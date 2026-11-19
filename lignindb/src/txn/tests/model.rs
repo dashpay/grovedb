@@ -169,24 +169,25 @@ pub struct Left {
 }
 
 impl Left {
-    /// Whether the write deletes every key of `unit`.
-    fn takes(&self, unit: Unit) -> bool {
-        let own = match self.cleared {
+    /// Whether `unit` is one the write takes of its own subtree: every
+    /// column of a drop, and the data of a clear.
+    fn own(&self, unit: Unit) -> bool {
+        match self.cleared {
             true => unit == Unit::data(self.subtree),
             false => unit.subtree == self.subtree,
-        };
-        own || self.below.contains(&unit.subtree)
+        }
+    }
+
+    /// Whether the write deletes every key of `unit`.
+    fn takes(&self, unit: Unit) -> bool {
+        self.own(unit) || self.below.contains(&unit.subtree)
     }
 
     /// Whether the write is in the key set of its commit for every key of
     /// `unit`. For a subtree below that the transaction had not written,
     /// it is not: CF5 for such a write is open.
     fn names(&self, unit: Unit) -> bool {
-        let own = match self.cleared {
-            true => unit == Unit::data(self.subtree),
-            false => unit.subtree == self.subtree,
-        };
-        own || self.cut.contains(&unit.subtree)
+        self.own(unit) || self.cut.contains(&unit.subtree)
     }
 }
 

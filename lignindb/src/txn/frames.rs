@@ -686,7 +686,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 Some(root) => *root,
                 None => {
                     let root = self.entered(&view, &subtree).map_err(Refused::clean)?;
-                    *entered.entry(subtree).or_insert(root)
+                    entered.insert(subtree, root);
+                    root
                 }
             };
             let Some(root) = root else {

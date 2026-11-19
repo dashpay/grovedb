@@ -801,19 +801,16 @@ impl WriteSet {
     /// A subtree that the batch drops or clears holds nothing when its
     /// change sets and records are applied.
     pub(crate) fn admits(&self, batch: &Batch<'_>) -> Result<(), BatchError> {
-        let leaves = |subtree: Subtree| {
-            (batch.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
-        };
         for merk in batch.merks {
             let subtree = merk.subtree;
-            if !leaves(subtree) && self.held(Unit::data(subtree)) == Some(Held::Flat) {
+            if !batch.leaves(subtree) && self.held(Unit::data(subtree)) == Some(Held::Flat) {
                 return Err(BatchError::NotMerk { subtree });
             }
         }
         for record in batch.records {
             let unit = record.unit();
             let nodes = unit.column == Column::Data && self.held(unit) == Some(Held::Nodes);
-            if nodes && !leaves(unit.subtree) {
+            if nodes && !batch.leaves(unit.subtree) {
                 return Err(BatchError::NotFlat { unit });
             }
         }
@@ -827,9 +824,9 @@ impl WriteSet {
         for op in (0..self.ops.len()).rev() {
             // The change sets of an operation come after what it does to
             // subtrees as a whole.
-            let (.., from, to) = self.op_bounds(op);
+            let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
             let set = |merk: &MerkEntry| (merk.subtree == *subtree).then_some(merk.root).flatten();
-            if let Some(root) = self.merks[from..to].iter().rev().find_map(set) {
+            if let Some(root) = self.merks[merks_from..merks_to].iter().rev().find_map(set) {
                 return Some(root.is_some());
             }
             let named = |entry: &SubtreeEntry| match entry {
@@ -839,9 +836,8 @@ impl WriteSet {
             };
             // A Merk below one that the operation dropped or cleared went
             // with it.
-            let (entries, to, ..) = self.op_bounds(op);
-            let mut cut =
-                (self.entries[entries..to].iter()).flat_map(|entry| Self::cut(&self.arena, entry));
+            let mut cut = (self.entries[entries_from..entries_to].iter())
+                .flat_map(|entry| Self::cut(&self.arena, entry));
             if self.op_subtrees(op).iter().any(named) || cut.any(|cut| cut == *subtree) {
                 return Some(false);
             }

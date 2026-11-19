@@ -311,6 +311,11 @@ impl Batch<'_> {
                 merk.nodes.is_empty() && merk.removed.is_empty() && merk.root == RootPut::Keep
             })
     }
+
+    /// Whether the batch drops or clears `subtree`.
+    pub(crate) fn leaves(&self, subtree: Subtree) -> bool {
+        (self.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
+    }
 }
 
 /// What the application of a batch reports: where the nodes it wrote are

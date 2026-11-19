@@ -524,15 +524,12 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
-        let leaves = |subtree: Subtree| {
-            (batch.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
-        };
         for record in batch.records {
             // The transaction has written no node of the subtree since it
             // last dropped or cleared it, or the write set would not admit
             // the record: the subtree holds nodes if it has a root.
             let unit = record.unit();
-            let flat = unit.column != Column::Data || leaves(unit.subtree);
+            let flat = unit.column != Column::Data || batch.leaves(unit.subtree);
             if !flat && self.rooted(state, op, &unit.subtree)? {
                 return Err(BatchError::NotFlat { unit }.into());
             }
@@ -542,7 +539,7 @@ impl<'s> WriteTxn<'s> {
         let mut entry: EntryId = 0;
         for merk in batch.merks {
             let subtree = merk.subtree;
-            let left = leaves(subtree);
+            let left = batch.leaves(subtree);
             empty.push(left || !self.rooted(state, op, &subtree)?);
             for node in merk.nodes {
                 entry += 1;

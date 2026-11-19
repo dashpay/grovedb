@@ -440,21 +440,21 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
         let (path, at, subtree) = (*self.txn.path(), self.pin.version(), self.unit.subtree);
         let (opened, seen) = (&mut self.opened, self.seen);
-        let found = self.txn.with_set(self.scoped, |set| {
+        let (left, reads) = self.txn.with_set(self.scoped, |set| {
             if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
-                return Ok(Some((set.left(), reads)));
+                return Ok((set.left(), reads));
             }
             let opened = Opened::at(opened, &path, guard, at)?;
             let reads = opened.seen(&path, guard, set, &subtree)?.is_some();
-            Ok::<_, TxnError>(Some((set.left(), reads)))
+            Ok::<_, TxnError>((set.left(), reads))
         })??;
-        if found.map(|(_, reads)| reads) != seen.map(|(_, reads)| reads) {
+        if seen.map(|(_, reads)| reads) != Some(reads) {
             // The committed side comes into the cursor's view, or leaves
             // it: it is placed again by the next move.
             self.way = Way::Lost;
         }
-        self.seen = found;
-        Ok(found.is_some_and(|(_, reads)| reads))
+        self.seen = Some((left, reads));
+        Ok(reads)
     }
 
     /// The committed version the cursor reads beside the transaction's
