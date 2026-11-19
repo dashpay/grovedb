@@ -93,13 +93,13 @@ The eight files of `grovedb/tests/` (80 tests) use the crate as a dependent does
 
 ### RocksDB-only tests of GroveDB
 
-78 tests are compiled for the RocksDB engine alone, with the 47 helpers only they call. Each carries `#[cfg(grovedb_test_engine = "rocksdb")]`, so `grep -rn 'grovedb_test_engine = "rocksdb"' grovedb/src` lists them. All of them write or remove a record under GroveDB, in RocksDB's layout, to see what GroveDB makes of a store it did not write:
+77 tests are compiled for the RocksDB engine alone, with the 47 helpers only they call. Each carries `#[cfg(grovedb_test_engine = "rocksdb")]`, so `grep -rn 'grovedb_test_engine = "rocksdb"' grovedb/src` lists them. All of them write or remove a record under GroveDB, in RocksDB's layout, to see what GroveDB makes of a store it did not write:
 
 | File | Tests | What they do under GroveDB |
 | --- | --- | --- |
 | `tests/verify_grovedb_aggregate_recompute_tests.rs` | 16 | plant an aggregate in a stored node or a secondary row, rebind a root key, and expect `verify_grovedb` to report it |
 | `tests/coverage_lib_paths_tests.rs` | 16 | put raw and undecodable records into a subtree or an axis secondary |
-| `tests/indexed_tree_secondary_drift_tests.rs` | 15 | make the secondary of a count-indexed tree drift from its primary, write a key over the ceiling, put a record into a secondary's storage that no tree links, and pin the records and the cost of the repair of grove version 4 (the last four came with GroveDB #1063) |
+| `tests/indexed_tree_secondary_drift_tests.rs` | 14 | make the secondary of a count-indexed tree drift from its primary, write a key over the ceiling, and put a record into a secondary's storage that no tree links (the last three came with GroveDB #1063) |
 | `tests/verify_grovedb_indexed_tests.rs` | 12 | delete a secondary row, or insert an orphan one, behind the primary |
 | `tests/indexed_reference_row_tests.rs` | 8 | overwrite a stored row |
 | `tests/provable_sum_tree_tests.rs` | 4 | change a stored value without its hash, or a parent element with consistent hashes |
@@ -110,7 +110,7 @@ The eight files of `grovedb/tests/` (80 tests) use the crate as a dependent does
 
 Besides these, the tests of `grovedb/src/engine/tests.rs` name `RocksDbEngine` and run on it whatever engine the suite is on, as said above, and the tests of the hatches `raw_storage` and `ingest_subtree_sst` (feature `unsafe-dump-load`) are compiled for the RocksDB engine alone, as the hatches are.
 
-Thirteen tests that only read through RocksDB contexts, or committed a batch through the storage, go through `Engine` now (`Engine::subtree`, `Engine::apply_batch`, `NodeStore::cursor`, `NodeStore::has_node`) and run on every engine. So do three of the tests of the repair that came with GroveDB #1063: `drift_axis_secondary`, the helper that makes one axis's secondary drift, writes through a Merk of the secondary and the engine's batch, and the tests that use it alone check on every engine that each row a repair removes leaves storage, where a batch that kept a put over a later delete would keep the row.
+Thirteen tests that only read through RocksDB contexts, or committed a batch through the storage, go through `Engine` now (`Engine::subtree`, `Engine::apply_batch`, `NodeStore::cursor`, `NodeStore::has_node`) and run on every engine. So do four of the tests of the repair that came with GroveDB #1063: `drift_axis_secondary`, the helper that makes one axis's secondary drift, writes through a Merk of the secondary and the engine's batch. Three of the tests that use it alone check on every engine that each row the repair of grove version 5 removes leaves storage. The fourth, `the_repair_on_grove_v4_is_what_it_was`, pins the opposite for the repair of the released versions: its cost, its root hash, and the five records it leaves in storage that no tree links, each with its length. An engine has to hold such records, and show them to a cursor, to pass it.
 
 One thing the second engine does not catch: `PinnedReads` is a type of its own, and its batch, transactions and handles are RocksDB's. A test that names `StorageBatch` (many write `StorageBatch::new()`), or calls a method of a storage context on a handle it opened through `Engine`, compiles on both engines of today. On an engine with types of its own it does not compile, so nothing can run on the wrong engine unseen, and `SuiteBatch` of the fixtures is the name to use instead.
 

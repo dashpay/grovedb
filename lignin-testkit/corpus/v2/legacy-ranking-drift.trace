@@ -174,6 +174,199 @@ cb7dde41f4qb7ddp24bc
   failed NotSupported
   prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
   prove-failed NotSupported
-stream 28 e9976351549cb1c7ea4dae70552ffc4446ebb24aeafd87883318fa033eaef889
-tally failed=4 unproved=4 unverified=0
-end 28 76f2765bea34d0e297b7fe16b81d49b3f0e8a91309e9581582c81be3f9a06e17
+cf36fr214a
+  step 28
+  # Write(Insert { path: [[116, 111, 112]], key: [119, 105, 100, 101], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 })
+  cost seeks=7 loaded=286 added=125 replaced=167 removed=- hashes=12 sinsemilla=0
+  root 883db251391d6bf7f9e3dd084137b5d283ee992957b4998b962fbb2a8f3ca241
+cdf69r365f
+  step 29
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 48], element: item: [hex: 7600, str: v\u{0}], tree: Count })
+  cost seeks=20 loaded=964 added=356 replaced=255 removed=- hashes=30 sinsemilla=0
+  root 0989d94dc3e339b50ca237302f261cac57a1fb721f1268820a9f18cc96f0b869
+cdab6r52a9
+  step 30
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 49], element: item: [hex: 7601, str: v\u{1}], tree: Count })
+  cost seeks=23 loaded=1230 added=356 replaced=533 removed=- hashes=34 sinsemilla=0
+  root ab155ae69686539a40f10ca23a43a77ce4eafe1b2f63eae00cfe985d809e4d3d
+c0fd8rd9e6
+  step 31
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 50], element: item: [hex: 7602, str: v\u{2}], tree: Count })
+  cost seeks=28 loaded=1507 added=356 replaced=811 removed=- hashes=38 sinsemilla=0
+  root e9bc74422d05b7afe8271e5534bd5ee09ef3bd18bcbc50dcdcc18212c4c9ed2c
+c3716rbfe6
+  step 32
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 51], element: item: [hex: 7603, str: v\u{3}], tree: Count })
+  cost seeks=28 loaded=1633 added=356 replaced=811 removed=- hashes=38 sinsemilla=0
+  root 2d3f4d8e5c2a877d75c762b7efde9065211e69d633577a25c4154a21db10735c
+c13acr3f3a
+  step 33
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 52], element: item: [hex: 7604, str: v\u{4}], tree: Count })
+  cost seeks=32 loaded=1871 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root 54e6d1f5be23dd1d266d4dc03b1e2d30d066cab536a3f9410c117e4073823e57
+c53a2r8599
+  step 34
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 53], element: item: [hex: 7605, str: v\u{5}], tree: Count })
+  cost seeks=36 loaded=2109 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 2c62641db36f9b960f85ab5826010ed53a667e33f8f80cd91dc41b1aab7de6b2
+c13acrf261
+  step 35
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 54], element: item: [hex: 7606, str: v\u{6}], tree: Count })
+  cost seeks=32 loaded=1871 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root 7957b5e6038aa422471c1bd9d6177fd8ec831d5a64dd8d33f54e168dceca5840
+ce70crf95b
+  step 36
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 55], element: item: [hex: 7607, str: v\u{7}], tree: Count })
+  cost seeks=32 loaded=1958 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root fd72724d53601e247daff2f36d174442be665e8e9947d6b5aa72320c94b8f0cb
+c21c9reb94
+  step 37
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 56], element: item: [hex: 7608, str: v\u{8}], tree: Count })
+  cost seeks=36 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 4b899d0a7f28189a79339abf9faffe2526c9cdb1f4ad49050f958bea4e7b8761
+cf472r749f
+  step 38
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 57], element: item: [hex: 7609, str: v\t], tree: Count })
+  cost seeks=40 loaded=2434 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root d810ae6678d813ac2a072d2d79a09d7a0a98c59e658946d48425662d555f659b
+c21c9r7a33
+  step 39
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 58], element: item: [hex: 760a, str: v], tree: Count })
+  cost seeks=36 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 0d5546cc70560666dff96961127d554335ccf743313600a12fcf66633061be43
+c6abbraf61
+  step 40
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 59], element: item: [hex: 760b, str: v\u{b}], tree: Count })
+  cost seeks=40 loaded=2608 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root dec64d5856e6a68bc5b7a84c62f9212978d30826d46bd58ece43243c143121bd
+c21c9r5ae6
+  step 41
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 60], element: item: [hex: 760c, str: v\u{c}], tree: Count })
+  cost seeks=36 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 37ae0f457403a11d840f49df239a0dc7c4c448ba3b94669b7c5e6340d677d470
+cf472r23fa
+  step 42
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 61], element: item: [hex: 760d, str: v\r], tree: Count })
+  cost seeks=40 loaded=2434 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root 13ed06194b0237d268a77f745d614e7ea36801ca1c4a3505979c83a3f88a4f10
+c21c9r7776
+  step 43
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 62], element: item: [hex: 760e, str: v\u{e}], tree: Count })
+  cost seeks=36 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 31912ad065735700b760f342619d14eace42ad1c3e647577d5d282659a46e352
+c3297rc9c1
+  step 44
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 63], element: item: [hex: 760f, str: v\u{f}], tree: Count })
+  cost seeks=36 loaded=2283 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root aa614f7b21759c159318ae04c5867c5f58e5a3202497c11ef4bb435eb2be3357
+cb7ddrc9c1
+  step 45
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root aa614f7b21759c159318ae04c5867c5f58e5a3202497c11ef4bb435eb2be3357
+c7a64v1a73redee
+  step 46
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 51], tree: Count })
+  cost seeks=32 loaded=2664 added=0 replaced=755 removed=160 hashes=31 sinsemilla=0
+  result flag
+  flag true
+  root 3d0cebd349b4a22c8a5cb9a46e19e9167a4ac8906348da22dcd842ed149a46fc
+cb7ddredee
+  step 47
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3d0cebd349b4a22c8a5cb9a46e19e9167a4ac8906348da22dcd842ed149a46fc
+cc2a3v1a73rc4cc
+  step 48
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 55], tree: Count })
+  cost seeks=30 loaded=2362 added=0 replaced=755 removed=160 hashes=31 sinsemilla=0
+  result flag
+  flag true
+  root 15a0013b12b7cb9c4efc6844ecb0d4bb68851787ceb8c998b6d3aff4d71b1166
+cb7ddrc4cc
+  step 49
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 15a0013b12b7cb9c4efc6844ecb0d4bb68851787ceb8c998b6d3aff4d71b1166
+ce056v1a73rdb13
+  step 50
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 59], tree: Count })
+  cost seeks=34 loaded=2737 added=0 replaced=880 removed=160 hashes=33 sinsemilla=0
+  result flag
+  flag true
+  root 98d9a2a55300d8b44b74758d3234e03f64d8ce729f228721db7aa518f1512daf
+cb7ddrdb13
+  step 51
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 98d9a2a55300d8b44b74758d3234e03f64d8ce729f228721db7aa518f1512daf
+c03c4vaf54
+  step 52
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true }… (401 characters)
+  cost seeks=27 loaded=3473 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 13
+  row 746f70/77696465 6b30 0002760000
+  row 746f70/77696465 6b31 0002760100
+  row 746f70/77696465 6b32 0002760200
+  row 746f70/77696465 6b34 0002760400
+  row 746f70/77696465 6b35 0002760500
+  row 746f70/77696465 6b36 0002760600
+  row 746f70/77696465 6b38 0002760800
+  row 746f70/77696465 6b39 0002760900
+  row 746f70/77696465 6b3a 0002760a00
+  row 746f70/77696465 6b3c 0002760c00
+  row 746f70/77696465 6b3d 0002760d00
+  row 746f70/77696465 6b3e 0002760e00
+  row 746f70/77696465 6b3f 0002760f00
+  skipped 0
+cb7dde41f4qb7ddp24bc
+  step 53
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7bbraad9
+  step 54
+  # Write(ReconcileIndexed { path: [[116, 111, 112], [119, 105, 100, 101]] })
+  cost seeks=86 loaded=12778 added=0 replaced=1785 removed=196 hashes=66 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7ddraad9
+  step 55
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7dde41f4qb7ddp24bc
+  step 56
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cf0b9raad9
+  step 57
+  # Write(ReconcileIndexed { path: [[116, 111, 112], [119, 105, 100, 101]] })
+  cost seeks=79 loaded=12472 added=0 replaced=1326 removed=- hashes=58 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7ddraad9
+  step 58
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7dde41f4qb7ddp24bc
+  step 59
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+stream 60 b6a7912da048ed6c7fd043c971cbbd477b8a75e94e033230105ec5fe31380575
+tally failed=7 unproved=7 unverified=0
+end 60 9e01aa8bbd36b0a87fbd98203659adc68fe6deb89631dbcb25ec6de3c60d4860

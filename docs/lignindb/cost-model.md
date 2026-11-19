@@ -10,7 +10,7 @@ It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the 
 
 **Since SEAM-05** the storage rules of section 5 are the functions of `grovedb_costs::cost_model`, and the RocksDB engine charges only through them. Section 14 says which function is which rule. The citations of section 5 are of the code at the pinned commit, where the rules were written out in the storage contexts.
 
-**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 380 traces and 229,366 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
+**Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 380 traces and 229,526 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
 ## 1. How to read this document
 
@@ -562,7 +562,7 @@ The rules of sections 6 and 7 are therefore executed by the code that owns them,
 
 ```text
 $ lignin-testkit/cost-model-storage/check.sh
-golden corpus: 380 traces replayed, 380 as recorded (229366 steps), 0 not
+golden corpus: 380 traces replayed, 380 as recorded (229526 steps), 0 not
 ```
 
 The replay is BASE-02's: it compares the cost, the result, the root hash and the proof of every step with the committed corpus, and names the first step and part that differ. A green replay on the model therefore also says that the model gave the same answers as RocksDB wherever the corpus looks: every result read, every root hash and every proof. It does not say that the two states are equal record by record; an aux or meta record that nothing reads would not be noticed.
@@ -573,7 +573,7 @@ Everything that was run on the model, at the pinned commit:
 
 | What | Command | Result |
 | --- | --- | --- |
-| The corpus at the standard scale: 76 traces on each of grove versions 1 to 5, recorded from `develop` `2cfc1ce1`. Run again when `develop` was merged up to that commit | `check.sh` | 380 traces as recorded, 229,366 steps |
+| The corpus at the standard scale: 76 traces on each of grove versions 1 to 5, recorded from `develop` `2cfc1ce1`. Run again when `develop` was merged up to that commit | `check.sh` | 380 traces as recorded, 229,526 steps |
 | The corpus at the reference scale: 1,050,008 operations on each grove version | `check.sh replay --reference` | 5 traces as recorded, 5,250,055 steps |
 | The storage crate's tests | `check.sh test -p grovedb-storage --features rocksdb_storage -- --skip cost_model::` | 51 pass. The crate's other 14 are unit tests inside `rocksdb_storage/storage.rs`, the file the model replaces. |
 | Merk's tests | `check.sh test -p grovedb-merk` | 872 and 9 doc tests pass |
@@ -633,33 +633,33 @@ The model counts every application of a rule, by case. `check.sh` prints the cou
 
 | Rule | Case | Corpus | Storage tests | Merk tests | GroveDB tests |
 | --- | --- | ---: | ---: | ---: | ---: |
-| P1 | a subtree handle opened by the empty path | 627,088 | 0 | 3,541 | 227,613 |
-| P1 | a subtree handle opened by a path of one segment or more | 1,811,662 | 132 | 3 | 801,434 |
-| P2 | a subtree handle opened by a prefix | 39,106 | 13 | 0 | 33,547 |
-| P3 | the prefix of an indexed tree's secondary derived | 36,469 | 0 | 0 | 18,362 |
-| R1 | a data record read through a deferred handle | 4,863,261 | 24 | 217,766 | 1,607,100 |
-| R1 | a data key with no record read through a deferred handle | 35,132 | 13 | 1 | 9,623 |
+| P1 | a subtree handle opened by the empty path | 627,609 | 0 | 3,541 | 227,613 |
+| P1 | a subtree handle opened by a path of one segment or more | 1,812,575 | 132 | 3 | 801,434 |
+| P2 | a subtree handle opened by a prefix | 39,223 | 13 | 0 | 33,547 |
+| P3 | the prefix of an indexed tree's secondary derived | 36,586 | 0 | 0 | 18,362 |
+| R1 | a data record read through a deferred handle | 4,866,026 | 24 | 217,766 | 1,607,100 |
+| R1 | a data key with no record read through a deferred handle | 35,258 | 13 | 1 | 9,623 |
 | R1 | an aux record read through a deferred handle | 290 | 12 | 1 | 19 |
 | R1 | an aux key with no record read through a deferred handle | 40 | 10 | 0 | 178 |
-| R1 | a root key record read through a deferred handle | 407,210 | 11 | 3,008 | 117,923 |
-| R1 | an absent root key record read through a deferred handle | 3,721 | 4 | 421 | 12,733 |
+| R1 | a root key record read through a deferred handle | 407,502 | 11 | 3,008 | 117,923 |
+| R1 | an absent root key record read through a deferred handle | 3,726 | 4 | 421 | 12,733 |
 | R1 | a meta record read through a deferred handle | 0 | 10 | 0 | 8 |
 | R1 | a meta key with no record read through a deferred handle | 0 | 4 | 2 | 22 |
 | R2 | a read through an immediate handle | 0 | 461 | 29,226 | 16,366 |
-| W1 | the stored key added to the key cost of a new data record | 244,920 | 1 | 108,684 | 250,138 |
-| W2 | a data put with the sizes of a node's links and feature | 2,953,073 | 0 | 162,830 | 915,178 |
+| W1 | the stored key added to the key cost of a new data record | 245,085 | 1 | 108,684 | 250,138 |
+| W2 | a data put with the sizes of a node's links and feature | 2,954,239 | 0 | 162,830 | 915,178 |
 | W2 | a data put with no link sizes | 14,873 | 78 | 23,135 | 39,798 |
 | W2 | an aux put | 1,155 | 34 | 2 | 21 |
 | W2 | a meta put | 522 | 33 | 2 | 35 |
 | W3 | a root key put with a cost | 0 | 2 | 0 | 0 |
-| W3 | a root key put with no cost | 139,568 | 23 | 3,100 | 28,687 |
+| W3 | a root key put with no cost | 139,668 | 23 | 3,100 | 28,687 |
 | W4 | a prepaid put | 1,213 | 14 | 0 | 745 |
-| K2 | a value cost worked out from the record length | 931,533 | 132 | 181,551 | 505,444 |
-| K2 | a value cost taken from the writer as given | 2,038,090 | 15 | 4,418 | 449,588 |
-| K3 | a writer's value cost checked against the record length | 921,957 | 2 | 158,412 | 488,502 |
-| K3 | a writer's key cost checked against the stored key | 244,918 | 1 | 108,382 | 250,061 |
+| K2 | a value cost worked out from the record length | 932,369 | 132 | 181,551 | 505,444 |
+| K2 | a value cost taken from the writer as given | 2,038,420 | 15 | 4,418 | 449,588 |
+| K3 | a writer's value cost checked against the record length | 922,793 | 2 | 158,412 | 488,502 |
+| K3 | a writer's key cost checked against the stored key | 245,083 | 1 | 108,382 | 250,061 |
 | K3 | a write refused because the writer's cost does not match | 6 | 0 | 0 | 3 |
-| D1 | a data delete with the writer's cost | 72,482 | 0 | 1,852 | 10,543 |
+| D1 | a data delete with the writer's cost | 72,504 | 0 | 1,852 | 10,543 |
 | D1 | an aux delete with the writer's cost | 0 | 0 | 0 | 0 |
 | D1 | a root key delete with the writer's cost | 0 | 0 | 1 | 65 |
 | D1 | a meta delete with the writer's cost | 0 | 0 | 0 | 0 |
@@ -668,26 +668,26 @@ The model counts every application of a rule, by case. `check.sh` prints the cou
 | M1 | a write through an immediate handle | 0 | 481 | 5,192 | 2,407 |
 | M2 | a put in the batch of an immediate handle | 0 | 7 | 24,501 | 12,024 |
 | M2 | a delete in the batch of an immediate handle | 0 | 1 | 3 | 0 |
-| C1 | a cursor moved to the first record | 74,636 | 86 | 1,630 | 26,191 |
+| C1 | a cursor moved to the first record | 74,667 | 86 | 1,630 | 26,191 |
 | C1 | a cursor moved to the last record | 850 | 10 | 12 | 434 |
 | C1 | a cursor moved to the first key at or after a key | 2,957 | 3 | 307 | 5,050 |
 | C1 | a cursor moved to the last key at or before a key | 98 | 2 | 0 | 233 |
-| C1 | a cursor stepped forward | 201,275 | 106 | 43,047 | 49,207 |
+| C1 | a cursor stepped forward | 201,705 | 106 | 43,047 | 49,207 |
 | C1 | a cursor stepped back | 8,196 | 28 | 3,348 | 4,839 |
-| C2 | a cursor asked for its key or validity on a record | 744,609 | 388 | 148,950 | 214,692 |
-| C2 | a cursor asked for its key or validity off its subtree | 64,248 | 92 | 208 | 18,794 |
-| C3 | a cursor asked for the value of a record | 179,343 | 110 | 46,699 | 56,654 |
-| B1 | a batch applied to a transaction | 190,785 | 43 | 3,413 | 88,148 |
+| C2 | a cursor asked for its key or validity on a record | 746,329 | 388 | 148,950 | 214,692 |
+| C2 | a cursor asked for its key or validity off its subtree | 64,279 | 92 | 208 | 18,794 |
+| C3 | a cursor asked for the value of a record | 179,773 | 110 | 46,699 | 56,654 |
+| B1 | a batch applied to a transaction | 190,895 | 43 | 3,413 | 88,148 |
 | B1 | a batch whose writes were refused | 0 | 1 | 0 | 2 |
-| N1 | a data record kept as the fields of a node | 2,957,335 | 0 | 191,097 | 942,062 |
+| N1 | a data record kept as the fields of a node | 2,958,501 | 0 | 191,097 | 942,062 |
 | N1 | a data record that is not a node, kept as bytes | 10,611 | 207 | 2 | 14,839 |
-| N2 | the link and feature sizes Merk gave with a node are the node's | 2,953,073 | 0 | 162,830 | 915,178 |
+| N2 | the link and feature sizes Merk gave with a node are the node's | 2,954,239 | 0 | 162,830 | 915,178 |
 | N2 | the link and feature sizes Merk gave with a node are not the node's | 0 | 0 | 0 | 0 |
 
 ### 12.5 What the check does not show
 
 - **Rules the corpus does not reach** (zero in the first column above) are specified from the code: reads of the meta keyspace, R2, a root key put with a cost (W3), a batch whose writes are refused (B1), D1 outside the data keyspace, M1 and M2. A write refused because the writer's cost does not match (K3) is in the corpus since the hand-written case `legacy-flags-of-another-length`, twice on each of grove versions 1 to 3. The engine's suites reach all of them but D1 in the aux and meta keyspaces. `cost_model/against_rocksdb.rs` compares every one of them with RocksDB.
-- **N2** has to stay at zero in its second row, and does: on 4,031,081 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own. This row is also what keeps the model from charging a Merk's node from stored bytes: a record that comes with sizes and that the model cannot keep as a node's fields counts here. With the model's node parser made to give up on records over 100 bytes, every step of the corpus still matches, because the bytes it falls back to have the engine's length, and the check fails on this row with 2,260,997 such puts.
+- **N2** has to stay at zero in its second row, and does: on 4,032,247 node writes of the four runs, and on 235,356,610 of the reference scale, the sizes Merk passed were the node's own. This row is also what keeps the model from charging a Merk's node from stored bytes: a record that comes with sizes and that the model cannot keep as a node's fields counts here. With the model's node parser made to give up on records over 100 bytes, every step of the corpus still matches, because the bytes it falls back to have the engine's length, and the check fails on this row with 2,260,997 such puts.
 - **D2 on a record the same transaction wrote** is applied by the corpus only inside operations whose cost is dropped (section 12.3, Sensitivity).
 - **Commit conflicts** are not modelled: the model commits every transaction. No workload has two open write transactions.
 - **Persistence** is in memory: a database lives as long as the process and is found again through a mark left in its directory, and a checkpoint is a database of its own that starts as the committed state of the moment it was taken.

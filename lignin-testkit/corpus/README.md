@@ -74,8 +74,8 @@ out as it was but for its `engine` line again. That range is one commit,
   version. No scan of the corpus fails.
 
 One case was added with it, recorded from the same pin: `ranking-drift`,
-which holds what the repair is for on grove versions 1 to 4 (case 13
-below).
+which holds what the repair is for on grove versions 1 to 4, and what the
+repair of those versions leaves in storage (case 13 below).
 
 ## Using it
 
@@ -264,7 +264,7 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 380 traces and 229,366 steps in 5.7 MB: for each
+The standard scale is 380 traces and 229,526 steps in 5.8 MB: for each
 grove version the 31 workloads of the suite, `suite` and 44 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
@@ -512,7 +512,7 @@ the second from a callback and refuse the batch (`CorruptedData`).
 
 | Case | What it does | v1, v2, v3 | v4 | v5 |
 | --- | --- | --- | --- | --- |
-| `ranking-drift` | removes the entry at the root of a tree ranked by count, through the method of the tree and in a batch, reads the ranking, repairs the tree and reads the ranking again | 4 / 4 / 0 | 2 / 2 / 0 | 0 / 0 / 0 |
+| `ranking-drift` | removes entries from three trees ranked by count, through the method of the tree and in a batch, reads each ranking, repairs the tree and reads the ranking again | 7 / 7 / 0 | 5 / 3 / 0 | 0 / 0 / 0 |
 
 To maintain a ranking, grove versions 1 to 4 read an entry back by key
 after the write (`apply_batch.indexed_mirror_entry_read` 0). Where that
@@ -520,10 +520,12 @@ read meets a link the write did not load, it takes the record from storage,
 and the record of a removed entry is still there while the removal is
 pending. So the removal is taken for no change, and the row of the entry
 stays in the ranking. Whether it happens depends on the shape of the tree
-around the removed entry. The case builds the smallest tree in which it
-does, five entries with the removed one at the root, twice: one tree loses
-the entry through `GroveDb::delete_from_count_indexed_tree`, the other
-through a batch.
+around the removed entry.
+
+**One row.** The case builds the smallest tree in which it happens, five
+entries with the removed one at the root, twice: one tree loses the entry
+through `GroveDb::delete_from_count_indexed_tree`, the other through a
+batch.
 
 - On grove versions 1 to 4 each tree then holds four entries and its
   ranking five rows. The removal frees 160 bytes where grove version 5
@@ -538,6 +540,36 @@ through a batch.
   has had since the removals.
 - On grove version 5 the removal takes the row with it, the ranking is
   read and proven at once, and the repair does not move the root hash.
+
+**Three rows, and what the repair leaves.** A third tree is filled with
+sixteen keys in order and loses the fourth, the eighth and the twelfth
+through the method of the tree. Each removal leaves its row on grove
+versions 1 to 4 (160 bytes freed, 356 on grove version 5).
+
+- The repair of grove versions 1 to 4 removes the rows one commit of the
+  ranking's tree at a time, all into one operation of the storage batch,
+  which keeps a put over a later delete of the same key. Removing a row
+  rewrites the nodes around it, and a row that is rewritten and then
+  removed stays in storage. The repair frees 196 bytes, one row of the
+  three. The root hash it leaves is the one grove version 5 has: the tree
+  of the ranking holds thirteen rows.
+- The rows of a ranking are read from storage and proven from the tree. So
+  after the repair, grove version 4 proves the ranking, the proof verifies,
+  and the read of the same ranking fails on a row whose entry is gone
+  (`CorruptedData`). This is the one kind of step in the corpus where a read
+  fails and its proof is recorded.
+- A second repair frees nothing and moves nothing: the released repair
+  does not see a row that is in storage and in no tree. The read fails as
+  before.
+- On grove version 5 the three removals take their rows with them, and
+  both repairs change nothing.
+
+A record that is stored under a key of a subtree and that no node of the
+tree links is therefore a state a released grove version reaches through
+its public operations, and another engine has to hold it to give these
+answers: a cursor over the subtree shows the record, the tree and its root
+hash do not have it. The repair of grove version 5 removes such records
+(GroveDB #1063). No stream or case runs it on a tree that holds one yet.
 
 The other half of what was seen in a generated stream (BASE-01, `wide-ranks`
 on grove version 4: a ranking that lacks the row of an entry a batch

@@ -186,6 +186,199 @@ ce7c3v1cc5qd917p829f
   prove-cost seeks=25 loaded=2588 added=0 replaced=0 removed=- hashes=28 sinsemilla=0
   proof 474 0100310403746f70000a02010672616e6b6564002cd02dd276df9313b190a4c1e60706ab3e4c717d2ec1cd61a367adbe400438a90103746f70006004076261746368656400131601026b33010a00000000000000016b330400cf4b2a595fa1c5450bded2b77315c9950f28f27dfc99fc2d85970b129dce53bd02477c99a67e3109edfba2f3fe0cf87ab4891182b32fbc2220b057396565c1e59b1001076261746368656407fb0131000000b44dde89762aa87170ca92549baefd1d730152549441de63c1588e305299df4100eb070a00000000000000016b3000091206026b3001010200cb917d6bb7be5263f7248044745bdb23f68829577836feae09e02b38edfdccfe080204070a00000000000000016b3100091206026b3101010200f2cf3cd8349c4ddda916df0bf308df2dbbe219777f15e8b40ff20f5fcf4456ed08010211070a00000000000000016b3300091206026b330101020057921b86751724e3faa9545c708a266de855c64bf08ccec47f52e7d1ff33d28c08040810070a00000000000000016b3400091206026b34010102009540f6d0ec821e7ed8f721f658a7e36432b610ffda810c0a6c812588b7fed3820801021104010500027600000001050002760100000105000276030000010500027604000000
   verification verified
-stream 28 e9976351549cb1c7ea4dae70552ffc4446ebb24aeafd87883318fa033eaef889
-tally failed=2 unproved=2 unverified=0
-end 28 736ce3003efcb40f9e8d5d9204f9f7d8145a7e738d97f3f61306d1a2bd208b3d
+cf36fr214a
+  step 28
+  # Write(Insert { path: [[116, 111, 112]], key: [119, 105, 100, 101], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 })
+  cost seeks=7 loaded=286 added=125 replaced=167 removed=- hashes=12 sinsemilla=0
+  root 883db251391d6bf7f9e3dd084137b5d283ee992957b4998b962fbb2a8f3ca241
+cdf69r365f
+  step 29
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 48], element: item: [hex: 7600, str: v\u{0}], tree: Count })
+  cost seeks=20 loaded=964 added=356 replaced=255 removed=- hashes=30 sinsemilla=0
+  root 0989d94dc3e339b50ca237302f261cac57a1fb721f1268820a9f18cc96f0b869
+cdab6r52a9
+  step 30
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 49], element: item: [hex: 7601, str: v\u{1}], tree: Count })
+  cost seeks=23 loaded=1230 added=356 replaced=533 removed=- hashes=34 sinsemilla=0
+  root ab155ae69686539a40f10ca23a43a77ce4eafe1b2f63eae00cfe985d809e4d3d
+ce464rd9e6
+  step 31
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 50], element: item: [hex: 7602, str: v\u{2}], tree: Count })
+  cost seeks=27 loaded=1507 added=356 replaced=811 removed=- hashes=38 sinsemilla=0
+  root e9bc74422d05b7afe8271e5534bd5ee09ef3bd18bcbc50dcdcc18212c4c9ed2c
+c74darbfe6
+  step 32
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 51], element: item: [hex: 7603, str: v\u{3}], tree: Count })
+  cost seeks=27 loaded=1633 added=356 replaced=811 removed=- hashes=38 sinsemilla=0
+  root 2d3f4d8e5c2a877d75c762b7efde9065211e69d633577a25c4154a21db10735c
+c9673r3f3a
+  step 33
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 52], element: item: [hex: 7604, str: v\u{4}], tree: Count })
+  cost seeks=31 loaded=1871 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root 54e6d1f5be23dd1d266d4dc03b1e2d30d066cab536a3f9410c117e4073823e57
+c87bcr8599
+  step 34
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 53], element: item: [hex: 7605, str: v\u{5}], tree: Count })
+  cost seeks=35 loaded=2109 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 2c62641db36f9b960f85ab5826010ed53a667e33f8f80cd91dc41b1aab7de6b2
+c9673rf261
+  step 35
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 54], element: item: [hex: 7606, str: v\u{6}], tree: Count })
+  cost seeks=31 loaded=1871 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root 7957b5e6038aa422471c1bd9d6177fd8ec831d5a64dd8d33f54e168dceca5840
+cc2e4rf95b
+  step 36
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 55], element: item: [hex: 7607, str: v\u{7}], tree: Count })
+  cost seeks=31 loaded=1958 added=356 replaced=1089 removed=- hashes=42 sinsemilla=0
+  root fd72724d53601e247daff2f36d174442be665e8e9947d6b5aa72320c94b8f0cb
+c07e2reb94
+  step 37
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 56], element: item: [hex: 7608, str: v\u{8}], tree: Count })
+  cost seeks=35 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 4b899d0a7f28189a79339abf9faffe2526c9cdb1f4ad49050f958bea4e7b8761
+ce9b8r749f
+  step 38
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 57], element: item: [hex: 7609, str: v\t], tree: Count })
+  cost seeks=39 loaded=2434 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root d810ae6678d813ac2a072d2d79a09d7a0a98c59e658946d48425662d555f659b
+c07e2r7a33
+  step 39
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 58], element: item: [hex: 760a, str: v], tree: Count })
+  cost seeks=35 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 0d5546cc70560666dff96961127d554335ccf743313600a12fcf66633061be43
+c1fd0raf61
+  step 40
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 59], element: item: [hex: 760b, str: v\u{b}], tree: Count })
+  cost seeks=39 loaded=2608 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root dec64d5856e6a68bc5b7a84c62f9212978d30826d46bd58ece43243c143121bd
+c07e2r5ae6
+  step 41
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 60], element: item: [hex: 760c, str: v\u{c}], tree: Count })
+  cost seeks=35 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 37ae0f457403a11d840f49df239a0dc7c4c448ba3b94669b7c5e6340d677d470
+ce9b8r23fa
+  step 42
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 61], element: item: [hex: 760d, str: v\r], tree: Count })
+  cost seeks=39 loaded=2434 added=356 replaced=1645 removed=- hashes=50 sinsemilla=0
+  root 13ed06194b0237d268a77f745d614e7ea36801ca1c4a3505979c83a3f88a4f10
+c07e2r7776
+  step 43
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 62], element: item: [hex: 760e, str: v\u{e}], tree: Count })
+  cost seeks=35 loaded=2196 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root 31912ad065735700b760f342619d14eace42ad1c3e647577d5d282659a46e352
+c6375rc9c1
+  step 44
+  # Write(IndexedInsert { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 63], element: item: [hex: 760f, str: v\u{f}], tree: Count })
+  cost seeks=35 loaded=2283 added=356 replaced=1367 removed=- hashes=46 sinsemilla=0
+  root aa614f7b21759c159318ae04c5867c5f58e5a3202497c11ef4bb435eb2be3357
+cb7ddrc9c1
+  step 45
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root aa614f7b21759c159318ae04c5867c5f58e5a3202497c11ef4bb435eb2be3357
+cc2a3v1a73redee
+  step 46
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 51], tree: Count })
+  cost seeks=30 loaded=2362 added=0 replaced=755 removed=160 hashes=31 sinsemilla=0
+  result flag
+  flag true
+  root 3d0cebd349b4a22c8a5cb9a46e19e9167a4ac8906348da22dcd842ed149a46fc
+cb7ddredee
+  step 47
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3d0cebd349b4a22c8a5cb9a46e19e9167a4ac8906348da22dcd842ed149a46fc
+cc2a3v1a73rc4cc
+  step 48
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 55], tree: Count })
+  cost seeks=30 loaded=2362 added=0 replaced=755 removed=160 hashes=31 sinsemilla=0
+  result flag
+  flag true
+  root 15a0013b12b7cb9c4efc6844ecb0d4bb68851787ceb8c998b6d3aff4d71b1166
+cb7ddrc4cc
+  step 49
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 15a0013b12b7cb9c4efc6844ecb0d4bb68851787ceb8c998b6d3aff4d71b1166
+c6ce1v1a73rdb13
+  step 50
+  # Write(IndexedDelete { path: [[116, 111, 112], [119, 105, 100, 101]], key: [107, 59], tree: Count })
+  cost seeks=32 loaded=2435 added=0 replaced=880 removed=160 hashes=33 sinsemilla=0
+  result flag
+  flag true
+  root 98d9a2a55300d8b44b74758d3234e03f64d8ce729f228721db7aa518f1512daf
+cb7ddrdb13
+  step 51
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 98d9a2a55300d8b44b74758d3234e03f64d8ce729f228721db7aa518f1512daf
+c03c4vaf54
+  step 52
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true }… (401 characters)
+  cost seeks=27 loaded=3473 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 13
+  row 746f70/77696465 6b30 0002760000
+  row 746f70/77696465 6b31 0002760100
+  row 746f70/77696465 6b32 0002760200
+  row 746f70/77696465 6b34 0002760400
+  row 746f70/77696465 6b35 0002760500
+  row 746f70/77696465 6b36 0002760600
+  row 746f70/77696465 6b38 0002760800
+  row 746f70/77696465 6b39 0002760900
+  row 746f70/77696465 6b3a 0002760a00
+  row 746f70/77696465 6b3c 0002760c00
+  row 746f70/77696465 6b3d 0002760d00
+  row 746f70/77696465 6b3e 0002760e00
+  row 746f70/77696465 6b3f 0002760f00
+  skipped 0
+cce63eae3bq0096pb409
+  step 53
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: data corruption error: indexed axis read: primary entry 6b33 named by a secondary row is missing: path key not found: get: key 0x6b33 not found in Merk that has a root key [6b38] and is of type LayeredMerk
+  # prove failed: data corruption error: indexed target chain: primary entry 6b33 is missing: path key not found: get: key 0x6b33 not found in Merk that has a root key [6b38] and is of type LayeredMerk
+  cost seeks=32 loaded=6398 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  failed CorruptedData
+  prove-cost seeks=38 loaded=4204 added=0 replaced=0 removed=- hashes=64 sinsemilla=0
+  prove-failed CorruptedData
+cb7bbraad9
+  step 54
+  # Write(ReconcileIndexed { path: [[116, 111, 112], [119, 105, 100, 101]] })
+  cost seeks=86 loaded=12778 added=0 replaced=1785 removed=196 hashes=66 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7ddraad9
+  step 55
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+c22b0eae3bq25ebpcb67
+  step 56
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: data corruption error: indexed axis read: primary entry 6b37 named by a secondary row is missing: path key not found: get: key 0x6b37 not found in Merk that has a root key [6b38] and is of type LayeredMerk
+  cost seeks=34 loaded=6536 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  failed CorruptedData
+  prove-cost seeks=61 loaded=6946 added=0 replaced=0 removed=- hashes=73 sinsemilla=0
+  proof 1107 0100310403746f70000a02010672616e6b6564001f5b3cf8ab269a9f6eec7ce5dfa83bf136314b4bcc5dc38aba878edecba6e2930103746f70007f01c6732efe2a35bfad5366af0825eae2d15586156d60005afe860ae565a9cbc3ae02477c99a67e3109edfba2f3fe0cf87ab4891182b32fbc2220b057396565c1e59b1004047769646500131601026b38010a00000000000000016b380d007379cf0eb732d7ef926079e0cacefab2757f94c03e84a7234a72e1260619fcef1101047769646507fb038e000000a0566b7bbc182617928959433905e27a184602bd9c2f1debc915526b546feca800fb02fe070a00000000000000016b3000091206026b3001010200cb917d6bb7be5263f7248044745bdb23f68829577836feae09e02b38edfdccfe080102070a00000000000000016b3100091206026b3101010200f2cf3cd8349c4ddda916df0bf308df2dbbe219777f15e8b40ff20f5fcf4456ed08030610070a00000000000000016b3200091206026b32010102005469680a9a3c512e4a3fcd7f571352cbfdbeb744718fc38c9c77db5136d1afd208010211070a00000000000000016b3400091206026b34010102009540f6d0ec821e7ed8f721f658a7e36432b610ffda810c0a6c812588b7fed38208060c10070a00000000000000016b3500091206026b3501010200db50c9427da7716bcff5f29de9466dc0d4dd5163009f95444f1811b337c7846a080204070a00000000000000016b3600091206026b3601010200ee692a6ab303821c4bd5c6e4d9a54a204c2972834141165ea8b6d8386e1bcaa90801021111070a00000000000000016b3800091206026b3801010200b736040649c7a294afca72aab0b147a5d6bbce882a6dc35364e50dfcc8fa6d04080d1a10070a00000000000000016b3900091206026b39010102004018157da5ff4e52e0274f629d0fbfcf22db872f70ebe524b59f100e2a42cfdf080204070a00000000000000016b3a00091206026b3a01010200b61b1984be50d64367fd33a8fa59f1787d1794bbfd62c389688e1b91b04ab2e408010211070a00000000000000016b3c00091206026b3c0101020050ded27c2725f7881ffcfc386b0827e79526e3874ce69aa5f4509377848dee2508060c10070a00000000000000016b3d00091206026b3d01010200dbb0063a18b6db99444da7814cd6d38658f341d68daae46c14118991e6b7c4a9080102070a00000000000000016b3e00091206026b3e01010200e37236d734666b59c683b61566537f5beb253256270916b8a8b6b9f4ff4b182f08030610070a00000000000000016b3f00091206026b3f01010200ae091d32a94db7ff12fe3680bd17073472038aebb047aba8e1f2d3cb388846a40801021111110d0105000276000000010500027601000001050002760200000105000276040000010500027605000001050002760600000105000276080000010500027609000001050002760a000001050002760c000001050002760d000001050002760e000001050002760f000000
+  verification verified
+cf0b9raad9
+  step 57
+  # Write(ReconcileIndexed { path: [[116, 111, 112], [119, 105, 100, 101]] })
+  cost seeks=79 loaded=12472 added=0 replaced=1326 removed=- hashes=58 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+cb7ddraad9
+  step 58
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root b05b4b51d7a56e5a6d8e165556e4c887046147ddd3d782ac001bb550d1f158ae
+c22b0eae3bq25ebpcb67
+  step 59
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [119, 105, 100, 101]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis: Count, traversal: RankedPage { k: 20, offset: 0 }, descen… (513 characters)
+  # failed: data corruption error: indexed axis read: primary entry 6b37 named by a secondary row is missing: path key not found: get: key 0x6b37 not found in Merk that has a root key [6b38] and is of type LayeredMerk
+  cost seeks=34 loaded=6536 added=0 replaced=0 removed=- hashes=6 sinsemilla=0
+  failed CorruptedData
+  prove-cost seeks=61 loaded=6946 added=0 replaced=0 removed=- hashes=73 sinsemilla=0
+  proof 1107 0100310403746f70000a02010672616e6b6564001f5b3cf8ab269a9f6eec7ce5dfa83bf136314b4bcc5dc38aba878edecba6e2930103746f70007f01c6732efe2a35bfad5366af0825eae2d15586156d60005afe860ae565a9cbc3ae02477c99a67e3109edfba2f3fe0cf87ab4891182b32fbc2220b057396565c1e59b1004047769646500131601026b38010a00000000000000016b380d007379cf0eb732d7ef926079e0cacefab2757f94c03e84a7234a72e1260619fcef1101047769646507fb038e000000a0566b7bbc182617928959433905e27a184602bd9c2f1debc915526b546feca800fb02fe070a00000000000000016b3000091206026b3001010200cb917d6bb7be5263f7248044745bdb23f68829577836feae09e02b38edfdccfe080102070a00000000000000016b3100091206026b3101010200f2cf3cd8349c4ddda916df0bf308df2dbbe219777f15e8b40ff20f5fcf4456ed08030610070a00000000000000016b3200091206026b32010102005469680a9a3c512e4a3fcd7f571352cbfdbeb744718fc38c9c77db5136d1afd208010211070a00000000000000016b3400091206026b34010102009540f6d0ec821e7ed8f721f658a7e36432b610ffda810c0a6c812588b7fed38208060c10070a00000000000000016b3500091206026b3501010200db50c9427da7716bcff5f29de9466dc0d4dd5163009f95444f1811b337c7846a080204070a00000000000000016b3600091206026b3601010200ee692a6ab303821c4bd5c6e4d9a54a204c2972834141165ea8b6d8386e1bcaa90801021111070a00000000000000016b3800091206026b3801010200b736040649c7a294afca72aab0b147a5d6bbce882a6dc35364e50dfcc8fa6d04080d1a10070a00000000000000016b3900091206026b39010102004018157da5ff4e52e0274f629d0fbfcf22db872f70ebe524b59f100e2a42cfdf080204070a00000000000000016b3a00091206026b3a01010200b61b1984be50d64367fd33a8fa59f1787d1794bbfd62c389688e1b91b04ab2e408010211070a00000000000000016b3c00091206026b3c0101020050ded27c2725f7881ffcfc386b0827e79526e3874ce69aa5f4509377848dee2508060c10070a00000000000000016b3d00091206026b3d01010200dbb0063a18b6db99444da7814cd6d38658f341d68daae46c14118991e6b7c4a9080102070a00000000000000016b3e00091206026b3e01010200e37236d734666b59c683b61566537f5beb253256270916b8a8b6b9f4ff4b182f08030610070a00000000000000016b3f00091206026b3f01010200ae091d32a94db7ff12fe3680bd17073472038aebb047aba8e1f2d3cb388846a40801021111110d0105000276000000010500027601000001050002760200000105000276040000010500027605000001050002760600000105000276080000010500027609000001050002760a000001050002760c000001050002760d000001050002760e000001050002760f000000
+  verification verified
+stream 60 b6a7912da048ed6c7fd043c971cbbd477b8a75e94e033230105ec5fe31380575
+tally failed=5 unproved=3 unverified=0
+end 60 81932d452accb14e333dfb75d8e3d0949124570e1a7901bf62b9a0fde5dd465f

@@ -255,7 +255,7 @@ The adapter keeps no state and has no rule of its own. What can go wrong in it i
 
 | Run | Compared | Result |
 | --- | --- | --- |
-| Golden corpus, standard scale as it was then (290 traces and 216,069 steps; it has 375 and 229,226 since), one trace at a time | 14,310,752 storage calls | one digest, equal |
+| Golden corpus, standard scale as it was then (290 traces and 216,069 steps; it has 380 and 229,526 since), one trace at a time | 14,310,752 storage calls | one digest, equal |
 | GroveDB suite (3,885 tests, all features) | 3,135 tests that reach storage, and 9 threads that are doc tests or are started by a test | 3,133 tests and the 9 threads equal, 4,889,177 calls. The other two tests draw random keys or a random seed and give another digest on every run of one build. |
 | Merk suite, the 843 tests that existed before the seam | 296 tests that reach storage, and one thread a test starts | 292 tests and the thread equal, 448,406 calls. In the other four the test reads a record itself, and SEAM-01 changed that read from `get` to a cursor; every other call in them is equal. |
 | Failure injection: twelve Merk workloads on two grove versions, on an in-memory storage context that makes one call fail, for every call in turn, as an error with a cost, as a record that does not decode and as a missing record | 46,636 runs, each with every storage call, its arguments and what it returned, the result of every Merk operation with its error and cost, and the records left behind | one digest, equal |
