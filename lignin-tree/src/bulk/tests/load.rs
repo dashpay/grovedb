@@ -199,6 +199,60 @@ fn pages_are_at_least_as_full_as_asked() {
 }
 
 #[test]
+fn a_page_is_topped_off_from_any_branch_of_the_piece() {
+    let mut bench = Bench::new(Layout::proposed(SIZE), params(100, 100));
+    for filler in 0..27u32 {
+        let leaf = bench.node(&plain(&filler.to_be_bytes(), &[1; 200]));
+        bench.root(leaf.expect("a leaf")).expect("a root");
+    }
+    let filled = bench.loader.counters().cell_bytes as usize;
+    let room = bench.layout.capacity() - filled;
+
+    // The heavier branch is one cell that is too large for the room. The
+    // lighter one is too large as well, and has two leaves that fit.
+    let (key, feature) = ([b'k'; 255], [b'f'; 255]);
+    let heavy = bench.node(&NodeLoad {
+        feature: &feature,
+        ..plain(&key, &[2; 256])
+    });
+    let leaves = [b"a", b"c"].map(|key| bench.node(&plain(key, &[3; 250])).expect("a leaf"));
+    let light = bench.node(&NodeLoad {
+        left: link(leaves[0]),
+        right: link(leaves[1]),
+        ..plain(b"b", b"")
+    });
+    let top = bench.node(&NodeLoad {
+        left: link(heavy.expect("a node")),
+        right: link(light.expect("a node")),
+        ..plain(b"top", b"")
+    });
+    let root = bench.root(top.expect("a node")).expect("a root");
+    let report = bench.finish();
+    bench.mem.check();
+    bench.mem.check_fragment_sizes(&bench.layout);
+
+    let first = report.pages[0];
+    assert_ne!(first.page, root.address.page(), "the piece did not fit");
+    let leaf = first.used - filled;
+    assert!(
+        leaf > 0 && leaf <= room,
+        "a leaf of {leaf} bytes for {room}"
+    );
+    let light = bench
+        .mem
+        .node(root.address)
+        .link(Side::Right)
+        .expect("a link");
+    let light = bench.mem.node(light.child);
+    let pages = Side::BOTH.map(|side| light.link(side).expect("a link").child.page());
+    assert_eq!(pages, [first.page, root.address.page()], "one leaf fitted");
+    assert!(
+        pages[1] != first.page && 2 * leaf > room,
+        "and the other did not"
+    );
+}
+
+#[test]
 fn a_page_holds_at_least_two_fragments_of_the_proposed_layout() {
     let (bench, left, ..) = filled(20_000, 50, LoadParams::DEFAULT);
     for page in &left {
