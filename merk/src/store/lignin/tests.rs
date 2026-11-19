@@ -60,6 +60,21 @@ impl Lignin {
             .commit(&self.versions, transaction)
             .expect("the transaction commits")
     }
+
+    /// The key of the root of the Merk under `subtree`, as the subtree
+    /// directory of the latest commit has it.
+    fn root_in_directory(&self, subtree: [u8; 32]) -> Option<Vec<u8>> {
+        let guard = self.versions.guard();
+        let pages = self.db.committed(&guard, self.versions.latest());
+        let directory = self.db.directory_at(&pages);
+        let mut entries = directory.entries();
+        while let Some((prefix, entry)) = entries.next(&pages).expect("an entry") {
+            if prefix == subtree && directory.is_live(&entry) {
+                return entry.root().map(|root| root.key.to_vec());
+            }
+        }
+        None
+    }
 }
 
 fn open<'db, S: NodeStore<'db>>(store: S, tree_type: TreeType) -> Merk<S> {
@@ -419,6 +434,8 @@ fn same_tree_as_on_rocksdb(tree_type: TreeType, writing: Writing, seed: u64, rou
         if writing == Writing::Committed {
             writer.into_scope().merge();
             assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+            let root = lignin.root_in_directory(ROOT.prefix);
+            assert_eq!(root, found.1, "the root in the directory, {at}");
             transaction = path.begin();
             writer = LigninWriter::new(transaction.scope().unwrap());
         }
@@ -862,7 +879,15 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
     assert!(stored(&deferred, 6).link(false).is_some());
     staged.apply(&writer).unwrap().unwrap();
     assert!(stored(&deferred, 6).link(false).is_none());
-    assert_eq!(records(&deferred, root).len(), 6);
+    assert_eq!(records(&deferred, root.clone()).len(), 6);
+
+    // Neither write stated a root: the directory still names the one the
+    // Merk's commit stated.
+    drop((store, deferred));
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+    assert_eq!(root, Some(be(4)));
+    assert_eq!(lignin.root_in_directory(ROOT.prefix), root);
 }
 
 #[test]

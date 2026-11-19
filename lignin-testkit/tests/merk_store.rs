@@ -20,10 +20,16 @@
 //!    dropped and entered in one batch.
 //! 4. Every written node is read back through `LigninNodeStore` and must
 //!    be, as a record, the record RocksDB holds: the same value, feature,
-//!    hashes, links, heights and aggregates. Every so often, and at the end
-//!    of the trace, every node of every Merk is compared so, from each
-//!    Merk's root down. Equal records from the root down are an equal tree
-//!    shape, and the root hash is a function of the root's record.
+//!    hashes, links, heights and aggregates.
+//! 5. Every so often, and at the end of the trace, the LigninDB
+//!    transaction is committed. The check of the committed tree pages
+//!    walks every Merk from the root its entry in the subtree directory
+//!    names, and must reach the keys RocksDB holds for that Merk and no
+//!    others, with a pointer in its host at every hosted root. Then every
+//!    node of every Merk is read from the committed pages and compared, as
+//!    a record, with RocksDB's. Equal records from the root down are an
+//!    equal tree shape, and the root hash is a function of the root's
+//!    record.
 //!
 //! The Merk logic itself runs on RocksDB here. That it gives the same tree
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
@@ -56,7 +62,10 @@ use lignin_testkit::{
     layout_sim::{ChangeSet, Grove, MerkId, Observer},
     workload::apply::Transactions,
 };
-use lignindb::txn::testing::Db;
+use lignindb::txn::{
+    testing::{Db, Outcome},
+    Subtree, WriteTxn,
+};
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
 
@@ -79,9 +88,9 @@ type Hosted = HashMap<Vec<u8>, Vec<Prefix>>;
 /// The stack of the thread a trace is replayed on: GroveDB recurses.
 const STACK_BYTES: usize = 64 << 20;
 
-/// After this many operations that changed a node, every node of every
-/// Merk is compared.
-const COMPARE_ALL_EVERY: u64 = 400;
+/// After this many operations that changed a node, the LigninDB
+/// transaction is committed and every node of every Merk is compared.
+const COMMIT_EVERY: u64 = 400;
 
 /// What the replay of one trace handed the store.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -199,9 +208,8 @@ impl Change<'_> {
     }
 }
 
-struct Replay<'a, 't, 's> {
+struct Replay<'a> {
     db: &'a GroveDb,
-    writer: &'a LigninWriter<'t, 's>,
     kinds: Kinds,
     /// The subtrees the replay has entered.
     entered: HashMap<Prefix, Entered>,
@@ -211,7 +219,7 @@ struct Replay<'a, 't, 's> {
     tally: Tally,
 }
 
-impl Replay<'_, '_, '_> {
+impl Replay<'_> {
     /// Forgets the entered subtree `prefix` and every subtree under it.
     fn forget(&mut self, prefix: [u8; 32]) {
         self.entered.remove(&prefix);
@@ -317,7 +325,13 @@ impl Replay<'_, '_, '_> {
 
     /// Hands LigninDB what one operation did to the nodes of every Merk, as
     /// one batch, and compares each written node.
-    fn write(&mut self, transaction: &Transaction, grove: &Grove, changes: &ChangeSet) {
+    fn write(
+        &mut self,
+        writer: &LigninWriter<'_, '_>,
+        transaction: &Transaction,
+        grove: &Grove,
+        changes: &ChangeSet,
+    ) {
         let storage = self.db.raw_storage();
         let rocks = |prefix: [u8; 32]| {
             storage
@@ -331,7 +345,7 @@ impl Replay<'_, '_, '_> {
         self.subtrees(grove, changes, &batch);
         for (prefix, change) in &by_prefix {
             let subtree = subtree(grove, change.merk);
-            let store = LigninNodeStore::deferred(self.writer, subtree, Some(&batch));
+            let store = LigninNodeStore::deferred(writer, subtree, Some(&batch));
             let stored = rocks(*prefix);
             // A Merk the operation made has no node before it, whatever the
             // transaction holds under its prefix until the batch is applied.
@@ -373,14 +387,14 @@ impl Replay<'_, '_, '_> {
             change_set.state_root(root.map(|root| &*grove.node(root).key));
             (store.commit(change_set).unwrap()).expect("the change set is staged");
         }
-        let applied = (batch.apply(self.writer).unwrap()).expect("the batch is applied");
+        let applied = (batch.apply(writer).unwrap()).expect("the batch is applied");
         self.tally.writes += 1;
         self.tally.values_written += applied.values_written as u64;
         self.tally.values_kept += applied.values_kept as u64;
 
         for (prefix, change) in &by_prefix {
             let path = &grove.merk(change.merk).path;
-            let store = LigninNodeStore::deferred(self.writer, LigninSubtree::alone(*prefix), None);
+            let store = LigninNodeStore::deferred(writer, LigninSubtree::alone(*prefix), None);
             let stored = rocks(*prefix);
             for (key, ..) in &change.written {
                 let read = |node: CostResult<Option<TreeNode>, Error>| {
@@ -402,13 +416,24 @@ impl Replay<'_, '_, '_> {
         }
     }
 
-    /// Compares every node of every Merk with the records RocksDB holds.
-    fn compare_all(&mut self, transaction: &Transaction, grove: &Grove) {
+    /// Compares what LigninDB has committed with the records RocksDB
+    /// holds: the keys the check of the tree pages reached from the root of
+    /// each Merk in the subtree directory (`reached`), the pointers to
+    /// hosted roots it followed (`pointers`), and every node of every Merk,
+    /// read through `committed`.
+    fn compare_all(
+        &mut self,
+        committed: &WriteTxn<'_>,
+        reached: &BTreeMap<Subtree, Vec<Vec<u8>>>,
+        pointers: u64,
+        transaction: &Transaction,
+        grove: &Grove,
+    ) {
         let storage = self.db.raw_storage();
+        let (mut with_nodes, mut hosted) = (0, 0);
         for (_, merk) in grove.merks().filter(|(_, merk)| merk.live) {
             let root = merk.root.map(|root| grove.node(root).key.to_vec());
-            let store =
-                LigninNodeStore::deferred(self.writer, LigninSubtree::alone(merk.prefix), None);
+            let store = LigninNodeStore::read_only(committed, LigninSubtree::alone(merk.prefix));
             let stored = storage
                 .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
                 .unwrap();
@@ -426,8 +451,19 @@ impl Replay<'_, '_, '_> {
                     "the node under {key:?} of the Merk {path:?}"
                 );
             }
+            let keys: Vec<&[u8]> = expected.iter().map(|(key, _)| key.as_slice()).collect();
+            let from_root = reached.get(&Subtree::new(merk.prefix));
+            assert_eq!(
+                from_root.map_or(Vec::new(), |keys| keys.iter().map(Vec::as_slice).collect()),
+                keys,
+                "the keys under the root of the Merk {path:?} in the directory"
+            );
+            with_nodes += usize::from(!keys.is_empty());
+            hosted += u64::from(!keys.is_empty() && merk.host.is_some());
             self.tally.compared += expected.len() as u64;
         }
+        assert_eq!(reached.len(), with_nodes, "the Merks that have a node");
+        assert_eq!(pointers, hosted, "the hosts that point at a root");
     }
 }
 
@@ -437,11 +473,8 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     let db = GroveDb::open(dir.path()).expect("a GroveDB");
     let (lignin, versions) = Db::new(1024);
     let path = lignin.path(&versions);
-    let transaction = path.begin();
-    let writer = LigninWriter::new(transaction.scope().expect("a scope"));
     let mut replay = Replay {
         db: &db,
-        writer: &writer,
         kinds,
         // The store is made with the subtree of the root Merk entered.
         entered: HashMap::from([(
@@ -457,8 +490,13 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
 
     let mut observer = Observer::new(spec.grove_version);
     let mut transactions = Transactions::new(&db);
-    for segment in &spec.segments {
-        for op in segment.source.ops(spec.seed) {
+    let mut ops = (spec.segments.iter()).flat_map(|segment| segment.source.ops(spec.seed));
+    let mut ended = false;
+    while !ended {
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+        ended = true;
+        for op in ops.by_ref() {
             // A hand-written case may hold an operation that GroveDB
             // refuses. What it left behind is observed all the same.
             let _ = transactions.apply(&op, spec.grove_version).unwrap();
@@ -466,13 +504,22 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
             if changes.is_empty() {
                 continue;
             }
-            replay.write(transactions.block(), observer.grove(), &changes);
-            if replay.tally.writes.is_multiple_of(COMPARE_ALL_EVERY) {
-                replay.compare_all(transactions.block(), observer.grove());
+            replay.write(&writer, transactions.block(), observer.grove(), &changes);
+            if replay.tally.writes.is_multiple_of(COMMIT_EVERY) {
+                ended = false;
+                break;
             }
         }
+        writer.into_scope().merge();
+        let outcome = lignin.commit(&versions, &transaction);
+        assert_ne!(outcome.expect("a commit"), Outcome::Conflict);
+
+        let reached = lignin.check_trees(&versions, versions.latest());
+        let pointers = lignin.counts.hosted.load(Ordering::Relaxed);
+        let committed = path.begin();
+        let (block, grove) = (transactions.block(), observer.grove());
+        replay.compare_all(&committed, &reached, pointers, block, grove);
     }
-    replay.compare_all(transactions.block(), observer.grove());
 
     // Of the values it was handed, the store wrote exactly those whose
     // bytes it did not hold, and kept the others. Handed every node as

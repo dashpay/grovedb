@@ -49,7 +49,9 @@
 //! value, and when the write is applied the value is compared, byte for
 //! byte, with what the transaction holds under that key: equal bytes are
 //! kept where they are. So the tree element of every Merk on the way up,
-//! which Merk reports as written on every write below it, costs no value.
+//! which Merk reports as written on every write below it, hands the
+//! transaction no value. The charge for such a put is that of the whole
+//! record, as on RocksDB.
 //!
 //! A Merk whose subtree the same batch enters has no node before the
 //! write, whatever the transaction holds under its prefix until then: a
