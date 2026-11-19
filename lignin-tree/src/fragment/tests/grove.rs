@@ -548,9 +548,16 @@ impl Grove {
             roots: &roots,
         };
         let from = self.mem.shadow.records.len();
+        let pages_before = self.mem.frames.len();
         let report = self.fragments.apply(&mut self.mem, &mut self.log, &write)?;
+        assert_eq!(
+            self.mem.frames.len() + report.freed.len(),
+            pages_before + report.created.len(),
+            "the report names the pages that came and went: {report:?}"
+        );
 
         assert_eq!(report.nodes.len(), written.len());
+        assert_eq!(report.carries.total().cells, report.carried.len() as u64);
         for address in &removed {
             self.by_address.remove(address);
         }

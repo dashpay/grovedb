@@ -490,7 +490,9 @@ pub(super) fn apply<P: Pages, V: Values>(
             }
         }
     }
-    for &address in &plan.orphans {
+    let roots = plan.roots.iter().flatten().map(|root| &cells[*root]);
+    let unpointed = roots.filter(|root| root.stays()).map(origin);
+    for address in unpointed.chain(plan.orphans.iter().copied()) {
         if let Some(page_work) = work.get_mut(&address.page()) {
             page_work.marks.push((address.slot(), true));
         }

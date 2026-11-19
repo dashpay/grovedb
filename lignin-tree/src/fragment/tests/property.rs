@@ -12,7 +12,6 @@ struct Run {
     /// The Merks that were made.
     merks: Vec<usize>,
     next_key: u64,
-    carried: u64,
 }
 
 impl Run {
@@ -22,7 +21,6 @@ impl Run {
             keys: Vec::new(),
             merks: vec![0],
             next_key: 0,
-            carried: 0,
         }
     }
 
@@ -61,9 +59,9 @@ impl Run {
         None
     }
 
-    fn took(&mut self, report: &Report) {
-        self.carried += report.carries.total().cells;
-        assert_eq!(report.carries.total().cells, report.carried.len() as u64);
+    /// How many cells the writes so far carried.
+    fn carried(&self) -> u64 {
+        self.grove.fragments.counters().carries.total().cells
     }
 
     fn insert(&mut self) {
@@ -74,8 +72,7 @@ impl Run {
         key.truncate(1 + self.grove.rng.below(8));
         key.extend_from_slice(&self.next_key.to_be_bytes());
         let value = self.value();
-        let report = self.grove.put(merk, &key, &value);
-        self.took(&report);
+        self.grove.put(merk, &key, &value);
         self.keys.push((merk, key));
     }
 
@@ -86,14 +83,12 @@ impl Run {
             50..62 => {
                 if let Some((merk, key)) = self.key() {
                     let value = self.value();
-                    let report = self.grove.put(merk, &key, &value);
-                    self.took(&report);
+                    self.grove.put(merk, &key, &value);
                 }
             }
             62..84 => {
                 if let Some((merk, key)) = self.key() {
-                    let report = self.grove.delete(merk, &key);
-                    self.took(&report);
+                    self.grove.delete(merk, &key);
                 }
             }
             84..88 => {
@@ -106,14 +101,12 @@ impl Run {
             88..90 => {
                 let merk = self.merk();
                 if merk != 0 {
-                    let report = self.grove.clear(merk);
-                    self.took(&report);
+                    self.grove.clear(merk);
                 }
             }
             90..96 => {
                 if let Some((merk, key)) = self.key() {
-                    let report = self.grove.touch(merk, &key);
-                    self.took(&report);
+                    self.grove.touch(merk, &key);
                 }
             }
             _ => {
@@ -128,11 +121,10 @@ impl Run {
     fn reorganise(&mut self, layout: Layout, writes: usize) -> u64 {
         self.grove.fragments.set_layout(layout);
         let before = self.grove.logical();
-        let carried = self.carried;
+        let carried = self.carried();
         for _ in 0..writes {
             let Some((merk, key)) = self.key() else { break };
             let report = self.grove.touch(merk, &key);
-            self.took(&report);
             assert!(report.orphaned.is_empty() && report.freed.len() <= report.left.len());
         }
         self.grove.check();
@@ -140,7 +132,7 @@ impl Run {
             before == self.grove.logical(),
             "the logical tree is what it was"
         );
-        self.carried - carried
+        self.carried() - carried
     }
 }
 
@@ -182,10 +174,9 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
             }
         }
         run.grove.check();
-        carried += run.carried;
+        carried += run.carried();
         pages += run.grove.mem.frames.len();
         let counters = run.grove.fragments.counters();
-        assert_eq!(counters.carries.total().cells, run.carried);
         assert_eq!(
             counters.pages_created - counters.pages_freed,
             run.grove.mem.frames.len() as u64
