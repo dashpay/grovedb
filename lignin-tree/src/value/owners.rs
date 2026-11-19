@@ -128,9 +128,9 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
     /// `policy` does not ask for it: the values lie well enough as they
     /// are.
     ///
-    /// Nothing points at the copies yet. Before [`Self::install_grouped`],
-    /// the caller makes them durable and has the manifest cover them: it
-    /// syncs `to` and replaces the manifest
+    /// `to` is a writer of `store`. Nothing points at the copies yet.
+    /// Before [`Self::install_grouped`], the caller makes them durable and
+    /// has the manifest cover them: it syncs `to` and replaces the manifest
     /// ([`ValueStore::commit`]). `to` is given no other value between the
     /// first copy and the last, since it is borrowed here.
     ///
@@ -177,13 +177,18 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
     /// counts one value fewer in the old file and one more in the new
     /// (`lignin_store::values`). A step that is refused installs and counts
     /// nothing: the cell keeps its pointer, the copy is dead space, and
-    /// the value reads as before.
+    /// the value reads as before. Once a step is refused because the page
+    /// is superseded or copied, no later step of the call is tried: they
+    /// are refused with it.
     ///
-    /// Fails with [`ValueError::NotCovered`], and installs nothing, if the
-    /// durable manifest does not cover every copy. If it fails part way,
-    /// the steps made so far stand. A step that could not be counted as
-    /// reported does not stop the others: they are made, and the call then
-    /// fails with that error.
+    /// `store` is the value log that `grouped` was copied in. Fails with
+    /// [`ValueError::NotCovered`], and installs nothing, if its durable
+    /// manifest does not cover every copy.
+    ///
+    /// If a step fails, the steps made before it stand and no later one is
+    /// made. A step that could not be counted as reported does not stop
+    /// the others, and the call then fails with that error, before any
+    /// other.
     pub fn install_grouped(
         &self,
         store: &ValueStore,
@@ -201,35 +206,57 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
         }
         let mut done = Regrouped {
             before,
+            after: before,
             ..Regrouped::default()
         };
-        let mut miscount: Option<ValueStoreError> = None;
-        for (from, to) in moves {
-            let Some(frame) = self.current(page)? else {
-                done.gone += 1;
-                continue;
-            };
-            let counts = store.step()?;
-            let step = self.pool.page_step(page);
-            match self.repoint(&step, &frame, born, from, to)? {
-                Ok(()) => {
-                    let change = ValueChange::moved(from, to);
-                    let counted = counts.apply(&change, self.log.latest());
-                    miscount = miscount.or(counted.err());
-                    done.moved += 1;
+        let mut miscount = None;
+        let mut failed = None;
+        for (index, &(from, to)) in moves.iter().enumerate() {
+            match self.step(store, page, born, from, to, &mut miscount) {
+                Ok(Ok(())) => done.moved += 1,
+                Ok(Err(Refusal::OwnerGone)) => done.gone += 1,
+                Ok(Err(Refusal::Busy)) => {
+                    done.busy += (moves.len() - index) as u64;
+                    break;
                 }
-                Err(Refusal::OwnerGone) => done.gone += 1,
-                Err(Refusal::Busy) => done.busy += 1,
+                Err(error) => {
+                    failed = Some(error);
+                    break;
+                }
             }
         }
         drop(hold);
-        if let Some(error) = miscount {
-            return Err(error.into());
+        if let Some(error) = miscount.map(ValueError::Store).or(failed) {
+            return Err(error);
         }
         if let Some(frame) = self.current(page)? {
             done.after = tree_page(&frame).map_or(before, |page| Locality::of(&page));
         }
         Ok(done)
+    }
+
+    /// One step of a regrouping: the counts lock, the page step, and the
+    /// count of the move inside it.
+    fn step(
+        &self,
+        store: &ValueStore,
+        page: PageId,
+        born: CommitVersion,
+        from: ValuePointer,
+        to: ValuePointer,
+        miscount: &mut Option<ValueStoreError>,
+    ) -> Result<Result<(), Refusal>, ValueError> {
+        let Some(frame) = self.current(page)? else {
+            return Ok(Err(Refusal::OwnerGone));
+        };
+        let counts = store.step()?;
+        let step = self.pool.page_step(page);
+        let made = self.repoint(&step, &frame, born, from, to)?;
+        if made.is_ok() {
+            let counted = counts.apply(&ValueChange::moved(from, to), self.log.latest());
+            *miscount = miscount.take().or(counted.err());
+        }
+        Ok(made)
     }
 }
 

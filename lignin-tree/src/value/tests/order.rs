@@ -262,6 +262,8 @@ fn a_page_is_regrouped_when_enough_of_its_values_are_jumped_to() {
     assert!(RegroupPolicy::ALWAYS.applies(lying(100, 2)));
     assert!(!RegroupPolicy::DEFAULT.applies(lying(100, 25)));
     assert!(RegroupPolicy::DEFAULT.applies(lying(100, 26)));
-    assert!(RegroupPolicy::new(100).applies(lying(2, 3)));
-    assert!(!RegroupPolicy::new(101).applies(lying(100, 100)));
+    // A scan jumps to fewer values than a page has, so from 100 on no
+    // page is regrouped.
+    assert!(RegroupPolicy::new(99).applies(lying(100, 100)));
+    assert!(!RegroupPolicy::new(100).applies(lying(100, 100)));
 }

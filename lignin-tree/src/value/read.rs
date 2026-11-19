@@ -13,7 +13,7 @@ use lignin_store::{
 };
 
 use super::error::ValueError;
-use crate::node::{NodeRef, PinnedNode, PinnedPage};
+use crate::node::PinnedNode;
 
 /// The memory a read of a value out of line uses, kept by the reader from
 /// one read to the next.
@@ -91,16 +91,6 @@ impl<'s> ValueSource<'s> {
         }
     }
 
-    /// The value log.
-    pub const fn store(&self) -> &'s ValueStore {
-        self.store
-    }
-
-    /// The version the committed pages are read at.
-    pub const fn at(&self) -> CommitVersion {
-        self.at
-    }
-
     /// The value at `pointer`, which a cell of the page `owner` holds.
     pub(super) fn placed<'a>(
         &self,
@@ -138,7 +128,10 @@ impl<'s> ValueSource<'s> {
 ///   another page without its value fails here.
 /// - A pending value is returned from the bytes that are with the frame of
 ///   the page, under the value's name. Neither the log nor the value log is
-///   read (`transactions.md` FL7).
+///   read (`transactions.md` FL7). It is found with the page that the node
+///   holds pinned, not with the page as it is stored now: write-back can
+///   have placed the value since, and taken its bytes off the frame that
+///   replaced this one.
 ///
 /// `store` is the value log of the store the page is of, and `buf` is what
 /// a read from it reads into.
@@ -147,28 +140,12 @@ pub fn read_value<'a>(
     node: &'a PinnedNode<'_>,
     buf: &'a mut ValueBuf,
 ) -> Result<&'a [u8], ValueError> {
-    read_value_of(store, node.page(), node.node(), buf)
-}
-
-/// The value of `node`, which was read from `page`: [`read_value`] for a
-/// reader that holds the page and a view of the node.
-///
-/// A pending value is found with the page that is held, not with the page
-/// as it is stored now: write-back can have placed the value since, and
-/// taken its bytes off the frame that replaced this one.
-pub fn read_value_of<'a>(
-    store: &ValueStore,
-    page: &'a PinnedPage<'_>,
-    node: NodeRef<'a>,
-    buf: &'a mut ValueBuf,
-) -> Result<&'a [u8], ValueError> {
-    let id = node.address().page();
-    match node.value() {
+    let page = node.page();
+    match node.node().value() {
         CellValue::Inline(bytes) => Ok(bytes),
-        CellValue::OutOfLine(pointer) => read_placed(store, pointer, id, buf),
+        CellValue::OutOfLine(pointer) => read_placed(store, pointer, page.id(), buf),
         CellValue::Pending(pending) => {
-            let attached = page.frame().attached(pending.id());
-            pending_bytes(attached.filter(|_| page.id() == id), pending, id)
+            pending_bytes(page.frame().attached(pending.id()), pending, page.id())
         }
     }
 }

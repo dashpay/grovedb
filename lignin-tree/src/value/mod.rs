@@ -154,8 +154,8 @@
 //! the value's record in the value log names the page of its owner, so the
 //! cell in its new page holds a pending value, never the pointer it had.
 //! The bytes are not read when the cell is carried. The scope's values
-//! remember where they are, and they are read once, when the commit logs
-//! them, or earlier if the scope reads the value:
+//! remember where they are. The commit reads them when it logs them, and
+//! a read of the value by the scope before that reads them as well:
 //!
 //! | The carried cell held | The bytes are read from |
 //! | --- | --- |
@@ -250,8 +250,9 @@
 //!   page. A Merk's nodes are in its pages by fragments, and a node high in
 //!   the tree stands between the pages below it: its value is read
 //!   between theirs.
-//! - **What it does not touch.** The cells, the hashes, the page's version
-//!   and every handle: a regrouped page says what it said.
+//! - **What it does not touch.** What the cells say, the page's version
+//!   and every handle. Of a cell only the 12 bytes of its value's place
+//!   change, and no cell moves.
 //!
 //! # What the callers do
 //!
@@ -261,6 +262,12 @@
 //!   for a savepoint and puts the clone back together with the pages. It
 //!   gives up the pending value of a write that was refused
 //!   ([`TreeValues::forget`]).
+//! - **A scope that applies its writes again**, on pages that it made
+//!   again after a rebase or that another scope changed
+//!   (`transactions.md` LT4), states them to values that have not seen
+//!   them: new ones, or a clone from before the first of them. The values
+//!   of the first time hold the pointers it released, and gave away the
+//!   pending values it placed.
 //! - **It keeps its copy of a committed page it has freed until its
 //!   commit**, as it keeps every copy: a cell that left such a page can
 //!   name a value that is still with the page, and a page step on the page
@@ -290,8 +297,8 @@
 //!    length of its cell's links.
 //! 2. **A carried value is read at the commit, not at the carry.** A cell
 //!    that is carried twice, or carried and then deleted or overwritten,
-//!    costs one read or none, and fragment maintenance, which cannot fail
-//!    here, reads nothing.
+//!    costs the commit one read or none, and fragment maintenance, which
+//!    cannot fail here, reads nothing.
 //! 3. **A carried value is repeated in the log, not named** (LG23), until
 //!    the store keeps the holds of LG24.
 //! 4. **The scope's own names have the highest bit set**, as those of a
@@ -328,5 +335,5 @@ pub use error::ValueError;
 pub use order::{scan_order, Locality, RegroupPolicy};
 pub use owners::{Grouped, Regrouped, TreeOwners};
 pub use policy::InlinePolicy;
-pub use read::{read_value, read_value_of, ValueBuf, ValueSource};
+pub use read::{read_value, ValueBuf, ValueSource};
 pub use write::TreeValues;

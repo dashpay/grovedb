@@ -160,7 +160,8 @@ impl RegroupPolicy {
     };
 
     /// Regroups a page when a scan jumps to at least `min_jump_percent` in
-    /// a hundred of its values. Above 100 no page is regrouped.
+    /// a hundred of its values. From 100 on no page is regrouped: a scan
+    /// jumps to fewer values than the page has.
     pub const fn new(min_jump_percent: u8) -> Self {
         Self { min_jump_percent }
     }

@@ -98,9 +98,12 @@ impl Source {
 /// cell has stayed there, is not the scope's: an earlier commit logged it
 /// for that page, and its bytes stay with the frame.
 ///
-/// It holds no page and no latch, and reads the store only for the value
-/// of a carried cell, when that value is read or logged. A clone is what a
-/// savepoint keeps of it: the bytes are shared, not copied.
+/// It holds no page and no latch. [`Self::log_values`] reads the store
+/// only for the values of carried cells, and [`Self::read`] as any read of
+/// a value does. A clone is what a savepoint keeps of it: the bytes are
+/// shared, not copied. A pending value that [`Self::write`] handed out
+/// after the clone was taken is given up with what the scope goes back
+/// over: the names start again from the clone's.
 #[derive(Debug, Clone, Default)]
 pub struct TreeValues {
     policy: InlinePolicy,
@@ -178,16 +181,9 @@ impl TreeValues {
             CellValue::OutOfLine(pointer) => return source.placed(pointer, page, buf),
             CellValue::Pending(pending) => pending,
         };
-        let held = self
-            .pages
-            .get(&page)
-            .and_then(|held| held.get(&pending.id()));
-        match held {
-            Some(held) if held.value_len() == pending.value_len() as usize => {
-                held.read(source, buf)
-            }
-            None if !is_new(pending.id()) => source.pending(page, pending, buf),
-            _ => Err(ValueError::NoValue { page }),
+        match own_value(self.pages.get(&page), page, pending)? {
+            Some(own) => own.read(source, buf),
+            None => source.pending(page, pending, buf),
         }
     }
 
@@ -198,7 +194,8 @@ impl TreeValues {
     }
 
     /// How many such values the cells of `page` hold.
-    pub fn pending_in(&self, page: PageId) -> usize {
+    #[cfg(test)]
+    pub(super) fn pending_in(&self, page: PageId) -> usize {
         self.pages.get(&page).map_or(0, HashMap::len)
     }
 
@@ -269,12 +266,8 @@ impl TreeValues {
             let cells = pages.read(page, |view| {
                 view.tree_page().pending_values().collect::<Vec<_>>()
             })?;
-            check_cells(page, &cells, held)?;
             let mut logged = Vec::with_capacity(held.len());
-            for (slot, pending) in cells {
-                let Some(value) = held.get(&pending.id()) else {
-                    continue;
-                };
+            for (slot, _, value) in own_values(page, &cells, held)? {
                 let bytes = match value {
                     Source::Bytes(bytes) => Arc::clone(bytes),
                     carried => Arc::from(carried.read(source, &mut buf)?),
@@ -322,15 +315,12 @@ impl TreeValues {
         let cells: Vec<(SlotId, PendingValue)> = view.pending_values().collect();
         let none = HashMap::new();
         let held = self.pages.get(&page).unwrap_or(&none);
-        check_cells(page, &cells, held)?;
         let mut own = Vec::with_capacity(held.len());
-        for (_, pending) in &cells {
-            let name = pending.id();
-            match held.get(&name) {
-                Some(Source::Bytes(bytes)) => own.push((name, Arc::clone(bytes))),
-                Some(_) => return Err(ValueError::NoValue { page }),
-                None => {}
-            }
+        for (_, name, value) in own_values(page, &cells, held)? {
+            let Source::Bytes(bytes) = value else {
+                return Err(ValueError::NoValue { page });
+            };
+            own.push((name, Arc::clone(bytes)));
         }
         let named = |name: &ValueId| cells.iter().any(|(_, pending)| pending.id() == *name);
         let stale: Vec<ValueId> = latch
@@ -366,32 +356,46 @@ impl TreeValues {
     }
 }
 
-/// Checks the pending values that the cells of `page` hold against the
-/// values `held` for it: each value of `held` is held by one cell, which
-/// states its length, and every other pending value has a name that an
-/// earlier commit gave.
-fn check_cells(
+/// The value of a scope that a cell of `page` names with `pending`, among
+/// the values `held` for the page: `None` for a value that an earlier
+/// commit left pending, which has a name that commit gave. A name of a
+/// scope's own that is not held, and a cell that states another length
+/// than its value has, are errors.
+fn own_value(
+    held: Option<&HashMap<ValueId, Source>>,
+    page: PageId,
+    pending: PendingValue,
+) -> Result<Option<&Source>, ValueError> {
+    match held.and_then(|held| held.get(&pending.id())) {
+        Some(value) if value.value_len() == pending.value_len() as usize => Ok(Some(value)),
+        None if !is_new(pending.id()) => Ok(None),
+        _ => Err(ValueError::NoValue { page }),
+    }
+}
+
+/// The values `held` for `page`, each with the slot of the cell that holds
+/// it and its name, in the order of `cells`, the pending values the cells
+/// of the page hold. Each value of `held` is held by one cell, and no two
+/// cells hold one name.
+fn own_values<'h>(
     page: PageId,
     cells: &[(SlotId, PendingValue)],
-    held: &HashMap<ValueId, Source>,
-) -> Result<(), ValueError> {
+    held: &'h HashMap<ValueId, Source>,
+) -> Result<Vec<(SlotId, ValueId, &'h Source)>, ValueError> {
     let mut names = HashSet::with_capacity(cells.len());
-    let mut own = 0;
-    for (_, pending) in cells {
-        let name = pending.id();
-        match held.get(&name) {
-            Some(value) if value.value_len() == pending.value_len() as usize => own += 1,
-            None if !is_new(name) => {}
-            _ => return Err(ValueError::NoValue { page }),
+    let mut own = Vec::with_capacity(held.len());
+    for &(slot, pending) in cells {
+        if let Some(value) = own_value(Some(held), page, pending)? {
+            own.push((slot, pending.id(), value));
         }
-        if !names.insert(name) {
+        if !names.insert(pending.id()) {
             return Err(ValueError::Shared { page });
         }
     }
-    if own != held.len() {
+    if own.len() != held.len() {
         return Err(ValueError::NoCell { page });
     }
-    Ok(())
+    Ok(own)
 }
 
 impl Values for TreeValues {
@@ -417,12 +421,17 @@ impl Values for TreeValues {
         let source = match place {
             ValuePlace::Placed(pointer) => {
                 self.released.push(pointer);
-                let owner = from;
-                Some(Source::Stored { pointer, owner })
+                Some(Source::Stored {
+                    pointer,
+                    owner: from,
+                })
             }
             ValuePlace::Pending(pending) => self.take(from, pending.id()).or_else(|| {
-                let page = from;
-                (!is_new(pending.id())).then_some(Source::Inherited { page, pending })
+                let inherited = Source::Inherited {
+                    page: from,
+                    pending,
+                };
+                (!is_new(pending.id())).then_some(inherited)
             }),
         };
         let name = self.name();

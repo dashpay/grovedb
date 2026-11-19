@@ -1,8 +1,10 @@
 //! The cells of tree pages as the owners of values: the cleaner's pointer
 //! rewrites, and the regrouping of a page's values.
 
+use std::cell::Cell;
+
 use lignin_format::flat_page::{FlatLeafBuilder, FlatValue};
-use lignin_store::values::ValueOwners;
+use lignin_store::values::{ValueOwners, ValueStoreError};
 
 use super::{
     scope::{check_attached, value_reads},
@@ -11,23 +13,8 @@ use super::{
 
 /// A tree of `count` keys with large values, each commit of `round` keys
 /// written back, in an order that is not the keys'.
-fn grown(db: &Db, count: u32, round: usize) -> Tree {
-    let mut rng = Rng(u64::from(count));
-    let mut order: Vec<u32> = (0..count).collect();
-    for index in (1..order.len()).rev() {
-        order.swap(index, rng.below(index + 1));
-    }
-    let mut tree = Tree::new();
-    for keys in order.chunks(round) {
-        let mut scope = db.scope();
-        for &index in keys {
-            tree.put(&key(index), &big(index));
-            tree.flush(&mut scope);
-        }
-        db.commit(scope);
-        db.write_back();
-    }
-    tree
+fn tree_of(db: &Db, count: u32, round: usize) -> Tree {
+    grown(db, &shuffled(count, u64::from(count)), round)
 }
 
 fn pointer_of(read: &Scanned) -> ValuePointer {
@@ -43,10 +30,7 @@ fn values_of(tree: &Tree, db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
 fn in_scan_order(db: &Db, page: PageId) -> Vec<ValuePointer> {
     let frame = db.current(page);
     let view = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
-    scan_order(&view)
-        .into_iter()
-        .filter_map(|slot| view.cell(slot)?.value_pointer())
-        .collect()
+    crate::value::order::pointers_in_order(&view)
 }
 
 fn locality(db: &Db, page: PageId) -> Locality {
@@ -72,23 +56,37 @@ impl Db {
     }
 }
 
-/// A log that takes no record.
-struct Full<'d>(&'d Db);
+/// A log that takes a number of records and then no more.
+struct Full<'d> {
+    db: &'d Db,
+    left: Cell<usize>,
+}
+
+impl<'d> Full<'d> {
+    fn after(db: &'d Db, records: usize) -> Self {
+        let left = Cell::new(records);
+        Self { db, left }
+    }
+}
 
 impl StepLog for Full<'_> {
     fn latest(&self) -> CommitVersion {
-        self.0.latest()
+        self.db.latest()
     }
 
-    fn append(&self, _: &[u8]) -> Result<(), OwnersError> {
-        Err("the log is full".into())
+    fn append(&self, record: &[u8]) -> Result<(), OwnersError> {
+        let Some(left) = self.left.get().checked_sub(1) else {
+            return Err("the log is full".into());
+        };
+        self.left.set(left);
+        StepLog::append(&self.db, record)
     }
 }
 
 #[test]
 fn the_cleaner_of_the_value_log_finds_and_repoints_the_cells_of_tree_pages() {
     let db = Db::new();
-    let mut tree = grown(&db, 150, 150);
+    let tree = tree_of(&db, 150, 150);
     let before = tree.scan(&db);
     let file = pointer_of(&before[0]).file();
     let mut to = db.close_value_file();
@@ -165,15 +163,16 @@ fn the_cleaner_of_the_value_log_finds_and_repoints_the_cells_of_tree_pages() {
     db.write_back();
     assert_eq!(db.pool.oldest_unwritten(), None);
     assert_eq!(values_of(&tree, &db), values_of(&tree, &db));
-    let _ = &mut tree;
 }
 
-/// The three checks of a pointer rewrite (`transactions.md` PV7, CL5), each
-/// refused alone, between the look and the step.
+/// What a pointer rewrite is refused for besides a private copy, which the
+/// test above has (`transactions.md` PV7, CL5): a page that a commit has
+/// superseded since the look, a cell that no longer holds the pointer, and
+/// a page that is gone.
 #[test]
 fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     let db = Db::new();
-    let mut tree = grown(&db, 300, 300);
+    let mut tree = tree_of(&db, 300, 300);
     let before = tree.scan(&db);
     let file = pointer_of(&before[0]).file();
     let mut to = db.close_value_file();
@@ -261,7 +260,7 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
 #[test]
 fn regrouping_puts_the_values_of_a_page_back_to_back_in_scan_order() {
     let db = Db::traced();
-    let mut tree = grown(&db, 150, 30);
+    let tree = tree_of(&db, 150, 30);
     let before = tree.scan(&db);
     let mut to = db.close_value_file();
     let page = before[70].at.page();
@@ -356,7 +355,6 @@ fn regrouping_puts_the_values_of_a_page_back_to_back_in_scan_order() {
     assert!(!again(scattered, RegroupPolicy::new(101)));
     assert!(again(scattered, RegroupPolicy::DEFAULT));
     check_attached(&db);
-    let _ = &mut tree;
 }
 
 /// A regrouping installs nothing that the page steps refuse: before the
@@ -365,7 +363,7 @@ fn regrouping_puts_the_values_of_a_page_back_to_back_in_scan_order() {
 #[test]
 fn a_regrouping_that_is_refused_leaves_the_page_and_the_counts_as_they_were() {
     let db = Db::new();
-    let mut tree = grown(&db, 150, 30);
+    let mut tree = tree_of(&db, 150, 30);
     let before = tree.scan(&db);
     let page = before[70].at.page();
     let old = in_scan_order(&db, page);
@@ -417,7 +415,7 @@ fn a_regrouping_that_is_refused_leaves_the_page_and_the_counts_as_they_were() {
 
     // The log does not take the record of the step: the page keeps its
     // pointers and nothing is counted.
-    let failing = TreeOwners::new(db.loader(), &db.pool, SIZE, Full(&db));
+    let failing = TreeOwners::new(db.loader(), &db.pool, SIZE, Full::after(&db, 0));
     let grouped = failing
         .copy_grouped(&db.values, page, &mut to, RegroupPolicy::ALWAYS)
         .expect("copied")
@@ -453,4 +451,98 @@ fn a_regrouping_that_is_refused_leaves_the_page_and_the_counts_as_they_were() {
     assert_eq!(regrouped.moved, expected.len() as u64);
     assert!(regrouped.after.is_sequential());
     db.check_counts();
+}
+
+/// A regrouping whose step fails keeps the steps it made before: each is
+/// in the log, in its page and in the counts, and the others are not.
+#[test]
+fn a_regrouping_that_fails_part_way_keeps_the_steps_it_made() {
+    let db = Db::new();
+    let tree = tree_of(&db, 150, 30);
+    let before = tree.scan(&db);
+    let page = before[70].at.page();
+    let old = in_scan_order(&db, page);
+    let mut to = db.close_value_file();
+
+    let failing = TreeOwners::new(db.loader(), &db.pool, SIZE, Full::after(&db, 3));
+    let grouped = failing
+        .copy_grouped(&db.values, page, &mut to, RegroupPolicy::ALWAYS)
+        .expect("copied")
+        .expect("scattered");
+    db.cover(&mut to);
+    let refused = failing.install_grouped(&db.values, grouped);
+    let refused = refused.expect_err("the log is full");
+    assert!(matches!(refused, ValueError::Log(_)), "{refused}");
+    let now = in_scan_order(&db, page);
+    assert!(now[..3]
+        .iter()
+        .all(|pointer| pointer.file() == to.file_id()));
+    assert_eq!(now[3..], old[3..]);
+    assert_eq!(db.moves().len(), 3);
+    assert_eq!(
+        db.values.count(to.file_id()).map(|count| count.values),
+        Some(3)
+    );
+    db.check_counts();
+    assert_eq!(values_of(&tree, &db).len(), 150);
+    assert_eq!(tree.scan(&db), {
+        let mut expected = before.clone();
+        for read in expected.iter_mut().filter(|read| read.at.page() == page) {
+            let at = old.iter().position(|pointer| *pointer == pointer_of(read));
+            read.held = Some(ValuePlace::Placed(now[at.expect("a value of the page")]));
+        }
+        expected
+    });
+}
+
+/// A step that the counts did not take as reported is made all the same,
+/// and so are the steps after it. The call then fails with that error,
+/// also if a later step failed for another reason.
+#[test]
+fn a_count_that_is_wrong_is_reported_before_any_other_error() {
+    let db = Db::new();
+    let tree = tree_of(&db, 150, 30);
+    let before = tree.scan(&db);
+    let mut to = db.close_value_file();
+
+    // The counts lose every value, while the cells go on pointing.
+    let mut lost = ValueChange::new();
+    for (_, pointer) in db.pointers() {
+        lost.release(pointer);
+    }
+    db.values.apply(&lost, db.latest()).expect("counted");
+
+    let miscounted =
+        |error: &ValueError| matches!(error, ValueError::Store(ValueStoreError::Miscounted { .. }));
+    let page = before[70].at.page();
+    let owners = db.owners();
+    let grouped = owners
+        .copy_grouped(&db.values, page, &mut to, RegroupPolicy::ALWAYS)
+        .expect("copied")
+        .expect("scattered");
+    db.cover(&mut to);
+    let refused = owners.install_grouped(&db.values, grouped);
+    let refused = refused.expect_err("miscounted");
+    assert!(miscounted(&refused), "{refused}");
+    let now = in_scan_order(&db, page);
+    assert!(now.iter().all(|pointer| pointer.file() == to.file_id()));
+    assert_eq!(db.moves().len(), now.len());
+
+    let other = before.iter().find(|read| read.at.page() != page);
+    let other = other.expect("a second page").at.page();
+    let failing = TreeOwners::new(db.loader(), &db.pool, SIZE, Full::after(&db, 2));
+    let grouped = failing
+        .copy_grouped(&db.values, other, &mut to, RegroupPolicy::ALWAYS)
+        .expect("copied")
+        .expect("scattered");
+    db.cover(&mut to);
+    let refused = failing.install_grouped(&db.values, grouped);
+    let refused = refused.expect_err("miscounted, and then the log is full");
+    assert!(miscounted(&refused), "{refused}");
+    let moved = in_scan_order(&db, other);
+    let moved = moved
+        .iter()
+        .filter(|pointer| pointer.file() == to.file_id());
+    assert_eq!(moved.count(), 2);
+    assert_eq!(values_of(&tree, &db).len(), 150);
 }

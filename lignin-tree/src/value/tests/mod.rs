@@ -348,6 +348,11 @@ impl Db {
         let mut hold = ValueHold::new();
         let mut placed = Vec::new();
         for &page in &state.pages {
+            // A page that a write transaction holds a copy of takes no
+            // step (`transactions.md` PV7): its values stay pending.
+            if self.pool.page_step(page).private_copies() != 0 {
+                continue;
+            }
             let frame = self.at(page, latest);
             let view = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
             for (slot, pending) in view.pending_values() {
@@ -408,7 +413,13 @@ impl Db {
                 };
                 let image = match TreePage::from_validated(&frame, FRAME_FORMAT) {
                     Ok(view) if view.has_pending_value() => {
-                        self.pool.hold_for_readers(&frame).expect("held");
+                        // A value that could not be placed, under a
+                        // private copy, keeps the current version of its
+                        // page owed. A superseded one is kept for its
+                        // readers.
+                        if !self.pool.page_step(page).is_current(&frame) {
+                            self.pool.hold_for_readers(&frame).expect("held");
+                        }
                         continue;
                     }
                     Ok(view) => view.to_image(),
@@ -1004,6 +1015,32 @@ struct Scanned {
     value: Vec<u8>,
     at: CellAddress,
     held: Option<ValuePlace>,
+}
+
+/// The numbers below `count`, in an order that depends on `seed`.
+fn shuffled(count: u32, seed: u64) -> Vec<u32> {
+    let mut rng = Rng(seed);
+    let mut order: Vec<u32> = (0..count).collect();
+    for index in (1..order.len()).rev() {
+        order.swap(index, rng.below(index + 1));
+    }
+    order
+}
+
+/// A tree of the keys of `order` with large values, written in that order,
+/// committed and written back in rounds of `round` keys.
+fn grown(db: &Db, order: &[u32], round: usize) -> Tree {
+    let mut tree = Tree::new();
+    for keys in order.chunks(round) {
+        let mut scope = db.scope();
+        for &index in keys {
+            tree.put(&key(index), &big(index));
+            tree.flush(&mut scope);
+        }
+        db.commit(scope);
+        db.write_back();
+    }
+    tree
 }
 
 fn key(index: u32) -> Vec<u8> {

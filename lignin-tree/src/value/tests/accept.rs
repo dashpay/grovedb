@@ -31,21 +31,7 @@ fn sequential(reads: &[(String, u64, u64)]) -> usize {
 fn a_scan_over_large_values_reads_the_value_log_sequentially_after_consolidation() {
     const COUNT: u32 = 2_000;
     let db = Db::traced();
-    let mut rng = Rng(77);
-    let mut order: Vec<u32> = (0..COUNT).collect();
-    for index in (1..order.len()).rev() {
-        order.swap(index, rng.below(index + 1));
-    }
-    let mut tree = Tree::new();
-    for keys in order.chunks(50) {
-        let mut scope = db.scope();
-        for &index in keys {
-            tree.put(&key(index), &big(index));
-            tree.flush(&mut scope);
-        }
-        db.commit(scope);
-        db.write_back();
-    }
+    let tree = grown(&db, &shuffled(COUNT, 77), 50);
     let expected: Vec<(Vec<u8>, Vec<u8>)> =
         (0..COUNT).map(|index| (key(index), big(index))).collect();
     // A scan in key order, as a cursor makes it: down the links from the
@@ -146,9 +132,9 @@ fn a_scan_over_large_values_reads_the_value_log_sequentially_after_consolidation
 ///
 /// Random puts, overwrites and deletes of long and short values, in
 /// commits of several writes, over a tree whose cells are carried between
-/// pages as it grows and shrinks. Between commits write-back places the
-/// values, or leaves them pending; pages are regrouped; value-log files
-/// are cleaned; a scope is rolled back.
+/// pages as it grows and shrinks. Between commits, and beside an open
+/// scope, write-back places the values, or leaves them pending; pages are
+/// regrouped; value-log files are cleaned; a scope is rolled back.
 ///
 /// After every commit:
 ///
@@ -195,6 +181,11 @@ fn every_pointer_a_cell_stops_holding_is_reported_in_its_commit() {
                 }
                 let report = tree.flush(&mut scope);
                 totals.0 += report.carries.total().values;
+                // Write-back runs beside the open scope, and leaves the
+                // pages the scope holds as they are.
+                if rng.below(6) == 0 {
+                    db.write_back();
+                }
             }
             // What the scope reads is what it wrote.
             if let Some((key, value)) = model.iter().nth(rng.below(model.len().max(1))) {

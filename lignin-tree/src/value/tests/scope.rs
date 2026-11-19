@@ -53,31 +53,6 @@ fn pending_at(scope: &mut Scope<'_>, address: CellAddress) -> PendingValue {
     place.pending().expect("a pending value")
 }
 
-/// A tree of `count` keys with large values, committed and written back in
-/// rounds of `round` keys, in the order `order` gives.
-fn grown(db: &Db, order: &[u32], round: usize) -> Tree {
-    let mut tree = Tree::new();
-    for keys in order.chunks(round) {
-        let mut scope = db.scope();
-        for &index in keys {
-            tree.put(&key(index), &big(index));
-            tree.flush(&mut scope);
-        }
-        db.commit(scope);
-        db.write_back();
-    }
-    tree
-}
-
-fn shuffled(count: u32, seed: u64) -> Vec<u32> {
-    let mut rng = Rng(seed);
-    let mut order: Vec<u32> = (0..count).collect();
-    for index in (1..order.len()).rev() {
-        order.swap(index, rng.below(index + 1));
-    }
-    order
-}
-
 /// The life of a value that is too long for its cell: pending in the scope
 /// under a name of the scope's own, in the commit's group for the page of
 /// its cell and in the cell under its address in the log, read from the
@@ -427,7 +402,7 @@ fn a_group_that_is_written_again_names_the_values_anew() {
 #[test]
 fn a_pointer_to_a_value_of_another_page_is_not_read() {
     let db = Db::new();
-    let mut tree = grown(&db, &shuffled(120, 9), 120);
+    let tree = grown(&db, &shuffled(120, 9), 120);
     let scanned = tree.scan(&db);
     let (first, other) = (
         &scanned[0],
@@ -481,7 +456,6 @@ fn a_pointer_to_a_value_of_another_page_is_not_read() {
         read_value(&db.values, &node, &mut buf).expect("read"),
         other.value
     );
-    let _ = &mut tree;
 }
 
 /// A pending value whose bytes are not with its page is an error of the
@@ -802,4 +776,99 @@ fn a_value_of_several_records_is_read_whole() {
     let read = db.source().placed(pointer, page, &mut buf).expect("read");
     assert_eq!(read.len(), value.len());
     assert!(read == value);
+}
+
+/// Background work leaves a page alone while a scope holds a copy of it
+/// (`transactions.md` PV7), and that is what a scope's values rest on: the
+/// pointer of a cell it carried still leads to the value, and the bytes of
+/// a pending value it carried are still with the committed page. So
+/// write-back, the cleaner and a regrouping can run while a scope is open,
+/// and the scope reads and commits what it wrote.
+#[test]
+fn background_work_runs_beside_an_open_scope() {
+    let db = Db::new();
+    // Large values under the even keys, those of the last commit pending.
+    let order: Vec<u32> = shuffled(140, 3)
+        .into_iter()
+        .map(|index| 2 * index)
+        .collect();
+    let mut tree = grown(&db, &order[..120], 40);
+    let first_file = db.pointers()[0].1.file();
+    let mut scope = db.scope();
+    for &index in &order[120..] {
+        tree.put(&key(index), &big(index));
+        tree.flush(&mut scope);
+    }
+    db.commit(scope);
+    let committed = tree.scan(&db);
+    let is_pending = |read: &&Scanned| read.held.is_some_and(|held| held.is_pending());
+    // The twenty, and the values of the cells their commit carried.
+    assert!(committed.iter().filter(is_pending).count() >= 20);
+
+    // The scope writes short values under the odd keys between them. It
+    // carries cells that hold pointers and cells that hold pending values.
+    let mut scope = db.scope();
+    for index in 0..120 {
+        tree.put(&key(2 * index + 1), b"short");
+        tree.flush(&mut scope);
+    }
+    let copied: Vec<PageId> = scope.pages.copies.keys().copied().collect();
+    let carried: Vec<&Scanned> = committed
+        .iter()
+        .filter(|read| tree.at(&read.key).page() != read.at.page())
+        .collect();
+    assert!(carried.iter().any(is_pending));
+    assert!(carried.iter().any(|read| !is_pending(read)));
+
+    // Write-back places what it may: the values of the pages the scope
+    // holds stay pending.
+    db.write_back();
+    let held_back = tree_pending(&db);
+    assert!(!held_back.is_empty());
+    assert!(held_back.iter().all(|page| copied.contains(page)));
+
+    // The cleaner moves what it may, and a regrouping likewise.
+    let mut to = db.close_value_file();
+    let owners = db.owners();
+    let cleaned = {
+        let mut manifest = db.manifest.borrow_mut();
+        db.values.clean(first_file, &mut to, &mut manifest, &owners)
+    };
+    let cleaned = cleaned.expect("a pass");
+    assert!(cleaned.busy > 0, "{cleaned:?}");
+    let busy = db.regroup(copied[0], &mut to, RegroupPolicy::ALWAYS);
+    assert!(busy.is_none_or(|regrouped| regrouped.moved == 0));
+    db.check_counts();
+
+    // The scope reads what it wrote and what it carried, and commits.
+    for read in &committed {
+        assert_eq!(scope.read(tree.at(&read.key)).expect("read"), read.value);
+    }
+    db.commit(scope);
+    db.check_counts();
+    check_attached(&db);
+    let expected: Vec<Vec<u8>> = (0..280)
+        .filter(|index| index % 2 == 0 || *index < 240)
+        .map(|index| match index % 2 == 0 {
+            true => big(index),
+            false => b"short".to_vec(),
+        })
+        .collect();
+    let read =
+        |db: &Db| -> Vec<Vec<u8>> { tree.scan(db).into_iter().map(|read| read.value).collect() };
+    assert_eq!(read(&db), expected);
+    db.write_back();
+    db.check_counts();
+    assert_eq!(tree.scan(&db).iter().filter(is_pending).count(), 0);
+    assert_eq!(read(&db), expected);
+}
+
+/// The pages of the latest version that have a pending value.
+fn tree_pending(db: &Db) -> Vec<PageId> {
+    let has_pending = |page: &PageId| {
+        let frame = db.current(*page);
+        let view = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        view.has_pending_value()
+    };
+    db.pages().into_iter().filter(has_pending).collect()
 }
