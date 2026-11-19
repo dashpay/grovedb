@@ -65,6 +65,11 @@ fn a_write_changes_the_leaf_as_it_took_it() {
     }
 }
 
+fn records_of(pages: &Mem, tree: &FlatTree) -> Vec<Vec<u8>> {
+    let found = records(pages, tree);
+    found.into_iter().map(|(key, _)| key).collect()
+}
+
 fn leaf_image(page: PageId, keys: &[&[u8]]) -> Vec<u8> {
     let mut leaf = FlatLeafBuilder::new(page, b"", 4_096).expect("a leaf");
     for key in keys {
@@ -193,19 +198,26 @@ fn pages_that_are_reached_twice_end_a_write_with_an_error() {
     )
     .expect("an entry");
     let (mut pages, tree) = with(vec![leaf.finish()]);
-    // Every key is as many trees deep as it has heads, and no deeper.
-    let long = [head.as_slice(), &head, &head, b"rest"].concat();
-    assert_eq!(get(&pages, &tree, &long), None);
-    // A cursor goes into the tree of a bucket once.
+    // No call goes into the tree of a bucket twice.
     let ring = "a bucket of long keys whose tree is a tree it is in";
+    let long = [head.as_slice(), b"rest"].concat();
+    let found = tree.get(&pages, &long, &mut Vec::new()).map(drop);
+    assert_eq!(damaged(found), (one, ring));
+    assert_eq!(damaged(tree.put(&mut pages, &long, b"")), (one, ring));
+    assert_eq!(
+        damaged(tree.delete(&mut pages, &long).map(drop)),
+        (one, ring)
+    );
+    let part = tree.delete_range(&mut pages, &long, Some(&[head.as_slice(), b"s"].concat()));
+    assert_eq!(damaged(part), (one, ring));
+    assert!(pages.taken.is_empty());
     let mut cursor = tree.cursor();
     for seek in [Cursor::seek_to_first::<Mem>, Cursor::seek_to_last::<Mem>] {
         assert_eq!(damaged(seek(&mut cursor, &pages)), (one, ring));
         assert!(!cursor.valid());
     }
-    // A seek goes as deep as its key is long, and finds nothing there.
-    cursor.seek(&pages, &long).expect("a seek");
-    assert!(!cursor.valid());
+    assert_eq!(damaged(cursor.seek(&pages, &long)), (one, ring));
+    assert_eq!(damaged(cursor.seek_for_prev(&pages, &long)), (one, ring));
     let inside = tree.delete_range(&mut pages, b"", None);
     assert!(matches!(inside, Err(FlatError::Freed { page }) if page == one));
 
@@ -219,12 +231,82 @@ fn pages_that_are_reached_twice_end_a_write_with_an_error() {
         FlatValue::Inline(&one.encode()),
     )
     .expect("an entry");
-    let (pages, tree) = with(vec![leaf.finish()]);
+    let (mut pages, tree) = with(vec![leaf.finish()]);
     let mut cursor = tree.cursor();
     cursor.seek_to_first(&pages).expect("a seek");
     assert_eq!(cursor.key(), Some(&b"a"[..]));
     assert_eq!(damaged(cursor.next(&pages)), (one, ring));
     assert!(!cursor.valid());
+    // The long key that the ring would make stand for the record is not
+    // that record.
+    let alias = [head.as_slice(), b"a"].concat();
+    assert_eq!(
+        damaged(tree.delete(&mut pages, &alias).map(drop)),
+        (one, ring)
+    );
+    assert_eq!(damaged(tree.put(&mut pages, &alias, b"other")), (one, ring));
+    assert_eq!(get(&pages, &tree, b"a"), Some(b"value".to_vec()));
+    assert!(pages.taken.is_empty());
+
+    // Buckets that are passed by one after the other, each with a tree
+    // that a step of background work left empty, cost a cursor no depth.
+    let (mut pages, tree) = Mem::tree(config);
+    let long = |n: u32| {
+        [
+            vec![b'h'; config.key_limit() - 4],
+            n.to_be_bytes().to_vec(),
+            b"rest".to_vec(),
+        ]
+        .concat()
+    };
+    for n in 0..300 {
+        tree.put(&mut pages, &long(n), b"").expect("a put");
+    }
+    tree.put(&mut pages, b"z", b"the last").expect("a put");
+    pages.commit();
+    let empty: Vec<(PageId, Vec<u8>)> = pages
+        .pages
+        .keys()
+        .filter(|&&page| page != tree.root())
+        .filter(|&&page| pages.image(page).leaf().is_some_and(|leaf| leaf.len() == 1))
+        .filter(|&&page| {
+            pages
+                .image(page)
+                .leaf()
+                .and_then(|leaf| leaf.key(0))
+                .is_some_and(|key| key.to_vec() == b"rest")
+        })
+        .map(|&page| {
+            (
+                page,
+                FlatLeafBuilder::new(page, b"", 4_096)
+                    .expect("a leaf")
+                    .finish(),
+            )
+        })
+        .collect();
+    assert_eq!(empty.len(), 300);
+    for (page, image) in empty {
+        pages.pages.insert(page, image.clone());
+        pages.base.insert(page, image);
+    }
+    let mut cursor = tree.cursor();
+    cursor.seek_to_first(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"z"[..]));
+    cursor.prev(&pages).expect("a step");
+    assert!(!cursor.valid());
+    cursor.seek_to_last(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"z"[..]));
+    assert_eq!(get(&pages, &tree, &long(7)), None);
+    // A put into an empty tree fills it, and a range delete takes the
+    // empty ones along.
+    tree.put(&mut pages, &long(7), b"again").expect("a put");
+    cursor.seek_to_first(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(long(7).as_slice()));
+    tree.delete_range(&mut pages, b"", Some(b"z"))
+        .expect("a range delete");
+    assert_eq!(records_of(&pages, &tree), [b"z".to_vec()]);
+    assert!(pages.pages.len() <= 2);
 
     // A bucket whose value is out of line names no page, for a range
     // delete as for a read: the value is not dropped as a record's.

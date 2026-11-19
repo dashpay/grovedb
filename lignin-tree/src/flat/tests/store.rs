@@ -13,7 +13,7 @@ use lignin_format::{
 };
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
-    alloc::{PageAllocator, PageState},
+    alloc::{AllocError, PageAllocator, PageState},
     cache::{BufferPool, CacheError, OwnerId, PageRef, PoolConfig},
     load::{LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore, SegmentWriter},
@@ -25,7 +25,7 @@ use lignin_store::{
 use tempfile::TempDir;
 
 use super::{
-    super::{Committed, FlatOwners, Private, StepLog},
+    super::{Committed, FlatOwners, PageIds, Private, StepLog},
     *,
 };
 
@@ -1130,21 +1130,193 @@ fn a_writer_owns_the_copies_it_made_and_no_others() {
     db.commit(first);
     assert_eq!(get(&db.reader(), &tree, b"b"), Some(b"first".to_vec()));
 
-    // A page whose pending value has lost its bytes: the copy is of no
-    // use, and does not stay in the way of page steps.
-    {
-        let step = db.pool.page_step(root);
-        let old = step.current().expect("the page");
-        let (slot, _) = pending_of(&old)[0];
-        let mut blank = db.pool.blank();
-        blank.copy_from(&old);
-        blank.detach(slot as u32).expect("attached");
-        step.replace(&old, blank).expect("replaced");
+    // A page whose pending value has bytes of another length with it, and
+    // then none: the copy is of no use, and does not stay in the way of
+    // page steps.
+    for bytes in [Some(Arc::from(&[0u8; 5][..])), None] {
+        {
+            let step = db.pool.page_step(root);
+            let old = step.current().expect("the page");
+            let (slot, _) = pending_of(&old)[0];
+            let mut blank = db.pool.blank();
+            blank.copy_from(&old);
+            blank.detach(slot as u32).expect("attached");
+            if let Some(bytes) = bytes {
+                blank.attach(slot as u32, bytes);
+            }
+            step.replace(&old, blank).expect("replaced");
+        }
+        let mut writer = db.writer();
+        let lost = tree.put(&mut writer, b"d", b"more");
+        assert!(matches!(lost, Err(FlatError::NoValue { page }) if page == root));
+        assert_eq!(db.pool.page_step(root).private_copies(), 0);
+        writer.roll_back().expect("rolled back");
+        assert_eq!(db.pool.census().private, 0);
     }
-    let mut writer = db.writer();
-    let lost = tree.put(&mut writer, b"d", b"more");
-    assert!(matches!(lost, Err(FlatError::NoValue { page }) if page == root));
-    assert_eq!(db.pool.page_step(root).private_copies(), 0);
+}
+
+/// Ids that a test hands out, and the ids that came back.
+struct Given<'a> {
+    next: Option<PageId>,
+    released: &'a RefCell<Vec<PageId>>,
+}
+
+impl PageIds for Given<'_> {
+    fn allocate(&mut self) -> Result<PageId, AllocError> {
+        self.next.take().ok_or(AllocError::Exhausted)
+    }
+
+    fn release(&mut self, page: PageId) -> Result<(), AllocError> {
+        self.released.borrow_mut().push(page);
+        Ok(())
+    }
+}
+
+/// An id and a copy leave a writer together or not at all: an id whose
+/// page could not be made goes back when the writer ends, and an id whose
+/// copy the pool would not discard stays reserved.
+#[test]
+fn a_writer_gives_back_an_id_only_with_its_copy() {
+    let db = Db::new();
+    let owner = OwnerId::new(7);
+
+    // The pool has a copy of the page that the id names, from elsewhere.
+    let released = RefCell::new(Vec::new());
+    let page = page_id(900);
+    let foreign = db.pool.new_private(owner, page).expect("a copy");
+    let ids = Given {
+        next: Some(page),
+        released: &released,
+    };
+    let mut writer = Private::new(db.reader(), &db.pool, owner, ids);
+    let refused = writer.allocate();
+    assert!(matches!(
+        refused,
+        Err(FlatError::Cache(CacheError::AlreadyPrivate { .. }))
+    ));
+    assert!(matches!(writer.allocate(), Err(FlatError::Alloc(_))));
+    assert_eq!(writer.written().count(), 0);
     writer.roll_back().expect("rolled back");
-    assert_eq!(db.pool.census().private, 0);
+    assert_eq!(*released.borrow(), [page]);
+    db.pool.discard(&foreign).expect("discarded");
+
+    // A copy that is latched elsewhere cannot be discarded: the page stays
+    // the writer's, with its id.
+    let mut writer = db.writer();
+    let owner = OwnerId::new(db.state.borrow().owners);
+    let made = writer.allocate().expect("a page");
+    let other = db.pool.private(owner, made).expect("the copy");
+    let latch = other.read();
+    let held = writer.free(made);
+    assert!(matches!(
+        held,
+        Err(FlatError::Cache(CacheError::Latched { .. }))
+    ));
+    assert!(writer.written().any(|page| page == made));
+    drop(latch);
+    writer.free(made).expect("freed");
+    assert!(!writer.written().any(|page| page == made));
+    assert_eq!(db.ids.state(made), PageState::Private);
+
+    // The same at the end of the writer: every other id goes back.
+    let kept = writer.allocate().expect("a page");
+    let other = db.pool.private(owner, kept).expect("the copy");
+    let latch = other.read();
+    let held = writer.roll_back();
+    assert!(matches!(
+        held,
+        Err(FlatError::Cache(CacheError::Latched { .. }))
+    ));
+    assert_eq!(db.ids.state(made), PageState::Free);
+    assert_eq!(db.ids.state(kept), PageState::Private);
+    drop(latch);
+    db.pool.discard(&other).expect("discarded");
+    db.ids.release(kept).expect("released");
+}
+
+/// A group is written for one place (`log-format.md` LG22). A commit that
+/// wrote its group for a place it did not get writes it again, and the
+/// group it appends holds every value of the writer, new and carried, at
+/// the addresses its pages name.
+#[test]
+fn a_group_that_is_written_again_holds_the_values_of_its_writer_again() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 100 + usize::from(n)];
+    let key = |n: u8| [vec![n], vec![b'k'; 400]].concat();
+    // Writes the writer's group for a place far from the one it will get,
+    // and leaves it at that.
+    let abandon = |writer: &mut Writer<'_>| {
+        let version = version(db.state.borrow().latest + 1);
+        let elsewhere = LogStart::FIRST.address(1 << 30).expect("an address");
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(version, elsewhere, &mut bytes).expect("a group");
+        writer.log_values(&mut group).expect("the values");
+        for page in writer.written().collect::<Vec<_>>() {
+            writer.log_page(page, &mut group).expect("a run");
+        }
+    };
+
+    // Four values in the value log, and one that is pending in the root
+    // from a commit of its own.
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    let root = tree.root();
+    for n in 0..4 {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    db.commit(writer);
+    db.write_back();
+    let old: Vec<ValuePointer> = (0..4)
+        .map(|n| {
+            home(&db.reader(), &tree, &key(n))
+                .1
+                .pointer()
+                .expect("placed")
+        })
+        .collect();
+    let mut writer = db.writer();
+    tree.put(&mut writer, &key(4), &big(4)).expect("a put");
+    db.commit(writer);
+    let earlier = home(&db.reader(), &tree, &key(4)).1;
+    assert!(earlier.is_pending());
+
+    // A new value beside it: the group holds that one, at the address the
+    // entry names, and not the value that an earlier group holds.
+    let mut writer = db.writer();
+    tree.put(&mut writer, &key(5), &big(5)).expect("a put");
+    abandon(&mut writer);
+    abandon(&mut writer);
+    db.commit(writer);
+    let reader = db.reader();
+    let (page, place) = home(&reader, &tree, &key(5));
+    let held = place.pending().expect("pending");
+    let group = db.groups().pop().expect("the group");
+    assert_eq!(group.values, [(root, held, big(5))]);
+    assert_eq!((page, home(&reader, &tree, &key(4)).1), (root, earlier));
+    drop(reader);
+
+    // A split carries all six: four from the value log, and two that are
+    // pending, one of them from the group before.
+    let mut writer = db.writer();
+    for n in 6..24 {
+        tree.put(&mut writer, &key(n), b"small").expect("a put");
+    }
+    abandon(&mut writer);
+    let split = db.commit(writer);
+    let reader = db.reader();
+    let group = db.groups().pop().expect("the group of the split");
+    assert_eq!(group.values.len(), 6);
+    assert_eq!(group.released, old);
+    for n in 0..6 {
+        let (page, place) = home(&reader, &tree, &key(n));
+        let held = place.pending().expect("pending again");
+        assert_ne!(page, root);
+        assert!(group.values.contains(&(page, held, big(n))), "value {n}");
+        let run = group.runs.iter().find(|(of, _)| *of == page);
+        assert!(run.expect("a run").1.contains(&held));
+    }
+    drop(reader);
+    db.write_back();
+    assert!(db.cold(split, |pages| (0..6)
+        .all(|n| get(pages, &tree, &key(n)) == Some(big(n)))));
 }

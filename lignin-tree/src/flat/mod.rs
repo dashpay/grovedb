@@ -220,14 +220,19 @@
 //!   same reason. A page step changes one leaf and never a branch, so the
 //!   way down to a leaf is as it was read.
 //! - **A copy is the writer's or nobody's.** A copy that the pool holds
-//!   under the writer's name and the writer did not make is refused, and
-//!   a copy that cannot be made whole is discarded at once.
+//!   under the writer's name and the writer did not make is refused when
+//!   the writer finds it, and a copy that cannot be made whole is
+//!   discarded at once. The pool tells no new copy from one that is there,
+//!   so the look is not one step with the copy: that an owner id is one
+//!   writer's at a time is the transaction's to keep.
 //! - **A writer ends as a whole.** [`Private::into_parts`] is its commit,
 //!   and [`Private::roll_back`] gives it up. After a call that failed the
 //!   writer's pages are in no state to go on from, and giving the writer
 //!   up is what is left. The id of a page that the writer made and freed
 //!   again stays the writer's until one of the two, so that nobody is
-//!   given it while a rollback could bring the page back (ID1).
+//!   given it while a rollback could bring the page back (ID1). An id
+//!   goes back only with its copy: one whose copy the pool would not
+//!   discard stays reserved.
 //! - **A flat page is written whole.** An image is immutable and exactly
 //!   as long as its content (`flat-page.md` P11), so every change builds
 //!   the image again and puts it at the start of the copy's frame.
@@ -247,7 +252,12 @@
 //!    of the writer holds and no log has is written into the group for the
 //!    page of its entry, and the entry gets the pending value that names
 //!    the value's log address ([`log::stamp_pending`]). A carried value is
-//!    repeated, not named (LG23): its bytes go into the group again.
+//!    repeated, not named (LG23): its bytes go into the group again. A
+//!    group is written for one place (LG22), so a commit that writes its
+//!    group again for another place takes this step and the next again,
+//!    and the values of the writer are written and named anew each time.
+//!    A value that was pending when the writer copied its page is in the
+//!    group of an earlier commit, and stays as it is.
 //! 2. **The pages**, in ascending order ([`Private::log_page`],
 //!    [`Private::freed`]). The run of a page is the records that take it
 //!    from what it was to what it is ([`log::push_changes`]): removes and
@@ -279,8 +289,7 @@
 //! have changed since the cursor moved, a step goes on from the cursor's
 //! key: every write under a cursor is defined, the delete of the record it
 //! stands on among them (rule 7). The pages say that they have changed
-//! with a number ([`FlatPages::revision`]) that no two states of any
-//! reader or writer share.
+//! with a [`Revision`] that no two states of any reader or writer share.
 //!
 //! Under a reader the cursor knows where it stands by the key of the entry
 //! there, not by the entry's position alone: a page step can take an entry
@@ -288,6 +297,15 @@
 //! on from the key, and a record that is gone has no value. Under a long
 //! key the cursor is in the tree of each bucket on the way to it, and goes
 //! from the last key of one to what follows the bucket.
+//!
+//! # Damage
+//!
+//! Pages that are not a tree end a call with [`FlatError::Damaged`], or
+//! with the error of the page that could not be read, and not without an
+//! end: a page is checked to be the page that was asked for and one level
+//! below the branch that names it, and no call goes into the tree of a
+//! bucket that it is in already. What a failed write has changed by then
+//! is the writer's to give up.
 //!
 //! # What the callers do
 //!
@@ -378,6 +396,6 @@ mod tests;
 pub use cursor::Cursor;
 pub use error::FlatError;
 pub use owners::{FlatOwners, StepLog};
-pub use pages::{FlatConfig, FlatPages, FlatPagesMut};
+pub use pages::{FlatConfig, FlatPages, FlatPagesMut, Revision};
 pub use store::{Committed, PageIds, Parts, Private, PrivatePage};
 pub use tree::FlatTree;

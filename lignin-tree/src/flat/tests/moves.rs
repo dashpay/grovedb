@@ -286,7 +286,7 @@ impl FlatPages for Plain {
         self.0.read_value(held, page, slot, place, out)
     }
 
-    fn revision(&self) -> u64 {
+    fn revision(&self) -> Revision {
         self.0.revision()
     }
 }

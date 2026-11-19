@@ -4,7 +4,7 @@ use std::ops::Deref;
 
 use lignin_format::{
     value_log::{PendingValue, ValuePlace},
-    PageId, PageSize,
+    CommitVersion, PageId, PageSize,
 };
 
 use super::error::FlatError;
@@ -105,14 +105,26 @@ pub trait FlatPages {
         out: &mut Vec<u8>,
     ) -> Result<(), FlatError>;
 
-    /// A number that names these pages as they are: another one after every
+    /// What names these pages as they are: another revision after every
     /// change to a page of a writer, and another one for every reader and
     /// writer that does not read the same pages. A [`Cursor`](super::Cursor)
-    /// that is given pages of another number goes on from its key.
+    /// that is given pages of another revision goes on from its key.
     ///
     /// A background step that takes an entry out of a leaf of a reader's
-    /// version changes no number: a cursor finds that by itself.
-    fn revision(&self) -> u64;
+    /// version changes no revision: a cursor finds that by itself.
+    fn revision(&self) -> Revision;
+}
+
+/// What tells the pages of a reader or a writer apart from every other
+/// pages a cursor could be given ([`FlatPages::revision`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Revision {
+    /// The committed pages at one version: readers of one version read the
+    /// same pages.
+    Committed(CommitVersion),
+    /// One state of the pages of one writer, by a number that no other
+    /// state of any writer of the process has.
+    Written(u64),
 }
 
 /// The pages of a flat keyspace, as the one writer of a write transaction

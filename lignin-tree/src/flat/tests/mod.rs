@@ -20,7 +20,7 @@ use lignin_io::sim::SimRng;
 
 use super::{
     log::{is_changed, push_changes},
-    Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree,
+    Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree, Revision,
 };
 
 const V1: FormatVersion = FormatVersion::V1;
@@ -283,8 +283,8 @@ impl FlatPages for Mem {
         Ok(())
     }
 
-    fn revision(&self) -> u64 {
-        self.revision
+    fn revision(&self) -> Revision {
+        Revision::Written(self.revision)
     }
 }
 

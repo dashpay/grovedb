@@ -28,7 +28,7 @@ use super::{
     error::FlatError,
     log::{is_changed, push_changes, stamp_pending},
     node::{place, view},
-    pages::{value_len, FlatPages, FlatPagesMut},
+    pages::{value_len, FlatPages, FlatPagesMut, Revision},
 };
 
 /// The tag under which the bytes of a pending value are attached to the
@@ -149,9 +149,9 @@ impl<'s> FlatPages for Committed<'s> {
     }
 
     /// The version the pages are read at: readers of one version read the
-    /// same pages. It is below 2^63, where the numbers of writers begin.
-    fn revision(&self) -> u64 {
-        self.at.get() & !WRITER
+    /// same pages.
+    fn revision(&self) -> Revision {
+        Revision::Committed(self.at)
     }
 }
 
@@ -179,9 +179,10 @@ impl PageIds for &PageAllocator {
 #[derive(Debug)]
 struct Held {
     bytes: Arc<[u8]>,
-    /// Whether a log group holds the value: it was pending in the page
-    /// when the copy was made, or the commit has written it.
-    logged: bool,
+    /// Whether the value was pending in the page when the copy was made:
+    /// the log group of an earlier commit holds it. Every other value is
+    /// the writer's, and goes into the group of the writer's commit.
+    inherited: bool,
 }
 
 /// One private copy of a writer.
@@ -266,17 +267,17 @@ pub struct Private<'s, I> {
     unused: BTreeSet<PageId>,
     released: Vec<ValuePointer>,
     values: u64,
-    revision: u64,
+    revision: Revision,
 }
 
-/// The bit that the number of a writer's pages has, and the version of a
-/// reader's pages has not.
-const WRITER: u64 = 1 << 63;
+/// The bit that the names of a writer's new values begin with: the address
+/// of a value in the log has it only in a log of more than 2^63 bytes.
+const NEW_VALUE: u64 = 1 << 63;
 
-/// A number that no pages of any writer of this process have had.
-fn next_revision() -> u64 {
+/// A revision that no pages of any writer of this process have had.
+fn next_revision() -> Revision {
     static NEXT: AtomicU64 = AtomicU64::new(0);
-    WRITER | NEXT.fetch_add(1, Ordering::Relaxed)
+    Revision::Written(NEXT.fetch_add(1, Ordering::Relaxed))
 }
 
 impl<'s, I: PageIds> Private<'s, I> {
@@ -321,29 +322,32 @@ impl<'s, I: PageIds> Private<'s, I> {
         &self.released
     }
 
-    /// Writes every value that the writer's entries hold and no log has
-    /// into `group`, each for the page of its entry, and gives each entry
-    /// the pending value that names the value's place in the log
-    /// (`log-format.md` LG20 to LG22). The pages come in ascending order,
-    /// and the values of a page in key order.
+    /// Writes every value that an entry of the writer holds and no earlier
+    /// commit has logged into `group`, each for the page of its entry, and
+    /// gives each entry the pending value that names the value's place in
+    /// that group (`log-format.md` LG20 to LG22). The pages come in
+    /// ascending order, and the values of a page in key order.
     ///
-    /// A commit calls this before [`Self::log_page`].
+    /// A commit calls this before [`Self::log_page`]. A group is written
+    /// for one place (LG22): a commit that writes its group again for
+    /// another place calls this again, and then [`Self::log_page`] again.
+    /// Every call writes all of the writer's values and names them anew.
     pub fn log_values(&mut self, group: &mut GroupWriter<'_>) -> Result<(), FlatError> {
         for (&page, own) in &mut self.copies {
             let mut latch = own.frame.write()?;
-            // Every new value leaves the copy's values before one comes
-            // back under its place in the log, so that no name stands for
-            // two values at any time.
+            // Every value of the writer leaves the copy's values before
+            // one comes back under its place in the group, so that no name
+            // stands for two values at any time.
             let mut logged = Vec::new();
-            for (slot, unlogged) in pending(&latch)? {
+            for (slot, named) in pending(&latch)? {
                 if own
                     .values
-                    .get(&unlogged.id())
-                    .is_some_and(|held| held.logged)
+                    .get(&named.id())
+                    .is_some_and(|held| held.inherited)
                 {
                     continue;
                 }
-                let held = own.values.remove(&unlogged.id());
+                let held = own.values.remove(&named.id());
                 let held = held.ok_or(FlatError::NoValue { page })?;
                 logged.push((slot, group.value(page, &held.bytes)?, held.bytes));
             }
@@ -351,8 +355,8 @@ impl<'s, I: PageIds> Private<'s, I> {
                 if !stamp_pending(&mut latch, slot, name)? {
                     return Err(FlatError::NoValue { page });
                 }
-                let logged = true;
-                own.values.insert(name.id(), Held { bytes, logged });
+                let inherited = false;
+                own.values.insert(name.id(), Held { bytes, inherited });
             }
         }
         self.revision = next_revision();
@@ -404,7 +408,8 @@ impl<'s, I: PageIds> Private<'s, I> {
     /// after a call that failed.
     ///
     /// Every copy is discarded and every id given back, also if one of
-    /// them fails: the first error is returned.
+    /// them fails: the first error is returned. The id of a page whose
+    /// copy could not be discarded stays reserved.
     pub fn roll_back(self) -> Result<(), FlatError> {
         let (pool, mut ids) = (self.pool, self.ids);
         let mut result = Ok(());
@@ -414,10 +419,13 @@ impl<'s, I: PageIds> Private<'s, I> {
             }
         };
         for (page, own) in self.copies {
-            keep(pool.discard(&own.frame).map_err(FlatError::from));
-            if own.created {
+            // The id of a page whose copy the pool still has is not given
+            // to anybody else.
+            let discarded = pool.discard(&own.frame).map_err(FlatError::from);
+            if discarded.is_ok() && own.created {
                 keep(ids.release(page).map_err(FlatError::from));
             }
+            keep(discarded);
         }
         for copy in self.freed.into_values() {
             keep(pool.discard(&copy).map_err(FlatError::from));
@@ -437,15 +445,18 @@ impl<'s, I: PageIds> Private<'s, I> {
         let mut values = HashMap::new();
         let mut latch = frame.write()?;
         for (slot, pending) in pending(&latch)? {
+            // The bytes that are with the page are the value only if they
+            // are as long as the entry says.
             let bytes = tag(slot)
                 .and_then(|tag| Some((tag, latch.detach(tag)?)))
                 .map(|(tag, bytes)| {
                     latch.attach(tag, Arc::clone(&bytes));
                     bytes
                 })
+                .filter(|bytes| bytes.len() == pending.value_len() as usize)
                 .ok_or(FlatError::NoValue { page })?;
-            let logged = true;
-            values.insert(pending.id(), Held { bytes, logged });
+            let inherited = true;
+            values.insert(pending.id(), Held { bytes, inherited });
         }
         Ok(values)
     }
@@ -515,13 +526,13 @@ impl<'s, I: PageIds> Private<'s, I> {
         let values = &mut self.own(page)?.values;
         let name = loop {
             next += 1;
-            let name = (WRITER | next).to_le_bytes();
+            let name = (NEW_VALUE | next).to_le_bytes();
             if !values.contains_key(&name) {
                 break name;
             }
         };
-        let logged = false;
-        values.insert(name, Held { bytes, logged });
+        let inherited = false;
+        values.insert(name, Held { bytes, inherited });
         self.values = next;
         Ok(name)
     }
@@ -589,7 +600,7 @@ impl<'s, I: PageIds> FlatPages for Private<'s, I> {
         }
     }
 
-    fn revision(&self) -> u64 {
+    fn revision(&self) -> Revision {
         self.revision
     }
 }
@@ -597,7 +608,14 @@ impl<'s, I: PageIds> FlatPages for Private<'s, I> {
 impl<I: PageIds> FlatPagesMut for Private<'_, I> {
     fn allocate(&mut self) -> Result<PageId, FlatError> {
         let page = self.ids.allocate()?;
-        let frame = self.pool.new_private(self.owner, page)?;
+        let frame = match self.pool.new_private(self.owner, page) {
+            Ok(frame) => frame,
+            Err(error) => {
+                // The id goes back when the writer ends.
+                self.unused.insert(page);
+                return Err(error.into());
+            }
+        };
         let (created, values) = (true, HashMap::new());
         self.copies.insert(
             page,
@@ -633,16 +651,15 @@ impl<I: PageIds> FlatPagesMut for Private<'_, I> {
     }
 
     fn free(&mut self, page: PageId) -> Result<(), FlatError> {
-        self.own(page)?;
-        let Some(own) = self.copies.remove(&page) else {
-            return Err(FlatError::Freed { page });
-        };
-        if own.created {
+        if self.own(page)?.created {
             // Nobody else has seen the page. Its id is kept until the
-            // transaction knows that no rollback brings the page back.
+            // transaction knows that no rollback brings the page back. A
+            // copy that cannot be discarded stays the writer's.
+            let own = self.copies.get(&page).ok_or(FlatError::Freed { page })?;
             self.pool.discard(&own.frame)?;
+            self.copies.remove(&page);
             self.unused.insert(page);
-        } else {
+        } else if let Some(own) = self.copies.remove(&page) {
             self.freed.insert(page, own.frame);
         }
         self.revision = next_revision();

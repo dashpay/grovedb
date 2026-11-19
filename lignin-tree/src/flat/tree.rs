@@ -1,7 +1,7 @@
 //! The B+tree: get, put, delete and range delete, and how its pages are
 //! split, merged and removed.
 
-use std::cmp::Ordering;
+use std::{cmp::Ordering, collections::BTreeSet};
 
 use lignin_format::{
     flat_page::{shortest_separator, FlatLeaf, FlatPage, FlatPageKind, FlatValue},
@@ -111,11 +111,12 @@ impl FlatTree {
         out: &mut Vec<u8>,
     ) -> Result<bool, FlatError> {
         let (mut tree, mut key) = (*self, key);
+        let mut way = Way::default();
         loop {
             match self.config.stored(key) {
                 Stored::Short(key) => return tree.get_stored(pages, key, out),
                 Stored::Long { bucket, rest } => {
-                    let Some(next) = tree.bucket(pages, &bucket)? else {
+                    let Some(next) = tree.bucket(pages, &bucket, &mut way)? else {
                         return Ok(false);
                     };
                     (tree, key) = (next, rest);
@@ -133,11 +134,12 @@ impl FlatTree {
     ) -> Result<(), FlatError> {
         value_len(value)?;
         let (mut tree, mut key) = (*self, key);
+        let mut way = Way::default();
         loop {
             match self.config.stored(key) {
                 Stored::Short(key) => return tree.put_stored(pages, key, value),
                 Stored::Long { bucket, rest } => {
-                    let next = match tree.bucket(pages, &bucket)? {
+                    let next = match tree.bucket(pages, &bucket, &mut way)? {
                         Some(next) => next,
                         None => {
                             let next = Self::create(pages, self.config)?;
@@ -158,7 +160,7 @@ impl FlatTree {
         key: &[u8],
     ) -> Result<bool, FlatError> {
         let (mut tree, mut key) = (*self, key);
-        let mut passed = Vec::new();
+        let (mut passed, mut way) = (Vec::new(), Way::default());
         loop {
             match self.config.stored(key) {
                 Stored::Short(key) => {
@@ -168,7 +170,7 @@ impl FlatTree {
                     break;
                 }
                 Stored::Long { bucket, rest } => {
-                    let Some(next) = tree.bucket(pages, &bucket)? else {
+                    let Some(next) = tree.bucket(pages, &bucket, &mut way)? else {
                         return Ok(false);
                     };
                     passed.push((tree, bucket, next));
@@ -192,7 +194,7 @@ impl FlatTree {
         end: Option<&[u8]>,
     ) -> Result<(), FlatError> {
         let mut ranges = vec![(*self, start, end)];
-        let mut passed = Vec::new();
+        let (mut passed, mut way) = (Vec::new(), Way::default());
         while let Some((tree, start, end)) = ranges.pop() {
             if end.is_some_and(|end| end <= start) {
                 continue;
@@ -201,7 +203,7 @@ impl FlatTree {
             // the range's side, as a range of its own tree. Between the
             // two ends whole entries leave.
             let mut inside = |pages: &mut P, bucket: &[u8], start, end| {
-                if let Some(next) = tree.bucket(pages, bucket)? {
+                if let Some(next) = tree.bucket(pages, bucket, &mut way)? {
                     ranges.push((next, start, end));
                     passed.push((tree, bucket.to_vec(), next));
                 }
@@ -247,6 +249,27 @@ impl FlatTree {
         prefix: &[u8],
     ) -> Result<(), FlatError> {
         self.delete_range(pages, prefix, prefix_end(prefix).as_deref())
+    }
+}
+
+/// The trees that a call has gone into on its way through buckets. Each
+/// is gone into once: a bucket whose tree is one of them is damage, and
+/// would make a key stand for another.
+#[derive(Debug, Default)]
+struct Way(BTreeSet<PageId>);
+
+impl Way {
+    /// Goes from the tree with the root `from` into the tree with the root
+    /// `into`, which a bucket of the first names.
+    fn go_into(&mut self, from: PageId, into: PageId) -> Result<(), FlatError> {
+        self.0.insert(from);
+        if self.0.insert(into) {
+            return Ok(());
+        }
+        Err(FlatError::Damaged {
+            page: into,
+            what: "a bucket of long keys whose tree is a tree it is in",
+        })
     }
 }
 
@@ -329,18 +352,21 @@ impl FlatTree {
         Ok(true)
     }
 
-    /// The tree of the bucket stored under `key`, if there is one.
+    /// The tree of the bucket stored under `key`, if there is one, on the
+    /// `way` that led to this tree.
     fn bucket<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         key: &[u8],
+        way: &mut Way,
     ) -> Result<Option<Self>, FlatError> {
         let (page, frame) = self.walk(pages, key, None)?;
-        let root = match leaf(&frame, page)?.get(key) {
-            Some(value) => Some(bucket_root(page, value)?),
-            None => None,
+        let Some(value) = leaf(&frame, page)?.get(key) else {
+            return Ok(None);
         };
-        Ok(root.map(|root| Self::open(root, self.config)))
+        let root = bucket_root(page, value)?;
+        way.go_into(self.root, root)?;
+        Ok(Some(Self::open(root, self.config)))
     }
 
     /// Whether the keyspace has no record.
