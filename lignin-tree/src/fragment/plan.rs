@@ -183,8 +183,9 @@ pub(super) struct Plan<'w> {
     pub of_node: Vec<usize>,
     /// The cell each root pointer of the write names.
     pub roots: Vec<Option<usize>>,
-    /// The cells nothing points at any more.
-    pub orphans: Vec<CellAddress>,
+    /// The cells that stay where they are and that no cell of their page
+    /// points at any more.
+    pub unpointed: Vec<CellAddress>,
     known: HashMap<CellAddress, usize>,
     page_of: HashMap<PageId, usize>,
     removed: HashSet<CellAddress>,
@@ -222,7 +223,7 @@ pub(super) fn plan<'w, P: Pages>(
             pages: Vec::new(),
             of_node: Vec::new(),
             roots: Vec::new(),
-            orphans: Vec::new(),
+            unpointed: Vec::new(),
             known: HashMap::new(),
             page_of: HashMap::new(),
             removed: HashSet::new(),
@@ -232,14 +233,20 @@ pub(super) fn plan<'w, P: Pages>(
         queue: Vec::new(),
         stuck: Vec::new(),
     };
-    let (order, lens, takes) = planner.build()?;
+    let (order, lens, takes, let_go) = planner.build()?;
     planner.place(&order, &lens, takes)?;
     planner.cap()?;
     planner.settle()?;
     planner.absorb()?;
     planner.merge()?;
     planner.settle()?;
-    Ok(planner.plan)
+    let mut plan = planner.plan;
+    let stay = let_go.into_iter().map(|cell| &plan.cells[cell]);
+    let stay = stay
+        .filter(|cell| cell.stays())
+        .filter_map(|cell| cell.origin);
+    plan.unpointed = stay.chain(write.dropped.iter().copied()).collect();
+    Ok(plan)
 }
 
 fn slot_number(address: CellAddress) -> usize {
@@ -291,13 +298,19 @@ fn node_len(
     Ok(len)
 }
 
-type Built = (Vec<usize>, Vec<usize>, Vec<(usize, CellAddress)>);
+type Built = (
+    Vec<usize>,
+    Vec<usize>,
+    Vec<(usize, CellAddress)>,
+    Vec<usize>,
+);
 
 impl<P: Pages> Planner<'_, '_, P> {
     /// Reads the cells the write names and links them as the write leaves
     /// them. Returns the nodes of the write from the top down, the length of
-    /// each node's cell, and the nodes that take the place of a deleted one
-    /// (R2).
+    /// each node's cell, the nodes that take the place of a deleted one
+    /// (R2), and the cells that the cell which pointed at them let go of
+    /// while no other cell of the write took them.
     fn build(&mut self) -> Result<Built, FragmentError> {
         let write = self.plan.write;
         let max = self.layout.page_size().max_cell_len();
@@ -375,6 +388,8 @@ impl<P: Pages> Planner<'_, '_, P> {
 
         let mut takes = Vec::new();
         let mut tops = Vec::new();
+        let mut let_go = Vec::new();
+        let mut named = Vec::new();
         for root in write.roots {
             let now = match root.now {
                 Some(target) => self.target(target, root.was)?,
@@ -382,22 +397,43 @@ impl<P: Pages> Planner<'_, '_, P> {
             };
             if let Some(cell) = now {
                 let entry = &mut self.plan.cells[cell];
-                if entry.parent.is_some() || entry.free {
+                if entry.parent.is_some() || named.contains(&cell) {
                     let address = entry.origin;
                     return Err(WriteError::TwoPointers { address }.into());
                 }
-                entry.free = true;
-                if entry.node.is_some() {
-                    tops.push(cell);
-                }
-                if let Some(was) = root.was.filter(|was| self.plan.removed.contains(was)) {
-                    takes.push((cell, was));
+                named.push(cell);
+                if root.anchored {
+                    if entry.origin != root.was {
+                        let_go.push(cell);
+                    }
+                } else {
+                    entry.free = true;
+                    if entry.node.is_some() {
+                        tops.push(cell);
+                    }
+                    if let Some(was) = root.was.filter(|was| self.plan.removed.contains(was)) {
+                        takes.push((cell, was));
+                    }
                 }
             }
             self.plan.roots.push(now);
         }
+        for &address in write.dropped {
+            let named = self
+                .plan
+                .known
+                .get(&address)
+                .map(|cell| &self.plan.cells[*cell]);
+            let written = named.is_some_and(|cell| cell.node.is_some());
+            if written || self.plan.removed.contains(&address) {
+                return Err(WriteError::Twice { address }.into());
+            }
+            if named.is_some() {
+                return Err(WriteError::Dropped { address }.into());
+            }
+        }
 
-        let mut former = Vec::new();
+        let mut former = HashSet::new();
         for &address in write.removed {
             let old = self.stored(address, None)?;
             let cell = self.cell(Some(address));
@@ -442,16 +478,13 @@ impl<P: Pages> Planner<'_, '_, P> {
             }
             former.extend(old.children());
         }
-        for address in former {
-            let pointed = self.plan.known.get(&address).is_some_and(|cell| {
-                let cell = &self.plan.cells[*cell];
-                cell.removed || cell.parent.is_some() || cell.free
-            });
-            if !pointed {
-                self.plan.orphans.push(address);
+        for &cell in &order {
+            let entry = &self.plan.cells[cell];
+            if entry.anchored && entry.origin.is_some_and(|at| former.contains(&at)) {
+                let_go.push(cell);
             }
         }
-        Ok((order, lens, takes))
+        Ok((order, lens, takes, let_go))
     }
 
     /// Sections 5 and 8: the cells of deleted nodes go, a node that takes
@@ -974,8 +1007,9 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     /// The fullest page that holds another child of the fragment the parent
     /// of `root` is in, and that stays within the seed limit when it takes
-    /// `bytes` more. A page the plan has not read is judged by its hint, and
-    /// is read before it is chosen.
+    /// `bytes` more. A page the plan has not read is judged by its hint and
+    /// read before it is chosen: it is taken if it has the room, whatever
+    /// the hint said, and passed over for the next one if it has not.
     fn beside(&mut self, root: usize, bytes: usize) -> Result<Option<usize>, FragmentError> {
         let seed_limit = self.layout.seed_limit();
         let Some(parent) = self.up(root).filter(|_| bytes <= seed_limit) else {
@@ -1012,6 +1046,9 @@ impl<P: Pages> Planner<'_, '_, P> {
                 return Ok(Some(page));
             }
             self.load(page)?;
+            if self.plan.pages[page].used() + bytes <= seed_limit {
+                return Ok(Some(page));
+            }
         }
     }
 

@@ -11,7 +11,7 @@ fn grove() -> Grove {
 }
 
 fn key(index: u32) -> [u8; 4] {
-    index.wrapping_mul(2_654_435_761).to_be_bytes()
+    (Rng(u64::from(index)).next() as u32).to_be_bytes()
 }
 
 /// A value of 400 bytes, which the grove stores out of line.
@@ -41,7 +41,19 @@ fn pointer(grove: &Grove, key: &[u8]) -> ValuePointer {
 /// again with the new page as owner, in the same commit.
 #[test]
 fn a_carried_cell_has_its_value_appended_again_for_its_new_page() {
+    carried_values(false);
+}
+
+/// The same when the write states again the pending value a cell holds:
+/// the value is carried, and not released and given back.
+#[test]
+fn a_pending_value_that_a_write_states_again_is_carried_with_its_cell() {
+    carried_values(true);
+}
+
+fn carried_values(restate: bool) {
     let mut grove = grove();
+    grove.restate = restate;
     let (mut placed, mut pending) = (0, 0);
     for index in 0..1200 {
         let before = grove.log.carried.len();

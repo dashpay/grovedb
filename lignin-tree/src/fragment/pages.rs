@@ -22,6 +22,10 @@ pub type PageMut<'p, 'f> = NodePageMut<'f, &'p mut dyn ChangeSink>;
 /// Each call is one physical step on one page (`transactions.md` LT3):
 /// fragment maintenance never holds two pages at once, so its caller never
 /// holds two latches for it.
+///
+/// A call that fails returns [`FragmentError::Pages`] or
+/// [`FragmentError::Node`], and no other error: the others say that no
+/// page was changed, which a failure in the middle of a write cannot say.
 pub trait Pages {
     /// Reads the tree page `page` as the write sees it.
     fn read<R>(

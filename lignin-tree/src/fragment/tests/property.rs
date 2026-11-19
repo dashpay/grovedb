@@ -67,11 +67,7 @@ impl Run {
     fn insert(&mut self) {
         let merk = self.merk();
         self.next_key += 1;
-        let scattered = self
-            .next_key
-            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
-            .to_be_bytes();
-        let mut key = scattered.to_vec();
+        let mut key = self.grove.rng.next().to_be_bytes().to_vec();
         key.truncate(1 + self.grove.rng.below(8));
         key.extend_from_slice(&self.next_key.to_be_bytes());
         let value = self.value();
@@ -128,7 +124,11 @@ impl Run {
         for _ in 0..writes {
             let Some((merk, key)) = self.key() else { break };
             let report = self.grove.touch(merk, &key);
-            assert!(report.orphaned.is_empty() && report.freed.len() <= report.left.len());
+            assert!(report.freed.len() <= report.left.len());
+            assert!(
+                before == self.grove.logical(),
+                "the logical tree is what it was"
+            );
         }
         self.grove.check();
         assert!(
@@ -162,13 +162,15 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
     let mut carried = 0;
     let mut reorganised = 0;
     let mut pages = 0;
+    let mut rotations = 0;
     for seed in 1..=6 {
         let size = [PageSize::MIN, PageSize::new(16_384).expect("a page size")][seed as usize % 2];
         let mut run = Run::new(size, seed);
+        run.grove.restate = seed % 3 == 0;
         let layouts = layouts(size);
         for step in 0..2600 {
             run.step();
-            if step % 32 == 0 {
+            if step % 4 == 0 {
                 run.grove.check();
             }
             if step % 400 == 399 {
@@ -182,6 +184,7 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
         }
         run.grove.check();
         carried += run.carried();
+        rotations += run.grove.rotations;
         pages += run.grove.mem.frames.len();
         let counters = run.grove.fragments.counters();
         assert_eq!(
@@ -190,9 +193,10 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
         );
     }
     println!(
-        "{pages} pages in six groves, {carried} cells carried, {reorganised} of them by writes that \
-         changed no node"
+        "{pages} pages in six groves, {rotations} rotations, {carried} cells carried, {reorganised} \
+         of them by writes that changed no node"
     );
+    assert!(rotations > 2000, "the trees rotated: {rotations}");
     assert!(pages > 60, "the groves span many pages: {pages}");
     assert!(carried > 3000, "the writes carried cells: {carried}");
     assert!(

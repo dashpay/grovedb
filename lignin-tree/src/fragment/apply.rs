@@ -43,6 +43,8 @@ struct Work {
     fixes: Vec<(SlotId, Via, CellAddress)>,
     /// The cells that stay, with the fragment-root mark each has to have.
     marks: Vec<(SlotId, bool)>,
+    /// The slots of the cells that nothing in the page points at any more.
+    unpointed: Vec<SlotId>,
     /// The cells whose handle the report gives.
     wanted: Vec<usize>,
 }
@@ -275,6 +277,7 @@ fn insert<V: Values>(
     let hosted = hosted_roots(entry, write, stored, places);
     let kept = old.map(|old| old.value());
     let set = write.and_then(|write| cell_value(write.value));
+    let set = set.filter(|value| Some(*value) != kept);
     let mut carried_len = None;
     let value = match (set, kept, from) {
         (Some(value), _, _) => value,
@@ -494,16 +497,18 @@ pub(super) fn apply<P: Pages, V: Values>(
         }
     }
     let roots = plan.roots.iter().flatten().map(|root| &cells[*root]);
-    let unpointed = roots.filter(|root| root.stays()).map(origin);
-    for address in unpointed.chain(plan.orphans.iter().copied()) {
+    let free = roots.filter(|root| root.free && root.stays()).map(origin);
+    for address in free.chain(plan.unpointed.iter().copied()) {
         if let Some(page_work) = work.get_mut(&address.page()) {
-            page_work.marks.push((address.slot(), true));
+            page_work.unpointed.push(address.slot());
         }
     }
 
     for (&id, page_work) in &work {
-        let idle =
-            page_work.kept.is_empty() && page_work.fixes.is_empty() && page_work.marks.is_empty();
+        let idle = page_work.kept.is_empty()
+            && page_work.fixes.is_empty()
+            && page_work.marks.is_empty()
+            && page_work.unpointed.is_empty();
         if idle {
             continue;
         }
@@ -522,6 +527,13 @@ pub(super) fn apply<P: Pages, V: Values>(
                 let mut node = node_mut(page, CellAddress::new(id, slot))?;
                 if node.node().is_fragment_root() != mark {
                     node.set_fragment_root(mark)?;
+                }
+            }
+            for &slot in &page_work.unpointed {
+                if let Some(mut node) = page.node_mut(slot)
+                    && !node.node().is_fragment_root()
+                {
+                    node.set_fragment_root(true)?;
                 }
             }
             Ok(())
@@ -548,7 +560,7 @@ pub(super) fn apply<P: Pages, V: Values>(
         hints.note(id, used);
     }
     for (entry, id) in plan.pages.iter().zip(&ids) {
-        if let Some(id) = id.filter(|id| work.contains_key(id)) {
+        if let Some(id) = id.filter(|id| entry.touched && work.contains_key(id)) {
             debug_assert_eq!(hints.used(id), Some(entry.used()), "{id} is as planned");
         }
     }
@@ -575,6 +587,5 @@ pub(super) fn apply<P: Pages, V: Values>(
             hosted_by,
         });
     }
-    report.orphaned.clone_from(&plan.orphans);
     Ok(report)
 }

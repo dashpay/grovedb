@@ -80,8 +80,9 @@ pub struct NodeWrite<'a> {
     pub value: ValueWrite<'a>,
 }
 
-/// A pointer to the root of a Merk that no cell holds: the root Merk's, or
-/// that of a Merk with no host. The write's caller keeps it, in the subtree
+/// A pointer to the root of a Merk that no cell of the write holds: the
+/// root Merk's, that of a Merk with no host, or that of a Merk whose host
+/// the write does not hold. The write's caller keeps it, in the subtree
 /// directory, and rewrites it from the write's report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RootWrite {
@@ -89,6 +90,11 @@ pub struct RootWrite {
     pub was: Option<CellAddress>,
     /// The root it names now.
     pub now: Option<Target>,
+    /// Whether the root stays in its page whatever the rules would do with
+    /// it: the Merk has a host, whose cell the write does not hold, and the
+    /// pointer in that cell is rewritten later (`tree-layout.md` T3). The
+    /// directory entry names the root meanwhile.
+    pub anchored: bool,
 }
 
 /// One write: the change sets of one operation, for all the Merks it wrote
@@ -104,6 +110,11 @@ pub struct Write<'a> {
     pub nodes: &'a [NodeWrite<'a>],
     /// The cells of the nodes the write deletes, by their address.
     pub removed: &'a [CellAddress],
+    /// The roots of the Merks the write drops or clears, by their address
+    /// (`tree-layout.md` D1, D4). No link or pointer names them afterwards.
+    /// Their cells, and all that hangs below them, stay in their pages for
+    /// the reclaimer.
+    pub dropped: &'a [CellAddress],
     /// The root pointers the write's caller holds.
     pub roots: &'a [RootWrite],
 }

@@ -58,12 +58,24 @@ pub(super) struct Grove {
     pub root_at: Option<CellAddress>,
     /// The cells that dropped Merks left in the pages.
     pub ghosts: usize,
+    /// How many times a node was lifted over its parent.
+    pub rotations: usize,
     /// Names every child by its address where it has one.
     pub plain_names: bool,
     /// Leaves the pointer to the root of the grove out of the writes.
     pub rootless: bool,
     /// The longest value the grove keeps in its cell.
     pub inline_max: usize,
+    /// States again the pending value of a node whose value is kept.
+    pub restate: bool,
+    /// Whether the pointer of a host is behind the root of its Merk: a
+    /// write stopped below the host and has not been finalized.
+    pub stale: bool,
+    /// The Merk whose root the next write names as a root that stays, with
+    /// the address its directory entry has.
+    stopped: Option<(usize, Option<CellAddress>)>,
+    /// The directory entries of the Merks whose host is behind.
+    entries: HashMap<usize, Option<CellAddress>>,
     by_address: HashMap<CellAddress, usize>,
     dirty: BTreeSet<usize>,
     removed: Vec<usize>,
@@ -134,9 +146,14 @@ impl Grove {
             }],
             root_at: None,
             ghosts: 0,
+            rotations: 0,
             plain_names: false,
             rootless: false,
             inline_max: INLINE_MAX,
+            restate: false,
+            stale: false,
+            stopped: None,
+            entries: HashMap::new(),
             by_address: HashMap::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
@@ -183,6 +200,7 @@ impl Grove {
             .child(node, side)
             .expect("the side that rises has a child");
         let inner = self.child(child, other);
+        self.rotations += 1;
         self.set_child(node, side, inner);
         self.set_child(child, other, Some(node));
         self.fix(node);
@@ -469,6 +487,65 @@ impl Grove {
         report
     }
 
+    /// The address the directory entry of `merk` has before a write that
+    /// stops at its root.
+    fn stop(&mut self, merk: usize) {
+        let root = self.merks[merk].root;
+        let at = root.and_then(|root| self.nodes[root].at);
+        let was = self.entries.get(&merk).copied().unwrap_or(at);
+        self.stopped = Some((merk, was));
+        self.stale = true;
+    }
+
+    /// Applies what was done to `merk` in a write that holds no node above
+    /// the Merk's root, and names that root as one that stays.
+    fn stopped(&mut self, merk: usize) -> Report {
+        if let Some(root) = self.merks[merk].root {
+            self.rehash(root);
+        }
+        let report = self.apply().expect("the write is applied");
+        self.stopped = None;
+        self.entries.insert(merk, report.roots[0]);
+        report
+    }
+
+    /// Puts `value` under `key` in the hosted `merk`, in a write that stops
+    /// at the Merk's root (`tree-layout.md` T3).
+    pub fn put_stopped(&mut self, merk: usize, key: &[u8], value: &[u8]) -> Report {
+        self.stop(merk);
+        let root = self.insert_at(self.merks[merk].root, merk, key, value);
+        self.merks[merk].root = Some(root);
+        self.stopped(merk)
+    }
+
+    /// Deletes `key` from the hosted `merk` in a write that stops at the
+    /// Merk's root.
+    pub fn delete_stopped(&mut self, merk: usize, key: &[u8]) -> Report {
+        self.stop(merk);
+        self.merks[merk].root = self.delete_at(self.merks[merk].root, key);
+        self.stopped(merk)
+    }
+
+    /// Writes the host of `merk`, and all above it, with the root the Merk
+    /// has now.
+    pub fn finalize(&mut self, merk: usize) -> Report {
+        self.entries.remove(&merk);
+        self.stale = !self.entries.is_empty();
+        self.flush(merk)
+    }
+
+    /// Reads the nodes of `merk` from the pages, from the root its
+    /// directory entry names, and returns how many there are.
+    pub fn check_merk(&self, merk: usize) -> usize {
+        let mut reached = 0;
+        match (self.merks[merk].root, self.entries[&merk]) {
+            (Some(root), Some(at)) => self.walk(root, at, None, &mut reached),
+            (None, None) => {}
+            other => panic!("the directory entry and the Merk disagree: {other:?}"),
+        }
+        reached
+    }
+
     fn flush(&mut self, merk: usize) -> Report {
         self.prepare(merk);
         self.apply().expect("the write is applied")
@@ -529,11 +606,21 @@ impl Grove {
                 named.push(root.map(|root| name(rng, plain, nodes, &index_of, root, kept)));
             }
             let out_of_line = node.value_dirty && node.value.len() > self.inline_max;
+            let restated = node
+                .at
+                .filter(|_| self.restate && !node.value_dirty)
+                .and_then(|at| {
+                    let view = self.mem.view(at.page());
+                    view.node(at.slot())?.value().pending()
+                });
             parts.push(Parts {
                 links,
                 hosted,
                 roots,
-                pending: out_of_line.then(|| self.log.pending(&node.value)),
+                pending: match out_of_line {
+                    true => Some(self.log.pending(&node.value)),
+                    false => restated,
+                },
             });
         }
         let node_writes: Vec<NodeWrite<'_>> = written
@@ -577,16 +664,24 @@ impl Grove {
             .filter_map(|node| nodes[*node].at)
             .collect();
         let root = self.merks[0].root;
-        let roots = [RootWrite {
-            was: self.root_at,
-            now: root.map(|root| {
-                let kept = self.root_at.is_some() && nodes[root].at == self.root_at;
-                name(rng, plain, nodes, &index_of, root, kept)
-            }),
+        let mut root_of =
+            |root: Option<usize>, was: Option<CellAddress>, anchored: bool| RootWrite {
+                was,
+                now: root.map(|root| {
+                    let kept = was.is_some() && nodes[root].at == was;
+                    name(rng, plain, nodes, &index_of, root, kept)
+                }),
+                anchored,
+            };
+        let roots = [match self.stopped {
+            Some((merk, was)) => root_of(self.merks[merk].root, was, true),
+            None => root_of(root, self.root_at, false),
         }];
+        let dropped = std::mem::take(&mut self.orphans);
         let write = Write {
             nodes: &node_writes,
             removed: &removed,
+            dropped: &dropped,
             roots: match self.rootless {
                 true => &[],
                 false => &roots,
@@ -661,15 +756,15 @@ impl Grove {
             node.stored = [node.left, node.right];
             node.stored_hosted = parts.roots;
         }
-        if let Some(named) = report.roots.first() {
+        if let Some(named) = report.roots.first().filter(|_| self.stopped.is_none()) {
             self.root_at = *named;
         }
         assert_eq!(self.root_at, root.and_then(|root| self.nodes[root].at));
-        let mut orphans = std::mem::take(&mut self.orphans);
-        let mut reported = report.orphaned.clone();
-        orphans.sort_unstable();
-        reported.sort_unstable();
-        assert_eq!(reported, orphans, "the cells nothing points at any more");
+        for dropped in &dropped {
+            let view = self.mem.view(dropped.page());
+            let cell = view.node(dropped.slot()).expect("a dropped root stays");
+            assert!(cell.is_fragment_root(), "nothing points at a dropped root");
+        }
         self.dirty.clear();
         self.removed.clear();
 
@@ -699,8 +794,10 @@ impl Grove {
         let page = view.tree_page();
         page.check(self.mem.size)
             .expect("a valid page in its frame");
-        page.check_fragments()
-            .expect("the marks are what the links say");
+        if !self.stale {
+            page.check_fragments()
+                .expect("the marks are what the links say");
+        }
         assert!(!view.is_empty(), "a page with no cell is freed");
         let shadow = NodePage::open(&self.mem.shadow.frames[&id], self.mem.lease).expect("a page");
         assert_eq!(

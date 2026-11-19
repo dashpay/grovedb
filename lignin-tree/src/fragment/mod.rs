@@ -23,11 +23,20 @@
 //! # A write
 //!
 //! A write states, for every node whose cell is new or may differ, what the
-//! cell holds afterwards ([`NodeWrite`]), and the cells of the nodes it
-//! deletes. A link or a hosted-root pointer names its node as a [`Target`]:
-//! by the address its cell had before the write, or by its position in the
-//! write, which is the only name a new node has. The addresses that the
-//! pages store afterwards are this module's to give.
+//! cell holds afterwards ([`NodeWrite`]), the cells of the nodes it deletes,
+//! and the roots of the Merks it drops or clears. A link or a hosted-root
+//! pointer names its node as a [`Target`]: by the address its cell had
+//! before the write, or by its position in the write, which is the only
+//! name a new node has. The addresses that the pages store afterwards are
+//! this module's to give.
+//!
+//! **What a write lets go of, it says** ([`Write::dropped`]). A pointer
+//! that names another node than before does not show whether the node it
+//! named is still in a tree: a host that is written after a write stopped
+//! below it names a new root, and the old one hangs below that
+//! (`tree-layout.md` T3). So nothing is taken for dropped that the write
+//! does not name as dropped. The cells of a dropped Merk stay in their
+//! pages (D1), and its root is marked as the root of its fragment.
 //!
 //! A write is applied in two steps.
 //!
@@ -45,8 +54,9 @@
 //!    page's [`ChangeSink`](crate::node::ChangeSink) as the record that
 //!    makes it. A carried cell is a remove record in one page and an insert
 //!    record in the other. An error in this step, which can only come from
-//!    [`Pages`], leaves the pages between two states: the caller rolls the
-//!    write's scope back.
+//!    [`Pages`], leaves the pages between two states. The caller rolls the
+//!    write's scope back, and with it what the sinks of the pages and
+//!    [`Values`] were told.
 //!
 //! # Allocation inside a page
 //!
@@ -86,15 +96,27 @@
 //!   `page-delta.md`).
 //!
 //! A rotation carries nothing (R1): it reaches this module as links that
-//! name other nodes, and a link is written where it is.
+//! name other nodes, and a link is written where it is. The rules of
+//! sections 6 and 7 then apply to the fragments as the rotation left them,
+//! in the same write, as they do in the simulation: a fragment that the
+//! rotation left small, with its parent in another page that has room, is
+//! carried there by M1 and counted under [`Cause::Merge`].
 //!
 //! # A node that nothing in the write points at
 //!
 //! Such a node is the root of its fragment for the rules, whatever else its
 //! page holds, and it is not carried: the write does not hold the cell that
 //! points at it (T3). What hangs below it can leave. The one exception is a
-//! node that a [`RootWrite`] names: its pointer is the caller's, so it is
-//! carried like any other, and the report says where to.
+//! node that a [`RootWrite`] names without anchoring it: its pointer is
+//! the caller's alone, so it is carried like any other, and the report
+//! says where to.
+//!
+//! A write that stops below the host of its Merk names the Merk's root in
+//! a [`RootWrite`] that is [anchored](RootWrite::anchored). The root then
+//! stays, the report gives its address for the directory entry, and a root
+//! that is another node than before is marked as the root of its fragment:
+//! the pointer in the host's cell does not name it yet. The write that
+//! later holds the host states the root as the host's, as any write does.
 //!
 //! On existing GroveVersions every write holds the whole path up to the
 //! root of the grove, and the root is named by a root pointer, so no node

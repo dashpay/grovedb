@@ -79,7 +79,8 @@ pub enum WriteError {
         /// The node, by its position in the write.
         node: usize,
     },
-    /// One cell is written twice, or removed twice, or written and removed.
+    /// One cell is written twice, or removed twice, or written or let go of
+    /// and removed.
     Twice {
         /// The cell's address.
         address: CellAddress,
@@ -101,6 +102,12 @@ pub enum WriteError {
     /// the write does not hold still points at one.
     Removed {
         /// The removed cell's address.
+        address: CellAddress,
+    },
+    /// A link or pointer of the write names a cell that the write lets go
+    /// of.
+    Dropped {
+        /// The cell's address.
         address: CellAddress,
     },
     /// A link or pointer keeps what the cell has, and the cell has nothing
@@ -155,6 +162,12 @@ impl fmt::Display for WriteError {
                 write!(
                     f,
                     "a pointer names the cell at {address}, which the write removes"
+                )
+            }
+            Self::Dropped { address } => {
+                write!(
+                    f,
+                    "a pointer names the cell at {address}, which the write lets go of"
                 )
             }
             Self::NothingKept { node } => {

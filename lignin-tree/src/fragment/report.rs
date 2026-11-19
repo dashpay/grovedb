@@ -108,14 +108,11 @@ pub struct Report {
     /// here on, under the lease the pages were opened with.
     pub nodes: Vec<NodeHandle>,
     /// What each root pointer of the write names now, in the order of
-    /// [`Write::roots`](super::Write::roots).
+    /// [`Write::roots`](super::Write::roots): the address to put into the
+    /// Merk's directory entry.
     pub roots: Vec<Option<CellAddress>>,
     /// The cells that were carried, a child before its parent.
     pub carried: Vec<Carried>,
-    /// The cells that nothing points at any more and that the write did not
-    /// remove: the roots of what a dropped or cleared Merk left
-    /// (`tree-layout.md` D1). The reclaimer starts from them.
-    pub orphaned: Vec<CellAddress>,
     /// The pages a cell left. Every handle into them that was issued before
     /// the write has ended, also those of the nodes that stayed, which are
     /// read again by their address.

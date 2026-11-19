@@ -34,7 +34,7 @@ fn grove_of(size: PageSize, params: LayoutParams) -> Grove {
 
 /// Keys in an order that has nothing to do with their value.
 fn key(index: u32) -> [u8; 4] {
-    index.wrapping_mul(2_654_435_761).to_be_bytes()
+    (Rng(u64::from(index)).next() as u32).to_be_bytes()
 }
 
 fn value(len: usize, fill: u8) -> Vec<u8> {
@@ -403,8 +403,7 @@ fn crowded() -> Grove {
         grove.put(hosted, &key(index), &value(100, 5));
         index += 1;
     }
-    let report = grove.clear(hosted);
-    assert_eq!(report.orphaned.len(), 1);
+    grove.clear(hosted);
     assert_eq!(grove.mem.frames.len(), 1);
     assert_eq!(grove.mem.cells(), 3 + grove.ghosts);
     grove.check();
@@ -475,6 +474,167 @@ fn a_node_that_nothing_in_the_write_points_at_stays_in_its_page() {
     let unplaced = FragmentError::NoRoom { page: None };
     assert_eq!(unplaced.to_string(), "a new page is above its capacity");
     grove.check();
+}
+
+#[test]
+fn a_root_whose_host_is_not_in_the_write_stays_and_is_not_let_go_of() {
+    let mut grove = grove(LayoutParams::PROPOSED);
+    for key in [b"m", b"c", b"x"] {
+        grove.put(0, key, b"root");
+    }
+    let hosted = grove.host(0, b"c", false);
+    let host = grove.node(0, b"c").at.expect("placed");
+    let pointer = |grove: &Grove| {
+        let view = grove.mem.view(host.page());
+        let cell = view.node(host.slot()).expect("the host stays");
+        cell.hosted_roots().next().flatten()
+    };
+
+    // Three writes that stop at the root of the hosted Merk. The third
+    // rotates it: the node that was the root hangs below another now.
+    grove.put_stopped(hosted, &[1], b"one");
+    let first = grove.put_stopped(hosted, &[2], b"two").roots[0];
+    assert_eq!(first, grove.node(hosted, &[1]).at);
+    let from = grove.mem.shadow.records.len();
+    let report = grove.put_stopped(hosted, &[3], b"three");
+    assert_eq!(grove.merks[hosted].root, grove.find(hosted, &[2]));
+    assert_eq!(report.roots, [grove.node(hosted, &[2]).at]);
+    assert_ne!(report.roots[0], first);
+    assert!(report.carried.is_empty() && report.left.is_empty());
+    assert_eq!(grove.mem.count(from, Rec::Remove), 0);
+    // The host's cell is behind. The new root is where its directory
+    // entry says, marked as the root of its fragment, with the old one
+    // below it.
+    assert_eq!(pointer(&grove), None);
+    assert_eq!(grove.check_merk(hosted), 3);
+
+    // The root is deleted, and the node that takes its place is one the
+    // write does not write.
+    grove.delete_stopped(hosted, &[3]);
+    let report = grove.delete_stopped(hosted, &[2]);
+    assert_eq!(report.roots, [grove.node(hosted, &[1]).at]);
+    assert!(report.carried.is_empty());
+    assert_eq!(grove.check_merk(hosted), 1);
+    grove.put_stopped(hosted, &[4], b"four");
+    assert_eq!(grove.check_merk(hosted), 2);
+
+    // Finalize writes the host with the root the Merk has now. Nothing is
+    // let go of, and every mark is right.
+    let cells = grove.mem.cells();
+    grove.finalize(hosted);
+    assert_eq!(pointer(&grove), grove.node(hosted, &[1]).at);
+    assert_eq!(grove.mem.cells(), cells);
+    grove.check();
+
+    // The same with the old root left where it is, in the page of the
+    // node that is the root now.
+    grove.put_stopped(hosted, &[5], b"five");
+    grove.put_stopped(hosted, &[6], b"six");
+    assert_eq!(grove.merks[hosted].root, grove.find(hosted, &[4]));
+    assert_eq!(grove.check_merk(hosted), 4);
+    grove.finalize(hosted);
+    grove.check();
+}
+
+#[test]
+fn a_write_carries_cells_only_out_of_a_page_that_is_full() {
+    // No fragment of this grove is small, no fragment is cut for its size,
+    // and no page takes a fragment in. So nothing but a full page carries a
+    // cell: not a rotation, across pages or not, and not a hash.
+    let mut grove = grove(params(100, 64, 0, 0));
+    let capacity = grove.fragments.layout().capacity();
+    let mut carrying = 0;
+    for index in 0..1500u32 {
+        let used: Vec<(PageId, usize)> = grove
+            .mem
+            .frames
+            .keys()
+            .map(|id| (*id, grove.mem.used(*id)))
+            .collect();
+        let report = grove.put(0, &key(index), &vec![index as u8; 400]);
+        if index % 9 == 0 {
+            let Grove { log, mem, .. } = &mut grove;
+            log.write_back(mem);
+        }
+        if report.carried.is_empty() {
+            continue;
+        }
+        carrying += 1;
+        let full = |id: &PageId| {
+            let before = used.iter().find(|(page, _)| page == id);
+            before.is_some_and(|(_, used)| used + 700 > capacity)
+        };
+        assert!(
+            report.left.iter().any(full),
+            "a cell left a page that was not full"
+        );
+    }
+    grove.check();
+    let carries = grove.fragments.counters().carries;
+    assert_eq!(
+        carries[Cause::Merge].cells + carries[Cause::Delete].cells,
+        0
+    );
+    assert!(carries[Cause::Split].values > 100);
+    println!(
+        "{carrying} of 1500 writes carried cells, with {} rotations in {} pages",
+        grove.rotations,
+        grove.mem.frames.len()
+    );
+    assert!(grove.rotations > 500 && carrying < 100 && grove.mem.frames.len() > 30);
+}
+
+#[test]
+fn a_page_with_a_stale_hint_is_taken_if_it_has_the_room() {
+    let mut grove = grown_of(PageSize::DEFAULT, LayoutParams::PROPOSED, 3000, 60);
+    let seed_limit = grove.fragments.layout().seed_limit();
+    let (mut idle, mut unexplained) = (0, 0);
+    for index in 3000..5500u32 {
+        // Every hint is somewhere between nothing and what the page holds.
+        let pages: Vec<PageId> = grove.mem.frames.keys().copied().collect();
+        for id in pages {
+            let stale = grove.rng.below(grove.mem.used(id) + 1);
+            grove.fragments.hints_mut().note(id, stale);
+        }
+        grove.mem.touched.clear();
+        let from = grove.mem.shadow.records.len();
+        let report = grove.put(0, &key(index), &value(60, 2));
+        let changed = grove.mem.shadow.records[from..]
+            .iter()
+            .map(|(page, _)| *page);
+        let mut held: Vec<PageId> = changed.chain(report.freed.iter().copied()).collect();
+        held.extend(report.nodes.iter().map(|node| node.page()));
+        let mut read = grove.mem.touched.clone();
+        read.sort_unstable();
+        read.dedup();
+        // The bytes of the largest group of cells that went to one page.
+        let mut groups: Vec<(PageId, usize)> = Vec::new();
+        for carried in &report.carried {
+            let view = grove.mem.view(carried.to.page());
+            let cell = view.resolve(carried.to).expect("the handle is good").cell();
+            let bytes = cell.encoded_len() + 2;
+            match groups
+                .iter_mut()
+                .find(|(page, _)| *page == carried.to.page())
+            {
+                Some(group) => group.1 += bytes,
+                None => groups.push((carried.to.page(), bytes)),
+            }
+        }
+        let largest = groups.iter().map(|group| group.1).max();
+        // A page that was read and not used had no room for what left.
+        for id in read.iter().filter(|page| !held.contains(page)) {
+            idle += 1;
+            match largest {
+                Some(bytes) => assert!(grove.mem.used(*id) + bytes > seed_limit),
+                None => unexplained += 1,
+            }
+        }
+    }
+    grove.fragments.hints_mut().clear();
+    grove.check();
+    println!("{idle} pages were read and had no room, {unexplained} of them in a write that carried nothing");
+    assert!(idle > 0 && unexplained <= 2);
 }
 
 #[test]

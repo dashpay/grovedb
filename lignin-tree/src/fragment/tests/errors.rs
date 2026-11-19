@@ -39,6 +39,7 @@ fn root(was: Option<CellAddress>, now: Target) -> RootWrite {
     RootWrite {
         was,
         now: Some(now),
+        anchored: false,
     }
 }
 
@@ -66,10 +67,8 @@ impl Bare {
             .apply(&Write {
                 nodes: &[top, node(None, b"c"), node(None, b"x")],
                 removed: &[],
-                roots: &[RootWrite {
-                    was: None,
-                    now: Some(Target::Node(0)),
-                }],
+                dropped: &[],
+                roots: &[root(None, Target::Node(0))],
             })
             .expect("the write is applied");
         assert_eq!(report.roots, [Some(address(1, 3))]);
@@ -167,6 +166,7 @@ fn a_write_that_names_what_is_not_there_is_refused() {
     assert_eq!(error, WriteError::Removed { address: c });
     let error = bare.refused(&Write {
         removed: &[m],
+        dropped: &[],
         roots: &[root(Some(m), Target::Kept)],
         ..Write::default()
     });
@@ -222,6 +222,79 @@ fn a_write_that_names_what_is_not_there_is_refused() {
             ..Report::default()
         }
     );
+}
+
+#[test]
+fn a_root_that_the_write_lets_go_of_stays_and_is_marked() {
+    let (mut bare, [m, c, _]) = Bare::new();
+    let host = |roots| NodeWrite {
+        left: link(Target::Kept),
+        right: link(Target::Kept),
+        hosted: HostedWrite::Set(roots),
+        ..node(Some(m), b"m")
+    };
+    let report = bare.apply(&Write {
+        nodes: &[host(&[Some(Target::Node(1))]), node(None, b"h")],
+        roots: &[root(Some(m), Target::Kept)],
+        ..Write::default()
+    });
+    let h = report.expect("the write is applied").nodes[1].address();
+    assert!(!stored(&bare, h).is_fragment_root());
+
+    // A cell that is let go of is not one the write writes, removes or
+    // points at.
+    let error = bare.refused(&Write {
+        removed: &[h],
+        dropped: &[h],
+        ..Write::default()
+    });
+    assert_eq!(error, WriteError::Twice { address: h });
+    let error = bare.refused(&Write {
+        nodes: &[node(Some(c), b"c")],
+        dropped: &[c],
+        ..Write::default()
+    });
+    assert_eq!(error, WriteError::Twice { address: c });
+    let error = bare.refused(&Write {
+        nodes: &[host(&[Some(Target::Kept)])],
+        dropped: &[h],
+        ..Write::default()
+    });
+    assert_eq!(error, WriteError::Dropped { address: h });
+
+    // The Merk is cleared: its host keeps its cell and loses the pointer,
+    // and the root stays where it is, with nothing pointing at it.
+    let report = bare.apply(&Write {
+        nodes: &[host(&[None])],
+        dropped: &[h, address(1, 60), address(7, 1)],
+        roots: &[root(Some(m), Target::Kept)],
+        ..Write::default()
+    });
+    let report = report.expect("the write is applied");
+    assert!(report.left.is_empty() && report.freed.is_empty());
+    assert!(stored(&bare, h).is_fragment_root());
+    assert_eq!(bare.mem.cells(), 4);
+
+    // The whole tree is let go of: no cell changes.
+    let records = bare.mem.shadow.records.len();
+    let report = bare.apply(&Write {
+        dropped: &[m],
+        roots: &[RootWrite {
+            was: Some(m),
+            now: None,
+            anchored: false,
+        }],
+        ..Write::default()
+    });
+    let report = report.expect("the write is applied");
+    assert_eq!(
+        report,
+        Report {
+            roots: vec![None],
+            ..Report::default()
+        }
+    );
+    assert_eq!(bare.mem.shadow.records.len(), records);
 }
 
 #[test]
@@ -288,10 +361,8 @@ fn a_cell_that_still_points_at_a_removed_cell_is_found_when_it_is_read() {
     let report = bare.apply(&Write {
         nodes: &nodes,
         removed: &[],
-        roots: &[RootWrite {
-            was: None,
-            now: Some(Target::Node(0)),
-        }],
+        dropped: &[],
+        roots: &[root(None, Target::Node(0))],
     });
     let at = report.expect("the write is applied").nodes;
     let [m, x, a] = [0, 2, 3].map(|node| at[node].address());
@@ -311,6 +382,7 @@ fn a_cell_that_still_points_at_a_removed_cell_is_found_when_it_is_read() {
             },
         ],
         removed: &[a],
+        dropped: &[],
         roots: &[root(Some(m), Target::Kept)],
     });
     assert_eq!(error, WriteError::Removed { address: a });
@@ -350,6 +422,7 @@ fn every_part_of_a_cell_can_get_longer_and_shorter() {
     let report = bare.apply(&Write {
         nodes: &[grown, node(None, b"p"), node(None, b"q")],
         removed: &[],
+        dropped: &[],
         roots: &[root(Some(m), Target::Kept)],
     });
     let report = report.expect("the write is applied");
@@ -377,12 +450,10 @@ fn every_part_of_a_cell_can_get_longer_and_shorter() {
     let report = bare.apply(&Write {
         nodes: &[shrunk, node(None, b"r")],
         removed: &[],
+        dropped: &[p, q],
         roots: &[root(Some(m), Target::Kept)],
     });
-    let mut report = report.expect("the write is applied");
-    let r = report.nodes[1].address();
-    report.orphaned.sort_unstable();
-    assert_eq!(report.orphaned, [p.min(q), p.max(q)]);
+    let r = report.expect("the write is applied").nodes[1].address();
     let cell = stored(&bare, m);
     assert_eq!(cell.feature(), [0]);
     assert_eq!(cell.hosted_roots().collect::<Vec<_>>(), [Some(r)]);
@@ -391,8 +462,8 @@ fn every_part_of_a_cell_can_get_longer_and_shorter() {
         let link = cell.link(side).expect("a link");
         assert_eq!((link.child, link.aggregate), (child, &[0][..]));
     }
-    for orphan in [p, q] {
-        assert!(stored(&bare, orphan).is_fragment_root());
+    for dropped in [p, q] {
+        assert!(stored(&bare, dropped).is_fragment_root());
     }
 }
 
@@ -419,10 +490,8 @@ fn a_write_is_not_refused_for_room_that_it_makes_itself() {
     let report = bare.apply(&Write {
         nodes: &nodes,
         removed: &[],
-        roots: &[RootWrite {
-            was: None,
-            now: Some(Target::Node(0)),
-        }],
+        dropped: &[],
+        roots: &[root(None, Target::Node(0))],
     });
     let at = report.expect("the write is applied").nodes;
     let [m, c] = [0, 1].map(|node| at[node].address());
@@ -444,6 +513,7 @@ fn a_write_is_not_refused_for_room_that_it_makes_itself() {
     let report = bare.apply(&Write {
         nodes: &[grown, shrunk],
         removed: &[],
+        dropped: &[],
         roots: &[root(Some(m), Target::Kept)],
     });
     let report = report.expect("the write is applied");
@@ -466,6 +536,7 @@ fn a_failure_of_the_pages_is_passed_on() {
         let result = bare.apply(&Write {
             nodes: &[top, node(None, b"y")],
             removed: &[x],
+            dropped: &[],
             roots: &[],
         });
         if let Err(error) = &result {
@@ -524,6 +595,10 @@ fn every_error_says_what_is_wrong() {
         (
             WriteError::Removed { address: at },
             "a pointer names the cell at 3/4, which the write removes",
+        ),
+        (
+            WriteError::Dropped { address: at },
+            "a pointer names the cell at 3/4, which the write lets go of",
         ),
         (
             WriteError::NothingKept { node: 1 },
