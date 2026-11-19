@@ -14,15 +14,7 @@ use super::{
     handle::{Lease, NodeHandle},
     view::{NodePage, NodeRef},
 };
-
-/// What an operation holds while it reads (`transactions.md` PN5): for as
-/// long as it lives, every frame the operation reached, every page-table
-/// entry it read and every file location it took from one stays valid.
-///
-/// Whoever keeps the guards implements this for its guard (TXN-02). The
-/// operation takes its guard before it reads the latest version, or before
-/// it asks at a version it has pinned.
-pub trait OperationGuard {}
+use crate::OperationGuard;
 
 /// The read path of one operation: the committed pages as a reader at one
 /// version sees them.
