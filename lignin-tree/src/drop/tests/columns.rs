@@ -8,7 +8,10 @@ use std::{
     thread,
 };
 
-use lignin_format::{flat_page::FlatPage, PageId};
+use lignin_format::{
+    flat_page::{FlatPage, FlatValue},
+    PageId,
+};
 use lignin_store::load::FRAME_FORMAT;
 
 use super::{
@@ -496,6 +499,119 @@ fn a_leaf_that_a_commit_changed_since_the_look_loses_no_entry() {
     // out, or with the page.
     reclaim_all(&db, &grove);
     check_reclaimed(&db, &grove);
+}
+
+/// No key is too long for a flat tree: a long key is as many trees deep as
+/// it has eighths of a page. The records of a nested Merk under keys that
+/// are seventy trees deep, and under keys that share the first of those
+/// trees, are taken out like any other, and the trees stay with no key.
+#[test]
+fn a_flat_record_under_a_key_of_any_length_is_taken_out() {
+    let Built {
+        db,
+        mut grove,
+        outer,
+        inner,
+        beside,
+        ..
+    } = build(40);
+    let limit = db.config.key_limit();
+    let deep = |last: u8| {
+        let mut key: Vec<u8> = (0..70 * limit).map(|n| (n / limit) as u8).collect();
+        key.push(last);
+        key
+    };
+    let mut branching = deep(0);
+    branching.truncate(3 * limit + 7);
+    let mut txn = db.begin();
+    for merk in [inner, beside] {
+        grove.put_flat(merk, 0, &deep(1), b"at the end of seventy trees");
+        grove.put_flat(merk, 0, &deep(2), &held(0, 31));
+        grove.put_flat(merk, 0, &branching, b"three trees deep");
+        grove.put_flat(merk, 2, &deep(3), b"in a column that shares its keyspace");
+    }
+    grove.flush(&mut txn);
+    db.commit(txn);
+    db.write_back();
+    grove.check(&db);
+    let before = scan_flat(&db, &grove.columns[0].tree);
+    let records: u64 = (0..3).map(|c| grove.flat_of(inner, c).len() as u64).sum();
+    let deepest: u64 = 40 + 3 + 12 + 12;
+
+    let mut txn = db.begin();
+    grove.drop_merks(&mut txn, &[outer], false);
+    db.commit(txn);
+    let done = reclaim_all(&db, &grove);
+    assert_eq!(done[0].flat_records, records + deepest);
+    check_reclaimed(&db, &grove);
+    // The Merk beside it has its keys of the same length.
+    let kept = grove.flat_of(beside, 0);
+    assert!(kept.contains_key(&deep(1)) && kept.contains_key(&branching));
+    // The trees of the buckets are where they were.
+    let after = scan_flat(&db, &grove.columns[0].tree);
+    assert!(before.pages.len() > 140);
+    assert!(after.pages.len() + 4 > before.pages.len());
+}
+
+/// A bucket of long keys whose value names a page that the reclaimer
+/// passed on its way to it is damage: its "tree" would be the tree it is
+/// in, with the records of every other Merk. Nothing is taken out of it.
+#[test]
+fn a_bucket_that_names_a_page_on_its_way_is_refused() {
+    let Built {
+        db,
+        mut grove,
+        outer,
+        inner,
+        ..
+    } = build(40);
+    let column = grove.columns[0];
+    let stored = grove.stored_key(inner, 0, &long(&db, 0));
+    let mut bucket = stored[..db.config.key_limit()].to_vec();
+    bucket.push(0);
+    let leaf = leaf_with(&db, &column.tree, &bucket);
+    // Where the bucket keeps the root of its tree, in the image of its
+    // leaf.
+    let at = {
+        let frame = db.reader().page(leaf).expect("a page");
+        let FlatPage::Leaf(view) = FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a page")
+        else {
+            panic!("a leaf");
+        };
+        let Some(FlatValue::Inline(root)) = view.get(&bucket) else {
+            panic!("a bucket");
+        };
+        root.as_ptr() as usize - frame.as_ptr() as usize
+    };
+    let mut txn = db.begin();
+    let mut image = txn.flat.take(leaf).expect("a copy");
+    image[at..at + 4].copy_from_slice(&column.tree.root().encode());
+    txn.flat.write(leaf, &image).expect("spoiled");
+    grove.drop_merks(&mut txn, &[outer], false);
+    db.commit(txn);
+    db.tick();
+
+    let directory = grove.directory(&db);
+    let [dropped] = drops(&db, &directory)[..] else {
+        panic!("one Merk was dropped");
+    };
+    let all = flat_records(&db, &grove.columns[1].tree).len();
+    let reclaimer = db.reclaimer();
+    let mut reclaim = Reclaim::new(dropped);
+    for _ in 0..3 {
+        let refused =
+            reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
+        let Err(DropError::Damaged { page, what }) = refused else {
+            panic!("{refused:?}");
+        };
+        assert_eq!(page, column.tree.root());
+        assert!(what.contains("whose tree is a tree it is in"), "{what}");
+    }
+    // The other column is as it was but for the deepest Merk, which went
+    // first, and the Merk keeps its entry: its records are still its own.
+    assert!(flat_records(&db, &grove.columns[1].tree).len() + 24 >= all);
+    let stored = directory.stored(&db.reader(), &grove.merks[inner].prefix);
+    assert!(stored.expect("a lookup").is_some());
 }
 
 /// A cleared Merk keeps its own flat records, as it keeps its entry. Those

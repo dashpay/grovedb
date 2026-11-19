@@ -2,8 +2,10 @@
 //! an enter write to them, and how the reclaimer takes out those of a
 //! subtree that was nested in a dropped one.
 
-use lignin_format::{flat_page::FlatPage, CommitVersion};
-use lignin_store::values::ValueStoreError;
+use std::collections::HashSet;
+
+use lignin_format::{flat_page::FlatPage, CommitVersion, PageId};
+use lignin_store::{cache::PageRef, values::ValueStoreError};
 
 use super::{
     error::DropError,
@@ -12,7 +14,7 @@ use super::{
 };
 use crate::{
     directory::{Directory, Host, MerkId, Prefix},
-    flat::{Committed, FlatPagesMut, FlatTree, StepLog},
+    flat::{Committed, FlatConfig, FlatPagesMut, FlatTree, StepLog},
     OperationGuard,
 };
 
@@ -117,10 +119,6 @@ pub fn enter<F: FlatPagesMut + ?Sized>(
     Ok(id)
 }
 
-/// How many buckets of long keys can be inside one another: a key of
-/// sixty-four times the longest that a page stores as it is.
-const MAX_BUCKET_DEPTH: u8 = 64;
-
 /// How far the reclaimer has come with the flat records of one subtree.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Sweep {
@@ -205,7 +203,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             if range.len() > tree.config().key_limit() {
                 return Err(DropError::Record("a lead that leaves a prefix no room"));
             }
-            match self.sweep(tree, &range, at, &mut sweep.from, swept, 0)? {
+            match self.sweep(tree, &range, at, &mut sweep.from, swept)? {
                 Ended::Done => {
                     sweep.column += 1;
                     sweep.from.clear();
@@ -234,19 +232,17 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         at: CommitVersion,
         from: &mut Vec<u8>,
         swept: &mut Swept,
-        depth: u8,
     ) -> Result<Ended, DropError> {
         let config = tree.config();
-        // A bucket that is in its own tree would have no end.
-        if depth > MAX_BUCKET_DEPTH {
-            let what = "buckets of long keys that are nested without end";
-            return Err(damaged(tree.root(), what));
-        }
+        // Every page that was looked at: the tree of a bucket begins at
+        // none of them.
+        let mut passed = HashSet::new();
         // The pages to look at, the lowest keys last, each with the level
         // of the branch that names it. A page is one level below its
         // branch, so the walk of a tree ends.
         let mut walk = vec![(tree.root(), None::<u8>)];
         while let Some((page, above)) = walk.pop() {
+            passed.insert(page);
             let frame = self
                 .at(page, at)?
                 .ok_or(damaged(page, "a flat tree that names no page"))?;
@@ -295,32 +291,13 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                     keys.push(key);
                 }
             }
-            if !keys.is_empty() {
-                if swept.left == 0 {
-                    return Ok(Ended::More);
-                }
-                match self.remove_entries(&frame, config.capacity(), &keys)? {
-                    None => return Ok(Ended::Stale),
-                    Some(Step::Refused(busy)) => return Ok(Ended::Blocked(busy)),
-                    Some(Step::Made(removed)) => {
-                        swept.left -= 1;
-                        swept.records += keys.len() as u64;
-                        swept.leaves += 1;
-                        swept.values += removed.released.len() as u64;
-                        swept.value_bytes += value_bytes(&removed.released);
-                        swept.pending += removed.pending;
-                        if swept.miscount.is_none() {
-                            swept.miscount = removed.miscount;
-                        }
-                    }
-                }
+            if let Some(ended) = self.take(&frame, &config, &keys, swept)? {
+                return Ok(ended);
             }
             // The trees of the buckets among them are emptied, each from
             // its start: a bucket holds the keys of one head, and few.
             for (key, root) in buckets {
-                let inner = FlatTree::open(root, config);
-                let mut start = Vec::new();
-                match self.sweep(&inner, &[], at, &mut start, swept, depth + 1)? {
+                match self.empty(root, &config, at, swept, &mut passed)? {
                     Ended::Done => {}
                     other => return Ok(other),
                 }
@@ -338,5 +315,98 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             }
         }
         Ok(Ended::Done)
+    }
+
+    /// Takes every entry out of the tree of a bucket of long keys whose
+    /// root is `root`, and out of the trees of the buckets in it, as the
+    /// version `at` has them. The trees stay, with no key in them.
+    ///
+    /// A long key is as many trees deep as it has eighths of a page, and no
+    /// key is too long ([`flat`](crate::flat)), so the trees are not
+    /// counted. What ends the walk is that no tree begins at a page that
+    /// was `passed`: a bucket that names such a page is damage, and would
+    /// make the entries of another tree those of the bucket.
+    ///
+    /// A call that could not go on begins again at the root: a leaf that
+    /// was emptied has no entry to take out, and costs a read.
+    fn empty(
+        &self,
+        root: PageId,
+        config: &FlatConfig,
+        at: CommitVersion,
+        swept: &mut Swept,
+        passed: &mut HashSet<PageId>,
+    ) -> Result<Ended, DropError> {
+        let mut trees = vec![root];
+        while let Some(root) = trees.pop() {
+            let mut walk = vec![(root, None::<u8>)];
+            while let Some((page, above)) = walk.pop() {
+                if !passed.insert(page) {
+                    let what = "a bucket of long keys whose tree is a tree it is in";
+                    return Err(damaged(page, what));
+                }
+                let frame = self
+                    .at(page, at)?
+                    .ok_or(damaged(page, "a flat tree that names no page"))?;
+                let leaf = match flat_page(&frame, page, above)? {
+                    FlatPage::Branch(branch) => {
+                        let above = Some(branch.level());
+                        for index in 0..=branch.len() {
+                            let child = branch.child(index);
+                            let what = "a branch that names no child";
+                            walk.push((child.ok_or(damaged(page, what))?, above));
+                        }
+                        continue;
+                    }
+                    FlatPage::Leaf(leaf) => leaf,
+                };
+                let mut keys = Vec::new();
+                for (key, value) in leaf.iter() {
+                    if key.len() > config.key_limit() {
+                        trees.push(bucket_root(page, value)?);
+                    } else {
+                        keys.push(key.to_vec());
+                    }
+                }
+                if let Some(ended) = self.take(&frame, config, &keys, swept)? {
+                    return Ok(ended);
+                }
+            }
+        }
+        Ok(Ended::Done)
+    }
+
+    /// One page step of a sweep: takes the entries under `keys` out of the
+    /// leaf in `frame`, and counts them. Returns why the sweep ends here,
+    /// if it does.
+    fn take(
+        &self,
+        frame: &PageRef<'s>,
+        config: &FlatConfig,
+        keys: &[Vec<u8>],
+        swept: &mut Swept,
+    ) -> Result<Option<Ended>, DropError> {
+        if keys.is_empty() {
+            return Ok(None);
+        }
+        if swept.left == 0 {
+            return Ok(Some(Ended::More));
+        }
+        match self.remove_entries(frame, config.capacity(), keys)? {
+            None => Ok(Some(Ended::Stale)),
+            Some(Step::Refused(busy)) => Ok(Some(Ended::Blocked(busy))),
+            Some(Step::Made(removed)) => {
+                swept.left -= 1;
+                swept.records += keys.len() as u64;
+                swept.leaves += 1;
+                swept.values += removed.released.len() as u64;
+                swept.value_bytes += value_bytes(&removed.released);
+                swept.pending += removed.pending;
+                if swept.miscount.is_none() {
+                    swept.miscount = removed.miscount;
+                }
+                Ok(None)
+            }
+        }
     }
 }
