@@ -195,10 +195,12 @@ impl<'s> WriteBack<'s> {
             // A page with a version that waits for the block of the next
             // has that next version in the pool, as its current one, until
             // the block is written. A page that has none was freed, and so
-            // was one whose free link is newer than what waits.
+            // was one whose free link is newer than what waits. The pool
+            // is asked in a page step, as background work asks it: a read
+            // at the latest version is for an operation under its guard.
             let freed = match table.newest(page) {
                 Some(link) if link.kind == LinkKind::Free && link.version.get() > newest => true,
-                _ => pool.get(page, CommitVersion::MAX).is_err(),
+                _ => pool.page_step(page).current().is_none(),
             };
             if freed {
                 lock(&self.state.kept).unfold(page, newest);

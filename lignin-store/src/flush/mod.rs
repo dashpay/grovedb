@@ -431,7 +431,7 @@
 //! | 3 | the manifest (level 3 of LT7) | one replacement, and one roll of the log |
 //! | 4 | the values that are ready for their step | one call that places values |
 //! | 5 | the value counts (level 4a) | one page step, one sample with its mark, one turn of the log |
-//! | 6 | a page's step (level 5) | the checks of one step, the append of its record, and the swap of the frame; or one look at the page's unwritten versions |
+//! | 6 | a page's step (level 5) | the checks of one step, the append of its record, and the swap of the frame; or one look at the page's unwritten versions, or at whether it has a current version |
 //! | 7 | what write-back was told and has not written; the log's append lock | a few instructions; nothing is taken under either |
 //!
 //! No file is synced and no manifest is replaced under the lock on the
