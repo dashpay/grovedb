@@ -249,14 +249,16 @@ corpus-at-pin)
             differ=1
         fi
     done
-    # The whole standard scale, or one grove version of it, records every
-    # committed trace of it and nothing else. Other selections are checked
+    # The whole standard scale, one grove version of it, or the reference
+    # scale records every committed trace of it and nothing else. Other selections are checked
     # trace by trace only.
     expected=
     if [ $# -eq 0 ]; then
         expected=$(cd lignin-testkit/corpus && find . -path ./reference -prune -o -name '*.trace' -print | sort)
     elif [ $# -eq 2 ] && [ "$1" = --grove-version ]; then
         expected=$(cd lignin-testkit/corpus && find "./v$2" -name '*.trace' | sort)
+    elif [ $# -eq 1 ] && [ "$1" = --reference ]; then
+        expected=$(cd lignin-testkit/corpus && find ./reference -name '*.trace' | sort)
     fi
     if [ -n "$expected" ] && [ "$expected" != "$recorded" ]; then
         echo "the traces recorded are not those committed:"
