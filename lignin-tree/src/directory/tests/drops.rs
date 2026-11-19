@@ -477,3 +477,105 @@ fn a_drop_or_a_reclaim_that_cannot_be_is_refused_and_writes_nothing() {
         .expect_err("left over");
     assert!(matches!(error, DirectoryError::NotFound { .. }), "{error}");
 }
+
+#[test]
+fn a_merk_takes_the_place_of_an_entry_whose_root_record_the_reclaimer_took() {
+    let mut grove = nested();
+    let dropped = grove.unlink(&["a"]);
+    let b = grove.children(dropped.id).remove(0);
+    let c = grove.children(b.id).remove(0);
+    // The reclaimer has taken the record of the root of `a/b/c`, and not
+    // yet its entry.
+    let left = grove.directory.left_by(&grove.pages, b.id, &c);
+    let left = left.expect("its records");
+    let tree = *grove.directory.tree();
+    assert!(tree.delete(&mut grove.pages, &left[0]).expect("taken out"));
+    grove.check();
+    for keys in [&["a"][..], &["a", "b"], &["a", "b", "c"]] {
+        grove.add(keys);
+    }
+    assert_eq!(grove.entry(&["a", "b", "c"]).root(), None);
+    // It goes on with what is left: the record of the host.
+    let left = grove.directory.left_by(&grove.pages, b.id, &c);
+    assert_eq!(left.expect("its records").len(), 1);
+    assert_eq!(grove.reclaim(dropped.id), 3);
+    let census = grove.check();
+    assert_eq!((census.live, census.left_over, census.dropped), (5, 0, 0));
+}
+
+/// The pages of a reader under which a page step is made: after a number
+/// of page reads, the pages are those of `after`.
+struct Stepped<'a> {
+    before: &'a Pages,
+    after: &'a Pages,
+    reads_before: u64,
+    reads: std::cell::Cell<u64>,
+}
+
+impl FlatPages for Stepped<'_> {
+    type Page<'a>
+        = &'a [u8]
+    where
+        Self: 'a;
+
+    fn page(&self, page: PageId) -> Result<&[u8], FlatError> {
+        self.reads.set(self.reads.get() + 1);
+        match self.reads.get() > self.reads_before {
+            true => self.after.page(page),
+            false => self.before.page(page),
+        }
+    }
+
+    fn read_value(
+        &self,
+        held: &&[u8],
+        page: PageId,
+        slot: usize,
+        place: lignin_format::value_log::ValuePlace,
+        out: &mut Vec<u8>,
+    ) -> Result<(), FlatError> {
+        self.after.read_value(held, page, slot, place, out)
+    }
+
+    fn revision(&self) -> crate::flat::Revision {
+        self.before.revision()
+    }
+}
+
+#[test]
+fn a_walk_passes_a_record_that_a_page_step_takes_out_under_it() {
+    let mut grove = nested();
+    let dropped = grove.unlink(&["a"]);
+    let all: Vec<Vec<u8>> = grove
+        .children(dropped.id)
+        .into_iter()
+        .map(|child| child.key)
+        .collect();
+    assert_eq!(all, [b"b", b"d"]);
+    // The reclaimer takes the record of `a/d` out of its leaf in a page
+    // step, at any moment of a reader's walk over the two records.
+    let before = grove.pages.clone();
+    let d = grove.children(dropped.id).remove(1);
+    grove
+        .directory
+        .reclaim_child(&mut grove.pages, dropped.id, &d)
+        .expect("reclaimed");
+    let mut walks = std::collections::BTreeSet::new();
+    for reads_before in 0..12 {
+        let pages = Stepped {
+            before: &before,
+            after: &grove.pages,
+            reads_before,
+            reads: std::cell::Cell::new(0),
+        };
+        let mut walk = grove.directory.children(dropped.id);
+        let mut keys = Vec::new();
+        while let Some(child) = walk.next(&pages).expect("a child record") {
+            keys.push(child.key);
+        }
+        // The walk gives the record or passes it, and gives nothing else.
+        assert!(keys == all || keys == all[..1], "{keys:?}");
+        walks.insert(keys.len());
+    }
+    assert_eq!(walks.len(), 2);
+}

@@ -147,7 +147,7 @@ fn the_check_finds_every_record_that_does_not_fit() {
                 put(grove, &root_key(root), &[7; 32]);
             },
             RecordKind::Entry,
-            "a root that has no record",
+            "a root in the cell of another Merk",
         ),
         (
             |grove| put(grove, &root_key(cell(80, 1)), &[7; 32]),
@@ -377,30 +377,139 @@ fn the_check_finds_every_record_that_does_not_fit() {
             RecordKind::Entry,
             "a left-over entry that a lookup returns",
         ),
-        // Child records of Merks whose entries are gone, in a circle.
+        // A root where the dropped Merk `x` has its cells, and one where
+        // the Merk `a/b` has its root.
         (
             |grove| {
-                forget_y(grove);
+                let x = grove.drops()[0].root.expect("a root");
+                let c = prefix_of(&path(&["a", "b", "c"]));
+                let was = grove
+                    .entry(&["a", "b", "c"])
+                    .root()
+                    .expect("a root")
+                    .address;
+                delete(grove, &root_key(was));
+                put(grove, &root_key(x), &c);
+                let entry = grove.stored(&["a", "b", "c"]).expect("an entry");
+                let mut fields = entry.fields();
+                fields.root = Some(Root {
+                    address: x,
+                    key: b"root",
+                });
                 put(
                     grove,
-                    &child_key(id(6), 0, b"k"),
-                    &encode_child(&[5; 32], id(40)),
-                );
-                put(
-                    grove,
-                    &child_key(id(40), 0, b"k"),
-                    &encode_child(&[5; 32], id(6)),
+                    &entry_key(&c),
+                    fields.encode().expect("an entry").as_bytes(),
                 );
             },
             RecordKind::Entry,
-            "child records that lead in a circle",
+            "a root in the cell of a dropped Merk",
+        ),
+        (
+            |grove| {
+                let c = prefix_of(&path(&["a", "b", "c"]));
+                let was = grove
+                    .entry(&["a", "b", "c"])
+                    .root()
+                    .expect("a root")
+                    .address;
+                delete(grove, &root_key(was));
+                let entry = grove.stored(&["a", "b", "c"]).expect("an entry");
+                let mut fields = entry.fields();
+                fields.root = grove.entry(&["a", "b"]).root().map(|root| Root {
+                    address: root.address,
+                    key: b"root",
+                });
+                put(
+                    grove,
+                    &entry_key(&c),
+                    fields.encode().expect("an entry").as_bytes(),
+                );
+            },
+            RecordKind::Entry,
+            "a root in the cell of another Merk",
+        ),
+        (
+            |grove| put(grove, &[9, 9], b"what"),
+            RecordKind::Header,
+            "a record of no kind",
+        ),
+        (
+            |grove| put(grove, &[0], b"what"),
+            RecordKind::Header,
+            "a record of no kind",
+        ),
+        (
+            |grove| put(grove, &[RecordKind::Header.code(), 0], b"what"),
+            RecordKind::Header,
+            "a record of no kind",
+        ),
+        (
+            |grove| {
+                put(
+                    grove,
+                    &child_key(id(6), 0, b"k"),
+                    &encode_child(&[5; 32], id(900)),
+                )
+            },
+            RecordKind::Entry,
+            "an id that was not given out",
+        ),
+        // A record under the left-over `x/y` that names the Merk `a`.
+        (
+            |grove| {
+                put(
+                    grove,
+                    &child_key(id(6), 0, b"k"),
+                    &encode_child(&[5; 32], id(2)),
+                )
+            },
+            RecordKind::Entry,
+            "a Merk that two hosts have",
+        ),
+        // The same for the Merk at the root, which no host has, and for a
+        // dropped Merk.
+        (
+            |grove| {
+                put(
+                    grove,
+                    &child_key(id(6), 0, b"k"),
+                    &encode_child(&[5; 32], id(1)),
+                )
+            },
+            RecordKind::Entry,
+            "a left-over record of a Merk that is entered",
+        ),
+        (
+            |grove| {
+                put(
+                    grove,
+                    &child_key(id(6), 0, b"k"),
+                    &encode_child(&[5; 32], id(5)),
+                )
+            },
+            RecordKind::Entry,
+            "a left-over record of a Merk that is entered",
+        ),
+        // A child record of a Merk whose entry is gone that leads back to
+        // that Merk.
+        (
+            |grove| {
+                forget_y(grove);
+                let record = encode_child(&[5; 32], id(6));
+                put(grove, &child_key(id(6), 0, b"k"), &record);
+            },
+            RecordKind::Entry,
+            "a Merk that two hosts have",
         ),
     ];
     for (damage, kind, says) in cases {
         let mut grove = sample();
         damage(&mut grove);
         let (key, what) = found(&grove);
-        assert_eq!((RecordKind::of(&key), what), (Some(kind), says));
+        // A record of no kind is reported with no key.
+        let kind = (says != "a record of no kind").then_some(kind);
+        assert_eq!((RecordKind::of(&key), what), (kind, says));
     }
 }
 

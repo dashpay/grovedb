@@ -21,8 +21,8 @@ use lignin_format::{
 };
 
 use super::{
-    record::RecordKind, Child, Directory, DirectoryError, Dropped, Entry, Host, MerkId, Prefix,
-    Root, RootChange,
+    record::RecordKind, Census, Child, Directory, DirectoryError, Dropped, Entry, Host, MerkId,
+    Prefix, Root, RootChange,
 };
 use crate::flat::{FlatConfig, FlatError, FlatPages, FlatPagesMut, Revision};
 
@@ -47,12 +47,8 @@ struct Pages {
 
 impl Pages {
     fn new() -> Self {
-        Self::of(PageSize::MIN)
-    }
-
-    fn of(size: PageSize) -> Self {
         Self {
-            config: FlatConfig::new(size),
+            config: FlatConfig::new(PageSize::MIN),
             pages: BTreeMap::new(),
             values: HashMap::new(),
             next_page: 0,
@@ -298,21 +294,13 @@ impl Grove {
     }
 
     fn children(&self, parent: MerkId) -> Vec<Child> {
-        let mut children = self.directory.children(parent);
-        let mut out = Vec::new();
-        while let Some(child) = children.next(&self.pages).expect("a child record") {
-            out.push(child);
-        }
-        out
+        let mut walk = self.directory.children(parent);
+        std::iter::from_fn(|| walk.next(&self.pages).expect("a child record")).collect()
     }
 
     fn drops(&self) -> Vec<Dropped> {
-        let mut drops = self.directory.drops();
-        let mut out = Vec::new();
-        while let Some(dropped) = drops.next(&self.pages).expect("a record") {
-            out.push(dropped);
-        }
-        out
+        let mut walk = self.directory.drops();
+        std::iter::from_fn(|| walk.next(&self.pages).expect("a record")).collect()
     }
 
     /// Reclaims all that the dropped Merk `dropped` left, the innermost
@@ -341,7 +329,7 @@ impl Grove {
         taken
     }
 
-    fn check(&self) -> super::Census {
+    fn check(&self) -> Census {
         self.directory.check(&self.pages).expect("a directory")
     }
 

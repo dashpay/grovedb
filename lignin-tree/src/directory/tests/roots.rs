@@ -179,6 +179,18 @@ fn a_cell_that_became_a_root_is_named() {
     );
     assert_eq!(grove.pages.pages, pages, "a refused change writes nothing");
 
+    // Nor does it count that a root which the directory knows is carried
+    // to the same cell.
+    let wrong = [carried(cell(40, 1), cell(41, 1)), carried(was, cell(41, 1))];
+    let error = grove
+        .set(&wrong)
+        .expect_err("no Merk is named with the cell");
+    assert!(
+        matches!(error, DirectoryError::UnknownRoot { .. }),
+        "{error}"
+    );
+    assert_eq!(grove.pages.pages, pages, "a refused change writes nothing");
+
     let right = [
         carried(cell(40, 1), cell(41, 1)),
         named(&prefix, Some((cell(41, 1), b"k"))),

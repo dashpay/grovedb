@@ -178,6 +178,27 @@ fn an_entry_takes_parts_of_up_to_255_bytes_and_65535_merks_above() {
         );
     }
 
+    // A host is in a Merk, which is above, and nothing is above a Merk
+    // with no host.
+    for fields in [
+        Fields {
+            lineage: &[],
+            ..fields
+        },
+        Fields {
+            host: None,
+            ..fields
+        },
+    ] {
+        let error = fields
+            .encode()
+            .expect_err("a host and no Merk above, or the reverse");
+        assert_eq!(
+            error.to_string(),
+            "subtree directory record 02: a host with no Merk above it, or Merks above with no host"
+        );
+    }
+
     let deepest = vec![1; 8 * 65_535];
     let deep = Fields {
         lineage: &deepest,

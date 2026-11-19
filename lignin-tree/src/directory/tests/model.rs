@@ -51,6 +51,9 @@ struct Counts {
     reclaimed_drops: u64,
     refused: u64,
     most_left: u64,
+    both_ways: u64,
+    became_roots: u64,
+    took_over: u64,
 }
 
 struct Model {
@@ -197,19 +200,41 @@ impl Model {
 
     /// States roots to the directory, and takes them into the model.
     fn state(&mut self, changes: &[(usize, RootAt, bool)]) {
-        let stated: Vec<RootChange<'_>> = changes
+        // A Merk is stated by its prefix, by the address its root had, or
+        // in both ways. A cell that became a root in another cell is also
+        // said to be carried, from an address no root was at.
+        let forms: Vec<(bool, bool, bool)> = changes
             .iter()
             .map(|(index, root, by_address)| {
-                let merk = &self.merks[*index];
-                match (root, &merk.root, by_address) {
-                    (Some((to, _)), Some((from, _)), true) => RootChange::Carried {
-                        from: *from,
-                        to: *to,
-                    },
-                    _ => named(&merk.prefix, root.as_ref().map(|(at, key)| (*at, &key[..]))),
-                }
+                let was = self.merks[*index].root.as_ref().map(|(at, _)| *at);
+                let now = root.as_ref().map(|(at, _)| *at);
+                let carried = *by_address && was.is_some() && now.is_some();
+                let both = carried && self.chance(20);
+                let became = !carried && now.is_some() && was != now && self.chance(30);
+                (carried, both, became)
             })
             .collect();
+        let mut stated: Vec<RootChange<'_>> = Vec::new();
+        for ((index, root, _), (carried, both, became)) in changes.iter().zip(forms) {
+            let merk = &self.merks[*index];
+            let by_prefix = named(&merk.prefix, root.as_ref().map(|(at, key)| (*at, &key[..])));
+            let (was, now) = (merk.root.as_ref(), root.as_ref());
+            if let (true, Some((from, _)), Some((to, _))) = (carried, was, now) {
+                stated.push(RootChange::Carried {
+                    from: *from,
+                    to: *to,
+                });
+                self.counts.both_ways += u64::from(both);
+            }
+            if both || !carried {
+                stated.push(by_prefix);
+            }
+            if let (true, Some((to, _))) = (became, now) {
+                self.counts.became_roots += 1;
+                let from = cell(900_000 + self.counts.became_roots as u32, 1);
+                stated.insert(0, RootChange::Carried { from, to: *to });
+            }
+        }
         self.directory
             .set_roots(&mut self.pages, &stated)
             .expect("the roots are stated");
@@ -283,7 +308,7 @@ impl Model {
 
     fn roots(&mut self) {
         let mut changes: Vec<(usize, RootAt, bool)> = Vec::new();
-        let mut given_up = Vec::new();
+        let mut given_up: Vec<CellAddress> = Vec::new();
         for _ in 0..1 + self.below(4) {
             let Some(index) = self.pick(|_| true) else {
                 return;
@@ -299,10 +324,18 @@ impl Model {
                     self.counts.emptied += 1;
                     None
                 }
-                // The root is carried to another cell.
+                // The root is carried to another cell: one that a root
+                // of the same change has left, or any other.
                 (Some((_, key)), 0..60) => {
                     self.counts.carried += 1;
-                    Some((self.cell(), key.clone()))
+                    let at = match given_up.is_empty() || self.chance(70) {
+                        true => self.cell(),
+                        false => {
+                            self.counts.took_over += 1;
+                            given_up.swap_remove(self.below(given_up.len()))
+                        }
+                    };
+                    Some((at, key.clone()))
                 }
                 // Another node is the root, in the cell the root was in.
                 (Some((at, _)), 60..70) => Some((*at, self.bytes(2))),
@@ -706,6 +739,9 @@ fn the_directory_agrees_with_a_model_and_no_open_returns_a_left_over_entry() {
             (&mut total.reclaimed_merks, counts.reclaimed_merks),
             (&mut total.reclaimed_drops, counts.reclaimed_drops),
             (&mut total.refused, counts.refused),
+            (&mut total.both_ways, counts.both_ways),
+            (&mut total.became_roots, counts.became_roots),
+            (&mut total.took_over, counts.took_over),
         ] {
             *sum += count;
         }
@@ -723,4 +759,5 @@ fn the_directory_agrees_with_a_model_and_no_open_returns_a_left_over_entry() {
         total.replaced
     );
     assert!(total.reclaimed_merks > 300 && total.most_left > 20);
+    assert!(total.both_ways > 50 && total.became_roots > 100 && total.took_over > 50);
 }

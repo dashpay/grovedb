@@ -10,6 +10,7 @@ use lignin_format::CellAddress;
 
 use super::{
     error::DirectoryError,
+    read::damaged,
     record::{
         child_key, dropped_key, encode_child, encode_dropped, encode_header, entry_key, root_key,
         Dropped, Entry, Fields, Host, MerkId, Prefix, Root, HEADER_KEY,
@@ -93,13 +94,15 @@ impl Changed<'_> {
 
     /// The entry after the change.
     fn encode(&self) -> Result<Entry, DirectoryError> {
-        let was = self.entry.root();
         let root = match self.now {
-            Now::At(address) => was.map(|root| Root { address, ..root }),
+            Now::At(address) => self.entry.root().map(|root| Root { address, ..root }),
             Now::Named(root) => root,
         };
-        let fields = self.entry.fields();
-        Fields { root, ..fields }.encode()
+        let fields = Fields {
+            root,
+            ..self.entry.fields()
+        };
+        fields.encode()
     }
 }
 
@@ -130,24 +133,21 @@ impl Directory {
             }
             None => None,
         };
-        let mut fields = Fields {
-            id: MerkId::FIRST,
+        let id = self.next_id(pages)?;
+        let fields = Fields {
+            id,
             root: None,
             tree_type,
             host,
             lineage: place.as_ref().map_or(&[], |place| &place.lineage),
         };
-        fields.encode()?;
-
-        fields.id = self.take_id(pages)?;
         let entry = fields.encode()?;
+
+        self.give_out(pages, id)?;
         self.displace(pages, prefix, left.as_ref())?;
-        self.tree.put(pages, &entry_key(prefix), entry.as_bytes())?;
-        if let Some(place) = &place {
-            let child = encode_child(prefix, fields.id);
-            self.tree.put(pages, &place.child, &child)?;
-        }
-        Ok(fields.id)
+        let child = place.as_ref().map(|place| &place.child[..]);
+        self.enter(pages, prefix, &entry, child)?;
+        Ok(id)
     }
 
     /// Gives the Merk under `prefix` another tree type.
@@ -158,12 +158,11 @@ impl Directory {
         tree_type: &[u8],
     ) -> Result<(), DirectoryError> {
         let entry = self.live(pages, prefix)?;
-        let fields = entry.fields();
-        let changed = Fields {
+        let fields = Fields {
             tree_type,
-            ..fields
-        }
-        .encode()?;
+            ..entry.fields()
+        };
+        let changed = fields.encode()?;
         if changed != entry {
             self.tree
                 .put(pages, &entry_key(prefix), changed.as_bytes())?;
@@ -209,10 +208,8 @@ impl Directory {
                 continue;
             };
             if entry.root().map(|root| root.address) != Some(from) {
-                return Err(DirectoryError::Damaged {
-                    key: root_key(from).to_vec(),
-                    what: "the Merk has its root elsewhere",
-                });
+                let what = "the Merk has its root elsewhere";
+                return Err(damaged(&root_key(from), what));
             }
             if places.insert(prefix, merks.len()).is_some() {
                 return Err(DirectoryError::Twice { prefix });
@@ -221,6 +218,7 @@ impl Directory {
             merks.push(Changed { prefix, entry, now });
         }
         let mut named = HashSet::new();
+        let mut named_roots = HashSet::new();
         for change in changes {
             let &RootChange::Named { prefix, root } = change else {
                 continue;
@@ -228,6 +226,7 @@ impl Directory {
             if !named.insert(*prefix) {
                 return Err(DirectoryError::Twice { prefix: *prefix });
             }
+            named_roots.extend(root.map(|root| root.address));
             let now = Now::Named(root);
             match places.get(prefix) {
                 Some(&place) => merks[place].now = now,
@@ -262,7 +261,10 @@ impl Directory {
                 return Err(DirectoryError::RootTaken { address });
             }
         }
-        if let Some(&(address, _)) = became_roots.iter().find(|(_, to)| !roots.contains(to)) {
+        let unknown = became_roots
+            .iter()
+            .find(|(_, to)| !named_roots.contains(to));
+        if let Some(&(address, _)) = unknown {
             return Err(DirectoryError::UnknownRoot { address });
         }
         let entries: Vec<Entry> = merks
@@ -303,12 +305,17 @@ impl Directory {
         prefix: &Prefix,
     ) -> Result<Dropped, DirectoryError> {
         let entry = self.live(pages, prefix)?;
-        let dropped = self.dropped_of(pages, prefix, &entry)?;
-        if let Some(root) = dropped.root {
+        let root = entry.root().map(|root| root.address);
+        // A Merk with no root has no node, and so hosts no Merk.
+        if root.is_none() && self.has_children(pages, entry.id())? {
+            return Err(DirectoryError::NotEmpty { prefix: *prefix });
+        }
+        let id = entry.id();
+        let dropped = Dropped { id, root };
+        if let Some(root) = root {
             self.tree.delete(pages, &root_key(root))?;
         }
-        if let (Some(host), Some(parent)) = (entry.host(), entry.parent_id()) {
-            let child = child_key(parent, host.position, host.key);
+        if let Some(child) = entry.child_key() {
             self.tree.delete(pages, &child)?;
         }
         self.tree.delete(pages, &entry_key(prefix))?;
@@ -321,7 +328,8 @@ impl Directory {
     /// under another id, and what it held is left under the id it had, as
     /// by [`Self::unlink`].
     ///
-    /// Returns `None`, and writes nothing, for a Merk with no node.
+    /// Returns `None`, and writes nothing, for a Merk with no node: it has
+    /// nothing to leave, and keeps its id.
     pub fn clear<P: FlatPagesMut + ?Sized>(
         &mut self,
         pages: &mut P,
@@ -335,21 +343,17 @@ impl Directory {
             id: entry.id(),
             root: Some(root.address),
         };
-        let id = self.take_id(pages)?;
-        let fields = entry.fields();
-        let cleared = Fields {
+        let id = self.next_id(pages)?;
+        let fields = Fields {
             id,
             root: None,
-            ..fields
+            ..entry.fields()
         };
-        let cleared = cleared.encode()?;
+        let cleared = fields.encode()?;
+
+        self.give_out(pages, id)?;
         self.tree.delete(pages, &root_key(root.address))?;
-        if let (Some(host), Some(parent)) = (entry.host(), entry.parent_id()) {
-            let child = child_key(parent, host.position, host.key);
-            self.tree.put(pages, &child, &encode_child(prefix, id))?;
-        }
-        self.tree
-            .put(pages, &entry_key(prefix), cleared.as_bytes())?;
+        self.enter(pages, prefix, &cleared, entry.child_key().as_deref())?;
         self.leave(pages, dropped)?;
         Ok(Some(dropped))
     }
@@ -428,33 +432,38 @@ impl Directory {
         Ok(())
     }
 
-    pub(super) fn take_id<P: FlatPagesMut + ?Sized>(
+    /// Writes every record of the Merk under `prefix` as `entry` has it:
+    /// the entry, the record of its root, and under `child` the record of
+    /// its host.
+    pub(super) fn enter<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
-    ) -> Result<MerkId, DirectoryError> {
-        let id = self.next_id(pages)?;
+        prefix: &Prefix,
+        entry: &Entry,
+        child: Option<&[u8]>,
+    ) -> Result<(), DirectoryError> {
+        self.tree.put(pages, &entry_key(prefix), entry.as_bytes())?;
+        if let Some(child) = child {
+            let record = encode_child(prefix, entry.id());
+            self.tree.put(pages, child, &record)?;
+        }
+        if let Some(root) = entry.root() {
+            self.tree.put(pages, &root_key(root.address), prefix)?;
+        }
+        Ok(())
+    }
+
+    /// Writes into the header that `id`, the next id to give out, is
+    /// given out.
+    fn give_out<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        id: MerkId,
+    ) -> Result<(), DirectoryError> {
         let next = id.get().checked_add(1).and_then(MerkId::new);
         let next = next.ok_or(DirectoryError::IdsExhausted)?;
         self.tree.put(pages, &HEADER_KEY, &encode_header(next))?;
-        Ok(id)
-    }
-
-    /// What dropping the Merk `entry` leaves. A Merk with no root has no
-    /// node, and so hosts no Merk.
-    fn dropped_of<P: FlatPages + ?Sized>(
-        &self,
-        pages: &P,
-        prefix: &Prefix,
-        entry: &Entry,
-    ) -> Result<Dropped, DirectoryError> {
-        let root = entry.root().map(|root| root.address);
-        if root.is_none() && self.has_children(pages, entry.id())? {
-            return Err(DirectoryError::NotEmpty { prefix: *prefix });
-        }
-        Ok(Dropped {
-            id: entry.id(),
-            root,
-        })
+        Ok(())
     }
 
     /// Records what a Merk left. From here on the Merks below it are not

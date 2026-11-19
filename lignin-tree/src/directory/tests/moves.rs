@@ -295,8 +295,8 @@ fn a_move_that_cannot_be_is_refused_and_writes_nothing() {
         assert_eq!(grove.pages.pages, pages, "a refused move writes nothing");
     }
 
-    // The host has a Merk at the position, entered under another prefix
-    // than the one the move goes to.
+    // The host has a Merk at the position: another Merk, or the moved
+    // Merk itself, which a move does not give another prefix where it is.
     let top = prefix_of(&[]);
     let host = Host {
         parent: &top,
@@ -313,6 +313,17 @@ fn a_move_that_cannot_be_is_refused_and_writes_nothing() {
         matches!(error, DirectoryError::HostTaken { parent, position: 0 } if parent == top),
         "{error}"
     );
+    assert_eq!(grove.pages.pages, pages);
+    let host = Host {
+        parent: &top,
+        key: b"a",
+        position: 0,
+    };
+    let none = |_: &[Step<'_>]| unreachable!("the move is refused");
+    let error = grove
+        .directory
+        .rekey(&mut grove.pages, &from, &[0xDD; 32], host, none);
+    assert!(matches!(error, Err(DirectoryError::HostTaken { .. })));
     assert_eq!(grove.pages.pages, pages);
     // A left-over Merk is moved by nobody.
     grove.unlink(&["a"]);

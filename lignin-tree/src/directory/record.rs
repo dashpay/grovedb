@@ -179,9 +179,9 @@ pub fn encode_child(prefix: &Prefix, id: MerkId) -> [u8; PREFIX_LEN + MerkId::EN
 /// Reads a child record: the prefix and the id of the hosted Merk.
 pub fn decode_child(bytes: &[u8]) -> Result<(Prefix, MerkId), Malformed> {
     let wrong = Malformed("a child record that is not a prefix and an id");
-    let (prefix, id) = bytes.split_at_checked(PREFIX_LEN).ok_or(wrong)?;
+    let (prefix, id) = bytes.split_first_chunk().ok_or(wrong)?;
     let id = id.try_into().ok().and_then(MerkId::decode);
-    Ok((decode_prefix(prefix).map_err(|_| wrong)?, id.ok_or(wrong)?))
+    Ok((*prefix, id.ok_or(wrong)?))
 }
 
 /// What comes after the parent's id in the key of a child record: the
@@ -301,66 +301,56 @@ pub struct Entry {
 /// Reads an entry from its start, and ends with an error where it ends
 /// early.
 struct Reader<'a> {
-    bytes: &'a [u8],
-    at: usize,
+    rest: &'a [u8],
 }
 
 impl Reader<'_> {
     const SHORT: Malformed = Malformed("an entry that ends early");
 
     fn skip(&mut self, len: usize) -> Result<(), Malformed> {
-        let end = self
-            .at
-            .checked_add(len)
-            .filter(|end| *end <= self.bytes.len());
-        self.at = end.ok_or(Self::SHORT)?;
+        self.rest = self.rest.get(len..).ok_or(Self::SHORT)?;
         Ok(())
     }
 
     fn array<const N: usize>(&mut self) -> Result<[u8; N], Malformed> {
-        let start = self.at;
-        self.skip(N)?;
-        self.bytes[start..self.at]
-            .try_into()
-            .map_err(|_| Self::SHORT)
+        let (array, rest) = self.rest.split_first_chunk().ok_or(Self::SHORT)?;
+        self.rest = rest;
+        Ok(*array)
     }
 
-    fn byte(&mut self) -> Result<u8, Malformed> {
-        let [byte] = self.array()?;
-        Ok(byte)
-    }
-
-    /// Passes a byte string that has its length in one byte before it, and
-    /// returns where it ends.
-    fn string(&mut self) -> Result<usize, Malformed> {
-        let len = self.byte()?;
-        self.skip(usize::from(len))?;
-        Ok(self.at)
+    /// Passes a byte string that has its length in one byte before it.
+    fn string(&mut self) -> Result<(), Malformed> {
+        let [len] = self.array()?;
+        self.skip(usize::from(len))
     }
 }
 
 impl Entry {
     /// Reads the bytes of an entry.
     pub fn decode(raw: Vec<u8>) -> Result<Self, Malformed> {
-        let mut read = Reader { bytes: &raw, at: 0 };
+        let mut read = Reader { rest: &raw };
+        let at = |read: &Reader<'_>| raw.len() - read.rest.len();
         let id = MerkId::decode(read.array()?).ok_or(Malformed("an entry with no id"))?;
         let root = CellAddress::decode(read.array()?)
             .map_err(|_| Malformed("a root address that is not one"))?;
-        let root_key_end = read.string()?;
+        read.string()?;
+        let root_key_end = at(&read);
         if root.is_none() && root_key_end != ROOT_KEY_AT {
             return Err(Malformed("a root key with no root"));
         }
-        let type_end = read.string()?;
+        read.string()?;
+        let type_end = at(&read);
         let depth = u16::from_le_bytes(read.array()?);
         let mut host_key_end = 0;
         if depth > 0 {
             read.skip(1 + PREFIX_LEN)?;
-            host_key_end = read.string()?;
+            read.string()?;
+            host_key_end = at(&read);
             for _ in 0..depth {
                 MerkId::decode(read.array()?).ok_or(Malformed("an ancestor with no id"))?;
             }
         }
-        if read.at != raw.len() {
+        if !read.rest.is_empty() {
             return Err(Malformed("bytes after the entry"));
         }
         Ok(Self {
@@ -392,6 +382,9 @@ impl Entry {
 
     /// The element that hosts the Merk, or `None` for a Merk with no host.
     pub fn host(&self) -> Option<Host<'_>> {
+        if self.host_key_end == 0 {
+            return None;
+        }
         let at = self.type_end + DEPTH_LEN;
         let (position, rest) = self.raw.get(at..self.host_key_end)?.split_first()?;
         let (parent, key) = rest.split_first_chunk::<PREFIX_LEN>()?;
@@ -423,6 +416,12 @@ impl Entry {
     /// The entry's bytes.
     pub fn as_bytes(&self) -> &[u8] {
         &self.raw
+    }
+
+    /// The key of the record of its host.
+    pub(super) fn child_key(&self) -> Option<Vec<u8>> {
+        let host = self.host()?;
+        Some(child_key(self.parent_id()?, host.position, host.key))
     }
 
     pub(super) fn lineage_bytes(&self) -> &[u8] {
@@ -480,7 +479,11 @@ impl Fields<'_> {
         let root_key = self.root.map_or(&[][..], |root| root.key);
         let depth = self.lineage.len() / MerkId::ENCODED_LEN;
         let depth = u16::try_from(depth).map_err(|_| DirectoryError::TooDeep)?;
-        debug_assert_eq!(self.host.is_some(), depth > 0, "a host, and Merks above");
+        if self.host.is_some() != (depth > 0) {
+            let key = vec![RecordKind::Entry.code()];
+            let what = "a host with no Merk above it, or Merks above with no host";
+            return Err(DirectoryError::Damaged { key, what });
+        }
 
         let mut raw =
             Vec::with_capacity(ROOT_KEY_AT + root_key.len() + 1 + self.tree_type.len() + DEPTH_LEN);

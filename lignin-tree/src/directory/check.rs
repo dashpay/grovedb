@@ -2,9 +2,11 @@
 
 use std::collections::{BTreeSet, HashSet};
 
+use lignin_format::CellAddress;
+
 use super::{
     error::DirectoryError,
-    read::{Children, Records},
+    read::{damaged, Children, Records},
     record::{dropped_key, entry_key, Child, MerkId, Prefix, RecordKind},
     Directory,
 };
@@ -36,11 +38,15 @@ struct Level {
     rooted: bool,
 }
 
-fn wrong(key: &[u8], what: &'static str) -> DirectoryError {
-    DirectoryError::Damaged {
-        key: key.to_vec(),
-        what,
-    }
+/// What the check has found so far.
+struct Found {
+    /// The next id to give out.
+    next: MerkId,
+    /// The ids of the entries and of the dropped Merks.
+    ids: HashSet<MerkId>,
+    /// The ids that a child record names.
+    hosted: HashSet<MerkId>,
+    census: Census,
 }
 
 impl Directory {
@@ -53,7 +59,9 @@ impl Directory {
     /// - Every other entry is reached in the same way from the record of a
     ///   dropped Merk, and no lookup returns it.
     /// - Every root of a Merk in use has its record, every root record has
-    ///   its entry, and no id is held twice.
+    ///   its entry, no two Merks have their root in one cell, and no id is
+    ///   held twice.
+    /// - The keyspace holds no other record.
     /// - The handle has the dropped Merks that the pages have.
     ///
     /// What is not checked here needs the tree pages and the elements: that
@@ -66,21 +74,23 @@ impl Directory {
         let mut ids = HashSet::new();
         let mut drops = Vec::new();
         let mut dead = BTreeSet::new();
+        let mut left_cells: HashSet<CellAddress> = HashSet::new();
         let mut walk = self.drops();
         while let Some(dropped) = walk.next(pages)? {
-            let key = dropped_key(dropped.id);
             if dropped.id >= next {
-                return Err(wrong(&key, "an id that was not given out"));
+                let what = "an id that was not given out";
+                return Err(damaged(&dropped_key(dropped.id), what));
             }
             ids.insert(dropped.id);
-            if dropped.root.is_some() {
+            if let Some(root) = dropped.root {
                 dead.insert(dropped.id);
+                left_cells.insert(root);
             }
             drops.push(dropped);
         }
         if dead != *self.dropped {
             let key = [RecordKind::Dropped.code()];
-            return Err(wrong(&key, "the handle has other dropped Merks"));
+            return Err(damaged(&key, "the handle has other dropped Merks"));
         }
 
         let mut tops = Vec::new();
@@ -90,36 +100,51 @@ impl Directory {
             let key = entry_key(&prefix);
             entries += 1;
             if entry.id() >= next {
-                return Err(wrong(&key, "an id that was not given out"));
+                return Err(damaged(&key, "an id that was not given out"));
             }
             if !ids.insert(entry.id()) {
-                return Err(wrong(&key, "an id that another Merk has"));
+                return Err(damaged(&key, "an id that another Merk has"));
             }
             if let Some(root) = entry.root() {
+                if left_cells.contains(&root.address) {
+                    return Err(damaged(&key, "a root in the cell of a dropped Merk"));
+                }
                 // The reclaimer takes the record of a left-over root
                 // before the entry.
-                if self.root_owner(pages, root.address)? == Some(prefix) {
-                    roots += 1;
-                } else if self.is_live(&entry) {
-                    return Err(wrong(&key, "a root that has no record"));
+                match self.root_owner(pages, root.address)? {
+                    Some(owner) if owner == prefix => roots += 1,
+                    Some(_) => return Err(damaged(&key, "a root in the cell of another Merk")),
+                    None if self.is_live(&entry) => {
+                        return Err(damaged(&key, "a root that has no record"));
+                    }
+                    None => {}
                 }
             }
             if entry.host().is_none() {
                 tops.push((prefix, entry.id(), entry.root().is_some()));
             }
         }
-        let children = self.count(pages, RecordKind::Child)?;
-        if self.count(pages, RecordKind::Root)? != roots {
+        let children = self.count(pages, &[RecordKind::Child.code()])?;
+        if self.count(pages, &[RecordKind::Root.code()])? != roots {
             let key = [RecordKind::Root.code()];
-            return Err(wrong(&key, "a root record of no entry"));
+            return Err(damaged(&key, "a root record of no entry"));
+        }
+        let known = 1 + entries + children + roots + drops.len() as u64;
+        if self.count(pages, &[])? != known {
+            return Err(damaged(&[], "a record of no kind"));
         }
 
-        let mut census = Census {
+        let census = Census {
             live: tops.len() as u64,
             left_over: 0,
             dropped: drops.len() as u64,
         };
-        let mut reached = 0;
+        let mut found = Found {
+            next,
+            ids,
+            hosted: HashSet::new(),
+            census,
+        };
         for (prefix, id, rooted) in tops {
             let top = Level {
                 children: self.children(id),
@@ -128,7 +153,7 @@ impl Directory {
                 live: true,
                 rooted,
             };
-            self.walk(pages, top, children, &mut reached, &mut census)?;
+            self.walk(pages, top, &mut found)?;
         }
         for dropped in drops {
             let top = Level {
@@ -138,25 +163,26 @@ impl Directory {
                 live: false,
                 rooted: dropped.root.is_some(),
             };
-            self.walk(pages, top, children, &mut reached, &mut census)?;
+            self.walk(pages, top, &mut found)?;
         }
-        if reached != children {
+        if found.hosted.len() as u64 != children {
             let key = [RecordKind::Child.code()];
-            return Err(wrong(&key, "a child record that no Merk leads to"));
+            return Err(damaged(&key, "a child record that no Merk leads to"));
         }
-        if census.live + census.left_over != entries {
+        if found.census.live + found.census.left_over != entries {
             let key = [RecordKind::Entry.code()];
-            return Err(wrong(&key, "an entry that no Merk leads to"));
+            return Err(damaged(&key, "an entry that no Merk leads to"));
         }
-        Ok(census)
+        Ok(found.census)
     }
 
+    /// How many records have a key that begins with `within`.
     fn count<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
-        kind: RecordKind,
+        within: &[u8],
     ) -> Result<u64, DirectoryError> {
-        let mut records = Records::new(&self.tree, &[kind.code()]);
+        let mut records = Records::new(&self.tree, within);
         let mut count = 0;
         while records.step(pages)? {
             count += 1;
@@ -170,9 +196,7 @@ impl Directory {
         &self,
         pages: &P,
         top: Level,
-        children: u64,
-        reached: &mut u64,
-        census: &mut Census,
+        found: &mut Found,
     ) -> Result<(), DirectoryError> {
         // The ids of the Merks above the children of the level that is
         // walked, as an entry has them, for the Merks in use.
@@ -185,12 +209,15 @@ impl Directory {
                 continue;
             };
             let key = entry_key(&child.prefix);
-            *reached += 1;
-            if *reached > children {
-                return Err(wrong(&key, "child records that lead in a circle"));
+            if child.id >= found.next {
+                return Err(damaged(&key, "an id that was not given out"));
+            }
+            // A Merk has one host, so no walk comes to it twice.
+            if !found.hosted.insert(child.id) {
+                return Err(damaged(&key, "a Merk that two hosts have"));
             }
             if !level.rooted {
-                return Err(wrong(&key, "a Merk with no node hosts a Merk"));
+                return Err(damaged(&key, "a Merk with no node hosts a Merk"));
             }
             let entry = self.stored(pages, &child.prefix)?;
             let entry = entry.filter(|entry| entry.id() == child.id);
@@ -203,24 +230,31 @@ impl Directory {
                     (host.key, host.position) == (child.key.as_slice(), child.position)
                 });
                 if !hosted || entry.parent_id() != Some(id) {
-                    return Err(wrong(&key, "an entry under the record of another host"));
+                    return Err(damaged(&key, "an entry under the record of another host"));
                 }
                 if live {
                     if host.map(|host| *host.parent) != Some(prefix) {
-                        return Err(wrong(&key, "an entry that names another parent"));
+                        return Err(damaged(&key, "an entry that names another parent"));
                     }
                     if entry.lineage_bytes() != lineage || !self.is_live(entry) {
-                        return Err(wrong(&key, "an entry with other Merks above it"));
+                        return Err(damaged(&key, "an entry with other Merks above it"));
                     }
-                    census.live += 1;
+                    found.census.live += 1;
                 } else {
                     if self.is_live(entry) {
-                        return Err(wrong(&key, "a left-over entry that a lookup returns"));
+                        return Err(damaged(&key, "a left-over entry that a lookup returns"));
                     }
-                    census.left_over += 1;
+                    found.census.left_over += 1;
                 }
             } else if live {
-                return Err(wrong(&key, "a Merk in use hosts a Merk with no entry"));
+                return Err(damaged(&key, "a Merk in use hosts a Merk with no entry"));
+            } else if found.ids.contains(&child.id) {
+                // Its entry was replaced or taken: no other record has
+                // its id.
+                return Err(damaged(
+                    &key,
+                    "a left-over record of a Merk that is entered",
+                ));
             }
             let Child { id, prefix, .. } = child;
             lineage.extend_from_slice(&id.encode());

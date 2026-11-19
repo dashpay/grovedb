@@ -13,12 +13,11 @@ use super::{
 };
 use crate::flat::{Cursor, FlatPages, FlatTree};
 
-/// A record that is not what its key says.
-pub(super) fn damaged(key: &[u8], what: Malformed) -> DirectoryError {
-    DirectoryError::Damaged {
-        key: key.to_vec(),
-        what: what.0,
-    }
+/// A record that is not what its key says, or that does not agree with
+/// another.
+pub(super) fn damaged(key: &[u8], what: &'static str) -> DirectoryError {
+    let key = key.to_vec();
+    DirectoryError::Damaged { key, what }
 }
 
 impl Directory {
@@ -52,7 +51,7 @@ impl Directory {
         let Some(raw) = self.get(pages, &key)? else {
             return Ok(None);
         };
-        let entry = Entry::decode(raw).map_err(|what| damaged(&key, what))?;
+        let entry = Entry::decode(raw).map_err(|what| damaged(&key, what.0))?;
         Ok(Some(entry))
     }
 
@@ -75,7 +74,7 @@ impl Directory {
         let Some(value) = self.get(pages, &key)? else {
             return Ok(None);
         };
-        let prefix = decode_prefix(&value).map_err(|what| damaged(&key, what))?;
+        let prefix = decode_prefix(&value).map_err(|what| damaged(&key, what.0))?;
         Ok(Some(prefix))
     }
 
@@ -105,7 +104,7 @@ impl Directory {
         let header = header.ok_or(Malformed("the directory has no header"));
         header
             .and_then(|header| decode_header(&header))
-            .map_err(|what| damaged(&HEADER_KEY, what))
+            .map_err(|what| damaged(&HEADER_KEY, what.0))
     }
 
     pub(super) fn get<P: FlatPages + ?Sized>(
@@ -133,8 +132,7 @@ impl Directory {
         pages: &P,
         parent: MerkId,
     ) -> Result<bool, DirectoryError> {
-        let mut records = Records::new(&self.tree, &children_key(parent));
-        records.step(pages)
+        Records::new(&self.tree, &children_key(parent)).step(pages)
     }
 }
 
@@ -167,11 +165,12 @@ impl Records {
         pages: &P,
     ) -> Result<bool, DirectoryError> {
         loop {
-            match self.started {
-                true => self.cursor.next(pages)?,
-                false => self.cursor.seek_to_first(pages)?,
+            if self.started {
+                self.cursor.next(pages)?;
+            } else {
+                self.cursor.seek_to_first(pages)?;
+                self.started = true;
             }
-            self.started = true;
             if !self.cursor.valid() {
                 return Ok(false);
             }
@@ -183,17 +182,20 @@ impl Records {
         }
     }
 
-    /// The key of the record, without the bytes the walk is within.
-    pub(super) fn key(&self) -> &[u8] {
-        self.cursor.key().unwrap_or_default()
-    }
-
-    pub(super) fn value(&self) -> &[u8] {
-        &self.value
-    }
-
-    pub(super) fn damaged(&self, what: Malformed) -> DirectoryError {
-        damaged(&[&self.within, self.key()].concat(), what)
+    /// Goes to the next record and reads it, from its key without the
+    /// bytes the walk is within and from its value.
+    fn next<T, P: FlatPages + ?Sized>(
+        &mut self,
+        pages: &P,
+        decode: impl FnOnce(&[u8], &[u8]) -> Result<T, Malformed>,
+    ) -> Result<Option<T>, DirectoryError> {
+        if !self.step(pages)? {
+            return Ok(None);
+        }
+        let key = self.cursor.key().unwrap_or_default();
+        let read = decode(key, &self.value);
+        read.map(Some)
+            .map_err(|what| damaged(&[&self.within, key].concat(), what.0))
     }
 }
 
@@ -207,18 +209,17 @@ impl Children {
         &mut self,
         pages: &P,
     ) -> Result<Option<Child>, DirectoryError> {
-        if !self.0.step(pages)? {
-            return Ok(None);
-        }
-        let (position, key) =
-            decode_child_key(self.0.key()).map_err(|what| self.0.damaged(what))?;
-        let (prefix, id) = decode_child(self.0.value()).map_err(|what| self.0.damaged(what))?;
-        Ok(Some(Child {
-            position,
-            key: key.to_vec(),
-            prefix,
-            id,
-        }))
+        self.0.next(pages, |key, value| {
+            let (position, key) = decode_child_key(key)?;
+            let (prefix, id) = decode_child(value)?;
+            let key = key.to_vec();
+            Ok(Child {
+                position,
+                key,
+                prefix,
+                id,
+            })
+        })
     }
 }
 
@@ -232,12 +233,9 @@ impl Entries {
         &mut self,
         pages: &P,
     ) -> Result<Option<(Prefix, Entry)>, DirectoryError> {
-        if !self.0.step(pages)? {
-            return Ok(None);
-        }
-        let prefix = decode_prefix(self.0.key()).map_err(|what| self.0.damaged(what))?;
-        let entry = Entry::decode(self.0.value().to_vec()).map_err(|what| self.0.damaged(what))?;
-        Ok(Some((prefix, entry)))
+        self.0.next(pages, |key, value| {
+            Ok((decode_prefix(key)?, Entry::decode(value.to_vec())?))
+        })
     }
 }
 
@@ -251,11 +249,9 @@ impl Drops {
         &mut self,
         pages: &P,
     ) -> Result<Option<Dropped>, DirectoryError> {
-        if !self.0.step(pages)? {
-            return Ok(None);
-        }
-        let id = decode_id(self.0.key()).map_err(|what| self.0.damaged(what))?;
-        let root = decode_dropped(self.0.value()).map_err(|what| self.0.damaged(what))?;
-        Ok(Some(Dropped { id, root }))
+        self.0.next(pages, |key, value| {
+            let (id, root) = (decode_id(key)?, decode_dropped(value)?);
+            Ok(Dropped { id, root })
+        })
     }
 }

@@ -135,14 +135,15 @@
 //!
 //! **Every Merk has an id** ([`MerkId`]), which no other Merk has had or
 //! will have. A Merk gets its id when it is entered, keeps it when it is
-//! moved, and gets another when it is cleared: the id stands for the nodes
-//! the Merk holds, and for the Merks they host. **An entry holds the ids
+//! moved, and gets another when its nodes are cleared: the id stands for
+//! the nodes the Merk holds, and for the Merks they host. **An entry holds the ids
 //! of the Merks its Merk is below**, from the outermost to the Merk of its
 //! host. That is eight bytes for each level of the path.
 //!
-//! **A dropped or cleared Merk leaves its id** in a record of its own,
-//! which holds the address its root had, for the walk of its cells
-//! (`tree-layout.md` D2). A handle has the ids that are left
+//! **A dropped Merk leaves its id** in a record of its own, which holds
+//! the address its root had, for the walk of its cells
+//! (`tree-layout.md` D2). So does a Merk whose nodes are cleared: a Merk
+//! with no node has nothing to clear, and keeps its id. A handle has the ids that are left
 //! ([`Directory::load`]), and an entry is live if none of the ids in it is
 //! among them ([`Directory::is_live`]). So:
 //!
@@ -266,8 +267,8 @@
 //!    data of a subtree by its prefix or its id, and the record is what
 //!    says that it waits to be reclaimed. Only the ids of the Merks that
 //!    had a root are held by a handle.
-//! 5. **A clear gives the Merk another id**, so what is kept under the id
-//!    of a Merk is not kept across a clear.
+//! 5. **A clear of a Merk with nodes gives it another id**, so what is
+//!    kept under the id of a Merk is not kept across a clear.
 //! 6. **The tree type is opaque**, up to 255 bytes.
 //! 7. **The entry's bytes are defined here**, above the flat page format,
 //!    as the bucket of a long key is. They are part of format version 1.
@@ -341,9 +342,7 @@ impl Directory {
                 dropped.insert(drop.id);
             }
         }
-        if !dropped.is_empty() {
-            directory.dropped = Arc::new(dropped);
-        }
+        directory.dropped = Arc::new(dropped);
         Ok(directory)
     }
 
