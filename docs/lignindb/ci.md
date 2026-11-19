@@ -55,7 +55,7 @@ The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the
 
 The loom models run on every pull request that runs the tests: with their bounds they take minutes (seven on a loaded strixbox). `loom` is a dependency of `lignin-store` and `lignindb` under `cfg(loom)` only (D-059 item 3); `cargo audit` reads the lock file, which lists it, and passes, so the models stay where they are. The models build in `target/loom`, because the cfg changes every crate they compile.
 
-Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over. A pull request runs the pool, which has the unsafe code, under both borrow models, and the file layer, which has none of its own, under Stacked Borrows: one pass over `lignin-io` took 27 minutes on a loaded strixbox. The checksum runs its published vectors and random lengths there. The nightly run (`lignin-ci.sh miri --full`) adds the file layer under Tree Borrows, the checksum test that walks 128 MiB, and the races under 64 of Miri's schedules.
+Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over. A pull request runs the pool, which has the unsafe code, under both borrow models, and the file layer, which has none of its own, under Stacked Borrows: one pass over `lignin-io` took 27 minutes on a loaded strixbox. The checksum runs its published vectors and random lengths there. The nightly run adds the file layer under Tree Borrows and the checksum test that walks 128 MiB (`lignin-ci.sh miri --full`), and the races under 64 of Miri's schedules (`lignin-ci.sh miri-schedules 64`).
 
 ### Test scratch
 
@@ -63,7 +63,7 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 ### Open files
 
-`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises it first: `ulimit -n 65536`.
+`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
 
 ## Nightly
 

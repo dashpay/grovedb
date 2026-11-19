@@ -174,9 +174,9 @@ miri)
     # The file layer has no unsafe code of its own, so a pull request runs
     # it under one borrow model and the night under both. The pool's unsafe
     # code runs under both on every run.
-    case "${2:-}" in
-    "") file_layer=("") checksum=checksum::tests::crc32c_matches ;;
-    --full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
+    case "$#:${2:-}" in
+    1:) file_layer=("") checksum=checksum::tests::crc32c_matches ;;
+    2:--full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
     *) fail "usage: lignin-ci.sh miri [--full]" ;;
     esac
     for borrows in "${file_layer[@]}"; do
@@ -249,22 +249,19 @@ corpus-at-pin)
             differ=1
         fi
     done
-    # Each directory recorded (a grove version, or the reference scale) has
-    # every committed trace of it, unless the recording named its traces.
-    if [[ " $* " != *" --only "* ]]; then
-        dirs=$(cd "$into" && find . -mindepth 1 -maxdepth 1 -type d | sort)
-        if [ $# -eq 0 ]; then
-            dirs=$(cd lignin-testkit/corpus && find . -mindepth 1 -maxdepth 1 -type d ! -name reference | sort)
-        fi
-        for dir in $dirs; do
-            committed=$(cd lignin-testkit/corpus && find "$dir" -name '*.trace' | sort)
-            made=$(cd "$into" && { [ ! -d "$dir" ] || find "$dir" -name '*.trace'; } | sort)
-            if [ "$committed" != "$made" ]; then
-                echo "the traces of $dir are not those committed:"
-                diff <(echo "$committed") <(echo "$made") || true
-                differ=1
-            fi
-        done
+    # The whole standard scale, or one grove version of it, records every
+    # committed trace of it and nothing else. Other selections are checked
+    # trace by trace only.
+    expected=
+    if [ $# -eq 0 ]; then
+        expected=$(cd lignin-testkit/corpus && find . -path ./reference -prune -o -name '*.trace' -print | sort)
+    elif [ $# -eq 2 ] && [ "$1" = --grove-version ]; then
+        expected=$(cd lignin-testkit/corpus && find "./v$2" -name '*.trace' | sort)
+    fi
+    if [ -n "$expected" ] && [ "$expected" != "$recorded" ]; then
+        echo "the traces recorded are not those committed:"
+        diff <(echo "$expected") <(echo "$recorded") || true
+        differ=1
     fi
     [ "$differ" = 0 ] || fail "the corpus does not come out of its pinned engine as committed"
     echo "$(wc -l <<<"$recorded") traces recorded, all as committed"

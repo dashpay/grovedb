@@ -80,12 +80,16 @@ check)
             # or one that names crates.io.
             | def publishable: .publish == null or (.publish | index("crates-io"));
             # A dependency is on the member of its name by path, or on the
-            # member'"'"'s own version through crates.io.
+            # member'"'"'s own version through crates.io. A requirement on
+            # crates.io is read in the forms the workspace writes (V, ^V,
+            # =V); another form is reported, not guessed.
+            def crates_io: .source == "registry+https://github.com/rust-lang/crates.io-index";
+            def plain_req: .req | test("^[=^]?[0-9]+\\.[0-9]+\\.[0-9]+$");
             def on_member($by_name):
                 $by_name[.name] as $member
                 | $member != null
                   and (.path != null
-                       or ((.source // "" | startswith("registry+https://github.com/rust-lang/crates.io-index"))
+                       or (crates_io and plain_req
                            and (.req | ltrimstr("=") | ltrimstr("^")) == $member.version));
             (.packages | map({key: .name, value: .}) | from_entries) as $by_name
             | ($order | to_entries | map({key: .value, value: .key}) | from_entries) as $place
@@ -100,6 +104,10 @@ check)
                     | select((.kind // "normal") != "dev" or .req != "*")
                     | select(($place[.name] // 1e9) > $place[$crate])
                     | "\($crate) depends on \(.name) (\(.kind // "normal")\(if .optional then ", optional" else "" end)), which is not listed before it"),
+                ($order[] | . as $crate | select($by_name[$crate] != null)
+                    | $by_name[$crate].dependencies[]
+                    | select(.path == null and $by_name[.name] != null and crates_io and (plain_req | not))
+                    | "\($crate) asks crates.io for \(.name) \(.req), a form of requirement this check does not read"),
                 (if $release then
                     ($order[] | select($by_name[.] | publishable | not)
                         | "\(.) is listed and cannot be published to crates.io (`publish` in its manifest)")
