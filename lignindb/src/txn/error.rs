@@ -49,7 +49,9 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
-    /// The root that the change set names is a key with no node.
+    /// The root that the change set names is a key with no node: the Merk
+    /// holds none under it in the transaction's view, or the change set
+    /// itself deletes it.
     NoRoot {
         /// The Merk's subtree.
         subtree: Subtree,

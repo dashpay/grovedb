@@ -213,6 +213,17 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             BatchError::TooManyHosted { subtree: one }
         );
 
+        // A root is a node the change set leaves in the Merk. Served by
+        // key, nothing else would refuse this one.
+        let removed: [&[u8]; 1] = [b"there"];
+        let write = MerkWrite {
+            removed: &removed,
+            ..merk(1, &[], RootPut::Set(Some(b"there")))
+        };
+        assert_eq!(
+            batch_error(&tx, &merks(&[write])),
+            BatchError::NoRoot { subtree: one }
+        );
         // A node that keeps a value has to be there.
         let nodes = [node(b"absent", ValuePut::Keep)];
         assert_eq!(

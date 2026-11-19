@@ -19,8 +19,8 @@ const MAX_HOSTED: usize = u8::MAX as usize;
 
 /// Checks what can be checked of `batch` without reading a page: that it
 /// writes each record key once, names each Merk once, sets no root without
-/// a node, writes no flat record among the nodes of a Merk, and holds no key
-/// or value that is too long.
+/// a node and none that it deletes, writes no flat record among the nodes of
+/// a Merk, and holds no key or value that is too long.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
@@ -62,7 +62,13 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
             if merk.nodes.is_empty() && merk.removed.is_empty() {
                 return Err(BatchError::RootAlone { subtree });
             }
-            root.map_or(Ok(()), key_len)?;
+            if let Some(root) = root {
+                key_len(root)?;
+                // The root is a node the change set leaves in the Merk.
+                if merk.removed.contains(&root) {
+                    return Err(BatchError::NoRoot { subtree });
+                }
+            }
         }
     }
     for record in batch.records {
