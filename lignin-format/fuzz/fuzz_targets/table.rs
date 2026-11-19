@@ -9,7 +9,9 @@ use lignin_format::{
     table::{self, Checkpoint, Decoder, Record, LINKS_PER_RECORD, LINK_LEN, MAX_PAYLOAD_LEN},
     FileHeader, FileId, FormatVersion,
 };
-use lignin_format_fuzz::{default_frame_len, ok, sealed_file, take_u16, take_up_to, Input};
+use lignin_format_fuzz::{
+    default_frame_len, header_file_id, ok, seal_file, sealed_file, take_u16, take_up_to, Input,
+};
 
 fuzz_target!(|data: &[u8]| {
     let Some(input) = Input::split(data) else {
@@ -25,17 +27,11 @@ fuzz_target!(|data: &[u8]| {
     }
 });
 
-fn sequence(file: &[u8]) -> FileId {
-    file.get(12..16)
-        .and_then(|sequence| FileId::new(u32::from_le_bytes(sequence.try_into().unwrap())))
-        .unwrap_or(FileId::MIN)
-}
-
 fn file(input: &Input<'_>, file: Vec<u8>) {
     let id = if input.bit(3) {
         FileId::MIN
     } else {
-        sequence(&file)
+        header_file_id(&file)
     };
     let decoded = ok(table::decode(&file, id));
     let stepped = step(&file, id);
@@ -191,8 +187,7 @@ fn expand(mut bytes: &[u8]) -> Vec<u8> {
         changed = true;
     }
     if changed {
-        lignin_format_fuzz::seal_file_header(&mut file);
-        lignin_format_fuzz::seal_frames(&mut file, FileHeader::ENCODED_LEN, default_frame_len);
+        seal_file(&mut file, default_frame_len);
     }
     file
 }

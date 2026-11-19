@@ -11,7 +11,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use lignin_format::{
-    flat_page::FlatPage,
+    flat_page::{FlatLeaf, FlatPage},
     tree_page::TreePage,
     value_log::ValuePlace,
     wal::{read_logged_value, read_pending_value, record_len, Change, LogAddress, Record},
@@ -27,13 +27,7 @@ fuzz_target!(|data: &[u8]| {
     };
     let pieces = pieces(input.bytes);
     let piece = |index: usize| pieces.get(index).copied().unwrap_or_default();
-    let records = sealed_records(
-        &Input {
-            control: input.control,
-            bytes: piece(0),
-        },
-        default_frame_len,
-    );
+    let records = sealed_records(&input.with_bytes(piece(0)), default_frame_len);
     let tree = ok(TreePage::decode(piece(1), V1, PageSize::MAX));
     let flat = ok(FlatPage::decode(piece(2), V1)).and_then(FlatPage::leaf);
     let pending = piece(3)
@@ -98,7 +92,7 @@ fn change(
     bytes: &[u8],
     change: &Change<'_>,
     tree: Option<&TreePage<'_>>,
-    flat: Option<&lignin_format::flat_page::FlatLeaf<'_>>,
+    flat: Option<&FlatLeaf<'_>>,
 ) {
     let mut written = Vec::new();
     change.write(&mut written).expect("a change that was read");

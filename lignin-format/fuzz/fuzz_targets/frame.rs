@@ -9,7 +9,9 @@ use lignin_format::{
     CellAddress, Checksum, CommitVersion, FileHeader, FileId, FileKind, FormatVersion, PageId,
     RecordHeader, SlotId,
 };
-use lignin_format_fuzz::{default_frame_len, ok, seal_file_header, seal_frames, take_u16, Input};
+use lignin_format_fuzz::{
+    default_frame_len, ok, seal_file_header, sealed_records, take_u16, Input,
+};
 
 fuzz_target!(|data: &[u8]| {
     let Some(input) = Input::split(data) else {
@@ -78,14 +80,11 @@ fn file_header(input: &Input<'_>) {
 }
 
 fn records(input: &Input<'_>) {
-    let mut bytes = input.bytes.to_vec();
+    let bytes = sealed_records(input, default_frame_len);
     let max_payload_len = match input.control >> 1 {
         127 => usize::MAX,
         n => usize::from(n) << 9,
     };
-    if !input.keeps_checksums() {
-        seal_frames(&mut bytes, 0, default_frame_len);
-    }
     let mut rest = bytes.as_slice();
     while !rest.is_empty() {
         if let Some(header) = ok(RecordHeader::decode(rest, max_payload_len)) {

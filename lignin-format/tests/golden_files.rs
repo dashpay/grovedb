@@ -22,7 +22,9 @@ use lignin_format::{
     manifest::{FileState, LastFileIds, LiveFile, Manifest, TableCheckpoint},
     segment::{self, Block, BlockContent, Compression, IndexEntry, SegmentIndex},
     table::{self, BlockPointer, Checkpoint, Link, LinkKind, ValueCount},
-    tree_page::{CellContent, CellValue, HashField, Side, TreeLink, TreePage, TreePageMut},
+    tree_page::{
+        CellContent, CellValue, HashField, Side, TreeCell, TreeLink, TreePage, TreePageMut,
+    },
     value_log::{self, ValuePlace, ValuePointer},
     wal::{
         self, write_file_start, write_reclaim, CarriedValue, CheckpointMark, FlatChange, FlatRun,
@@ -266,8 +268,8 @@ fn cell(key: &[u8], value: &[u8], value_hash: [u8; 32], kv_hash: [u8; 32], root:
     .expect("a cell")
 }
 
-fn decoded_cell(bytes: &[u8]) -> lignin_format::tree_page::TreeCell<'_> {
-    lignin_format::tree_page::TreeCell::decode(bytes, V1).expect("a cell")
+fn decoded_cell(bytes: &[u8]) -> TreeCell<'_> {
+    TreeCell::decode(bytes, V1).expect("a cell")
 }
 
 /// Flat leaf 21 with the prefix `user/`: a value inline, a value out of line
@@ -607,12 +609,13 @@ fn the_writers_write_the_golden_files() {
     if write {
         fs::create_dir_all(directory()).expect("the golden directory");
     }
-    for (name, bytes) in golden() {
+    let golden = golden();
+    for (name, bytes) in &golden {
         if write {
-            fs::write(directory().join(name), &bytes).expect("a golden file");
-        } else if name != "segment" {
+            fs::write(directory().join(name), bytes).expect("a golden file");
+        } else if *name != "segment" {
             assert!(
-                committed(name) == bytes,
+                committed(name) == *bytes,
                 "{name} is not what the writers write"
             );
         }
@@ -628,10 +631,7 @@ fn the_writers_write_the_golden_files() {
         })
         .collect();
     names.sort();
-    let mut expected: Vec<_> = golden()
-        .into_iter()
-        .map(|(name, _)| name.to_owned())
-        .collect();
+    let mut expected: Vec<_> = golden.iter().map(|(name, _)| name.to_string()).collect();
     expected.sort();
     assert_eq!(names, expected, "a golden file without a writer here");
 }

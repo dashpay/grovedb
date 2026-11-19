@@ -10,7 +10,7 @@ pub mod tree;
 
 use std::fmt::Write as _;
 
-use lignin_format::{Checksum, FileHeader, FormatError, PageSize};
+use lignin_format::{Checksum, FileHeader, FileId, FormatError, PageSize};
 
 /// The control byte and the bytes under test.
 pub struct Input<'a> {
@@ -35,6 +35,14 @@ impl<'a> Input<'a> {
     pub fn page_size(&self, shift: u32) -> PageSize {
         page_size(self.control >> shift)
     }
+
+    /// Other bytes under the same control byte.
+    pub fn with_bytes<'b>(&self, bytes: &'b [u8]) -> Input<'b> {
+        Input {
+            control: self.control,
+            bytes,
+        }
+    }
 }
 
 /// One of the four page sizes, chosen by the two low bits of `choice`.
@@ -53,6 +61,14 @@ pub fn default_frame_len(word: u32) -> usize {
 /// A segment's frame: bits 0 to 26 of the tag are the body length.
 pub fn segment_frame_len(word: u32) -> usize {
     (word & ((1 << 27) - 1)) as usize
+}
+
+/// The file id that the header at the start of `file` names, or the
+/// smallest one.
+pub fn header_file_id(file: &[u8]) -> FileId {
+    file.get(12..16)
+        .and_then(|sequence| FileId::new(u32::from_le_bytes(sequence.try_into().unwrap())))
+        .unwrap_or(FileId::MIN)
 }
 
 /// Writes the checksum of the file header at the start of `bytes`.
@@ -83,13 +99,19 @@ pub fn seal_frames(bytes: &mut [u8], start: usize, len: FrameLen) {
     }
 }
 
+/// Writes every checksum of a file whose records are framed from offset 20
+/// on.
+pub fn seal_file(bytes: &mut [u8], len: FrameLen) {
+    seal_file_header(bytes);
+    seal_frames(bytes, FileHeader::ENCODED_LEN, len);
+}
+
 /// The bytes of a file whose records are framed from offset 20 on: the input
 /// as it is, or with every checksum made right.
 pub fn sealed_file(input: &Input<'_>, len: FrameLen) -> Vec<u8> {
     let mut bytes = input.bytes.to_vec();
     if !input.keeps_checksums() {
-        seal_file_header(&mut bytes);
-        seal_frames(&mut bytes, FileHeader::ENCODED_LEN, len);
+        seal_file(&mut bytes, len);
     }
     bytes
 }

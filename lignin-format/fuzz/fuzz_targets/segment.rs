@@ -9,9 +9,9 @@ use lignin_format::{
         self, Block, BlockTag, Compression, IndexEntry, SegmentIndex, SegmentTrailer, DATA_START,
         MAX_BODY_LEN,
     },
-    FileId, FormatVersion,
+    FormatVersion,
 };
-use lignin_format_fuzz::{ok, page_size, sealed_file, segment_frame_len, Input};
+use lignin_format_fuzz::{header_file_id, ok, page_size, sealed_file, segment_frame_len, Input};
 
 fuzz_target!(|data: &[u8]| {
     let Some(input) = Input::split(data) else {
@@ -25,11 +25,8 @@ fuzz_target!(|data: &[u8]| {
     };
     tags(&file);
 
-    let id = file
-        .get(12..16)
-        .and_then(|sequence| FileId::new(u32::from_le_bytes(sequence.try_into().unwrap())))
-        .unwrap_or(FileId::MIN);
-    let version = ok(segment::decode_file_header(&file, id)).unwrap_or(FormatVersion::V1);
+    let version =
+        ok(segment::decode_file_header(&file, header_file_id(&file))).unwrap_or(FormatVersion::V1);
     walk(&file, version, max_payload_len);
     footer(&file, version, max_payload_len);
 });

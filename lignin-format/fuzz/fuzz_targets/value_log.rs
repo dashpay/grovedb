@@ -27,12 +27,11 @@ fuzz_target!(|data: &[u8]| {
 });
 
 fn file(file: &[u8]) {
-    let Some(values) = ok(value_log::scan(file)) else {
+    let Some(mut values) = ok(value_log::scan(file)) else {
         return;
     };
     let id = values.file();
     assert_eq!(values.header().file_id(), Some(id));
-    let mut values = values;
     let mut offset = values.offset();
     while let Some(next) = values.next() {
         let Some((pointer, value)) = ok(next) else {
@@ -109,13 +108,7 @@ fn places(input: &Input<'_>) {
             assert!(pointer.value_len() > 0);
             assert!(pointer.offset() <= value_log::MAX_VALUE_OFFSET);
             let _ = pointer.end(V1);
-            let extent = sealed_records(
-                &Input {
-                    control: input.control,
-                    bytes: rest,
-                },
-                default_frame_len,
-            );
+            let extent = sealed_records(&input.with_bytes(rest), default_frame_len);
             let owner = PageId::new(input.control.into()).unwrap_or(PageId::MIN);
             if let Some(value) = ok(pointer.read(&extent, owner, V1)) {
                 assert_eq!(value.owner(), owner);
@@ -132,8 +125,7 @@ fn places(input: &Input<'_>) {
         assert_eq!(decoded.is_pending(), pointer.is_none());
         if let Some(pending) = decoded.pending() {
             assert_eq!(pending.value_len(), decoded.value_len());
-            let again =
-                lignin_format::value_log::PendingValue::new(pending.id(), pending.value_len());
+            let again = value_log::PendingValue::new(pending.id(), pending.value_len());
             assert_eq!(ok(again), Some(pending));
         }
     }
