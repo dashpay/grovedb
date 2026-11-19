@@ -16,7 +16,7 @@
 use std::time::{Duration, Instant};
 
 use lignin_testkit::diff::{
-    cli::SEEDED_FAULT, fuzz, Candidate, Fault, Part, Reference, Settings, Side, StandIn,
+    cli::SEEDED_FAULT, fuzz, Budget, Candidate, Fault, Part, Reference, Settings, Side, StandIn,
 };
 
 const A_MINUTE: Duration = Duration::from_secs(60);
@@ -85,6 +85,12 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
             &StandIn::side(fault),
             &Settings {
                 duration: Some(A_MINUTE),
+                // The minute is for finding the defect. The shrinking after
+                // it takes the time it takes.
+                shrink: Some(Budget {
+                    time: Duration::MAX,
+                    ..Budget::default()
+                }),
                 ..settings(&scratch)
             },
             &mut |_| {},

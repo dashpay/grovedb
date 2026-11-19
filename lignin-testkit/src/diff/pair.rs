@@ -512,9 +512,8 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
 
     let mut tally = Tally::default();
     let mut writes = 0u64;
-    // The subtrees the last walk reached, and the ones the stream asked to
-    // drop flat, whose records an engine may keep until the drop is flushed
-    // (`super::state`).
+    // The subtrees the last walk handed on: the ones it reached, and the
+    // ones a pending drop kept it from looking at (`super::state`).
     let mut places: BTreeSet<Place> = BTreeSet::new();
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
