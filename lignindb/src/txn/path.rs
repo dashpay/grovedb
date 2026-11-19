@@ -10,17 +10,19 @@ use lignin_format::{CellAddress, CommitVersion, PageSize};
 use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, OwnerId},
-    load::PageLoader,
+    load::{LoadBuffers, PageLoader},
     values::ValueStore,
 };
 use lignin_tree::{
     flat::{Committed, FlatTree, Private},
     fragment::Layout,
+    node::Lease,
 };
 
 use super::{
     commits::Commits,
     key::{Column, Subtree},
+    pages::CommittedPages,
     txn::WriteTxn,
 };
 use crate::snapshot::Versions;
@@ -197,6 +199,21 @@ impl<'s> WritePath<'s> {
     /// The committed flat pages at `version`.
     pub(crate) fn committed(&self, version: CommitVersion) -> Committed<'s> {
         Committed::new(self.loader, self.values, version)
+    }
+
+    /// The committed tree pages at `version`, read under `lease`.
+    pub(crate) fn committed_pages<'a>(
+        &self,
+        version: CommitVersion,
+        lease: Lease,
+        buffers: &'a mut LoadBuffers,
+    ) -> CommittedPages<'a, 's> {
+        CommittedPages {
+            loader: self.loader,
+            at: version,
+            lease,
+            buffers,
+        }
     }
 
     /// An owner that no private copy has had.

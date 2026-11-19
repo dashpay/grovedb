@@ -18,7 +18,7 @@ use lignin_tree::{
 use super::{
     error::{BatchError, TxnError},
     key::{Column, Subtree},
-    pages::{find, NodePages, TreePages, TreeValues},
+    pages::{find, follow, NodePages, TreePages, TreeValues},
     path::{FlatWriter, WritePath},
     write::{Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, ValuePut},
     write_set::WriteSet,
@@ -209,6 +209,15 @@ struct Resolved<'a> {
     value: ValueWrite<'a>,
 }
 
+/// What every name of a batch stands for, as [`Frames::resolve`] finds it.
+struct ResolvedBatch<'a> {
+    nodes: Vec<Resolved<'a>>,
+    hosted: Vec<Vec<Option<Target>>>,
+    removed: Vec<CellAddress>,
+    root_writes: Vec<Option<RootWrite>>,
+    root_targets: Vec<Option<Target>>,
+}
+
 impl<'s> Frames<'s> {
     /// Frames with no copy, over the committed pages of the version `at`,
     /// which the transaction keeps pinned for as long as it has them.
@@ -286,14 +295,8 @@ impl<'s> Frames<'s> {
     /// The address `handle` names, if the handle is still good in these
     /// frames and its cell has the key `key`.
     pub(crate) fn follow(&mut self, handle: NodeHandle, key: &[u8]) -> Option<CellAddress> {
-        if handle.lease() != self.lease() {
-            return None;
-        }
-        let followed = self.tree.page(handle.page(), |page| {
-            let node = page.resolve(handle)?;
-            (node.key() == key).then(|| node.address())
-        });
-        followed.ok().flatten()
+        let lease = self.lease();
+        follow(&mut self.tree, lease, handle, key)
     }
 
     /// Applies `batch` to the frames: the change sets of its Merks as one
@@ -407,7 +410,13 @@ impl<'s> Frames<'s> {
         // with every page as it was.
         let mut held = Vec::new();
         let resolved = self.resolve(path, &resolver, total, &mut held);
-        let (nodes, hosted, removed, root_writes, root_targets) = match resolved {
+        let ResolvedBatch {
+            nodes,
+            hosted,
+            removed,
+            root_writes,
+            root_targets,
+        } = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
                 self.values.forget(&held);
@@ -518,23 +527,13 @@ impl<'s> Frames<'s> {
     /// Finds what every key of the batch names: the cell of each written
     /// and each deleted node, the child of each link, and the root of each
     /// Merk, by a hint that is still good or by the key (PN8).
-    #[allow(clippy::type_complexity)]
     fn resolve<'a>(
         &mut self,
         path: &WritePath<'s>,
         resolver: &Resolver<'a>,
         total: usize,
         held: &mut Vec<lignin_format::value_log::PendingValue>,
-    ) -> Result<
-        (
-            Vec<Resolved<'a>>,
-            Vec<Vec<Option<Target>>>,
-            Vec<CellAddress>,
-            Vec<Option<RootWrite>>,
-            Vec<Option<Target>>,
-        ),
-        TxnError,
-    > {
+    ) -> Result<ResolvedBatch<'a>, TxnError> {
         let merks = resolver.merks;
         let mut root_targets = Vec::with_capacity(merks.len());
         for merk in 0..merks.len() {
@@ -623,6 +622,12 @@ impl<'s> Frames<'s> {
                 })
             })
             .collect();
-        Ok((nodes, hosted, removed, root_writes, root_targets))
+        Ok(ResolvedBatch {
+            nodes,
+            hosted,
+            removed,
+            root_writes,
+            root_targets,
+        })
     }
 }

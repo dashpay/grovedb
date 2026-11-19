@@ -24,7 +24,7 @@ use super::{
     error::{BatchError, TxnError},
     frames::{stored_key, Frames},
     key::{Column, Subtree, Unit},
-    pages::{find, CommittedPages, NodePages},
+    pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
     view::NodeView,
     write::{Applied, Batch, ValuePut},
@@ -361,12 +361,7 @@ impl<'s> WriteTxn<'s> {
             let subtree = state.set.entry(id).unit.subtree;
             let root = (path.directory.committed_root(&committed, &subtree))
                 .map_err(TxnError::Directory)?;
-            let mut pages = CommittedPages {
-                loader: path.loader,
-                at: version,
-                lease,
-                buffers: &mut state.buffers,
-            };
+            let mut pages = path.committed_pages(version, lease, &mut state.buffers);
             // No commit wrote the key since the transaction did, or the
             // entry would be met: the node it kept the value of is there.
             let address = find(&mut pages, root, state.set.key(id))?
@@ -527,12 +522,8 @@ impl<'s> WriteTxn<'s> {
                     Own::Deleted | Own::Put(_) => None,
                     Own::Unwritten => {
                         let root = committed_root(&subtree)?;
-                        let mut pages = CommittedPages {
-                            loader: path.loader,
-                            at: op.at,
-                            lease: state.lease,
-                            buffers: &mut state.buffers,
-                        };
+                        let mut pages =
+                            path.committed_pages(op.at, state.lease, &mut state.buffers);
                         match find(&mut pages, root, node.key)? {
                             None => None,
                             Some(address) => Some(
@@ -683,21 +674,8 @@ impl<'s> WriteTxn<'s> {
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
             Own::Unwritten => {
                 let lease = state.lease;
-                let mut pages = CommittedPages {
-                    loader: path.loader,
-                    at: op.at,
-                    lease,
-                    buffers: &mut state.buffers,
-                };
-                let followed = hint
-                    .filter(|handle| handle.lease() == lease)
-                    .and_then(|handle| {
-                        let resolved = pages.page(handle.page(), |page| {
-                            let node = page.resolve(handle)?;
-                            (node.key() == key).then(|| node.address())
-                        });
-                        resolved.ok().flatten()
-                    });
+                let mut pages = path.committed_pages(op.at, lease, &mut state.buffers);
+                let followed = hint.and_then(|handle| follow(&mut pages, lease, handle, key));
                 let at = match followed {
                     Some(at) => {
                         state.followed += 1;
@@ -729,12 +707,9 @@ impl<'s> WriteTxn<'s> {
         // the transaction may have rebuilt the tree around it (RD10). It is
         // read under a lease of its own, so no handle to it is followed
         // into the transaction's frames.
-        let mut pages = CommittedPages {
-            loader: self.path.loader,
-            at: op.at,
-            lease: Lease::take(),
-            buffers: &mut state.buffers,
-        };
+        let mut pages = self
+            .path
+            .committed_pages(op.at, Lease::take(), &mut state.buffers);
         let at = find(&mut pages, root, key)?;
         show_committed(&mut pages, at, read)
     }
@@ -768,12 +743,9 @@ impl<'s> WriteTxn<'s> {
             return Ok(None);
         }
         let unit = Unit::data(subtree);
-        let mut pages = CommittedPages {
-            loader: self.path.loader,
-            at: op.at,
-            lease: state.lease,
-            buffers: &mut state.buffers,
-        };
+        let mut pages = self
+            .path
+            .committed_pages(op.at, state.lease, &mut state.buffers);
         let mut key = std::mem::take(&mut state.key);
         key.clear();
         let child = pages.page(parent.page(), |page| {

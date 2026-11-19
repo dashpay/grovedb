@@ -7,7 +7,7 @@ use lignin_format::{
 };
 use lignin_tree::node::{NodeHandle, NodeRef};
 
-use super::write_set::{EntryId, Kind, LinkEntry, NodeEntry, WriteSet};
+use super::write_set::{hash_of, EntryId, Kind, LinkEntry, NodeEntry, WriteSet};
 
 /// The value of a node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,7 +124,7 @@ impl<'a> NodeView<'a> {
     pub fn value_hash(&self) -> &'a Hash {
         match self.source {
             Source::Cell { node, .. } => node.value_hash(),
-            Source::Record { set, id } => hash(set.bytes_at(Self::entry(set, id).value_hash)),
+            Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).value_hash)),
         }
     }
 
@@ -132,7 +132,7 @@ impl<'a> NodeView<'a> {
     pub fn kv_hash(&self) -> &'a Hash {
         match self.source {
             Source::Cell { node, .. } => node.kv_hash(),
-            Source::Record { set, id } => hash(set.bytes_at(Self::entry(set, id).kv_hash)),
+            Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).kv_hash)),
         }
     }
 
@@ -178,7 +178,7 @@ impl<'a> NodeView<'a> {
                     Side::Right => node.right,
                 };
                 link.map(|link| LinkView {
-                    hash: hash(set.bytes_at(link.hash)),
+                    hash: hash_of(set.bytes_at(link.hash)),
                     heights: link.heights,
                     child_key_len: link.key.len() as u8,
                     aggregate: set.bytes_at(link.aggregate),
@@ -203,8 +203,4 @@ impl<'a> NodeView<'a> {
     pub fn is_record(&self) -> bool {
         matches!(self.source, Source::Record { .. })
     }
-}
-
-fn hash(bytes: &[u8]) -> &Hash {
-    bytes.try_into().expect("a hash was put in whole")
 }

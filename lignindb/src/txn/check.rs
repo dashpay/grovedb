@@ -52,15 +52,11 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
             if let ValuePut::Inline(value) | ValuePut::OutOfLine(value) = node.value {
                 value_len(value.len())?;
             }
-            if !keys.insert((unit, node.key)) {
-                return Err(BatchError::KeyTwice { unit });
-            }
+            once(&mut keys, unit, node.key)?;
         }
         for key in merk.removed {
             key_len(key)?;
-            if !keys.insert((unit, key)) {
-                return Err(BatchError::KeyTwice { unit });
-            }
+            once(&mut keys, unit, key)?;
         }
         if let RootPut::Set(root) = merk.root {
             if merk.nodes.is_empty() && merk.removed.is_empty() {
@@ -77,17 +73,24 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         match *record {
             RecordWrite::Put { unit, key, value } => {
                 value_len(value.len())?;
-                if !keys.insert((unit, key)) {
-                    return Err(BatchError::KeyTwice { unit });
-                }
+                once(&mut keys, unit, key)?;
             }
-            RecordWrite::Delete { unit, key } => {
-                if !keys.insert((unit, key)) {
-                    return Err(BatchError::KeyTwice { unit });
-                }
-            }
+            RecordWrite::Delete { unit, key } => once(&mut keys, unit, key)?,
             RecordWrite::DeleteRange { .. } => {}
         }
     }
     Ok(())
+}
+
+/// Adds the record key `key` of `unit` to `keys`, which holds the keys the
+/// batch has written before it.
+fn once<'a>(
+    keys: &mut HashSet<(Unit, &'a [u8])>,
+    unit: Unit,
+    key: &'a [u8],
+) -> Result<(), BatchError> {
+    match keys.insert((unit, key)) {
+        true => Ok(()),
+        false => Err(BatchError::KeyTwice { unit }),
+    }
 }

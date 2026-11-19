@@ -21,7 +21,7 @@ use lignin_store::{
 };
 use lignin_tree::{
     fragment::{FragmentError, PageMut, Pages, Values},
-    node::{ChangeSink, Lease, NodeError, NodePage, NodePageMut},
+    node::{ChangeSink, Lease, NodeError, NodeHandle, NodePage, NodePageMut},
 };
 
 use super::error::TxnError;
@@ -91,6 +91,24 @@ pub(crate) fn find<P: NodePages>(
         }
     }
     Err(TxnError::Damaged("a Merk deeper than any tree of nodes"))
+}
+
+/// The address `handle` names, if the handle is of `lease` and its cell
+/// has the key `key`.
+pub(crate) fn follow<P: NodePages>(
+    pages: &mut P,
+    lease: Lease,
+    handle: NodeHandle,
+    key: &[u8],
+) -> Option<CellAddress> {
+    if handle.lease() != lease {
+        return None;
+    }
+    let followed = pages.page(handle.page(), |page| {
+        let node = page.resolve(handle)?;
+        (node.key() == key).then(|| node.address())
+    });
+    followed.ok().flatten()
 }
 
 /// The sink of one private copy: every change the page took is put into
@@ -468,11 +486,16 @@ impl<'s> TreeValues<'s> {
     /// its place in the log.
     pub(crate) fn hold(&mut self, value: Arc<[u8]>) -> Result<PendingValue, TxnError> {
         let len = lignin_format::value_log::checked_value_len(value.len())?;
-        self.next += 1;
-        let name = (NEW_VALUE | self.next).to_le_bytes();
+        let name = self.next_name();
         let pending = PendingValue::new(name, len)?;
         self.held.insert(name, value);
         Ok(pending)
+    }
+
+    /// A name that no value of the transaction has had.
+    fn next_name(&mut self) -> [u8; PendingValue::ID_LEN] {
+        self.next += 1;
+        (NEW_VALUE | self.next).to_le_bytes()
     }
 
     /// Lets go of values that were taken for a write that was then refused.
@@ -570,8 +593,7 @@ impl Values for TreeValues<'_> {
                     self.failed.get_or_insert(error);
                     // What stands in the cell of a write that has failed:
                     // the caller gives the pages up.
-                    self.next += 1;
-                    PendingValue::new((NEW_VALUE | self.next).to_le_bytes(), pointer.value_len())
+                    PendingValue::new(self.next_name(), pointer.value_len())
                         .expect("a named value of a pointer's length")
                 })
             }

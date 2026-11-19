@@ -218,7 +218,8 @@ impl<'a> OpBatch<'a> {
     }
 }
 
-fn hash_of(bytes: &[u8]) -> &Hash {
+/// The 32 bytes of a hash that was put in the arena.
+pub(crate) fn hash_of(bytes: &[u8]) -> &Hash {
     bytes.try_into().expect("a hash was put in whole")
 }
 
@@ -626,16 +627,21 @@ impl WriteSet {
         (self.merks.iter().rev().find_map(set)).map(|root| root.is_some())
     }
 
-    fn range_holds(&self, id: EntryId, key: &[u8]) -> bool {
+    /// The first key of the range delete `id`, and the key it ends before.
+    fn range_bounds(&self, id: EntryId) -> (&[u8], Option<&[u8]>) {
         let entry = self.entry(id);
         let Kind::Range { end } = entry.kind else {
             unreachable!("the ranges of a unit are range deletes");
         };
-        in_range(
-            key,
+        (
             self.arena.get(entry.key),
             end.map(|end| self.arena.get(end)),
         )
+    }
+
+    fn range_holds(&self, id: EntryId, key: &[u8]) -> bool {
+        let (start, end) = self.range_bounds(id);
+        in_range(key, start, end)
     }
 
     /// The transaction's newest write that covers the record key `key` of
@@ -786,23 +792,13 @@ impl WriteSet {
             let Some(theirs) = keys.units.get(unit) else {
                 continue;
             };
-            let bounds = |id: EntryId| {
-                let entry = self.entry(id);
-                let Kind::Range { end } = entry.kind else {
-                    unreachable!("the ranges of a unit are range deletes");
-                };
-                (
-                    self.arena.get(entry.key),
-                    end.map(|end| self.arena.get(end)),
-                )
-            };
             for key in &theirs.keys {
                 if let Some(id) = index.keys.get(key) {
                     chain(*id, &mut met);
                 }
             }
             for range in &index.ranges {
-                let (start, end) = bounds(*range);
+                let (start, end) = self.range_bounds(*range);
                 let meets = theirs.keys_in(start, end).next().is_some()
                     || (theirs.ranges.iter())
                         .any(|(from, to)| ranges_meet((from, to.as_deref()), (start, end)));
@@ -836,12 +832,8 @@ impl WriteSet {
                 set.key(*unit, key);
             }
             for range in &index.ranges {
-                let entry = self.entry(*range);
-                let Kind::Range { end } = entry.kind else {
-                    unreachable!("the ranges of a unit are range deletes");
-                };
-                let end = end.map(|end| self.arena.get(end));
-                set.range(*unit, self.arena.get(entry.key), end);
+                let (start, end) = self.range_bounds(*range);
+                set.range(*unit, start, end);
             }
         }
         set
