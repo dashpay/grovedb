@@ -686,7 +686,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod test {
     use grovedb_version::version::GroveVersion;
 

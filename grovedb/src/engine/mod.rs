@@ -48,6 +48,17 @@ pub use self::rocksdb::RocksDbEngine;
 #[cfg(not(feature = "rocksdb_storage"))]
 pub enum NoEngine {}
 
+/// The engine [`GroveDb`](crate::GroveDb) runs on where none is named.
+///
+/// It is [`RocksDbEngine`]. In GroveDB's own unit tests it is the engine the
+/// suite was built for, so that the tests, which name no engine, run on each
+/// engine in turn (`grovedb/test-engines.txt`).
+#[cfg(all(feature = "rocksdb_storage", not(test)))]
+pub type DefaultEngine = RocksDbEngine;
+/// The engine the test suite of this build runs on.
+#[cfg(all(feature = "rocksdb_storage", test))]
+pub type DefaultEngine = crate::tests::SuiteEngine;
+
 /// The error of a node store call that GroveDB makes itself, where it used to
 /// call the storage context: an error of the storage stays
 /// [`Error::StorageError`](crate::Error::StorageError), as it was before the

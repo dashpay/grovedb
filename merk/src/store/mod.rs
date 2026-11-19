@@ -11,7 +11,7 @@
 pub mod kv;
 #[cfg(test)]
 pub(crate) mod mem;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 pub(crate) mod recording;
 #[cfg(test)]
 mod tests;
@@ -36,7 +36,7 @@ pub use grovedb_storage::RawIterator as NodeCursor;
 
 /// The record a store's cursor shows under `key`, for tests that measure or
 /// decode stored nodes.
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 pub(crate) fn stored_record<'db, S: NodeStore<'db>>(store: &S, key: &[u8]) -> Option<Vec<u8>> {
     let mut cursor = store.cursor();
     cursor.seek(key).unwrap();

@@ -245,7 +245,7 @@ impl<'tx, E: Engine> SubtreeStateSyncInfo<'tx, E> {
 /// Struct governing the state synchronization process.
 pub struct MultiStateSyncSession<
     'db,
-    #[cfg(feature = "rocksdb_storage")] E: Engine = crate::RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E: Engine = crate::engine::DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E: Engine,
 > {
     /// GroveDb instance to apply changes to

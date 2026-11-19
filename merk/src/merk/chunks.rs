@@ -478,7 +478,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod test {
     use super::*;
     use crate::{

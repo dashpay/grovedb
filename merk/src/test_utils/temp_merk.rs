@@ -28,34 +28,27 @@
 
 //! Temp merk test utils
 
-#[cfg(feature = "full")]
 use std::ops::{Deref, DerefMut};
 
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
-use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    StorageBatch,
-};
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
-use crate::Merk;
-use crate::{tree::kv::ValueDefinedCostType, TreeType};
+use super::engine::{SuiteBatch, SuiteSubtree, SuiteTransaction, TempEngine, TestEngine};
+use crate::{tree::kv::ValueDefinedCostType, Merk, TreeType};
 
-#[cfg(feature = "full")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
+///
+/// The Merk is on the engine the suite runs on
+/// ([`SuiteEngine`](super::SuiteEngine)).
 pub struct TempMerk {
-    storage: &'static TempStorage,
-    batch: &'static StorageBatch,
-    merk: Merk<PrefixedRocksDbTransactionContext<'static>>,
-    tx: &'static <RocksDbStorage as Storage<'static>>::Transaction,
+    engine: &'static TempEngine,
+    batch: &'static SuiteBatch,
+    merk: Merk<SuiteSubtree<'static>>,
+    tx: &'static SuiteTransaction<'static>,
     /// The tree type to preserve across commits
     pub tree_type: TreeType,
 }
 
-#[cfg(feature = "full")]
 impl TempMerk {
     /// Opens a `TempMerk` at the given file path, creating a new one if it
     /// does not exist.
@@ -65,12 +58,12 @@ impl TempMerk {
 
     /// Opens a `TempMerk` with a specific tree type.
     pub fn new_with_tree_type(grove_version: &GroveVersion, tree_type: TreeType) -> Self {
-        let storage = Box::leak(Box::new(TempStorage::new()));
-        let batch = Box::leak(Box::new(StorageBatch::new()));
-        let tx = Box::leak(Box::new(storage.start_transaction()));
+        let engine = Box::leak(Box::new(TempEngine::new()));
+        let batch = Box::leak(Box::new(SuiteBatch::default()));
+        let tx = Box::leak(Box::new(engine.start_transaction()));
 
-        let context = storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(batch), tx)
+        let context = engine
+            .subtree(SubtreePath::empty(), Some(batch), tx)
             .unwrap();
 
         let merk = Merk::open_base(
@@ -82,7 +75,7 @@ impl TempMerk {
         .unwrap()
         .unwrap();
         TempMerk {
-            storage,
+            engine,
             merk,
             batch,
             tx,
@@ -92,26 +85,23 @@ impl TempMerk {
 
     /// Commits pending batch operations.
     pub fn commit(&mut self, grove_version: &GroveVersion) {
-        let batch: Box<StorageBatch> =
-            unsafe { Box::from_raw(self.batch as *const _ as *mut StorageBatch) };
-        let tx: Box<<RocksDbStorage as Storage<'static>>::Transaction> = unsafe {
-            Box::from_raw(
-                self.tx as *const _ as *mut <RocksDbStorage as Storage<'static>>::Transaction,
-            )
-        };
-        self.storage
-            .commit_multi_context_batch(*batch, Some(self.tx))
+        let batch: Box<SuiteBatch> =
+            unsafe { Box::from_raw(self.batch as *const _ as *mut SuiteBatch) };
+        let tx: Box<SuiteTransaction<'static>> =
+            unsafe { Box::from_raw(self.tx as *const _ as *mut SuiteTransaction<'static>) };
+        self.engine
+            .apply_batch(*batch, self.tx)
             .unwrap()
             .expect("unable to commit batch");
-        self.storage
+        self.engine
             .commit_transaction(*tx)
             .unwrap()
             .expect("unable to commit transaction");
-        self.batch = Box::leak(Box::new(StorageBatch::new()));
-        self.tx = Box::leak(Box::new(self.storage.start_transaction()));
+        self.batch = Box::leak(Box::new(SuiteBatch::default()));
+        self.tx = Box::leak(Box::new(self.engine.start_transaction()));
         let context = self
-            .storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(self.batch), self.tx)
+            .engine
+            .subtree(SubtreePath::empty(), Some(self.batch), self.tx)
             .unwrap();
         self.merk = Merk::open_base(
             context,
@@ -124,42 +114,37 @@ impl TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
 impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
-            let batch = Box::from_raw(self.batch as *const _ as *mut StorageBatch);
+            let batch = Box::from_raw(self.batch as *const _ as *mut SuiteBatch);
 
-            let tx: Box<<RocksDbStorage as Storage<'static>>::Transaction> = Box::from_raw(
-                self.tx as *const _ as *mut <RocksDbStorage as Storage<'static>>::Transaction,
-            );
+            let tx: Box<SuiteTransaction<'static>> =
+                Box::from_raw(self.tx as *const _ as *mut SuiteTransaction<'static>);
 
-            let _ = self.storage.commit_multi_context_batch(*batch, Some(&tx));
-            let _ = self.storage.commit_transaction(*tx).unwrap();
-            drop(Box::from_raw(self.storage as *const _ as *mut TempStorage));
+            let _ = self.engine.apply_batch(*batch, &tx);
+            let _ = self.engine.commit_transaction(*tx).unwrap();
+            drop(Box::from_raw(self.engine as *const _ as *mut TempEngine));
         }
     }
 }
 
-#[cfg(feature = "full")]
 impl Default for TempMerk {
     fn default() -> Self {
         Self::new(GroveVersion::latest())
     }
 }
 
-#[cfg(feature = "full")]
 impl Deref for TempMerk {
-    type Target = Merk<PrefixedRocksDbTransactionContext<'static>>;
+    type Target = Merk<SuiteSubtree<'static>>;
 
-    fn deref(&self) -> &Merk<PrefixedRocksDbTransactionContext<'static>> {
+    fn deref(&self) -> &Merk<SuiteSubtree<'static>> {
         &self.merk
     }
 }
 
-#[cfg(feature = "full")]
 impl DerefMut for TempMerk {
-    fn deref_mut(&mut self) -> &mut Merk<PrefixedRocksDbTransactionContext<'static>> {
+    fn deref_mut(&mut self) -> &mut Merk<SuiteSubtree<'static>> {
         &mut self.merk
     }
 }

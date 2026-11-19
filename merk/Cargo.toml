@@ -32,6 +32,7 @@ integer-encoding = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true, optional = true }
 rand = { workspace = true, optional = true }
+tempfile = { workspace = true, optional = true }
 byteorder = { workspace = true }
 blake3 = { workspace = true, optional = true }
 ed = { workspace = true, optional = true }
@@ -54,13 +55,15 @@ minimal = [
 ]
 rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
 full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
-# `test_utils::TempMerk` opens a RocksDB storage.
-test_utils = ["rand", "rocksdb_storage"]
+# The engines of `test_utils` (`merk/test-engines.txt`) are on RocksDB.
+test_utils = ["rand", "tempfile", "rocksdb_storage"]
 colored_debug = ["colored"]
 verify = ["ed", "blake3"]
 grovedbg = ["full"]
 
 [dev-dependencies]
+# For `test_utils` in a test build that has the feature off.
+rand = { workspace = true }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 assert_matches = { workspace = true }

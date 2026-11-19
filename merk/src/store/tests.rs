@@ -1,12 +1,17 @@
+// With no engine in the build, the tests that compare the in-memory store
+// with another are left out, and the helpers only they call are unused.
+#![cfg_attr(not(merk_test_engine), allow(dead_code))]
+
 use std::collections::BTreeMap;
 
 use grovedb_version::version::GroveVersion;
 
 use super::{mem::MemNodeStore, NodeChange, NodeCursor, NodeStore};
+#[cfg(merk_test_engine)]
+use crate::test_utils::TempMerk;
 use crate::{
     merk::{chunks::ChunkProducer, restore::Restorer},
     proofs::Query,
-    test_utils::TempMerk,
     tree::{kv::ValueDefinedCostType, TreeNode},
     KVIterator, Merk, Op, TreeFeatureType, TreeType,
 };
@@ -153,6 +158,7 @@ fn random_batch(
 /// Runs one random history on the in-memory store and on RocksDB. The
 /// in-memory store keeps of each written node only what its change kind
 /// names, so equal records mean every kind told the truth.
+#[cfg(merk_test_engine)]
 fn same_tree_on_both_stores(tree_type: TreeType, seed: u64, reopen_every: usize) -> [u32; 4] {
     let grove_version = GroveVersion::latest();
     let store = MemNodeStore::new();
@@ -262,6 +268,7 @@ fn a_merk_can_be_written_from_one_thread_after_another() {
 /// node is one this Merk created.
 const REOPEN_EVERY: [usize; 3] = [1, 5, usize::MAX];
 
+#[cfg(merk_test_engine)]
 #[test]
 fn a_merk_gives_the_same_tree_on_a_store_that_keeps_only_what_changed() {
     let mut seen_by_reopening = [[0; 4]; 3];
@@ -301,6 +308,7 @@ fn a_merk_gives_the_same_tree_on_a_store_that_keeps_only_what_changed() {
 /// functions, on the in-memory store and on RocksDB: items, sum items,
 /// references and subtrees, whose node value hash is given and changes
 /// while their bytes stay.
+#[cfg(feature = "rocksdb_storage")]
 fn same_elements_on_both_stores(tree_type: TreeType, seed: u64, reopen_every: usize) -> [u32; 4] {
     use grovedb_element::{reference_path::ReferencePathType, Element};
     use grovedb_path::SubtreePath;
@@ -415,6 +423,7 @@ fn same_elements_on_both_stores(tree_type: TreeType, seed: u64, reopen_every: us
     seen
 }
 
+#[cfg(feature = "rocksdb_storage")]
 #[test]
 fn elements_give_the_same_tree_on_a_store_that_keeps_only_what_changed() {
     for (seed, tree_type) in [TreeType::NormalTree, TreeType::SumTree]

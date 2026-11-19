@@ -40,6 +40,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn make_secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
         let mut k = Vec::with_capacity(8 + item_key.len());
         k.extend_from_slice(&count.to_be_bytes());
@@ -50,6 +51,7 @@ mod tests {
     /// Manually delete an entry from a PCIT secondary at the given
     /// secondary key, then commit. Used to introduce drift between
     /// primary and secondary for content-consistency testing.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcit_secondary_delete(
         db: &crate::GroveDb,
         cidx_primary_path: &[&[u8]],
@@ -109,6 +111,7 @@ mod tests {
     }
 
     /// Manually insert a bogus orphan into a PCIT secondary.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcit_secondary_insert_orphan(
         db: &crate::GroveDb,
         cidx_primary_path: &[&[u8]],
@@ -283,6 +286,7 @@ mod tests {
     // PCIT corruption detection
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcit_detects_primary_orphan() {
         // Delete a secondary entry that the primary still has — surfaces
@@ -334,6 +338,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcit_detects_secondary_orphan() {
         let grove_version = GroveVersion::latest();
@@ -379,6 +384,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcit_detects_count_mismatch() {
         let grove_version = GroveVersion::latest();
@@ -435,6 +441,7 @@ mod tests {
         assert_eq!(&entry.2[24..32], &42u64.to_be_bytes());
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcit_detects_secondary_duplicate() {
         // Insert two secondary rows pointing at the same primary key
@@ -1200,6 +1207,7 @@ mod tests {
 
     /// Manually delete an entry from a PSIT secondary at the given
     /// secondary key.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_psit_secondary_delete(
         db: &crate::GroveDb,
         psit_primary_path: &[&[u8]],
@@ -1255,6 +1263,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn psit_secondary_key(sum: i64, item_key: &[u8]) -> Vec<u8> {
         // Mirror of `make_axis_secondary_key(IndexAxis::Sum, ...)` —
         // 8-byte sortable sum encoding followed by the item key.
@@ -1265,6 +1274,7 @@ mod tests {
         k
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn delete_psit_secondary_row_and_get_root_key(
         db: &crate::GroveDb,
         psit_primary_path: &[&[u8]],
@@ -1313,6 +1323,7 @@ mod tests {
         new_root_key
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_psit_detects_secondary_drift() {
         // PSIT mirror is via i64-keyed secondary. Delete the secondary
@@ -1364,6 +1375,7 @@ mod tests {
         assert!(!issues.is_empty(), "expected H1-A drift detection");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_psit_detects_coherently_rebound_relational_drift() {
         let grove_version = GroveVersion::latest();
@@ -1449,6 +1461,7 @@ mod tests {
     // PCPSIT corruption detection
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn pcpsit_count_secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
         let prefix = grovedb_element::indexed::encode_count_sort_key(count);
         let mut k = Vec::with_capacity(prefix.len() + item_key.len());
@@ -1459,6 +1472,7 @@ mod tests {
 
     /// Manually delete an entry from a PCPSIT axis secondary at the
     /// given key, then commit.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcpsit_axis_secondary_delete(
         db: &crate::GroveDb,
         pcpsit_primary_path: &[&[u8]],
@@ -1521,6 +1535,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcpsit_detects_count_axis_drift() {
         // Build PCPSIT with Count axis, populate, then delete one
@@ -1569,6 +1584,7 @@ mod tests {
         assert!(!issues.is_empty(), "expected PCPSIT axis drift detection");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcpsit_detects_sum_axis_drift() {
         // Same shape but Sum axis.
@@ -1621,6 +1637,7 @@ mod tests {
         assert!(!issues.is_empty(), "expected PCPSIT sum-axis drift");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcpsit_detects_avg_axis_drift() {
         // Same shape as the count/sum drift tests but for the Avg
@@ -1686,6 +1703,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcit_empty_secondary_detects_orphan_insert() {
         // Insert a bogus orphan into the PCIT secondary at a key that
@@ -2003,6 +2021,7 @@ mod tests {
     /// re-derives the parent's value_hash from the drifted secondary's
     /// current root, at which point the chain is internally consistent again
     /// and the drift is invisible without a per-entry content walk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_psit_drift_survives_hash_reheal_and_is_still_detected() {
         let grove_version = GroveVersion::latest();
@@ -2077,6 +2096,7 @@ mod tests {
     /// drift on ONE axis must remain visible after a later write re-derives
     /// the axes digest over the drifted axis, and must be attributed to the
     /// axis it happened on.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcpsit_axis_drift_survives_hash_reheal_and_names_the_axis() {
         let grove_version = GroveVersion::latest();

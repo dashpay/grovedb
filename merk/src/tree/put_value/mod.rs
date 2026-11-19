@@ -185,7 +185,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_costs::storage_cost::{
         removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},
@@ -196,14 +196,11 @@ mod tests {
 
     use grovedb_element::Element;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-        Storage, StorageBatch,
-    };
 
     use crate::{
         element::{costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions},
         store::NodeStore,
+        test_utils::{SuiteBatch, SuiteEngine, SuiteTransaction, TempEngine, TestEngine},
         tree::hash::NULL_HASH,
         Error, Merk, TreeType,
     };
@@ -249,16 +246,16 @@ mod tests {
     /// node (and runs the physical-size verification), so its cost is the
     /// operation's storage cost.
     fn step<'db>(
-        storage: &'db RocksDbStorage,
-        tx: &'db <RocksDbStorage as Storage<'db>>::Transaction,
+        storage: &'db SuiteEngine,
+        tx: &'db SuiteTransaction<'db>,
         tree_type: TreeType,
         element: &Element,
         grove_version: &GroveVersion,
     ) -> Result<StorageCost, Error> {
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), tx)
+                .subtree(SubtreePath::empty(), Some(&batch), tx)
                 .unwrap(),
             tree_type,
             Some(&Element::value_defined_cost_for_serialized_value),
@@ -269,7 +266,7 @@ mod tests {
         put(&mut merk, element, grove_version)?;
         drop(merk);
         storage
-            .commit_multi_context_batch(batch, Some(tx))
+            .apply_batch(batch, tx)
             .cost_as_result()
             .map(|cost| cost.storage_cost)
             .map_err(Error::StorageError)
@@ -284,7 +281,7 @@ mod tests {
         after: &Element,
         grove_version: &GroveVersion,
     ) -> Result<StorageCost, Error> {
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         step(&storage, &tx, tree_type, before, grove_version).expect("predecessor");
         step(&storage, &tx, tree_type, after, grove_version)
@@ -468,7 +465,7 @@ mod tests {
         }
         // A brand-new node never goes through `put_value`, so first inserts
         // are unaffected by the gate.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         step(&storage, &tx, TreeType::SumTree, &big_item(), &future).expect("fresh insert");
     }

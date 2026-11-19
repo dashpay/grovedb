@@ -20,16 +20,32 @@ use crate::{
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_commitment_tree::CommitmentTree;
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_path::SubtreePath;
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_storage::{
-    rocksdb_storage::{Options, RocksDbStorage, SstFileWriter},
+    rocksdb_storage::{Options, SstFileWriter},
     RawIterator, Storage, StorageContext,
 };
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use tempfile::TempDir;
 
 /// Default chunk power for tests (2^10 = 1024, large enough that compaction
@@ -2589,7 +2605,11 @@ fn test_commitment_compaction_transaction_rollback() {
 // the source's, byte-for-byte, demonstrating the snapshot-bootstrap contract
 // described in `replace_subtree_root.rs`'s module docs.
 
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 #[test]
 fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
     let grove_version = GroveVersion::latest();
@@ -2631,7 +2651,7 @@ fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
     // --- Compute combined_root by re-opening CommitmentTree on A's storage ---
     let pool_segments: [&[u8]; 1] = [b"pool"];
     let subtree_path = SubtreePath::from(pool_segments.as_slice());
-    let prefix: [u8; 32] = RocksDbStorage::build_prefix(subtree_path.clone()).value;
+    let prefix: [u8; 32] = grovedb_storage::prefix::build_prefix(subtree_path.clone()).value;
 
     let tx_a = db_a.start_transaction();
     let ctx_open = db_a

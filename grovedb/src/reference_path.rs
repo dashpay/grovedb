@@ -218,7 +218,7 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
     .wrap_with_cost(cost)
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use grovedb_element::{reference_path::ReferencePathType, Element};
     use grovedb_merk::proofs::Query;

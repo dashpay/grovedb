@@ -33,7 +33,7 @@ pub mod proofs;
 pub mod store;
 
 /// Various helpers useful for tests or benchmarks.
-#[cfg(feature = "test_utils")]
+#[cfg(any(feature = "test_utils", all(test, feature = "minimal")))]
 pub mod test_utils;
 
 /// The core tree data structure.

@@ -819,7 +819,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(all(test, feature = "full"))]
+#[cfg(all(test, feature = "full", grovedb_test_engine))]
 mod test {
     use std::option::Option::None;
 
@@ -828,31 +828,28 @@ mod test {
         estimated_costs::average_case_costs::add_average_case_get_merk_node,
         test_utils::make_batch_seq, tree::kv::ValueDefinedCostType, tree_type::TreeType, Merk,
     };
-    use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength, Storage, StorageBatch,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
     use crate::{
         batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
-        tests::{common::EMPTY_PATH, TEST_LEAF},
-        Element, GroveDb,
+        tests::{common::EMPTY_PATH, make_empty_grovedb, SuiteBatch, TEST_LEAF},
+        Element, Engine, GroveDb,
     };
 
     #[test]
     fn test_get_merk_node_average_case() {
         let grove_version = GroveVersion::latest();
         // Open a merk and insert 10 elements.
-        let tmp_dir = TempDir::new().expect("cannot open tempdir");
-        let storage = RocksDbStorage::default_rocksdb_with_path(tmp_dir.path())
-            .expect("cannot open rocksdb storage");
-        let batch = StorageBatch::new();
+        let db = make_empty_grovedb();
+        let storage = db.engine();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let mut merk = Merk::open_base(
             storage
-                .get_transactional_storage_context(EMPTY_PATH, Some(&batch), &transaction)
+                .subtree(EMPTY_PATH, Some(&batch), &transaction)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -866,16 +863,11 @@ mod test {
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
         let merk = Merk::open_base(
-            storage
-                .get_transactional_storage_context(EMPTY_PATH, None, &transaction)
-                .unwrap(),
+            storage.subtree(EMPTY_PATH, None, &transaction).unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             grove_version,

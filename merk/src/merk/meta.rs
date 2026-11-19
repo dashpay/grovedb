@@ -40,7 +40,7 @@ impl<'db, S: NodeStore<'db>> Merk<S> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;

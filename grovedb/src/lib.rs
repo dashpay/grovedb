@@ -133,12 +133,13 @@
 #![allow(clippy::result_large_err)]
 // Intentional drops to release borrows before re-borrowing
 #![allow(clippy::drop_non_drop)]
-// A test build with no storage engine compiles the tests that open no
-// database. What only the other tests call or import is unused there.
-#![cfg_attr(
-    all(test, not(feature = "rocksdb_storage")),
-    allow(dead_code, unused_imports)
-)]
+// A test build whose suite has no engine compiles the tests that open no
+// database. What only the other tests call is unused there.
+#![cfg_attr(all(test, not(grovedb_test_engine)), allow(dead_code))]
+// A test build for an engine other than RocksDB, or for none, leaves out the
+// tests that reach under RocksDB, and with them the only users of some
+// imports.
+#![cfg_attr(all(test, not(grovedb_test_engine = "rocksdb")), allow(unused_imports))]
 
 #[cfg(feature = "engine_generic")]
 pub mod batch;
@@ -171,9 +172,9 @@ pub mod reference_path;
 #[cfg(feature = "engine_generic")]
 /// State replication and synchronization support.
 pub mod replication;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests;
-#[cfg(all(test, feature = "engine_generic", not(feature = "rocksdb_storage")))]
+#[cfg(all(test, feature = "engine_generic", not(grovedb_test_engine)))]
 #[path = "tests_without_engine.rs"]
 mod tests;
 #[cfg(feature = "engine_generic")]
@@ -196,6 +197,8 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(feature = "rocksdb_storage")]
+use engine::DefaultEngine;
 #[cfg(feature = "engine_generic")]
 pub use engine::Engine;
 #[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
@@ -347,7 +350,7 @@ type Hash = [u8; 32];
 /// verifiers and the estimated costs.
 #[cfg(feature = "engine_generic")]
 pub struct GroveDb<
-    #[cfg(feature = "rocksdb_storage")] E: Engine = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E: Engine = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E = NoEngine,
 > {
     db: E,
@@ -366,7 +369,7 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 #[cfg(feature = "engine_generic")]
 pub type Transaction<
     'db,
-    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E,
 > = <E as Engine>::Transaction<'db>;
 /// An optional transaction: `None` runs the operation in a transaction of
@@ -375,7 +378,7 @@ pub type Transaction<
 pub type TransactionArg<
     'db,
     'a,
-    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E,
 > = Option<&'a Transaction<'db, E>>;
 
@@ -482,7 +485,12 @@ impl GroveDb {
         let weak = Arc::downgrade(self);
         start_visualizer(weak, addr);
     }
+}
 
+/// The hatches to the storage of the RocksDB engine. No other engine has
+/// them, so they are on that engine by name.
+#[cfg(feature = "unsafe-dump-load")]
+impl GroveDb<RocksDbEngine> {
     /// Reborrow the underlying [`grovedb_storage::rocksdb_storage::RocksDbStorage`]
     /// for callers that need to use the public [`grovedb_storage::Storage`]
     /// trait directly — notably to open a [`grovedb_storage::StorageContext`]
@@ -4884,7 +4892,7 @@ mod aggregate_consistency_labels_tests {
 }
 
 /// Test-only helpers for verifying internal storage state.
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 impl GroveDb {
     /// Read a raw key from a subtree's transactional storage context.
     ///
