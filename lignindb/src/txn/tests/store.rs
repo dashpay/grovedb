@@ -192,6 +192,9 @@ pub struct Counts {
     /// Pages freed that no segment ever held, under an id that was freed
     /// before.
     pub freed_unwritten: AtomicU64,
+    /// The pointers to hosted roots that the last check of the tree pages
+    /// followed.
+    pub hosted: AtomicU64,
 }
 
 /// How a commit of the test store ended.
@@ -518,6 +521,10 @@ impl Db {
             keys.insert(*subtree, order);
         }
 
+        let hosted = pointers.iter().filter(|(_, to)| root_of.contains_key(to));
+        self.counts
+            .hosted
+            .store(hosted.count() as u64, Ordering::Relaxed);
         // The marks, and the cells nothing reaches.
         let named: BTreeSet<CellAddress> = pointers
             .iter()

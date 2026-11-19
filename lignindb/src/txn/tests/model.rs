@@ -335,6 +335,8 @@ pub struct OwnedMerk {
     pub hosted: BTreeMap<Vec<u8>, Vec<Subtree>>,
     /// Above which length a stated value goes out of line.
     pub out_of_line_above: usize,
+    /// Whether the Merk has a host that the batch does not write.
+    pub anchored: bool,
 }
 
 impl OwnedMerk {
@@ -369,6 +371,7 @@ impl OwnedMerk {
             root: (root != old_root).then_some(root),
             hosted: BTreeMap::new(),
             out_of_line_above: usize::MAX,
+            anchored: false,
         }
     }
 
@@ -437,7 +440,7 @@ impl OwnedBatch {
                     None => RootPut::Keep,
                     Some(root) => RootPut::Set(root.as_deref()),
                 },
-                anchored: false,
+                anchored: merk.anchored,
             })
             .collect();
         let records: Vec<RecordWrite<'_>> = (self.records.iter())

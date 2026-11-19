@@ -7,6 +7,7 @@ mod handles;
 mod random;
 mod reads;
 mod rebase;
+mod trees;
 
 use std::{
     cell::RefCell,
