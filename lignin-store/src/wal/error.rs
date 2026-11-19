@@ -180,6 +180,16 @@ pub enum LogError {
         /// The error the file layer returned.
         source: io::Error,
     },
+    /// The log is not durable up to the place from which it was to be
+    /// kept, so no file before that place was dropped: a crash could take
+    /// the place away, and with it the beginning of what is left of the
+    /// log.
+    NotDurable {
+        /// The place the log was to be kept from.
+        place: LogPlace,
+        /// How far the log is durable.
+        durable: Option<LogPlace>,
+    },
     /// A place was passed to a log it does not come from, or to the log of a
     /// later session.
     WrongStore,
@@ -380,6 +390,23 @@ impl fmt::Display for LogError {
                 "a sync of {} failed, so the log cannot be made durable in this session: {source}",
                 path.display()
             ),
+            Self::NotDurable { place, durable } => {
+                write!(
+                    f,
+                    "the log is to be kept from offset {} of file {}, and is durable ",
+                    place.offset(),
+                    place.file()
+                )?;
+                match durable {
+                    Some(durable) => write!(
+                        f,
+                        "up to offset {} of file {}",
+                        durable.offset(),
+                        durable.file()
+                    ),
+                    None => write!(f, "nowhere"),
+                }
+            }
             Self::WrongStore => write!(f, "a place of another log, or of an earlier session"),
             Self::UnknownFile { file } => write!(f, "no log file {file}"),
             Self::UnknownAddress { address } => {

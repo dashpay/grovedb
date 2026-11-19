@@ -23,7 +23,9 @@ fn a_commit_is_one_append_to_the_log_and_nothing_else() {
         assert_eq!(std.db.log.sync_for_commit(&appended(&item)).unwrap(), None);
         assert_eq!(std.faulty.take_calls(), []);
         longest = longest.max(item.bytes.len());
-        records += lignin_format::wal::scan(&file_image(&item)).unwrap().count();
+        records += lignin_format::wal::scan(&file_image(&item))
+            .unwrap()
+            .count();
         written.push(item);
     }
     assert!(longest > 2000, "groups of several records: {longest}");
@@ -89,7 +91,10 @@ fn the_policy_says_when_a_commit_syncs() {
     assert!(!interval.is_due(Duration::from_millis(9)));
     assert!(interval.is_due(Duration::from_millis(10)));
     assert_eq!(LogOptions::default().sync, SyncPolicy::Never);
-    assert_eq!(LogOptions::default().target_file_len, DEFAULT_TARGET_FILE_LEN);
+    assert_eq!(
+        LogOptions::default().target_file_len,
+        DEFAULT_TARGET_FILE_LEN
+    );
 
     let mut rng = Rng(3);
     for (policy, syncs) in [
@@ -197,9 +202,9 @@ fn what_recovery_would_not_take_is_not_appended() {
     let error = log.append_group(&at, &other).unwrap_err();
     assert!(
         matches!(&error, LogError::Refused { offset: 0, source }
-            if matches!(source, lignin_format::FormatError::Wal(
-                lignin_format::wal::WalError::VersionGap { .. }
-            ))),
+        if matches!(source, lignin_format::FormatError::Wal(
+            lignin_format::wal::WalError::VersionGap { .. }
+        ))),
         "{error}"
     );
 
@@ -334,7 +339,10 @@ fn the_log_turns_to_the_next_file_where_this_one_ends() {
         panic!("three files: {log_end:?}");
     };
     assert_eq!(first.start(), LogStart::FIRST);
-    assert_eq!((first.file(), first.valid_len()), (file_id(1), first_end.offset()));
+    assert_eq!(
+        (first.file(), first.valid_len()),
+        (file_id(1), first_end.offset())
+    );
     assert_eq!(
         second.start(),
         LogStart::new(first_end.offset(), first_latest).unwrap()
@@ -479,7 +487,11 @@ fn a_pending_value_is_read_from_the_log_by_its_address() {
     let pending = writer.carried(&name).unwrap();
     writer.finish();
     std.db.log.append_group(&at, &bytes).unwrap();
-    let read = std.db.log.read_pending(&pending, page(9), &mut buf).unwrap();
+    let read = std
+        .db
+        .log
+        .read_pending(&pending, page(9), &mut buf)
+        .unwrap();
     assert_eq!(read.carried(), Some(name));
     carried += 1;
     assert_eq!(carried, 1);
@@ -543,7 +555,10 @@ fn files_before_the_place_that_is_kept_are_dropped_and_then_deleted() {
 
     // Nothing lies before the first file.
     assert_eq!(std.db.log.drop_before(place(1, FIRST)).unwrap(), []);
-    let keep = written.iter().find(|item| item.at.file() == file_id(3)).unwrap();
+    let keep = written
+        .iter()
+        .find(|item| item.at.file() == file_id(3))
+        .unwrap();
     assert_eq!(
         std.db.log.drop_before(keep.end).unwrap(),
         [file_id(1), file_id(2)]
@@ -573,11 +588,23 @@ fn files_before_the_place_that_is_kept_are_dropped_and_then_deleted() {
             std.db.log.rotate().unwrap();
         }
     }
-    let dropped = std.db.log.drop_before(std.db.log.end().unwrap()).unwrap();
-    assert_eq!(dropped, [file_id(3), file_id(4)], "5 and 6 were not synced");
+    // The log is kept only from a place that is durable: a crash could
+    // take any other away, and the start of its file with it.
+    let end = std.db.log.end().unwrap();
+    let durable = std.db.log.durable().place.unwrap();
+    assert_eq!(durable.file(), file_id(4), "the last roll synced it");
+    let error = std.db.log.drop_before(end).unwrap_err();
+    assert!(
+        matches!(error, LogError::NotDurable { place, durable: found }
+            if place == end && found == Some(durable)),
+        "{error}"
+    );
+    assert_eq!(std.db.log.drop_before(durable).unwrap(), [file_id(3)]);
     std.db.log.sync().unwrap();
-    let dropped = std.db.log.drop_before(std.db.log.end().unwrap()).unwrap();
-    assert_eq!(dropped, [file_id(5), file_id(6)]);
+    assert_eq!(
+        std.db.log.drop_before(end).unwrap(),
+        [file_id(4), file_id(5), file_id(6)]
+    );
 }
 
 #[test]
@@ -609,27 +636,39 @@ fn the_next_session_goes_on_in_a_file_of_its_own() {
     assert_eq!(std.db.log.latest(), latest);
     assert_eq!(std.db.log.end(), None);
     assert!(std.db.log.is_due());
-    assert!(matches!(std.db.log.next_group(), Err(LogError::NoActiveFile)));
+    assert!(matches!(
+        std.db.log.next_group(),
+        Err(LogError::NoActiveFile)
+    ));
     assert!(matches!(
         std.db.change(&mut rng),
         Err(LogError::NoActiveFile)
     ));
     // How far the manifest vouches for the log.
     assert_eq!(std.db.log.durable(), synced);
-    assert_eq!(synced.place, Some(place(end.file().get(), last.valid_len())));
+    assert_eq!(
+        synced.place,
+        Some(place(end.file().get(), last.valid_len()))
+    );
 
-    // The first roll syncs the file the last session left open, names it
+    // The first roll makes durable the file the last session left open,
+    // by writing it again into a file that takes its name. It names it
     // closed where the log was found to end in it, drops the file that
     // session had not turned to yet, and turns to a new one.
     assert!(std.db.roll().unwrap());
     let calls = std.faulty.take_calls();
     let old = log_name(end.file().get());
-    assert!(calls.contains(&(Op::SyncData, old.clone())), "{calls:?}");
+    let copy = format!("{old}.tmp");
+    for op in [Op::Open, Op::Append, Op::SyncAll, Op::Rename] {
+        assert!(calls.contains(&(op, copy.clone())), "{op:?}: {calls:?}");
+    }
     assert!(
-        !calls.iter().any(|(op, name)| *name == old
-            && matches!(op, Op::Append | Op::Write | Op::SetLen)),
-        "a file of an earlier session is never written: {calls:?}"
+        !calls
+            .iter()
+            .any(|(op, name)| *name == old && *op != Op::Read),
+        "a file of an earlier session is only read: {calls:?}"
     );
+    assert!(!FileNames::WAL.dir(&std.db.dir).join(&copy).exists());
     let named = std.db.named();
     let closed = named[named.len() - 3];
     assert_eq!(
@@ -654,7 +693,14 @@ fn the_next_session_goes_on_in_a_file_of_its_own() {
     // And the session after that reads the same log.
     let std = std.reopen(LogOptions::default());
     assert_eq!(std.db.read().0, written);
-    assert_eq!(std.db.log.latest(), written.iter().filter_map(|item| item.version).max().unwrap());
+    assert_eq!(
+        std.db.log.latest(),
+        written
+            .iter()
+            .filter_map(|item| item.version)
+            .max()
+            .unwrap()
+    );
 }
 
 #[test]
@@ -681,7 +727,10 @@ fn an_open_removes_the_log_files_no_manifest_names() {
     // A file that was dropped and not yet deleted: its id is one the
     // manifest records, and whatever it holds goes.
     std.db.roll().unwrap();
-    assert!(!wal.join(log_name(2)).exists(), "it held nothing of the log");
+    assert!(
+        !wal.join(log_name(2)).exists(),
+        "it held nothing of the log"
+    );
     let mut dropped = header(2).to_vec();
     dropped.extend_from_slice(b"items of a file that is gone");
     std::fs::write(wal.join(log_name(2)), &dropped).unwrap();
@@ -716,7 +765,10 @@ fn the_end_of_another_log_does_not_open_this_one() {
 
     // The other database names its file with another length.
     let error = LogStore::open(&other.db.manifest, &end, LogOptions::default()).unwrap_err();
-    assert!(matches!(error, LogError::WrongLogEnd { file } if file == file_id(1)), "{error}");
+    assert!(
+        matches!(error, LogError::WrongLogEnd { file } if file == file_id(1)),
+        "{error}"
+    );
     // An end that knows nothing of a file the manifest names, and one that
     // knows a file the manifest does not name.
     let error = LogStore::open(&std.db.manifest, &LogEnd::default(), LogOptions::default());

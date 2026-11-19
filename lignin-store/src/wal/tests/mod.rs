@@ -363,3 +363,531 @@ fn small_files(target_file_len: u64) -> LogOptions {
         ..LogOptions::default()
     }
 }
+
+/// A new database on a simulated file system.
+fn sim_db(config: lignin_io::sim::SimConfig, options: LogOptions) -> (lignin_io::SimVfs, Db) {
+    let fs = sim::sim_fs(config);
+    let db = Db::create(sim::shared(&fs), sim::db_dir(), options).expect("a database");
+    (fs, db)
+}
+
+fn log_path(dir: &Path, file: u32) -> PathBuf {
+    FileNames::WAL.path(dir, file_id(file))
+}
+
+/// The bytes of a file.
+fn file_bytes(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
+    let file = vfs
+        .open(path, lignin_io::OpenMode::Read)
+        .expect("the file opens");
+    let mut bytes = vec![0; file.len().expect("a length") as usize];
+    file.read_exact_at(&mut bytes, 0).expect("the bytes");
+    bytes
+}
+
+/// Makes `bytes` the content of a file that nothing has open for
+/// appending, creating it if it is missing.
+fn put_file(vfs: &dyn Vfs, path: &Path, bytes: &[u8]) {
+    use lignin_io::{Create, OpenMode};
+    let file = vfs
+        .open(path, OpenMode::Write(Create::IfMissing))
+        .expect("the file opens");
+    file.set_len(0).expect("a length");
+    file.write_at(bytes, 0).expect("the bytes");
+}
+
+/// A database directory made by hand on a simulated file system: log files
+/// with these bytes, and a manifest that names them so.
+fn crafted(files: &[(LiveFile, &[u8])]) -> (lignin_io::SimVfs, Arc<dyn Vfs>) {
+    let fs = sim::sim_fs(lignin_io::sim::SimConfig::new(1));
+    let vfs = sim::shared(&fs);
+    let dir = sim::db_dir();
+    fs.create_dir(&FileNames::WAL.dir(dir)).expect("wal/");
+    let mut last = lignin_format::manifest::LastFileIds::default();
+    for (named, bytes) in files {
+        put_file(&fs, &FileNames::WAL.path(dir, named.id()), bytes);
+        last.wal = last.wal.max(Some(named.id()));
+    }
+    let named = files.iter().map(|(named, _)| *named).collect();
+    let manifest = Manifest::new(PageSize::DEFAULT, last, None, named).expect("a manifest");
+    ManifestStore::create(vfs.clone(), dir, manifest).expect("a manifest");
+    (fs, vfs)
+}
+
+/// The bytes of a log file by hand: its start, and `items` drawn items
+/// behind it. Returns the bytes, where each item ends, and the version of
+/// the last group.
+fn crafted_file(
+    file: u32,
+    start: lignin_format::wal::LogStart,
+    items: usize,
+    rng: &mut Rng,
+) -> (Vec<u8>, Vec<u64>, CommitVersion) {
+    let mut bytes = Vec::new();
+    lignin_format::wal::write_file_start(file_id(file), &start, &mut bytes).expect("a start");
+    let mut latest = start.after();
+    let mut ends = Vec::new();
+    for _ in 0..items {
+        match rng.below(5) {
+            0 => bytes.extend_from_slice(&mark(latest)),
+            1 => bytes.extend_from_slice(&change(rng)),
+            _ => {
+                latest = latest.next().expect("a version");
+                let address = start.address(bytes.len() as u64).expect("an address");
+                let mut out = Vec::new();
+                let mut group = GroupWriter::new(latest, address, &mut out).expect("a group");
+                group.value(page(4), &rng.bytes(300)).expect("a value");
+                group.freed(page(5)).expect("a page");
+                group.finish();
+                bytes.extend_from_slice(&out);
+            }
+        }
+        ends.push(bytes.len() as u64);
+    }
+    (bytes, ends, latest)
+}
+
+/// What a session did to a log, as far as a recovery can be held to it.
+#[derive(Debug, Clone, Default)]
+struct Model {
+    /// The items whose append returned `Ok`, in order.
+    items: Vec<Item>,
+    /// How many of them a sync has reported durable.
+    durable: usize,
+    /// How many of them lie in files that were dropped: they need not be
+    /// read any more.
+    first: usize,
+    /// An item whose append was left unsettled. It may be in the log,
+    /// behind the last item, or not. A crash settles it, and so does the
+    /// first manifest of the next session, which names the file closed
+    /// where that session found its last item. Until then a crash can
+    /// still bring the item back.
+    maybe: Option<Item>,
+}
+
+impl Model {
+    fn all(&self) -> Vec<Item> {
+        let mut all = self.items.clone();
+        all.extend(self.maybe.clone());
+        all
+    }
+
+    /// Checks what a recovery read against what was appended: it is a run
+    /// of the items, in order and with nothing else in it, that holds every
+    /// durable item which was not dropped. With `whole`, nothing was lost:
+    /// it holds every item that was not dropped.
+    fn check(&self, read: &[Item], whole: bool) -> Result<(), String> {
+        let all = self.all();
+        let must_reach = if whole {
+            self.items.len()
+        } else {
+            self.durable
+        };
+        let Some(head) = read.first() else {
+            return if must_reach > self.first {
+                Err(format!(
+                    "nothing was read, and items {}..{must_reach} must be",
+                    self.first
+                ))
+            } else {
+                Ok(())
+            };
+        };
+        let Some(at) = all.iter().position(|item| item.at == head.at) else {
+            return Err(format!(
+                "the first item read, at {:?}, was never appended",
+                head.at
+            ));
+        };
+        let Some(appended) = all.get(at..at + read.len()) else {
+            return Err(format!(
+                "{} items were read from item {at} on, and {} were appended",
+                read.len(),
+                all.len()
+            ));
+        };
+        if let Some(wrong) = (0..read.len()).find(|&item| read[item] != appended[item]) {
+            return Err(format!(
+                "item {} was read as {:?} and appended as {:?}",
+                at + wrong,
+                read[wrong],
+                appended[wrong]
+            ));
+        }
+        if must_reach > self.first && (at > self.first || at + read.len() < must_reach) {
+            return Err(format!(
+                "items {at}..{} were read, and items {}..{must_reach} must be",
+                at + read.len(),
+                self.first
+            ));
+        }
+        Ok(())
+    }
+
+    /// Takes the log's word for how far it is durable: every item that
+    /// ends at or before that place must survive a crash.
+    fn claimed(&mut self, durable: crate::table::LogDurable) {
+        let covered = |item: &Item| Some(item.end) <= durable.place;
+        let count = self.items.partition_point(covered);
+        self.durable = self.durable.max(count);
+        if let Some(last) = self.items[..count]
+            .iter()
+            .rev()
+            .find_map(|item| item.version)
+        {
+            assert!(durable.version >= last, "{durable:?} covers version {last}");
+        }
+    }
+
+    /// Takes what a recovery read for the log from now on. `crashed` says
+    /// that it read what a crash left, in which nothing is unsettled.
+    fn recovered(&mut self, read: &[Item], crashed: bool) {
+        let all = self.all();
+        let unsettled = self.maybe.take().filter(|_| !crashed);
+        let kept = match read.first() {
+            Some(head) => {
+                let at = all.iter().position(|item| item.at == head.at).unwrap_or(0);
+                self.first = at;
+                at + read.len()
+            }
+            None => self.first.min(all.len()),
+        };
+        let read_it = kept == all.len();
+        self.items = all;
+        self.items.truncate(kept);
+        self.durable = self.durable.min(kept);
+        self.first = self.first.min(kept);
+        self.maybe = unsettled.filter(|_| !read_it);
+    }
+}
+
+#[derive(Debug, Default, Clone, Copy)]
+struct Stats {
+    appended: u64,
+    not_appended: u64,
+    unsettled: u64,
+    syncs: u64,
+    sync_failed: u64,
+    turns: u64,
+    dropped: u64,
+    other_errors: u64,
+    restarts: u64,
+    crashes: u64,
+    lost_in_a_crash: u64,
+    states: u64,
+}
+
+/// A database on a simulated file system that is driven by drawn steps,
+/// with a model of what its log must hold.
+struct Run {
+    fs: lignin_io::SimVfs,
+    db: Option<Db>,
+    options: LogOptions,
+    model: Model,
+    rng: Rng,
+    stats: Stats,
+    plans: sim::Plans,
+    faults: lignin_io::sim::FaultOdds,
+}
+
+impl Run {
+    fn new(config: lignin_io::sim::SimConfig, options: LogOptions, plans: sim::Plans) -> Self {
+        let rng = Rng(config.seed ^ 0xA5A5);
+        let faults = config.faults.clone();
+        let quiet = lignin_io::sim::SimConfig {
+            faults: lignin_io::sim::FaultOdds::NONE,
+            ..config
+        };
+        let (fs, db) = sim_db(quiet, options);
+        fs.set_faults(faults.clone());
+        Self {
+            fs,
+            db: Some(db),
+            options,
+            model: Model::default(),
+            rng,
+            stats: Stats::default(),
+            plans,
+            faults,
+        }
+    }
+
+    /// Whether the session can go on after `error`. It cannot when the log
+    /// is unsettled or the manifest is in doubt: both are settled by
+    /// opening the directory again.
+    fn ends_session(error: &LogError) -> bool {
+        use crate::segment::SegmentStoreError;
+        matches!(
+            error,
+            LogError::Unsettled { .. }
+                | LogError::Manifest(SegmentStoreError::ManifestInDoubt { .. })
+        )
+    }
+
+    fn failed(&mut self, error: &LogError) {
+        match error {
+            LogError::NotAppended { .. } => self.stats.not_appended += 1,
+            LogError::Unsettled { .. } => self.stats.unsettled += 1,
+            LogError::SyncFailed { .. } => self.stats.sync_failed += 1,
+            _ => self.stats.other_errors += 1,
+        }
+        assert!(
+            error.io_error().is_some()
+                || matches!(error, LogError::NoActiveFile | LogError::Manifest(_)),
+            "an error the file layer did not cause: {error}"
+        );
+        // A session whose log cannot be synced any more ends sooner or
+        // later: the next one writes the files again.
+        let gives_up = matches!(error, LogError::SyncFailed { .. }) && self.rng.below(2) == 0;
+        if Self::ends_session(error) || gives_up {
+            self.db = None;
+        }
+    }
+
+    /// Sees to it that the log has a file to turn to, and syncs nothing.
+    fn prepare(&mut self) {
+        let Some(db) = self.db.as_mut() else { return };
+        let prepared = match db.log.create() {
+            Ok(_) | Err(LogError::SpareExists { .. }) => db.log.commit(&mut db.manifest),
+            Err(error) => Err(error),
+        };
+        if let Err(error) = prepared {
+            self.failed(&error);
+        }
+    }
+
+    /// Appends a drawn item, and keeps the model as the outcome says.
+    fn append(&mut self) {
+        let Some(db) = self.db.as_ref() else { return };
+        let Some(end) = db.log.end() else {
+            return self.roll();
+        };
+        let (bytes, version, appended) = match self.rng.below(6) {
+            0 => {
+                let covers = version(self.rng.below(db.log.latest().get() + 1));
+                (mark(covers), None, db.log.append_mark(covers))
+            }
+            1 => {
+                let bytes = change(&mut self.rng);
+                let appended = db.log.append_change(&bytes);
+                (bytes, None, appended)
+            }
+            _ => match db.log.next_group() {
+                Ok(at) => {
+                    let bytes = group(&at, &mut self.rng);
+                    let appended = db.log.append_group(&at, &bytes);
+                    (bytes, Some(at.version()), appended)
+                }
+                Err(error) => (Vec::new(), None, Err(error)),
+            },
+        };
+        match appended {
+            Ok(appended) => {
+                self.stats.appended += 1;
+                assert_eq!(appended.at, end);
+                let item = Item::appended(appended, bytes, version);
+                let synced = db.log.sync_for_commit(&appended);
+                self.model.items.push(item);
+                match synced {
+                    Ok(Some(_)) => self.synced(),
+                    Ok(None) => {}
+                    Err(error) => self.failed(&error),
+                }
+            }
+            Err(error) => {
+                if matches!(error, LogError::Unsettled { .. }) {
+                    let after = place(end.file().get(), end.offset() + bytes.len() as u64);
+                    self.model.maybe = Some(Item {
+                        at: end,
+                        end: after,
+                        bytes,
+                        version,
+                    });
+                }
+                self.failed(&error);
+            }
+        }
+    }
+
+    fn synced(&mut self) {
+        self.stats.syncs += 1;
+    }
+
+    fn sync(&mut self) {
+        let Some(db) = self.db.as_ref() else { return };
+        match db.log.sync() {
+            Ok(durable) => {
+                if let Some(end) = db.log.end() {
+                    assert_eq!(durable.place, Some(end));
+                }
+                assert_eq!(durable.version, db.log.latest());
+                assert_eq!(durable, db.log.durable());
+                self.synced();
+            }
+            Err(error) => self.failed(&error),
+        }
+    }
+
+    fn roll(&mut self) {
+        let Some(db) = self.db.as_mut() else { return };
+        match db.roll() {
+            Ok(turned) => {
+                self.stats.turns += u64::from(turned);
+                // A session's first roll names every earlier file closed.
+                self.model.maybe = None;
+                self.synced();
+            }
+            Err(error) => self.failed(&error),
+        }
+    }
+
+    fn rotate(&mut self) {
+        let Some(db) = self.db.as_ref() else { return };
+        match db.log.rotate() {
+            Ok(turned) => self.stats.turns += u64::from(turned),
+            Err(LogError::NoSpare | LogError::SpareNotNamed { .. }) => {}
+            Err(error) => self.failed(&error),
+        }
+    }
+
+    /// Drops every file before the one the log is durable up to, and
+    /// replaces the manifest.
+    fn drop_files(&mut self) {
+        if self.rng.below(2) == 0 {
+            self.sync();
+        }
+        let Some(db) = self.db.as_mut() else { return };
+        let Some(durable) = db.log.durable().place else {
+            return;
+        };
+        let dropped = db.log.drop_before(durable).expect("a durable place");
+        if let Some(last) = dropped.last() {
+            self.stats.dropped += dropped.len() as u64;
+            let kept = |item: &Item| item.at.file() > *last;
+            let first = self.model.items.iter().position(kept);
+            self.model.first = first.unwrap_or(self.model.items.len());
+        }
+        if let Err(error) = db.log.commit(&mut db.manifest) {
+            self.failed(&error);
+        }
+    }
+
+    /// One drawn step of a session, or a new session if the last one
+    /// ended.
+    fn step(&mut self) {
+        if self.db.is_none() {
+            return self.restart();
+        }
+        self.draw_step();
+        self.note_durable();
+    }
+
+    /// Holds the log to what it says is durable, whatever the step that
+    /// made it so reported.
+    fn note_durable(&mut self) {
+        if let Some(db) = &self.db {
+            self.model.claimed(db.log.durable());
+        }
+    }
+
+    fn draw_step(&mut self) {
+        match self.rng.below(32) {
+            0 => self.sync(),
+            1 => self.roll(),
+            2 | 3 => self.prepare(),
+            4..=6 => self.rotate(),
+            7 => self.drop_files(),
+            8 if self.model.durable < self.model.items.len() => {
+                let item = &self.model.items[self.model.durable];
+                let through = item.end;
+                let db = self.db.as_ref().expect("a session");
+                match db.log.sync_through(through) {
+                    Ok(_) => self.synced(),
+                    Err(error) => self.failed(&error),
+                }
+            }
+            _ => self.append(),
+        }
+    }
+
+    /// Reads the log as it is, with no fault injected.
+    fn read(fs: &lignin_io::SimVfs) -> Result<Vec<Item>, LogError> {
+        let odds = fs.config().faults;
+        fs.set_faults(lignin_io::sim::FaultOdds::NONE);
+        let read = read_log(&sim::shared(fs), sim::db_dir());
+        fs.set_faults(odds);
+        read.map(|(items, _)| items)
+    }
+
+    /// Ends the session as a process that exits does, and starts the next
+    /// one: nothing is lost.
+    fn restart(&mut self) {
+        self.db = None;
+        self.stats.restarts += 1;
+        let read = Self::read(&self.fs).unwrap_or_else(|error| panic!("{}: {error}", self.at()));
+        if let Err(wrong) = self.model.check(&read, true) {
+            panic!("{} after a restart: {wrong}", self.at());
+        }
+        self.model.recovered(&read, false);
+        self.open();
+    }
+
+    /// Opens the directory for the next session. If the file layer fails
+    /// that, a later step tries again.
+    fn open(&mut self) {
+        match Db::open(sim::shared(&self.fs), sim::db_dir(), self.options) {
+            Ok(db) => {
+                self.db = Some(db);
+                self.roll();
+                self.note_durable();
+            }
+            Err(error) => {
+                assert!(error.io_error().is_some(), "{}: {error}", self.at());
+                self.stats.other_errors += 1;
+            }
+        }
+    }
+
+    /// The power fails, and the next session starts from one of the states
+    /// that can leave.
+    fn crash(&mut self, draw: u64) {
+        self.db = None;
+        self.stats.crashes += 1;
+        self.fs = self.fs.crash(draw);
+        self.fs.set_faults(lignin_io::sim::FaultOdds::NONE);
+        let read = Self::read(&self.fs).unwrap_or_else(|error| panic!("{}: {error}", self.at()));
+        if let Err(wrong) = self.model.check(&read, false) {
+            panic!("{} after a crash: {wrong}", self.at());
+        }
+        let before = self.model.items.len();
+        self.model.recovered(&read, true);
+        self.stats.lost_in_a_crash += (before - self.model.items.len()) as u64;
+        self.fs.set_faults(self.faults.clone());
+        self.open();
+    }
+
+    fn at(&self) -> String {
+        format!(
+            "seed {}, {:?}, trace {:x}",
+            self.fs.config().seed,
+            self.stats,
+            self.fs.trace_digest()
+        )
+    }
+
+    /// Checks every state a crash at this moment can leave, or the ones
+    /// the plans pick: the log reads, and it holds what the model says.
+    fn check_crash_states(&mut self) {
+        let image = self.fs.crash_image();
+        let states = sim::crash_states(&image, &self.plans);
+        for (plan, state) in &states.states {
+            state.set_faults(lignin_io::sim::FaultOdds::NONE);
+            let read = read_log(&sim::shared(state), sim::db_dir())
+                .unwrap_or_else(|error| panic!("{}, plan {plan:?}: {error}", self.at()));
+            if let Err(wrong) = self.model.check(&read.0, false) {
+                panic!("{}, plan {plan:?}: {wrong}", self.at());
+            }
+        }
+        self.stats.states += states.states.len() as u64;
+    }
+}

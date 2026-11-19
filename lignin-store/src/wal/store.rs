@@ -21,7 +21,7 @@ use lignin_format::{
     },
     CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion, PageId,
 };
-use lignin_io::{DirEntry, EntryKind, OpenMode, Vfs};
+use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs};
 
 use super::{error::LogError, file::LogFile, reader::LogEnd};
 use crate::{
@@ -34,6 +34,18 @@ use crate::{
 pub const DEFAULT_TARGET_FILE_LEN: u64 = 64 << 20;
 
 const HEADER_LEN: u64 = FileHeader::ENCODED_LEN as u64;
+
+/// What a file of an earlier session is called while it is written again.
+const TEMPORARY_SUFFIX: &str = ".tmp";
+
+/// Bytes that are copied at a time when a file is written again.
+const COPY_CHUNK_LEN: u64 = 1 << 20;
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_os_string();
+    name.push(TEMPORARY_SUFFIX);
+    PathBuf::from(name)
+}
 
 /// When a commit makes the log durable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -413,6 +425,16 @@ fn remove_unnamed(
         if entry.kind != EntryKind::File {
             continue;
         }
+        // What an interrupted rewrite of a log file left behind.
+        let rewritten = entry
+            .name
+            .to_str()
+            .and_then(|name| name.strip_suffix(TEMPORARY_SUFFIX))
+            .and_then(|name| FileNames::WAL.parse(name.as_ref()));
+        if rewritten.is_some() {
+            unnamed.push(wal_dir.join(&entry.name));
+            continue;
+        }
         let Some(id) = FileNames::WAL.parse(&entry.name) else {
             continue;
         };
@@ -675,9 +697,8 @@ impl LogStore {
     /// ([`LogError::PlaceTaken`]).
     ///
     /// If the file layer fails the append of the start record, the log has
-    /// not turned ([`LogError::NotAppended`]). The file it would have
-    /// turned to is still there to turn to, unless bytes of the record
-    /// stay in it: then it is given up, and another one is created.
+    /// not turned ([`LogError::NotAppended`]), and the file it would have
+    /// turned to is given up: create another one.
     pub fn rotate(&self) -> Result<bool, LogError> {
         let mut tail = self.tail();
         tail.check_settled()?;
@@ -715,21 +736,18 @@ impl LogStore {
             }
             Err(error) => {
                 let verifies = |found: &[u8]| {
-                    let mut file = FileHeader::new(FileKind::Wal, spare.version(), spare.id().get())
-                        .map(|header| header.encode().to_vec())
-                        .unwrap_or_default();
+                    let mut file =
+                        FileHeader::new(FileKind::Wal, spare.version(), spare.id().get())
+                            .map(|header| header.encode().to_vec())
+                            .unwrap_or_default();
                     file.extend_from_slice(found);
                     wal::read_file_start(&file).is_ok()
                 };
                 match settle(&spare, HEADER_LEN, &record, verifies) {
                     Settled::InLog => false,
-                    Settled::Absent => {
-                        return Err(LogError::NotAppended {
-                            path: spare.path().to_path_buf(),
-                            source: error,
-                        });
-                    }
-                    Settled::Torn => {
+                    Settled::Absent | Settled::Torn => {
+                        // Whatever the file holds, its handle may append
+                        // no more.
                         spare.kill();
                         tail.spare = None;
                         return Err(LogError::NotAppended {
@@ -1078,7 +1096,9 @@ impl LogStore {
                 .collect()
         };
         for (file, file_end) in targets {
-            if let Err(source) = file.sync() {
+            if file.is_adopted() {
+                self.write_again(&file, file_end)?;
+            } else if let Err(source) = file.sync() {
                 self.files_mut().sync_failed = Some(Sticky::of(file.path(), &source));
                 return Err(LogError::SyncFailed {
                     path: file.path().to_path_buf(),
@@ -1092,7 +1112,10 @@ impl LogStore {
 
         let mut files = self.files_mut();
         let place = end.or_else(|| {
-            let last = files.live.values().rfind(|entry| entry.file.start().is_some())?;
+            let last = files
+                .live
+                .values()
+                .rfind(|entry| entry.file.start().is_some())?;
             LogPlace::new(last.file.id(), last.file.end()).ok()
         });
         if place >= files.durable.place {
@@ -1103,6 +1126,54 @@ impl LogStore {
         }
         files.last_sync = Instant::now();
         Ok(files.durable)
+    }
+
+    /// Makes durable a file of an earlier session whose end the manifest
+    /// does not vouch for, by writing the file again: its bytes up to `end`
+    /// go into a new file, which is synced and then takes the file's name.
+    ///
+    /// A sync of the file itself would not do. If a sync of it failed in the
+    /// session that wrote it, and no crash came since, a sync that succeeds
+    /// now covers nothing of what was appended before that failure
+    /// (`lignin_io::vfs`), and this session cannot know. Bytes that are
+    /// written again are covered. The file is not written in place and not
+    /// appended to (B11): the name gets a new file with the same bytes, and
+    /// whoever shares the old one as a hard link keeps it.
+    ///
+    /// The log goes on reading the file through the handle it has.
+    fn write_again(&self, file: &LogFile, end: u64) -> Result<(), LogError> {
+        let temporary = temporary_path(file.path());
+        remove(&*self.vfs, &temporary).map_err(LogError::io("remove", &temporary))?;
+        let copied = self.copy(file, end, &temporary);
+        if copied.is_err() {
+            let _ = self.vfs.remove_file(&temporary);
+        }
+        copied?;
+        self.vfs
+            .rename(&temporary, file.path())
+            .map_err(LogError::io("rename", &temporary))?;
+        let wal_dir = FileNames::WAL.dir(&self.dir);
+        self.vfs
+            .sync_dir(&wal_dir)
+            .map_err(LogError::io("sync the directory", &wal_dir))
+    }
+
+    fn copy(&self, file: &LogFile, end: u64, to: &Path) -> Result<(), LogError> {
+        let copy = self
+            .vfs
+            .open(to, OpenMode::Append(Create::New))
+            .map_err(LogError::io("create", to))?;
+        let mut chunk = vec![0; end.min(COPY_CHUNK_LEN) as usize];
+        let mut at = 0;
+        while at < end {
+            let len = (end - at).min(COPY_CHUNK_LEN) as usize;
+            file.read_exact_at(&mut chunk[..len], at)
+                .map_err(LogError::io("read", file.path()))?;
+            copy.append(&chunk[..len])
+                .map_err(LogError::io("append to", to))?;
+            at += len as u64;
+        }
+        copy.sync_all().map_err(LogError::io("sync", to))
     }
 
     /// Makes the log durable for the commit whose group is `appended`, if
@@ -1202,15 +1273,25 @@ impl LogStore {
     /// it (LG29), and every pending value. The caller vouches for it. The
     /// file of `keep_from` and every later one stay.
     ///
-    /// Only a file that takes no more items and is durable to its end is
-    /// taken out, and no file behind one that stays: the files a manifest
-    /// names are always a run of the log with nothing missing in it.
+    /// The log must be durable up to `keep_from` ([`LogError::NotDurable`]):
+    /// sync it first. What is kept then begins with a file whose start
+    /// record no crash takes away, so the log that is left never reads as
+    /// a log with no file, which would begin again at version 0. Every
+    /// file before a durable place takes no more items and is durable to
+    /// its end, and the files a manifest names are always a run of the log
+    /// with nothing missing in it.
     pub fn drop_before(&self, keep_from: LogPlace) -> Result<Vec<FileId>, LogError> {
         let mut files = self.files_mut();
         let keep = keep_from.file();
         let kept = files.live.get(&keep);
         if !kept.is_some_and(|entry| entry.file.start().is_some()) {
             return Err(LogError::UnknownFile { file: keep });
+        }
+        if Some(keep_from) > files.durable.place {
+            return Err(LogError::NotDurable {
+                place: keep_from,
+                durable: files.durable.place,
+            });
         }
         let mut taken = Vec::new();
         let before: Vec<FileId> = files.live.range(..keep).map(|(&id, _)| id).collect();

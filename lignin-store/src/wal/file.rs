@@ -28,6 +28,7 @@ pub(super) struct LogFile {
     end: AtomicU64,
     finished: AtomicBool,
     dead: AtomicBool,
+    adopted: bool,
 }
 
 impl LogFile {
@@ -42,6 +43,7 @@ impl LogFile {
             end: AtomicU64::new(FileHeader::ENCODED_LEN as u64),
             finished: AtomicBool::new(false),
             dead: AtomicBool::new(false),
+            adopted: false,
         }
     }
 
@@ -74,6 +76,7 @@ impl LogFile {
             end: AtomicU64::new(read.valid_len()),
             finished: AtomicBool::new(true),
             dead: AtomicBool::new(false),
+            adopted: true,
         })
     }
 
@@ -87,6 +90,11 @@ impl LogFile {
 
     pub(super) fn version(&self) -> FormatVersion {
         self.version
+    }
+
+    /// Whether an earlier session wrote the file.
+    pub(super) fn is_adopted(&self) -> bool {
+        self.adopted
     }
 
     /// The file's start record, once it has one.
