@@ -415,16 +415,17 @@ fn the_value_hash_of_a_tree_is_combined_with_the_root_hash_of_its_merk() {
         assert_eq!(made(&value, &[None]), Ok(layered(NULL_HASH)));
         assert_ne!(layered(root), layered(NULL_HASH));
 
-        // A cell that does not name the Merk is not taken for an empty one.
-        for hosted in [&[][..], &[None, None][..]] {
-            assert_eq!(
-                made(&value, hosted),
-                Err(HashRefusal::Hosted {
-                    element: 1,
-                    cell: hosted.len()
-                })
-            );
-        }
+        // So has a Merk the cell has no pointer for: one that never had
+        // a node.
+        assert_eq!(made(&value, &[]), Ok(layered(NULL_HASH)));
+        // A cell does not host more Merks than its element has.
+        assert_eq!(
+            made(&value, &[Some(root), None]),
+            Err(HashRefusal::Hosted {
+                element: 1,
+                cell: 2
+            })
+        );
     }
 
     // What the rule counts is what Merk's functions count: a value hash
@@ -436,6 +437,79 @@ fn the_value_hash_of_a_tree_is_combined_with_the_root_hash_of_its_merk() {
     let expected =
         own.cost().hash_node_calls + combine_hash(own.value(), &root).cost().hash_node_calls;
     assert_eq!(rules.cost().hash_node_calls, expected);
+}
+
+#[test]
+fn a_tree_that_old_versions_insert_as_a_plain_value_has_either_hash_until_it_has_a_root() {
+    let inserted_plain = [
+        Element::empty_count_sum_tree(),
+        Element::empty_count_big_sum_tree(),
+        Element::empty_provable_count_tree(),
+        Element::empty_provable_count_sum_tree(),
+        Element::new_non_counted(Element::empty_provable_count_tree()).unwrap(),
+        Element::new_not_summed(Element::empty_count_sum_tree()).unwrap(),
+        Element::new_not_counted_or_summed(Element::empty_count_sum_tree()).unwrap(),
+    ];
+    let root = [0xab; 32];
+    for element in inserted_plain {
+        let value = bytes(&element);
+        let plain = value_hash(&value).unwrap();
+        let combined = made(&value, &[None]).unwrap();
+        assert_ne!(plain, combined);
+        let mut rules = MerkHashRules::new(version());
+        assert_eq!(rules.value_hash_at_insert(&value), Some(plain));
+
+        let answer = |mut rules: MerkHashRules<'_>, stored, hosted: &[Option<CryptoHash>]| {
+            with_leaf(b"key", &value, stored, |cell| {
+                rules.value_hash(cell, &value, hosted)
+            })
+            .expect("a tree's value hash is made")
+        };
+        // An evaluation makes the hash a write below the tree gives it,
+        // whatever the cell stores.
+        for stored in [plain, combined, [7; 32]] {
+            assert_eq!(answer(MerkHashRules::new(version()), stored, &[]), combined);
+        }
+        // A check takes the hash of the insert for a tree with no root,
+        // and no other hash, and none for a tree that has a root.
+        let check = || MerkHashRules::for_check(version());
+        assert_eq!(answer(check(), plain, &[]), plain);
+        assert_eq!(answer(check(), plain, &[None]), plain);
+        assert_eq!(answer(check(), combined, &[None]), combined);
+        assert_eq!(answer(check(), [7; 32], &[None]), combined);
+        let rooted = made(&value, &[Some(root)]).unwrap();
+        assert_eq!(answer(check(), plain, &[Some(root)]), rooted);
+    }
+
+    // Every other value has one hash.
+    let others = [
+        Element::empty_tree(),
+        Element::empty_sum_tree(),
+        Element::empty_count_tree(),
+        Element::empty_provable_sum_tree(),
+        Element::empty_provable_count_indexed_tree(),
+        Element::new_item(vec![1]),
+        Element::new_reference(path()),
+        Element::empty_mmr_tree(),
+    ];
+    for element in others {
+        let value = bytes(&element);
+        assert_eq!(
+            MerkHashRules::new(version()).value_hash_at_insert(&value),
+            None
+        );
+        if let Ok(combined) = made(&value, &[]) {
+            let stored = value_hash(&value).unwrap();
+            let checked = with_leaf(b"key", &value, stored, |cell| {
+                MerkHashRules::for_check(version()).value_hash(cell, &value, &[])
+            });
+            assert_eq!(checked.unwrap(), combined);
+        }
+    }
+    assert_eq!(
+        MerkHashRules::new(version()).value_hash_at_insert(&[]),
+        None
+    );
 }
 
 #[test]
@@ -482,9 +556,14 @@ fn the_value_hash_of_an_indexed_tree_is_combined_with_both_of_its_merks() {
         assert_ne!(layered(primary, secondary), layered(secondary, primary));
         assert_eq!(
             made(&value, &[Some(primary)]),
+            Ok(layered(primary, NULL_HASH))
+        );
+        assert_eq!(made(&value, &[]), Ok(layered(NULL_HASH, NULL_HASH)));
+        assert_eq!(
+            made(&value, &[Some(primary), None, None]),
             Err(HashRefusal::Hosted {
                 element: 2,
-                cell: 1
+                cell: 3
             })
         );
     }
@@ -539,14 +618,29 @@ fn the_value_hash_of_a_tree_with_axes_is_combined_with_the_digest_of_their_roots
         // The axes are taken in the order the element lists them.
         hosted[1..].reverse();
         assert_ne!(made(&value, &hosted), Ok(expected));
-        hosted.pop();
+        hosted.push(None);
         assert_eq!(
             made(&value, &hosted),
             Err(HashRefusal::Hosted {
                 element: 1 + axes.len(),
-                cell: axes.len()
+                cell: 2 + axes.len()
             })
         );
+
+        // An axis the cell has no pointer for has no root.
+        let all_empty: Vec<(u8, CryptoHash)> =
+            axes.iter().map(|(tag, _)| (*tag, NULL_HASH)).collect();
+        let expected = KV::new_with_layered_value_hash_three(
+            vec![1],
+            value.clone(),
+            3,
+            primary,
+            axes_digest(&all_empty).unwrap(),
+            TreeFeatureType::BasicMerkNode,
+        );
+        let expected = *expected.unwrap().value_hash();
+        assert_eq!(made(&value, &[Some(primary)]), Ok(expected));
+        assert_eq!(made(&value, &[Some(primary), None]), Ok(expected));
     }
 }
 
@@ -614,15 +708,15 @@ fn a_value_that_is_no_element_is_refused_also_for_a_check() {
             assert!(refused.to_string().starts_with("the value is no element"));
         }
     }
-    // A cell that does not host what its element has is refused for a
-    // check as well.
+    // A cell that hosts more than its element has is refused for a check
+    // as well.
     let value = bytes(&Element::empty_tree());
     let refused = with_leaf(b"key", &value, [1; 32], |cell| {
-        MerkHashRules::for_check(version()).value_hash(cell, &value, &[])
+        MerkHashRules::for_check(version()).value_hash(cell, &value, &[None, None])
     });
     assert_eq!(
         refused.unwrap_err().to_string(),
-        "the element has 1 Merks and its cell hosts 0"
+        "the element has 1 Merks and its cell hosts 2"
     );
 }
 

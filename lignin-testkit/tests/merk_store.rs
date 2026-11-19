@@ -31,6 +31,11 @@
 //!    a record, with RocksDB's. Equal records from the root down are an
 //!    equal tree shape, and the root hash is a function of the root's
 //!    record.
+//! 6. The hashes of the committed pages are then made again by Merk's hash
+//!    rules (`hashes`, MERK-02): checked as they are stored, and made by
+//!    one evaluation of the engine after every one of them was overwritten
+//!    and marked stale. The hash the rules make of the grove's root is the
+//!    root hash GroveDB gives on RocksDB.
 //!
 //! The Merk logic itself runs on RocksDB here. That it gives the same tree
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
@@ -205,6 +210,7 @@ impl Tally {
         self.hashed.cells += other.hashed.cells;
         self.hashed.hashes += other.hashed.hashes;
         self.hashed.stated += other.hashed.stated;
+        self.hashed.inserted_plain += other.hashed.inserted_plain;
     }
 }
 
@@ -964,7 +970,9 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         let committed = Committed::check(&lignin, &versions);
         let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
+        let before = replay.tally.compared;
         replay.compare_all(&committed, &reader, block, grove);
+        let compared = replay.tally.compared - before;
 
         // The hashes of the committed pages are the ones Merk's hash
         // rules make, and the root hash they make is GroveDB's.
@@ -978,6 +986,7 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
             root_hash.expect("the root hash of the grove"),
             spec.grove_version,
         );
+        assert_eq!(made.cells, compared, "every node that was compared");
         replay.tally.add(Tally {
             hashed: made,
             ..Tally::default()
@@ -1102,9 +1111,12 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(tally.checked > 10_000, "{tally:?}");
         let hashed = tally.hashed;
-        assert_eq!(hashed.cells, tally.compared, "{tally:?}");
         assert!(
-            hashed.hashes > 3 * hashed.cells && hashed.stated > 10_000,
+            hashed.cells > 1_000_000 && hashed.hashes > 2 * hashed.cells,
+            "{tally:?}"
+        );
+        assert!(
+            hashed.stated > 10_000 && hashed.inserted_plain > 0,
             "{tally:?}"
         );
     }

@@ -7,9 +7,10 @@
 //!
 //! 1. Every cell of every Merk is checked with [`hash::check`]: each hash
 //!    the cell stores is what the rules make of what it is made from, as
-//!    that is stored. A value hash that only its writer can make, a
-//!    reference's or that of a tree whose data is no Merk, is taken as it
-//!    is stored.
+//!    that is stored. A value hash that only its writer can make is taken
+//!    as it is stored: a reference's, that of a tree whose data is no
+//!    Merk, and that of a tree which an old GroveVersion inserted as a
+//!    plain value and which has no root yet.
 //! 2. Then the engine makes them: in a copy of the pages, every hash the
 //!    rules can make is overwritten and marked stale, and one evaluation
 //!    makes them all ([`Hashes::evaluate_all`]). Every cell then holds,
@@ -53,6 +54,9 @@ pub struct Made {
     /// The value hashes that only their writer can make, which were left
     /// as they are.
     pub stated: u64,
+    /// Those among them of a tree with no root that has the hash of its
+    /// insert as a plain value.
+    pub inserted_plain: u64,
 }
 
 /// The committed tree pages at one version, with the pages that were
@@ -115,7 +119,9 @@ struct Cell {
     hashes: [Option<Hash>; 4],
     /// The value, where it is in the cell, and its place where it is not.
     value: Result<Vec<u8>, ValuePlace>,
+    /// How many Merks the cell hosts, and how many of them have a root.
     hosted: usize,
+    rooted: usize,
 }
 
 fn stored(pages: &mut Frames<'_>, at: CellAddress) -> [Option<Hash>; 4] {
@@ -173,6 +179,7 @@ pub fn check(
                 hashes,
                 value,
                 hosted: hosted.len(),
+                rooted: hosted.iter().flatten().count(),
             };
             (cell, below, hosted)
         });
@@ -210,11 +217,14 @@ pub fn check(
             .filter(|(_, hash)| hash.is_some())
             .map(|(field, _)| field)
             .collect();
+        let at_insert = classify.value_hash_at_insert(value);
+        let at_insert = cell.rooted == 0 && at_insert.is_some() && at_insert == cell.hashes[0];
         match classify.element_value_hash(value, &vec![None; cell.hosted]) {
-            Ok(_) => {}
-            Err(HashRefusal::StatedByWriter(_)) => {
+            Ok(_) if !at_insert => {}
+            Ok(_) | Err(HashRefusal::StatedByWriter(_)) => {
                 marked = marked.without(HashField::Value);
                 made.stated += 1;
+                made.inserted_plain += u64::from(at_insert);
             }
             Err(refused) => panic!("the value of {}: {refused}", cell.at),
         }

@@ -53,9 +53,27 @@
 //! The root hash of a hosted Merk is what the tree layer hands the rule
 //! for each Merk the cell hosts, by position: the primary Merk first, then
 //! the secondaries in the order the element lists them. A hosted Merk with
-//! no root has the hash of an empty Merk, `NULL_HASH`. A cell that does not
-//! host as many Merks as its element has is refused: a hash is not made
-//! from a root that is not named.
+//! no root has the hash of an empty Merk, `NULL_HASH`, and so has a
+//! position the cell has no pointer for: a cell points at the root of
+//! every Merk it hosts that has one (`tree-layout.md` C3, `tree-page.md`
+//! TP15), and the cell of a tree whose Merk never had a node hosts none.
+//! A cell that hosts more Merks than its element has is refused.
+//!
+//! **A tree's value hash is the one a write below it gives it.** The value
+//! hash of a tree element goes stale when a Merk it hosts gets another
+//! root, and Merk then puts the element with the combined hash, on every
+//! GroveVersion. That is the hash the rule makes. The insert of the element
+//! itself is another matter, and its hash is its writer's to state:
+//! `GROVE_V1` and `GROVE_V2` insert a count sum tree, a count big sum tree,
+//! a provable count tree and a provable count sum tree outside a batch as
+//! plain values (`add_element_on_transaction` v0, frozen for the chain
+//! that was built with it). Such an element has `value_hash(value)` until
+//! something is written below it, and the combined hash from then on, also
+//! once its Merk is empty again, with the same bytes. So for these four
+//! types the bytes and the roots do not say which of the two an element
+//! with no root has ([`MerkHashRules::value_hash_at_insert`]). Whoever
+//! copies existing nodes, a load or a migration, hands over the value
+//! hashes they have.
 //!
 //! A refused hash stays marked, and its evaluation stops
 //! ([`HashRefusal`]). A commit whose evaluation stops has failed, and its
@@ -75,9 +93,11 @@
 //! recomputed, and one refusal would end the check of its cell.
 //! [`MerkHashRules::for_check`] answers such a value hash with the bytes
 //! the cell stores, so the check reports nothing for it and still compares
-//! the key-value hash and the hashes of the children. It is for a check
-//! only: it does not make that hash, so an evaluation with it would leave a
-//! stale value hash in its cell and take the mark off.
+//! the key-value hash and the hashes of the children. It answers the same
+//! way for a tree with no root whose cell stores the hash its insert gave
+//! it as a plain value, which is as right as the combined one. It is for
+//! a check only: it does not make those hashes, so an evaluation with it
+//! would leave a stale value hash in its cell and take the mark off.
 //!
 //! # What Merk holds when it writes a node
 //!
@@ -158,7 +178,7 @@ pub enum HashRefusal {
     /// The value is no element of GroveDB, or one whose value hash these
     /// rules do not know.
     NotAnElement(String),
-    /// The cell does not host as many Merks as its element has.
+    /// The cell hosts more Merks than its element has.
     Hosted {
         /// The Merks the element has.
         element: usize,
@@ -203,6 +223,9 @@ enum ValueHash {
     Stripped,
     /// From the value's bytes and the root hash of one Merk.
     Tree,
+    /// As [`Self::Tree`], for a type that `GROVE_V1` and `GROVE_V2` insert
+    /// as a plain value.
+    TreeInsertedPlain,
     /// From the value's bytes and the root hashes of two Merks.
     Indexed,
     /// From the value's bytes, the root hash of the primary Merk and the
@@ -242,14 +265,12 @@ impl ValueHash {
                 Self::IndexedByAxes
             }
             _ if element.is_indexed_tree() => Self::Indexed,
+            CountSumTree | CountBigSumTree | ProvableCountTree | ProvableCountSumTree => {
+                Self::TreeInsertedPlain
+            }
             _ => Self::Tree,
         })
     }
-}
-
-/// The root hash of a hosted Merk: of an empty Merk where it has no root.
-fn root(hosted: &Option<Hash>) -> &CryptoHash {
-    hosted.as_ref().unwrap_or(&NULL_HASH)
 }
 
 /// A node of Merk with what its aggregate and its hash are made from, and
@@ -355,12 +376,19 @@ impl<'v> MerkHashRules<'v> {
         hosted: &[Option<Hash>],
     ) -> Result<CryptoHash, HashRefusal> {
         let how = ValueHash::of(value)?;
-        let hosts = |element: usize| match hosted.len() == element {
+        // The cell hosts no more Merks than the element has.
+        let hosts = |element: usize| match hosted.len() <= element {
             true => Ok(()),
             false => Err(HashRefusal::Hosted {
                 element,
                 cell: hosted.len(),
             }),
+        };
+        // The root hash of the Merk at a position: of an empty Merk where
+        // it has no root, or the cell no pointer.
+        let root = |position: usize| match hosted.get(position) {
+            Some(Some(root)) => root,
+            Some(None) | None => &NULL_HASH,
         };
         let mut cost = OperationCost::default();
         let own = |bytes: &[u8], cost: &mut OperationCost| value_hash(bytes).unwrap_add_cost(cost);
@@ -377,31 +405,47 @@ impl<'v> MerkHashRules<'v> {
                     .map_err(|error| HashRefusal::NotAnElement(error.to_string()))?;
                 own(&stripped, &mut cost)
             }
-            ValueHash::Tree => {
+            ValueHash::Tree | ValueHash::TreeInsertedPlain => {
                 hosts(1)?;
                 let own = own(value, &mut cost);
-                combine_hash(&own, root(&hosted[0])).unwrap_add_cost(&mut cost)
+                combine_hash(&own, root(0)).unwrap_add_cost(&mut cost)
             }
             ValueHash::Indexed => {
                 hosts(2)?;
                 let own = own(value, &mut cost);
-                combine_hash_three(&own, root(&hosted[0]), root(&hosted[1]))
-                    .unwrap_add_cost(&mut cost)
+                combine_hash_three(&own, root(0), root(1)).unwrap_add_cost(&mut cost)
             }
             ValueHash::IndexedByAxes => {
                 let element = self.element(value)?;
                 let axes = element.axes().unwrap_or_default();
                 hosts(1 + axes.len())?;
-                let axes: Vec<(u8, CryptoHash)> = (axes.iter().zip(&hosted[1..]))
-                    .map(|((tag, _), hosted)| (*tag, *root(hosted)))
+                let axes: Vec<(u8, CryptoHash)> = (axes.iter().enumerate())
+                    .map(|(at, (tag, _))| (*tag, *root(1 + at)))
                     .collect();
                 let own = own(value, &mut cost);
                 let digest = axes_digest(&axes).unwrap_add_cost(&mut cost);
-                combine_hash_three(&own, root(&hosted[0]), &digest).unwrap_add_cost(&mut cost)
+                combine_hash_three(&own, root(0), &digest).unwrap_add_cost(&mut cost)
             }
         };
         self.cost += cost;
         Ok(made)
+    }
+
+    /// The value hash an element with the bytes `value` has from its
+    /// insert until something is written below it, where that is not the
+    /// hash [`Self::element_value_hash`] makes: `value_hash(value)` for a
+    /// tree of one of the four types that `GROVE_V1` and `GROVE_V2` insert
+    /// as a plain value, and `None` for every other value.
+    ///
+    /// A cell of such a tree that hosts no root stores this hash or the
+    /// combined one, and both are right.
+    pub fn value_hash_at_insert(&mut self, value: &[u8]) -> Option<CryptoHash> {
+        match ValueHash::of(value) {
+            Ok(ValueHash::TreeInsertedPlain) => {
+                Some(value_hash(value).unwrap_add_cost(&mut self.cost))
+            }
+            _ => None,
+        }
     }
 
     fn element(&self, value: &[u8]) -> Result<Element, HashRefusal> {
@@ -429,8 +473,15 @@ impl HashRules for MerkHashRules<'_> {
         value: &[u8],
         hosted: &[Option<Hash>],
     ) -> Result<Hash, Refusal> {
+        let stored = node.value_hash();
         match self.element_value_hash(value, hosted) {
-            Err(HashRefusal::StatedByWriter(_)) if self.for_check => Ok(*node.value_hash()),
+            Err(HashRefusal::StatedByWriter(_)) if self.for_check => Ok(*stored),
+            Ok(made) if self.for_check && made != *stored => {
+                // A tree with no root may have the hash of its insert.
+                let no_root = hosted.iter().all(Option::is_none);
+                let at_insert = no_root && self.value_hash_at_insert(value) == Some(*stored);
+                Ok(if at_insert { *stored } else { made })
+            }
             made => Ok(made?),
         }
     }
