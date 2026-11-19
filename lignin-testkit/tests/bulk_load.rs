@@ -624,8 +624,7 @@ impl<'db> Walk<'db> {
         self.loading += started.elapsed();
         let read = read(Some(loaded));
         assert_eq!(loader.hash_of(loaded).expect("a subtree"), read.hash);
-        let left: Vec<_> = loader.drain_pages().collect();
-        for page in left {
+        for page in loader.drain_pages() {
             sink.write_out(page.page, page.used, false);
         }
         read

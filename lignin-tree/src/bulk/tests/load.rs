@@ -147,8 +147,8 @@ fn the_same_stream_gives_the_same_pages() {
 }
 
 /// A balanced Merk of `count` nodes with short values, loaded under
-/// `params`. Returns the pages the load left before it ended, the pages it
-/// was filling when it ended, and its counters.
+/// `params`. Returns the pages the load left before it ended, what it did,
+/// and where the root went.
 fn filled(
     count: usize,
     largest: u32,
@@ -228,25 +228,7 @@ fn a_page_that_is_left_is_not_written_again() {
         let right = node.right.map(|_| done.pop().expect("the right subtree"));
         let left_child = node.left.map(|_| done.pop().expect("the left subtree"));
         let hosted = bench.hosted(&model, index, false);
-        let aggregate = |child: Option<usize>| child.map(|child| model.nodes[child].aggregate());
-        let aggregates = [aggregate(node.left), aggregate(node.right)];
-        let children = [(left_child, node.left), (right, node.right)];
-        let link = |side: usize| {
-            Some(LinkLoad {
-                child: children[side].0?,
-                heights: model.nodes[children[side].1?].heights,
-                aggregate: aggregates[side].as_ref()?,
-            })
-        };
-        let loaded = bench.node(&NodeLoad {
-            key: &node.key,
-            feature: &node.feature,
-            value: &node.value,
-            value_hash: node.given.as_ref(),
-            left: link(0),
-            right: link(1),
-            hosted: &hosted,
-        });
+        let loaded = bench.node(&model.load(index, [left_child, right], &hosted));
         done.push(loaded.expect("a node"));
         for page in bench.loader.drain_pages() {
             left.push((page, bench.mem.writes[&page.page]));

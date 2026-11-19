@@ -28,7 +28,7 @@ fn push(bench: &mut Bench, merk: &mut InOrder, node: &NodeLoad<'_, ()>) -> Resul
     merk.push(&mut bench.loader, mem, log, rules, node)
 }
 
-fn shape(result: Result<(), LoadError>) -> ShapeError {
+fn shape<T: std::fmt::Debug>(result: Result<T, LoadError>) -> ShapeError {
     match result {
         Err(LoadError::Shape(shape)) => shape,
         other => panic!("{other:?}"),
@@ -83,7 +83,8 @@ fn a_merk_with_no_node_has_no_root() {
 #[test]
 fn two_shapes_of_the_same_keys_are_told_apart_by_their_heights() {
     // a, b, c with b at the top; and a at the top, c below it, b below c.
-    let shapes: [[(Option<(u8, u8)>, Option<(u8, u8)>); 3]; 2] = [
+    type Sides = (Option<(u8, u8)>, Option<(u8, u8)>);
+    let shapes: [[Sides; 3]; 2] = [
         [(None, None), (Some((0, 0)), Some((0, 0))), (None, None)],
         [(None, Some((1, 0))), (None, None), (Some((0, 0)), None)],
     ];
@@ -147,10 +148,7 @@ fn a_right_child_that_was_not_given_is_refused() {
     push(&mut bench, &mut merk, &ordered(b"a", None, Some((0, 1)))).expect("a node");
     push(&mut bench, &mut merk, &ordered(b"b", None, Some((0, 0)))).expect("a node");
     let refused = merk.finish(&mut bench.loader);
-    let Err(LoadError::Shape(shape)) = refused else {
-        panic!("{refused:?}");
-    };
-    assert_eq!(shape, ShapeError::NoRight { waiting: 2 });
+    assert_eq!(shape(refused), ShapeError::NoRight { waiting: 2 });
     assert!(matches!(bench.leaf(b"c"), Err(LoadError::Failed)));
 }
 

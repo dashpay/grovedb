@@ -406,11 +406,9 @@ impl Loader {
     /// The level above the page of a cell that is in a page: 0 unless the
     /// load still fills that page.
     fn level_above(&self, page: PageId) -> usize {
-        let filled =
-            |filling: &Option<Filling>| filling.is_some_and(|filling| filling.page == page);
         self.levels
             .iter()
-            .position(filled)
+            .position(|filling| filling.is_some_and(|filling| filling.page == page))
             .map_or(0, |level| level + 1)
     }
 
@@ -421,11 +419,8 @@ impl Loader {
         rules: &mut R,
         node: &NodeLoad<'_>,
     ) -> Result<Loaded, LoadError> {
-        let adopt = |loader: &mut Self, link: &Option<LinkLoad<'_>>| {
-            let adopted = link.map(|link| loader.adopt(link.child));
-            adopted.transpose()
-        };
-        let (left, right) = (adopt(self, &node.left)?, adopt(self, &node.right)?);
+        let left = node.left.map(|link| self.adopt(link.child)).transpose()?;
+        let right = node.right.map(|link| self.adopt(link.child)).transpose()?;
         let mut hosted = Vec::with_capacity(node.hosted.len());
         for root in node.hosted {
             hosted.push(match *root {
@@ -681,9 +676,9 @@ impl Loader {
         self.walk.push(root);
         while let Some(index) = self.walk.pop() {
             self.order.push(index);
-            let below = self.nodes[index as usize].as_ref().expect(LIVE);
+            let node = self.nodes[index as usize].as_ref().expect(LIVE);
             self.walk
-                .extend(below.open_children().map(|(_, child)| child));
+                .extend(node.open_children().map(|(_, child)| child));
         }
         for &index in self.order.iter().rev() {
             let node = self.nodes[index as usize].as_mut().expect(LIVE);

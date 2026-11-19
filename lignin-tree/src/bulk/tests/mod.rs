@@ -493,16 +493,11 @@ struct Node {
     right: Option<usize>,
     hosted: Vec<Option<(usize, Hosting)>>,
     heights: (u8, u8),
+    /// The aggregate that the link to this node states.
+    aggregate: Vec<u8>,
     value_hash: Hash,
     kv_hash: Hash,
     hash: Hash,
-}
-
-impl Node {
-    /// The aggregate that the link to this node states.
-    fn aggregate(&self) -> Vec<u8> {
-        self.feature.iter().rev().copied().collect()
-    }
 }
 
 /// A grove of the tests.
@@ -584,14 +579,17 @@ impl Model {
             .collect();
         let value_hash = given.unwrap_or_else(|| value_rule(&value, &roots));
         let kv_hash = kv_rule(&key, &value_hash);
-        let aggregates =
-            [left, right].map(|child| child.map(|child| self.nodes[child].aggregate()));
-        let part = |side: usize| -> LinkPart<'_> {
-            let child = &self.nodes[[left, right][side]?];
-            let aggregate: &[u8] = aggregates[side].as_ref()?;
-            Some((&child.hash, aggregate, child.heights, child.key.len() as u8))
+        let part = |child: Option<usize>| -> LinkPart<'_> {
+            let child = &self.nodes[child?];
+            Some((
+                &child.hash,
+                &child.aggregate,
+                child.heights,
+                child.key.len() as u8,
+            ))
         };
-        let hash = node_rule(&kv_hash, &feature, part(0), part(1));
+        let hash = node_rule(&kv_hash, &feature, part(left), part(right));
+        let aggregate = feature.iter().rev().copied().collect();
         self.nodes.push(Node {
             key,
             feature,
@@ -601,11 +599,40 @@ impl Model {
             right,
             hosted,
             heights,
+            aggregate,
             value_hash,
             kv_hash,
             hash,
         });
         Some(self.nodes.len() - 1)
+    }
+
+    /// The node `index` as a load is given it, with `children` naming its
+    /// children.
+    fn load<'a, C: Copy>(
+        &'a self,
+        index: usize,
+        children: [Option<C>; 2],
+        hosted: &'a [HostedLoad],
+    ) -> NodeLoad<'a, C> {
+        let (nodes, node) = (&self.nodes, &self.nodes[index]);
+        let link = |side: usize, below: Option<usize>| {
+            let below = &nodes[below?];
+            Some(LinkLoad {
+                child: children[side]?,
+                heights: below.heights,
+                aggregate: &below.aggregate[..],
+            })
+        };
+        NodeLoad {
+            key: &node.key,
+            feature: &node.feature,
+            value: &node.value,
+            value_hash: node.given.as_ref(),
+            left: link(0, node.left),
+            right: link(1, node.right),
+            hosted,
+        }
     }
 }
 
@@ -689,23 +716,7 @@ impl Bench {
         let children = [node.left, node.right];
         let loaded = children.map(|child| child.map(|child| self.subtree(model, child)));
         let hosted = self.hosted(model, index, false);
-        let aggregates = children.map(|child| child.map(|child| model.nodes[child].aggregate()));
-        let link = |side: usize| {
-            Some(LinkLoad {
-                child: loaded[side]?,
-                heights: model.nodes[children[side]?].heights,
-                aggregate: aggregates[side].as_ref()?,
-            })
-        };
-        let subtree = self.node(&NodeLoad {
-            key: &node.key,
-            feature: &node.feature,
-            value: &node.value,
-            value_hash: node.given.as_ref(),
-            left: link(0),
-            right: link(1),
-            hosted: &hosted,
-        });
+        let subtree = self.node(&model.load(index, loaded, &hosted));
         let subtree = subtree.expect("a node");
         let hash = self.loader.hash_of(subtree).expect("a free subtree");
         assert_eq!(hash, node.hash, "the hash of the node");
@@ -723,27 +734,8 @@ impl Bench {
                 next = model.nodes[index].left;
             }
             let index = open.pop().expect("a node");
-            let node = &model.nodes[index];
             let hosted = self.hosted(model, index, true);
-            let children = [node.left, node.right];
-            let aggregates =
-                children.map(|child| child.map(|child| model.nodes[child].aggregate()));
-            let link = |side: usize| {
-                Some(LinkLoad {
-                    child: (),
-                    heights: model.nodes[children[side]?].heights,
-                    aggregate: aggregates[side].as_ref()?,
-                })
-            };
-            let node = NodeLoad {
-                key: &node.key,
-                feature: &node.feature,
-                value: &node.value,
-                value_hash: node.given.as_ref(),
-                left: link(0),
-                right: link(1),
-                hosted: &hosted,
-            };
+            let node = model.load(index, [Some(()); 2], &hosted);
             let (mem, log, rules) = (&mut self.mem, &mut self.log, &mut self.rules);
             merk.push(&mut self.loader, mem, log, rules, &node)
                 .expect("the next node");
@@ -791,7 +783,7 @@ impl Bench {
                 assert_eq!(link.hash, &below.hash);
                 assert_eq!(link.heights, below.heights);
                 assert_eq!(usize::from(link.child_key_len), below.key.len());
-                assert_eq!(link.aggregate, below.aggregate());
+                assert_eq!(link.aggregate, below.aggregate);
                 open.push((child, link.child));
             }
             let roots: Vec<_> = cell.hosted_roots().collect();
