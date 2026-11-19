@@ -11,7 +11,10 @@
 //!   the records of GroveDB
 //!
 //! `the_reference_workload_loads_within_the_time_and_fill` is the task's
-//! "done when": one million documents and their references. It is ignored
+//! "done when": one million documents and their references. The time is
+//! that of the load: the calls of the loader, writing its pages and values
+//! to their files, and the sync. Reading the grove from RocksDB, which is
+//! the stream's side, is not in it. It is ignored
 //! by default, wants a release build, and builds the grove on RocksDB
 //! first, which takes most of an hour. `BULK_LOAD_DIR` names a directory
 //! for it (about 3 GB); a grove that was built there is used again.
@@ -158,19 +161,20 @@ impl HashRules for MerkRules {
     }
 }
 
-/// The feature of a node as a cell stores it: Merk's tag, and for the test
-/// what Merk prints of the rest.
+/// The feature of a node as a cell stores it (`tree-page.md` TP12). The
+/// grove of this test has no tree with an aggregate, and neither have the
+/// rules.
 fn feature_bytes(feature: TreeFeatureType) -> Vec<u8> {
     match feature {
         TreeFeatureType::BasicMerkNode => vec![0],
-        other => format!("{other:?}").into_bytes(),
+        other => unreachable!("a node of {other:?} in a grove of plain trees"),
     }
 }
 
 fn aggregate_bytes(aggregate: AggregateData) -> Vec<u8> {
     match aggregate {
         AggregateData::NoAggregateData => vec![0],
-        other => format!("{other:?}").into_bytes(),
+        other => unreachable!("a link with {other:?} in a grove of plain trees"),
     }
 }
 

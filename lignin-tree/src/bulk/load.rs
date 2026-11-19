@@ -208,8 +208,6 @@ struct Filling {
 /// A subtree of a piece that fits the room of a page.
 #[derive(Debug, Clone, Copy)]
 struct Cut {
-    /// How many nodes of the walk from the piece's root are above it.
-    depth: usize,
     parent: u32,
     which: Which,
     node: u32,
@@ -238,6 +236,7 @@ pub struct Loader {
     order: Vec<u32>,
     walk: Vec<u32>,
     path: Vec<u32>,
+    search: Vec<(u32, usize)>,
     roots: Vec<Option<CellAddress>>,
     hashes: Vec<Option<Hash>>,
     left: Vec<LoadedPage>,
@@ -269,6 +268,7 @@ impl Loader {
             order: Vec::new(),
             walk: Vec::new(),
             path: Vec::new(),
+            search: Vec::new(),
             roots: Vec::new(),
             hashes: Vec::new(),
             left: Vec::new(),
@@ -610,7 +610,7 @@ impl Loader {
                 };
                 let address = self.put(pages, values, cut.node, level)?;
                 *self.open_mut(cut.parent).child_mut(cut.which) = Some(Child::Placed(address));
-                for above in 0..cut.depth {
+                for above in 0..self.path.len() {
                     let above = self.path[above];
                     self.open_mut(above).below -= cut.below;
                 }
@@ -632,33 +632,34 @@ impl Loader {
     }
 
     /// The largest subtree of the piece of `root`, other than the piece,
-    /// that takes at most `room` bytes. The nodes from the root down to its
-    /// parent are the first `depth` of `self.path`.
+    /// that takes at most `room` bytes: the first of them in the order the
+    /// piece is walked. The nodes from the root down to its parent are left
+    /// in `self.path`.
     fn largest_within(&mut self, root: u32, room: usize) -> Option<Cut> {
-        self.path.clear();
-        let (mut current, mut best) = (root, None::<Cut>);
-        loop {
-            self.path.push(current);
-            let mut heaviest = None::<(u32, u32)>;
-            for (which, node) in self.open(current).open_children() {
-                let below = self.open(node).below;
+        let (nodes, chain) = (&self.nodes, &mut self.walk);
+        let mut best = None::<Cut>;
+        chain.clear();
+        self.search.clear();
+        self.search.push((root, 0));
+        while let Some((parent, depth)) = self.search.pop() {
+            chain.truncate(depth);
+            chain.push(parent);
+            for (which, node) in nodes[parent as usize].as_ref().expect(LIVE).open_children() {
+                let below = nodes[node as usize].as_ref().expect(LIVE).below;
                 if below as usize > room {
-                    heaviest = heaviest.max(Some((below, node)));
+                    self.search.push((node, depth + 1));
                 } else if best.is_none_or(|best| below > best.below) {
                     best = Some(Cut {
-                        depth: self.path.len(),
-                        parent: current,
+                        parent,
                         which,
                         node,
                         below,
                     });
+                    self.path.clone_from(chain);
                 }
             }
-            match heaviest {
-                Some((_, node)) => current = node,
-                None => return best,
-            }
         }
+        best
     }
 
     /// Puts the piece of the node `root` into the page that is filled at

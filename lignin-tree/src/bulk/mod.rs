@@ -2,9 +2,9 @@
 //!
 //! - [`Loader`] takes the nodes of a grove, each after its children
 //!   ([`NodeLoad`]), and puts their cells into new pages: whole fragments
-//!   of at most the largest size, in pages that are at least 90% full
-//!   ([`LoadParams`]), with the roots above them together in the pages
-//!   above.
+//!   of at most the largest size, in pages that are 90% full or more as
+//!   long as there is a piece that fits ([`LoadParams`]), with the roots
+//!   above them together in the pages above.
 //! - [`InOrder`] takes the nodes of one Merk in the order of their keys, as
 //!   a scan of its records gives them, and hands them to a loader.
 //! - [`LoadValues`] is what a load tells about the values that are not in
@@ -53,8 +53,8 @@
 //! [`HashRules::node_hash`] and, unless its value hash is given, one of
 //! [`HashRules::value_hash`]. A cell goes into its page once, with every
 //! hash in it: no hash is marked stale ([`Hashes`](crate::hash::Hashes)),
-//! none is written as a record of its own, and no page is read or written
-//! for a hash.
+//! none is written as a record of its own, and no page is written for a
+//! hash, or read for one but in the one case below.
 //!
 //! The other way is to insert cells without hashes, mark them and ask for
 //! the root hash once. It makes the same hashes, and reads and writes
@@ -102,9 +102,10 @@
 //!    not fit the page of its level and the page is below the least fill,
 //!    subtrees of that piece go into the page as fragments of their own,
 //!    each time the largest that fits, until the page is full enough or
-//!    nothing fits. Then the rest of the piece starts the next page. A
-//!    largest subtree that fits takes more than half the room, less one
-//!    cell, so a few of them fill a page.
+//!    nothing fits. Then the rest of the piece starts the next page. Of
+//!    a piece that Merk balanced, the largest subtree that fits takes more
+//!    than half the room, less one cell, so a few of them fill a page. A
+//!    piece that is one cell has none, and the page is left as it is.
 //!
 //! What this leaves is what fragment maintenance accepts: every page
 //! passes `TreePage::check_fragments`, no fragment is above the largest
@@ -134,6 +135,8 @@
 //!   cell, which is the caller's write.
 //! - **An error ends the load.** The pages may hold a part of it, and the
 //!   values a value that no cell holds: the caller rolls back the scope.
+//!   Asking for a hash ([`Loader::hash_of`]) changes nothing and ends
+//!   nothing.
 //!
 //! [`HashRules::kv_hash`]: crate::hash::HashRules::kv_hash
 //! [`HashRules::node_hash`]: crate::hash::HashRules::node_hash

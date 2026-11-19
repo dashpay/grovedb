@@ -7,9 +7,11 @@ use lignin_format::CellAddress;
 use super::node::Loaded;
 use crate::{fragment::FragmentError, hash::Refusal, node::NodeError};
 
-/// Why a load stopped. A load that returned an error is over: every later
-/// call returns [`LoadError::Failed`], and the caller rolls back the scope
-/// the pages belong to.
+/// Why a load stopped. A load is over once a call that takes a node, places
+/// a root or ends a Merk has returned an error: every later call returns
+/// [`LoadError::Failed`], and the caller rolls back the scope the pages
+/// belong to. [`Loader::hash_of`](super::Loader::hash_of) only asks, and
+/// its error ends nothing.
 #[derive(Debug)]
 pub enum LoadError {
     /// The fill a load was asked for is no fill: the least is above the
