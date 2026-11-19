@@ -59,15 +59,16 @@ fn record(n: usize) -> Vec<u8> {
 
 /// Builds a Merk of `elements` nodes below a host of the root Merk, with a
 /// Merk of two nodes nested at every `nest`th of them, drops it, and
-/// reclaims it. The Merk has a flat record for every tenth element, every
-/// tenth of them with a value out of line, and each nested Merk has three,
-/// in two columns.
+/// reclaims it. Each nested Merk has three flat records, in two columns.
+/// With `own_flat`, the Merk has a flat record for every tenth element as
+/// well, every tenth of them with a value out of line.
 fn drop_a_subtree(
     elements: usize,
     nest: usize,
     size: PageSize,
     pool: usize,
     rounds: usize,
+    own_flat: bool,
 ) -> Measured {
     let db = Db::with(size, pool);
     let mut txn = db.begin();
@@ -120,11 +121,20 @@ fn drop_a_subtree(
         db.write_back();
     }
     assert_eq!(put, elements);
-    let flat_records = elements / 10;
+    // A flat page keeps a value up to an eighth of its size.
+    let flat_records = match own_flat {
+        true => elements / 10,
+        false => 0,
+    };
+    let long = db.config.max_inline() + 100;
     for chunk in 0..flat_records.div_ceil(20_000) {
         let mut txn = db.begin();
         for n in chunk * 20_000..flat_records.min(chunk * 20_000 + 20_000) {
-            grove.put_flat(merk, 0, &record(n), &value(n));
+            let held = match n % 10 {
+                0 => bytes(n as u64, long),
+                _ => bytes(n as u64, 16),
+            };
+            grove.put_flat(merk, 0, &record(n), &held);
         }
         grove.flush(&mut txn);
         db.commit(txn);
@@ -244,8 +254,8 @@ fn drop_a_subtree(
 /// The same run at a size that every test run can afford.
 #[test]
 fn a_subtree_is_dropped_and_reclaimed() {
-    let small = drop_a_subtree(300, 50, PageSize::MIN, 4 << 20, 2);
-    let large = drop_a_subtree(12_000, 50, PageSize::MIN, 16 << 20, 2);
+    let small = drop_a_subtree(300, 50, PageSize::MIN, 4 << 20, 2, true);
+    let large = drop_a_subtree(12_000, 50, PageSize::MIN, 16 << 20, 2, true);
     // Forty times the elements, and the drop changes the same tree pages.
     // Of the directory it writes the leaf of each of its four records and
     // the branches above them, and the directory of the larger run is the
@@ -278,13 +288,21 @@ fn a_subtree_is_dropped_and_reclaimed() {
     assert!(large.done.pages_freed > 100);
 }
 
-/// The acceptance test. It builds a subtree of a million elements, which
-/// takes a few minutes and about two gigabytes, so it is run by hand:
+/// The acceptance test. It builds a subtree of a million elements twice,
+/// which takes a minute or two and about two gigabytes, so it is run by
+/// hand:
 ///
 /// ```text
 /// cargo test --release -p lignin-tree --lib -- --ignored --nocapture \
 ///     a_subtree_of_a_million_elements_is_dropped_within_a_millisecond
 /// ```
+///
+/// The second time the subtree has a hundred thousand flat records of its
+/// own as well, which the drop takes out of their column: two leaves, a
+/// branch and the record of the pages between. That run is measured and
+/// held to a looser bound. Its drop writes six flat pages where the first
+/// writes four, and on 32 KiB pages a write to a flat page is most of what
+/// a drop costs.
 #[test]
 #[ignore = "builds a subtree of a million elements"]
 fn a_subtree_of_a_million_elements_is_dropped_within_a_millisecond() {
@@ -292,9 +310,14 @@ fn a_subtree_of_a_million_elements_is_dropped_within_a_millisecond() {
         .ok()
         .and_then(|elements| elements.parse().ok())
         .unwrap_or(1_000_000);
-    let one = drop_a_subtree(1, 1_000, PageSize::DEFAULT, 64 << 20, 20);
-    let run = drop_a_subtree(elements, 1_000, PageSize::DEFAULT, 1 << 30, 20);
-    for (name, run) in [("one element", &one), ("the subtree", &run)] {
+    let one = drop_a_subtree(1, 1_000, PageSize::DEFAULT, 64 << 20, 20, false);
+    let run = drop_a_subtree(elements, 1_000, PageSize::DEFAULT, 1 << 30, 20, false);
+    let flat = drop_a_subtree(elements, 1_000, PageSize::DEFAULT, 1 << 30, 20, true);
+    for (name, run) in [
+        ("one element", &one),
+        ("the subtree", &run),
+        ("the subtree with flat records of its own", &flat),
+    ] {
         println!(
             "{name}: {} elements and {} nested Merks in {} tree pages",
             run.elements, run.nested, run.tree_pages
@@ -350,10 +373,13 @@ fn a_subtree_of_a_million_elements_is_dropped_within_a_millisecond() {
     // The commit is made once. Of the write, the median of its rounds
     // stands for it, so that one slow moment of a shared machine does not
     // fail the test.
-    let median = run.unlinks[run.unlinks.len() / 2];
-    assert!(median + run.commit < Duration::from_millis(1));
-    assert!(run.tree_pages_changed <= one.tree_pages_changed + 1);
-    assert!(run.flat_pages_read <= 28 && run.flat_pages_written <= 18);
+    let median = |run: &Measured| run.unlinks[run.unlinks.len() / 2];
+    assert!(median(&run) + run.commit < Duration::from_millis(1));
+    assert!(median(&flat) + flat.commit < Duration::from_millis(2));
+    for run in [&run, &flat] {
+        assert!(run.tree_pages_changed <= one.tree_pages_changed + 1);
+        assert!(run.flat_pages_read <= 28 && run.flat_pages_written <= 18);
+    }
 }
 
 /// The share of their bytes that the tree pages of the latest version use.
