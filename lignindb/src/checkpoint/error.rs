@@ -92,6 +92,13 @@ pub enum CheckpointError {
         /// The error of the file layer.
         source: io::Error,
     },
+    /// [`delete`](super::delete): the path names no directory of its own
+    /// in the directory above it: nothing, a file, or a link to a
+    /// directory, which is not followed. Nothing was removed.
+    NotADirectory {
+        /// The path.
+        dir: PathBuf,
+    },
     /// [`delete`](super::delete): the directory has no manifest of this
     /// engine, so it is no checkpoint and no database of it. Nothing was
     /// removed.
@@ -173,6 +180,11 @@ impl fmt::Display for CheckpointError {
                 path,
                 source,
             } => write!(f, "could not {action} {}: {source}", path.display()),
+            Self::NotADirectory { dir } => write!(
+                f,
+                "{} is not a directory of its own, and nothing was removed",
+                dir.display()
+            ),
             Self::NotADatabase { dir, source } => write!(
                 f,
                 "{} is no checkpoint, and nothing of it was removed: {source}",
@@ -203,6 +215,7 @@ impl Error for CheckpointError {
             | Self::LogAhead { .. }
             | Self::NotDurable { .. }
             | Self::LogFile { .. }
+            | Self::NotADirectory { .. }
             | Self::Open { .. } => None,
         }
     }

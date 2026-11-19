@@ -25,7 +25,7 @@ use lignin_store::{
 };
 
 use super::{
-    block, checkpointer, checkpoints_in, open_on, sim, store_files, History, NoLinks, DIR,
+    block, checkpointer, checkpoints_in, open_on, sim, store_files, History, Meddling, DIR,
     NO_CATCH_UP,
 };
 use crate::{
@@ -66,11 +66,11 @@ fn made(seed: u64, files: Files) -> Made {
     let plain: Arc<dyn Vfs> = Arc::new(fs.clone());
     let vfs: Arc<dyn Vfs> = match files {
         Files::Linked => plain,
-        Files::Copied => Arc::new(NoLinks {
-            inner: plain,
-            under: Path::new(DIR).join("checkpoints"),
-            kind: ErrorKind::CrossesDevices,
-        }),
+        Files::Copied => Arc::new(Meddling::no_links(
+            plain,
+            Path::new(DIR).join("checkpoints"),
+            ErrorKind::CrossesDevices,
+        )),
     };
     let (options, flush) = (LogOptions::default(), FlushConfig::new(SIZE));
     let (db, versions) = Db::on(vfs, Path::new(DIR), 256, options, flush, None);
@@ -327,8 +327,7 @@ fn a_catch_up_that_fails_is_reported_and_the_checkpoint_is_made() {
     // its pass fails.
     let segment = store_files(&made.fs, Path::new(DIR))
         .into_iter()
-        .filter(|file| file.starts_with("seg"))
-        .next_back()
+        .rfind(|file| file.starts_with("seg"))
         .expect("a segment");
     let appends = OpSet::of(&[OpKind::Append]);
     let rule = FaultRule::new(Fault::Eio).on(appends).forever();

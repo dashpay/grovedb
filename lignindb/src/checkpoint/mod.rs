@@ -6,7 +6,8 @@
 //!   path, made from its [`Committer`](crate::commit::Committer).
 //! - [`Created`] says what a creation made, and [`CheckpointOptions`] how
 //!   much log it leaves for the checkpoint's first open to replay.
-//! - [`delete`] removes a checkpoint's directory.
+//! - [`delete`] removes a checkpoint's directory, and
+//!   [`DELETING_FILE_NAME`] marks one that it is removing.
 //! - [`CheckpointError`] is every way a creation or a deletion fails.
 //!
 //! `docs/lignindb/transactions.md` section 11 is the specification (CK1 to
@@ -64,7 +65,7 @@
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
 //! | 3 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. | the lock of the target, to the end |
-//! | 4 | **The sample** (CK2): the latest version *vc*, where the log ends, and the durable manifest. A session whose log holds a commit it has not published is refused. The version is pinned, and the whole log and the value-log files are held (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
+//! | 4 | **The sample** (CK2): the latest version *vc*, where the log ends, and the durable manifest. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the target, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
 //! | 7 | The log's files up to the one the sample ended in are linked. | the same |
@@ -79,6 +80,18 @@
 //! manifest and which another creation holds while it links: the sample
 //! only tries that lock while it has the commit lock. Where the manifest
 //! is taken, it gives the commit lock back, waits, and takes both anew.
+//!
+//! **One wait is the log's, and is not taken away here.** The log makes
+//! itself durable one sync at a time (`lignin_store::wal`). Where the
+//! commits of a database sync the log themselves
+//! ([`SyncPolicy::EveryCommit`](lignin_store::wal::SyncPolicy::EveryCommit),
+//! or an interval that is due), a commit does so under the commit lock
+//! (CM7), and waits there for a sync of the log that is under way: the one
+//! of step 6, as it waits for write-back's or for a flush's. What it waits
+//! for is the writing of bytes that its own sync would have had to write.
+//! CK5 and CM8 say "never waits for the fsync" of commits that sync
+//! nothing, which is the default; with such a policy they hold but for
+//! that one sync.
 //!
 //! **The lock on the manifest is held through step 5**, which is one
 //! `link` for each file the manifest names: write-back replaces no
@@ -147,7 +160,9 @@
 //!   checkpoint that write-back installs meanwhile drops no log file;
 //! - the value-log files
 //!   ([`ValueStore::hold_files`](lignin_store::values::ValueStore::hold_files)),
-//!   as the value log asks of a checkpoint;
+//!   as the value log asks of a checkpoint. The hold is taken under the
+//!   lock on the manifest and not under the commit lock: it looks at
+//!   every file the value log has;
 //! - for step 5, the lock on the manifest. **Every file that a durable
 //!   manifest names is on disk, and its name is removed only under that
 //!   lock**, by the `manifest_replaced` of its store. The creation relies
@@ -210,20 +225,31 @@
 //! the database is opened again (`lignin_store::wal`). The creation
 //! removes what it made in the target, the manifest first, and the target
 //! itself, so that the same call can be made again. It removes nothing it
-//! did not make. Where the file layer fails that too, what is left is for
-//! the caller to remove. An error of the catch-up of step 2 does not fail
+//! did not make: a file that somebody else put into the target while it
+//! was made stays, and the target with it, and where the creation does
+//! not get the lock of the target it has just made, somebody else has
+//! it, and nothing in the target is touched. Where the file layer fails
+//! the removal too, what is left is for the caller to remove. An error of
+//! the catch-up of step 2 does not fail
 //! the creation: it is reported in [`Created::catch_up`], and the
 //! checkpoint's first open replays more log.
 //!
 //! # Links and copies
 //!
-//! A file is linked where the file system links it, and copied where it
+//! A file is linked where the system links it, and copied where it
 //! reports that it does not: the two directories are on different file
 //! systems, the file has as many names as it can have, or the file system
 //! has no hard links, which is reported as "not supported" or, on Linux,
-//! as "not permitted". Any other failure of a link fails the creation.
-//! The choice is made for each file, so a target on the file system of
-//! some of the live directories shares those.
+//! as "not permitted". Linux says "not permitted" also where its policy
+//! keeps one file from being linked (a file of another owner where links
+//! are protected, a file marked append-only), and the two cannot be told
+//! apart. **So a link that is not permitted becomes a copy wherever the
+//! file can be read and the copy created**, and the checkpoint is as good
+//! a one. It then costs what a copy costs, and nothing says so but
+//! [`Created::copied`] and [`Created::copied_bytes`]: an engine that
+//! expects links looks there. Any other failure of a link fails the
+//! creation. The choice is made for each file, so a target on the file
+//! system of some of the live directories shares those.
 //!
 //! A copy is of the first bytes of the file, as many as the checkpoint's
 //! manifest gives it, read through a handle that was opened in step 5 or
@@ -253,6 +279,8 @@
 //! or if the engine keeps any other file there that an open needs, the
 //! checkpoint has to have it: [`Checkpointer::carrying`] names such files,
 //! and each is linked or copied in step 5, before the manifest is written.
+//! Each is a file, and not a link to one, which would lead nowhere from
+//! the target.
 //! A checkpoint takes nothing else from the database directory: not what
 //! somebody else keeps there, such as the directory of the checkpoints
 //! themselves (P-03, P-14), and not the lock file. Its own lock file is
@@ -261,8 +289,20 @@
 //! # Deleting a checkpoint, and removing one that is open
 //!
 //! **Deleting a checkpoint is removing its directory.** Nothing in the
-//! live database knows of it. [`delete`] does it with two checks, and a
-//! caller that removes the directory itself does as well (P-18).
+//! live database knows of it. A caller that removes the directory itself
+//! does as well as [`delete`] (P-18), which is the careful way:
+//!
+//! - It removes nothing of a path that is no directory of its own, of a
+//!   directory that is no database of this engine, or of one that a handle
+//!   has open.
+//! - **It makes the directory stop being a database before it removes a
+//!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], durably,
+//!   and then everything goes, the renamed manifest last. A deletion that
+//!   is cut short therefore never leaves a directory that opens with
+//!   something missing: not a file of the store, which an open would miss,
+//!   and not a file that the engine or Platform keeps beside them (P-17),
+//!   which it would not. What it leaves has the renamed manifest, or is
+//!   empty, and a second call finishes it.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the
@@ -276,7 +316,12 @@
 //! write into a directory that was made anew there. The test
 //! `a_checkpoint_whose_directory_is_removed_while_it_is_open_closes_cleanly`
 //! shows it for the parts of a close that exist here: write-back's last
-//! turn and the drop of every store.
+//! turn and the drop of every store. It does not show that such a close
+//! writes nothing, which P-18 asks as well: write-back's last turn can
+//! append to a file it has open before it meets the first one it cannot
+//! create. Those bytes go to a file without a name and are lost with it.
+//! A close that writes nothing into a directory that is gone is the
+//! engine's to make (TXN-07).
 //!
 //! # What other tasks take from here
 //!
@@ -293,11 +338,15 @@
 //!     nothing refuses the second kind. A rename of a directory in the
 //!     file layer would let a creation build under another name and
 //!     appear whole, and is the owner's to decide on.
+//!   - **It makes no database in a directory that holds
+//!     [`DELETING_FILE_NAME`]**: that is a checkpoint, or a database,
+//!     whose deletion was cut short, and [`delete`] finishes it.
 //!   - If it keeps a file beside the store's, whoever makes checkpoints
 //!     names it ([`Checkpointer::carrying`]).
 //!   - Its close of a database whose directory is gone ends with the
-//!     errors of write-back and no more: it creates no directory. It
-//!     shares the name of the lock file with [`delete`], which is `LOCK`.
+//!     errors of write-back and no more: it creates no directory, and it
+//!     is the one to see that nothing is written then (P-18). It shares
+//!     the name of the lock file with [`delete`], which is `LOCK`.
 //! - **GroveDB's engine** (GROVE-01, GROVE-08) makes a [`Checkpointer`]
 //!   from the committer of the open database for `create_checkpoint`,
 //!   which refuses an existing path as the trait asks. Its
@@ -336,7 +385,7 @@ mod files;
 
 pub use create::{CheckpointOptions, Checkpointer, Created, DEFAULT_CATCH_UP_ABOVE};
 pub use error::CheckpointError;
-pub use files::delete;
+pub use files::{delete, DELETING_FILE_NAME};
 
 #[cfg(all(test, not(loom)))]
 mod tests;

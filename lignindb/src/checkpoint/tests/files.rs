@@ -3,14 +3,15 @@
 //! carry, and the deletion of a checkpoint.
 
 use std::{
+    collections::BTreeMap,
     io::ErrorKind,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use lignin_format::manifest::Manifest;
-use lignin_io::{StdVfs, Vfs};
+use lignin_io::{sim::SimVfs, StdVfs, Vfs, VfsLock};
 use lignin_store::{
     flush::FlushConfig,
     segment::{read_manifest, FileNames, SegmentStoreError},
@@ -18,28 +19,28 @@ use lignin_store::{
 };
 
 use super::{
-    block, checkpointer, checkpoints_in, memory_dir, names_of, open, sim, store_files, store_on,
-    store_with_log, turn, NoLinks,
+    block, checkpointer, checkpoints_in, everything_in, memory_dir, names_of, open, open_on, sim,
+    store_files, store_on, store_with_log, turn, write_file, BeforeLock, Meddling,
 };
 use crate::{
-    checkpoint::{self, create::Step, CheckpointError, CheckpointOptions},
+    checkpoint::{self, create::Step, CheckpointError, CheckpointOptions, DELETING_FILE_NAME},
     snapshot::Versions,
     txn::tests::{
+        model::Committed,
         store::{Db, Rng, SIZE},
         World,
     },
 };
 
-/// A store in a directory of its own in memory, on a file layer that makes
-/// no hard link into the directory of its checkpoints.
-fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
+/// A store in a directory of its own in memory, on the file layer that
+/// `meddling` makes of the plain one and of the directory of the store's
+/// checkpoints.
+fn store_on_meddling(
+    meddling: impl FnOnce(Arc<dyn Vfs>, PathBuf) -> Meddling,
+) -> (Arc<Db>, Versions) {
     let dir = memory_dir();
     let path = dir.path().to_path_buf();
-    let vfs = NoLinks {
-        inner: Arc::new(StdVfs),
-        under: path.join("checkpoints"),
-        kind,
-    };
+    let vfs = meddling(Arc::new(StdVfs), path.join("checkpoints"));
     let options = LogOptions {
         target_file_len: 24 << 10,
         ..LogOptions::default()
@@ -52,6 +53,24 @@ fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
         FlushConfig::new(SIZE),
         Some(dir),
     )
+}
+
+/// A store on a file layer that makes no hard link into the directory of
+/// its checkpoints.
+fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
+    store_on_meddling(|plain, checkpoints| Meddling::no_links(plain, checkpoints, kind))
+}
+
+/// A store on a file layer that runs `before` before it takes the lock of
+/// a directory among the store's checkpoints, given the lock's file.
+fn store_with_locks_met(before: BeforeLock) -> (Arc<Db>, Versions) {
+    store_on_meddling(|plain, checkpoints| {
+        let among = move |lock: &Path| match lock.starts_with(&checkpoints) {
+            true => before(lock),
+            false => Ok(()),
+        };
+        Meddling::before_lock(plain, Box::new(among))
+    })
 }
 
 /// Every numbered file that `manifest` names, as its path inside the
@@ -229,43 +248,46 @@ fn a_checkpoint_carries_the_files_the_engine_names() {
     assert_eq!(created.linked, store_files(&StdVfs, &target).len() + 1);
     open(&db, &target).check(&world.model);
 
-    for name in [
+    // No plain name, a name of the store's, and what is no file: nothing,
+    // a directory, and a link to a file, which would be linked as a link
+    // that leads nowhere from the target and copied as the file.
+    let refused_names = [
         "",
         ".",
         "..",
         "../ENGINE",
         "wal/00000001.log",
         "MANIFEST",
+        "MANIFEST.tmp",
+        DELETING_FILE_NAME,
         "LOCK",
-    ] {
-        let names = [name];
-        let target = checkpoints.join("refused");
-        let refused = checkpointer(&db, &versions)
-            .carrying(&names)
-            .create(&target);
-        assert!(
-            matches!(&refused, Err(CheckpointError::CarriedName { name: said }) if said == name),
-            "{name:?}: {refused:?}"
-        );
-        assert!(!target.exists(), "{name:?} left a directory");
-    }
-    let missing = ["ENGINE", "not-there"];
-    let target = checkpoints.join("missing");
-    let failed = checkpointer(&db, &versions)
-        .carrying(&missing)
-        .create(&target);
-    assert!(
-        matches!(&failed, Err(CheckpointError::Io { source, .. })
-            if source.kind() == ErrorKind::NotFound),
-        "{failed:?}"
-    );
-    assert!(!target.exists());
+        "not-there",
+        "wal",
+        "link",
+    ];
+    let refuses = |db: &Db, versions: &Versions| {
+        std::os::unix::fs::symlink("ENGINE", db.dir.join("link")).expect("a link");
+        let checkpoints = checkpoints_in(db);
+        for name in refused_names {
+            let names = ["ENGINE", name];
+            let target = checkpoints.join("refused");
+            let refused = checkpointer(db, versions).carrying(&names).create(&target);
+            assert!(
+                matches!(&refused, Err(CheckpointError::CarriedName { name: said }) if said == name),
+                "{name:?}: {refused:?}"
+            );
+            assert!(!target.exists(), "{name:?} left a directory");
+        }
+    };
+    refuses(&db, &versions);
 
-    // Where no link can be made, the file is copied whole.
+    // Where no link can be made, the file is copied whole, and the same
+    // names are refused.
     let (db, versions) = store_without_links(ErrorKind::CrossesDevices);
     let mut world = World::new(&db, &versions);
     block(&mut world, &mut Rng::new(65), 0, 10);
     std::fs::write(db.dir.join("ENGINE"), b"what the engine keeps").expect("a file");
+    refuses(&db, &versions);
     let target = checkpoints_in(&db).join("1");
     let created = (checkpointer(&db, &versions)
         .carrying(&carried)
@@ -319,138 +341,237 @@ fn deleting_a_checkpoint_removes_its_directory() {
     block(&mut world, &mut rng, 4 * 20, 20);
     world.check_committed();
 
-    // What a deletion that was cut short behind the manifest leaves is
-    // finished: the lock file alone, or nothing.
-    for lock_left in [true, false] {
+    // What a deletion leaves that was cut short is finished: a directory
+    // with the renamed manifest and whatever else, or an empty one.
+    for marked in [true, false] {
         let leftover = checkpoints.join("leftover");
         std::fs::create_dir(&leftover).expect("a directory");
-        if lock_left {
-            std::fs::write(leftover.join("LOCK"), b"").expect("a file");
+        if marked {
+            std::fs::write(leftover.join(DELETING_FILE_NAME), b"").expect("a file");
+            std::fs::create_dir(leftover.join("seg")).expect("a directory");
+            std::fs::write(leftover.join("seg").join("00000001.seg"), b"left").expect("a file");
         }
         checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
         assert!(!leftover.exists());
     }
 
-    // No database: a directory of the caller's, and nothing at all.
+    // No database, and nothing of it is touched: a directory of the
+    // caller's, though it holds a file that is named as the lock file is.
     let not_one = checkpoints.join("not-one");
     std::fs::create_dir(&not_one).expect("a directory");
-    std::fs::write(not_one.join("kept"), b"as it was").expect("a file");
-    for dir in [&not_one, &checkpoints.join("nothing")] {
-        let refused = checkpoint::delete(&StdVfs, dir);
+    std::fs::write(not_one.join("LOCK"), b"as it was").expect("a file");
+    let refused = checkpoint::delete(&StdVfs, &not_one);
+    assert!(
+        matches!(
+            &refused,
+            Err(CheckpointError::NotADatabase {
+                source: SegmentStoreError::NoManifest { .. },
+                ..
+            })
+        ),
+        "{refused:?}"
+    );
+    let kept = BTreeMap::from([(PathBuf::from("LOCK"), Some(b"as it was".to_vec()))]);
+    assert_eq!(everything_in(&StdVfs, &not_one), kept);
+
+    // No directory of its own: nothing, a file, a path with no name, and
+    // a link to a checkpoint, which is not followed into it.
+    let second = checkpoints.join("2");
+    (checkpointer(&db, &versions).create(&second)).expect("a checkpoint");
+    let held = everything_in(&StdVfs, &second);
+    let (link, file) = (checkpoints.join("link"), checkpoints.join("file"));
+    std::os::unix::fs::symlink("2", &link).expect("a link");
+    std::fs::write(&file, b"a file").expect("a file");
+    let nothing = checkpoints.join("nothing");
+    for path in [&nothing, &file, &link, Path::new("/"), Path::new("")] {
+        let refused = checkpoint::delete(&StdVfs, path);
         assert!(
-            matches!(
-                &refused,
-                Err(CheckpointError::NotADatabase {
-                    source: SegmentStoreError::NoManifest { .. },
-                    ..
-                })
-            ),
-            "{refused:?}"
+            matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if dir == path),
+            "{}: {refused:?}",
+            path.display()
         );
     }
-    assert_eq!(
-        std::fs::read(not_one.join("kept")).expect("the file"),
-        b"as it was"
-    );
+    assert!(link.is_symlink() && file.exists());
+    assert_eq!(everything_in(&StdVfs, &second), held);
+    open(&db, &second).check(&world.model);
 }
 
-/// A deletion is durable when it returns, and one that is cut short can be
-/// made again: the manifest goes last, so what is left is still known for
-/// what it is.
+/// What a directory is, is asked again under its lock: one that stopped
+/// being a database between the first look and the lock is left as it is,
+/// with what was put into it meanwhile.
 #[test]
-fn a_deletion_that_is_cut_short_can_be_made_again() {
-    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
-
-    let fs = sim(67);
-    let (db, versions) = store_on(&fs);
+fn a_directory_that_changes_before_its_lock_is_taken_is_not_deleted() {
+    let (db, versions) = store_with_log(24 << 10, 128);
     let mut world = World::new(&db, &versions);
-    block(&mut world, &mut Rng::new(67), 0, 10);
-    (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+    block(&mut world, &mut Rng::new(70), 0, 20);
+    turn(&db, &versions);
     let target = checkpoints_in(&db).join("1");
     (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
-    let files = store_files(&fs, &target).len();
-    assert!(files >= 3);
+    let files = store_files(&StdVfs, &target);
 
-    // Each attempt removes one file, and its second removal fails, until
-    // the attempt that has one file left to remove.
-    let removals = OpSet::of(&[OpKind::RemoveFile]);
-    let mut attempts = 0;
-    loop {
-        fs.add_rule(FaultRule::new(Fault::Eio).on(removals).skip(1));
-        let deleted = checkpoint::delete(&fs, &target);
-        fs.clear_rules();
-        attempts += 1;
-        let Err(failed) = deleted else {
-            break;
-        };
-        assert!(
-            matches!(
-                &failed,
-                CheckpointError::Io {
-                    action: "remove",
-                    ..
-                }
-            ),
-            "{failed}"
-        );
-        // Until everything else is gone, the manifest is there.
-        let left = fs.read_dir(&target).expect("the directory");
-        let lock_alone = left.iter().all(|entry| entry.name == "LOCK");
-        assert_eq!(read_manifest(&fs, &target).is_err(), lock_alone, "{left:?}");
-        assert!(attempts < 100, "the deletion does not come to an end");
-    }
-    // The files, then the manifest, and the lock file alone at the last.
-    assert_eq!(attempts, files + 2);
-    assert_eq!(
-        fs.read_dir(&target).expect_err("it is gone").kind(),
-        ErrorKind::NotFound
+    let theirs = target.clone();
+    let meddling = Meddling::before_lock(
+        Arc::new(StdVfs),
+        Box::new(move |_| {
+            std::fs::remove_file(theirs.join("MANIFEST"))?;
+            std::fs::write(theirs.join("theirs"), b"put there meanwhile")
+        }),
     );
+    let refused = checkpoint::delete(&meddling, &target);
+    assert!(
+        matches!(&refused, Err(CheckpointError::NotADatabase { dir, .. }) if *dir == target),
+        "{refused:?}"
+    );
+    assert_eq!(
+        std::fs::read(target.join("theirs")).expect("their file"),
+        b"put there meanwhile"
+    );
+    assert_eq!(store_files(&StdVfs, &target), files);
+    assert!(!target.join(DELETING_FILE_NAME).exists());
+}
+
+/// A checkpoint on the simulated file system with the files that the
+/// engine and Platform keep beside the store's (P-17), all durable, and
+/// the model of what it holds.
+struct Kept {
+    fs: SimVfs,
+    db: Arc<Db>,
+    model: Committed,
+    target: PathBuf,
+    /// Everything in the checkpoint's directory.
+    held: BTreeMap<PathBuf, Option<Vec<u8>>>,
+}
+
+fn kept(seed: u64) -> Kept {
+    let fs = sim(seed);
+    let (db, versions) = store_on(&fs);
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(seed), 0, 10);
+    (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+    let model = world.model.clone();
+    drop(world);
+    let target = checkpoints_in(&db).join("1");
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    write_file(&fs, &target.join("ENGINE"), b"what the engine keeps");
+    write_file(&fs, &target.join("platform_state.bin"), b"the caller's");
+    fs.create_dir(&target.join("theirs")).expect("a directory");
+    write_file(&fs, &target.join("theirs").join("more"), b"the caller's");
+    (fs.sync_dir(&target.join("theirs"))).expect("the caller's file is durable");
+    (fs.sync_dir(&target)).expect("the files beside the store's are durable");
+    let held = everything_in(&fs, &target);
+    Kept {
+        fs,
+        db,
+        model,
+        target,
+        held,
+    }
+}
+
+/// What a deletion that did not end has left, in the state `left` of the
+/// file system: the directory is gone, or it is the whole checkpoint, or
+/// it is no database.
+#[derive(Debug, Default)]
+struct LeftOf {
+    gone: usize,
+    whole: usize,
+    none: usize,
+}
+
+impl Kept {
+    /// Checks what is left of the checkpoint in `left`, and makes the
+    /// deletion again there. A directory that has its manifest has every
+    /// file it had, the ones beside the store's among them, and `opens`
+    /// says whether it is also opened.
+    fn check_left(&self, left: &SimVfs, opens: bool, context: &str, seen: &mut LeftOf) {
+        if left.read_dir(&self.target).is_err() {
+            seen.gone += 1;
+            return;
+        }
+        if read_manifest(left, &self.target).is_ok() {
+            assert_eq!(everything_in(left, &self.target), self.held, "{context}");
+            if opens {
+                let vfs: Arc<dyn Vfs> = Arc::new(left.clone());
+                let opened = open_on(vfs, &self.target, &self.db)
+                    .unwrap_or_else(|error| panic!("{context}: the checkpoint: {error}"));
+                opened.check(&self.model);
+            }
+            seen.whole += 1;
+        } else {
+            let entries = left.read_dir(&self.target).expect("the directory");
+            let marked = entries.iter().any(|entry| entry.name == DELETING_FILE_NAME);
+            assert!(marked || entries.is_empty(), "{context}: {entries:?}");
+            seen.none += 1;
+        }
+        checkpoint::delete(left, &self.target).unwrap_or_else(|error| panic!("{context}: {error}"));
+        assert!(left.read_dir(&self.target).is_err(), "{context}");
+    }
+}
+
+/// Each operation of a deletion is failed in turn. What is left opens as
+/// the whole checkpoint, with every file that was beside the store's, or
+/// has no manifest and is known for a deletion that was cut short: never a
+/// database with something missing. The deletion can be made again, and is
+/// durable when it returns.
+#[test]
+fn a_deletion_that_the_file_layer_fails_leaves_the_checkpoint_or_no_database() {
+    use lignin_io::sim::{Fault, FaultRule};
+
+    let whole = kept(67);
+    let from = whole.fs.stats().ops;
+    checkpoint::delete(&whole.fs, &whole.target).expect("the checkpoint is deleted");
+    let ops = whole.fs.stats().ops - from;
+    assert!(ops > 12, "a deletion of {ops} operations");
     // Durable: a power cut that loses every unsynced change does not
     // bring it back.
-    let image = fs.crash_image();
+    let image = whole.fs.crash_image();
     let left = image.recover(&image.lose_all()).expect("a state");
-    assert!(left.read_dir(&target).is_err());
-    world.check_committed();
+    assert!(left.read_dir(&whole.target).is_err());
+
+    let mut seen = LeftOf::default();
+    for at in 1..=ops {
+        let kept = kept(67);
+        assert_eq!(kept.fs.stats().ops, from, "the same store");
+        (kept.fs).add_rule(FaultRule::new(Fault::Eio).from_op(from + at));
+        let deleted = checkpoint::delete(&kept.fs, &kept.target);
+        kept.fs.clear_rules();
+        let context = format!("a fault at operation {at} of {ops}: {deleted:?}");
+        if deleted.is_ok() {
+            assert!(kept.fs.read_dir(&kept.target).is_err(), "{context}");
+            continue;
+        }
+        kept.check_left(&kept.fs, true, &context, &mut seen);
+    }
+    assert!(seen.whole > 2 && seen.none > 4 && seen.gone > 0, "{seen:?}");
 }
 
 /// The power is cut after each operation of a deletion. In every state the
-/// crash can leave, the directory is gone, or the deletion can be made
-/// again and ends it: nothing is left that the call refuses.
+/// crash can leave, the directory is gone, or it opens as the whole
+/// checkpoint with every file that was beside the store's, or it has no
+/// manifest: never a database with something missing. In each, the
+/// deletion can be made again and ends it.
 #[test]
-fn a_deletion_that_the_power_cuts_can_be_made_again() {
+fn a_deletion_that_the_power_cuts_leaves_the_checkpoint_or_no_database() {
     use lignin_io::sim::CrashPoint;
 
-    let build = || {
-        let fs = sim(68);
-        let (db, versions) = store_on(&fs);
-        let mut world = World::new(&db, &versions);
-        block(&mut world, &mut Rng::new(68), 0, 10);
-        (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
-        let target = checkpoints_in(&db).join("1");
-        (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
-        fs.create_dir(&target.join("theirs")).expect("a directory");
-        (fs.sync_dir(&target)).expect("the caller's directory is durable");
-        drop(world);
-        (fs, target)
-    };
-    let (fs, target) = build();
-    let from = fs.stats().ops;
-    checkpoint::delete(&fs, &target).expect("the checkpoint is deleted");
-    let ops = fs.stats().ops - from;
-    assert!(ops > 8, "a deletion of {ops} operations");
+    let whole = kept(68);
+    let from = whole.fs.stats().ops;
+    checkpoint::delete(&whole.fs, &whole.target).expect("the checkpoint is deleted");
+    let ops = whole.fs.stats().ops - from;
+    assert!(ops > 12, "a deletion of {ops} operations");
 
-    let (mut gone, mut finished) = (0, 0);
+    let mut seen = LeftOf::default();
     for cut in 1..=ops {
-        let (fs, target) = build();
-        assert_eq!(fs.stats().ops, from, "the same store");
-        fs.crash_at(CrashPoint::AfterOp(from + cut));
-        let deleted = checkpoint::delete(&fs, &target);
+        let kept = kept(68);
+        assert_eq!(kept.fs.stats().ops, from, "the same store");
+        kept.fs.crash_at(CrashPoint::AfterOp(from + cut));
+        let deleted = checkpoint::delete(&kept.fs, &kept.target);
         assert_eq!(
             deleted.is_ok(),
             cut == ops,
             "cut {cut} of {ops}: {deleted:?}"
         );
-        let image = fs.crash_image();
+        let image = kept.fs.crash_image();
         let mut plans = vec![image.lose_all(), image.keep_all()];
         plans.extend(image.prefixes());
         plans.extend(image.holes());
@@ -460,17 +581,103 @@ fn a_deletion_that_the_power_cuts_can_be_made_again() {
                 continue;
             };
             let context = format!("cut {cut} of {ops}, crash plan {index}");
-            if left.read_dir(&target).is_err() {
-                gone += 1;
-                continue;
-            }
-            assert!(deleted.is_err(), "{context}: the deletion came back");
-            checkpoint::delete(&left, &target).unwrap_or_else(|error| panic!("{context}: {error}"));
-            assert!(left.read_dir(&target).is_err(), "{context}");
-            finished += 1;
+            let gone = seen.gone;
+            kept.check_left(&left, index < 2, &context, &mut seen);
+            assert!(
+                deleted.is_err() || seen.gone > gone,
+                "{context}: the deletion came back"
+            );
         }
     }
-    assert!(gone > 0 && finished > 0, "{gone}, {finished}");
+    assert!(seen.whole > 0 && seen.none > 0 && seen.gone > 0, "{seen:?}");
+}
+
+/// Where somebody else has the lock of the target that was just made, the
+/// target is theirs: the creation fails and touches nothing in it. Where
+/// the lock fails and nobody is in the target, the target goes.
+#[test]
+fn a_target_whose_lock_somebody_else_has_is_left_to_them() {
+    let theirs: Arc<Mutex<Vec<Box<dyn VfsLock>>>> = Arc::default();
+    let taken = theirs.clone();
+    // An opener that finds the directory as soon as it is made, takes its
+    // lock and begins a database of its own in it.
+    let (db, versions) = store_with_locks_met(Box::new(move |lock| {
+        let held = StdVfs.lock(lock)?;
+        taken.lock().expect("their locks").push(held);
+        std::fs::write(lock.with_file_name("MANIFEST"), b"theirs")
+    }));
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(71), 0, 10);
+    let target = checkpoints_in(&db).join("1");
+    let failed = checkpointer(&db, &versions).create(&target);
+    assert!(
+        matches!(&failed, Err(CheckpointError::Io { action: "lock", source, .. })
+            if source.kind() == ErrorKind::WouldBlock),
+        "{failed:?}"
+    );
+    assert_eq!(theirs.lock().expect("their locks").len(), 1);
+    let left = BTreeMap::from([
+        (PathBuf::from("LOCK"), Some(Vec::new())),
+        (PathBuf::from("MANIFEST"), Some(b"theirs".to_vec())),
+    ]);
+    assert_eq!(everything_in(&StdVfs, &target), left);
+    assert_eq!(versions.pins_held(), 0);
+    world.check_committed();
+
+    let (db, versions) = store_with_locks_met(Box::new(|_| Err(ErrorKind::Other.into())));
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(72), 0, 10);
+    let target = checkpoints_in(&db).join("1");
+    let failed = checkpointer(&db, &versions).create(&target);
+    assert!(
+        matches!(&failed, Err(CheckpointError::Io { action: "lock", source, .. })
+            if source.kind() == ErrorKind::Other),
+        "{failed:?}"
+    );
+    assert!(!target.exists());
+    world.check_committed();
+}
+
+/// A creation that fails takes away the files it made and no other: a file
+/// that somebody put into the target under a name the creation was about
+/// to use fails the creation, and stays.
+#[test]
+fn a_file_that_somebody_else_put_into_the_target_is_not_removed() {
+    let (db, versions) = store_without_links(ErrorKind::CrossesDevices);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(73);
+    for round in 0..3 {
+        block(&mut world, &mut rng, round * 20, 20);
+        turn(&db, &versions);
+    }
+    (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+    let target = checkpoints_in(&db).join("1");
+    // The first file of the log is copied after the table checkpoint, the
+    // segments and the value-log files.
+    let files = store_files(&StdVfs, &db.dir);
+    let theirs = (files.iter())
+        .find(|file| file.starts_with("wal"))
+        .expect("a log file");
+    assert!(files.iter().any(|file| !file.starts_with("wal")));
+    let pause = |step: Step| {
+        if step == Step::Secured {
+            std::fs::write(target.join(theirs), b"theirs").expect("their file");
+        }
+    };
+    let failed = checkpointer(&db, &versions).pausing(&pause).create(&target);
+    assert!(
+        matches!(&failed, Err(CheckpointError::Io { action: "create", source, .. })
+            if source.kind() == ErrorKind::AlreadyExists),
+        "{failed:?}"
+    );
+    // The copies that were made are gone, and the directories that have
+    // nothing in them. Their file is as it was.
+    let left = BTreeMap::from([
+        (PathBuf::from("wal"), None),
+        (theirs.clone(), Some(b"theirs".to_vec())),
+    ]);
+    assert_eq!(everything_in(&StdVfs, &target), left);
+    world.check_committed();
 }
 
 /// The directory above a path, as the file layer is given it.
@@ -603,6 +810,13 @@ fn the_errors_say_what_happened() {
             CheckpointError::io("link", Path::new("/db/seg/1"))(io()),
             "could not link /db/seg/1: the device",
             true,
+        ),
+        (
+            CheckpointError::NotADirectory {
+                dir: PathBuf::from("/c/1"),
+            },
+            "/c/1 is not a directory of its own, and nothing was removed",
+            false,
         ),
         (
             CheckpointError::NotADatabase {

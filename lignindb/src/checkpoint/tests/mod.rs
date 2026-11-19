@@ -453,16 +453,79 @@ pub(super) fn bytes_of(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
     bytes
 }
 
-/// A file layer that makes no hard link into the directory `under`: it
-/// fails one with `kind`, as a file system does that cannot make it.
-#[derive(Debug)]
-pub(super) struct NoLinks {
-    pub(super) inner: Arc<dyn Vfs>,
-    pub(super) under: PathBuf,
-    pub(super) kind: io::ErrorKind,
+/// What a test has done right before the lock in a file is taken. An
+/// error is what the lock then fails with, untaken.
+pub(super) type BeforeLock = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+
+/// Writes the new file `path` of `vfs` with `bytes`, durably but for its
+/// name.
+pub(super) fn write_file(vfs: &dyn Vfs, path: &Path, bytes: &[u8]) {
+    let mode = OpenMode::Append(lignin_io::Create::New);
+    let file = vfs.open(path, mode).expect("the file is created");
+    file.append(bytes).expect("the file is written");
+    file.sync_all().expect("the file is synced");
 }
 
-impl Vfs for NoLinks {
+/// Everything under the directory `dir` of `vfs`: each file by its path
+/// inside `dir` with its bytes, and each directory with none.
+pub(super) fn everything_in(vfs: &dyn Vfs, dir: &Path) -> BTreeMap<PathBuf, Option<Vec<u8>>> {
+    let mut found = BTreeMap::new();
+    let mut dirs = vec![PathBuf::new()];
+    while let Some(inside) = dirs.pop() {
+        for entry in vfs.read_dir(&dir.join(&inside)).expect("a directory") {
+            let path = inside.join(&entry.name);
+            if entry.kind == lignin_io::EntryKind::Dir {
+                dirs.push(path.clone());
+                found.insert(path, None);
+            } else {
+                let bytes = bytes_of(vfs, &dir.join(&path));
+                found.insert(path, Some(bytes));
+            }
+        }
+    }
+    found
+}
+
+/// A file layer that does what `inner` does, but for what a test has it
+/// do otherwise.
+pub(super) struct Meddling {
+    pub(super) inner: Arc<dyn Vfs>,
+    /// No hard link is made into this directory: one fails with this kind,
+    /// as a file system does that cannot make it.
+    pub(super) no_links: Option<(PathBuf, io::ErrorKind)>,
+    pub(super) before_lock: Option<BeforeLock>,
+}
+
+impl Meddling {
+    /// `inner`, with no hard link into the directory `under`.
+    pub(super) fn no_links(inner: Arc<dyn Vfs>, under: PathBuf, kind: io::ErrorKind) -> Self {
+        Self {
+            inner,
+            no_links: Some((under, kind)),
+            before_lock: None,
+        }
+    }
+
+    /// `inner`, with `before` run before each lock is taken.
+    pub(super) fn before_lock(inner: Arc<dyn Vfs>, before: BeforeLock) -> Self {
+        Self {
+            inner,
+            no_links: None,
+            before_lock: Some(before),
+        }
+    }
+}
+
+impl std::fmt::Debug for Meddling {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Meddling")
+            .field("inner", &self.inner)
+            .field("no_links", &self.no_links)
+            .finish_non_exhaustive()
+    }
+}
+
+impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
         self.inner.open(path, mode)
     }
@@ -472,9 +535,9 @@ impl Vfs for NoLinks {
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
-        match link.starts_with(&self.under) {
-            true => Err(self.kind.into()),
-            false => self.inner.hard_link(original, link),
+        match &self.no_links {
+            Some((under, kind)) if link.starts_with(under) => Err((*kind).into()),
+            _ => self.inner.hard_link(original, link),
         }
     }
 
@@ -499,6 +562,9 @@ impl Vfs for NoLinks {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        if let Some(before) = &self.before_lock {
+            before(path)?;
+        }
         self.inner.lock(path)
     }
 }

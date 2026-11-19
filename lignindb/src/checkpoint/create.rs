@@ -76,7 +76,7 @@ pub struct Created {
 }
 
 /// A point of a creation at which the tests let other work in.
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
     /// The target is made, and nothing is sampled.
@@ -95,7 +95,7 @@ pub(super) enum Step {
     Secured,
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(loom)))]
 type Pause<'s> = &'s (dyn Fn(Step) + Sync);
 
 /// What makes checkpoints of one open database: a view of its commit
@@ -111,7 +111,7 @@ pub struct Checkpointer<'s> {
     write_back: WriteBack<'s>,
     options: CheckpointOptions,
     carried: &'s [&'s str],
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pause: Option<Pause<'s>>,
 }
 
@@ -149,7 +149,7 @@ impl<'s> Checkpointer<'s> {
             write_back: *committer.write_back(),
             options: CheckpointOptions::default(),
             carried: &[],
-            #[cfg(test)]
+            #[cfg(all(test, not(loom)))]
             pause: None,
         }
     }
@@ -165,23 +165,24 @@ impl<'s> Checkpointer<'s> {
     /// the engine keeps beside the store's files and needs to open a
     /// database, if it keeps any such thing.
     ///
-    /// Each is one plain name inside the database directory, and not the
-    /// manifest's or the lock's ([`CheckpointError::CarriedName`]). The
-    /// engine vouches that such a file is durable and is never written
-    /// again: a hard link shares every later change, and a copy is of the
-    /// bytes the file has when the checkpoint is made.
+    /// Each is the plain name of a file in the database directory: not of
+    /// a directory or of a link to a file, and not the manifest's or the
+    /// lock's ([`CheckpointError::CarriedName`]). The engine vouches that
+    /// such a file is durable and is never written again: a hard link
+    /// shares every later change, and a copy is of the bytes the file has
+    /// when the checkpoint is made.
     pub fn carrying(mut self, names: &'s [&'s str]) -> Self {
         self.carried = names;
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     pub(super) fn pausing(mut self, pause: Pause<'s>) -> Self {
         self.pause = Some(pause);
         self
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, not(loom)))]
     fn reached(&self, step: Step) {
         if let Some(pause) = self.pause {
             pause(step);
@@ -207,10 +208,12 @@ impl<'s> Checkpointer<'s> {
     /// directory like any other, and is opened as one.
     ///
     /// Commits are kept out for the sampling step, which reads three
-    /// things, and for nothing else of this call (CK5). Open write
-    /// transactions are not waited for, and nothing of them is in the
-    /// checkpoint (CK8). Any number of checkpoints may be made at once
-    /// (CK9).
+    /// things, and for nothing else of this call (CK5). A commit that
+    /// makes the log durable itself waits for a sync of the log that is
+    /// under way, as the log has it, and this call makes one: see the
+    /// [module documentation](super). Open write transactions are not
+    /// waited for, and nothing of them is in the checkpoint (CK8). Any
+    /// number of checkpoints may be made at once (CK9).
     ///
     /// If it fails, the live database is as it was (CK10), with one
     /// exception: where the sync of its log failed
@@ -235,7 +238,7 @@ impl<'s> Checkpointer<'s> {
         Target::refuse_existing(&*vfs, target)?;
         let catch_up = self.catch_up();
         let mut made = Target::make(vfs, target)?;
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         self.reached(Step::Made);
         let created = self.fill(&mut made, &source, catch_up);
         if created.is_err() {
@@ -260,7 +263,9 @@ impl<'s> Checkpointer<'s> {
     /// store is deleted while both are held.
     ///
     /// It returns with the commit lock given back and the lock on the
-    /// manifest still held.
+    /// manifest still held. The value-log files are held once the commit
+    /// lock is given back: none of them is deleted but under the lock on
+    /// the manifest, and the hold looks at every file the value log has.
     ///
     /// **No commit waits for the manifest.** Write-back holds that lock
     /// over a sync when it replaces a manifest, and another creation holds
@@ -281,7 +286,7 @@ impl<'s> Checkpointer<'s> {
                 Err(TryLockError::WouldBlock) => {}
             }
             drop(commits);
-            #[cfg(test)]
+            #[cfg(all(test, not(loom)))]
             self.reached(Step::Waiting);
             drop(lock(stores.manifest));
         };
@@ -302,8 +307,8 @@ impl<'s> Checkpointer<'s> {
             });
         }
         let log_hold = stores.log.hold_from(None)?;
-        let value_hold = stores.values.hold_files();
         drop(commits);
+        let value_hold = stores.values.hold_files();
         let sample = Sample {
             version,
             end,
@@ -328,7 +333,7 @@ impl<'s> Checkpointer<'s> {
             named,
             held,
         } = sample;
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         self.reached(Step::Linking);
 
         // Still under the file-set lock: the table checkpoint, the
@@ -370,7 +375,7 @@ impl<'s> Checkpointer<'s> {
             target.carry(source, name)?;
         }
         drop(manifest);
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         self.reached(Step::Sampled);
 
         // The log makes itself durable: nobody else syncs a file of it
@@ -424,7 +429,7 @@ impl<'s> Checkpointer<'s> {
             }
         }
         drop(held);
-        #[cfg(test)]
+        #[cfg(all(test, not(loom)))]
         self.reached(Step::Secured);
 
         target.copy_waiting()?;
