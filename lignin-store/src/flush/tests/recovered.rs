@@ -23,21 +23,49 @@
 use lignin_io::sim::{CrashPoint, SimVfs};
 
 use super::{
-    crash::{check, commit, flat, free, life, run, Ran, Session, Step, Tally},
+    crash::{check, check_state, commit, flat, free, life, run, Ran, Session, Step, Tally},
     recover::options,
     *,
 };
 use crate::segment::tests::sim::{crash_states, db_dir, shared, Plans};
 
-/// What the second session does: new pages, changes to the pages that
-/// the first session left, if the version the store landed on has them,
-/// a freed page whose id is used again, a flat leaf, a value move, and
-/// table checkpoints in between.
-fn sequel(model: &Model, landed: CommitVersion) -> Vec<Step> {
-    let mut steps = vec![commit(&[
+/// A cell with a value in the value log, in a tree page that the recovery
+/// rebuilt and that no block holds as it is: the pool lists the page as
+/// one write-back owes.
+fn placed_in_a_rebuilt_page(db: &Db) -> Option<(u32, u16)> {
+    let (mut versions, mut pages) = (Vec::new(), Vec::new());
+    db.pool.unwritten_versions(&mut versions);
+    for version in versions {
+        db.pool.unwritten_pages(version, &mut pages);
+    }
+    pages.sort_unstable();
+    pages.into_iter().find_map(|id| {
+        let frame = db.frame(id, db.latest()).ok()?;
+        if is_flat(&frame) {
+            return None;
+        }
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        let placed = tree
+            .cells()
+            .find(|(_, cell)| cell.value_pointer().is_some());
+        placed.map(|(slot, _)| (id.get(), slot.get()))
+    })
+}
+
+/// What the second session does: a value move on a page that the recovery
+/// rebuilt, if there is one to move, and a pass that writes the page; new
+/// pages, changes to the pages that the first session left, if the version
+/// the store landed on has them, a freed page whose id is used again, a
+/// flat leaf, a value move, and table checkpoints in between.
+fn sequel(model: &Model, landed: CommitVersion, rebuilt: Option<(u32, u16)>) -> Vec<Step> {
+    let mut steps = Vec::new();
+    if let Some((id, slot)) = rebuilt {
+        steps.extend([Step::Move(id, slot), Step::Pass]);
+    }
+    steps.push(commit(&[
         insert((30, 1), b"n", long(21, 700)),
         insert((31, 1), b"o", inline(b"small")),
-    ])];
+    ]));
     for id in [1, 2, 3] {
         let cells = model.at(page(id), landed).map(|(_, cells)| cells);
         if let Some(cell) = cells.and_then(<[Cell]>::first) {
@@ -79,6 +107,9 @@ struct Twice {
     log_files_dropped: u64,
     /// Commits of the first session that the first crash took.
     lost: u64,
+    /// Second sessions that began with a value move on a page that the
+    /// recovery had rebuilt.
+    moved_in_rebuilt: u64,
 }
 
 /// Recovers the state `state` that the first session `first` left, runs
@@ -104,7 +135,9 @@ fn go_on(
     // recovery filled, with every value.
     db.check_warm();
 
-    let script = sequel(&db.model.lock().expect("the model"), landed);
+    let rebuilt = placed_in_a_rebuilt_page(&db);
+    twice.moved_in_rebuilt += u64::from(rebuilt.is_some());
+    let script = sequel(&db.model.lock().expect("the model"), landed, rebuilt);
     let before = state.stats().changes;
     if let Some(changes) = power_off {
         state.crash_at(CrashPoint::AfterChange(before + changes));
@@ -190,6 +223,7 @@ fn a_store_that_was_recovered_goes_on_and_what_it_leaves_recovers() {
     assert!(twice.recovered > 60, "{twice:?}");
     assert!(twice.replayed > 20, "{twice:?}");
     assert!(twice.lost > 0, "{twice:?}");
+    assert!(twice.moved_in_rebuilt > 10, "{twice:?}");
     assert!(twice.checkpoints >= 3 * twice.recovered, "{twice:?}");
     assert!(twice.log_files_dropped > twice.recovered, "{twice:?}");
     assert!(tally.states > 10 * twice.recovered, "{tally:?}");
@@ -227,4 +261,68 @@ fn a_crash_of_the_session_after_a_recovery_recovers_too() {
     println!("{twice:?}, {tally:?}");
     assert!(twice.recovered > 100, "{twice:?}");
     assert!(tally.states > 2 * twice.recovered, "{tally:?}");
+}
+
+/// **A recovery that the power cuts leaves what the next one recovers.**
+/// The first session is cut at points across its life, each with a commit
+/// in the log that nobody had synced. Every state that such a cut can
+/// leave is recovered, half of them with every rebuilt page kept in memory
+/// and half with a single page kept, and the power goes off after each
+/// change that the recovery makes to what a crash can leave: the segment
+/// it writes rebuilt pages to, the manifests that name it, the log file of
+/// the new session and the one in reserve. Every state the cut recovery
+/// can leave is recovered again, and lands on the version that a recovery
+/// which was not cut lands on, with the same pages.
+#[test]
+fn a_recovery_that_the_power_cuts_leaves_what_the_next_one_recovers() {
+    let script = life();
+    let whole = run(&script, None);
+    let changes = whole.fs.stats().changes;
+    let (mut cuts, mut spilling, mut tally) = (0u64, 0u64, Tally::default());
+    for point in (changes / 6..changes).step_by(changes as usize / 6) {
+        // The next cut that leaves a commit which was not known durable.
+        let first = (point..=changes)
+            .map(|crash| run(&script, Some(crash)))
+            .find(|first| first.durable < first.latest)
+            .expect("a cut with a commit that was not synced");
+        let image = first.fs.crash_image();
+        let states = || crash_states(&image, &SECOND).states;
+        for at in 0..states().len() {
+            let state = || states().swap_remove(at).1;
+            let kept = (at % 2 == 1).then_some(1);
+            // What a recovery that is not cut lands on, and how many
+            // changes it makes.
+            let (landed, made) = {
+                let state = state();
+                let manifest = ManifestStore::open(shared(&state), db_dir()).expect("a manifest");
+                let before = state.stats().changes;
+                let store = recovery::recover(manifest, &options(kept))
+                    .unwrap_or_else(|error| panic!("the store does not recover: {error}"));
+                spilling += u64::from(store.report.pages_spilled > 0);
+                (store.landed(), state.stats().changes - before)
+            };
+            assert!(made >= 4, "a recovery makes {made} changes");
+            for cut in 1..=made {
+                let state = state();
+                let manifest = ManifestStore::open(shared(&state), db_dir()).expect("a manifest");
+                state.crash_at(CrashPoint::AfterChange(state.stats().changes + cut));
+                let outcome = recovery::recover(manifest, &options(kept));
+                assert!(state.is_powered_off(), "change {cut} of {made}");
+                assert!(
+                    outcome.is_err() || cut == made,
+                    "change {cut} of {made} was not made, and the store recovered"
+                );
+                drop(outcome);
+                cuts += 1;
+                for (plan, left) in crash_states(&state.crash_image(), &SECOND).states {
+                    let again = check_state(&left, &first, &plan, &mut tally);
+                    assert_eq!(again, Some(landed), "change {cut} of {made}: {plan:?}");
+                }
+            }
+        }
+    }
+    println!("{cuts} cuts, {spilling} recoveries that wrote pages, {tally:?}");
+    assert!(cuts > 100 && spilling > 0, "{cuts} cuts, {spilling}");
+    assert!(tally.states > 2 * cuts, "{tally:?}");
+    assert!(tally.ahead > 0 && tally.replayed > cuts, "{tally:?}");
 }

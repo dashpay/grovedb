@@ -280,7 +280,6 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
 pub(super) fn options(kept: Option<usize>) -> RecoveryOptions {
     RecoveryOptions {
         pool_capacity: 4 << 20,
-        flush: Some(FlushConfig::new(Db::SIZE)),
         max_replay_pages: kept,
         ..RecoveryOptions::default()
     }

@@ -196,9 +196,9 @@ pub(super) struct Tally {
     pub(super) states: u64,
     /// Recoveries that landed above the version known durable: commits
     /// that a crash kept though nobody had synced them.
-    ahead: u64,
+    pub(super) ahead: u64,
     /// Recoveries that replayed commits on a checkpoint.
-    replayed: u64,
+    pub(super) replayed: u64,
     from_checkpoint: u64,
     /// Pages that the store's recovery wrote to a segment while it read
     /// the log, when it was made to keep one page in memory.
@@ -211,57 +211,64 @@ pub(super) fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
     check_image(&ran.fs.crash_image(), ran, plans, tally);
 }
 
-/// Recovers every state that `image` can leave, as `plans` picks them. A
-/// recovery lands at or after the version `ran` knew durable when the
-/// image was taken, and what it lands on is what the model of `ran` says.
+/// Recovers every state that `image` can leave, as `plans` picks them, and
+/// checks each ([`check_state`]).
 pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &mut Tally) {
-    let ids: Vec<PageId> = ran.model.pages.keys().copied().collect();
-    let states = crash_states(image, plans);
     tally.crashes += 1;
-    for (plan, state) in states.states {
-        if state
-            .open(
-                &db_dir().join(ManifestStore::FILE_NAME),
-                lignin_io::OpenMode::Read,
-            )
-            .is_err()
-        {
-            // The power went before the store had its first manifest.
-            assert_eq!(
-                ran.latest,
-                CommitVersion::EMPTY,
-                "the manifest is gone: {plan:?}"
-            );
-            continue;
-        }
-        let recovered = recover(shared(&state), db_dir(), &ids);
-        let landed = recovered.landed;
-        assert!(
-            ran.durable <= landed && landed <= ran.latest,
-            "landed on {landed}, with {} durable and {} the latest: {plan:?}",
-            ran.durable,
-            ran.latest
+    for (plan, state) in crash_states(image, plans).states {
+        check_state(&state, ran, &plan, tally);
+    }
+}
+
+/// Recovers `state`, which the plan `plan` of a crash left. A recovery
+/// lands at or after the version `ran` knew durable when the power went,
+/// and what it lands on is what the model of `ran` says. Returns the
+/// version, or `None` if the power went before the store had its first
+/// manifest.
+pub(super) fn check_state(
+    state: &SimVfs,
+    ran: &Ran,
+    plan: &dyn std::fmt::Debug,
+    tally: &mut Tally,
+) -> Option<CommitVersion> {
+    let ids: Vec<PageId> = ran.model.pages.keys().copied().collect();
+    let manifest = db_dir().join(ManifestStore::FILE_NAME);
+    if state.open(&manifest, lignin_io::OpenMode::Read).is_err() {
+        assert_eq!(
+            ran.latest,
+            CommitVersion::EMPTY,
+            "the manifest is gone: {plan:?}"
         );
-        for &id in &ids {
-            let expected = ran.model.at(id, landed).map(|(_, cells)| cells);
-            match (&recovered.pages[&id], expected) {
-                (Some(found), Some(cells)) => assert!(
-                    same(found, cells),
-                    "page {id} at version {landed}: {found:?}, not {cells:?}: {plan:?}"
-                ),
-                (None, None) => {}
-                (found, expected) => {
-                    panic!("page {id} at version {landed}: {found:?}, not {expected:?}: {plan:?}")
-                }
+        return None;
+    }
+    let recovered = recover(shared(state), db_dir(), &ids);
+    let landed = recovered.landed;
+    assert!(
+        ran.durable <= landed && landed <= ran.latest,
+        "landed on {landed}, with {} durable and {} the latest: {plan:?}",
+        ran.durable,
+        ran.latest
+    );
+    for &id in &ids {
+        let expected = ran.model.at(id, landed).map(|(_, cells)| cells);
+        match (&recovered.pages[&id], expected) {
+            (Some(found), Some(cells)) => assert!(
+                same(found, cells),
+                "page {id} at version {landed}: {found:?}, not {cells:?}: {plan:?}"
+            ),
+            (None, None) => {}
+            (found, expected) => {
+                panic!("page {id} at version {landed}: {found:?}, not {expected:?}: {plan:?}")
             }
         }
-        // The store's own recovery lands on the same state, twice.
-        tally.spilled += the_store_recovers_the_same(shared(&state), db_dir(), &ids, &recovered);
-        tally.states += 1;
-        tally.ahead += u64::from(landed > ran.durable);
-        tally.replayed += u64::from(landed > recovered.covers);
-        tally.from_checkpoint += u64::from(recovered.checkpoint);
     }
+    // The store's own recovery lands on the same state, twice.
+    tally.spilled += the_store_recovers_the_same(shared(state), db_dir(), &ids, &recovered);
+    tally.states += 1;
+    tally.ahead += u64::from(landed > ran.durable);
+    tally.replayed += u64::from(landed > recovered.covers);
+    tally.from_checkpoint += u64::from(recovered.checkpoint);
+    Some(landed)
 }
 
 pub(super) fn commit(ops: &[Op]) -> Step {

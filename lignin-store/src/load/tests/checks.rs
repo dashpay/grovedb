@@ -468,7 +468,7 @@ fn run_of_len(written: &mut Written, len: usize) -> Vec<u8> {
     let (per_change, per_removal) = (change.encoded_len(), removal(0).encoded_len());
     let records = len - PageId::ENCODED_LEN;
     let removals = (0..cells - 1)
-        .find(|&n| (records - usize::from(n) * per_removal) % per_change == 0)
+        .find(|&n| (records - usize::from(n) * per_removal).is_multiple_of(per_change))
         .expect("some number of removals makes up the length");
     let changes = (records - usize::from(removals) * per_removal) / per_change;
     let mut deltas = vec![change; changes];
