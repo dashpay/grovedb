@@ -925,6 +925,9 @@ enum Act {
     /// A reclaiming step takes the cells of the slots out of a page, or
     /// frees the page with the version.
     Reclaim(u32, Vec<u16>, Option<u64>),
+    /// The table gives a page that a step freed with the version its free
+    /// link, and trims the chain away.
+    Trim(u32, u64),
     /// A table checkpoint that covers the version begins: the sample of
     /// the counts is taken and its mark is in the log.
     Sample(u64),
@@ -933,27 +936,50 @@ enum Act {
 }
 
 /// Runs `acts` on a new store and kills the session. Returns the
-/// directory, what the pages say then, and the last commit.
-fn left_by(acts: &[Act]) -> (Dir, Model, CommitVersion) {
+/// directory, what the pages say then, the last commit, and the version
+/// that the checkpoint named last needed the log to be durable through.
+///
+/// A checkpoint is named with the log durable to its end. Before that, an
+/// install that is told the log is durable through the version before the
+/// one the checkpoint needs is refused.
+fn left_by(acts: &[Act]) -> (Dir, Model, CommitVersion, Option<CommitVersion>) {
     let dir = Dir::new();
     let mut session = Session::begin(&dir, Model::default());
-    let mut begun = None;
+    let (mut begun, mut needed) = (None, None);
     for act in acts {
         match act {
             Act::Commit(ops) => drop(session.commit(ops)),
             Act::Place(id, slot) => drop(session.place((*id, *slot))),
             Act::WriteBack(id, born) => session.write_back(*id, *born),
             Act::Reclaim(id, slots, freed) => drop(session.reclaim(*id, slots, *freed)),
+            Act::Trim(id, freed) => session.trim_freed(*id, *freed),
             Act::Sample(covers) => begun = Some((*covers, session.sample(*covers))),
             Act::Install => {
                 let (covers, sample) = begun.take().expect("a checkpoint that began");
-                session.checkpoint_with(covers, &sample, None);
+                let info = session.write_checkpoint(covers, &sample);
+                let synced = session.sync();
+                let behind = LogDurable {
+                    version: version(info.log_needed().get() - 1),
+                    ..synced
+                };
+                let refused = session
+                    .install(&info, behind)
+                    .expect_err("the log is behind");
+                assert!(
+                    matches!(
+                        refused,
+                        PageTableError::LogBehind { needed, .. } if needed == info.log_needed()
+                    ),
+                    "{refused}"
+                );
+                session.install(&info, synced).expect("installed");
+                needed = Some(info.log_needed());
             }
         }
     }
     let latest = session.latest();
     let model = session.kill();
-    (dir, model, latest)
+    (dir, model, latest, needed)
 }
 
 /// **Wherever the session is killed, the pages that a checkpoint has lost
@@ -963,19 +989,23 @@ fn left_by(acts: &[Act]) -> (Dir, Model, CommitVersion) {
 /// made, and that knows nothing of checkpoints.
 ///
 /// The history has every way in which a page step meets a page that the
-/// checkpoint in force has no chain of. The table of these tests never
-/// has a link of a page that was not written back, which is how a table
-/// is after the chain of a freed page was trimmed away (K10):
+/// checkpoint in force has no chain of:
 ///
 /// - Page 2 is older than the checkpoint, changed by a commit after it,
-///   and freed by a step. A commit makes a page under its id again.
+///   and freed by a step. A commit makes a page under its id again. It is
+///   never written back, so the table of these tests has no link of it,
+///   which is how a table is after the chain of a freed page was trimmed
+///   away.
 /// - Page 3 is made by a commit that the checkpoint does not cover. A
 ///   step takes a cell out, a commit puts another into the slot, and
 ///   steps take a cell out and free the page after the sample was taken.
-/// - Page 4 is older than the checkpoint, with a value in the value log.
-///   Everything that steps do to it comes between the sample and the
-///   copy of the chains: its cell leaves, with the pointer, and it is
-///   freed.
+/// - Page 4 is older than the checkpoint and in a block, with a value
+///   that was placed before the sample was taken. After the sample, and
+///   before the chains are copied, its cell leaves, with the pointer,
+///   and a step frees the page. The table gives it its free link and
+///   trims the chain away (K10), so the checkpoint, which covers commit
+///   1, is named only with the log durable through commit 5, which the
+///   page was freed with.
 ///
 /// Before the first checkpoint is named the whole log is replayed on an
 /// empty table, and every record counts. Afterwards the same records are
@@ -994,6 +1024,7 @@ fn a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_kil
         ]),
         Act::Place(4, 2),
         Act::WriteBack(1, 1),
+        Act::WriteBack(4, 1),
         Act::Commit(vec![
             hash((1, 1), 2),
             hash((2, 1), 2),
@@ -1021,6 +1052,7 @@ fn a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_kil
         Act::Commit(vec![hash((1, 1), 5)]),
         Act::Reclaim(3, vec![], Some(5)),
         Act::Reclaim(4, vec![], Some(5)),
+        Act::Trim(4, 5),
         Act::Install,
         Act::Commit(vec![
             hash((2, 1), 6),
@@ -1037,7 +1069,7 @@ fn a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_kil
 
     let (mut from_a_checkpoint, mut looked_at_before_the_place) = (0, 0);
     for acts in 0..=history.len() {
-        let (dir, model, latest) = left_by(&history[..acts]);
+        let (dir, model, latest, needed) = left_by(&history[..acts]);
         let gone: Vec<u32> = (1..=4)
             .filter(|&id| !model.pages.contains_key(&page(id)))
             .collect();
@@ -1056,6 +1088,7 @@ fn a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_kil
             // With the first checkpoint in force, the records of the steps
             // before its sample are looked at for the pages it lost.
             if report.covers == version(1) {
+                assert_eq!(needed, Some(version(5)));
                 assert_eq!(report.changes_dropped, 3, "after {acts} acts: {report:?}");
                 looked_at_before_the_place += report.changes - 4;
             }

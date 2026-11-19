@@ -40,7 +40,7 @@ use crate::{
     cache::PageRef,
     load::{LoadBuffers, LoadError, FRAME_FORMAT},
     segment::SegmentWriter,
-    table::{CountSample, Link, LogDurable, ValueCount},
+    table::{CheckpointInfo, CountSample, Link, LogDurable, PageTableError, ValueCount},
     values::{ValueChange, ValueHold, ValueWriter},
     wal::Appended,
 };
@@ -629,25 +629,55 @@ impl<'d> Session<'d> {
         sample: &CountSample,
         durable: Option<LogDurable>,
     ) -> LogPlace {
-        let store = &mut self.store;
-        let place = sample.place.expect("a place");
+        let info = self.write_checkpoint(covers, sample);
+        let synced = self.sync();
+        self.install(&info, durable.unwrap_or(synced))
+            .expect("installed");
+        sample.place.expect("a place")
+    }
+
+    /// Writes a table checkpoint of the session's page table with the
+    /// sample `sample`. No manifest names it yet.
+    fn write_checkpoint(&mut self, covers: u64, sample: &CountSample) -> CheckpointInfo {
+        let store = &self.store;
         let log = &store.log;
-        let info = store
-            .checkpoints
-            .write(&store.table, version(covers), sample, || log.end())
-            .expect("a checkpoint");
-        let synced = log.sync().expect("the log is durable");
-        store.values.sync().expect("the values are durable");
         store
             .checkpoints
-            .install(
-                &info,
-                durable.unwrap_or(synced),
-                &mut store.manifest,
-                &store.segments,
-            )
-            .expect("installed");
-        place
+            .write(&store.table, version(covers), sample, || log.end())
+            .expect("a checkpoint")
+    }
+
+    /// Makes the log and the values durable, and says how far the log is.
+    fn sync(&mut self) -> LogDurable {
+        let synced = self.store.log.sync().expect("the log is durable");
+        self.store.values.sync().expect("the values are durable");
+        synced
+    }
+
+    /// Has a manifest name the checkpoint `info`, which is told that the
+    /// log is durable as `durable` says.
+    fn install(
+        &mut self,
+        info: &CheckpointInfo,
+        durable: LogDurable,
+    ) -> Result<(), PageTableError> {
+        let store = &mut self.store;
+        store
+            .checkpoints
+            .install(info, durable, &mut store.manifest, &store.segments)
+    }
+
+    /// Gives the page `id`, which a step freed with the version `freed`,
+    /// its free link, and trims its chain away, as the table does once no
+    /// reader needs the page (`page-table.md` T11, K10).
+    fn trim_freed(&mut self, id: u32, freed: u64) {
+        let table = &self.store.table;
+        let freed = version(freed);
+        table
+            .push(page(id), Link::free(freed))
+            .expect("a free link");
+        assert!(table.trim(page(id), freed, &mut Vec::new()), "page {id}");
+        assert_eq!(table.trimmed_free(), Some(freed));
     }
 
     /// Turns the log to its next file, as the committer does whose file is
