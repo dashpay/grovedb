@@ -379,7 +379,7 @@ impl Generator {
             let item = items.swap_remove(self.rng.index(items.len()));
             self.ops.push(build::delete(&child(tree, pot), &item));
         }
-        if round % 2 == 0 {
+        if round.is_multiple_of(2) {
             let (pot, _) = self.held[index].pots.remove(0);
             self.ops.push(self.delete(board, tree, &pot));
         }

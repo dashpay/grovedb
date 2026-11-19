@@ -15,9 +15,9 @@
 
 use grovedb::{Error, GroveDb, Transaction};
 
-/// Savepoints set on the transaction, under the names `GroveDb` has for
-/// them where it sets them itself.
-#[allow(dead_code)]
+/// Savepoints set on the transaction, under the names and with the
+/// signatures `GroveDb` has for them where it sets them itself.
+#[allow(dead_code, clippy::result_large_err)]
 pub(super) trait Savepoints {
     /// `Transaction::set_savepoint`.
     fn set_savepoint<'db>(&'db self, transaction: &Transaction<'db>) -> Result<(), Error>;

@@ -1131,14 +1131,16 @@ fn a_page_is_proven_by_fewer_keys_from_grove_version_5() {
         };
         workload.stream(seed)
     };
+    // The rows a proof verifies to and their root, or nothing if it does
+    // not verify.
     let verified = |proof: &[u8], query: &PathQuery, grove_version: &GroveVersion| {
         match GroveDb::verify_path_query(proof, query, grove_version) {
             Ok(VerifiedPathQuery::Elements {
                 root_hash,
                 elements,
-            }) => Ok((root_hash, elements)),
+            }) => Some((root_hash, elements)),
             Ok(other) => panic!("{query:?} verified to {other:?}"),
-            Err(error) => Err(error),
+            Err(_) => None,
         }
     };
     on_a_big_stack(|| {
@@ -1188,7 +1190,7 @@ fn a_page_is_proven_by_fewer_keys_from_grove_version_5() {
                 );
                 assert!(new_proof.len() <= old_proof.len(), "{context}");
                 if new_proof.len() < old_proof.len() {
-                    assert!(verified(&new_proof, query, older).is_err(), "{context}");
+                    assert!(verified(&new_proof, query, older).is_none(), "{context}");
                     proofs.shorter += 1;
                 } else {
                     assert_eq!(new_proof, old_proof, "{context}");
@@ -1226,8 +1228,12 @@ fn grovedb_sets_savepoints_itself() {
     let (_dir, db) = open();
     let grove_version = GroveVersion::latest();
     let transaction = db.start_transaction();
-    let root = |transaction| db.root_hash(Some(transaction), grove_version).unwrap();
-    let before = root(&transaction).expect("root hash");
+    let root = |transaction| {
+        db.root_hash(Some(transaction), grove_version)
+            .unwrap()
+            .expect("root hash")
+    };
+    let before = root(&transaction);
     db.set_savepoint(&transaction).expect("a savepoint");
     db.insert(
         &[] as &[&[u8]],
@@ -1239,9 +1245,9 @@ fn grovedb_sets_savepoints_itself() {
     )
     .unwrap()
     .expect("insert");
-    assert_ne!(root(&transaction).expect("root hash"), before);
+    assert_ne!(root(&transaction), before);
     db.rollback_to_savepoint(&transaction).expect("back to it");
-    assert_eq!(root(&transaction).expect("root hash"), before);
+    assert_eq!(root(&transaction), before);
 }
 
 /// The proofs of `legacy-limit-over-empty-subtrees`, which the corpus
