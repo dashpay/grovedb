@@ -126,7 +126,8 @@ fn delete(run: &mut Run) -> Vec<FileId> {
         let first = run.model.items.iter().position(kept);
         run.model.first = first.unwrap_or(run.model.items.len());
     }
-    db.log.commit(&mut db.manifest).unwrap();
+    let committed = run.with_manifest(|db| db.log.commit(&mut db.manifest));
+    committed.unwrap().unwrap();
     run.note_durable();
     dropped
 }

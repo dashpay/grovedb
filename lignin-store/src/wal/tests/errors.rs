@@ -116,7 +116,28 @@ fn every_error_says_what_failed_and_where() {
         (LogError::ReaderFailed, &["has failed before"], false),
         (
             LogError::CutNotDurable { path: path() },
-            &["was taken back", "not been synced since"],
+            &["failed", "no manifest names the file closed"],
+            false,
+        ),
+        (
+            LogError::TakenBack {
+                path: path(),
+                source: io(),
+            },
+            &[
+                "as long as it was",
+                "bring the item back",
+                "the disk is gone",
+            ],
+            true,
+        ),
+        (
+            LogError::ItemTooLong {
+                path: path(),
+                offset: 45,
+                len: 9000,
+            },
+            &["9000 bytes", "from offset 45 on", "do not fit in memory"],
             false,
         ),
         (
@@ -271,6 +292,7 @@ fn every_error_says_what_failed_and_where() {
             LogError::Io { .. }
                 | LogError::NotDeleted { .. }
                 | LogError::NotAppended { .. }
+                | LogError::TakenBack { .. }
                 | LogError::Unsettled { .. }
                 | LogError::SyncFailed { .. }
         );

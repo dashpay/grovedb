@@ -729,9 +729,7 @@ fn an_open_removes_the_log_files_no_manifest_names() {
     assert!(wal.join(log_name(1)).exists() && wal.join(log_name(2)).exists());
 
     // A file that was dropped and not yet deleted: its id is one the
-    // manifest records, and whatever it holds goes. It goes once this
-    // session has replaced the manifest: the manifest it found may be one
-    // that a crash takes away again, for the one that names the file.
+    // manifest records, and whatever it holds goes.
     std.db.roll().unwrap();
     assert!(
         !wal.join(log_name(2)).exists(),
@@ -740,9 +738,7 @@ fn an_open_removes_the_log_files_no_manifest_names() {
     let mut dropped = header(2).to_vec();
     dropped.extend_from_slice(b"items of a file that is gone");
     std::fs::write(wal.join(log_name(2)), &dropped).unwrap();
-    let mut std = std.reopen(LogOptions::default());
-    assert!(wal.join(log_name(2)).exists());
-    std.db.roll().unwrap();
+    let std = std.reopen(LogOptions::default());
     assert!(!wal.join(log_name(2)).exists());
 
     // A file above every id the manifest records that holds more than a
@@ -942,7 +938,7 @@ fn the_end_of_the_log_never_goes_back() {
                 let file = item.end.file().get();
                 faulty.fail(Op::Append, &log_name(file));
                 let error = db.change(&mut rng).unwrap_err();
-                assert!(matches!(error, LogError::NotAppended { .. }), "{error}");
+                assert!(matches!(error, LogError::TakenBack { .. }), "{error}");
                 assert_eq!(note(&db, &mut ends), Some(item.end));
                 assert!(db.roll().unwrap());
                 assert_eq!(note(&db, &mut ends), Some(place(file + 1, FIRST)));
@@ -1132,4 +1128,25 @@ fn a_file_length_that_leaves_no_room_for_an_item_is_taken_as_one_that_does() {
         }
         assert_eq!(std.db.read().0.len(), 4);
     }
+}
+
+#[test]
+fn an_end_that_was_read_before_a_file_grew_does_not_open_the_log() {
+    let std = StdDb::new(LogOptions::default());
+    let mut rng = Rng(34);
+    std.db.commit(&mut rng).unwrap();
+    // The end of the log is read, and then something is appended: the
+    // manifest names the file as before, and the file is longer. A log
+    // that opened with that end would name the file closed where the end
+    // was read, and what was appended since would be gone.
+    let (_, stale) = std.db.read();
+    std.db.commit(&mut rng).unwrap();
+    let error = LogStore::open(&std.db.manifest, &stale, LogOptions::default()).unwrap_err();
+    assert!(
+        matches!(error, LogError::WrongLogEnd { file } if file == file_id(1)),
+        "{error}"
+    );
+    let (_, end) = std.db.read();
+    assert_eq!(end.files()[0].file_len(), end.files()[0].valid_len());
+    LogStore::open(&std.db.manifest, &end, LogOptions::default()).unwrap();
 }

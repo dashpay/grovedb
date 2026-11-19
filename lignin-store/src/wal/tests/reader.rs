@@ -5,7 +5,7 @@ use lignin_format::{
     wal::{self, LogStart, WalError},
     FormatError, FormatVersion,
 };
-use lignin_io::sim::SimConfig;
+use lignin_io::sim::{Event, OpKind, SimConfig};
 
 use super::*;
 use crate::table::LogDurable;
@@ -668,29 +668,93 @@ fn a_record_that_is_there_whole_and_is_no_record_is_not_waited_for() {
     let malformed_end = bytes.len();
     bytes.extend(rng.bytes(300_000));
 
+    // How far into the file the reader reads, fetching 64 bytes at a time.
+    const WINDOW: usize = 64;
     let reads = |bytes: &[u8], valid_len: u64| {
-        let (fs, vfs) = crafted(&[(log_file(1, FileState::Open, valid_len), bytes)]);
-        let before = fs.stats().ops;
-        let read = read_log_with(&vfs, dir, 64);
-        (read, fs.stats().ops - before)
+        let named = log_file(1, FileState::Open, valid_len);
+        let (fs, vfs) = crafted_on(sim::traced(1, 512), &[(named, bytes)]);
+        let read = read_log_with(&vfs, dir, WINDOW);
+        let read_to = fs.trace().into_iter().filter_map(|event| match event {
+            Event::Op(op) if op.kind == OpKind::Read && op.path.ends_with(&log_name(1)) => {
+                Some(op.offset + op.len)
+            }
+            _ => None,
+        });
+        (read, read_to.max().unwrap())
     };
-    let (read, ops) = reads(&bytes, ends[2]);
+    let (read, read_to) = reads(&bytes, ends[2]);
     let (items, end) = read.unwrap();
     assert_eq!(items.len(), 5);
     assert_eq!(end.place(), Some(place(1, good)));
-    // What lies behind the record is not fetched: the reader makes the
-    // calls it makes when the file ends with the record.
-    let (short, short_ops) = reads(&bytes[..malformed_end], ends[2]);
+    // What lies behind the record is not fetched for it: the reader reads
+    // as far as it does when little lies behind the record, which is what
+    // the items before it made it fetch.
+    let little = malformed_end + 3000;
+    let (short, short_to) = reads(&bytes[..little], ends[2]);
     assert_eq!(short.unwrap().0.len(), 5);
-    assert_eq!(ops, short_ops);
+    assert!(short_to < little as u64, "read to {short_to}");
+    assert_eq!(read_to, short_to);
 
     // Below the valid length it is damage, and is not waited for either.
-    let (read, damaged_ops) = reads(&bytes, malformed_end as u64);
+    let (read, read_to) = reads(&bytes, malformed_end as u64);
     let error = read.unwrap_err();
     assert!(
         matches!(&error, LogError::Damaged { offset, source: FormatError::Truncated { .. }, .. }
             if *offset == good),
         "{error}"
     );
-    assert!(damaged_ops <= ops, "{damaged_ops} calls, {ops} to the end");
+    assert_eq!(read_to, short_to);
+}
+
+#[test]
+fn the_file_with_the_first_id_begins_the_log_or_holds_nothing_of_it() {
+    let mut rng = Rng(24);
+    let dir = sim::db_dir();
+    let later = LogStart::new(5000, version(7)).unwrap();
+    let (bytes, ends, _) = crafted_file(1, later, 3, &mut rng);
+    // No file was ever before the one with the first id. With its start
+    // record vouched for, the file is not one this log wrote.
+    let (_fs, vfs) = crafted(&[(log_file(1, FileState::Open, ends[0]), &bytes)]);
+    let error = read_log(&vfs, dir).unwrap_err();
+    assert!(
+        matches!(&error, LogError::Damaged { offset, source, .. } if *offset == HEADER
+            && matches!(source, FormatError::Wal(WalError::NotTheNextFile { .. }))),
+        "{error}"
+    );
+    // Behind the valid length it is a start record that fits nothing, and
+    // the file holds nothing of the log.
+    let (_fs, vfs) = crafted(&[(log_file(1, FileState::Open, HEADER), &bytes)]);
+    let (items, end) = read_log(&vfs, dir).unwrap();
+    assert!(items.is_empty());
+    assert_eq!(end.unread(), [file_id(1)]);
+    assert_eq!(end.next_start().unwrap(), LogStart::FIRST);
+
+    // Any other file may be the first that is read: the files before it
+    // were dropped.
+    let (bytes, ends, _) = crafted_file(2, later, 3, &mut rng);
+    let (_fs, vfs) = crafted(&[(log_file(2, FileState::Open, ends[0]), &bytes)]);
+    assert_eq!(read_log(&vfs, dir).unwrap().0.len(), 3);
+}
+
+#[test]
+fn items_behind_the_last_address_of_a_log_are_read_as_the_format_reads_them() {
+    // A file that begins at the last address: its items have none. A mark
+    // needs none.
+    let start = LogStart::new(wal::MAX_LOG_OFFSET, version(3)).unwrap();
+    let mut bytes = Vec::new();
+    wal::write_file_start(file_id(2), &start, &mut bytes).unwrap();
+    bytes.extend(mark(version(3)));
+    bytes.extend(mark(version(1)));
+    let mut scan = wal::scan(&bytes).unwrap();
+    assert!(scan.next().is_some() && scan.next().is_some() && scan.next().is_none());
+    assert!(scan.tail().failure().is_none());
+
+    for window in [1, 16, 4096] {
+        let (_fs, vfs) = crafted(&[(log_file(2, FileState::Open, HEADER), &bytes)]);
+        let (items, end) = read_log_with(&vfs, sim::db_dir(), window).unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(end.place(), Some(place(2, bytes.len() as u64)));
+        // No file continues this one: the log has no address left.
+        assert!(end.next_start().is_err());
+    }
 }

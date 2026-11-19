@@ -460,20 +460,15 @@ fn remove(vfs: &dyn Vfs, path: &Path) -> io::Result<()> {
     }
 }
 
-/// Removes what no manifest has ever named: a file that was created and
-/// not named, and what an interrupted rewrite left. Returns the files an
-/// earlier session dropped and did not delete, which a manifest before
-/// this one names.
 fn remove_unnamed(
     vfs: &dyn Vfs,
     dir: &Path,
     entries: &[DirEntry],
     named: &BTreeSet<FileId>,
     last_id: Option<FileId>,
-) -> Result<BTreeMap<FileId, PathBuf>, LogError> {
+) -> Result<(), LogError> {
     let wal_dir = FileNames::WAL.dir(dir);
     let mut unnamed = Vec::new();
-    let mut dropped = BTreeMap::new();
     for entry in entries {
         if entry.kind != EntryKind::File {
             continue;
@@ -495,23 +490,21 @@ fn remove_unnamed(
             continue;
         }
         let path = wal_dir.join(&entry.name);
-        if Some(id) <= last_id {
-            dropped.insert(id, path);
-            continue;
-        }
-        let len = vfs
-            .open(&path, OpenMode::Read)
-            .and_then(|file| file.len())
-            .map_err(LogError::io("measure", &path))?;
-        if len > HEADER_LEN {
-            return Err(LogError::UnnamedFileHoldsItems { path, len });
+        if Some(id) > last_id {
+            let len = vfs
+                .open(&path, OpenMode::Read)
+                .and_then(|file| file.len())
+                .map_err(LogError::io("measure", &path))?;
+            if len > HEADER_LEN {
+                return Err(LogError::UnnamedFileHoldsItems { path, len });
+            }
         }
         unnamed.push(path);
     }
     for path in unnamed {
         remove(vfs, &path).map_err(LogError::io("remove", &path))?;
     }
-    Ok(dropped)
+    Ok(())
 }
 
 /// The write-ahead log of one database directory.
@@ -548,7 +541,10 @@ pub struct LogStore {
 impl LogStore {
     /// Opens the log that `manifest` names, in its directory, for writing.
     /// `end` is where a [`LogReader`](super::LogReader) of that manifest
-    /// found the log to end.
+    /// found the log to end, with nothing written to the directory since:
+    /// an end of another directory, or of files that have another length
+    /// now, is refused ([`LogError::WrongDirectory`],
+    /// [`LogError::WrongLogEnd`]).
     ///
     /// Every file of the log belongs to an earlier session. It is read and
     /// synced, and never appended to: it ends where the reader found its
@@ -558,19 +554,16 @@ impl LogStore {
     ///
     /// The files the manifest names that hold nothing of the log
     /// ([`LogEnd::unread`]) are taken out: the next manifest does not name
-    /// them, and they are deleted then. So is every file in `wal/` with a
-    /// log file's name and an id up to the last one in the manifest that
-    /// the manifest does not name: an earlier session dropped it and did
-    /// not delete it. It is not deleted before this session has replaced
-    /// the manifest, because the manifest the session before left may not
-    /// be durable, and a crash would then bring back the one that names
-    /// the file.
-    ///
-    /// A file with an id above the last one in the manifest was created
-    /// and never named. It is removed at once, with what an interrupted
-    /// rewrite of a log file left. If it holds more than a file header,
-    /// the open fails with [`LogError::UnnamedFileHoldsItems`] and removes
-    /// nothing. Other entries of `wal/` are left alone.
+    /// them, and they are deleted then. Every file in `wal/` with a log
+    /// file's name that the manifest does not name is removed at once: a
+    /// crash can leave one that was created and never named, or one that
+    /// was dropped and not yet deleted. The manifest is durable when a
+    /// [`ManifestStore`] of it exists, so no crash brings back one that
+    /// names such a file. If such a file has an id above the last id in
+    /// the manifest and holds more than a file header, the open fails with
+    /// [`LogError::UnnamedFileHoldsItems`] and removes nothing. What an
+    /// interrupted rewrite of a log file left is removed too. Other entries
+    /// of `wal/` are left alone.
     ///
     /// `wal/` is created if it is missing, and its name is made durable
     /// either way.
@@ -628,7 +621,7 @@ impl LogStore {
 
         let last_id = current.last_file_ids().wal;
         let entries = list_or_create_dir(&*vfs, &dir, &FileNames::WAL)?;
-        dropped.extend(remove_unnamed(&*vfs, &dir, &entries, &named, last_id)?);
+        remove_unnamed(&*vfs, &dir, &entries, &named, last_id)?;
 
         Ok(Self {
             vfs,
@@ -680,6 +673,12 @@ impl LogStore {
                 found: manifest.dir().to_path_buf(),
             })
         }
+    }
+
+    /// Whether an append that was taken back still waits for a sync.
+    #[cfg(test)]
+    pub(super) fn waits_for_sync(&self) -> bool {
+        matches!(&self.tail().active, Some((file, _)) if file.is_taken_back())
     }
 
     /// The database directory.
@@ -749,16 +748,14 @@ impl LogStore {
         let handle = create_file(&*self.vfs, &self.dir, &FileNames::WAL, id)?;
         let path = FileNames::WAL.path(&self.dir, id);
         let file = Arc::new(LogFile::created(id, path, handle));
-        {
-            let mut files = self.files_mut();
-            let entry = Entry {
-                file: file.clone(),
-                durable_len: HEADER_LEN,
-            };
-            files.live.insert(id, entry);
-            files.last_id = Some(id);
-        }
-        self.tail().spare = Some((file, false));
+        self.tail().spare = Some((file.clone(), false));
+        let mut files = self.files_mut();
+        let entry = Entry {
+            file,
+            durable_len: HEADER_LEN,
+        };
+        files.live.insert(id, entry);
+        files.last_id = Some(id);
         Ok(id)
     }
 
@@ -780,9 +777,9 @@ impl LogStore {
     /// and appending its group, or that commit writes its group again
     /// ([`LogError::PlaceTaken`]).
     ///
-    /// After an append that failed and was taken back, the log turns only
-    /// once a sync has made the file durable as it is
-    /// ([`LogError::CutNotDurable`]): sync the log first.
+    /// After an append that failed, the log turns only once a durable
+    /// manifest names the file closed where its last whole item ends
+    /// ([`LogError::CutNotDurable`]): [`Self::roll`] does that.
     ///
     /// If the file layer fails the append of the start record, the log has
     /// not turned ([`LogError::NotAppended`]), and the file it would have
@@ -794,7 +791,7 @@ impl LogStore {
             Some((file, cursor)) if !file.is_finished() => {
                 cursor.offset() >= self.options.target_file_len
             }
-            Some((file, _)) if file.is_taken_back() => {
+            Some((file, _)) if file.is_uncut() => {
                 return Err(LogError::CutNotDurable {
                     path: file.path().to_path_buf(),
                 });
@@ -885,8 +882,12 @@ impl LogStore {
     ///
     /// Because it leaves a file ready, the log can be turned with
     /// [`Self::rotate`] alone the next time, which syncs nothing and
-    /// replaces no manifest: by a committer whose file is full, and after
-    /// an append that failed.
+    /// replaces no manifest: by a committer whose file is full.
+    ///
+    /// After an append that failed it replaces the manifest before it
+    /// turns, with the file named closed where its last whole item ends:
+    /// the cut of CM9, which is made before the next commit and not by
+    /// one.
     ///
     /// If it fails, it can be called again.
     pub fn roll(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
@@ -895,10 +896,14 @@ impl LogStore {
         let mut turned = false;
         for _ in 0..2 {
             turned |= self.rotate_if_ready()?;
-            let spare = self.tail().spare.as_ref().map(|(_, named)| *named);
+            let (spare, uncut) = {
+                let tail = self.tail();
+                let uncut = matches!(&tail.active, Some((file, _)) if file.is_uncut());
+                (tail.spare.as_ref().map(|(_, named)| *named), uncut)
+            };
             match spare {
-                Some(true) => return Ok(turned),
-                Some(false) => {}
+                Some(true) if !uncut => return Ok(turned),
+                Some(_) => {}
                 None => {
                     self.create()?;
                 }
@@ -911,7 +916,9 @@ impl LogStore {
     /// Turns the log if a turn is due and it has a file to turn to.
     fn rotate_if_ready(&self) -> Result<bool, LogError> {
         match self.rotate() {
-            Err(LogError::NoSpare | LogError::SpareNotNamed { .. }) => Ok(false),
+            Err(
+                LogError::NoSpare | LogError::SpareNotNamed { .. } | LogError::CutNotDurable { .. },
+            ) => Ok(false),
             turned => turned,
         }
     }
@@ -972,8 +979,10 @@ impl LogStore {
     /// When this returns `Ok`, the group is in the log: recovery takes the
     /// commit whenever these bytes survive, and everything before them in
     /// the log. When it returns [`LogError::NotAppended`], the group is not
-    /// in the log. A crash can still bring it back until a sync of the log
-    /// has succeeded ([`Self::sync`]): then the commit has failed. When it
+    /// in the log and no crash brings it back: the commit has failed. When
+    /// it returns [`LogError::TakenBack`], the group is not in the log, and
+    /// a crash can still bring it back until a sync of the log has
+    /// succeeded ([`Self::sync`]): then the commit has failed. When it
     /// returns [`LogError::Unsettled`], neither is known.
     pub fn append_group(&self, at: &GroupPlace, group: &[u8]) -> Result<Appended, LogError> {
         if at.session != self.session {
@@ -1081,10 +1090,16 @@ impl LogStore {
                 self.finish(&file);
                 Ok(appended)
             }
-            settled @ (Settled::Absent | Settled::Torn) => {
-                if matches!(settled, Settled::Absent) {
-                    file.take_back();
-                }
+            Settled::Absent => {
+                file.failed(true);
+                self.finish(&file);
+                Err(LogError::TakenBack {
+                    path: file.path().to_path_buf(),
+                    source: error,
+                })
+            }
+            Settled::Torn => {
+                file.failed(false);
                 self.finish(&file);
                 Err(LogError::NotAppended {
                     path: file.path().to_path_buf(),
@@ -1204,7 +1219,7 @@ impl LogStore {
                 return Err(self.sync_failed(file.path(), source));
             }
             if taken_back {
-                file.cut();
+                file.made_durable();
             }
             if let Some(entry) = self.files_mut().live.get_mut(&file.id()) {
                 entry.durable_len = entry.durable_len.max(file_end);
@@ -1513,7 +1528,15 @@ impl LogStore {
     /// again.
     pub fn manifest_replaced(&self, manifest: &ManifestStore) -> Result<(), LogError> {
         self.check_same_dir(manifest)?;
-        let named: BTreeSet<FileId> = log_files(manifest.manifest()?).map(LiveFile::id).collect();
+        let current = manifest.manifest()?;
+        let named: BTreeSet<FileId> = log_files(current).map(LiveFile::id).collect();
+        {
+            let files = self.files();
+            let closed = log_files(current).filter(|file| file.state() == FileState::Closed);
+            for entry in closed.filter_map(|file| files.live.get(&file.id())) {
+                entry.file.cut();
+            }
+        }
         {
             // A file that a manifest has stopped naming is given up: no
             // manifest may name it again.

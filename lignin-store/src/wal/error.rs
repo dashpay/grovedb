@@ -178,12 +178,22 @@ pub enum LogError {
         /// What the call appends.
         expected: &'static str,
     },
-    /// The file layer failed the append, and the item is not in the log.
-    /// The log file takes no more items. If the file layer wrote bytes of
-    /// the item and took them back, a crash can still bring the item back
-    /// until a sync of the log has succeeded: sync the log, then turn it to
-    /// its next file.
+    /// The file layer failed the append. The item is not in the log, and no
+    /// crash brings it back. The log file takes no more items, and the log
+    /// goes on in its next file once a manifest names this one closed.
     NotAppended {
+        /// The file.
+        path: PathBuf,
+        /// The error the file layer returned.
+        source: io::Error,
+    },
+    /// The file layer failed the append and left the file with the length
+    /// it had. The item is not in the log. If the file layer wrote bytes
+    /// of it and took them back, a crash can still bring the item back,
+    /// until a sync of the log has succeeded or a manifest names the file
+    /// closed. The log file takes no more items, and the log goes on in
+    /// its next file once a manifest names this one closed.
+    TakenBack {
         /// The file.
         path: PathBuf,
         /// The error the file layer returned.
@@ -199,10 +209,10 @@ pub enum LogError {
         /// The error that left it open.
         source: io::Error,
     },
-    /// An append to the file the log ends in failed and was taken back,
-    /// and no sync has made the file durable as it is since. The log does
-    /// not turn to its next file until one has: a crash could bring the
-    /// item back, in front of everything appended after it. Sync the log.
+    /// An append to the file the log ends in failed, and no manifest names
+    /// the file closed where its last whole item ends. The log does not
+    /// turn to its next file before one does (CM9): replace the manifest,
+    /// as [`LogStore::roll`](super::LogStore::roll) does.
     CutNotDurable {
         /// The file.
         path: PathBuf,
@@ -247,6 +257,16 @@ pub enum LogError {
         /// The address asked for.
         address: LogAddress,
     },
+    /// An item of the log, or a run of records that ends in none, is
+    /// longer than this machine can hold in memory.
+    ItemTooLong {
+        /// The file.
+        path: PathBuf,
+        /// The file offset at which it begins.
+        offset: u64,
+        /// The bytes that were to be held.
+        len: u64,
+    },
     /// A value is longer than this machine can hold in memory.
     ValueTooLong {
         /// The bytes the value's records take.
@@ -284,6 +304,7 @@ impl LogError {
             Self::Io { source, .. }
             | Self::NotDeleted { source, .. }
             | Self::NotAppended { source, .. }
+            | Self::TakenBack { source, .. }
             | Self::Unsettled { source, .. }
             | Self::SyncFailed { source, .. } => Some(source),
             Self::Manifest(SegmentStoreError::Io { source, .. }) => Some(source),
@@ -438,6 +459,12 @@ impl fmt::Display for LogError {
                 "an append to {} failed, and the item is not in the log: {source}",
                 path.display()
             ),
+            Self::TakenBack { path, source } => write!(
+                f,
+                "an append to {} failed and left the file as long as it was, and a crash can \
+                 still bring the item back: {source}",
+                path.display()
+            ),
             Self::Unsettled { path, source } => write!(
                 f,
                 "an append to {} failed, and it is not known whether the item is in the log: \
@@ -446,7 +473,7 @@ impl fmt::Display for LogError {
             ),
             Self::CutNotDurable { path } => write!(
                 f,
-                "an append to {} was taken back, and the log has not been synced since",
+                "an append to {} failed, and no manifest names the file closed yet",
                 path.display()
             ),
             Self::BeyondEnd { place, end } => {
@@ -490,6 +517,11 @@ impl fmt::Display for LogError {
             Self::UnknownAddress { address } => {
                 write!(f, "no log file in use holds the address {address}")
             }
+            Self::ItemTooLong { path, offset, len } => write!(
+                f,
+                "{len} bytes of {} from offset {offset} on do not fit in memory here",
+                path.display()
+            ),
             Self::ValueTooLong { extent } => write!(
                 f,
                 "a value whose records take {extent} bytes does not fit in memory here"
@@ -504,6 +536,7 @@ impl std::error::Error for LogError {
             Self::Io { source, .. }
             | Self::NotDeleted { source, .. }
             | Self::NotAppended { source, .. }
+            | Self::TakenBack { source, .. }
             | Self::Unsettled { source, .. }
             | Self::SyncFailed { source, .. } => Some(source),
             Self::Format { source, .. }

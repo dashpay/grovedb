@@ -27,6 +27,7 @@ pub(super) struct LogFile {
     start: OnceLock<LogStart>,
     end: AtomicU64,
     finished: AtomicBool,
+    uncut: AtomicBool,
     taken_back: AtomicBool,
     dead: AtomicBool,
     adopted: bool,
@@ -43,6 +44,7 @@ impl LogFile {
             start: OnceLock::new(),
             end: AtomicU64::new(FileHeader::ENCODED_LEN as u64),
             finished: AtomicBool::new(false),
+            uncut: AtomicBool::new(false),
             taken_back: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             adopted: false,
@@ -62,12 +64,8 @@ impl LogFile {
             .open(&path, OpenMode::Read)
             .map_err(LogError::io("open", &path))?;
         let len = handle.len().map_err(LogError::io("measure", &path))?;
-        if len < read.valid_len() {
-            return Err(LogError::FileTooShort {
-                path,
-                valid_len: read.valid_len(),
-                len,
-            });
+        if len != read.file_len() {
+            return Err(LogError::WrongLogEnd { file: read.file() });
         }
         Ok(Self {
             id: read.file(),
@@ -77,6 +75,7 @@ impl LogFile {
             start: OnceLock::from(read.start()),
             end: AtomicU64::new(read.valid_len()),
             finished: AtomicBool::new(true),
+            uncut: AtomicBool::new(false),
             taken_back: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             adopted: true,
@@ -129,6 +128,12 @@ impl LogFile {
         self.finished.store(true, Ordering::Release);
     }
 
+    /// Whether an append to the file failed, and no durable manifest names
+    /// the file closed where its last whole item ends.
+    pub(super) fn is_uncut(&self) -> bool {
+        self.uncut.load(Ordering::Acquire)
+    }
+
     /// Whether an append to the file failed and left it with the length it
     /// had, while the file as it is now is not known to be durable: a crash
     /// could still bring back what the append wrote and took back.
@@ -136,12 +141,24 @@ impl LogFile {
         self.taken_back.load(Ordering::Acquire)
     }
 
-    pub(super) fn take_back(&self) {
-        self.taken_back.store(true, Ordering::Release);
+    /// An append to the file failed. `taken_back` says that it left the
+    /// file with the length it had.
+    pub(super) fn failed(&self, taken_back: bool) {
+        self.uncut.store(true, Ordering::Release);
+        if taken_back {
+            self.taken_back.store(true, Ordering::Release);
+        }
     }
 
+    /// The file is durable as it is: nothing that was taken back returns.
+    pub(super) fn made_durable(&self) {
+        self.taken_back.store(false, Ordering::Release);
+    }
+
+    /// A durable manifest names the file closed.
     pub(super) fn cut(&self) {
         self.taken_back.store(false, Ordering::Release);
+        self.uncut.store(false, Ordering::Release);
     }
 
     /// Whether the file holds nothing and never will.

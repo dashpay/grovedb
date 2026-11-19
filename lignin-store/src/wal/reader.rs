@@ -8,7 +8,7 @@ use std::{
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
-    wal::{self, LogItem, LogPlace, LogStart, WalError, FIRST_ITEM_OFFSET},
+    wal::{self, LogItem, LogPlace, LogStart, WalError, FIRST_ITEM_OFFSET, MAX_LOG_OFFSET},
     CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion,
 };
 use lignin_io::{OpenMode, Vfs, VfsFile};
@@ -40,6 +40,7 @@ pub struct LogRead<'a> {
 pub struct FileEnd {
     file: FileId,
     start: LogStart,
+    len: u64,
     valid_len: u64,
     latest: CommitVersion,
     named_len: u64,
@@ -55,6 +56,11 @@ impl FileEnd {
     /// The file's start record.
     pub const fn start(&self) -> LogStart {
         self.start
+    }
+
+    /// The length the file had when it was read.
+    pub const fn file_len(&self) -> u64 {
+        self.len
     }
 
     /// The length of the file that is part of the log: the end of its last
@@ -169,6 +175,7 @@ struct Current {
     header: [u8; HEADER_LEN],
     version: FormatVersion,
     start: LogStart,
+    len: u64,
     /// The bytes of the file that are read: all of an open file, and a
     /// closed one up to its valid length.
     limit: u64,
@@ -201,7 +208,15 @@ impl Current {
         let left = self.limit - self.offset;
         let want = usize::try_from(left).map_or(len, |left| left.min(len));
         if want > have {
-            buf.resize(PREFIX_LEN + want, 0);
+            let too_long = || LogError::ItemTooLong {
+                path: self.path.clone(),
+                offset: self.offset,
+                len: want as u64,
+            };
+            let total = PREFIX_LEN.checked_add(want).ok_or_else(too_long)?;
+            buf.try_reserve_exact(total - buf.len())
+                .map_err(|_| too_long())?;
+            buf.resize(total, 0);
             let read = self
                 .file
                 .read_exact_at(&mut buf[PREFIX_LEN + have..], self.offset + have as u64);
@@ -222,13 +237,11 @@ impl Current {
         match self.version {
             FormatVersion::V1 => {}
         }
+        // An item behind the last address has none, as in the file itself:
+        // only a group needs one, and a group there is refused.
         let begins = self.offset - FIRST_ITEM_OFFSET;
-        let start = self
-            .start
-            .base()
-            .checked_add(begins)
-            .ok_or(FormatError::Wal(WalError::AddressOutOfRange))
-            .and_then(|base| LogStart::new(base, self.latest))
+        let base = self.start.base().saturating_add(begins);
+        let start = LogStart::new(base.min(MAX_LOG_OFFSET), self.latest)
             .map_err(LogError::format(&self.path, self.offset))?;
         self.scratch.clear();
         wal::write_file_start(self.named.id(), &start, &mut self.scratch)
@@ -327,6 +340,7 @@ impl Current {
         FileEnd {
             file: self.named.id(),
             start: self.start,
+            len: self.len,
             valid_len: self.offset,
             latest: self.latest,
             named_len: self.named.valid_len(),
@@ -529,19 +543,32 @@ impl LogReader {
             Err(error) if vouched => return Err(damaged(HEADER_LEN as u64, error)),
             Err(_) => None,
         };
-        let continues = match (start, self.end.files.last()) {
+        // The file with the first id is the first the log ever had, and
+        // any other file that is read first follows files that were
+        // dropped.
+        let fits = match (start, self.end.files.last()) {
             (None, _) => None,
-            (Some(start), None) => Some(start),
-            (Some(start), Some(before)) => {
-                match before
-                    .start
-                    .check_next(before.valid_len, before.latest, &start)
-                {
-                    Ok(()) => Some(start),
-                    Err(error) if vouched => return Err(damaged(HEADER_LEN as u64, error)),
-                    Err(_) => None,
-                }
+            (Some(start), None) if named.id().get() == 1 && start != LogStart::FIRST => {
+                let not_first = WalError::NotTheNextFile {
+                    expected_base: LogStart::FIRST.base(),
+                    found_base: start.base(),
+                    expected_after: LogStart::FIRST.after(),
+                    found_after: start.after(),
+                };
+                Some(Err(not_first.into()))
             }
+            (Some(start), None) => Some(Ok(start)),
+            (Some(start), Some(before)) => {
+                let fits = before
+                    .start
+                    .check_next(before.valid_len, before.latest, &start);
+                Some(fits.map(|()| start))
+            }
+        };
+        let continues = match fits {
+            Some(Ok(start)) => Some(start),
+            Some(Err(error)) if vouched => return Err(damaged(HEADER_LEN as u64, error)),
+            Some(Err(_)) | None => None,
         };
         let Some(start) = continues else {
             let behind = &self.named[self.next + 1..];
@@ -572,6 +599,7 @@ impl LogReader {
             header: header_bytes,
             version: header.version(),
             start,
+            len,
             limit,
             offset: FIRST_ITEM_OFFSET,
             latest: start.after(),

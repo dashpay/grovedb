@@ -395,7 +395,15 @@ fn put_file(vfs: &dyn Vfs, path: &Path, bytes: &[u8]) {
 /// A database directory made by hand on a simulated file system: log files
 /// with these bytes, and a manifest that names them so.
 fn crafted(files: &[(LiveFile, &[u8])]) -> (lignin_io::SimVfs, Arc<dyn Vfs>) {
-    let fs = sim::sim_fs(lignin_io::sim::SimConfig::new(1));
+    crafted_on(lignin_io::sim::SimConfig::new(1), files)
+}
+
+/// As [`crafted`], on a file system with the configuration `config`.
+fn crafted_on(
+    config: lignin_io::sim::SimConfig,
+    files: &[(LiveFile, &[u8])],
+) -> (lignin_io::SimVfs, Arc<dyn Vfs>) {
+    let fs = sim::sim_fs(config);
     let vfs = sim::shared(&fs);
     let dir = sim::db_dir();
     fs.create_dir(&FileNames::WAL.dir(dir)).expect("wal/");
@@ -453,9 +461,10 @@ struct Model {
     /// How many of them lie in files that were dropped: they need not be
     /// read any more.
     first: usize,
-    /// Where a log that is read may begin, besides `first`: for each
-    /// manifest that a crash can still leave in force, how many of the
-    /// items lie before its first log file.
+    /// Where a log that is read may begin: for each manifest that a crash
+    /// can leave in force, how many of the items lie before its first log
+    /// file. The model knows them from what the session was told, not from
+    /// what its manifest holds.
     starts: Vec<usize>,
     /// An item whose append failed and that can still be in the log,
     /// behind the last item, or come back there in a crash: one whose
@@ -464,8 +473,9 @@ struct Model {
     /// session, which names the file closed where that session found its
     /// last item.
     maybe: Option<Item>,
-    /// Whether a sync of the log that succeeds settles `maybe` as well:
-    /// its append was taken back in the session that is running.
+    /// Whether `maybe` was taken back in the session that is running: its
+    /// bytes are not in the file, and a sync of the log that succeeds
+    /// keeps a crash from bringing them back.
     cut_by_sync: bool,
 }
 
@@ -518,10 +528,10 @@ impl Model {
                 appended[wrong]
             ));
         }
-        if at != self.first && !self.starts.contains(&at) {
+        if !self.starts.contains(&at) {
             return Err(format!(
-                "the log was read from item {at} on, and it begins at item {} or one of {:?}",
-                self.first, self.starts
+                "the log was read from item {at} on, and it begins at one of {:?}",
+                self.starts
             ));
         }
         if at + read.len() < must_reach {
@@ -534,19 +544,17 @@ impl Model {
         Ok(())
     }
 
-    /// Takes the manifest of the session: a log that is read under it
-    /// begins at the first item of the first log file it names. `durable`
-    /// says that no crash leaves an earlier manifest in force.
-    fn named(&mut self, manifest: &Manifest, durable: bool) {
-        let first_file = named(manifest).first().map(LiveFile::id);
-        let begins = |item: &Item| Some(item.at.file()) >= first_file;
-        let start = self.items.iter().position(begins);
-        let start = start.unwrap_or(self.items.len());
-        if durable {
-            self.starts.clear();
-        }
-        if !self.starts.contains(&start) {
-            self.starts.push(start);
+    /// The manifest was replaced, with one that names no dropped file: no
+    /// crash leaves another in force.
+    fn manifest_replaced(&mut self) {
+        self.starts = vec![self.first];
+    }
+
+    /// A replacement of the manifest was left in doubt: a crash can leave
+    /// the manifest that was to replace the one in force.
+    fn manifest_in_doubt(&mut self) {
+        if !self.starts.contains(&self.first) {
+            self.starts.push(self.first);
         }
     }
 
@@ -556,13 +564,13 @@ impl Model {
         let covered = |item: &Item| Some(item.end) <= durable.place;
         let count = self.items.partition_point(covered);
         self.durable = self.durable.max(count);
-        if let Some(last) = self.items[..count]
-            .iter()
-            .rev()
-            .find_map(|item| item.version)
-        {
-            assert_eq!(durable.version, last, "{durable:?} covers that version");
-        }
+        let groups = self.items[..count].iter().rev();
+        let last = groups.filter_map(|item| item.version).next();
+        assert_eq!(
+            durable.version,
+            last.unwrap_or(CommitVersion::EMPTY),
+            "{durable:?} is durable through that version"
+        );
     }
 
     /// Takes what a recovery read for the log from now on. `crashed` says
@@ -601,6 +609,7 @@ impl Model {
 struct Stats {
     appended: u64,
     not_appended: u64,
+    taken_back: u64,
     unsettled: u64,
     syncs: u64,
     sync_failed: u64,
@@ -624,8 +633,6 @@ struct Run {
     stats: Stats,
     plans: sim::Plans,
     faults: lignin_io::sim::FaultOdds,
-    /// The manifest the session found, if a crash can still take it away.
-    found: Option<Manifest>,
 }
 
 impl Run {
@@ -642,12 +649,14 @@ impl Run {
             fs,
             db: Some(db),
             options,
-            model: Model::default(),
+            model: Model {
+                starts: vec![0],
+                ..Model::default()
+            },
             rng,
             stats: Stats::default(),
             plans,
             faults,
-            found: None,
         }
     }
 
@@ -666,6 +675,7 @@ impl Run {
     fn failed(&mut self, error: &LogError) {
         match error {
             LogError::NotAppended { .. } => self.stats.not_appended += 1,
+            LogError::TakenBack { .. } => self.stats.taken_back += 1,
             LogError::Unsettled { .. } => self.stats.unsettled += 1,
             LogError::SyncFailed { .. } => self.stats.sync_failed += 1,
             _ => self.stats.other_errors += 1,
@@ -685,12 +695,11 @@ impl Run {
 
     /// Sees to it that the log has a file to turn to, and syncs nothing.
     fn prepare(&mut self) {
-        let Some(db) = self.db.as_mut() else { return };
-        let prepared = match db.log.create() {
+        let prepared = self.with_manifest(|db| match db.log.create() {
             Ok(_) | Err(LogError::SpareExists { .. }) => db.log.commit(&mut db.manifest),
             Err(error) => Err(error),
-        };
-        if let Err(error) = prepared {
+        });
+        if let Some(Err(error)) = prepared {
             self.failed(&error);
         }
     }
@@ -743,7 +752,7 @@ impl Run {
                 // until the log is synced, and an unsettled one until the
                 // next session has named its file closed. A log that is
                 // unsettled already wrote nothing.
-                let taken_back = matches!(error, LogError::NotAppended { .. });
+                let taken_back = matches!(error, LogError::TakenBack { .. });
                 let unsettled = matches!(error, LogError::Unsettled { .. });
                 if taken_back || (unsettled && self.model.maybe.is_none()) {
                     let after = place(end.file().get(), end.offset() + bytes.len() as u64);
@@ -760,14 +769,25 @@ impl Run {
         }
     }
 
-    /// A sync of the log has succeeded: it has cut off an append that was
-    /// taken back.
     fn synced(&mut self) {
         self.stats.syncs += 1;
-        if self.model.cut_by_sync {
-            self.model.maybe = None;
-            self.model.cut_by_sync = false;
+    }
+
+    /// Runs a step that may replace the manifest, and tells the model
+    /// which manifests a crash can leave in force afterwards.
+    fn with_manifest<T>(
+        &mut self,
+        step: impl FnOnce(&mut Db) -> Result<T, LogError>,
+    ) -> Option<Result<T, LogError>> {
+        let db = self.db.as_mut()?;
+        let before = db.manifest.manifest().ok().cloned();
+        let result = step(db);
+        match db.manifest.manifest() {
+            Ok(now) if Some(now) != before.as_ref() => self.model.manifest_replaced(),
+            Ok(_) => {}
+            Err(_) => self.model.manifest_in_doubt(),
         }
+        Some(result)
     }
 
     fn sync(&mut self) {
@@ -786,15 +806,15 @@ impl Run {
     }
 
     fn roll(&mut self) {
-        let Some(db) = self.db.as_mut() else { return };
-        match db.roll() {
-            Ok(turned) => {
+        match self.with_manifest(Db::roll) {
+            Some(Ok(turned)) => {
                 self.stats.turns += u64::from(turned);
                 // A session's first roll names every earlier file closed.
                 self.model.maybe = None;
                 self.synced();
             }
-            Err(error) => self.failed(&error),
+            Some(Err(error)) => self.failed(&error),
+            None => {}
         }
     }
 
@@ -826,7 +846,8 @@ impl Run {
             let first = self.model.items.iter().position(kept);
             self.model.first = first.unwrap_or(self.model.items.len());
         }
-        if let Err(error) = db.log.commit(&mut db.manifest) {
+        let committed = self.with_manifest(|db| db.log.commit(&mut db.manifest));
+        if let Some(Err(error)) = committed {
             self.failed(&error);
         }
     }
@@ -846,15 +867,11 @@ impl Run {
     fn note_durable(&mut self) {
         if let Some(db) = &self.db {
             self.model.claimed(db.log.durable());
-            if let Ok(manifest) = db.manifest.manifest() {
-                // The manifest a session found when it began without a
-                // crash may be one whose replacement was left in doubt:
-                // it is durable once the session has replaced it.
-                let durable = self.found.as_ref() != Some(manifest);
-                if durable {
-                    self.found = None;
-                }
-                self.model.named(manifest, durable);
+            // A sync has made the file durable as a taken-back append
+            // left it: no crash brings the item back.
+            if self.model.cut_by_sync && !db.log.waits_for_sync() {
+                self.model.maybe = None;
+                self.model.cut_by_sync = false;
             }
         }
     }
@@ -900,17 +917,25 @@ impl Run {
         if let Err(wrong) = self.model.check(&read, true) {
             panic!("{} after a restart: {wrong}", self.at());
         }
+        // What was taken back is not in the file: only a crash brings it
+        // back.
+        let taken_back = self.model.maybe.as_ref().filter(|_| self.model.cut_by_sync);
+        assert!(
+            taken_back.is_none() || read.last() != taken_back,
+            "{} after a restart: an append that was taken back is in the log",
+            self.at()
+        );
         self.model.recovered(&read, false);
-        self.open(false);
+        self.open();
     }
 
     /// Opens the directory for the next session. If the file layer fails
     /// that, a later step tries again.
-    fn open(&mut self, crashed: bool) {
+    fn open(&mut self) {
         match Db::open(sim::shared(&self.fs), sim::db_dir(), self.options) {
             Ok(db) => {
-                let found = db.manifest.manifest().ok().cloned();
-                self.found = found.filter(|_| !crashed);
+                // The manifest of a directory that opens is durable.
+                self.model.manifest_replaced();
                 self.db = Some(db);
                 self.roll();
                 self.note_durable();
@@ -937,7 +962,7 @@ impl Run {
         self.model.recovered(&read, true);
         self.stats.lost_in_a_crash += before.saturating_sub(self.model.items.len()) as u64;
         self.fs.set_faults(self.faults.clone());
-        self.open(true);
+        self.open();
     }
 
     fn at(&self) -> String {

@@ -160,7 +160,7 @@ fn a_session_after_another(seed: u64, cut: Option<u64>) -> (Run, std::ops::Range
     if let Ok(read) = Run::read(&run.fs) {
         run.model.check(&read, true).unwrap();
         run.model.recovered(&read, false);
-        run.open(false);
+        run.open();
         for _ in 0..3 {
             run.append();
         }
@@ -195,19 +195,29 @@ fn a_power_cut_at_any_operation_of_a_first_roll_leaves_a_log_that_reads() {
             .count();
         assert!(renames >= 1, "{renames} files written again");
 
-        for cut in ops {
+        for (cut, draw) in ops.flat_map(|cut| [(cut, cut), (cut, !cut)]) {
             let (mut run, _) = a_session_after_another(seed, Some(cut));
             assert!(run.fs.is_powered_off());
             cuts += 1;
             // Whatever the cut left, and whatever of it a crash keeps: the
             // log reads, and holds what was durable.
-            run.check_crash_states();
-            // The session after it goes on from there.
-            run.crash(cut);
+            if draw == cut {
+                run.check_crash_states();
+            }
+            // The session after it goes on from one of those states: it
+            // opens, rolls, takes an item and makes it durable.
+            run.crash(draw);
             assert!(run.db.is_some(), "the directory opens after cut {cut}");
+            let before = run.stats;
             run.append();
+            if run.stats.appended == before.appended {
+                run.append();
+            }
             run.sync();
             run.note_durable();
+            assert_eq!(run.stats.appended, before.appended + 1, "cut {cut}");
+            assert_eq!(run.stats.syncs, before.syncs + 1, "cut {cut}");
+            assert_eq!(run.model.durable, run.model.items.len(), "cut {cut}");
             run.check_crash_states();
             let read = Run::read(&run.fs).unwrap();
             run.model.check(&read, true).unwrap();
@@ -220,7 +230,7 @@ fn a_power_cut_at_any_operation_of_a_first_roll_leaves_a_log_that_reads() {
     }
     println!("{cuts} cuts: {total:?}");
     assert!(
-        cuts > 250 && total.states > 15_000,
+        cuts > 500 && total.states > 15_000,
         "{cuts} cuts, {total:?}"
     );
 }
