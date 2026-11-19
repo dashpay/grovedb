@@ -10,7 +10,7 @@
 //! - The costs the store reports add up to what the cost model handed out
 //!   (`cost-model.md` 14.2).
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use ed::Encode;
 use grovedb_costs::{
@@ -26,11 +26,16 @@ use grovedb_costs::{
     },
     CostResult,
 };
+use grovedb_query::QueryItem;
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError};
 use grovedb_version::version::GROVE_VERSIONS;
 
 use super::*;
-use crate::{cost_model::HANDLE_COST_MODEL, proofs::Query, store::NodeWriteCost};
+use crate::{
+    cost_model::HANDLE_COST_MODEL,
+    proofs::{query::count_offset::ProverCountOffsetResult, Query},
+    store::NodeWriteCost,
+};
 
 type Tx<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
 
@@ -302,41 +307,111 @@ fn meta_as_a_client<'db, S: NodeStore<'db>>(
     }
 }
 
-/// Every read of a Merk the comparison makes, each with what it cost.
+/// What a read gave, with what it cost.
+fn told<T: fmt::Debug>(read: CostResult<T, Error>) -> (OperationCost, String) {
+    (read.cost, format!("{:?}", read.value))
+}
+
+/// The range between two keys, in whichever order they come.
+fn between(a: &[u8], b: &[u8]) -> QueryItem {
+    QueryItem::RangeInclusive(a.min(b).to_vec()..=a.max(b).to_vec())
+}
+
+/// How many reads [`read_as_a_client`] makes of the tree, and then of each
+/// key.
+const TREE_READS: usize = 16;
+const KEY_READS: usize = 9;
+
+/// Which kinds of read were charged a seek.
+type Charged = [bool; TREE_READS + KEY_READS];
+
+/// Marks in `charged` the kinds of `reads` that were charged a seek.
+fn mark_charged(charged: &mut Charged, reads: &[(OperationCost, String)]) {
+    for (n, (cost, _)) in reads.iter().enumerate() {
+        let kind = match n.checked_sub(TREE_READS) {
+            None => n,
+            Some(of_a_key) => TREE_READS + of_a_key % KEY_READS,
+        };
+        charged[kind] |= cost.seek_count > 0;
+    }
+}
+
+/// Every read of a Merk the comparison makes, each with what it cost. Of
+/// the tree: an aux record, a proof, the aggregates of a range with their
+/// proofs, which a tree type that keeps none of the kind refuses, the
+/// query of a trunk, the proofs of a page that is skipped to by count, and
+/// the root hash. Then, of each of the four `keys`, the reads by key and
+/// the query of a branch.
+///
+/// A read is charged the fetches of the nodes no read before it loaded.
+/// So the reads of the tree are made in another order with every `turn`,
+/// and each of them is the first read of a Merk in one turn of sixteen.
 fn read_as_a_client<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
-    keys: &[Vec<u8>],
+    keys: &[Vec<u8>; 4],
+    turn: usize,
     grove_version: &GroveVersion,
 ) -> Vec<(OperationCost, String)> {
-    let mut reads = Vec::new();
-    let mut read = |cost: OperationCost, found: String| reads.push((cost, found));
+    let [a, b, c, d] = keys;
+    let mut query = Query::new();
+    query.insert_item(between(a, d));
+    let page =
+        |proved: ProverCountOffsetResult| (proved.ops, proved.returned, proved.offset_remaining);
+    let of_the_tree: [&dyn Fn() -> (OperationCost, String); TREE_READS] = [
+        &|| told(merk.get_aux(b"aux")),
+        &|| {
+            let proved = merk.prove(query.clone(), Some(7), grove_version);
+            told(proved.map_ok(|proved| proved.proof))
+        },
+        &|| told(merk.count_aggregate_on_range(&between(a, b), grove_version)),
+        &|| told(merk.sum_aggregate_on_range(&between(b, c), grove_version)),
+        &|| told(merk.count_and_sum_aggregate_on_range(&between(c, d), grove_version)),
+        &|| told(merk.big_sum_aggregate_on_range(&between(a, c), grove_version)),
+        &|| told(merk.count_and_big_sum_aggregate_on_range(&between(b, d), grove_version)),
+        &|| told(merk.prove_aggregate_count_on_range(&between(c, d), grove_version)),
+        &|| told(merk.prove_aggregate_sum_on_range(&between(a, b), grove_version)),
+        &|| told(merk.prove_aggregate_count_and_sum_on_range(&between(b, c), grove_version)),
+        &|| told(merk.prove_aggregate_big_sum_on_range(&between(b, d), grove_version)),
+        &|| told(merk.prove_aggregate_count_and_big_sum_on_range(&between(a, c), grove_version)),
+        &|| told(merk.trunk_query(3, None, grove_version)),
+        &|| {
+            let range = between(a, d);
+            let proved = merk.prove_count_offset_on_range(&range, 1, Some(3), true, grove_version);
+            told(proved.map_ok(page))
+        },
+        &|| {
+            let range = between(b, c);
+            let proved =
+                merk.prove_local_count_offset_on_range(&range, 1, Some(2), false, grove_version);
+            told(proved.map_ok(page))
+        },
+        &|| {
+            let hash = merk.root_hash();
+            (hash.cost, format!("{:?}", hash.value))
+        },
+    ];
+    let mut reads: Vec<_> = (0..TREE_READS)
+        .map(|n| (n + turn) % TREE_READS)
+        .map(|kind| (kind, of_the_tree[kind]()))
+        .collect();
+    reads.sort_by_key(|(kind, _)| *kind);
+    let mut reads: Vec<_> = reads.into_iter().map(|(_, read)| read).collect();
+
+    let cost_fn = VALUE_DEFINED_COST;
     for (n, key) in keys.iter().enumerate() {
         let cached = n.is_multiple_of(2);
-        let found = merk.get(key, cached, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
-        let found = merk.exists(key, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
-        let found = merk.exists_by_traversing_tree(key, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
-        let found = merk.get_feature_type(key, !cached, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
-        let found = merk.get_hash(key, cached, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
-        let found = merk.get_value_and_value_hash(key, !cached, VALUE_DEFINED_COST, grove_version);
-        read(found.cost, format!("{:?}", found.value));
+        reads.extend([
+            told(merk.get(key, cached, cost_fn, grove_version)),
+            told(merk.exists(key, cost_fn, grove_version)),
+            told(merk.exists_by_traversing_tree(key, cost_fn, grove_version)),
+            told(merk.get_feature_type(key, !cached, cost_fn, grove_version)),
+            told(merk.get_hash(key, cached, cost_fn, grove_version)),
+            told(merk.get_value_hash(key, !cached, cost_fn, grove_version)),
+            told(merk.get_kv_hash(key, cached, cost_fn, grove_version)),
+            told(merk.get_value_and_value_hash(key, !cached, cost_fn, grove_version)),
+            told(merk.branch_query(key, 2, grove_version)),
+        ]);
     }
-    let mut query = Query::new();
-    match keys {
-        [first, .., last] if first <= last => {
-            query.insert_range_inclusive(first.clone()..=last.clone())
-        }
-        _ => query.insert_all(),
-    }
-    let proved = merk.prove(query, Some(7), grove_version);
-    let proof = proved.value.map(|proved| proved.proof);
-    read(proved.cost, format!("{proof:?}"));
-    let hash = merk.root_hash();
-    read(hash.cost, format!("{:?}", hash.value));
     reads
 }
 
@@ -349,6 +424,7 @@ fn a_merk_costs_the_same(
     immediate: bool,
     seed: u64,
     rounds: usize,
+    charged: &mut Charged,
 ) {
     let at = |round: usize, what: &str| {
         format!(
@@ -403,10 +479,10 @@ fn a_merk_costs_the_same(
                 "{}",
                 at(round, "the meta record")
             );
-            let keys: Vec<_> = (0..4).map(|_| key(random.below(120))).collect();
+            let keys = [(); 4].map(|()| key(random.below(120)));
             assert_eq!(
-                read_as_a_client(&on_lignin, &keys, grove_version),
-                read_as_a_client(&on_rocks, &keys, grove_version),
+                read_as_a_client(&on_lignin, &keys, round, grove_version),
+                read_as_a_client(&on_rocks, &keys, round, grove_version),
                 "{}",
                 at(round, "the reads")
             );
@@ -489,18 +565,21 @@ fn a_merk_costs_the_same(
             "{}",
             at(round, "the meta record that is read")
         );
-        let keys: Vec<_> = (0..4).map(|_| key(random.below(120))).collect();
+        let keys = [(); 4].map(|()| key(random.below(120)));
+        let found = read_as_a_client(&on_lignin, &keys, round, grove_version);
         assert_eq!(
-            read_as_a_client(&on_lignin, &keys, grove_version),
-            read_as_a_client(&on_rocks, &keys, grove_version),
+            found,
+            read_as_a_client(&on_rocks, &keys, round, grove_version),
             "{}",
             at(round, "the reads")
         );
+        mark_charged(charged, &found);
     }
 }
 
 #[test]
 fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
+    let mut charged = [false; TREE_READS + KEY_READS];
     for (v, grove_version) in GROVE_VERSIONS.iter().enumerate() {
         for (n, tree_type) in TREE_TYPES.into_iter().enumerate() {
             let seed = 0x5851_F42D + (v * 16 + n) as u64;
@@ -512,10 +591,24 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
                 1 => Opened::Layered,
                 _ => Opened::Standalone,
             };
-            a_merk_costs_the_same(grove_version, tree_type, opened, false, seed, 18);
-            a_merk_costs_the_same(grove_version, tree_type, opened, true, seed, 12);
+            for (immediate, rounds) in [(false, 18), (true, 12)] {
+                a_merk_costs_the_same(
+                    grove_version,
+                    tree_type,
+                    opened,
+                    immediate,
+                    seed,
+                    rounds,
+                    &mut charged,
+                );
+            }
         }
     }
+    // Each kind of read was charged a fetch of its own in some round, but
+    // for the root hash, which reads nothing.
+    let mut expected = [true; TREE_READS + KEY_READS];
+    expected[TREE_READS - 1] = false;
+    assert_eq!(charged, expected);
 }
 
 fn at(n: u8) -> Prefix {
