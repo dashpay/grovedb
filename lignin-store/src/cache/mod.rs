@@ -91,9 +91,36 @@
 //!
 //! # Reading
 //!
-//! [`BufferPool::get`] is the read path: one lookup under a shared lock of
-//! one part of the pool's table, and one pin. A hit allocates nothing. So
-//! does a miss, and so does a load into one of the fixed frames.
+//! [`BufferPool::get`] is the read path: one lookup in one part of the
+//! pool's table, and one pin. A hit allocates nothing. So does a miss, and
+//! so does a load into one of the fixed frames.
+//!
+//! **A hit on a page in a fixed frame takes no lock and writes nothing that
+//! another reader of the page writes.** Every read of a tree starts at a
+//! page that every other reader reads too, so a lock or a count that each
+//! of them writes is what all of them would wait for.
+//!
+//! - The reader follows the frames of its part of the table without the
+//!   lock. That part counts its changes, and the reader reads the count
+//!   before it looks and after it has pinned: if the two differ, or a
+//!   change is under way, it has pinned nothing, and it asks again under
+//!   the lock.
+//! - The pin is not a count on the frame. It is **announced**: the reader
+//!   writes the frame's number into a cell of its thread's own lane, two
+//!   cache lines that no other thread writes while the process has no more
+//!   threads than the pool has lanes. Whoever needs a frame to have no pin
+//!   (eviction, a frame that a page step or [`BufferPool::reclaim`] took
+//!   out) looks through the lanes as well as at the frame's count.
+//! - The counts of hits and misses are kept in the lanes too.
+//!
+//! The shared lock of the part of the table, and a pin that is counted on
+//! the frame, are what a reader falls back to: for a miss, for a page in a
+//! frame beside the fixed ones, while that part of the table is being
+//! changed, and when a thread holds more pins from hits at once than a lane
+//! has cells (28). Every other pin is counted as well: a clone of a
+//! [`PageRef`], and what a load, a commit, a page step and write-back are
+//! given. A counted pin is as good as an announced one, and slower when
+//! many threads take it on one frame.
 //!
 //! On a miss the caller (STORE-05) reads the page table **after** the miss,
 //! fills a [`Blank`], and hands it over with the version of the link it
@@ -229,7 +256,8 @@
 //! # Memory
 //!
 //! The configured size is allocated when the pool is made: the frames,
-//! their headers and the table ([`BufferPool::fixed_memory`]). A page that
+//! their headers, the table and the lanes ([`BufferPool::fixed_memory`]).
+//! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page
 //! version that has no pin, chosen by a clock that passes over a frame once
 //! if it was used since the hand last came by.
@@ -259,13 +287,15 @@
 //! | --- | --- | --- |
 //! | 4 | the latch of a private copy | one physical step of its owner |
 //! | 5 | the page step lock of a page | one page step: a [`PageStep`], or inside the calls that install, free, copy, load, mark or drop a frame |
-//! | below 5 | the pool's own: one part of its table, the free list, the clock, the unwritten lists | a few instructions each. The clock takes the lock of one part of the table while it holds its own. Nothing else is taken under them, and no other module is called |
+//! | below 5 | the pool's own: one part of its table, the free list, the clock, the unwritten lists, the list of frames that were taken out while they were pinned | a few instructions each, and for the last a look through the lanes. The clock takes the lock of one part of the table while it holds its own, and a frame is put on the last list under the lock of its part of the table. Nothing else is taken under them, and no other module is called |
 //!
-//! No call into the pool waits for more than that. A reader takes the
-//! shared lock of one part of the table to find its page, and none to give
-//! it back, unless the page is in a frame beside the fixed ones: the last
-//! pin of such a frame goes under the exclusive lock of its part of the
-//! table, so that the frame leaves in the same step.
+//! No call into the pool waits for more than that. A reader that finds its
+//! page in a fixed frame takes no lock at all, to find it or to give it
+//! back. Otherwise it takes the shared lock of one part of the table to
+//! find its page, and none to give it back, unless the page is in a frame
+//! beside the fixed ones: the last pin of such a frame goes under the
+//! exclusive lock of its part of the table, so that the frame leaves in
+//! the same step.
 //!
 //! The page step lock is shared by the pages of one part of the table. So a
 //! step on one page can make a step on another wait, never a reader, and a
@@ -300,19 +330,23 @@
 //! # Unsafe code
 //!
 //! The pool's unsafe code is in `cache/frame.rs` and nowhere else: the
-//! allocation of the frames, and the access to a frame's bytes through a
-//! pin, a latch or an owner. The rules that make it sound are at the top of
-//! that file, and what they rest on is kept inside it: what a frame is
-//! (a private copy that can be written, or a page version that cannot)
-//! changes only there, and a frame of another pool is never linked into
-//! this one. The rest of the pool is safe code over the types that stand
-//! for the ways a frame may be reached.
+//! allocation of the frames, the walk of a reader that holds no lock, and
+//! the access to a frame's bytes through a pin, a latch or an owner. The
+//! rules that make it sound are at the top of that file, and what they rest
+//! on is kept inside it and in `cache/lanes.rs`, which has no unsafe code:
+//! what a frame is (a private copy that can be written, or a page version
+//! that cannot) changes only there, a frame of another pool is never linked
+//! into this one, a part of the table is changed only between two steps of
+//! its count of changes, and a pin that is announced is found by everyone
+//! who looks for it afterwards. The rest of the pool is safe code over the
+//! types that stand for the ways a frame may be reached.
 
 mod error;
 mod flush;
 #[allow(unsafe_code)]
 mod frame;
 mod guard;
+mod lanes;
 mod pool;
 mod sync;
 mod write;

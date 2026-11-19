@@ -6,20 +6,23 @@
 
 #[cfg(loom)]
 pub(super) use loom::sync::{
-    atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
+    atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
     Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
-use std::sync::{atomic::AtomicUsize, PoisonError, TryLockError};
 #[cfg(not(loom))]
 pub(super) use std::sync::{
-    atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering},
+    atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
     Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
+use std::{
+    ops::{Deref, DerefMut},
+    sync::{PoisonError, TryLockError},
 };
 
 /// A number the pool reports and decides nothing by. It is a plain atomic in
 /// every build, so that a model does not explore the orders of its updates.
 #[derive(Debug, Default)]
-pub(super) struct Counter(AtomicUsize);
+pub(super) struct Counter(std::sync::atomic::AtomicUsize);
 
 impl Counter {
     pub(super) fn add(&self, amount: usize) {
@@ -35,6 +38,85 @@ impl Counter {
     pub(super) fn get(&self) -> usize {
         self.0.load(std::sync::atomic::Ordering::Relaxed)
     }
+}
+
+/// A value on cache lines of its own, so that a thread that writes it does
+/// not slow the threads that read its neighbours.
+#[derive(Debug, Default)]
+#[repr(align(128))]
+pub(super) struct Padded<T>(pub(super) T);
+
+impl<T> Deref for Padded<T> {
+    type Target = T;
+
+    fn deref(&self) -> &T {
+        &self.0
+    }
+}
+
+impl<T> DerefMut for Padded<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.0
+    }
+}
+
+/// An atomic that a thread stores to and then reads another, where the
+/// other thread does the same the other way round, starts with a value
+/// that was stored `SeqCst`.
+///
+/// Loom takes the first value of an atomic for a weaker store, which a
+/// `SeqCst` load could still return after a later `SeqCst` store. So under
+/// loom the value is stored once more, the way every later one is.
+pub(super) fn settled_u64(value: u64) -> AtomicU64 {
+    let atomic = AtomicU64::new(value);
+    #[cfg(loom)]
+    atomic.store(value, Ordering::SeqCst);
+    atomic
+}
+
+/// As [`settled_u64`].
+pub(super) fn settled_u32(value: u32) -> AtomicU32 {
+    let atomic = AtomicU32::new(value);
+    #[cfg(loom)]
+    atomic.store(value, Ordering::SeqCst);
+    atomic
+}
+
+/// As [`settled_u64`].
+pub(super) fn settled_usize(value: usize) -> AtomicUsize {
+    let atomic = AtomicUsize::new(value);
+    #[cfg(loom)]
+    atomic.store(value, Ordering::SeqCst);
+    atomic
+}
+
+/// A number for the calling thread, which it keeps: the threads of a
+/// process are numbered as they first ask.
+#[cfg(not(loom))]
+pub(super) fn thread_number() -> usize {
+    static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    thread_local! {
+        static NUMBER: usize = THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    NUMBER.try_with(|number| *number).unwrap_or(0)
+}
+
+#[cfg(loom)]
+loom::thread_local! {
+    static NUMBER: std::cell::Cell<usize> = std::cell::Cell::new(0);
+}
+
+/// The number a model gave the calling thread, or 0: a model's threads are
+/// numbered by the model, so that every run of it is the same.
+#[cfg(loom)]
+pub(super) fn thread_number() -> usize {
+    NUMBER.with(std::cell::Cell::get)
+}
+
+/// Numbers the calling thread of a model.
+#[cfg(all(loom, test))]
+pub(super) fn set_thread_number(number: usize) {
+    NUMBER.with(|cell| cell.set(number));
 }
 
 /// Locks a mutex. A panic in another holder does not stop the pool: every

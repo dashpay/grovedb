@@ -229,7 +229,11 @@ fn a_load_that_cannot_be_is_refused() {
         })
     );
     assert_eq!(pool.census().published, 1);
-    assert_eq!(lock(&pool.free).len(), 3, "every refused frame came back");
+    assert_eq!(
+        lock(&pool.turnover.free).len(),
+        3,
+        "every refused frame came back"
+    );
     check(&pool, 0);
 }
 
@@ -246,7 +250,7 @@ fn a_second_load_of_one_page_version_gives_the_first_frame() {
     let second = loaded(pool.install_loaded(second, second_miss, version(3), None));
     assert_eq!(first.as_ptr(), second.as_ptr());
     assert_eq!(pool.census().published, 1);
-    assert_eq!(lock(&pool.free).len(), 2);
+    assert_eq!(lock(&pool.turnover.free).len(), 2);
     check(&pool, 0);
 }
 
@@ -358,7 +362,7 @@ fn the_clock_gives_a_used_page_a_second_chance() {
     for raw in 1..=3 {
         drop(seed(&pool, content(raw, 1, 0), None));
     }
-    assert_eq!(lock(&pool.free).len(), 0);
+    assert_eq!(lock(&pool.turnover.free).len(), 0);
 
     // Every page was used when it was loaded. The hand takes each mark off,
     // comes round, and evicts the first frame.
@@ -517,4 +521,164 @@ fn everything_can_be_shown() {
     }
     assert_eq!(owner(9).to_string(), "owner 9");
     assert_eq!(owner(9).get(), 9);
+}
+
+#[test]
+fn a_hit_in_a_fixed_frame_is_pinned_without_a_count() {
+    let pool = pool(2);
+    drop(seed(&pool, content(1, 1, 0), None));
+    let found = pool.get(page(1), version(1)).expect("in the pool");
+    assert_eq!(found.frame().pins(), 0, "the pin is announced");
+    let census = pool.census();
+    assert_eq!((census.pinned, census.unevictable), (1, 1));
+
+    // The frame is not taken for another page while it is held.
+    let second = seed(&pool, content(2, 1, 0), None);
+    let third = seed(&pool, content(3, 1, 0), None);
+    assert_eq!(pool.overflow_frames(), 1);
+    assert_eq!(Content::read(&found), content(1, 1, 0));
+    drop((second, third));
+    assert_eq!(pool.overflow_frames(), 0);
+
+    // A second pin is a count, and it keeps the frame when the first is
+    // gone.
+    let again = found.clone();
+    assert_eq!(again.frame().pins(), 1);
+    drop(found);
+    assert_eq!(pool.census().pinned, 1);
+    drop(seed(&pool, content(4, 1, 0), None));
+    assert_eq!(Content::read(&again), content(1, 1, 0));
+    drop(again);
+    assert_eq!(pool.census().pinned, 0);
+    assert_eq!(pool.stats().hits, 1);
+    check(&pool, 0);
+}
+
+#[test]
+fn a_thread_with_no_cell_left_counts_its_pins() {
+    let pool = pool(2);
+    drop(seed(&pool, content(1, 1, 0), None));
+    let held: Vec<_> = (0..100)
+        .map(|_| pool.get(page(1), version(1)).expect("in the pool"))
+        .collect();
+    let counted = held[0].frame().pins() as usize;
+    assert!(
+        counted > 0 && counted < held.len(),
+        "{counted} of {} pins are counted",
+        held.len()
+    );
+    assert_eq!(pool.census().pinned, 1);
+    assert_eq!(pool.stats().hits, 100);
+
+    // Whatever way a pin was taken, the frame stays while one is left, and
+    // a cell that was given back is used again.
+    let mut held = held;
+    while held.len() > 1 {
+        held.swap_remove(held.len() / 2);
+        drop(seed(&pool, content(2 + held.len() as u32, 1, 0), None));
+        assert_eq!(Content::read(&held[0]), content(1, 1, 0));
+    }
+    let again = pool.get(page(1), version(1)).expect("in the pool");
+    assert_eq!(again.frame().pins(), held[0].frame().pins());
+    drop((held, again));
+    assert_eq!(pool.census().pinned, 0);
+    check(&pool, 0);
+}
+
+#[test]
+fn a_hit_in_a_frame_beside_the_fixed_ones_is_counted() {
+    let pool = pool(1);
+    let fixed = seed(&pool, content(1, 1, 0), None);
+    let beside = seed(&pool, content(2, 1, 0), None);
+    assert_eq!(pool.overflow_frames(), 1);
+    let found = pool.get(page(2), version(1)).expect("in the pool");
+    assert_eq!(found.frame().pins(), 2);
+    drop(beside);
+    assert_eq!(pool.overflow_frames(), 1);
+    drop(found);
+    assert_eq!(pool.overflow_frames(), 0);
+    drop(fixed);
+    check(&pool, 0);
+}
+
+#[test]
+fn a_frame_that_was_taken_out_under_a_hit_is_free_when_the_hit_is_dropped() {
+    let pool = pool(3);
+    drop(create(&pool, 1, 1));
+    let found = pool.get(page(1), version(1)).expect("unwritten");
+    assert_eq!(found.frame().pins(), 0, "the pin is announced");
+
+    // A page step replaces the frame, and a commit frees the page: the
+    // version the reader holds is held for readers, and then reclaimed.
+    let step = pool.page_step(page(1));
+    let current = step.current().expect("in the pool");
+    let mut blank = pool.blank();
+    blank.copy_from(&current);
+    content(1, 1, 1).write(&mut blank);
+    drop(step.replace(&current, blank).expect("nothing in the way"));
+    drop((step, current));
+    assert_eq!(lock(&pool.turnover.free).len(), 1, "the reader holds it");
+    assert_eq!(Content::read(&found), content(1, 1, 0));
+
+    drop(found);
+    assert_eq!(lock(&pool.turnover.free).len(), 2, "the old frame is free");
+    check(&pool, 0);
+
+    let held = pool.get(page(1), version(1)).expect("unwritten");
+    pool.free(page(1), version(2)).expect("a later commit");
+    assert_eq!(pool.reclaim(&TestPins::at(2)), 1);
+    assert_eq!(lock(&pool.turnover.free).len(), 2, "the reader holds it");
+    assert_eq!(Content::read(&held), content(1, 1, 1));
+    drop(held);
+    assert_eq!(lock(&pool.turnover.free).len(), 3);
+    assert_eq!(pool.census(), Census::default());
+    check(&pool, 0);
+}
+
+#[test]
+fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
+    for (frames, lanes) in [
+        (1, 1),
+        (2, 1),
+        (3, 1),
+        (4, 2),
+        (9, 4),
+        (200, 64),
+        (300, 128),
+        (5_000, 128),
+    ] {
+        let pool = BufferPool::with_frames(frames, 8, 1, 0).expect("a small pool");
+        assert_eq!(pool.arena.lanes().len(), lanes, "{frames} frames");
+    }
+}
+
+#[test]
+fn a_frame_takes_less_than_512_bytes_beside_its_page() {
+    for size in [8_192, 16_384, 32_768, 65_536] {
+        for frames in (1..=40).chain([63, 64, 65, 255, 256, 257, 1_000, 4_097]) {
+            let config = PoolConfig {
+                page_size: PageSize::new(size).expect("a page size"),
+                capacity: frames * (size + 512),
+            };
+            let pool = BufferPool::new(config).expect("holds frames");
+            assert!(pool.frames() >= frames, "{frames} frames of {size}");
+            assert!(pool.fixed_memory() <= pool.capacity());
+            // What a few frames save of their 512 bytes is not another
+            // frame.
+            if frames <= 32 {
+                assert_eq!(pool.frames(), frames, "{frames} frames of {size}");
+            }
+            // One frame more does not fit.
+            let more = pool.frames() + 1;
+            let lanes = 1_usize << (more / 2).clamp(1, 128).ilog2();
+            let cost = more * (size + 136) + (2 * more).next_power_of_two() * 64 + lanes * 128;
+            assert!(cost > pool.capacity(), "{frames} frames of {size}");
+        }
+    }
+}
+
+#[test]
+fn a_part_of_the_table_is_a_cache_line_of_its_own() {
+    use crate::cache::pool::Bucket;
+    assert_eq!((size_of::<Bucket>(), align_of::<Bucket>()), (64, 64));
 }

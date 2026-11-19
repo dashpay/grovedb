@@ -7,9 +7,12 @@ use lignin_format::{CommitVersion, PageId, PageSize};
 
 use super::{
     error::CacheError,
-    frame::{flag, kind, Arena, Chain, Entry, Frame, OwnedFrame, Pinned, NO_VERSION},
+    frame::{
+        flag, kind, Arena, Chain, Entry, Frame, Links, OwnedFrame, Pinned, Unlocked, Unpinned,
+        NO_VERSION,
+    },
     guard::{Blank, PageRef},
-    sync::{lock, read, write, Counter, Mutex, RwLock},
+    sync::{lock, Counter, Mutex, Padded},
 };
 use crate::alloc::Epoch;
 
@@ -105,12 +108,13 @@ pub struct Census {
     pub overflow_unevictable: usize,
 }
 
+/// One part of the pool's table, on a cache line of its own: a reader of
+/// one part is not slowed by a change of the next.
+#[repr(align(64))]
 pub(super) struct Bucket {
     /// What makes a page step one step (`transactions.md` PV7, LT7 level 5).
     pub(super) step: Mutex<()>,
-    pub(super) chain: RwLock<Chain>,
-    hits: Counter,
-    misses: Counter,
+    pub(super) chain: Chain,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -146,19 +150,25 @@ impl Unwritten {
     }
 }
 
+/// What changes with every frame that comes and goes.
+pub(super) struct Turnover {
+    pub(super) free: Mutex<Vec<OwnedFrame>>,
+    hand: Mutex<usize>,
+    pub(super) unwritten: Mutex<Unwritten>,
+    overflow: Counter,
+    attached: Counter,
+    evictions: Counter,
+    overflows: Counter,
+}
+
 /// The buffer pool. See the [module documentation](super).
 pub struct BufferPool {
     pub(super) arena: Arena,
     pub(super) buckets: Box<[Bucket]>,
     bucket_bits: u32,
-    pub(super) free: Mutex<Vec<OwnedFrame>>,
-    hand: Mutex<usize>,
-    pub(super) unwritten: Mutex<Unwritten>,
     capacity: usize,
-    overflow: Counter,
-    attached: Counter,
-    evictions: Counter,
-    overflows: Counter,
+    /// On cache lines of its own, away from what every reader reads.
+    pub(super) turnover: Padded<Turnover>,
 }
 
 impl fmt::Debug for BufferPool {
@@ -176,25 +186,25 @@ pub(super) fn evictable(frame: &Frame) -> bool {
     frame.kind() == kind::PUBLISHED && frame.flags() == 0
 }
 
-pub(super) fn published(chain: &Chain, page: PageId) -> impl Iterator<Item = Entry<'_>> {
+pub(super) fn published(chain: &Links, page: PageId) -> impl Iterator<Item = Entry<'_>> {
     chain.iter().filter(move |entry| {
         entry.frame().page_raw() == page.get() && entry.frame().kind() == kind::PUBLISHED
     })
 }
 
-pub(super) fn privates(chain: &Chain, page: PageId) -> impl Iterator<Item = Entry<'_>> {
+pub(super) fn privates(chain: &Links, page: PageId) -> impl Iterator<Item = Entry<'_>> {
     chain.iter().filter(move |entry| {
         entry.frame().page_raw() == page.get() && entry.frame().kind() == kind::PRIVATE
     })
 }
 
-pub(super) fn current(chain: &Chain, page: PageId) -> Option<Entry<'_>> {
+pub(super) fn current(chain: &Links, page: PageId) -> Option<Entry<'_>> {
     published(chain, page).find(|entry| entry.frame().superseded() == NO_VERSION)
 }
 
 /// The page version of `page` that a reader at `at` sees, if it is in the
 /// chain. Otherwise what the chain knows for the load.
-pub(super) fn lookup(chain: &Chain, page: PageId, at: CommitVersion) -> Result<Entry<'_>, Miss> {
+pub(super) fn lookup(chain: &Links, page: PageId, at: CommitVersion) -> Result<Entry<'_>, Miss> {
     let mut newer = NO_VERSION;
     for entry in published(chain, page) {
         let born = entry.frame().born();
@@ -207,16 +217,37 @@ pub(super) fn lookup(chain: &Chain, page: PageId, at: CommitVersion) -> Result<E
     Err(Miss {
         page,
         at,
-        stamp: chain.stamp,
+        stamp: chain.stamp(),
         newer,
     })
 }
 
+/// Whether `frame` holds the version of `page` that a reader at `at` sees.
+/// Whoever asks has seen that the frame is a page version.
+fn stands_for(frame: &Frame, page: PageId, at: CommitVersion) -> bool {
+    frame.page_raw() == page.get() && frame.born() <= at.get() && at.get() < frame.superseded()
+}
+
 impl BufferPool {
-    /// The bytes one frame of the fixed part takes: a page, its header, its
-    /// place on the free list and its share of the table.
-    fn frame_cost(frame_len: usize) -> usize {
-        frame_len + Arena::HEADER_LEN + size_of::<OwnedFrame>() + 4 * size_of::<Bucket>()
+    /// The bytes the fixed part of a pool of `count` frames takes: the
+    /// pages, their headers, their places on the free list, the table and
+    /// the lanes.
+    fn fixed_cost(count: usize, frame_len: usize) -> Option<usize> {
+        let frame = frame_len
+            .checked_add(Arena::HEADER_LEN)?
+            .checked_add(size_of::<OwnedFrame>())?;
+        let buckets = Self::buckets_for(count)?.checked_mul(size_of::<Bucket>())?;
+        let lanes = Arena::lanes_for(count).checked_mul(Arena::LANE_LEN)?;
+        count
+            .checked_mul(frame)?
+            .checked_add(buckets)?
+            .checked_add(lanes)
+    }
+
+    /// The parts of the table of a pool of `count` frames: at least two for
+    /// a frame.
+    fn buckets_for(count: usize) -> Option<usize> {
+        count.checked_mul(2)?.checked_next_power_of_two()
     }
 
     /// A pool of as many frames as `config.capacity` bytes hold.
@@ -226,18 +257,27 @@ impl BufferPool {
     /// that back as soon as the frame could be.
     pub fn new(config: PoolConfig) -> Result<Self, CacheError> {
         let frame_len = config.page_size.get();
-        let frame = Self::frame_cost(frame_len);
-        let count = config.capacity / frame;
-        if count == 0 {
+        let fits = |count: usize| {
+            Self::fixed_cost(count, frame_len).is_some_and(|cost| cost <= config.capacity)
+        };
+        if !fits(1) {
             return Err(CacheError::CapacityTooSmall {
                 capacity: config.capacity,
-                frame,
+                frame: Self::fixed_cost(1, frame_len).ok_or(CacheError::CapacityTooLarge)?,
             });
         }
-        let buckets = count
-            .checked_mul(2)
-            .and_then(usize::checked_next_power_of_two)
-            .ok_or(CacheError::CapacityTooLarge)?;
+        // The cost of the fixed part rises with the number of frames, so
+        // the most frames that fit are found by halving.
+        let (mut count, mut beyond) = (1, config.capacity / frame_len + 1);
+        while beyond - count > 1 {
+            let middle = count + (beyond - count) / 2;
+            if fits(middle) {
+                count = middle;
+            } else {
+                beyond = middle;
+            }
+        }
+        let buckets = Self::buckets_for(count).ok_or(CacheError::CapacityTooLarge)?;
         Self::with_frames(count, frame_len, buckets, config.capacity)
     }
 
@@ -254,23 +294,23 @@ impl BufferPool {
         let buckets = (0..buckets)
             .map(|_| Bucket {
                 step: Mutex::new(()),
-                chain: RwLock::new(Chain::new()),
-                hits: Counter::default(),
-                misses: Counter::default(),
+                chain: Chain::new(),
             })
             .collect::<Box<[_]>>();
         Ok(Self {
             arena,
             bucket_bits: buckets.len().trailing_zeros(),
             buckets,
-            free: Mutex::new(free),
-            hand: Mutex::new(0),
-            unwritten: Mutex::new(Unwritten::default()),
             capacity,
-            overflow: Counter::default(),
-            attached: Counter::default(),
-            evictions: Counter::default(),
-            overflows: Counter::default(),
+            turnover: Padded(Turnover {
+                free: Mutex::new(free),
+                hand: Mutex::new(0),
+                unwritten: Mutex::new(Unwritten::default()),
+                overflow: Counter::default(),
+                attached: Counter::default(),
+                evictions: Counter::default(),
+                overflows: Counter::default(),
+            }),
         })
     }
 
@@ -293,6 +333,7 @@ impl BufferPool {
     pub fn fixed_memory(&self) -> usize {
         self.arena.len() * (self.arena.frame_len() + Arena::HEADER_LEN + size_of::<OwnedFrame>())
             + self.buckets.len() * size_of::<Bucket>()
+            + self.arena.lanes().len() * Arena::LANE_LEN
     }
 
     /// The bytes the pool has allocated now: the fixed part, every frame
@@ -304,7 +345,9 @@ impl BufferPool {
     /// frames. The lists of unwritten pages ([`Self::unwritten_pages`]),
     /// four bytes a page, are not counted.
     pub fn memory(&self) -> usize {
-        self.fixed_memory() + self.overflow.get() * self.overflow_cost() + self.attached.get()
+        self.fixed_memory()
+            + self.turnover.overflow.get() * self.overflow_cost()
+            + self.turnover.attached.get()
     }
 
     /// The bytes one frame beside the fixed part takes.
@@ -314,24 +357,22 @@ impl BufferPool {
 
     /// The frames allocated beside the fixed part now.
     pub fn overflow_frames(&self) -> usize {
-        self.overflow.get()
+        self.turnover.overflow.get()
     }
 
     /// The bytes of the values attached to frames now.
     pub fn attached_bytes(&self) -> usize {
-        self.attached.get()
+        self.turnover.attached.get()
     }
 
     /// What the pool has done since it was made.
     pub fn stats(&self) -> PoolStats {
-        let sum = |count: fn(&Bucket) -> usize| -> u64 {
-            self.buckets.iter().map(|bucket| count(bucket) as u64).sum()
-        };
+        let (hits, misses) = self.arena.lanes().counts();
         PoolStats {
-            hits: sum(|bucket| bucket.hits.get()),
-            misses: sum(|bucket| bucket.misses.get()),
-            evictions: self.evictions.get() as u64,
-            overflows: self.overflows.get() as u64,
+            hits,
+            misses,
+            evictions: self.turnover.evictions.get() as u64,
+            overflows: self.turnover.overflows.get() as u64,
         }
     }
 
@@ -340,10 +381,10 @@ impl BufferPool {
     pub fn census(&self) -> Census {
         let mut census = Census::default();
         for bucket in &self.buckets {
-            let chain = read(&bucket.chain);
+            let chain = bucket.chain.read();
             for entry in chain.iter() {
                 let frame = entry.frame();
-                let pinned = frame.pins() > 0;
+                let pinned = frame.pins() > 0 || self.arena.announces(frame);
                 let unevictable = pinned || !evictable(frame);
                 match frame.kind() {
                     kind::PUBLISHED => census.published += 1,
@@ -373,11 +414,11 @@ impl BufferPool {
     }
 
     pub(super) fn count_attached(&self, bytes: usize) {
-        self.attached.add(bytes);
+        self.turnover.attached.add(bytes);
     }
 
     pub(super) fn count_detached(&self, bytes: usize) {
-        self.attached.sub(bytes);
+        self.turnover.attached.sub(bytes);
     }
 
     /// The version of `page` that a reader at version `at` sees
@@ -387,9 +428,26 @@ impl BufferPool {
     /// one step of another thread on the same part of the pool's table. A
     /// miss returns what [`Self::install_loaded`] needs once the page has
     /// been read from its segment.
+    ///
+    /// A hit on a page in one of the fixed frames takes no lock either,
+    /// and writes nothing that another reader of the page writes: the pin
+    /// is announced in a lane of the calling thread's own. The lock of the
+    /// part of the table is taken for a miss, for a page in a frame beside
+    /// the fixed ones, while that part is being changed, and by a thread
+    /// that holds more pins at once than its lane has cells.
     pub fn get(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, Miss> {
         let bucket = self.bucket(page.get());
-        let chain = read(&bucket.chain);
+        let wanted = |frame: &Frame| stands_for(frame, page, at);
+        match bucket.chain.pin_unlocked(&self.arena, wanted) {
+            Unlocked::Found(frozen) => {
+                frozen.frame().touch();
+                self.arena.lanes().count_hit();
+                return Ok(PageRef::new(self, frozen));
+            }
+            Unlocked::Not => {}
+            Unlocked::Dead => self.release_dead(),
+        }
+        let chain = bucket.chain.read();
         let found = lookup(&chain, page, at).map(|entry| {
             entry.frame().touch();
             entry
@@ -399,11 +457,11 @@ impl BufferPool {
         drop(chain);
         match found {
             Ok(frozen) => {
-                bucket.hits.add(1);
+                self.arena.lanes().count_hit();
                 Ok(PageRef::new(self, frozen))
             }
             Err(miss) => {
-                bucket.misses.add(1);
+                self.arena.lanes().count_miss();
                 Err(miss)
             }
         }
@@ -412,7 +470,7 @@ impl BufferPool {
     /// The page version of `page` that the commit `born` bore, pinned, if
     /// it is in the pool.
     pub fn get_version(&self, page: PageId, born: CommitVersion) -> Option<PageRef<'_>> {
-        let chain = read(&self.bucket(page.get()).chain);
+        let chain = self.bucket(page.get()).chain.read();
         let frozen = published(&chain, page)
             .find(|entry| entry.frame().born() == born.get())
             .and_then(|entry| entry.freeze(&self.arena));
@@ -485,8 +543,8 @@ impl BufferPool {
 
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
-        let mut chain = write(&bucket.chain);
-        if chain.stamp != miss.stamp {
+        let mut chain = bucket.chain.write();
+        if chain.stamp() != miss.stamp {
             return Ok(Loaded::Again(blank));
         }
         let mut same = None;
@@ -527,14 +585,18 @@ impl BufferPool {
     }
 
     /// A frame nobody else can reach: a free one, one that held a page
-    /// version nobody needs in memory, or a new one beside the fixed ones.
+    /// version nobody needs in memory, a dead one whose last pin is gone, or
+    /// a new one beside the fixed ones.
     pub(super) fn acquire(&self) -> OwnedFrame {
-        let free = lock(&self.free).pop();
-        let frame = free.or_else(|| self.evict()).unwrap_or_else(|| {
-            self.overflow.add(1);
-            self.overflows.add(1);
-            self.arena.allocate_overflow()
-        });
+        let free = lock(&self.turnover.free).pop();
+        let frame = free
+            .or_else(|| self.evict())
+            .or_else(|| self.take_dead())
+            .unwrap_or_else(|| {
+                self.turnover.overflow.add(1);
+                self.turnover.overflows.add(1);
+                self.arena.allocate_overflow()
+            });
         frame.set_kind(kind::BLANK);
         frame
     }
@@ -543,7 +605,7 @@ impl BufferPool {
     /// that was used since it last passed, and evicts the first that was
     /// not and that nothing keeps in memory.
     fn evict(&self) -> Option<OwnedFrame> {
-        let mut hand = lock(&self.hand);
+        let mut hand = lock(&self.turnover.hand);
         let count = self.arena.len();
         for _ in 0..2 * count {
             let index = *hand;
@@ -556,11 +618,11 @@ impl BufferPool {
             if frame.take_referenced() {
                 continue;
             }
-            let mut chain = write(&self.bucket(page).chain);
-            let taken = chain.take_unpinned(self.arena.pointer(index), evictable);
+            let mut chain = self.bucket(page).chain.write();
+            let taken = chain.take_unpinned(&self.arena, self.arena.pointer(index), evictable);
             drop(chain);
             if let Some(mut frame) = taken {
-                self.evictions.add(1);
+                self.turnover.evictions.add(1);
                 self.reset(&mut frame);
                 return Some(frame);
             }
@@ -570,7 +632,21 @@ impl BufferPool {
 
     fn reset(&self, frame: &mut OwnedFrame) {
         let attached = frame.reset();
-        self.attached.sub(attached);
+        self.turnover.attached.sub(attached);
+    }
+
+    /// A dead frame whose last pin is gone, made free.
+    fn take_dead(&self) -> Option<OwnedFrame> {
+        let mut frame = self.arena.take_dead()?;
+        self.reset(&mut frame);
+        Some(frame)
+    }
+
+    /// Puts every dead frame whose last pin is gone on the free list.
+    fn release_dead(&self) {
+        while let Some(frame) = self.arena.take_dead() {
+            self.release(frame);
+        }
     }
 
     /// Takes back a frame nobody else can reach.
@@ -579,24 +655,30 @@ impl BufferPool {
         self.reset(&mut frame);
         if frame.header().is_overflow() {
             self.arena.free_overflow(frame);
-            self.overflow.sub(1);
+            self.turnover.overflow.sub(1);
         } else {
-            lock(&self.free).push(frame);
+            lock(&self.turnover.free).push(frame);
         }
     }
 
     /// Gives a pin back. A frame beside the fixed ones leaves the pool here
-    /// if nothing else keeps it.
+    /// if nothing else keeps it, and so does a frame that was retired, if
+    /// this was its last pin.
     pub(super) fn unpin(&self, pin: Pinned<'_>) {
-        let freed = if pin.frame().is_overflow() {
+        let left = if !pin.is_announced() && pin.frame().is_overflow() {
             let page = pin.frame().page_raw();
-            let mut chain = write(&self.bucket(page).chain);
-            chain.unpin_linked(pin, evictable)
+            let mut chain = self.bucket(page).chain.write();
+            match chain.unpin_linked(&self.arena, pin, evictable) {
+                Some(frame) => Unpinned::Owned(frame),
+                None => Unpinned::Done,
+            }
         } else {
             pin.unpin()
         };
-        if let Some(frame) = freed {
-            self.release(frame);
+        match left {
+            Unpinned::Done => {}
+            Unpinned::Owned(frame) => self.release(frame),
+            Unpinned::Dead => self.release_dead(),
         }
     }
 }
@@ -604,11 +686,7 @@ impl BufferPool {
 impl Drop for BufferPool {
     fn drop(&mut self) {
         for bucket in self.buckets.iter_mut() {
-            let chain = match bucket.chain.get_mut() {
-                Ok(chain) => chain,
-                Err(poisoned) => poisoned.into_inner(),
-            };
-            for frame in chain.take_all(&mut self.arena) {
+            for frame in bucket.chain.take_all(&mut self.arena) {
                 if frame.header().is_overflow() {
                     self.arena.free_overflow(frame);
                 }

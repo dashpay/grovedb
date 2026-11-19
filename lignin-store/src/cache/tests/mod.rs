@@ -20,7 +20,7 @@ use lignin_format::{CommitVersion, PageId};
 use super::{
     frame::{flag, kind, NO_VERSION},
     pool::evictable,
-    sync::{lock, read},
+    sync::lock,
     *,
 };
 use crate::alloc::{Epoch, Pins};
@@ -341,7 +341,7 @@ fn check(pool: &BufferPool, loose: usize) {
     let mut linked_fixed = 0;
     let mut overflow = 0;
     for bucket in pool.buckets.iter() {
-        let chain = read(&bucket.chain);
+        let chain = bucket.chain.read();
         let mut versions: BTreeMap<u32, Vec<(u64, u64)>> = BTreeMap::new();
         let mut owners = BTreeSet::new();
         for entry in chain.iter() {
@@ -395,7 +395,7 @@ fn check(pool: &BufferPool, loose: usize) {
         }
     }
 
-    let lists = lock(&pool.unwritten);
+    let lists = lock(&pool.turnover.unwritten);
     let listed: BTreeSet<(u64, u32)> = lists
         .versions
         .iter()
@@ -417,7 +417,7 @@ fn check(pool: &BufferPool, loose: usize) {
     assert_eq!(listed_held, held, "the held list and the frames differ");
     drop(lists);
 
-    let free = lock(&pool.free);
+    let free = lock(&pool.turnover.free);
     assert!(free
         .iter()
         .all(|frame| frame.header().kind() == kind::FREE && !frame.header().is_overflow()));
