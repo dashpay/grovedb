@@ -950,7 +950,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
 }
 
 #[cfg(feature = "engine_generic")]
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(test)]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `Check`; these plain-write pins declare none.
@@ -973,16 +973,18 @@ mod tests {
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;
 
+    #[cfg(feature = "rocksdb_storage")]
+    use crate::tests::{common::EMPTY_PATH, make_empty_grovedb};
     use crate::{
         batch::{
             estimated_costs::EstimatedCostsType::WorstCaseCostsType, key_info::KeyInfo, GroveOp,
             KeyInfoPath, NonMerkTreeMeta, QualifiedGroveDbOp, SubelementsDeletionBehavior,
         },
         reference_path::ReferencePathType,
-        tests::{common::EMPTY_PATH, make_empty_grovedb},
         Element, GroveDb,
     };
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1039,6 +1041,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_with_flags_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1095,6 +1098,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_item_insert_op_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1151,6 +1155,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_under_element_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1218,6 +1223,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_root_one_tree_insert_op_in_sub_tree_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -1283,6 +1289,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     #[test]
     fn test_batch_worst_case_costs() {
         let grove_version = GroveVersion::latest();
@@ -2202,6 +2209,7 @@ mod tests {
         .expect("expected to get worst case costs")
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The worst-case and applied costs of inserting `element` at the root of
     /// an empty db, a normal tree.
     fn root_insert_costs(
@@ -2223,6 +2231,7 @@ mod tests {
         (worst_case, applied)
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The worst-case and applied costs of a batch writing `element` as the
     /// only child `k1` of a count-sum tree `agg`: inserting it into the empty
     /// tree, or, with `replace`, replacing it with itself.
@@ -2274,6 +2283,7 @@ mod tests {
         cost.storage_cost.added_bytes as i64 + cost.storage_cost.replaced_bytes as i64
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The apply writes a sum-bearing item with its specialized cost, which
     /// charges the sum value at its fixed 9-byte width. From V4 the worst
     /// case sizes it the same way, so inserting one into a normal tree is
@@ -2299,6 +2309,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// The worst-case batch charges every op as if its parent were a normal
     /// tree, so under a count-sum tree its totals are short of the applied
     /// ones whatever the element; the element's own sizing is what can be
@@ -2337,6 +2348,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "rocksdb_storage")]
     /// Replay guarantee: before V4 a sum-bearing item is sized by its
     /// serialized size on insert, an `ItemWithSumItem` that way on replace and
     /// a wrapped `SumItem` without its wrapper byte, as historical admission

@@ -131,11 +131,14 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::result_large_err)]
-#![allow(clippy::drop_non_drop)]
 // Intentional drops to release borrows before re-borrowing
+#![allow(clippy::drop_non_drop)]
 // A test build with no storage engine compiles the tests that open no
-// database. What only the other tests call is unused there.
-#![cfg_attr(all(test, not(feature = "rocksdb_storage")), allow(dead_code))]
+// database. What only the other tests call or import is unused there.
+#![cfg_attr(
+    all(test, not(feature = "rocksdb_storage")),
+    allow(dead_code, unused_imports)
+)]
 
 #[cfg(feature = "engine_generic")]
 pub mod batch;
@@ -196,7 +199,7 @@ pub use element::ElementFlags;
 #[cfg(feature = "engine_generic")]
 pub use engine::Engine;
 #[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
-pub use engine::NoEngine;
+use engine::NoEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::RocksDbEngine;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
