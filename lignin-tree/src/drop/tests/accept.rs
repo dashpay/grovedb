@@ -257,7 +257,7 @@ fn a_subtree_is_dropped_and_reclaimed() {
     let small = drop_a_subtree(300, 50, PageSize::MIN, 4 << 20, 2, true);
     let large = drop_a_subtree(12_000, 50, PageSize::MIN, 16 << 20, 2, true);
     // Forty times the elements, and the drop changes the same tree pages.
-    // Of the directory it writes the leaf of each of its four records and
+    // Of the directory it writes the leaf of each of the four records and
     // the branches above them, and the directory of the larger run is the
     // larger one: it holds forty times the Merks.
     assert!(large.tree_pages > 20 * small.tree_pages);

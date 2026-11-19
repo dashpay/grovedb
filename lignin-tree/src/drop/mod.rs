@@ -30,9 +30,10 @@
 //! [`Directory::unlink`](crate::directory::Directory::unlink) or
 //! [`Directory::clear`](crate::directory::Directory::clear). It reads the
 //! entry of each Merk and nothing below it. So what a drop writes is the
-//! page of the host and four records of the directory (D1), and **what a
-//! Merk holds does not enter into it**: a million nodes cost what one
-//! costs.
+//! page of the host and at most four records of the directory (D1: the
+//! entry, the record of the root and that of the host where the Merk has
+//! them, and the record of the drop), and **what a Merk holds does not
+//! enter into it**: a million nodes cost what one costs.
 //!
 //! **The flat records of a dropped Merk go with the drop** (the exception
 //! in D1): [`unlink`] takes the Merk's range out of every column by the

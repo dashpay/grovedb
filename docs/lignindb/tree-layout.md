@@ -695,9 +695,10 @@ every pointer it finds. That is at least one page for each such host, and
 it is bounded by what the transaction wrote, not by the size of the
 subtree. On existing GroveVersions no host is behind.
 
-As built, the directory's part is four records: the entry, the record of
-the root and the record of the host go, and a record of the dropped Merk
-takes their place (`lignin-tree::directory`).
+As built, the directory's part is at most four records: the entry goes,
+with the record of the root if the Merk has a root and the record of the
+host if it has a host, and a record of the dropped Merk takes their place
+(`lignin-tree::directory`).
 
 A second exception, as built (D6, `lignin-tree::drop`): **the dropped
 Merk's own flat records go with the drop.** The record that a drop leaves
