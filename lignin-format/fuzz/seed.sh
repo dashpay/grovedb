@@ -30,6 +30,7 @@ seed() {
 scratch=$(mktemp -d)
 trap 'rm -rf "$scratch"' EXIT
 tail -c +21 "$golden/wal" >"$scratch/wal_records"
+tail -c +21 "$golden/doc_wal" >"$scratch/doc_wal_records"
 tail -c +21 "$golden/value_log" >"$scratch/value_records"
 printf '\xff\xff\xff\xff\x2d\x00\x00\x00\x00\x00\x00\x00\x1d\x00\x00\x00' >"$scratch/pending"
 
@@ -65,3 +66,21 @@ done
     piece "$golden/flat_leaf"
     piece "$scratch/pending"
 } | seed wal_record records
+{ control 00; cat "$golden/doc_manifest"; } | seed manifest doc_manifest
+{ control 00; cat "$golden/doc_segment"; } | seed segment doc_segment
+{ control 00; cat "$golden/doc_page_table"; } | seed table doc_page_table
+{ control 00; cat "$golden/doc_page_table_empty"; } | seed table doc_page_table_empty
+{ control 00; cat "$golden/doc_value_log"; } | seed value_log doc_value_log
+{ control 00; cat "$golden/doc_flat_leaf"; } | seed flat_page doc_flat_leaf
+{ control 00; cat "$golden/doc_flat_branch"; } | seed flat_page doc_flat_branch
+for run in doc_hash_run doc_tree_run doc_place_run; do
+    { control 04; piece "$golden/tree_page"; piece "$golden/$run"; } | seed delta "$run"
+done
+{ control 00; cat "$golden/doc_wal"; } | seed wal doc_wal
+{
+    control 00
+    piece "$scratch/doc_wal_records"
+    piece "$golden/tree_page"
+    piece "$golden/doc_flat_leaf"
+    piece "$scratch/pending"
+} | seed wal_record doc_records

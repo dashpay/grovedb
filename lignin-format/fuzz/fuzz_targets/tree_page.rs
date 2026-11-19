@@ -40,6 +40,9 @@ fuzz_target!(|data: &[u8]| {
         return;
     };
     check_valid(&page, size);
+    let validated = TreePage::from_validated(bytes, V1).expect("a page that decodes");
+    assert_eq!(validated.as_bytes(), page.as_bytes());
+    touch_page(&validated, size);
     let ops = &bytes[page.encoded_len()..];
     let mut buffer = vec![0; size.image_capacity()];
     buffer[..page.encoded_len()].copy_from_slice(page.as_bytes());

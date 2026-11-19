@@ -20,7 +20,7 @@ fuzz_target!(|data: &[u8]| {
     match (input.control >> 1 & 3, input.bit(4)) {
         (2, _) => payloads(input.bytes),
         (3, true) => {
-            let expanded = expand(input.bytes);
+            let expanded = expand(input.bytes, input.keeps_checksums());
             file(&input, expanded);
         }
         _ => file(&input, sealed_file(&input, default_frame_len)),
@@ -121,13 +121,13 @@ fn repeat_to(bytes: &[u8], len: usize) -> Vec<u8> {
 }
 
 /// Builds a large checkpoint from a few bytes, then changes some of its
-/// bytes and fixes its checksums, so that records of 4096 links and counts
+/// bytes and, unless the checksums are kept, fixes them, so that records of 4096 links and counts
 /// and the boundaries around them are reached.
 ///
 /// The input is: the number of links (`u16`) and of counts (`u16`), the
 /// step between page ids and between file ids, then a list of changes, each
 /// a `u32` offset and a byte to put there.
-fn expand(mut bytes: &[u8]) -> Vec<u8> {
+fn expand(mut bytes: &[u8], keeps_checksums: bool) -> Vec<u8> {
     use lignin_format::{
         table::{BlockPointer, Link, LinkKind, ValueCount},
         CommitVersion, PageId,
@@ -186,7 +186,7 @@ fn expand(mut bytes: &[u8]) -> Vec<u8> {
         }
         changed = true;
     }
-    if changed {
+    if changed && !keeps_checksums {
         seal_file(&mut file, default_frame_len);
     }
     file

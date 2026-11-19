@@ -1,11 +1,15 @@
 //! The golden files of each format version, in `fuzz/golden/v<N>/`.
 //!
-//! Each file is written here from fixed contents with the crate's own
-//! writers. The test holds every committed file to two things: it decodes to
-//! those contents, and the writers still write it byte for byte. Segments are
-//! the exception to the second: which LZ4 stream a writer produces is not
-//! part of the format (`segment-manifest.md`, section 5), so a segment is
-//! checked by decoding it alone.
+//! Two kinds of file are there. The examples of the format documents
+//! (`doc_*`, and `tree_page`) are held to the bytes the documents give,
+//! which were computed by an encoder of their own, not by this crate's
+//! writers. The others hold every record kind of each file together and are
+//! written here from fixed contents with the crate's writers: the test holds
+//! them to those contents when decoded, and to the bytes the writers still
+//! write. A segment is checked by decoding it alone, because which LZ4 stream
+//! a writer produces is not part of the format (`segment-manifest.md`,
+//! section 5). Every stored checksum of every file is checked against a
+//! CRC32C computed bit by bit here.
 //!
 //! The files are also the seeds of the fuzz targets (`fuzz/seed.sh`).
 //! Version 1 is open until the first release (U10 of `format.md`): while it
@@ -609,6 +613,109 @@ fn golden() -> Vec<(&'static str, Vec<u8>)> {
     ]
 }
 
+/// The examples of the format documents, as the documents give them: the
+/// manifest of `segment-manifest.md` 3.7; the checkpoints of `page-table.md`
+/// 3.7; the log of `log-format.md` 4.8 (a file start, a group, the record
+/// that places its value, and a mark like the documented one that covers
+/// version 1, the version the log has reached); the page of `tree-page.md` 2.5; the
+/// pages of `flat-page.md` 2.3; the record of `value-log-format.md` section 2
+/// behind the header of `val/00000012.val`; the block of `segment-manifest.md`
+/// 2.3 and the stored run of `page-delta.md` 2.4 behind the header of
+/// `seg/00000310.seg`; and the runs of `page-delta.md` 2.4.
+const DOCUMENTED: [(&str, &str); 12] = [
+    (
+        "doc_manifest",
+        "4c49474e494e444201000100000000005931c85e28000000a852102d00800000\
+         00000000000000000000000000000000000000000000000000000000ffffffff\
+         ffffffff",
+    ),
+    (
+        "doc_page_table_empty",
+        "4c49474e494e4442050001000100000009a971902d0000009c7289fb02000000\
+         0000000000ffffffffffffffff00000000000000000000000000000000000000\
+         000000000000000000",
+    ),
+    (
+        "doc_page_table",
+        "4c49474e494e4442050001007a0000000ba8756f550000004594b56701070000\
+         0008100010360100001400000000000000280000000000000007000000380000\
+         20360100001c1000000000000029000000000000000900000000000030000000\
+         0000000000000000002600000000000000310000008dbbb42803050000000000\
+         0000030000000000000000100000000000000800000001000000000000000000\
+         000000000000000000002d000000600ae0e40229000000000000002900000000\
+         00000003000000000000001100000014400100000000000200000000000000",
+    ),
+    (
+        "doc_wal",
+        "4c49474e494e4442020001002d000000dde85e0d11000000fe8269e201000000\
+         0000000000000000000000000028000000f4a99eb0020700000000001d000000\
+         612076616c756520746f6f206c6f6e6720666f72206974732063656c6c620000\
+         00995bb281040101000000000000000000000050000000013a00000007000000\
+         0501005555555555555555555555555555555555555555555555555555555555\
+         555555150100ffffffff2d000000000000001d000000040c0000001400000000\
+         0000002c010000280000001b2994770501070000000100ffffffff2d00000000\
+         0000001d0000000d0000006c010000000000001d0000000900000004d6dd3c06\
+         0100000000000000",
+    ),
+    (
+        "tree_page",
+        "0300f7000700000003000200000002000000000000001c000000ab000d020202\
+         2c01000011111111111111111111111111111111111111111111111111111111\
+         1111111122222222222222222222222222222222222222222222222222222222\
+         2222222207000000030033333333333333333333333333333333333333333333\
+         333333333333333333330100030105090000000100000000000000032a61620c\
+         0000001400000000000000000300000100000044444444444444444444444444\
+         4444444444444444444444444444444444444455555555555555555555555555\
+         5555555555555555555555555555555555555561626376",
+    ),
+    (
+        "doc_flat_leaf",
+        "01003f000900000003000500757365722f27000500003a000300013f00050000\
+         616c6963654131626f62030000001400000000000000701101006361726f6c",
+    ),
+    (
+        "doc_flat_branch",
+        "02012700030000000200050007000000757365722f1e00270062090000006361\
+         726f6c0c000000",
+    ),
+    (
+        "doc_value_log",
+        "4c49474e494e4442040001000c000000e6767d8916000000cad6d77507000000\
+         00000c0000006c69676e696e2076616c7565",
+    ),
+    (
+        "doc_segment",
+        "4c49474e494e44420300010036010000d2c72fa606000008e6e37a086c69676e\
+         696e270000189c0b7ac707000000060300555555555555555555555555555555\
+         5555555555555555555555555555555555",
+    ),
+    (
+        "doc_hash_run",
+        "0700000006030055555555555555555555555555555555555555555555555555\
+         55555555555555",
+    ),
+    (
+        "doc_tree_run",
+        "070000000c010009000000050099999999999999999999999999999999999999\
+         99999999999999999999999999020104012a0202004a000001000001000000cc\
+         ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccdd\
+         dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd62\
+         77040300",
+    ),
+    (
+        "doc_place_run",
+        "070000001501000d00000040000000000000002c010000",
+    ),
+];
+
+fn hex(text: &str) -> Vec<u8> {
+    let digits: Vec<u8> = text.bytes().filter(u8::is_ascii_hexdigit).collect();
+    digits
+        .chunks(2)
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).expect("ascii"), 16).expect("hex"))
+        .collect()
+}
+
 fn directory() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("fuzz/golden/v1")
 }
@@ -651,8 +758,13 @@ fn the_writers_write_the_golden_files() {
         })
         .collect();
     names.sort();
-    let mut expected: Vec<_> = golden.iter().map(|(name, _)| name.to_string()).collect();
+    let mut expected: Vec<_> = golden
+        .iter()
+        .map(|(name, _)| name.to_string())
+        .chain(DOCUMENTED.iter().map(|(name, _)| name.to_string()))
+        .collect();
     expected.sort();
+    expected.dedup();
     assert_eq!(names, expected, "a golden file without a writer here");
 }
 
@@ -835,4 +947,134 @@ fn the_log_decodes() {
     };
     assert_eq!(group.values().count(), 2);
     assert_eq!(group.entries().count(), 5);
+}
+
+#[test]
+fn the_documented_examples_are_committed_and_decode() {
+    for (name, bytes) in DOCUMENTED {
+        assert_eq!(
+            committed(name),
+            hex(bytes),
+            "{name} is not the documented example"
+        );
+    }
+    let manifest = Manifest::decode(&committed("doc_manifest")).expect("a manifest");
+    assert_eq!(manifest.page_size(), SIZE);
+    assert!(manifest.files().is_empty());
+    let empty = table::decode(&committed("doc_page_table_empty"), file(1)).expect("a checkpoint");
+    assert_eq!(empty.end.covers, CommitVersion::EMPTY);
+    let checkpoint = table::decode(&committed("doc_page_table"), file(122)).expect("a checkpoint");
+    assert_eq!(
+        (checkpoint.links.len(), checkpoint.value_counts.len()),
+        (3, 2)
+    );
+
+    let log = committed("doc_wal");
+    let mut scan = wal::scan(&log).expect("a log");
+    let items = scan.by_ref().count();
+    assert_eq!(scan.tail().failure(), None);
+    assert_eq!(items, 3);
+    assert_eq!(scan.tail().latest(), version(1));
+
+    let leaf = committed("doc_flat_leaf");
+    let leaf = FlatPage::decode(&leaf, V1)
+        .expect("a page")
+        .leaf()
+        .expect("a leaf");
+    assert_eq!(leaf.get(b"user/alice"), Some(FlatValue::Inline(b"A1")));
+    let branch = committed("doc_flat_branch");
+    let branch = FlatPage::decode(&branch, V1)
+        .expect("a page")
+        .branch()
+        .expect("a branch");
+    assert_eq!(branch.child_for(b"user/c"), Some(page(9)));
+
+    let values = committed("doc_value_log");
+    let read: Vec<_> = value_log::scan(&values)
+        .expect("a value log")
+        .map(|value| value.expect("a value"))
+        .map(|(pointer, value)| (pointer.encode(), value.to_vec()))
+        .collect();
+    let pointer = hex("0c000000 1400000000000000 0c000000");
+    assert_eq!(
+        read,
+        [(
+            pointer.try_into().expect("16 bytes"),
+            b"lignin value".to_vec()
+        )]
+    );
+
+    let segment = committed("doc_segment");
+    assert_eq!(segment::decode_file_header(&segment, file(310)), Ok(V1));
+    let (first, rest) = Block::read(V1, &segment[20..], SIZE.get()).expect("a block");
+    assert_eq!(*first.payload().expect("a payload"), *b"lignin");
+    let (second, rest) = Block::read(V1, rest, SIZE.get()).expect("a block");
+    assert!(rest.is_empty());
+    let stored = second.payload().expect("a payload");
+    assert_eq!(*stored, committed("doc_hash_run"));
+
+    let image = committed("tree_page");
+    for name in ["doc_hash_run", "doc_tree_run", "doc_place_run"] {
+        let bytes = committed(name);
+        let run = DeltaRun::decode(&bytes, V1).expect("a run");
+        let mut out = Vec::new();
+        consolidate(page(7), Some(&image), [&run], V1, SIZE, &mut out).expect("applies to page 7");
+        TreePage::decode(&out, V1, SIZE).expect("a page");
+    }
+}
+
+/// CRC32C, one bit at a time, and the mask of `format.md` C2: computed here,
+/// apart from the crate's checksum.
+fn reference_checksum(parts: &[&[u8]]) -> u32 {
+    let mut crc = u32::MAX;
+    for &byte in parts.iter().flat_map(|part| part.iter()) {
+        crc ^= u32::from(byte);
+        for _ in 0..8 {
+            crc = (crc >> 1) ^ (0x82F6_3B78 & 0u32.wrapping_sub(crc & 1));
+        }
+    }
+    (!crc).rotate_right(15).wrapping_add(0xA282_EAD8)
+}
+
+#[test]
+fn every_stored_checksum_is_the_reference_crc32c() {
+    let files = [
+        ("manifest", false),
+        ("wal", false),
+        ("value_log", false),
+        ("page_table", false),
+        ("segment", true),
+        ("doc_manifest", false),
+        ("doc_page_table_empty", false),
+        ("doc_page_table", false),
+        ("doc_wal", false),
+        ("doc_value_log", false),
+        ("doc_segment", true),
+    ];
+    for (name, segment) in files {
+        let bytes = committed(name);
+        let stored = |at: usize| u32::from_le_bytes(bytes[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!(
+            reference_checksum(&[&bytes[..16]]),
+            stored(16),
+            "{name}: the header"
+        );
+        let mut at = FileHeader::ENCODED_LEN;
+        let mut frames = 0;
+        while at < bytes.len() {
+            let word = stored(at) as usize;
+            let len = if segment {
+                word & ((1 << 27) - 1)
+            } else {
+                word
+            };
+            let end = at + 8 + len;
+            let covered = reference_checksum(&[&bytes[at..at + 4], &bytes[at + 8..end]]);
+            assert_eq!(covered, stored(at + 4), "{name}: the frame at {at}");
+            at = end;
+            frames += 1;
+        }
+        assert_eq!(at, bytes.len(), "{name}: frames end with the file");
+        assert!(frames > 0);
+    }
 }
