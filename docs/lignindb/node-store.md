@@ -94,7 +94,7 @@ A cursor shows the state the handle's reads show. How long it stays stable under
 
 `status()` reads nothing and is charged nothing, so no cost changes. On RocksDB all of these behave as before unless its iterator reports an error.
 
-**What is still owed, by the callers.** `KVIterator::next_kv` has no error to return, so a caller that concludes something from the end of a scan has to ask `KVIterator::status()`. GroveDB's scans, by the function that makes them:
+**What is still owed, by the callers.** `KVIterator::next_kv` has no error to return, so a caller that concludes something from the end of a scan has to ask `KVIterator::status()`. GroveDB's scans outside its test code, by the function that makes them:
 
 | Scan | Asks `status()` |
 | --- | --- |
@@ -104,7 +104,7 @@ A cursor shows the state the handle's reads show. How long it stays stable under
 | `verify_indexed_axis_content` (`grovedb/src/lib.rs`): its walk of the primary and its walk of the secondary | no |
 | `indexed_axis_range_rows_generic` and `collect_top_k_via_iterator` (`indexed_tree.rs`): walks of a secondary | no |
 
-A further scan in `indexed_tree.rs` is compiled for tests only (`legacy_linear_indexed_count_top_k_paginated`). On RocksDB nothing changes for them. On LigninDB a scan that a scope's claim refuses would end early there, so GROVE-05 and GROVE-06 make them ask. The same holds for the cursor loops of `grovedb-query` and `Element::iterator`.
+Scans that are compiled for tests only are not in the table, because no operation concludes anything from their end: `legacy_linear_indexed_count_top_k_paginated` in `indexed_tree.rs` and the helper `stored_rows` in `grovedb/src/tests/indexed_tree_secondary_drift_tests.rs`, neither of which asks. On RocksDB nothing changes for the scans of the table. On LigninDB a scan that a scope's claim refuses would end early there, so GROVE-05 and GROVE-06 make them ask. The same holds for the cursor loops of `grovedb-query` and `Element::iterator`.
 
 ### Change sets
 
