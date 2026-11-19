@@ -1,0 +1,751 @@
+//! The private frames of a write transaction, and how a batch is applied
+//! to them by key.
+
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+use lignin_format::{CellAddress, CommitVersion};
+use lignin_store::alloc::PageAllocator;
+use lignin_tree::{
+    flat::Private,
+    fragment::{
+        FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite,
+        Write,
+    },
+    node::{Lease, NodeError, NodeHandle},
+};
+
+use super::{
+    error::{BatchError, TxnError},
+    key::{Column, Subtree},
+    pages::{find, follow, NodePages, TreePages, TreeValues},
+    path::{FlatWriter, Idle, WritePath, IDLE},
+    write::{Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, ValuePut},
+    write_set::WriteSet,
+};
+use crate::snapshot::OperationGuard;
+
+/// Why a batch was not applied to the frames.
+#[derive(Debug)]
+pub(crate) struct Refused {
+    pub(crate) error: TxnError,
+    /// Whether the frames may hold a part of the batch. They are then of no
+    /// use, and are made again from the write set (WT3).
+    pub(crate) dirty: bool,
+}
+
+impl Refused {
+    /// A refusal that changed no page.
+    fn clean(error: impl Into<TxnError>) -> Self {
+        Self {
+            error: error.into(),
+            dirty: false,
+        }
+    }
+
+    /// A failure after which the frames are in no state to go on from.
+    fn dirty(error: impl Into<TxnError>) -> Self {
+        Self {
+            error: error.into(),
+            dirty: true,
+        }
+    }
+
+    fn directory(error: super::path::DirectoryError) -> Self {
+        Self::dirty(TxnError::Directory(error))
+    }
+}
+
+/// The key a record of `subtree` is stored under in the flat tree of its
+/// column: the subtree's 32 bytes, then the record's key.
+pub(crate) fn stored_key(out: &mut Vec<u8>, subtree: &Subtree, key: &[u8]) {
+    out.clear();
+    out.extend_from_slice(subtree.as_bytes());
+    out.extend_from_slice(key);
+}
+
+/// The first stored key after every key of `subtree`, or `None` if its keys
+/// go to the end of the keyspace.
+pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
+    let mut end = subtree.as_bytes().to_vec();
+    while let Some(last) = end.pop() {
+        if last < u8::MAX {
+            end.push(last + 1);
+            return Some(end);
+        }
+    }
+    None
+}
+
+/// The private frames of a write transaction (`transactions.md` WT3, WT4):
+/// its copies of tree pages and of flat pages, over the committed pages of
+/// its base version, which it keeps pinned (PN1).
+///
+/// They are derived from the write set: applying the write set's
+/// operations, in order, to the committed state of the base gives them.
+/// Nothing is kept here that the write set does not say, so they can be
+/// given up and made again at any time: for a rebase, a rollback to a
+/// mark, or after an operation that failed half way.
+///
+/// They are bound to the guard of the operation that reads through them
+/// (PN5): [`Awake`] in an operation, and [`Parked`] between two, where
+/// nothing is read. The base pin keeps the version from one operation to
+/// the next, which is what taking the flat pages along asks for.
+pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
+    base: CommitVersion,
+    pub(crate) tree: TreePages<'s>,
+    pub(crate) values: TreeValues<'s>,
+    pub(crate) flat: FlatFrames<'s, 'g, G>,
+    fragments: Fragments,
+    key: Vec<u8>,
+    /// For each Merk of the batch that was applied last, whether it had no
+    /// root before.
+    empty: Vec<bool>,
+}
+
+/// The frames of a transaction between two of its operations.
+pub(crate) type Parked<'s> = Frames<'s, 's, Idle>;
+
+/// The frames of a transaction in the operation that holds the guard.
+pub(crate) type Awake<'s, 'g> = Frames<'s, 'g, OperationGuard<'s>>;
+
+/// The flat pages of the frames. When they are dropped, their copies are
+/// given up.
+pub(crate) struct FlatFrames<'s: 'g, 'g, G: lignin_tree::OperationGuard>(
+    Option<Private<'s, 'g, G, &'s PageAllocator>>,
+);
+
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> FlatFrames<'s, 'g, G> {
+    /// The same pages, with all they hold, bound to `guard`.
+    fn under<'q, H>(mut self, guard: &'q H) -> FlatFrames<'s, 'q, H>
+    where
+        's: 'q,
+        H: lignin_tree::OperationGuard,
+    {
+        FlatFrames(self.0.take().map(|writer| writer.under(guard)))
+    }
+
+    /// How many private copies of flat pages the transaction holds: of the
+    /// pages it changed or made, and of those it freed.
+    pub(crate) fn copies(&self) -> usize {
+        (self.0.as_ref()).map_or(0, |writer| {
+            writer.written().count() + writer.freed().count()
+        })
+    }
+}
+
+impl<'s> FlatFrames<'s, 's, Idle> {
+    /// Ends the flat pages and hands the writer to the commit, which
+    /// installs them in the operation that holds `guard`.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
+    pub(crate) fn into_writer<'g>(mut self, guard: &'g OperationGuard<'s>) -> FlatWriter<'s, 'g> {
+        let writer = self.0.take();
+        writer
+            .expect("the writer is there until it is taken")
+            .under(guard)
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::Deref for FlatFrames<'s, 'g, OperationGuard<'s>> {
+    type Target = FlatWriter<'s, 'g>;
+
+    fn deref(&self) -> &Self::Target {
+        self.0
+            .as_ref()
+            .expect("the writer is there until it is taken")
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::DerefMut for FlatFrames<'s, 'g, OperationGuard<'s>> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0
+            .as_mut()
+            .expect("the writer is there until it is taken")
+    }
+}
+
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Drop for FlatFrames<'s, 'g, G> {
+    fn drop(&mut self) {
+        if let Some(writer) = &mut self.0 {
+            // What the pool will not let go of now cannot be given up
+            // later either: nothing is left that could.
+            let _ = writer.roll_back();
+        }
+    }
+}
+
+/// The frames of a transaction, awake for one of its operations. When this
+/// is dropped they are parked again where the transaction keeps them, on
+/// every way out of the operation.
+pub(crate) struct Woken<'a, 's: 'g, 'g> {
+    home: &'a mut Option<Parked<'s>>,
+    frames: Option<Awake<'s, 'g>>,
+}
+
+impl<'a, 's: 'g, 'g> Woken<'a, 's, 'g> {
+    /// Takes the frames that `home` keeps, if it keeps any, for the
+    /// operation that holds `guard`.
+    pub(crate) fn wake(
+        home: &'a mut Option<Parked<'s>>,
+        guard: &'g OperationGuard<'s>,
+    ) -> Option<Self> {
+        let frames = home.take()?.under(guard);
+        Some(Self {
+            home,
+            frames: Some(frames),
+        })
+    }
+
+    /// Gives the frames up: they hold a part of a batch.
+    pub(crate) fn discard(mut self) {
+        self.frames = None;
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::Deref for Woken<'_, 's, 'g> {
+    type Target = Awake<'s, 'g>;
+
+    fn deref(&self) -> &Self::Target {
+        (self.frames.as_ref()).expect("the frames are there until they are parked")
+    }
+}
+
+impl<'s: 'g, 'g> std::ops::DerefMut for Woken<'_, 's, 'g> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        (self.frames.as_mut()).expect("the frames are there until they are parked")
+    }
+}
+
+impl<'a, 's: 'g, 'g> Drop for Woken<'a, 's, 'g> {
+    fn drop(&mut self) {
+        *self.home = self.frames.take().map(Frames::park);
+    }
+}
+
+/// The nodes that the keys of one batch name, as the tree layer names them.
+struct Resolver<'a> {
+    merks: &'a [MerkWrite<'a>],
+    /// The root of each Merk before the batch.
+    roots: Vec<Option<CellAddress>>,
+    /// The nodes each Merk's change set writes, by key.
+    written: Vec<HashMap<&'a [u8], usize>>,
+    by_subtree: HashMap<Subtree, usize>,
+}
+
+impl Resolver<'_> {
+    /// The node under `key` in the Merk `merk`: a node of the batch, or a
+    /// cell that is there.
+    fn node(
+        &self,
+        tree: &mut TreePages<'_>,
+        merk: usize,
+        key: &[u8],
+    ) -> Result<Option<Target>, TxnError> {
+        if let Some(node) = self.written[merk].get(key) {
+            return Ok(Some(Target::Node(*node)));
+        }
+        Ok(find(tree, self.roots[merk], key)?.map(Target::At))
+    }
+
+    /// The root of the Merk `merk` after the batch.
+    fn root(&self, tree: &mut TreePages<'_>, merk: usize) -> Result<Option<Target>, TxnError> {
+        match self.merks[merk].root {
+            RootPut::Keep => Ok(self.roots[merk].map(Target::At)),
+            RootPut::Set(None) => Ok(None),
+            RootPut::Set(Some(key)) => {
+                let subtree = self.merks[merk].subtree;
+                let root = self.node(tree, merk, key)?;
+                Ok(Some(root.ok_or(BatchError::NoRoot { subtree })?))
+            }
+        }
+    }
+
+    fn link<'l>(
+        &self,
+        tree: &mut TreePages<'_>,
+        merk: usize,
+        link: &LinkPut<'l>,
+    ) -> Result<LinkWrite<'l>, TxnError> {
+        let subtree = self.merks[merk].subtree;
+        let child = self.node(tree, merk, link.key)?;
+        Ok(LinkWrite {
+            child: child.ok_or(BatchError::NoChild { subtree })?,
+            hash: link.hash,
+            heights: link.heights,
+            child_key_len: link.key.len() as u8,
+            aggregate: link.aggregate,
+        })
+    }
+}
+
+/// One node of a batch with its names resolved.
+struct Resolved<'a> {
+    at: Option<CellAddress>,
+    left: Option<LinkWrite<'a>>,
+    right: Option<LinkWrite<'a>>,
+    /// The position of the node's list of hosted roots.
+    hosted: Option<usize>,
+    value: ValueWrite<'a>,
+}
+
+/// What every name of a batch stands for, as [`Frames::resolve`] finds it.
+struct ResolvedBatch<'a> {
+    nodes: Vec<Resolved<'a>>,
+    hosted: Vec<Vec<Option<Target>>>,
+    removed: Vec<CellAddress>,
+    root_writes: Vec<Option<RootWrite>>,
+    root_targets: Vec<Option<Target>>,
+}
+
+impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
+    /// The version the frames are built over: *B(T)*.
+    pub(crate) fn base(&self) -> CommitVersion {
+        self.base
+    }
+
+    /// The same frames, with all they hold, bound to `guard`.
+    fn under<'q, H>(self, guard: &'q H) -> Frames<'s, 'q, H>
+    where
+        's: 'q,
+        H: lignin_tree::OperationGuard,
+    {
+        Frames {
+            base: self.base,
+            tree: self.tree,
+            values: self.values,
+            flat: self.flat.under(guard),
+            fragments: self.fragments,
+            key: self.key,
+            empty: self.empty,
+        }
+    }
+}
+
+impl<'s: 'g, 'g> Awake<'s, 'g> {
+    /// Frames with no copy, over the committed pages of the version `at`,
+    /// which the transaction keeps pinned for as long as it has them.
+    pub(crate) fn new(
+        path: &WritePath<'s>,
+        guard: &'g OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Self {
+        let owner = WritePath::next_owner();
+        let lease = Lease::take();
+        let size = path.layout.page_size();
+        Self {
+            tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size),
+            values: TreeValues::new(path.values),
+            flat: FlatFrames(Some(FlatWriter::new(
+                path.committed(guard, at),
+                path.pool,
+                owner,
+                path.ids,
+            ))),
+            fragments: Fragments::new(path.layout),
+            key: Vec::new(),
+            empty: Vec::new(),
+            base: at,
+        }
+    }
+
+    /// The frames as the transaction keeps them until its next operation.
+    pub(crate) fn park(self) -> Parked<'s> {
+        self.under(&IDLE)
+    }
+
+    /// Frames that show the write set `set` applied, in order, to the
+    /// committed state of the version `at` (WT3): every operation is
+    /// applied again through the tree layer, which finds every cell by its
+    /// key (WT7, LT4).
+    ///
+    /// They are read and written under `guard`, the guard of the operation
+    /// that makes them, and are returned as the transaction keeps them.
+    pub(crate) fn build(
+        path: &WritePath<'s>,
+        guard: &'g OperationGuard<'s>,
+        at: CommitVersion,
+        set: &WriteSet,
+    ) -> Result<Parked<'s>, TxnError> {
+        let mut frames = Self::new(path, guard, at);
+        for op in 0..set.ops() {
+            let hosted = set.hosted_lists(op);
+            let batch = set.batch(op, &hosted);
+            let merks = batch.merks();
+            let batch = Batch {
+                records: batch.records(),
+                merks: &merks,
+            };
+            frames
+                .apply(path, &batch, Some(&set.made(op)))
+                .map_err(|refused| refused.error)?;
+        }
+        Ok(frames.park())
+    }
+
+    /// For each Merk of the batch that was applied last, whether it had no
+    /// root before.
+    pub(crate) fn empty_before(&self) -> &[bool] {
+        &self.empty
+    }
+
+    /// The lease the nodes of the frames are read under. It ends with the
+    /// frames (PN8).
+    pub(crate) fn lease(&self) -> Lease {
+        self.tree.lease()
+    }
+
+    /// The root cell of the Merk `subtree`, as the transaction sees it.
+    pub(crate) fn root(
+        &self,
+        path: &WritePath<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<CellAddress>, TxnError> {
+        (path.directory.root(&self.flat, subtree)).map_err(TxnError::Directory)
+    }
+
+    /// The address `handle` names, if the handle is still good in these
+    /// frames and its cell has the key `key`.
+    pub(crate) fn follow(&mut self, handle: NodeHandle, key: &[u8]) -> Option<CellAddress> {
+        let lease = self.lease();
+        follow(&mut self.tree, lease, handle, key)
+    }
+
+    /// Applies `batch` to the frames: the change sets of its Merks as one
+    /// write of the tree layer, with each Merk's directory entry, and then
+    /// its records.
+    ///
+    /// The batch has passed [`check`](super::check::check). `made` is given
+    /// for a batch that is applied again (WT7): it says of each Merk
+    /// whether the transaction made its first node with this batch. Such a
+    /// Merk has to be empty still, and the batch is refused if it is not
+    /// (GM3).
+    pub(crate) fn apply(
+        &mut self,
+        path: &WritePath<'s>,
+        batch: &Batch<'_>,
+        made: Option<&[bool]>,
+    ) -> Result<Applied, Refused> {
+        let directory = path.directory;
+        for record in batch.records {
+            // The nodes of a Merk are not written through a flat tree.
+            let unit = record.unit();
+            if unit.column == Column::Data
+                && (directory.root(&self.flat, &unit.subtree))
+                    .map_err(|error| Refused::clean(TxnError::Directory(error)))?
+                    .is_some()
+            {
+                return Err(Refused::clean(BatchError::NotFlat { unit }));
+            }
+        }
+        let applied = self.apply_merks(path, batch.merks, made)?;
+        for record in batch.records {
+            let tree = path.keyspaces.of(record.unit().column);
+            let subtree = record.unit().subtree;
+            let done = match *record {
+                RecordWrite::Put { key, value, .. } => {
+                    stored_key(&mut self.key, &subtree, key);
+                    tree.put(&mut *self.flat, &self.key, value)
+                }
+                RecordWrite::Delete { key, .. } => {
+                    stored_key(&mut self.key, &subtree, key);
+                    tree.delete(&mut *self.flat, &self.key).map(|_| ())
+                }
+                RecordWrite::DeleteRange { start, end, .. } => {
+                    stored_key(&mut self.key, &subtree, start);
+                    let end = match end {
+                        Some(end) => {
+                            let mut stored = Vec::new();
+                            stored_key(&mut stored, &subtree, end);
+                            Some(stored)
+                        }
+                        None => subtree_end(&subtree),
+                    };
+                    tree.delete_range(&mut *self.flat, &self.key, end.as_deref())
+                }
+            };
+            done.map_err(Refused::dirty)?;
+        }
+        Ok(applied)
+    }
+
+    fn apply_merks(
+        &mut self,
+        path: &WritePath<'s>,
+        merks: &[MerkWrite<'_>],
+        made: Option<&[bool]>,
+    ) -> Result<Applied, Refused> {
+        self.empty.clear();
+        if merks.is_empty() {
+            return Ok(Applied::default());
+        }
+        let directory = path.directory;
+        let mut offsets = Vec::with_capacity(merks.len());
+        let mut total = 0;
+        for merk in merks {
+            offsets.push(total);
+            total += merk.nodes.len();
+        }
+        let mut roots = Vec::with_capacity(merks.len());
+        for merk in merks {
+            let root = directory.root(&self.flat, &merk.subtree);
+            roots.push(root.map_err(|error| Refused::clean(TxnError::Directory(error)))?);
+        }
+        self.empty.extend(roots.iter().map(Option::is_none));
+        let made = made.unwrap_or_default().iter();
+        for ((merk, made), empty) in merks.iter().zip(made).zip(&self.empty) {
+            // The transaction made the first node of this Merk, and it has
+            // a root now that is not the transaction's.
+            if *made && !*empty {
+                let subtree = merk.subtree;
+                return Err(Refused::clean(BatchError::RootTaken { subtree }));
+            }
+        }
+        let written = (merks.iter().zip(&offsets))
+            .map(|(merk, offset)| {
+                let nodes = merk.nodes.iter().enumerate();
+                nodes.map(|(node, put)| (put.key, offset + node)).collect()
+            })
+            .collect();
+        let by_subtree = (merks.iter().enumerate())
+            .map(|(merk, write)| (write.subtree, merk))
+            .collect();
+        let resolver = Resolver {
+            merks,
+            roots,
+            written,
+            by_subtree,
+        };
+
+        // What every name of the batch stands for is found before anything
+        // is changed, so a batch that names what is not there is refused
+        // with every page as it was.
+        let mut held = Vec::new();
+        let resolved = self.resolve(path, &resolver, total, &mut held);
+        let ResolvedBatch {
+            nodes,
+            hosted,
+            removed,
+            root_writes,
+            root_targets,
+        } = match resolved {
+            Ok(resolved) => resolved,
+            Err(error) => {
+                self.values.forget(&held);
+                return Err(Refused::clean(error));
+            }
+        };
+        let node_writes: Vec<NodeWrite<'_>> = (merks.iter().flat_map(|merk| merk.nodes))
+            .zip(&nodes)
+            .map(|(put, node)| NodeWrite {
+                at: node.at,
+                key: put.key,
+                feature: put.feature,
+                value_hash: put.value_hash,
+                kv_hash: put.kv_hash,
+                left: node.left,
+                right: node.right,
+                hosted: match node.hosted {
+                    None => HostedWrite::Keep,
+                    Some(list) => HostedWrite::Set(&hosted[list]),
+                },
+                value: node.value,
+            })
+            .collect();
+        let roots: Vec<RootWrite> = root_writes.iter().flatten().copied().collect();
+        let write = Write {
+            nodes: &node_writes,
+            removed: &removed,
+            dropped: &[],
+            roots: &roots,
+        };
+        let report = match (self.fragments).apply(&mut self.tree, &mut self.values, &write) {
+            Ok(report) => report,
+            Err(error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. })) => {
+                self.values.forget(&held);
+                return Err(Refused::clean(error));
+            }
+            Err(error) => return Err(Refused::dirty(error)),
+        };
+        self.values.take_failure().map_err(Refused::dirty)?;
+
+        // The directory entry of each Merk whose root is another cell now,
+        // and of each Merk whose root went along with its host.
+        let carried: HashMap<CellAddress, CellAddress> = (report.carried.iter())
+            .map(|carried| (carried.from, carried.to.address()))
+            .collect();
+        let mut settled = HashSet::new();
+        let mut pointer = 0;
+        for (merk, write) in merks.iter().enumerate() {
+            let root = match root_writes[merk] {
+                Some(_) => {
+                    pointer += 1;
+                    report.roots[pointer - 1]
+                }
+                None => match root_targets[merk] {
+                    None | Some(Target::Kept) => None,
+                    Some(Target::Node(node)) => Some(report.nodes[node].address()),
+                    Some(Target::At(at)) => Some(*carried.get(&at).unwrap_or(&at)),
+                },
+            };
+            if root != resolver.roots[merk] {
+                directory
+                    .set_root(&mut self.flat, &write.subtree, root)
+                    .map_err(Refused::directory)?;
+            }
+            settled.extend(root);
+        }
+        for carried in &report.carried {
+            let to = carried.to.address();
+            if carried.hosted_by.is_some() && !settled.contains(&to) {
+                directory
+                    .moved(&mut self.flat, carried.from, to)
+                    .map_err(Refused::directory)?;
+            }
+        }
+        Ok(Applied {
+            carried: (report.carried.iter())
+                .map(|carried| (carried.from, carried.to))
+                .collect(),
+            nodes: report.nodes,
+        })
+    }
+
+    /// Checks that the cell at `host`, which is written and keeps the Merks
+    /// it hosts, hosts none that the batch has a change set for: the root
+    /// of such a Merk is the host's to name, and a host that keeps its
+    /// pointers names nothing.
+    fn keeps_no_root(
+        &mut self,
+        resolver: &Resolver<'_>,
+        host: CellAddress,
+    ) -> Result<(), TxnError> {
+        let roots = &resolver.roots;
+        let hosted = self.tree.page(host.page(), |page| {
+            let pointers = page.node(host.slot())?.hosted_roots();
+            Some(
+                (pointers.flatten()).find_map(|root| roots.iter().position(|at| *at == Some(root))),
+            )
+        })?;
+        match hosted.ok_or(NodeError::NoNode { address: host })? {
+            Some(merk) if !resolver.merks[merk].anchored => {
+                let subtree = resolver.merks[merk].subtree;
+                Err(BatchError::HostKeeps { subtree }.into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// Finds what every key of the batch names: the cell of each written
+    /// and each deleted node, the child of each link, and the root of each
+    /// Merk, by a hint that is still good or by the key (PN8).
+    fn resolve<'a>(
+        &mut self,
+        path: &WritePath<'s>,
+        resolver: &Resolver<'a>,
+        total: usize,
+        held: &mut Vec<lignin_format::value_log::PendingValue>,
+    ) -> Result<ResolvedBatch<'a>, TxnError> {
+        let merks = resolver.merks;
+        let mut root_targets = Vec::with_capacity(merks.len());
+        for merk in 0..merks.len() {
+            root_targets.push(resolver.root(&mut self.tree, merk)?);
+        }
+        let mut nodes = Vec::with_capacity(total);
+        let mut hosted: Vec<Vec<Option<Target>>> = Vec::new();
+        let mut removed = Vec::new();
+        let mut hosted_here = vec![false; merks.len()];
+        for (merk, write) in merks.iter().enumerate() {
+            let subtree = write.subtree;
+            for put in write.nodes {
+                let hinted = put.at.and_then(|handle| self.follow(handle, put.key));
+                let at = match hinted {
+                    Some(at) => Some(at),
+                    None => find(&mut self.tree, resolver.roots[merk], put.key)?,
+                };
+                let link = |tree: &mut TreePages<'_>, link: &Option<LinkPut<'a>>| {
+                    (link.as_ref())
+                        .map(|link| resolver.link(tree, merk, link))
+                        .transpose()
+                };
+                let left = link(&mut self.tree, &put.left)?;
+                let right = link(&mut self.tree, &put.right)?;
+                let hosts = match put.hosted {
+                    Hosted::Keep => {
+                        // A host and the Merk it hosts are two Merks.
+                        if let Some(at) = at.filter(|_| merks.len() > 1) {
+                            self.keeps_no_root(resolver, at)?;
+                        }
+                        None
+                    }
+                    Hosted::Set(subtrees) => {
+                        let mut targets = Vec::with_capacity(subtrees.len());
+                        for hosted in subtrees {
+                            targets.push(match resolver.by_subtree.get(hosted) {
+                                Some(&merk) => {
+                                    hosted_here[merk] = true;
+                                    root_targets[merk]
+                                }
+                                None => (path.directory.root(&self.flat, hosted))
+                                    .map_err(TxnError::Directory)?
+                                    .map(Target::At),
+                            });
+                        }
+                        hosted.push(targets);
+                        Some(hosted.len() - 1)
+                    }
+                };
+                let value = match put.value {
+                    ValuePut::Keep if at.is_none() => {
+                        return Err(BatchError::NoValue { subtree }.into())
+                    }
+                    ValuePut::Keep => ValueWrite::Keep,
+                    // The length alone says where a value goes, and a
+                    // value of no bytes is never out of line.
+                    ValuePut::Value(value) if path.inline.is_inline(value.len()) => {
+                        ValueWrite::Inline(value)
+                    }
+                    ValuePut::Value(value) => {
+                        let pending = self.values.hold(Arc::from(value))?;
+                        held.push(pending);
+                        ValueWrite::Pending(pending)
+                    }
+                };
+                nodes.push(Resolved {
+                    at,
+                    left,
+                    right,
+                    hosted: hosts,
+                    value,
+                });
+            }
+            for key in write.removed {
+                // A delete of a key with no node is a write of the key and
+                // changes no page (ST5).
+                removed.extend(find(&mut self.tree, resolver.roots[merk], key)?);
+            }
+        }
+        // The root of a Merk that no node of the batch hosts is named by a
+        // pointer the directory alone holds.
+        let root_writes = (0..merks.len())
+            .map(|merk| {
+                (!hosted_here[merk]).then(|| RootWrite {
+                    was: resolver.roots[merk],
+                    now: root_targets[merk],
+                    anchored: merks[merk].anchored,
+                })
+            })
+            .collect();
+        Ok(ResolvedBatch {
+            nodes,
+            hosted,
+            removed,
+            root_writes,
+            root_targets,
+        })
+    }
+}
