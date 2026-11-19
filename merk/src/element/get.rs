@@ -635,10 +635,13 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
 #[cfg(test)]
 mod tests {
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 
     use super::*;
-    use crate::{element::insert::ElementInsertToStorageExtensions, tree_type::TreeType};
+    use crate::{
+        element::insert::ElementInsertToStorageExtensions,
+        test_utils::{SuiteBatch, TempEngine, TestEngine},
+        tree_type::TreeType,
+    };
 
     #[test]
     fn a_failed_read_keeps_its_type_and_any_other_unreadable_node_is_corrupted_data() {
@@ -664,12 +667,12 @@ mod tests {
     #[test]
     fn test_cache_changes_cost() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let storage = TempEngine::new();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let ctx = storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch), &transaction)
+            .subtree(SubtreePath::empty(), Some(&batch), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,
@@ -688,14 +691,11 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
-        let batch2 = StorageBatch::new();
+        let batch2 = SuiteBatch::default();
         let ctx = storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(&batch2), &transaction)
+            .subtree(SubtreePath::empty(), Some(&batch2), &transaction)
             .unwrap();
         let mut merk = Merk::open_base(
             ctx,

@@ -1313,13 +1313,6 @@ fn own_contribution_from_subtree_total(
 #[cfg(test)]
 mod tests {
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{
-            test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext,
-            PrefixedRocksDbTransactionContext,
-        },
-        RawIterator, Storage,
-    };
 
     use super::*;
     use crate::{
@@ -1327,7 +1320,11 @@ mod tests {
         proofs::chunk::{
             chunk::tests::traverse_get_node_hash, error::ChunkError::InvalidChunkProof,
         },
-        test_utils::{make_batch_seq, TempMerk},
+        store::NodeCursor,
+        test_utils::{
+            make_batch_seq, SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine,
+            TempMerk, TestEngine,
+        },
         tree_type::TreeType,
         Error::ChunkRestoringError,
         Merk, PanicSource,
@@ -1342,20 +1339,16 @@ mod tests {
             Op::Push(Node::KV(vec![3], vec![3])),
             Op::Parent,
         ];
-        assert!(Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            non_avl_tree_proof,
-            &[0; 32],
-            &None
-        )
-        .is_err());
+        assert!(
+            Restorer::<SuiteSubtree>::verify_chunk(non_avl_tree_proof, &[0; 32], &None).is_err()
+        );
     }
 
     #[test]
     fn test_chunk_verification_accepted_and_rejected_node_types() {
         // KV should be accepted (items in normal trees)
         let kv_proof = vec![Op::Push(Node::KV(vec![1], vec![1]))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kv_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kv_proof, &[0; 32], &None);
         // KV is now accepted; it will fail with hash mismatch (not invalid node type)
         assert!(
             !matches!(
@@ -1369,9 +1362,7 @@ mod tests {
 
         // KVValueHash should be accepted (subtrees in normal trees)
         let kvvh_proof = vec![Op::Push(Node::KVValueHash(vec![0], vec![0], [0; 32]))];
-        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            kvvh_proof, &[0; 32], &None,
-        );
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvvh_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1384,8 +1375,7 @@ mod tests {
 
         // KVCount should be accepted (items in provable count trees)
         let kvc_proof = vec![Op::Push(Node::KVCount(vec![0], vec![0], 1))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvc_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvc_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1402,8 +1392,7 @@ mod tests {
         // chunking a ProvableSumTree would produce chunks the verifier
         // refused to restore.
         let kvs_proof = vec![Op::Push(Node::KVSum(vec![0], vec![0], 7))];
-        let result =
-            Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(kvs_proof, &[0; 32], &None);
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvs_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1420,9 +1409,7 @@ mod tests {
         // `create_proof_node_for_chunk` (which maps PCPS Items to
         // KVCountSum) would be rejected at restore time.
         let kvcs_proof = vec![Op::Push(Node::KVCountSum(vec![0], vec![0], 1, 7))];
-        let result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            kvcs_proof, &[0; 32], &None,
-        );
+        let result = Restorer::<SuiteSubtree>::verify_chunk(kvcs_proof, &[0; 32], &None);
         assert!(
             !matches!(
                 result,
@@ -1435,11 +1422,8 @@ mod tests {
 
         // should not accept kvhash
         let invalid_chunk_proof = vec![Op::Push(Node::KVHash([0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1449,11 +1433,8 @@ mod tests {
 
         // should not accept kvdigest
         let invalid_chunk_proof = vec![Op::Push(Node::KVDigest(vec![0], [0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1463,11 +1444,8 @@ mod tests {
 
         // should not accept kvrefvaluehash
         let invalid_chunk_proof = vec![Op::Push(Node::KVRefValueHash(vec![0], vec![0], [0; 32]))];
-        let verification_result = Restorer::<PrefixedRocksDbTransactionContext>::verify_chunk(
-            invalid_chunk_proof,
-            &[0; 32],
-            &None,
-        );
+        let verification_result =
+            Restorer::<SuiteSubtree>::verify_chunk(invalid_chunk_proof, &[0; 32], &None);
         assert!(matches!(
             verification_result,
             Err(ChunkRestoringError(InvalidChunkProof(
@@ -1489,11 +1467,11 @@ mod tests {
         let crafted_hash: CryptoHash = [0xAB; 32];
         let malicious_chunk = vec![Op::Push(Node::Hash(crafted_hash))];
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1553,11 +1531,11 @@ mod tests {
             Op::Child,
         ];
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1612,11 +1590,11 @@ mod tests {
         merk.tree.set(Some(merk_tree.clone()));
         let mut tree_walker = RefWalker::new(&mut merk_tree, PanicSource {});
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1823,8 +1801,8 @@ mod tests {
     }
 
     fn assert_raw_db_entries_eq(
-        restored: &Merk<PrefixedRocksDbImmediateStorageContext>,
-        original: &Merk<PrefixedRocksDbImmediateStorageContext>,
+        restored: &Merk<SuiteImmediateSubtree>,
+        original: &Merk<SuiteImmediateSubtree>,
         length: usize,
     ) {
         assert_eq!(restored.root_hash().unwrap(), original.root_hash().unwrap());
@@ -1862,11 +1840,11 @@ mod tests {
     fn test_restoration_single_chunk_strategy(batch_size: u64) {
         let grove_version = GroveVersion::latest();
         // build the source merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1881,11 +1859,11 @@ mod tests {
             .expect("apply failed");
 
         // build the restoration merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -1954,11 +1932,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2023,11 +2001,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2105,11 +2083,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2196,11 +2174,11 @@ mod tests {
     #[test]
     fn test_process_multi_chunk_rejects_dangling_chunk_id() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2230,11 +2208,11 @@ mod tests {
             .unwrap()
             .expect("apply failed");
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2280,11 +2258,11 @@ mod tests {
             .expect("apply failed");
 
         // build the restoration merk
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2362,11 +2340,11 @@ mod tests {
             .expect("apply failed");
         assert_eq!(merk.height(), Some(4));
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2416,7 +2394,7 @@ mod tests {
         // open the restoration merk again and build a restorer from it
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             TreeType::NormalTree,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2457,11 +2435,11 @@ mod tests {
         let grove_version = GroveVersion::latest();
 
         // Source merk: one leaf with the given feature_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2479,11 +2457,11 @@ mod tests {
             .expect("apply leaf");
 
         // Empty restoration merk with the matching tree_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2573,11 +2551,11 @@ mod tests {
     ) {
         let grove_version = GroveVersion::latest();
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut source_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2591,11 +2569,11 @@ mod tests {
             .expect("apply elements");
 
         // Empty restoration merk with the matching tree_type.
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = Merk::open_base(
             storage
-                .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                .immediate_subtree(SubtreePath::empty(), &tx)
                 .unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2904,11 +2882,11 @@ mod tests {
             let expected = parent_hash.map_or(root_hash, |parent| {
                 combine_hash(&parent, &root_hash).unwrap()
             });
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = Merk::open_base(
                 storage
-                    .get_immediate_storage_context(SubtreePath::empty(), &tx)
+                    .immediate_subtree(SubtreePath::empty(), &tx)
                     .unwrap(),
                 TreeType::ProvableCountTree,
                 None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -2934,14 +2912,12 @@ mod tests {
     /// Opens an empty restoration merk of `tree_type` on `storage` inside
     /// `tx`.
     fn open_restoration_merk<'a>(
-        storage: &'a TempStorage,
-        tx: &'a <grovedb_storage::rocksdb_storage::RocksDbStorage as Storage<'a>>::Transaction,
+        storage: &'a TempEngine,
+        tx: &'a SuiteTransaction<'a>,
         tree_type: TreeType,
-    ) -> Merk<PrefixedRocksDbImmediateStorageContext<'a>> {
+    ) -> Merk<SuiteImmediateSubtree<'a>> {
         Merk::open_base(
-            storage
-                .get_immediate_storage_context(SubtreePath::empty(), tx)
-                .unwrap(),
+            storage.immediate_subtree(SubtreePath::empty(), tx).unwrap(),
             tree_type,
             None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
             GroveVersion::latest(),
@@ -3012,7 +2988,7 @@ mod tests {
             );
 
             // The honest chunk restores.
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3034,7 +3010,7 @@ mod tests {
 
             // The forged chunk passes verification but must be refused at
             // element-mode finalization.
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3098,7 +3074,7 @@ mod tests {
             ),
         ] {
             let root_hash = ProofTree::from(node.clone()).hash().unwrap();
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open_restoration_merk(&storage, &tx, tree_type);
             let mut restorer = Restorer::new(merk, root_hash, None);
@@ -3126,7 +3102,7 @@ mod tests {
             .expect("apply failed");
         let mut chunk_producer = ChunkProducer::new(&merk).expect("should create chunk producer");
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let restoration_merk = open_restoration_merk(&storage, &tx, TreeType::NormalTree);
         let mut restorer = Restorer::new(restoration_merk, merk.root_hash().unwrap(), None);

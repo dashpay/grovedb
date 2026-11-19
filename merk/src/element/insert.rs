@@ -1214,12 +1214,13 @@ impl ElementInsertToStorageExtensions for Element {
 #[cfg(all(feature = "minimal", feature = "test_utils"))]
 #[cfg(test)]
 mod tests {
-    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
-
     use super::*;
     use crate::{
         element::get::ElementFetchFromStorageExtensions,
-        test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
+        test_utils::{
+            empty_path_merk, empty_path_merk_read_only, SuiteBatch, TempEngine, TempMerk,
+            TestEngine,
+        },
         TreeType,
     };
 
@@ -1385,8 +1386,8 @@ mod tests {
     #[test]
     fn test_insert_if_changed_value_inserts_when_value_changed() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let storage = TempEngine::new();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
         let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
 
@@ -1399,12 +1400,9 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
         let element = Element::new_item(b"value2".to_vec());
         let delta = element
@@ -1415,10 +1413,7 @@ mod tests {
         assert!(delta.has_changed());
         assert_eq!(delta.old, Some(Element::new_item(b"value".to_vec())),);
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
         let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
 
         assert_eq!(

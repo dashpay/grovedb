@@ -479,15 +479,14 @@ mod test {
     use grovedb_merk::{
         estimated_costs::worst_case_costs::add_worst_case_get_merk_node,
         merk::NodeType,
-        test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq},
+        test_utils::{
+            empty_path_merk, empty_path_merk_read_only, make_batch_seq, SuiteBatch, TempEngine,
+            TestEngine,
+        },
         tree::kv::ValueDefinedCostType,
         tree_type::TreeType,
     };
-    use grovedb_storage::{
-        rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
-        worst_case_costs::WorstKeyLength,
-        Storage, StorageBatch,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, worst_case_costs::WorstKeyLength};
     use grovedb_version::version::GroveVersion;
     use tempfile::TempDir;
 
@@ -501,8 +500,8 @@ mod test {
     fn test_get_merk_node_worst_case() {
         let grove_version = GroveVersion::latest();
         // Open a merk and insert 10 elements.
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let storage = TempEngine::new();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
 
         let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
@@ -513,10 +512,7 @@ mod test {
             .unwrap();
 
         // this consumes the batch so storage contexts and merks will be dropped
-        storage
-            .commit_multi_context_batch(batch, Some(&transaction))
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         // Reopen merk: this time, only root node is loaded to memory
         let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);

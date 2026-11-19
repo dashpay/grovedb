@@ -28,15 +28,21 @@
 
 //! Test utils
 
+#[cfg(feature = "full")]
+mod engine;
 mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
+#[cfg(feature = "full")]
+pub use engine::{
+    NodeStoreOnly, NodeStoreOnlyEngine, RocksDbTestEngine, SuiteBatch, SuiteEngine,
+    SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine, TestEngine,
+};
 use grovedb_costs::storage_cost::{
     removal::StorageRemovedBytes::BasicStorageRemoval, transition::ElementFlagsUpdate,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
 use rand::prelude::*;
 pub use temp_merk::TempMerk;
@@ -309,19 +315,17 @@ pub fn make_tree_seq_with_start_key(
 
     tree
 }
-/// Shortcut to open a Merk with a provided storage and batch
-pub fn empty_path_merk<'db, S>(
-    storage: &'db S,
-    transaction: &'db <S as Storage<'db>>::Transaction,
-    batch: &'db StorageBatch,
+/// Shortcut to open a Merk of the root subtree on an engine, with a batch
+#[cfg(feature = "full")]
+pub fn empty_path_merk<'db, E: TestEngine>(
+    engine: &'db E,
+    transaction: &'db E::Transaction<'_>,
+    batch: &'db E::Batch,
     grove_version: &GroveVersion,
-) -> Merk<<S as Storage<'db>>::BatchTransactionalStorageContext>
-where
-    S: Storage<'db>,
-{
+) -> Merk<E::Subtree<'db>> {
     Merk::open_base(
-        storage
-            .get_transactional_storage_context(SubtreePath::empty(), Some(batch), transaction)
+        engine
+            .subtree(SubtreePath::empty(), Some(batch), transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
@@ -331,18 +335,16 @@ where
     .unwrap()
 }
 
-/// Shortcut to open a Merk for read only
-pub fn empty_path_merk_read_only<'db, S>(
-    storage: &'db S,
-    transaction: &'db <S as Storage<'db>>::Transaction,
+/// Shortcut to open a Merk of the root subtree on an engine for read only
+#[cfg(feature = "full")]
+pub fn empty_path_merk_read_only<'db, E: TestEngine>(
+    engine: &'db E,
+    transaction: &'db E::Transaction<'_>,
     grove_version: &GroveVersion,
-) -> Merk<<S as Storage<'db>>::BatchTransactionalStorageContext>
-where
-    S: Storage<'db>,
-{
+) -> Merk<E::Subtree<'db>> {
     Merk::open_base(
-        storage
-            .get_transactional_storage_context(SubtreePath::empty(), None, transaction)
+        engine
+            .subtree(SubtreePath::empty(), None, transaction)
             .unwrap(),
         TreeType::NormalTree,
         None::<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
