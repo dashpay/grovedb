@@ -168,7 +168,7 @@ grovedbg = [
 # out-of-band (e.g. devnet shielded-pool snapshot bake/apply). Misuse will
 # produce an inconsistent Merk tree — there is no runtime check that the
 # caller-provided hash matches the underlying state.
-unsafe-dump-load = ["grovedb-storage/unsafe-dump-load"]
+unsafe-dump-load = ["rocksdb_storage", "grovedb-storage/unsafe-dump-load"]
 
 # `lignin_cost_model` is set where `lignin-testkit/cost-model-storage/check.sh`
 # builds GroveDB on a storage crate that has no RocksDB.

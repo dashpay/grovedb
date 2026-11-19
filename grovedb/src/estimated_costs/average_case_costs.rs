@@ -819,7 +819,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, feature = "full"))]
 mod test {
     use std::option::Option::None;
 
