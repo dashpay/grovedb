@@ -1,0 +1,401 @@
+//! The errors of the facade.
+
+use std::{
+    error::Error,
+    ffi::OsString,
+    fmt, io,
+    path::{Path, PathBuf},
+};
+
+use lignin_format::{CommitVersion, PageSize};
+use lignin_store::{flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError};
+
+use crate::{
+    commit::{CommitError, Published, Stopped},
+    txn::TxnError,
+};
+
+/// Why a database was not opened ([`Db::open`](super::Db::open)).
+///
+/// The first five say that the directory is not one this build opens, and
+/// each of them is found before anything is written: the directory is
+/// byte for byte as it was.
+#[derive(Debug)]
+pub enum OpenError {
+    /// The directory holds no database, and
+    /// [`Options::create_if_missing`](crate::Options::create_if_missing) is
+    /// off. Nothing was created.
+    NoDatabase {
+        /// The directory.
+        dir: PathBuf,
+    },
+    /// The directory was written by another storage engine (P-02): it has
+    /// an entry that only that engine makes, or its `MANIFEST` is no
+    /// LigninDB file. No second database is made beside the first.
+    OtherEngine {
+        /// The directory.
+        dir: PathBuf,
+        /// The engine, where the entry says which.
+        engine: &'static str,
+        /// The entry that says so.
+        entry: OsString,
+    },
+    /// The database was written in a format version this build does not
+    /// read (`format.md`, the file header).
+    FormatVersion {
+        /// The directory.
+        dir: PathBuf,
+        /// The format version in the header of its manifest.
+        found: u16,
+    },
+    /// The directory has files of a database and no manifest, so what they
+    /// hold cannot be known. No database is made over them.
+    NoManifest {
+        /// The directory.
+        dir: PathBuf,
+        /// One of the entries that are a database's.
+        entry: OsString,
+    },
+    /// The database has pages of another size than the one that was asked
+    /// for (`segment-manifest.md` M17).
+    PageSize {
+        /// The directory.
+        dir: PathBuf,
+        /// The size the database was made with.
+        stored: PageSize,
+        /// The size [`Options::page_size`](crate::Options::page_size) names.
+        requested: PageSize,
+    },
+    /// Another handle has the database open, in this process or in
+    /// another (P-04).
+    Locked {
+        /// The directory.
+        dir: PathBuf,
+    },
+    /// The file layer failed.
+    Io {
+        /// What was being done.
+        action: &'static str,
+        /// The path it was done to.
+        path: PathBuf,
+        /// The error.
+        source: io::Error,
+    },
+    /// The manifest could not be read, written or replaced.
+    Manifest(SegmentStoreError),
+    /// The store could not be recovered. [`RecoveryError::is_damage`] says
+    /// whether the directory is damaged or a file operation failed.
+    Recovery(Box<RecoveryError>),
+    /// The first commit of a new database, which makes its keyspaces,
+    /// failed. The next open makes it again.
+    Create {
+        /// The step that failed.
+        step: &'static str,
+        /// What it said.
+        source: Box<dyn Error + Send + Sync>,
+    },
+    /// The record of where the keyspaces are could not be read, or is not
+    /// what this build writes.
+    Catalog {
+        /// What is wrong with it.
+        what: &'static str,
+        /// The error of the read, if a read failed.
+        source: Option<Box<dyn Error + Send + Sync>>,
+    },
+    /// A thread of the database's background work could not be started.
+    Thread(io::Error),
+}
+
+impl OpenError {
+    pub(super) fn io<'a>(
+        action: &'static str,
+        path: &'a Path,
+    ) -> impl FnOnce(io::Error) -> Self + use<'a> {
+        move |source| Self::Io {
+            action,
+            path: path.to_path_buf(),
+            source,
+        }
+    }
+
+    pub(super) fn create<E: Error + Send + Sync + 'static>(
+        step: &'static str,
+    ) -> impl FnOnce(E) -> Self {
+        move |source| Self::Create {
+            step,
+            source: Box::new(source),
+        }
+    }
+
+    pub(super) fn catalog<E: Error + Send + Sync + 'static>(
+        what: &'static str,
+    ) -> impl FnOnce(E) -> Self {
+        move |source| Self::Catalog {
+            what,
+            source: Some(Box::new(source)),
+        }
+    }
+
+    /// Whether the directory is not one this build opens, and was left
+    /// byte for byte as it was: it holds no database and none was to be
+    /// made, it is another engine's, its format version is unknown, it has
+    /// lost its manifest, or its pages are of another size.
+    pub const fn left_untouched(&self) -> bool {
+        matches!(
+            self,
+            Self::NoDatabase { .. }
+                | Self::OtherEngine { .. }
+                | Self::FormatVersion { .. }
+                | Self::NoManifest { .. }
+                | Self::PageSize { .. }
+        )
+    }
+}
+
+impl fmt::Display for OpenError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoDatabase { dir } => write!(f, "{} holds no database", dir.display()),
+            Self::OtherEngine { dir, engine, entry } => write!(
+                f,
+                "{} was written by another storage engine ({engine}: {})",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::FormatVersion { dir, found } => write!(
+                f,
+                "{} is a LigninDB database of format version {found}, which this build does \
+                 not read",
+                dir.display()
+            ),
+            Self::NoManifest { dir, entry } => write!(
+                f,
+                "{} has files of a database ({}) and no manifest",
+                dir.display(),
+                Path::new(entry).display()
+            ),
+            Self::PageSize {
+                dir,
+                stored,
+                requested,
+            } => write!(
+                f,
+                "{} has pages of {} bytes, and {} were asked for",
+                dir.display(),
+                stored.get(),
+                requested.get()
+            ),
+            Self::Locked { dir } => write!(f, "{} is open in another handle", dir.display()),
+            Self::Io {
+                action,
+                path,
+                source,
+            } => write!(f, "cannot {action} {}: {source}", path.display()),
+            Self::Manifest(source) => write!(f, "manifest: {source}"),
+            Self::Recovery(source) => write!(f, "recovery: {source}"),
+            Self::Create { step, source } => {
+                write!(f, "the first commit of the database ({step}): {source}")
+            }
+            Self::Catalog { what, source } => match source {
+                Some(source) => write!(f, "the record of the keyspaces: {what}: {source}"),
+                None => write!(f, "the record of the keyspaces: {what}"),
+            },
+            Self::Thread(source) => write!(f, "cannot start the background work: {source}"),
+        }
+    }
+}
+
+impl Error for OpenError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Io { source, .. } | Self::Thread(source) => Some(source),
+            Self::Manifest(source) => Some(source),
+            Self::Recovery(source) => Some(&**source),
+            Self::Create { source, .. } => Some(&**source),
+            Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
+            Self::NoDatabase { .. }
+            | Self::OtherEngine { .. }
+            | Self::FormatVersion { .. }
+            | Self::NoManifest { .. }
+            | Self::PageSize { .. }
+            | Self::Locked { .. } => None,
+        }
+    }
+}
+
+impl From<RecoveryError> for OpenError {
+    fn from(error: RecoveryError) -> Self {
+        Self::Recovery(Box::new(error))
+    }
+}
+
+/// Why a session takes no write any more, and has to be ended: the
+/// database is closed and opened again, which settles what the log holds
+/// (DU2).
+///
+/// Reads go on, and so does a rollback. What was published stays
+/// published.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reopen {
+    /// A sync of the log failed: of a commit under a sync policy that asks
+    /// for one, or of a [`flush`](super::Db::flush). The log makes nothing
+    /// durable any more in this session (`lignin_store::wal`), so a write
+    /// that was taken now could be lost with no error to say so.
+    NotDurable {
+        /// The latest version when the sync failed. It is published, and
+        /// not known to be durable.
+        version: CommitVersion,
+        /// What the sync said.
+        reason: String,
+    },
+    /// The commit path stopped the session
+    /// ([`Stopped`]): whether a commit is in the log
+    /// could not be found out, or a commit is in the log and could not be
+    /// installed.
+    Stopped(Stopped),
+}
+
+impl fmt::Display for Reopen {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("the session takes no write, and the database has to be opened again: ")?;
+        match self {
+            Self::NotDurable { version, reason } => write!(
+                f,
+                "a sync of the log failed with version {version} published ({reason})"
+            ),
+            Self::Stopped(stopped) => write!(f, "{stopped}"),
+        }
+    }
+}
+
+impl Error for Reopen {}
+
+/// How a write through the facade ended, if not with its commit published
+/// and, where the sync policy asked for it, durable: a commit of a write
+/// transaction, a write with no transaction, and a wipe.
+#[derive(Debug)]
+pub enum WriteError {
+    /// The commit ended as the commit path says ([`CommitError`], with the
+    /// table of what each outcome leaves).
+    Commit(CommitError),
+    /// The session takes no write any more, and nothing was tried. A
+    /// transaction is as it was, and nothing of it will be committed in
+    /// this session.
+    Reopen(Reopen),
+}
+
+impl WriteError {
+    /// Whether a commit outside the transaction wrote a key after the
+    /// transaction first wrote it (CF2): the one outcome for which the
+    /// caller makes its writes again.
+    pub const fn is_conflict(&self) -> bool {
+        matches!(self, Self::Commit(CommitError::Conflict))
+    }
+
+    /// The commit, if it was published although an error is reported
+    /// ([`CommitError::NotDurable`]).
+    pub fn published(&self) -> Option<&Published> {
+        match self {
+            Self::Commit(error) => error.published(),
+            Self::Reopen(_) => None,
+        }
+    }
+
+    /// Whether the transaction is still open with its writes and its
+    /// savepoints ([`CommitError::leaves_transaction_open`]).
+    pub const fn leaves_transaction_open(&self) -> bool {
+        match self {
+            Self::Commit(error) => error.leaves_transaction_open(),
+            Self::Reopen(_) => true,
+        }
+    }
+
+    /// Why the database has to be opened again, if this error says so: the
+    /// session took no write, or this commit is the one that ended it.
+    pub fn reopen(&self) -> Option<Reopen> {
+        match self {
+            Self::Reopen(reopen) => Some(reopen.clone()),
+            Self::Commit(CommitError::NotDurable { published, source }) => {
+                Some(Reopen::NotDurable {
+                    version: published.version,
+                    reason: source.to_string(),
+                })
+            }
+            Self::Commit(CommitError::Stopped(stopped)) => Some(Reopen::Stopped(stopped.clone())),
+            Self::Commit(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for WriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Commit(error) => write!(f, "{error}"),
+            Self::Reopen(reopen) => write!(f, "{reopen}"),
+        }
+    }
+}
+
+impl Error for WriteError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Commit(error) => Some(error),
+            Self::Reopen(reopen) => Some(reopen),
+        }
+    }
+}
+
+impl From<CommitError> for WriteError {
+    fn from(error: CommitError) -> Self {
+        Self::Commit(error)
+    }
+}
+
+/// Why a call of the facade that is no write failed: a flush, a close, a
+/// turn of the background work that a caller made itself.
+#[derive(Debug)]
+pub enum DbError {
+    /// Write-back failed: a sync of the log, a table checkpoint, the
+    /// closing of the session's files.
+    Flush(FlushError),
+    /// A transaction refused, or a page of the store could not be read.
+    Txn(TxnError),
+    /// What a drop left could not be reclaimed.
+    Reclaim(String),
+    /// A thread of the background work panicked. Its work is not done, and
+    /// what it held is as a crash would leave it: the next open recovers.
+    Panicked(&'static str),
+}
+
+impl fmt::Display for DbError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Flush(source) => write!(f, "write-back: {source}"),
+            Self::Txn(source) => write!(f, "{source}"),
+            Self::Reclaim(reason) => write!(f, "reclaiming what a drop left: {reason}"),
+            Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
+        }
+    }
+}
+
+impl Error for DbError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Flush(source) => Some(source),
+            Self::Txn(source) => Some(source),
+            Self::Reclaim(_) | Self::Panicked(_) => None,
+        }
+    }
+}
+
+impl From<FlushError> for DbError {
+    fn from(error: FlushError) -> Self {
+        Self::Flush(error)
+    }
+}
+
+impl From<TxnError> for DbError {
+    fn from(error: TxnError) -> Self {
+        Self::Txn(error)
+    }
+}

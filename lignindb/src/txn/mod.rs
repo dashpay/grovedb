@@ -26,8 +26,10 @@
 //! [`crate::commit`], and what it is handed is at the end of this page.
 //!
 //! No example runs here: a [`WritePath`] is made where the database is
-//! opened, of the structures of one store (TXN-07). The tests make one over
-//! a store on disk (`tests/store.rs`).
+//! opened, of the structures of one store, and a caller begins a
+//! transaction with [`Db::begin`](crate::Db::begin), whose page has one.
+//! The tests of this module make a write path over a store on disk
+//! (`tests/store.rs`).
 //!
 //! # What a transaction reads
 //!
@@ -137,11 +139,16 @@
 //!   (`tree-layout.md` S3). The cell one root left can be the cell another
 //!   is in afterwards, so they are resolved together, against the entries
 //!   as they were before the write.
-//! - **A handle on the directory is of the pages it was loaded from.** The
-//!   frames load theirs when they are made, so it is read again after a
-//!   commit of another landed and after every rollback. The committed
-//!   records beside them are read through a handle of the committed
-//!   version of that read, and a cursor through one of its own version.
+//! - **A handle on the directory is of one version, and none is loaded
+//!   here.** The engine keeps the handle of every version that is read
+//!   ([`Directories`](crate::snapshot::Directories)), and a transaction
+//!   takes copies ([`WritePath::directory_at`]): the frames one of their
+//!   base when they are made, so again after a commit of another landed
+//!   and after every rollback; the committed records beside them one of
+//!   the committed version of that read; and a cursor one of its own
+//!   version. A handle that was loaded late, after a later commit landed
+//!   and what a drop left was reclaimed, would take a subtree that was
+//!   below the dropped one for a subtree in use.
 //! - **A drop is one write** (`transactions.md` CV9, CF5): one entry of
 //!   the write set, a delete of every key of every column under the
 //!   subtree, which is in the key set of the commit as the subtree. A
@@ -336,8 +343,9 @@
 //!   [`ChildKeys`]): for a node of its committed side from the children's
 //!   cells at its own version, which no read of the scope reaches.
 //! - **Starting a reclaimer** (CL6): what a drop left is reclaimed by
-//!   `lignin_tree::drop::Reclaimer`, which the tests run beside a writing
-//!   transaction. The engine owes it the log of its page steps (TXN-07).
+//!   `lignin_tree::drop::Reclaimer`, which the engine runs on a thread of
+//!   its own, with the log of its page steps ([`crate::db`], "Background
+//!   work").
 //! - **While the transaction serves its records by key**, a batch is not
 //!   checked against the directory: what it says of subtrees is checked
 //!   when the frames are made, and its commit is refused then.
@@ -390,6 +398,7 @@ pub use commits::Commits;
 pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed};
 pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
+pub(crate) use path::Store;
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
 pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};

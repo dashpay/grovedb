@@ -23,9 +23,10 @@
 //! write-back, and `log-format.md` what a group is.
 //!
 //! No example runs here: a [`Committer`] is made where the database is
-//! opened, of the structures of one store (TXN-07). The tests make one over
-//! a store on disk and over the simulated file system
-//! (`txn/tests/store.rs`).
+//! opened, of the structures of one store, and a caller commits through
+//! [`Db::commit`](crate::Db::commit), whose page has an example. The
+//! tests make a committer over a store on disk and over the simulated
+//! file system (`txn/tests/store.rs`).
 //!
 //! # The steps of a commit
 //!
