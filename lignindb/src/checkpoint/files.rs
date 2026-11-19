@@ -24,7 +24,7 @@ const COPY_CHUNK_LEN: u64 = 1 << 20;
 
 /// The directory above `path` as the file layer is given it, or `None` if
 /// `path` has none.
-fn parent_of(path: &Path) -> Option<&Path> {
+pub(super) fn parent_of(path: &Path) -> Option<&Path> {
     let parent = path.parent()?;
     Some(match parent.as_os_str().is_empty() {
         true => Path::new("."),
@@ -33,13 +33,19 @@ fn parent_of(path: &Path) -> Option<&Path> {
 }
 
 /// Whether a hard link that failed with `kind` is one that the file system
-/// cannot make, so that a copy stands in for it: the two names are on
-/// different file systems, the file system has no hard links, or the file
-/// has as many names as it can have.
+/// does not make, so that a copy stands in for it: the two names are on
+/// different file systems, the file has as many names as it can have, or
+/// the file system has no hard links, which it says as "not supported" or,
+/// on Linux, as "not permitted". Where a link is refused for want of a
+/// permission, the copy is refused too, when the file is opened or its
+/// copy is created.
 const fn copies_instead(kind: ErrorKind) -> bool {
     matches!(
         kind,
-        ErrorKind::CrossesDevices | ErrorKind::Unsupported | ErrorKind::TooManyLinks
+        ErrorKind::CrossesDevices
+            | ErrorKind::TooManyLinks
+            | ErrorKind::Unsupported
+            | ErrorKind::PermissionDenied
     )
 }
 
@@ -69,6 +75,19 @@ pub(super) struct Target {
 }
 
 impl Target {
+    /// Refuses a target that is there, as a directory or as anything else,
+    /// before anything is done for it. [`Self::make`] is what decides.
+    pub(super) fn refuse_existing(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
+        match vfs.read_dir(dir) {
+            Ok(_) => {}
+            Err(error) if error.kind() == ErrorKind::NotADirectory => {}
+            Err(_) => return Ok(()),
+        }
+        Err(CheckpointError::TargetExists {
+            target: dir.to_path_buf(),
+        })
+    }
+
     /// Makes the directory `dir`, which must not be there, in a directory
     /// that is.
     pub(super) fn make(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<Self, CheckpointError> {
@@ -104,7 +123,8 @@ impl Target {
         &self.vfs
     }
 
-    /// Makes the name of the target durable.
+    /// Makes the name of the target durable, with everything that is
+    /// durable in it.
     pub(super) fn sync_parent(&self) -> Result<(), CheckpointError> {
         self.vfs
             .sync_dir(&self.parent)
@@ -298,17 +318,17 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// other once it is made, so the call cannot tell one from a database that
 /// was created, and deletes that too.
 ///
-/// The manifest goes after everything but the lock file. If the removal is
-/// cut short, what is left still has it and no longer opens, or is the
-/// lock file alone, and the call can be made again: it finishes a
-/// directory that holds nothing else. When it returns `Ok`, the removal is
-/// durable.
+/// The manifest goes after everything but the lock file, and only once
+/// the removal of everything else is durable. If the removal is cut
+/// short, by an error or by the power, what is left still has the
+/// manifest and no longer opens, or is the lock file alone, or is empty,
+/// and the call can be made again: it finishes a directory that holds
+/// nothing else. When it returns `Ok`, the removal is durable.
 pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     if let Err(source) = read_manifest(vfs, dir) {
         // What a deletion leaves that was cut short behind the manifest.
-        let lock_alone = |entries: Vec<DirEntry>| {
-            !entries.is_empty() && entries.iter().all(|entry| entry.name == LOCK_FILE_NAME)
-        };
+        let lock_alone =
+            |entries: Vec<DirEntry>| (entries.iter()).all(|entry| entry.name == LOCK_FILE_NAME);
         if !vfs.read_dir(dir).is_ok_and(lock_alone) {
             return Err(CheckpointError::NotADatabase {
                 dir: dir.to_path_buf(),
@@ -332,6 +352,11 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
             remove_entry(vfs, &dir.join(&entry.name), entry.kind)?;
         }
     }
+    // A power cut keeps the removal of a name with or without the removals
+    // before it. The manifest goes only once those are durable, so that
+    // none of them comes back beside a directory that has no manifest.
+    vfs.sync_dir(dir)
+        .map_err(CheckpointError::io("sync the directory", dir))?;
     for name in last {
         let path = dir.join(name);
         match vfs.remove_file(&path) {

@@ -90,6 +90,7 @@ fn where_no_link_can_be_made_the_files_are_copied() {
         ErrorKind::CrossesDevices,
         ErrorKind::Unsupported,
         ErrorKind::TooManyLinks,
+        ErrorKind::PermissionDenied,
     ] {
         let (db, versions) = store_without_links(kind);
         let mut world = World::new(&db, &versions);
@@ -192,7 +193,7 @@ fn a_checkpoint_on_another_file_system_is_copied() {
 /// fails with the error, and takes away what it made.
 #[test]
 fn a_link_that_fails_for_another_reason_fails_the_creation() {
-    let (db, versions) = store_without_links(ErrorKind::PermissionDenied);
+    let (db, versions) = store_without_links(ErrorKind::StorageFull);
     let mut world = World::new(&db, &versions);
     block(&mut world, &mut Rng::new(63), 0, 10);
     turn(&db, &versions);
@@ -200,7 +201,7 @@ fn a_link_that_fails_for_another_reason_fails_the_creation() {
     let failed = checkpointer(&db, &versions).create(&target);
     assert!(
         matches!(&failed, Err(CheckpointError::Io { action: "link", source, .. })
-            if source.kind() == ErrorKind::PermissionDenied),
+            if source.kind() == ErrorKind::StorageFull),
         "{failed:?}"
     );
     assert!(!target.exists());
@@ -323,6 +324,18 @@ fn deleting_a_checkpoint_removes_its_directory() {
     block(&mut world, &mut rng, 4 * 20, 20);
     world.check_committed();
 
+    // What a deletion that was cut short behind the manifest leaves is
+    // finished: the lock file alone, or nothing.
+    for lock_left in [true, false] {
+        let leftover = checkpoints.join("leftover");
+        std::fs::create_dir(&leftover).expect("a directory");
+        if lock_left {
+            std::fs::write(leftover.join("LOCK"), b"").expect("a file");
+        }
+        checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
+        assert!(!leftover.exists());
+    }
+
     // No database: a directory of the caller's, and nothing at all.
     let not_one = checkpoints.join("not-one");
     std::fs::create_dir(&not_one).expect("a directory");
@@ -407,6 +420,85 @@ fn a_deletion_that_is_cut_short_can_be_made_again() {
     let left = image.recover(&image.lose_all()).expect("a state");
     assert!(left.read_dir(&target).is_err());
     world.check_committed();
+}
+
+/// The power is cut after each operation of a deletion. In every state the
+/// crash can leave, the directory is gone, or the deletion can be made
+/// again and ends it: nothing is left that the call refuses.
+#[test]
+fn a_deletion_that_the_power_cuts_can_be_made_again() {
+    use lignin_io::sim::CrashPoint;
+
+    let build = || {
+        let fs = sim(68);
+        let (db, versions) = store_on(&fs);
+        let mut world = World::new(&db, &versions);
+        block(&mut world, &mut Rng::new(68), 0, 10);
+        (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+        let target = checkpoints_in(&db).join("1");
+        (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+        fs.create_dir(&target.join("theirs")).expect("a directory");
+        (fs.sync_dir(&target)).expect("the caller's directory is durable");
+        drop(world);
+        (fs, target)
+    };
+    let (fs, target) = build();
+    let from = fs.stats().ops;
+    checkpoint::delete(&fs, &target).expect("the checkpoint is deleted");
+    let ops = fs.stats().ops - from;
+    assert!(ops > 8, "a deletion of {ops} operations");
+
+    let (mut gone, mut finished) = (0, 0);
+    for cut in 1..=ops {
+        let (fs, target) = build();
+        assert_eq!(fs.stats().ops, from, "the same store");
+        fs.crash_at(CrashPoint::AfterOp(from + cut));
+        let deleted = checkpoint::delete(&fs, &target);
+        assert_eq!(
+            deleted.is_ok(),
+            cut == ops,
+            "cut {cut} of {ops}: {deleted:?}"
+        );
+        let image = fs.crash_image();
+        let mut plans = vec![image.lose_all(), image.keep_all()];
+        plans.extend(image.prefixes());
+        plans.extend(image.holes());
+        plans.extend((0..8).map(|draw| image.sample(draw)));
+        for (index, plan) in plans.iter().enumerate() {
+            let Ok(left) = image.recover(plan) else {
+                continue;
+            };
+            let context = format!("cut {cut} of {ops}, crash plan {index}");
+            if left.read_dir(&target).is_err() {
+                gone += 1;
+                continue;
+            }
+            assert!(deleted.is_err(), "{context}: the deletion came back");
+            checkpoint::delete(&left, &target).unwrap_or_else(|error| panic!("{context}: {error}"));
+            assert!(left.read_dir(&target).is_err(), "{context}");
+            finished += 1;
+        }
+    }
+    assert!(gone > 0 && finished > 0, "{gone}, {finished}");
+}
+
+/// The directory above a path, as the file layer is given it.
+#[test]
+fn the_directory_above_a_target() {
+    use crate::checkpoint::files::parent_of;
+
+    assert_eq!(
+        parent_of(Path::new("/db/checkpoints/1")),
+        Some(Path::new("/db/checkpoints"))
+    );
+    assert_eq!(
+        parent_of(Path::new("checkpoints/1")),
+        Some(Path::new("checkpoints"))
+    );
+    // A target that is one name lies in the directory the process is in.
+    assert_eq!(parent_of(Path::new("1")), Some(Path::new(".")));
+    assert_eq!(parent_of(Path::new("/")), None);
+    assert_eq!(parent_of(Path::new("")), None);
 }
 
 /// Every error says what it is.
