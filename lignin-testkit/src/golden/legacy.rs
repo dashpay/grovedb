@@ -37,6 +37,25 @@
 //!    refuse the limit and grove versions 1 to 4 the offset
 //!    (`subquery-limit`, `subquery-offset`).
 //!
+//! 10. **A limit of a query node on a layer that has subqueries**, which
+//!     grove versions 1 to 3 refuse, grove version 4 proves with every key
+//!     of the layer and grove version 5 with the keys the page needed
+//!     (`limit-over-subqueries`). With it: a page whose rows are trees,
+//!     one of them empty, whose proof does not verify on grove version 4
+//!     (`capped-tree-rows`); a limit of the whole query over keys without
+//!     documents, which grove versions 1 to 3 charge in one way when they
+//!     read and in another when they prove (`limit-over-empty-subtrees`);
+//!     and a branch without a subquery under a node that has one, which
+//!     grove versions 1 to 4 refuse to prove (`branch-without-subquery`).
+//! 11. **A tree that one batch creates and fills**, which grove versions 1
+//!     to 4 accept where they refuse the insert alone (the `filled-tree-…`
+//!     cases).
+//! 12. **Two behaviours of the storage-flag callbacks**: an update that
+//!     stores flags of another length without the callback changing them,
+//!     which fails on grove versions 1 to 3 (`flags-of-another-length`),
+//!     and an update accounted as a replacement, which grove versions 1 to
+//!     4 refuse (`full-handover`).
+//!
 //! Two more cases hold what every grove version refuses and the generators
 //! therefore never ask for: an offset where no count commits the rows it
 //! skips (`offset-without-count`) and an aggregate for each key of a full
@@ -50,6 +69,7 @@ use grovedb::{element::reference_path::ReferencePathType, Element};
 
 use crate::workload::{AppendEntry, BatchOp, Op, Query, QueryItem, Read, Write};
 
+mod later;
 mod refusals;
 
 /// A hand-written case: the operations applied to an empty database.
@@ -516,6 +536,7 @@ pub fn cases() -> Vec<Case> {
     );
     cases.push(reference_case());
     cases.extend(refusals::cases());
+    cases.extend(later::cases());
     cases
 }
 
@@ -711,7 +732,7 @@ mod tests {
     /// What the cases for refused operations and forms of query tally on
     /// grove versions 1 to 5: the operations refused, then the proofs
     /// refused.
-    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 12] = [
+    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 23] = [
         ("move-in-batch", [2, 2, 2, 0, 0], [0; 5]),
         ("drop-flat", [1, 1, 1, 0, 0], [0; 5]),
         ("drop-flat-in-batch", [1, 1, 1, 0, 0], [0; 5]),
@@ -724,6 +745,32 @@ mod tests {
         ("subquery-offset", [1, 1, 1, 1, 0], [1, 1, 1, 1, 0]),
         ("offset-without-count", [1; 5], [2; 5]),
         ("aggregate-per-key-over-every-key", [1; 5], [1; 5]),
+        ("limit-over-subqueries", [5, 5, 5, 0, 0], [5, 5, 5, 0, 0]),
+        ("capped-tree-rows", [1, 1, 1, 0, 0], [1, 1, 1, 0, 0]),
+        ("limit-over-empty-subtrees", [0; 5], [0; 5]),
+        ("branch-without-subquery", [0; 5], [1, 1, 1, 1, 0]),
+        ("filled-tree", [0; 5], [0; 5]),
+        ("filled-tree-claims-a-sum", [1, 1, 1, 1, 2], [1, 1, 0, 0, 0]),
+        (
+            "filled-tree-axes-out-of-order",
+            [1, 1, 1, 1, 2],
+            [1, 1, 0, 0, 0],
+        ),
+        ("filled-tree-wrapped", [1, 1, 1, 1, 2], [0; 5]),
+        (
+            "filled-tree-entry-of-indexed-tree",
+            [1, 1, 1, 1, 2],
+            [1, 1, 0, 0, 0],
+        ),
+        ("flags-of-another-length", [2, 2, 2, 0, 0], [0; 5]),
+        ("full-handover", [1, 1, 1, 1, 0], [0; 5]),
+    ];
+
+    /// The proofs of those cases that do not verify, on grove versions 1 to
+    /// 5, where there are any.
+    const UNVERIFIED: [(&str, [usize; 5]); 2] = [
+        ("capped-tree-rows", [0, 0, 0, 1, 0]),
+        ("limit-over-empty-subtrees", [2, 2, 0, 0, 0]),
     ];
 
     /// Keeps the panics this module expects out of the test output. Any
@@ -867,9 +914,13 @@ mod tests {
             if let Some((_, operations, proofs)) =
                 REFUSALS.iter().find(|(refusal, ..)| *refusal == name)
             {
+                let unverified = UNVERIFIED
+                    .iter()
+                    .find(|(case, _)| *case == name)
+                    .map_or([0; 5], |(_, proofs)| *proofs);
                 assert_eq!(failed, operations, "{name}");
                 assert_eq!(unproved, proofs, "{name}");
-                assert_eq!(refused, [0; 5], "{name}");
+                assert_eq!(refused, unverified, "{name}");
                 continue;
             }
             assert_eq!(failed, [0; 5], "{name}: an operation failed");
