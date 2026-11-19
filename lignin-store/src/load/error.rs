@@ -97,6 +97,21 @@ pub enum LoadError {
         /// The block of the run.
         location: BlockLocation,
     },
+    /// A run of deltas in a segment is longer than the store allows: its
+    /// payload is more than one page size
+    /// ([`max_run_len`](crate::flush::max_run_len)). Write-back writes a
+    /// page whose run would be that long as a base image.
+    RunTooLong {
+        /// The page.
+        page: PageId,
+        /// The block of the run.
+        location: BlockLocation,
+        /// The bytes of the run's payload, or, for a block that is longer
+        /// than any allowed run can be stored as, of the block's body.
+        len: usize,
+        /// The longest payload a run of this store has.
+        max: usize,
+    },
     /// A page version in a segment holds a value that is not in the value
     /// log yet: its base image does, or the page as the last record of a
     /// run leaves it. Write-back places every value before it writes the
@@ -185,6 +200,16 @@ impl fmt::Display for LoadError {
             Self::CreatedInSegment { page, location } => write!(
                 f,
                 "{} is a run that creates page {page}, in a segment",
+                block(location)
+            ),
+            Self::RunTooLong {
+                page,
+                location,
+                len,
+                max,
+            } => write!(
+                f,
+                "{} is a run of {len} bytes for page {page}, and a run of this store has at most {max}",
                 block(location)
             ),
             Self::PendingValue { page, location } => write!(
