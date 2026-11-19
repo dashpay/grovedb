@@ -86,8 +86,7 @@ impl Run<'_, '_, '_> {
             if self.walk_flat(&tree, Records::Any) {
                 entries = self.read_directory(&tree, guard);
             } else {
-                let what = || "its keyspace is no tree, so its records are not read".to_owned();
-                self.add(Rule::Directory, Place::Page(tree.root()), what);
+                self.add(Rule::Directory, Place::Page(tree.root()), not_scanned);
             }
             let none = HashMap::new();
             let prefixes = (entries.as_ref()).map_or(&none, |entries| &entries.by_prefix);
@@ -119,8 +118,8 @@ impl Run<'_, '_, '_> {
             if self.walk_flat(drops.tree(), Records::Any) {
                 self.walk_left_pages(&drops, guard);
             } else {
-                let what = || "its keyspace is no tree, so its records are not read".to_owned();
-                self.add(Rule::FlatDropRecord, Place::Page(drops.tree().root()), what);
+                let place = Place::Page(drops.tree().root());
+                self.add(Rule::FlatDropRecord, place, not_scanned);
                 self.cut.flat = true;
             }
         }
@@ -240,8 +239,16 @@ impl Run<'_, '_, '_> {
     }
 
     /// Walks the keyspace `tree` from its root, and returns whether its
-    /// pages are a tree that was read whole: the walk read every page it
-    /// was pointed at, and found nothing.
+    /// records can be read by a scan: the walk read every page it was
+    /// pointed at, and found nothing.
+    ///
+    /// Any finding of the walk counts, also one that leaves every page
+    /// read, as a key or a level out of its place does. The records are
+    /// read by the engine's cursor (`lignin_tree::flat`), which finds its
+    /// way by the separators and the levels, and ends a scan at the first
+    /// key that is not of the scan's range. Over leaves that are out of
+    /// their order it ends before the last record with no error, and what
+    /// it gave would be taken for all there is.
     fn walk_flat(&mut self, tree: &FlatTree, records: Records<'_>) -> bool {
         let before = self.found.count();
         let whole = self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
@@ -453,6 +460,12 @@ impl Run<'_, '_, '_> {
         self.cut.flat |= !whole;
         whole
     }
+}
+
+/// What is said of a keyspace whose records are not read because its walk
+/// did not pass ([`Run::walk_flat`]).
+fn not_scanned() -> String {
+    "the pages of its keyspace have a finding of their own, so its records are not read".to_owned()
 }
 
 /// The lower of two upper bounds.

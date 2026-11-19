@@ -1279,7 +1279,8 @@ fn a_flat_branch_that_is_not_read_blames_no_page_below_it() {
     assert_eq!(report.rules(), [Rule::FlatPageFormat], "{report}");
 }
 
-/// The keyspace of the records of range deletes is no tree: its records
+/// The keyspace of the records of range deletes has a page that is not
+/// read: its records
 /// are not read, which is reported, and the pages that a range delete
 /// left are not reported as pages that nothing reaches, since a record
 /// that is not read names them.
@@ -1301,7 +1302,7 @@ fn records_of_range_deletes_that_are_not_read_blame_no_page() {
         [Rule::FlatPageFormat, Rule::FlatDropRecord],
         "{report}"
     );
-    assert!(said(&report, "its keyspace is no tree"), "{report}");
+    assert!(said(&report, "so its records are not read"), "{report}");
 }
 
 /// A page of the directory's keyspace is not read: the directory is not
@@ -1319,7 +1320,7 @@ fn a_directory_in_a_keyspace_with_a_page_that_is_not_read_is_not_read() {
         [Rule::FlatPageFormat, Rule::Directory],
         "{report}"
     );
-    assert!(said(&report, "its keyspace is no tree"), "{report}");
+    assert!(said(&report, "so its records are not read"), "{report}");
     assert_eq!(report.census.live_cells, 0);
     assert!(report.unreached.uncertain, "{report}");
 }
@@ -1339,6 +1340,35 @@ fn a_run_longer_than_a_page_is_refused_for_its_length() {
         let words = format!("and a run of this store has at most {}", SIZE.get());
         assert!(said(&report, &words), "{report}");
     }
+}
+
+/// Two leaves of the directory's keyspace are exchanged: every page is
+/// read and is reached once, and the keys are out of order. The directory
+/// is not read from such a keyspace. A scan of it ends at the first record
+/// that is not of the scan's kind, with no error, so the entries behind a
+/// leaf that is out of its place would be missed, and the flat records and
+/// the hosts of the Merks they are of would be blamed.
+#[test]
+fn a_directory_in_a_keyspace_out_of_key_order_is_not_read() {
+    let store = plant();
+    store.db.unchecked();
+    // The last leaf holds the last entries and the records behind them:
+    // it is put before every other leaf.
+    let root = store.db.directory().root();
+    store.rebuild_branch(root, |children, _| {
+        assert!(children.len() > 2);
+        let last = children.len() - 1;
+        children.swap(0, last);
+    });
+    let report = store.check();
+    assert_eq!(
+        report.rules(),
+        [Rule::FlatKeyOrder, Rule::Directory],
+        "{report}"
+    );
+    assert!(said(&report, "so its records are not read"), "{report}");
+    assert_eq!(report.census.live_cells, 0);
+    assert!(report.unreached.uncertain, "{report}");
 }
 
 /// Whether a finding of `report` says `words`.

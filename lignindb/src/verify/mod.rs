@@ -103,9 +103,16 @@
 //! - **The counts of live values** ([`Rule::ValueCount`]): not compared
 //!   while any page of the version is not read, since it may hold
 //!   pointers.
-//! - **The directory**: with a keyspace that is no tree, or records that
-//!   are not all read, no Merk is walked and no flat record is compared
-//!   with its entries.
+//! - **The directory, and the records of range deletes**: their records
+//!   are read by a scan of their keyspace, and a scan is trusted only
+//!   over a keyspace whose walk found nothing: every page read and
+//!   reached once, every level and every key in its place. The engine's
+//!   cursor ends a scan at the first key outside its range, so over
+//!   leaves that are out of their order it would end early with no
+//!   error. Where the walk has a finding, or a scan ends at an error, the
+//!   records are not read, which is a finding of its own
+//!   ([`Rule::Directory`], [`Rule::FlatDropRecord`]). With no directory,
+//!   no Merk is walked and no flat record is compared with its entries.
 //!
 //! So one page that is not read gives the finding of that page, and the
 //! findings of what was read; the rest waits for a run over a store whose
@@ -328,10 +335,10 @@ impl Options {
 ///
 /// The run returns its findings and never fails: a page that cannot be
 /// read is a finding, and what could only be reached through it is not
-/// looked at. So with a directory whose keyspace is no tree, or whose
-/// records are not all read, no Merk is walked and no flat record is
-/// compared with its entries: the cells are then counted as reached by
-/// nothing, beside the finding that says why.
+/// looked at. So with a directory whose keyspace has a finding of its
+/// own, or whose records are not all read, no Merk is walked and no flat
+/// record is compared with its entries: the cells are then counted as
+/// reached by nothing, beside the finding that says why.
 pub fn check<G: OperationGuard + ?Sized>(
     store: &Store<'_, '_>,
     guard: &G,
