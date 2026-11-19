@@ -32,7 +32,7 @@ use lignin_store::{
     segment::{ManifestStore, SegmentStore, SegmentWriter},
     table::{Link, PageTable},
 };
-use lignindb::snapshot::{Reclaim, Versions};
+use lignindb::snapshot::{ReadPath, Reclaim, Versions};
 
 pub const SIZE: PageSize = PageSize::MIN;
 
@@ -117,6 +117,8 @@ pub struct Counts {
     pub ids_released: AtomicU64,
     pub links_trimmed: AtomicU64,
     pub reclaims: AtomicU64,
+    /// Times a reader said that a reclaim is due.
+    pub wakes: AtomicU64,
 }
 
 pub struct Store {
@@ -140,14 +142,13 @@ pub struct Store {
 
 impl Store {
     /// An empty store with a pool of `frames` frames, which keeps the pages
-    /// of every version for [`Self::pages_at`]. A reclaim also trims the
-    /// page table's chains.
+    /// of every version for [`Self::pages_at`].
     pub fn new(frames: usize) -> Arc<Self> {
         Self::build(frames, true)
     }
 
     /// As [`Self::new`], for a run of any length: only the pages of the
-    /// latest version are kept, and the chains are not trimmed.
+    /// latest version are kept.
     pub fn without_history(frames: usize) -> Arc<Self> {
         Self::build(frames, false)
     }
@@ -191,6 +192,11 @@ impl Store {
         PageLoader::new(&self.pool, &self.table, &self.segments, SIZE).expect("a loader")
     }
 
+    /// The read path of this store under its `versions`.
+    pub fn reads<'s>(&'s self, versions: &'s Versions) -> ReadPath<'s> {
+        ReadPath::new(versions, self.loader())
+    }
+
     /// The pages of `version`. A store without history has those of the
     /// latest version only.
     pub fn pages_at(&self, version: CommitVersion) -> Arc<Pages> {
@@ -204,9 +210,10 @@ impl Store {
     }
 
     /// One commit, from its install to its publication (CM3 steps 7 and
-    /// 8), and the reclaim that is asked for after it. One thread commits.
+    /// 8), and the reclaim that follows it. One thread commits.
     pub fn commit(&self, versions: &Versions, changes: &Changes) -> CommitVersion {
-        let latest = versions.latest();
+        let guard = versions.guard();
+        let latest = guard.latest();
         let commit = latest.next().expect("a next version");
         let owner = OwnerId::new(commit.get());
         let mut pages = Pages::clone(&self.pages_at(latest));
@@ -253,6 +260,7 @@ impl Store {
             drop(self.pool.install(copy, commit).expect("it installs"));
         }
         drop(copies);
+        drop(guard);
         let mut used = locked(&self.used);
         for id in created {
             self.ids.publish(id).expect("it is private");
@@ -307,7 +315,8 @@ impl Store {
 struct Hook(Arc<Store>);
 
 /// What a reclaim does to the store: the page id allocator and the buffer
-/// pool take their steps, and then the cleaner's part.
+/// pool take their steps, and then the cleaner's part, which trims the
+/// page table's chains.
 impl Reclaim for Hook {
     fn reclaim(&self, pins: &Versions) {
         let store = &self.0;
@@ -319,9 +328,6 @@ impl Reclaim for Hook {
             .ids_released
             .fetch_add(released.len() as u64, Ordering::Relaxed);
         store.pool.reclaim(pins);
-        if !store.keep_history {
-            return;
-        }
 
         let oldest_pin = pins.oldest_pin();
         let epoch = pins.next_epoch();
@@ -346,6 +352,12 @@ impl Reclaim for Hook {
             .counts
             .links_trimmed
             .fetch_add(removed.len() as u64, Ordering::Relaxed);
+    }
+
+    /// The store has no background work: the reclaim after the next commit
+    /// takes what the reader held back.
+    fn wake(&self) {
+        self.0.counts.wakes.fetch_add(1, Ordering::Relaxed);
     }
 }
 

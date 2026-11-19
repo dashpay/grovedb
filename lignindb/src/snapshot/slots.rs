@@ -116,21 +116,25 @@ impl Slots {
     /// Claims a cell that announces what `source` holds, and returns the
     /// cell with the announced number once `source` has been found to hold
     /// that number still: announce, then look again. If `source` has moved
-    /// on in between, its newer number is announced and looked at again.
+    /// on in between, its newer number is announced and looked at again,
+    /// and the last part of the answer says that an older announcement was
+    /// withdrawn that way.
     ///
     /// So the number returned was the one in `source` at a moment after it
     /// was announced. That is what makes an answer of [`Self::min`] stay
     /// true when it was taken after a read of `source`.
-    pub(super) fn claim_current(&self, source: &AtomicU64) -> (Slot<'_>, u64) {
+    pub(super) fn claim_current(&self, source: &AtomicU64) -> (Slot<'_>, u64, bool) {
         let mut announced = source.load(Ordering::SeqCst);
         let slot = self.claim(announced);
+        let mut withdrew = false;
         loop {
             let now = source.load(Ordering::SeqCst);
             if now == announced {
-                return (slot, announced);
+                return (slot, announced, withdrew);
             }
             announced = now;
             slot.announce(announced);
+            withdrew = true;
         }
     }
 

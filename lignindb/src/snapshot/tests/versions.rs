@@ -215,11 +215,12 @@ fn any_number_of_pins_and_guards_are_held_at_once() {
     assert_eq!(versions.oldest_pin(), version(700));
 }
 
-/// Counts the reclaims it is asked for, and what the oldest pin was at
-/// each.
+/// Counts the reclaims it runs, with what the oldest pin was at each, and
+/// the times it is told that one is due.
 #[derive(Default)]
 struct Counting {
     calls: AtomicUsize,
+    wakes: AtomicUsize,
     oldest: Mutex<Vec<u64>>,
 }
 
@@ -229,41 +230,70 @@ impl Reclaim for Arc<Counting> {
         let oldest = pins.oldest_pin().get();
         self.oldest.lock().expect("no panic").push(oldest);
     }
+
+    fn wake(&self) {
+        self.wakes.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 #[test]
-fn a_reclaim_is_asked_for_when_a_pin_before_the_latest_is_dropped() {
+fn a_pin_before_the_latest_says_that_a_reclaim_is_due_and_runs_none() {
     let counting = Arc::new(Counting::default());
     let versions = Versions::with_reclaim(version(1), Box::new(counting.clone()));
-    let calls = || counting.calls.load(Ordering::SeqCst);
+    let counts = || {
+        (
+            counting.calls.load(Ordering::SeqCst),
+            counting.wakes.load(Ordering::SeqCst),
+        )
+    };
 
-    // A pin on the latest version holds nothing back.
+    // A pin on the latest version holds nothing back, and neither does a
+    // guard that goes.
     drop(versions.pin());
     drop(versions.guard());
-    assert_eq!(calls(), 0);
+    assert_eq!(counts(), (0, 0));
 
-    // The committer asks after it has published.
+    // The committer reclaims after it has published.
     let old = versions.pin();
     let older_still = versions.pin();
     versions.publish(version(2)).expect("the next version");
-    assert_eq!(calls(), 0);
+    assert_eq!(counts(), (0, 0));
     versions.reclaim();
-    assert_eq!(calls(), 1);
+    assert_eq!(counts(), (1, 0));
 
-    // A pin before the latest version asks when it goes, and the reclaim
-    // then finds it gone.
+    // A pin before the latest version says so when it goes. The reader
+    // runs no reclaim: the one that is run later finds the pin gone.
     drop(old);
-    assert_eq!(calls(), 2);
+    assert_eq!(counts(), (1, 1));
     drop(older_still);
-    assert_eq!(calls(), 3);
-    assert_eq!(*counting.oldest.lock().expect("no panic"), [1, 1, 2]);
+    assert_eq!(counts(), (1, 2));
+    versions.reclaim();
+    assert_eq!(counts(), (2, 2));
+    assert_eq!(*counting.oldest.lock().expect("no panic"), [1, 2]);
 
-    // With nobody to ask, nothing happens.
+    // With nobody to ask or tell, nothing happens.
     let alone = published(1);
     let pin = alone.pin();
     alone.publish(version(2)).expect("the next version");
     drop(pin);
     alone.reclaim();
+}
+
+/// A reclaimer that does not act on being told.
+struct Deaf;
+
+impl Reclaim for Deaf {
+    fn reclaim(&self, _: &Versions) {}
+}
+
+#[test]
+fn a_reclaim_need_not_act_on_being_told() {
+    let versions = Versions::with_reclaim(version(1), Box::new(Deaf));
+    let pin = versions.pin();
+    versions.publish(version(2)).expect("the next version");
+    drop(pin);
+    versions.reclaim();
+    assert_eq!(versions.oldest_pin(), version(2));
 }
 
 /// Asks for another reclaim from inside the first one it runs.
@@ -287,41 +317,54 @@ fn a_reclaim_that_is_asked_for_while_one_runs_follows_it() {
     assert_eq!(calls.load(Ordering::SeqCst), 3);
 }
 
-/// Stops inside its first reclaim until it is let go.
+/// Stops inside its first reclaim until it is let go, and fails if two
+/// run at once.
 struct Stops {
     calls: AtomicUsize,
+    inside_now: AtomicBool,
     inside: Barrier,
     go_on: Barrier,
 }
 
 impl Reclaim for Arc<Stops> {
     fn reclaim(&self, _: &Versions) {
+        assert!(!self.inside_now.swap(true, Ordering::SeqCst), "two at once");
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
             self.inside.wait();
             self.go_on.wait();
         }
+        self.inside_now.store(false, Ordering::SeqCst);
     }
 }
 
+/// While one reclaim runs, a second and a third call return at once and
+/// start none: a call that could not begin leaves the mark of the one
+/// that is running as it is.
 #[test]
-fn a_reader_that_drops_a_pin_does_not_wait_for_a_running_reclaim() {
+fn calls_that_find_a_reclaim_running_leave_word_and_do_not_run_beside_it() {
     let stops = Arc::new(Stops {
         calls: AtomicUsize::new(0),
+        inside_now: AtomicBool::new(false),
         inside: Barrier::new(2),
         go_on: Barrier::new(2),
     });
     let versions = Versions::with_reclaim(version(1), Box::new(stops.clone()));
-    let pin = versions.pin();
-    versions.publish(version(2)).expect("the next version");
     thread::scope(|scope| {
         scope.spawn(|| versions.reclaim());
         stops.inside.wait();
-        // The first reclaim is running. The drop leaves word and returns.
-        drop(pin);
+        for _ in 0..3 {
+            versions.reclaim();
+            assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
+        }
+        thread::scope(|others| {
+            for _ in 0..3 {
+                others.spawn(|| versions.reclaim());
+            }
+        });
         assert_eq!(stops.calls.load(Ordering::SeqCst), 1);
         stops.go_on.wait();
     });
-    // The thread that ran the first one ran another for the drop.
+    // The thread that ran the first one ran one more, for all of them.
     assert_eq!(stops.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -413,10 +456,8 @@ fn a_thread_runs_two_reclaims_at_most_and_the_next_call_runs_what_was_left() {
     let versions = Versions::with_reclaim(version(1), Box::new(AlwaysAsksAgain(calls.clone())));
     versions.reclaim();
     assert_eq!(calls.load(Ordering::SeqCst), 2);
-    // Word was left during the second one. A pin that goes runs it.
-    let pin = versions.pin();
-    versions.publish(version(2)).expect("the next version");
-    drop(pin);
+    // Word was left during the second one. The next call runs it.
+    versions.reclaim();
     assert_eq!(calls.load(Ordering::SeqCst), 4);
 }
 
@@ -440,6 +481,24 @@ fn a_reclaim_that_panics_does_not_stop_the_next_one() {
     versions.reclaim();
     versions.reclaim();
     assert_eq!(calls.load(Ordering::SeqCst), 3);
+}
+
+#[test]
+fn the_clock_of_retirements_stops_before_the_number_of_an_unclaimed_cell() {
+    let versions = published(1);
+    versions.set_epoch(u64::MAX - 3);
+    assert_eq!(versions.next_epoch(), Epoch::new(u64::MAX - 2));
+    assert_eq!(versions.next_epoch(), Epoch::new(u64::MAX - 1));
+    let guard = versions.guard();
+    assert_eq!(guard.epoch(), Epoch::new(u64::MAX - 1));
+    assert_eq!(versions.oldest_guard(), Epoch::new(u64::MAX - 1));
+    assert_eq!(versions.guards_held(), 1);
+
+    let stopped = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| versions.next_epoch()));
+    assert!(stopped.is_err());
+    assert_eq!(versions.epoch(), Epoch::new(u64::MAX - 1));
+    drop(guard);
+    assert_eq!(versions.guards_held(), 0);
 }
 
 #[test]

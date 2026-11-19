@@ -12,6 +12,15 @@
 //! neither is told: which page each id named from which commit to which,
 //! and which reader can reach it.
 //!
+//! The actors are those of the allocator's check: a write transaction that
+//! allocates, marks a page to be freed or dropped and rolls back; its
+//! commit, in two steps; a snapshot; an operation with no pin, in three
+//! steps; a reclaim, in four; and whoever reclaims a dropped page, which
+//! frees it later with the version of the drop or with the latest one.
+//! When a reclaim takes its step, the allocator must ask for the three
+//! answers in the order the model took them in, and must release exactly
+//! the ids that those answers make due.
+//!
 //! [`explore`] visits every state that the actors can reach within the
 //! bounds and checks each: no id is free while a reader, the latest
 //! version or a commit that is installed and not yet published can reach
@@ -24,7 +33,10 @@
 //! With one rule broken at a time the same exploration must find a free id
 //! that a reader can reach ([`Fault`]).
 
-use std::collections::{BTreeMap, HashSet};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, HashSet},
+};
 
 use lignin_format::PageId;
 use lignin_store::alloc::{Epoch, PageAllocator, PageState, Pins};
@@ -55,6 +67,9 @@ struct Bounds {
     pins: usize,
     ops: usize,
     reclaimers: usize,
+    /// Whether a transaction can drop a page that is freed later, by
+    /// whoever reclaims a dropped subtree.
+    drops: bool,
 }
 
 /// What an id named from one commit to another.
@@ -62,8 +77,10 @@ struct Bounds {
 struct Page {
     id: u32,
     born: u64,
-    /// The version that freed the page: no handle reaches it from there on.
+    /// The version from which no handle reaches the page.
     gone: Option<u64>,
+    /// The version the allocator was told the page was freed at.
+    freed_at: Option<u64>,
 }
 
 impl Page {
@@ -76,8 +93,16 @@ impl Page {
 struct Txn {
     /// The id it holds, for the page it creates.
     private: Option<u32>,
-    /// The page its commit frees, by id and born version.
-    mark: Option<(u32, u64)>,
+    /// The page its commit frees or drops, by id and born version.
+    mark: Option<((u32, u64), Mark)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Mark {
+    /// The commit frees the page.
+    Free,
+    /// The commit unlinks the page, and it is freed later.
+    Drop,
 }
 
 enum Op<'v> {
@@ -96,20 +121,38 @@ struct Answers {
     oldest_guard: Option<u64>,
 }
 
-/// Hands the allocator the answers a reclaim took in its earlier steps.
-struct Asked(Answers);
+/// Hands the allocator the answers a reclaim took in its earlier steps,
+/// and checks that it asks for them in the order they were taken in.
+struct Asked {
+    answers: Answers,
+    asked: Cell<u8>,
+}
+
+impl Asked {
+    fn of(answers: Answers) -> Self {
+        Self {
+            answers,
+            asked: Cell::new(0),
+        }
+    }
+
+    fn answer(&self, turn: u8, answer: Option<u64>) -> u64 {
+        assert_eq!(self.asked.replace(turn + 1), turn, "asked out of turn");
+        answer.expect("the answer was taken")
+    }
+}
 
 impl Pins for Asked {
     fn oldest_pin(&self) -> CommitVersion {
-        version(self.0.oldest_pin.expect("the answer was taken"))
+        version(self.answer(0, self.answers.oldest_pin))
     }
 
     fn next_epoch(&self) -> Epoch {
-        Epoch::new(self.0.epoch.expect("the answer was taken"))
+        Epoch::new(self.answer(1, self.answers.epoch))
     }
 
     fn oldest_guard(&self) -> Epoch {
-        Epoch::new(self.0.oldest_guard.expect("the answer was taken"))
+        Epoch::new(self.answer(2, self.answers.oldest_guard))
     }
 }
 
@@ -117,7 +160,7 @@ impl Pins for Asked {
 enum Step {
     Allocate(usize),
     RollBack(usize),
-    Mark(usize, (u32, u64)),
+    Mark(usize, (u32, u64), Mark),
     Install(usize),
     Publish,
     Pin,
@@ -126,6 +169,9 @@ enum Step {
     Read(usize),
     End(usize),
     Reclaim(usize),
+    /// The reclaimer of a dropped page frees it: with the version of the
+    /// drop, or with the latest version.
+    FreeDropped((u32, u64), bool),
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -143,6 +189,8 @@ struct Stats {
     /// Reclaims that left an id waiting for an operation guard.
     held_for_a_guard: u64,
     released: u64,
+    /// Frees of a dropped page with a version below the latest.
+    freed_below_the_latest: u64,
 }
 
 fn page(raw: u32) -> PageId {
@@ -220,7 +268,22 @@ impl<'v> World<'v> {
                     .pages
                     .iter()
                     .filter(|page| page.gone.is_none() && page.born <= self.latest);
-                steps.extend(visible.map(|page| Step::Mark(at, (page.id, page.born))));
+                for page in visible {
+                    let key = (page.id, page.born);
+                    steps.push(Step::Mark(at, key, Mark::Free));
+                    if self.bounds.drops {
+                        steps.push(Step::Mark(at, key, Mark::Drop));
+                    }
+                }
+            }
+        }
+        for page in &self.pages {
+            if page.freed_at.is_none() && page.gone.is_some_and(|gone| gone <= self.latest) {
+                let key = (page.id, page.born);
+                steps.push(Step::FreeDropped(key, false));
+                if page.gone != Some(self.latest) {
+                    steps.push(Step::FreeDropped(key, true));
+                }
             }
         }
         if self.installing.is_some() {
@@ -248,7 +311,7 @@ impl<'v> World<'v> {
         match step {
             Step::Allocate(at) => self.allocate(at, stats)?,
             Step::RollBack(at) => self.roll_back(at),
-            Step::Mark(at, key) => self.txns[at].mark = Some(key),
+            Step::Mark(at, key, mark) => self.txns[at].mark = Some((key, mark)),
             Step::Install(at) => self.install(at),
             Step::Publish => {
                 let commit = self.installing.take().expect("the step is enabled");
@@ -295,6 +358,21 @@ impl<'v> World<'v> {
             }
             Step::End(at) => self.ops[at] = Op::Idle,
             Step::Reclaim(at) => self.reclaim(at, stats)?,
+            Step::FreeDropped((id, born), at_latest) => {
+                let latest = self.latest;
+                let dropped = self
+                    .pages
+                    .iter_mut()
+                    .find(|page| page.id == id && page.born == born)
+                    .expect("the step is enabled");
+                let gone = dropped.gone.expect("the page was dropped");
+                let freed_at = if at_latest { latest } else { gone };
+                dropped.freed_at = Some(freed_at);
+                stats.freed_below_the_latest += u64::from(freed_at < latest);
+                self.ids
+                    .free(page(id), version(freed_at))
+                    .expect("it is live");
+            }
         }
         self.check()
     }
@@ -309,6 +387,13 @@ impl<'v> World<'v> {
         let got = self.ids.allocate().expect("an id is free").get();
         if got > self.bounds.ids {
             return Err(format!("allocate gave id {got} with a lower id free"));
+        }
+        if self
+            .pages
+            .iter()
+            .any(|page| page.id == got && page.freed_at.is_none())
+        {
+            return Err(format!("id {got} was handed out while it names a page"));
         }
         if self.pages.iter().any(|page| page.id == got) {
             stats.reused += 1;
@@ -331,7 +416,7 @@ impl<'v> World<'v> {
                 .iter()
                 .any(|page| page.id == id && page.born == born && page.gone.is_none())
         };
-        if mark.is_some_and(|mark| !live(mark)) {
+        if mark.is_some_and(|(key, _)| !live(key)) {
             return self.roll_back(at);
         }
         let txn = std::mem::take(&mut self.txns[at]);
@@ -342,18 +427,22 @@ impl<'v> World<'v> {
                 id,
                 born: commit,
                 gone: None,
+                freed_at: None,
             });
         }
-        if let Some((id, born)) = txn.mark {
-            let freed = self
+        if let Some(((id, born), mark)) = txn.mark {
+            let unlinked = self
                 .pages
                 .iter_mut()
                 .find(|page| page.id == id && page.born == born)
                 .expect("it is live");
-            freed.gone = Some(commit);
-            self.ids
-                .free(page(id), version(commit))
-                .expect("it is live");
+            unlinked.gone = Some(commit);
+            if mark == Mark::Free {
+                unlinked.freed_at = Some(commit);
+                self.ids
+                    .free(page(id), version(commit))
+                    .expect("it is live");
+            }
         }
         self.installing = Some(commit);
         if self.fault == Fault::InstalledTakenForLatest {
@@ -379,18 +468,14 @@ impl<'v> World<'v> {
                 answers.epoch.expect("taken"),
                 answers.oldest_guard.expect("taken"),
             );
-            let mut released = Vec::new();
-            self.ids.reclaim(&Asked(answers), &mut released);
-            let mut released: Vec<u32> = released.iter().map(|page| page.get()).collect();
-            released.sort();
-
+            // What is due by the answers, from the ids that were retired
+            // before the allocator took its step (`page-alloc.md` A9).
             let mut retired = Vec::new();
             self.ids.retired(&mut retired);
             let mut expected = Vec::new();
             for (id, freed_at) in retired
                 .iter()
                 .map(|(page, freed_at)| (page.get(), freed_at.get()))
-                .chain(released.iter().map(|id| (*id, 0)))
             {
                 if freed_at <= oldest_pin {
                     self.stamps.entry(id).or_insert(epoch);
@@ -405,11 +490,22 @@ impl<'v> World<'v> {
                 }
             }
             expected.sort();
+
+            let asked = Asked::of(answers);
+            let mut released = Vec::new();
+            self.ids.reclaim(&asked, &mut released);
+            if asked.asked.get() != 3 {
+                return Err("a reclaim did not ask all three questions".into());
+            }
+            let mut released: Vec<u32> = released.iter().map(|page| page.get()).collect();
+            released.sort();
             if released != expected {
                 return Err(format!(
                     "a reclaim released {released:?}, and by its answers {expected:?} are due"
                 ));
             }
+            let mut retired = Vec::new();
+            self.ids.retired(&mut retired);
             let waits_for_a_pin = retired.iter().any(|(page, freed_at)| {
                 freed_at.get() <= self.latest && !self.stamps.contains_key(&page.get())
             });
@@ -482,14 +578,20 @@ impl<'v> World<'v> {
                 maybe(self.stamps.get(&id).map(|stamp| rank(*stamp))),
             ]);
         }
-        let pages = self
-            .pages
-            .iter()
-            .map(|page| [page.id.into(), page.born, maybe(page.gone)]);
+        let pages = self.pages.iter().map(|page| {
+            [
+                page.id.into(),
+                page.born,
+                maybe(page.gone),
+                maybe(page.freed_at),
+            ]
+        });
         section(&mut key, pages.collect());
         let txns = self.txns.iter().map(|txn| {
-            let (id, born) = txn.mark.map_or((0, 0), |(id, born)| (id.into(), born + 1));
-            [maybe(txn.private.map(u64::from)), id, born]
+            let (id, born, mark) = txn.mark.map_or((0, 0, 0), |((id, born), mark)| {
+                (id.into(), born + 1, 1 + mark as u64)
+            });
+            [maybe(txn.private.map(u64::from)), id, born, mark]
         });
         section(&mut key, txns.collect());
         let pins = self.pins.iter().map(|pin| [pin.version().get()]);
@@ -583,6 +685,10 @@ fn explored(bounds: Bounds) -> Stats {
     assert!(stats.reused_beside_a_reader > 0, "{stats:?}");
     assert!(stats.held_for_a_pin > 0, "no pin held an id: {stats:?}");
     assert!(stats.held_for_a_guard > 0, "no guard held an id: {stats:?}");
+    assert!(
+        !bounds.drops || stats.freed_below_the_latest > 0,
+        "no dropped page was freed with an earlier version: {stats:?}"
+    );
     stats
 }
 
@@ -593,11 +699,32 @@ const SMALL: Bounds = Bounds {
     pins: 1,
     ops: 1,
     reclaimers: 1,
+    drops: false,
 };
 
 #[test]
 fn no_id_is_reused_while_a_reader_can_reach_its_page() {
     explored(SMALL);
+}
+
+#[test]
+fn no_id_is_reused_while_a_reader_can_reach_a_dropped_page() {
+    explored(Bounds {
+        drops: true,
+        ..SMALL
+    });
+}
+
+#[test]
+fn an_allocator_that_asks_out_of_turn_is_caught() {
+    let asked = Asked::of(Answers {
+        oldest_pin: Some(1),
+        epoch: Some(1),
+        oldest_guard: Some(1),
+    });
+    asked.oldest_pin();
+    let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| asked.oldest_guard()));
+    assert!(caught.is_err());
 }
 
 /// The full bounds: `cargo test --release -p lignindb --lib -- --ignored
@@ -617,6 +744,16 @@ fn every_interleaving_within_the_full_bounds() {
         Bounds {
             ids: 3,
             versions: 4,
+            ..SMALL
+        },
+        Bounds {
+            pins: 2,
+            drops: true,
+            ..SMALL
+        },
+        Bounds {
+            reclaimers: 2,
+            drops: true,
             ..SMALL
         },
     ];

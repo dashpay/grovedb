@@ -6,9 +6,9 @@
 //! - [`VersionPin`] keeps one version readable until it is dropped, and
 //!   [`OperationGuard`] keeps what one operation read from being reclaimed
 //!   under it.
-//! - [`Snapshot`] is a version pin and the pages of the store, and
-//!   [`Operation`] is one operation of a reader: its guard and the one
-//!   version it reads at.
+//! - [`ReadPath`] binds the versions of a database to its pages.
+//!   [`Snapshot`] is a version pin and those pages, and [`Operation`] is
+//!   one operation of a reader: its guard and the one version it reads at.
 //! - [`Versions`] answers the three questions a reclaimer asks
 //!   ([`Pins`](lignin_store::alloc::Pins)), and [`Reclaim`] is what it asks
 //!   to reclaim when the oldest pin may have moved up.
@@ -59,9 +59,9 @@
 //!
 //! | Reader | Holds | Reads at |
 //! | --- | --- | --- |
-//! | a snapshot ([`Versions::snapshot`]) | a version pin for its life, and a guard for each operation ([`Snapshot::operation`]) | the pinned version |
+//! | a snapshot ([`ReadPath::snapshot`]) | a version pin for its life, and a guard for each operation ([`Snapshot::operation`]) | the pinned version |
 //! | a read with no transaction (RD2) | a snapshot for one caller operation | the pinned version |
-//! | an operation that pins nothing ([`Versions::operation`]): a write transaction with an empty write set | a guard, and a [`LatestLease`] from one operation to the next | the latest version, read after the guard was taken |
+//! | an operation that pins nothing ([`ReadPath::operation`]): a write transaction with an empty write set | a guard, and a [`LatestLease`] from one operation to the next | the latest version, read after the guard was taken |
 //!
 //! A cursor of a write transaction, a write transaction with writes and a
 //! checkpoint being created hold a [`VersionPin`] as well (PN1); the tasks
@@ -96,16 +96,20 @@
 //!
 //! All of it is `SeqCst` loads and stores of atomics: no lock, no wait, and
 //! no unsafe code. The one exception is a table of cells that is full. It
-//! grows by a chunk, which is linked through a `OnceLock`, and a count of
-//! the chunks, which is `SeqCst`, orders a claim in a new chunk before the
-//! scans that have to see it.
+//! grows by a chunk, which is linked through a `OnceLock`: a thread that
+//! links one can wait there for another that is linking the same chunk,
+//! for as long as a pointer takes to store. Safe code has no way to
+//! publish a pointer that never waits, and this crate has no unsafe code.
+//! The table starts with 256 cells for pins and as many for guards, doubles
+//! and never shrinks, so that is met a few times in the life of a process,
+//! and only while more pins or guards are held at once than ever before. A
+//! count of the chunks, which is `SeqCst`, orders a claim in a new chunk
+//! before the scans that have to see it.
 //!
 //! A reader writes to its own cell, which is on cache lines of its own, so
 //! taking and dropping pins and guards on different threads writes no line
 //! that two of them share. A commit writes the latest version once, and a
-//! reclaim writes the epoch once and reads every cell. A pin that is
-//! dropped on a version before the latest also writes the flag that asks
-//! for a reclaim, if it is not set already.
+//! reclaim writes the epoch once and reads every cell.
 //!
 //! An answer stays true, and a later answer can still be lower than an
 //! earlier one: a reader that has announced a version and has not looked
@@ -125,17 +129,22 @@
 //! N8):
 //!
 //! - after a commit is published: the committer calls
-//!   [`Versions::reclaim`] once it has given the commit lock back
-//! - after a pin on a version before the latest is dropped: the pin calls
-//!   it. A pin on the latest version holds nothing back, and its drop asks
-//!   for nothing
+//!   [`Versions::reclaim`] once it has given the commit lock back, or has
+//!   background work call it
+//! - after a pin on a version before the latest is dropped. The reader
+//!   does not reclaim: it tells the [`Reclaim`] that one is due
+//!   ([`Reclaim::wake`]), and background work calls [`Versions::reclaim`].
+//!   A reader does the same when it announced a version, found a newer one
+//!   published and announced that instead: the first announcement may have
+//!   held back the reclaim after that commit. A pin on the latest version
+//!   holds nothing back, and its drop tells nobody
 //!
 //! [`Versions::reclaim`] runs the [`Reclaim`] the versions were made with.
 //! One runs at a time, and a call that finds one running leaves word for it
-//! and returns, so a reader that drops a pin waits for no other thread. A
-//! thread runs at most two in one call, so none is kept reclaiming for the
-//! others. A reclaim runs on the thread that asked, so a pin is not
-//! dropped under the commit lock or under a lock that a reclaimer takes.
+//! and returns. A thread runs at most two in one call, so none is kept
+//! reclaiming for the others. With a [`Reclaim`] that does not act on
+//! [`Reclaim::wake`], what a reader held back is taken by the reclaim after
+//! the next commit: that costs space for as long, never correctness.
 //!
 //! # What the callers do
 //!
@@ -149,7 +158,9 @@
 //! - **A reclaimer** asks the three questions in their order and never
 //!   waits: what does not pass stays retired until a later call.
 //! - **Whoever opens the database** makes the [`Versions`] with the version
-//!   recovery landed on.
+//!   recovery landed on, and one [`ReadPath`] from them and the loader of
+//!   the same store. Its [`Reclaim`] runs the store's reclaimers, and its
+//!   [`Reclaim::wake`] lets background work know.
 //!
 //! # Models and tests
 //!
@@ -174,5 +185,5 @@ mod versions;
 mod tests;
 
 pub use error::{PublishError, SnapshotError};
-pub use read::{LatestLease, Operation, Snapshot};
+pub use read::{LatestLease, Operation, ReadPath, Snapshot};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};

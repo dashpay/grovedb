@@ -8,22 +8,37 @@ use lignin_store::alloc::{Epoch, Pins};
 
 use super::{
     error::PublishError,
-    slots::{Slot, Slots},
+    slots::{Slot, Slots, VACANT},
     sync::{atomic, flag, AtomicBool, AtomicU64, Ordering, Padded},
 };
 
 /// What is asked to reclaim when the oldest pin may have moved up: the page
 /// id allocator, the buffer pool, and whatever else holds something back
 /// for readers (`transactions.md` PN6, ID3).
-///
-/// [`Versions::reclaim`] calls it, one call at a time, on the thread of a
-/// committer or of a reader that dropped a pin. So it does what is cheap,
-/// and hands anything that waits or does file I/O to background work.
 pub trait Reclaim: Send + Sync {
     /// Asks every reclaimer to take its step. Each of them puts the three
     /// questions to `pins` in their order (`page-alloc.md` A9).
+    ///
+    /// [`Versions::reclaim`] calls this, one call at a time, on the thread
+    /// that called it: a committer that has published, or background work.
+    /// No reader runs it.
     fn reclaim(&self, pins: &Versions);
+
+    /// Says that a reclaim may have something to take that the last one
+    /// did not: a pin on a version before the latest was dropped, or was
+    /// announced and withdrawn while a commit was published.
+    ///
+    /// This is called on the reader's thread, in the drop of its pin or
+    /// while it takes one. So it does no reclaiming and waits for nothing:
+    /// it lets background work know that [`Versions::reclaim`] is due. The
+    /// default does nothing, and what the reader held back is then taken
+    /// by the reclaim after the next commit.
+    fn wake(&self) {}
 }
+
+/// Numbers the [`Versions`] of a process, so that what was read through
+/// one is not taken for another's.
+static NEXT_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The versions of one open database. See the
 /// [module documentation](super).
@@ -31,6 +46,7 @@ pub trait Reclaim: Send + Sync {
 /// Every method takes `&self` and may be called from any thread. None takes
 /// a lock or waits for another thread.
 pub struct Versions {
+    id: u64,
     latest: Padded<AtomicU64>,
     epoch: Padded<AtomicU64>,
     pins: Slots,
@@ -61,14 +77,16 @@ impl Versions {
         Self::build(latest, None)
     }
 
-    /// As [`Self::new`], with `reclaim` to ask whenever the oldest pin may
-    /// have moved up ([`Self::reclaim`]).
+    /// As [`Self::new`], with `reclaim` to ask when the oldest pin may have
+    /// moved up ([`Self::reclaim`]), and to tell when a reader has made
+    /// that so ([`Reclaim::wake`]).
     pub fn with_reclaim(latest: CommitVersion, reclaim: Box<dyn Reclaim>) -> Self {
         Self::build(latest, Some(reclaim))
     }
 
     fn build(latest: CommitVersion, reclaim: Option<Box<dyn Reclaim>>) -> Self {
         Self {
+            id: NEXT_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             latest: Padded(atomic(latest.get())),
             epoch: Padded(atomic(0)),
             pins: Slots::new(),
@@ -122,9 +140,14 @@ impl Versions {
     /// version is announced where [`Pins::oldest_pin`] looks, and the pin
     /// is given out only once the announced version has been found to be
     /// the latest still. If a commit was published in between, the newer
-    /// version is announced and looked at again.
+    /// version is announced and looked at again. The older announcement
+    /// may have held back the reclaim that followed that commit, so the
+    /// reader then says that one is due ([`Reclaim::wake`]).
     pub fn pin(&self) -> VersionPin<'_> {
-        let (slot, pinned) = self.pins.claim_current(&self.latest.0);
+        let (slot, pinned, withdrew) = self.pins.claim_current(&self.latest.0);
+        if withdrew {
+            self.wake();
+        }
         VersionPin {
             versions: self,
             slot,
@@ -139,7 +162,7 @@ impl Versions {
     /// The guard is of the epoch that is current when it is given out, by
     /// the same two steps as a pin: announce, then look again.
     pub fn guard(&self) -> OperationGuard<'_> {
-        let (slot, taken) = self.guards.claim_current(&self.epoch.0);
+        let (slot, taken, _) = self.guards.claim_current(&self.epoch.0);
         OperationGuard {
             versions: self,
             slot,
@@ -163,12 +186,12 @@ impl Versions {
         self.guards.claimed()
     }
 
-    /// Asks the [`Reclaim`] this was made with to reclaim, if there is one.
+    /// Runs the [`Reclaim`] this was made with, if there is one.
     ///
     /// Call it after a commit is published, with the commit lock given
-    /// back. A pin that is dropped on a version before the latest calls it
-    /// itself. No call is owed when a guard is released (`page-alloc.md`
-    /// N8).
+    /// back, and from background work that [`Reclaim::wake`] has told. No
+    /// reader calls it, and no call is owed when a guard is released
+    /// (`page-alloc.md` N8).
     ///
     /// One reclaim runs at a time, and no call waits for another. A call
     /// that finds one running leaves word and returns. The thread that
@@ -200,6 +223,17 @@ impl Versions {
         }
     }
 
+    fn wake(&self) {
+        if let Some(reclaim) = &self.reclaim {
+            reclaim.wake();
+        }
+    }
+
+    /// What tells these versions from every other in the process.
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
     /// Claims every cell of the first chunk of the pins, with announcements
     /// that hold nothing back, so that the next pin makes the table grow.
     #[cfg(test)]
@@ -207,6 +241,12 @@ impl Versions {
         while self.pins.claimed() < super::slots::FIRST_CHUNK {
             self.pins.claim(CommitVersion::MAX.get());
         }
+    }
+
+    /// Sets the clock of retirements, for a test of its last epochs.
+    #[cfg(all(test, not(loom)))]
+    pub(super) fn set_epoch(&self, epoch: u64) {
+        self.epoch.0.store(epoch, Ordering::SeqCst);
     }
 }
 
@@ -221,7 +261,7 @@ impl<'v> Running<'v> {
             && running
                 .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok();
-        free.then_some(Self(running))
+        free.then(|| Self(running))
     }
 }
 
@@ -254,8 +294,26 @@ impl Pins for Versions {
         version(latest.min(self.pins.min()))
     }
 
+    /// # Panics
+    ///
+    /// When the clock has started 2^64 - 2 epochs: the number after that
+    /// is the one an unclaimed cell holds.
     fn next_epoch(&self) -> Epoch {
-        Epoch::new(self.epoch.0.fetch_add(1, Ordering::SeqCst) + 1)
+        let mut epoch = self.epoch.0.load(Ordering::SeqCst);
+        loop {
+            let next = epoch
+                .checked_add(1)
+                .filter(|next| *next != VACANT)
+                .expect("the clock of retirements has epochs left");
+            match self
+                .epoch
+                .0
+                .compare_exchange(epoch, next, Ordering::SeqCst, Ordering::SeqCst)
+            {
+                Ok(_) => return Epoch::new(next),
+                Err(now) => epoch = now,
+            }
+        }
     }
 
     fn oldest_guard(&self) -> Epoch {
@@ -271,9 +329,9 @@ impl Pins for Versions {
 /// It never blocks anything and is never refused (PN7). Held for long, it
 /// costs disk space, page ids and memory that could be reclaimed.
 ///
-/// A pin on a version before the latest asks for a reclaim when it is
-/// dropped ([`Versions::reclaim`]), on the thread that drops it. So it is
-/// not dropped under the commit lock, or under any lock a reclaimer takes.
+/// A pin on a version before the latest says that a reclaim is due when it
+/// is dropped ([`Reclaim::wake`]). It runs none: a reader does not do the
+/// reclaimers' work, or wait for their locks.
 pub struct VersionPin<'v> {
     versions: &'v Versions,
     slot: Slot<'v>,
@@ -302,7 +360,7 @@ impl Drop for VersionPin<'_> {
     fn drop(&mut self) {
         self.slot.vacate();
         if self.version < self.versions.latest() {
-            self.versions.reclaim();
+            self.versions.wake();
         }
     }
 }

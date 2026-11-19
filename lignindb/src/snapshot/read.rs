@@ -14,14 +14,36 @@ use super::{
     versions::{OperationGuard, VersionPin, Versions},
 };
 
-impl Versions {
-    /// A snapshot of the latest version, which reads the pages of `pages`'s
-    /// store (RD1). A read with no transaction is one of these, held for
-    /// one caller operation (RD2).
-    pub fn snapshot<'s>(&'s self, pages: PageLoader<'s>) -> Snapshot<'s> {
+/// The read path of one database: its versions, and its pages.
+///
+/// Whoever opens the database makes it, once, from the [`Versions`] that
+/// the store's reclaimers ask and the loader of that same store. Every
+/// snapshot and every operation is taken from it, so that a pin is always
+/// on the versions of the store whose pages it reads.
+#[derive(Debug, Clone, Copy)]
+pub struct ReadPath<'s> {
+    versions: &'s Versions,
+    pages: PageLoader<'s>,
+}
+
+impl<'s> ReadPath<'s> {
+    /// The read path of the database whose versions are `versions` and
+    /// whose pages `pages` loads.
+    pub fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
+        Self { versions, pages }
+    }
+
+    /// The versions of the database.
+    pub fn versions(&self) -> &'s Versions {
+        self.versions
+    }
+
+    /// A snapshot of the latest version (RD1). A read with no transaction
+    /// is one of these, held for one caller operation (RD2).
+    pub fn snapshot(&self) -> Snapshot<'s> {
         Snapshot {
-            pin: self.pin(),
-            pages,
+            pin: self.versions.pin(),
+            pages: self.pages,
             lease: OnceLock::new(),
         }
     }
@@ -32,38 +54,34 @@ impl Versions {
     ///
     /// `lease` is the caller's, kept from one operation to the next. It is
     /// given a new lease here whenever the latest version is not the one
-    /// its last operation read, so that a node handle that was read at an
-    /// earlier version is not followed (PN8).
-    pub fn operation<'s>(
-        &'s self,
-        pages: PageLoader<'s>,
-        lease: &mut LatestLease,
-    ) -> Operation<'s> {
-        let guard = self.guard();
+    /// its last operation read, or that operation was on another database,
+    /// so that a node handle that was read elsewhere is not followed (PN8).
+    pub fn operation(&self, lease: &mut LatestLease) -> Operation<'s> {
+        let guard = self.versions.guard();
         let at = guard.latest();
         Operation {
             guard,
             at,
-            pages,
-            lease: Leased::Own(lease.at(at)),
+            pages: self.pages,
+            lease: Leased::Own(lease.at(self.versions.id(), at)),
         }
     }
 }
 
 /// The lease of a reader that pins no version and reads the latest one
 /// (`transactions.md` PN8): good for the node handles it read at one
-/// version, and replaced when it reads at another.
+/// version of one database, and replaced when it reads at another.
 ///
 /// With no pin, a page id is good only until the next commit, which can
 /// free the page and give its id to another. So the handles of such a
-/// reader end when the latest version moves, and
-/// [`Versions::operation`] sees to that. A reader that has other reasons
-/// to end them, as a write transaction has when it rolls back, calls
-/// [`Self::renew`].
+/// reader end when the latest version moves, and [`ReadPath::operation`]
+/// sees to that. A reader that has other reasons to end them, as a write
+/// transaction has when it rolls back, calls [`Self::renew`].
 #[derive(Debug)]
 pub struct LatestLease {
     lease: Lease,
-    read_at: Option<CommitVersion>,
+    /// The database and the version its last operation read.
+    read: Option<(u64, CommitVersion)>,
 }
 
 impl LatestLease {
@@ -71,7 +89,7 @@ impl LatestLease {
     pub fn new() -> Self {
         Self {
             lease: Lease::take(),
-            read_at: None,
+            read: None,
         }
     }
 
@@ -85,14 +103,15 @@ impl LatestLease {
         *self = Self::new();
     }
 
-    /// The lease for an operation that reads at `version`: the one of the
-    /// operation before it if that read at `version` too, and a new one
+    /// The lease for an operation that reads `database` at `version`: the
+    /// one of the operation before it if that read the same, and a new one
     /// otherwise.
-    fn at(&mut self, version: CommitVersion) -> Lease {
-        if self.read_at.is_some_and(|read_at| read_at != version) {
+    fn at(&mut self, database: u64, version: CommitVersion) -> Lease {
+        let reads = (database, version);
+        if self.read.is_some_and(|read| read != reads) {
             self.renew();
         }
-        self.read_at = Some(version);
+        self.read = Some(reads);
         self.lease
     }
 }

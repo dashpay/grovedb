@@ -7,7 +7,7 @@
 //! | Setting | Default | Is |
 //! | --- | --- | --- |
 //! | `SECS` | 1 | the length of one run; three are made of each, and the median is given |
-//! | `THREADS` | 1,2,4,8,14,20,28 up to the cores | the numbers of reader threads |
+//! | `THREADS` | 1, 2, 4, 8, 14, 20, 28, 56 up to the cores, and the cores | the numbers of reader threads |
 //! | `COMMITS` | 2000 | the commits the writer makes in a second |
 //!
 //! One read is what a read with no transaction does (`transactions.md`
@@ -28,16 +28,25 @@
 //! a second of the readers' own processor time, from
 //! `/proc/thread-self/schedstat`, and the share of a core each reader got.
 //!
-//! The store is 257 pages of 8 KiB in a pool of 514 frames. It keeps the
-//! pages of the latest version only, so its memory does not grow with the
-//! length of the run, and the peak is printed at the end.
+//! Every thread of a run starts at one signal, and the reads and the
+//! commits are those between that signal and the one that stops them. A
+//! run with a writer that made no commit is made again.
+//!
+//! The store has one page for all readers and four for each reader, of
+//! 8 KiB, in a pool of twice as many frames. It keeps the pages of the
+//! latest version only and trims its page table, so its memory does not
+//! grow with the length of the run; its segment file grows by three small
+//! blocks a commit. The peak of memory is printed at the end.
 
 #[path = "../tests/store/mod.rs"]
 mod store;
 
 use std::{
     hint::black_box,
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Barrier,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -47,9 +56,12 @@ use lignindb::snapshot::Versions;
 use store::{page, Changes, Rng, Store};
 
 const READER_PAGES: u32 = 3;
-const MAX_READERS: u32 = 64;
 const ROOT: u32 = 1;
-const PAGES: u32 = 1 + MAX_READERS * (READER_PAGES + 1);
+
+/// The pages of a store that `readers` readers read.
+fn pages_for(readers: u32) -> u32 {
+    1 + readers * (READER_PAGES + 1)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Kind {
@@ -118,26 +130,30 @@ fn run(
     commits: u32,
     length: Duration,
 ) -> Run {
+    let pages = store.pages_at(versions.latest()).len() as u32;
+    let reads_of = store.reads(versions);
+    let start = Barrier::new(readers as usize + usize::from(commits > 0) + 1);
     let stop = AtomicBool::new(false);
     let total = AtomicU64::new(0);
     let cpu_nanos = AtomicU64::new(0);
     let committed = AtomicU64::new(0);
-    let started = Instant::now();
+    let mut seconds = 0.0;
     thread::scope(|scope| {
         for reader in 0..readers {
-            let (stop, total, cpu_nanos) = (&stop, &total, &cpu_nanos);
+            let (start, stop, total, cpu_nanos) = (&start, &stop, &total, &cpu_nanos);
             scope.spawn(move || {
-                let pages = path(kind, reader);
+                let path = path(kind, reader);
                 let mut buffers = LoadBuffers::new();
                 let mut reads = 0u64;
+                start.wait();
                 let before = on_cpu_nanos();
                 while !stop.load(Ordering::Relaxed) {
-                    let snapshot = versions.snapshot(store.loader());
+                    let snapshot = reads_of.snapshot();
                     let operation = snapshot.operation();
                     if kind == Kind::Lease {
                         black_box(snapshot.lease());
                     }
-                    for &id in &pages {
+                    for &id in &path {
                         let frame = operation.page(page(id), &mut buffers).expect("a page");
                         assert!(frame.born() <= snapshot.version());
                         black_box(frame[64]);
@@ -151,15 +167,16 @@ fn run(
             });
         }
         if commits > 0 {
-            let (stop, committed) = (&stop, &committed);
+            let (start, stop, committed) = (&start, &stop, &committed);
             scope.spawn(move || {
                 let mut rng = Rng::new(7);
                 let every = Duration::from_secs(1) / commits;
+                start.wait();
                 let mut due = Instant::now();
                 while !stop.load(Ordering::Relaxed) {
                     let mut write = vec![page(ROOT)];
                     while write.len() < 3 {
-                        let other = page(2 + rng.below(u64::from(PAGES - 1)) as u32);
+                        let other = page(2 + rng.below(u64::from(pages - 1)) as u32);
                         if !write.contains(&other) {
                             write.push(other);
                         }
@@ -170,16 +187,20 @@ fn run(
                     };
                     store.commit(versions, &changes);
                     store.write_back();
-                    committed.fetch_add(1, Ordering::Relaxed);
+                    if !stop.load(Ordering::Relaxed) {
+                        committed.fetch_add(1, Ordering::Relaxed);
+                    }
                     due += every;
                     thread::sleep(due.saturating_duration_since(Instant::now()));
                 }
             });
         }
+        start.wait();
+        let started = Instant::now();
         thread::sleep(length);
         stop.store(true, Ordering::Relaxed);
+        seconds = started.elapsed().as_secs_f64();
     });
-    let seconds = started.elapsed().as_secs_f64();
     let reads = total.load(Ordering::Relaxed) as f64;
     let cpu_seconds = cpu_nanos.load(Ordering::Relaxed) as f64 / 1e9;
     let measured = cpu_seconds > 0.0;
@@ -189,6 +210,30 @@ fn run(
         share: measured.then(|| cpu_seconds / seconds / f64::from(readers)),
         commits: committed.load(Ordering::Relaxed) as f64 / seconds,
     }
+}
+
+/// The median of three runs. A run beside a writer that made no commit
+/// was not a run beside a writer, and is made again.
+fn median(
+    store: &Store,
+    versions: &Versions,
+    kind: Kind,
+    readers: u32,
+    commits: u32,
+    length: Duration,
+) -> Run {
+    let mut runs = Vec::new();
+    let mut tries = 0;
+    while runs.len() < 3 {
+        tries += 1;
+        assert!(tries <= 12, "the writer made no commit in most runs");
+        let run = run(store, versions, kind, readers, commits, length);
+        if commits == 0 || run.commits > 0.0 {
+            runs.push(run);
+        }
+    }
+    runs.sort_by(|a, b| a.rate.total_cmp(&b.rate));
+    runs.swap_remove(1)
 }
 
 fn setting<T: std::str::FromStr>(name: &str, default: T) -> T {
@@ -204,19 +249,25 @@ fn main() {
     let commits: u32 = setting("COMMITS", 2_000);
     let threads: Vec<u32> = match std::env::var("THREADS") {
         Ok(list) => list.split(',').filter_map(|n| n.parse().ok()).collect(),
-        Err(_) => [1, 2, 4, 8, 14, 20, 28, 56]
-            .into_iter()
-            .filter(|n| *n <= cores)
-            .collect(),
+        Err(_) => {
+            let mut counts: Vec<u32> = [1, 2, 4, 8, 14, 20, 28, 56]
+                .into_iter()
+                .filter(|n| *n < cores)
+                .collect();
+            counts.push(cores);
+            counts
+        }
     };
-    assert!(threads.iter().all(|n| (1..=MAX_READERS).contains(n)));
+    let most = threads.iter().copied().max().expect("a number of readers");
+    assert!(threads.iter().all(|n| *n >= 1));
 
-    let store = Store::without_history(2 * PAGES as usize);
+    let pages = pages_for(most);
+    let store = Store::without_history(2 * pages as usize);
     let versions = store.versions();
-    store.commit(&versions, &Changes::create(PAGES as usize));
+    store.commit(&versions, &Changes::create(pages as usize));
     store.write_back();
 
-    println!("{cores} cores, {length:?} a run, median of 3, {commits} commits/s\n");
+    println!("{cores} cores, {length:?} a run, median of 3, {commits} commits/s, {pages} pages\n");
     let optional = |value: Option<f64>, scale: f64| {
         value.map_or_else(|| "?".to_owned(), |value| format!("{:.0}", value * scale))
     };
@@ -233,15 +284,19 @@ fn main() {
                  of one reader's | core share % | commits/s |"
             );
             println!("| --- | --- | --- | --- | --- | --- | --- |");
-            let mut single: Option<(f64, Option<f64>)> = None;
+            // What one reader does alone is what the others are held to.
+            let mut alone = None;
             for &readers in &threads {
-                let mut runs: Vec<Run> = (0..3)
-                    .map(|_| run(&store, &versions, kind, readers, commits, length))
-                    .collect();
-                runs.sort_by(|a, b| a.rate.total_cmp(&b.rate));
-                let run = &runs[1];
-                let (rate, per_cpu) =
-                    *single.get_or_insert((run.rate / f64::from(readers), run.per_cpu_second));
+                let run = median(&store, &versions, kind, readers, commits, length);
+                if alone.is_none() {
+                    alone = Some(if readers == 1 {
+                        (run.rate, run.per_cpu_second)
+                    } else {
+                        let one = median(&store, &versions, kind, 1, commits, length);
+                        (one.rate, one.per_cpu_second)
+                    });
+                }
+                let (rate, per_cpu) = alone.expect("measured above");
                 let against = run.per_cpu_second.zip(per_cpu).map(|(now, one)| now / one);
                 println!(
                     "| {readers} | {:.0} | {:.1} | {} | {} % | {} | {:.0} |",

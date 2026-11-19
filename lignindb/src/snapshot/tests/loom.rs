@@ -33,9 +33,24 @@ use super::*;
 
 #[cfg(loom)]
 fn model(body: impl Fn() + Sync + Send + 'static) {
+    bounded_model(None, body);
+}
+
+/// A model that loom explores up to `preemptions` preemptions, or without
+/// a bound. `LOOM_MAX_PREEMPTIONS` sets another bound for all of them.
+#[cfg(loom)]
+fn bounded_model(preemptions: Option<usize>, body: impl Fn() + Sync + Send + 'static) {
     let mut builder = ::loom::model::Builder::new();
+    if builder.preemption_bound.is_none() {
+        builder.preemption_bound = preemptions;
+    }
     builder.max_branches = 100_000;
     builder.check(body);
+}
+
+#[cfg(not(loom))]
+fn bounded_model(_preemptions: Option<usize>, body: impl Fn() + Sync + Send + 'static) {
+    model(body);
 }
 
 /// Without loom the race is run on real threads, `LIGNIN_RACE_ROUNDS` times
@@ -215,9 +230,9 @@ fn a_pin_that_makes_the_table_grow_is_seen_by_the_reclaimer() {
 struct Counted {
     inside: AtomicBool,
     runs: AtomicU64,
-    /// Whether each of the two callers had asked when the last one began.
-    asked: [AtomicBool; 2],
-    seen: [AtomicBool; 2],
+    /// Whether each caller had asked when the last reclaim began.
+    asked: [AtomicBool; 3],
+    seen: [AtomicBool; 3],
 }
 
 struct CountedHook(Arc<Counted>);
@@ -234,22 +249,23 @@ impl Reclaim for CountedHook {
     }
 }
 
-/// Two threads ask for a reclaim. One runs at a time, neither waits, and
-/// the last one that runs began after both had asked.
-#[test]
-fn a_reclaim_starts_after_each_of_two_calls_that_ask() {
-    model(|| {
+/// `callers` threads call for a reclaim at once. One runs at a time, none
+/// waits, and with two callers the last one that runs began after both
+/// had asked. With three, word can be left for the next call, which the
+/// model makes at its end.
+fn callers_ask_for_a_reclaim(callers: usize, preemptions: Option<usize>) {
+    bounded_model(preemptions, move || {
         let counted = Arc::new(Counted {
             inside: flag(),
             runs: counter(0),
-            asked: [flag(), flag()],
-            seen: [flag(), flag()],
+            asked: [flag(), flag(), flag()],
+            seen: [flag(), flag(), flag()],
         });
         let versions = Arc::new(Versions::with_reclaim(
             version(1),
             Box::new(CountedHook(counted.clone())),
         ));
-        let callers: Vec<_> = (0..2)
+        let threads: Vec<_> = (0..callers)
             .map(|caller| {
                 let (versions, counted) = (versions.clone(), counted.clone());
                 thread::spawn(move || {
@@ -258,12 +274,87 @@ fn a_reclaim_starts_after_each_of_two_calls_that_ask() {
                 })
             })
             .collect();
-        for caller in callers {
-            caller.join().expect("the thread ends");
+        for thread in threads {
+            thread.join().expect("the thread ends");
         }
+        let seen_all = |counted: &Counted| {
+            counted.seen[..callers]
+                .iter()
+                .all(|seen| seen.load(Ordering::SeqCst))
+        };
         let runs = counted.runs.load(Ordering::SeqCst);
-        assert!((1..=2).contains(&runs), "{runs} reclaims ran");
-        assert!(counted.seen.iter().all(|seen| seen.load(Ordering::SeqCst)));
+        assert!((1..=callers as u64).contains(&runs), "{runs} reclaims ran");
+        if callers > 2 && !seen_all(&counted) {
+            versions.reclaim();
+        }
+        assert!(seen_all(&counted));
+    });
+}
+
+#[test]
+fn a_reclaim_starts_after_each_of_two_calls_that_ask() {
+    callers_ask_for_a_reclaim(2, None);
+}
+
+/// A call that cannot begin, because one is running, leaves the running
+/// one's mark alone: the third caller does not run beside the first. Loom
+/// explores this one up to three preemptions; without a bound it does not
+/// end in an hour.
+#[test]
+fn three_calls_never_run_two_reclaims_at_once() {
+    callers_ask_for_a_reclaim(3, Some(3));
+}
+
+/// What the last reclaim was answered, and whether a reader has said since
+/// it began that one is due.
+struct Told {
+    oldest_pin: AtomicU64,
+    woken: AtomicBool,
+}
+
+struct ToldHook(Arc<Told>);
+
+/// The flag is swapped, not stored: loom orders two writes of one atomic
+/// from two threads only when each reads what the other wrote.
+impl Reclaim for ToldHook {
+    fn reclaim(&self, pins: &Versions) {
+        self.0.woken.swap(false, Ordering::SeqCst);
+        let oldest = pins.oldest_pin().get();
+        self.0.oldest_pin.store(oldest, Ordering::SeqCst);
+    }
+
+    fn wake(&self) {
+        self.0.woken.swap(true, Ordering::SeqCst);
+    }
+}
+
+/// A reader holds back the reclaim that follows a commit, with a pin on
+/// the version before it or with an announcement of that version that it
+/// then withdraws. Either way it says that a reclaim is due: nothing it
+/// held back is left with nobody told.
+#[test]
+fn a_reader_that_held_back_a_reclaim_says_that_one_is_due() {
+    model(|| {
+        let told = Arc::new(Told {
+            oldest_pin: counter(0),
+            woken: flag(),
+        });
+        let versions = Arc::new(Versions::with_reclaim(
+            version(1),
+            Box::new(ToldHook(told.clone())),
+        ));
+        let reader = thread::spawn({
+            let versions = versions.clone();
+            move || drop(versions.pin())
+        });
+        versions.publish(version(2)).expect("the next version");
+        versions.reclaim();
+        reader.join().expect("the thread ends");
+        let answered = told.oldest_pin.load(Ordering::SeqCst);
+        assert!(
+            answered == 2 || told.woken.load(Ordering::SeqCst),
+            "the reclaim was answered {answered} and nobody was told"
+        );
     });
 }
 
