@@ -32,7 +32,6 @@ permissions:
   contents: read
 
 env:
-  BRIEF: ${{ github.event_name == 'pull_request' }}
   LIGNIN_NIGHTLY: nightly-2026-02-24
 
 jobs:
@@ -61,7 +60,7 @@ jobs:
         with:
           cache-on-failure: "false"
       - name: Fuzz
-        run: .github/scripts/lignin-ci.sh diff-fuzz "$([ "$BRIEF" = true ] && echo 120 || echo 3600)"
+        run: .github/scripts/lignin-ci.sh diff-fuzz ${{ github.event_name == 'pull_request' && 120 || 3600 }}
 
   # The golden corpus of the reference scale: a million documents on each
   # grove version, replayed on RocksDB.
@@ -88,12 +87,7 @@ jobs:
         with:
           cache-on-failure: "false"
       - name: Replay
-        run: |
-          if [ "$BRIEF" = true ]; then
-            .github/scripts/lignin-ci.sh corpus-reference --grove-version 5
-          else
-            .github/scripts/lignin-ci.sh corpus-reference
-          fi
+        run: .github/scripts/lignin-ci.sh corpus-reference ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
 
   # The corpus recorded again from the commit of develop it is pinned to,
   # through record-at-pin.sh, and compared with the committed corpus: the
@@ -129,12 +123,7 @@ jobs:
         if: runner.environment == 'self-hosted'
         run: rmdir target/record-at-pin/lock 2>/dev/null || true
       - name: Record and compare
-        run: |
-          if [ "$BRIEF" = true ]; then
-            .github/scripts/lignin-ci.sh corpus-at-pin --grove-version 5
-          else
-            .github/scripts/lignin-ci.sh corpus-at-pin
-          fi
+        run: .github/scripts/lignin-ci.sh corpus-at-pin ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
 
   # libFuzzer on every decoder of lignin-format (FMT-08). It installs a
   # nightly toolchain and cargo-fuzz, so it stays hosted.
@@ -155,7 +144,7 @@ jobs:
         if: hashFiles('lignin-format/fuzz/Cargo.toml') != ''
         run: cargo "+$LIGNIN_NIGHTLY" install cargo-fuzz --locked
       - name: Fuzz each decoder
-        run: .github/scripts/lignin-ci.sh fuzz-decoders "$([ "$BRIEF" = true ] && echo 20 || echo 300)"
+        run: .github/scripts/lignin-ci.sh fuzz-decoders ${{ github.event_name == 'pull_request' && 20 || 300 }}
       - name: Keep the inputs that failed
         if: failure()
         uses: actions/upload-artifact@v4
@@ -180,4 +169,4 @@ jobs:
         with:
           cache-on-failure: "false"
       - name: Run the races
-        run: .github/scripts/lignin-ci.sh miri-schedules "$([ "$BRIEF" = true ] && echo 4 || echo 64)"
+        run: .github/scripts/lignin-ci.sh miri-schedules ${{ github.event_name == 'pull_request' && 4 || 64 }}

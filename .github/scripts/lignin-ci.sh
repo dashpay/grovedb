@@ -32,8 +32,11 @@
 #
 # Miri and cargo-fuzz run on the toolchain $LIGNIN_NIGHTLY (default
 # nightly-2026-02-24), everything else on the one rust-toolchain.toml names.
-# Test databases go to the temporary directory: TMPDIR says where.
+# Test databases go to the temporary directory: TMPDIR says where. `test`
+# raises the limit of open files, whose default of 256 on macOS is less than
+# the RocksDB databases of the test kit's tests hold at once.
 set -euo pipefail
+shopt -s inherit_errexit 2>/dev/null || true
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
@@ -45,19 +48,31 @@ fail() {
     exit 1
 }
 
+# The LigninDB crates (the members whose name begins with lignin), or those
+# of them for which the jq condition $1 holds.
 crates() {
     cargo metadata --no-deps --format-version 1 |
-        jq -r '.packages[].name | select(startswith("lignin"))' | sort
+        jq -r ".packages[] | select((.name | startswith(\"lignin\")) and (${1:-true})) | .name" |
+        sort
 }
 
-# The lines a command prints, as words for a loop. An assignment, so that
-# the command failing stops the script, which a `for` over `$(...)` would
-# not; and printing nothing is a failure too.
+# The lines command "$@" prints. It fails when the command fails or prints
+# nothing, so that a list is never taken as empty.
 listed() {
     local lines
-    lines=$("$@")
+    lines=$("$@") || fail "$* failed"
     [ -n "$lines" ] || fail "$* lists nothing"
     echo "$lines"
+}
+
+# `-p CRATE` for each LigninDB crate but those named, into the array packages.
+package_args() {
+    local names crate
+    names=$(listed crates)
+    packages=()
+    for crate in $names; do
+        [[ " $* " == *" $crate "* ]] || packages+=(-p "$crate")
+    done
 }
 
 # The crates of the build of package $2 with the arguments that follow,
@@ -69,13 +84,6 @@ build_of() {
         awk '{ print $1 }' | sort -u
 }
 
-# The LigninDB crates that have Cargo features of their own.
-crates_with_features() {
-    cargo metadata --no-deps --format-version 1 |
-        jq -r '.packages[] | select((.name | startswith("lignin")) and (.features | length > 0)) | .name' |
-        sort
-}
-
 # Fails when a crate whose name matches $1 is among the crates on stdin.
 refuse() {
     local pattern=$1 what=$2 found
@@ -85,17 +93,18 @@ refuse() {
 
 case "${1:-}" in
 crates)
-    crates
+    listed crates
     ;;
 
 test)
     shift
-    names=$(listed crates)
-    packages=()
-    for crate in $names; do
-        packages+=(-p "$crate")
-    done
-    say "cargo test ${packages[*]} --all-features $*"
+    package_args
+    limit=$(ulimit -Hn)
+    if [ "$limit" = unlimited ] || [ "$limit" -gt 65536 ]; then
+        limit=65536
+    fi
+    ulimit -n "$limit"
+    say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@"
     ;;
 
@@ -121,7 +130,7 @@ features)
         refuse '^lignin' "LigninDB is among the crates of Merk on RocksDB"
 
     say "The LigninDB crates that have features, with none and with every one"
-    names=$(listed crates_with_features)
+    names=$(listed crates '.features | length > 0')
     for crate in $names; do
         cargo check -p "$crate" --no-default-features
         cargo check -p "$crate" --all-features
@@ -129,16 +138,11 @@ features)
     ;;
 
 docs)
-    # Every LigninDB crate but those whose documentation had warnings when
-    # this step was added: lignin-testkit (two ambiguous links in `diff`).
-    # The older crates are not in it either (grovedb-merk had 33 errors).
-    # A crate leaves this list when its documentation builds clean.
-    not_clean=" lignin-testkit "
-    names=$(listed crates)
-    packages=()
-    for crate in $names; do
-        [[ $not_clean == *" $crate "* ]] || packages+=(-p "$crate")
-    done
+    # Not lignin-testkit, whose documentation had warnings when this step was
+    # added (two ambiguous links in `diff`), nor the older crates
+    # (grovedb-merk had 33 errors). A crate joins when its documentation
+    # builds clean.
+    package_args lignin-testkit
     say "RUSTDOCFLAGS=-D warnings cargo doc ${packages[*]} --all-features --no-deps"
     RUSTDOCFLAGS="${RUSTDOCFLAGS:-} -D warnings" \
         cargo doc "${packages[@]}" --all-features --no-deps
@@ -163,15 +167,14 @@ MODELS
     ;;
 
 miri)
-    say "Miri: the file layer, under Stacked Borrows and Tree Borrows"
-    MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation" \
-        cargo "+$nightly" miri test -p lignin-io
-    MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation -Zmiri-tree-borrows" \
-        cargo "+$nightly" miri test -p lignin-io
-    say "Miri: the buffer pool, under Stacked Borrows and Tree Borrows"
-    cargo "+$nightly" miri test -p lignin-store --lib cache::
-    MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-tree-borrows" \
-        cargo "+$nightly" miri test -p lignin-store --lib cache::
+    for borrows in "" -Zmiri-tree-borrows; do
+        say "Miri: the file layer ${borrows:-(Stacked Borrows)}"
+        MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation $borrows" \
+            cargo "+$nightly" miri test -p lignin-io
+        say "Miri: the buffer pool ${borrows:-(Stacked Borrows)}"
+        MIRIFLAGS="${MIRIFLAGS:-} $borrows" \
+            cargo "+$nightly" miri test -p lignin-store --lib cache::
+    done
     # crc32c takes the instructions of the machine where it finds them
     # (x86_64, aarch64) and its tables elsewhere. A big-endian target has
     # neither, so this runs the tables, on the other byte order.
@@ -243,15 +246,14 @@ corpus-at-pin)
 
 fuzz-decoders)
     seconds=${2:?"usage: lignin-ci.sh fuzz-decoders SECONDS"}
-    fuzz=lignin-format/fuzz
-    if [ ! -e "$fuzz/Cargo.toml" ]; then
-        say "no $fuzz/Cargo.toml: nothing to fuzz"
+    if [ ! -e lignin-format/fuzz/Cargo.toml ]; then
+        say "no lignin-format/fuzz/Cargo.toml: nothing to fuzz"
         exit 0
     fi
     seeds=$(mktemp -d)
     trap 'rm -rf "$seeds"' EXIT
-    (cd "$fuzz" && ./seed.sh "$seeds")
-    cd "$fuzz"
+    cd lignin-format/fuzz
+    ./seed.sh "$seeds"
     cargo "+$nightly" fuzz build -s none --debug-assertions
     targets=$(listed cargo "+$nightly" fuzz list)
     for target in $targets; do

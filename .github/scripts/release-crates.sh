@@ -16,7 +16,12 @@
 # (Cargo drops one that names a path alone when it publishes).
 set -euo pipefail
 
-repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+cd "$(dirname "${BASH_SOURCE[0]}")/../.."
+
+usage() {
+    awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}" >&2
+    exit 2
+}
 
 list() {
     # Each crate comes after the workspace crates it depends on. cargo waits
@@ -63,35 +68,31 @@ check)
     case "${2:-}" in
     "") ;;
     --release) release=true ;;
-    *)
-        awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}" >&2
-        exit 2
-        ;;
+    *) usage ;;
     esac
-    cd "$repo"
+    # The crates of the list are the arguments of jq, one a word.
+    # shellcheck disable=SC2046
     problems=$(cargo metadata --no-deps --format-version 1 |
-        jq -r --argjson release "$release" --arg order "$(list)" '
-            ($order | split("\n") | map(select(. != ""))) as $order
-            | ([.packages[].name]) as $members
+        jq -r --argjson release "$release" '
+            $ARGS.positional as $order
             | (.packages | map({key: .name, value: .}) | from_entries) as $by_name
             | ($order | to_entries | map({key: .value, value: .key}) | from_entries) as $place
             | (
-                ($order[] | select(($by_name[.] // null) == null)
+                ($order[] | select($by_name[.] == null)
                     | "\(.) is listed and is not a member of the workspace"),
                 (.packages[] | select(.publish == null and ($place[.name] == null))
                     | "\(.name) can be published and is not listed"),
                 ($order[] | . as $crate | select($by_name[$crate] != null)
                     | $by_name[$crate].dependencies[]
-                    | select(.path != null and (.name as $n | $members | index($n)))
+                    | select(.path != null and $by_name[.name] != null)
                     | select((.kind // "normal") != "dev" or .req != "*")
                     | select(($place[.name] // 1e9) > $place[$crate])
                     | "\($crate) depends on \(.name) (\(.kind // "normal")\(if .optional then ", optional" else "" end)), which is not listed before it"),
                 (if $release then
-                    ($order[] | select($by_name[.] != null)
-                        | select($by_name[.].publish != null and ($by_name[.].publish | index("crates-io") | not))
+                    ($order[] | select($by_name[.].publish != null and ($by_name[.].publish | index("crates-io") | not))
                         | "\(.) is listed and cannot be published to crates.io (`publish` in its manifest)")
                  else empty end)
-            )')
+            )' --args $(list))
     if [ -n "$problems" ]; then
         echo "release-crates: the list does not match the workspace:" >&2
         echo "$problems" >&2
@@ -100,7 +101,6 @@ check)
     echo "release-crates: $(list | wc -l) crates, in an order crates.io can resolve"
     ;;
 *)
-    awk 'NR > 1 && /^set -euo/ { exit } NR > 1' "${BASH_SOURCE[0]}" >&2
-    exit 2
+    usage
     ;;
 esac
