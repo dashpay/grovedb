@@ -44,6 +44,12 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
             let mut rng = Rng(1);
             let mut commits = 0;
             while commits < COMMITS {
+                // A committer whose file is full waits for the turn, so
+                // the log turns however the threads are scheduled.
+                if log.is_due() {
+                    std::thread::yield_now();
+                    continue;
+                }
                 let at = match log.next_group() {
                     Ok(at) => at,
                     Err(LogError::NoActiveFile) => continue,
@@ -117,8 +123,14 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
         scope.spawn(|| {
             let mut buf = Vec::new();
             let mut next = 0;
-            while !done.load(Ordering::Acquire) {
+            loop {
+                // Every value the committer wrote is read, also the ones
+                // it wrote last.
+                let finished = done.load(Ordering::Acquire);
                 let Some((pending, value)) = values.lock().unwrap().get(next).cloned() else {
+                    if finished {
+                        break;
+                    }
                     std::thread::yield_now();
                     continue;
                 };
@@ -150,6 +162,10 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
     let (taken, turns, read) = (taken.into_inner(), turns.into_inner(), read.into_inner());
     println!("{taken} places taken, {turns} turns, {read} values read");
     assert!(turns >= 1, "{turns} turns");
-    assert!(read > 0);
+    let values = values.into_inner().unwrap();
+    assert!(
+        read > 0 && read == values.len() as u64,
+        "{read} values read"
+    );
     drop(manifest);
 }

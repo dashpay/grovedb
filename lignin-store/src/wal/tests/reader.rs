@@ -737,24 +737,33 @@ fn the_file_with_the_first_id_begins_the_log_or_holds_nothing_of_it() {
 }
 
 #[test]
-fn items_behind_the_last_address_of_a_log_are_read_as_the_format_reads_them() {
-    // A file that begins at the last address: its items have none. A mark
-    // needs none.
+fn an_item_that_begins_behind_the_last_address_of_a_file_is_refused_and_not_misread() {
+    // A file that begins at the last address a file can begin at. Its
+    // first item begins there too, and the item behind it does not.
     let start = LogStart::new(wal::MAX_LOG_OFFSET, version(3)).unwrap();
     let mut bytes = Vec::new();
     wal::write_file_start(file_id(2), &start, &mut bytes).unwrap();
     bytes.extend(mark(version(3)));
+    let one = bytes.len();
     bytes.extend(mark(version(1)));
-    let mut scan = wal::scan(&bytes).unwrap();
-    assert!(scan.next().is_some() && scan.next().is_some() && scan.next().is_none());
-    assert!(scan.tail().failure().is_none());
 
     for window in [1, 16, 4096] {
-        let (_fs, vfs) = crafted(&[(log_file(2, FileState::Open, HEADER), &bytes)]);
+        // The first item reads, and the file may end behind it.
+        let (_fs, vfs) = crafted(&[(log_file(2, FileState::Open, HEADER), &bytes[..one])]);
         let (items, end) = read_log_with(&vfs, sim::db_dir(), window).unwrap();
-        assert_eq!(items.len(), 2);
-        assert_eq!(end.place(), Some(place(2, bytes.len() as u64)));
+        assert_eq!(items.len(), 1);
+        assert_eq!(end.place(), Some(place(2, one as u64)));
         // No file continues this one: the log has no address left.
         assert!(end.next_start().is_err());
+
+        // The reader gives an item the addresses of a file that begins
+        // with it, and no file begins behind that address: the second
+        // item is an error, and is not read with another address.
+        let (_fs, vfs) = crafted(&[(log_file(2, FileState::Open, HEADER), &bytes)]);
+        let error = read_log_with(&vfs, sim::db_dir(), window).unwrap_err();
+        assert!(
+            matches!(&error, LogError::Format { offset, .. } if *offset == one as u64),
+            "{error}"
+        );
     }
 }

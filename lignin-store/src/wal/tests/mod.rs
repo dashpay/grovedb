@@ -473,9 +473,11 @@ struct Model {
     /// session, which names the file closed where that session found its
     /// last item.
     maybe: Option<Item>,
-    /// Whether `maybe` was taken back in the session that is running: its
-    /// bytes are not in the file, and a sync of the log that succeeds
-    /// keeps a crash from bringing them back.
+    /// Whether `maybe` was taken back: its bytes are not in the file, and
+    /// only a crash brings them back.
+    taken_back: bool,
+    /// Whether `maybe` was taken back in the session that is running: a
+    /// sync of the log that succeeds keeps a crash from bringing it back.
     cut_by_sync: bool,
 }
 
@@ -498,13 +500,15 @@ impl Model {
             self.durable
         };
         let Some(head) = read.first() else {
-            return if must_reach > self.first {
-                Err(format!(
-                    "nothing was read, and items {}..{must_reach} must be",
-                    self.first
-                ))
-            } else {
+            // A log that begins where nothing must be read may read as
+            // nothing.
+            return if self.starts.iter().any(|&start| must_reach <= start) {
                 Ok(())
+            } else {
+                Err(format!(
+                    "nothing was read, and the items up to {must_reach} must be, from one of {:?}",
+                    self.starts
+                ))
             };
         };
         let Some(at) = all.iter().position(|item| item.at == head.at) else {
@@ -601,6 +605,21 @@ impl Model {
             *start = (*start).min(kept);
         }
         self.maybe = unsettled.filter(|_| !read_it);
+        self.cut_by_sync = false;
+        self.taken_back &= self.maybe.is_some();
+    }
+
+    /// An append was taken back in the session that is running.
+    fn took_back(&mut self, item: Item) {
+        self.maybe = Some(item);
+        self.taken_back = true;
+        self.cut_by_sync = true;
+    }
+
+    /// The item that could still come back cannot any more.
+    fn settled(&mut self) {
+        self.maybe = None;
+        self.taken_back = false;
         self.cut_by_sync = false;
     }
 }
@@ -754,15 +773,17 @@ impl Run {
                 // unsettled already wrote nothing.
                 let taken_back = matches!(error, LogError::TakenBack { .. });
                 let unsettled = matches!(error, LogError::Unsettled { .. });
-                if taken_back || (unsettled && self.model.maybe.is_none()) {
-                    let after = place(end.file().get(), end.offset() + bytes.len() as u64);
-                    self.model.maybe = Some(Item {
-                        at: end,
-                        end: after,
-                        bytes,
-                        version,
-                    });
-                    self.model.cut_by_sync = taken_back;
+                let after = place(end.file().get(), end.offset() + bytes.len() as u64);
+                let item = Item {
+                    at: end,
+                    end: after,
+                    bytes,
+                    version,
+                };
+                if taken_back {
+                    self.model.took_back(item);
+                } else if unsettled && self.model.maybe.is_none() {
+                    self.model.maybe = Some(item);
                 }
                 self.failed(&error);
             }
@@ -810,7 +831,7 @@ impl Run {
             Some(Ok(turned)) => {
                 self.stats.turns += u64::from(turned);
                 // A session's first roll names every earlier file closed.
-                self.model.maybe = None;
+                self.model.settled();
                 self.synced();
             }
             Some(Err(error)) => self.failed(&error),
@@ -870,8 +891,20 @@ impl Run {
             // A sync has made the file durable as a taken-back append
             // left it: no crash brings the item back.
             if self.model.cut_by_sync && !db.log.waits_for_sync() {
-                self.model.maybe = None;
-                self.model.cut_by_sync = false;
+                self.model.settled();
+            }
+            // So has a manifest that names the item's file closed where
+            // the item would begin, or names the file no more: a recovery
+            // does not read that far.
+            if let (Some(maybe), Ok(manifest)) = (&self.model.maybe, db.manifest.manifest()) {
+                let named = named(manifest);
+                let file = named.iter().find(|file| file.id() == maybe.at.file());
+                let reaches = |file: &LiveFile| {
+                    file.state() == FileState::Open || file.valid_len() > maybe.at.offset()
+                };
+                if !file.is_some_and(reaches) {
+                    self.model.settled();
+                }
             }
         }
     }
@@ -919,7 +952,7 @@ impl Run {
         }
         // What was taken back is not in the file: only a crash brings it
         // back.
-        let taken_back = self.model.maybe.as_ref().filter(|_| self.model.cut_by_sync);
+        let taken_back = self.model.maybe.as_ref().filter(|_| self.model.taken_back);
         assert!(
             taken_back.is_none() || read.last() != taken_back,
             "{} after a restart: an append that was taken back is in the log",

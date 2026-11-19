@@ -1150,3 +1150,81 @@ fn an_end_that_was_read_before_a_file_grew_does_not_open_the_log() {
     assert_eq!(end.files()[0].file_len(), end.files()[0].valid_len());
     LogStore::open(&std.db.manifest, &end, LogOptions::default()).unwrap();
 }
+
+#[test]
+fn a_roll_makes_the_cut_for_an_append_that_fails_while_it_runs() {
+    let mut std = StdDb::new(LogOptions::default());
+    let mut rng = Rng(51);
+    std.db.commit(&mut rng).unwrap();
+    let (log, manifest) = (&std.db.log, &mut std.db.manifest);
+    let faulty = &std.faulty;
+    let mut end = None;
+    // The roll is stopped in its first sync, which covers the log as it
+    // is now.
+    let in_sync = faulty.stop_after(0, Op::SyncData, &log_name(1));
+    std::thread::scope(|scope| {
+        let rolling = scope.spawn(|| log.roll(manifest));
+        in_sync.wait();
+        // Meanwhile a group is appended, and the append after it fails.
+        let at = log.next_group().unwrap();
+        let appended = log.append_group(&at, &group(&at, &mut rng)).unwrap();
+        end = Some(appended.end);
+        faulty.fail(Op::Append, &log_name(1));
+        let at = log.next_group().unwrap();
+        let failed = log.append_group(&at, &group(&at, &mut rng));
+        assert!(matches!(failed, Err(LogError::TakenBack { .. })));
+        in_sync.go_on();
+        // The roll finds the file cut short behind what it had synced. It
+        // makes the file durable to its end, names it closed and turns.
+        assert!(rolling.join().unwrap().unwrap());
+    });
+    let end = end.unwrap();
+    assert_eq!(
+        std.db.named()[0],
+        log_file(1, FileState::Closed, end.offset())
+    );
+    assert_eq!(std.db.log.end(), Some(place(2, FIRST)));
+    assert!(!std.db.log.is_due() && !std.db.log.waits_for_sync());
+    assert_eq!(std.db.named().len(), 3, "a file to turn to is ready");
+    assert_eq!(std.db.read().0.len(), 2);
+}
+
+#[test]
+fn the_log_is_full_where_no_file_can_begin() {
+    // A log whose files begin just before the last address a file can
+    // begin at: the session's file begins 55 bytes before it.
+    let last = lignin_format::wal::MAX_LOG_OFFSET;
+    let start = LogStart::new(last - 100, version(3)).unwrap();
+    let mut bytes = Vec::new();
+    lignin_format::wal::write_file_start(file_id(2), &start, &mut bytes).unwrap();
+    let (fs, vfs) = crafted(&[(log_file(2, FileState::Open, FIRST), &bytes)]);
+    let mut db = Db::open(vfs, sim::db_dir(), small_files(100)).unwrap();
+    db.roll().unwrap();
+    assert_eq!(db.log.end(), Some(place(3, FIRST)));
+
+    // Four marks begin at or before that address, and the fifth would
+    // begin behind it: no reader could give it an address, so it is not
+    // appended.
+    let marks: Vec<Item> = (0..4).map(|_| db.mark(version(3)).unwrap()).collect();
+    let error = db.log.append_mark(version(3)).unwrap_err();
+    assert!(
+        matches!(&error, LogError::Format { offset, source, .. }
+        if *offset == marks[3].end.offset()
+            && matches!(source, lignin_format::FormatError::Wal(
+                lignin_format::wal::WalError::AddressOutOfRange
+            ))),
+        "{error}"
+    );
+    assert!(db.log.next_group().is_err());
+    assert_eq!(db.log.end(), Some(marks[3].end));
+    // What was appended reads, to the end of the file.
+    let (items, end) = db.read();
+    assert_eq!(items, marks);
+    assert_eq!(end.place(), Some(marks[3].end));
+    // No file can follow: the log has no address left, so the turn that
+    // is due is refused.
+    assert!(end.next_start().is_err());
+    assert!(db.log.is_due());
+    assert!(matches!(db.roll(), Err(LogError::Format { .. })));
+    drop(fs);
+}

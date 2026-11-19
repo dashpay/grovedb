@@ -8,7 +8,7 @@ use std::{
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
-    wal::{self, LogItem, LogPlace, LogStart, WalError, FIRST_ITEM_OFFSET, MAX_LOG_OFFSET},
+    wal::{self, LogItem, LogPlace, LogStart, WalError, FIRST_ITEM_OFFSET},
     CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion,
 };
 use lignin_io::{OpenMode, Vfs, VfsFile};
@@ -233,15 +233,21 @@ impl Current {
     /// gives the item the address and the version before it that it has in
     /// the file. A scan of the bytes from there on is then the scan of the
     /// file from this item on.
+    ///
+    /// A file can begin at an address up to 2^63 - 1, so an item that
+    /// begins behind that address cannot be given its own this way, and is
+    /// refused. The log does not write one: it is full there.
     fn write_prefix(&mut self, prefix: &mut [u8]) -> Result<(), LogError> {
         match self.version {
             FormatVersion::V1 => {}
         }
-        // An item behind the last address has none, as in the file itself:
-        // only a group needs one, and a group there is refused.
         let begins = self.offset - FIRST_ITEM_OFFSET;
-        let base = self.start.base().saturating_add(begins);
-        let start = LogStart::new(base.min(MAX_LOG_OFFSET), self.latest)
+        let start = self
+            .start
+            .base()
+            .checked_add(begins)
+            .ok_or(FormatError::Wal(WalError::AddressOutOfRange))
+            .and_then(|base| LogStart::new(base, self.latest))
             .map_err(LogError::format(&self.path, self.offset))?;
         self.scratch.clear();
         wal::write_file_start(self.named.id(), &start, &mut self.scratch)
@@ -269,9 +275,12 @@ impl Current {
                 self.load(buf, needed.max(window))?;
             }
             let at = (self.offset - self.window_at) as usize;
-            self.write_prefix(&mut buf[at..at + PREFIX_LEN])?;
             let reaches_limit = self.held_end(buf) >= self.limit;
             let have = buf.len() - at - PREFIX_LEN;
+            if have == 0 && reaches_limit {
+                return Ok(None);
+            }
+            self.write_prefix(&mut buf[at..at + PREFIX_LEN])?;
 
             let mut scan =
                 wal::scan(&buf[at..]).map_err(LogError::format(&self.path, self.offset))?;

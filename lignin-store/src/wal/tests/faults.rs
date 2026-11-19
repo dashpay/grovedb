@@ -119,8 +119,7 @@ fn an_append_that_was_taken_back_is_cut_off_by_the_next_sync_and_comes_back_in_n
         );
         // Until the log is synced, a crash can bring back what the append
         // wrote and took back: the whole group, as the last item.
-        run.model.maybe = Some(failed.clone());
-        run.model.cut_by_sync = true;
+        run.model.took_back(failed.clone());
         run.crash_states_with(|read| came_back += u64::from(read.last() == Some(&failed)));
 
         // The file takes no more items, and the log does not turn before
@@ -151,13 +150,26 @@ fn an_append_that_was_taken_back_is_cut_off_by_the_next_sync_and_comes_back_in_n
         // already. From then on no crash brings the group back, which is
         // when a commit reports that it failed.
         assert!(db.log.waits_for_sync());
-        if seed % 3 == 0 {
-            assert_eq!(db.log.durable().place, Some(failed.at));
-            db.log.sync_through(failed.at).unwrap();
-            run.synced();
-        } else {
-            run.sync();
+        match seed % 3 {
+            0 => {
+                assert_eq!(db.log.durable().place, Some(failed.at));
+                db.log.sync_through(failed.at).unwrap();
+                run.synced();
+            }
+            1 => {
+                db.log.settle().unwrap();
+                run.synced();
+            }
+            _ => run.sync(),
         }
+        assert_eq!(
+            ops_since(&run.fs, before),
+            [(OpKind::SyncData, log_name(1))]
+        );
+        // With nothing left to settle, settling does nothing.
+        let db = run.db.as_ref().unwrap();
+        assert!(!db.log.waits_for_sync());
+        db.log.settle().unwrap();
         assert_eq!(
             ops_since(&run.fs, before),
             [(OpKind::SyncData, log_name(1))]
@@ -225,8 +237,7 @@ fn a_cut_that_cannot_be_made_durable_leaves_the_append_unsettled() {
         fail_append(&run, 1, Fault::Enospc, false);
         let (failed, appended) = failing_commit(&mut run);
         assert!(matches!(appended, Err(LogError::TakenBack { .. })));
-        run.model.maybe = Some(failed.clone());
-        run.model.cut_by_sync = true;
+        run.model.took_back(failed.clone());
 
         // The sync that would keep the group from coming back fails.
         if !failed_before {
@@ -234,13 +245,18 @@ fn a_cut_that_cannot_be_made_durable_leaves_the_append_unsettled() {
         }
         let db = run.db.as_mut().unwrap();
         let before = run.fs.stats().ops;
-        let error = db.log.sync().unwrap_err();
-        assert!(matches!(&error, LogError::SyncFailed { path, .. } if *path == wal_path(1)));
+        let error = db.log.settle().unwrap_err();
+        assert!(
+            matches!(&error, LogError::Unsettled { path, .. } if *path == wal_path(1)),
+            "{error}"
+        );
         assert_eq!(
             ops_since(&run.fs, before).len(),
             usize::from(!failed_before),
             "a sync that failed is not tried again"
         );
+        assert!(matches!(db.log.sync(), Err(LogError::SyncFailed { .. })));
+        assert!(matches!(db.log.settle(), Err(LogError::Unsettled { .. })));
 
         // Nothing keeps a crash from bringing the group back, so the log
         // takes nothing more and says so.
@@ -311,10 +327,14 @@ fn an_append_that_stays_in_the_file_is_in_the_log_exactly_when_all_of_it_is_ther
                 0 => assert!(matches!(error, LogError::TakenBack { .. }), "{error}"),
                 _ => assert!(matches!(error, LogError::NotAppended { .. }), "{error}"),
             }
-            assert_eq!(
-                ops_since(&run.fs, before),
-                [OpKind::Append, OpKind::Len].map(|op| (op, log_name(1)))
-            );
+            // What stays is read back: a recovery takes nothing from it.
+            let looked = [OpKind::Append, OpKind::Len, OpKind::Read];
+            let looked = &looked[..if left == 0 { 2 } else { 3 }];
+            let ops = ops_since(&run.fs, before);
+            assert_eq!(ops.len(), looked.len());
+            for (op, kind) in ops.iter().zip(looked) {
+                assert_eq!(*op, (*kind, log_name(1)));
+            }
             torn += 1;
         }
         run.check_crash_states();
@@ -425,6 +445,80 @@ fn nothing_is_appended_behind_a_failed_append_until_the_cut_is_made() {
 }
 
 #[test]
+fn an_append_that_a_manifest_has_cut_off_is_settled_whatever_a_later_sync_does() {
+    let mut run = traced_run(3, 512, LogOptions::default());
+    for _ in 0..3 {
+        run.append();
+    }
+    fail_append(&run, 1, Fault::Enospc, false);
+    let (failed, appended) = failing_commit(&mut run);
+    assert!(matches!(appended, Err(LogError::TakenBack { .. })));
+    run.model.took_back(failed.clone());
+    // Whoever keeps the files makes the cut before the committer has
+    // settled its append, and the log goes on in its next file.
+    run.roll();
+    assert!(run.model.maybe.is_none());
+    run.append();
+    assert_eq!(
+        run.db.as_ref().unwrap().log.end().unwrap().file(),
+        file_id(2)
+    );
+
+    // That file cannot be synced. The group is out of the log for good
+    // all the same, and to settle it nothing is synced.
+    let syncs_fail = FaultRule::new(Fault::Eio).on(OpSet::SYNCS).at(wal_path(2));
+    run.fs.add_rule(syncs_fail);
+    let db = run.db.as_ref().unwrap();
+    let before = run.fs.stats().ops;
+    db.log.settle().unwrap();
+    assert_eq!(ops_since(&run.fs, before), []);
+    // The sync that fails leaves the commits of the next file not
+    // durable, and the log goes on taking items.
+    assert!(matches!(db.log.sync(), Err(LogError::SyncFailed { .. })));
+    db.log.settle().unwrap();
+    assert!(db.log.next_group().is_ok());
+    run.check_crash_states();
+    run.crash_states_with(|read| assert!(!read.contains(&failed)));
+}
+
+#[test]
+fn a_roll_goes_on_until_the_log_has_a_file_that_takes_items_and_one_to_turn_to() {
+    let mut whole = 0;
+    for seed in 1..=16 {
+        let mut run = traced_run(seed, 512, small_files(600));
+        while !run.db.as_ref().unwrap().log.is_due() {
+            run.append();
+        }
+        // The start record of the next file reaches the file whole, and
+        // the file layer says the append failed.
+        fail_append(&run, 2, Fault::Eio, true);
+        run.roll();
+        if last_effect(&run.fs) != Effect::AppendTorn(FIRST - HEADER) {
+            continue;
+        }
+        whole += 1;
+        // The log has turned to a file that takes nothing, so the roll
+        // went round again: the log ends in the file after it, and the
+        // one after that is named and ready.
+        assert_eq!(run.stats.other_errors, 0);
+        let db = run.db.as_ref().unwrap();
+        assert_eq!(db.log.end(), Some(place(3, FIRST)));
+        assert!(!db.log.is_due());
+        assert!(!db.log.rotate().unwrap());
+        let named = db.named();
+        assert_eq!(named[1], log_file(2, FileState::Open, HEADER));
+        assert_eq!(named.last(), Some(&log_file(4, FileState::Open, HEADER)));
+        run.append();
+        run.check_crash_states();
+        run.sync();
+        run.note_durable();
+        run.check_crash_states();
+        run.restart();
+    }
+    assert!(whole > 2, "{whole}");
+}
+
+#[test]
 fn an_append_that_cannot_be_settled_ends_the_session() {
     #[derive(Debug, Clone, Copy, PartialEq)]
     enum Open {
@@ -452,12 +546,10 @@ fn an_append_that_cannot_be_settled_ends_the_session() {
                 sim::failed_ops(&run.fs).last().unwrap().kind,
                 OpKind::Append
             );
-        if open == Open::Read && !whole {
-            // The read-back is made only of a group of full length.
-            assert!(matches!(
-                appended,
-                Err(LogError::NotAppended { .. } | LogError::TakenBack { .. })
-            ));
+        if open == Open::Read && matches!(appended, Err(LogError::TakenBack { .. })) {
+            // Nothing of the group stayed, so there was nothing to read
+            // back.
+            assert!(!whole);
             continue;
         }
         let error = appended.unwrap_err();
@@ -1131,9 +1223,11 @@ fn what_does_not_fit_in_memory_is_an_error_of_the_reader() {
     let manifest = db.manifest.manifest().unwrap();
     let mut reader = LogReader::new(db.vfs.clone(), &db.dir, manifest).with_window(usize::MAX);
     let error = reader.next_item(|_| ()).unwrap_err();
+    // All of the file, or as much as an address of this machine counts.
+    let most = (u64::MAX - FIRST).min(usize::MAX as u64);
     assert!(
         matches!(&error, LogError::ItemTooLong { path, offset, len }
-            if path.ends_with(log_name(1)) && *offset == FIRST && *len == u64::MAX - FIRST),
+            if path.ends_with(log_name(1)) && *offset == FIRST && *len == most),
         "{error}"
     );
     assert!(reader.end().is_none());

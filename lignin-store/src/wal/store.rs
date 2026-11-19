@@ -17,7 +17,7 @@ use lignin_format::{
     value_log::PendingValue,
     wal::{
         self, CheckpointMark, LogAddress, LogCursor, LogPlace, LogStart, LoggedValue, Record,
-        WalError, CHECKPOINT_MARK_LEN, FIRST_ITEM_OFFSET,
+        WalError, CHECKPOINT_MARK_LEN, FIRST_ITEM_OFFSET, MAX_LOG_OFFSET,
     },
     CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion, PageId,
 };
@@ -41,6 +41,10 @@ const HEADER_LEN: u64 = FileHeader::ENCODED_LEN as u64;
 
 /// What a file of an earlier session is called while it is written again.
 const TEMPORARY_SUFFIX: &str = ".tmp";
+
+/// How often [`LogStore::roll`] turns, creates and replaces the manifest
+/// before it gives up: more than it takes when one of them fails.
+const ROLL_ROUNDS: usize = 6;
 
 /// Bytes that are copied at a time when a file is written again.
 const COPY_CHUNK_LEN: u64 = 1 << 20;
@@ -240,6 +244,15 @@ impl ItemKind {
     }
 }
 
+/// Whether an item that begins at `offset` of a file with the start record
+/// `start` can be read. A reader gives an item the addresses of a file
+/// that begins with it, so behind the last address at which a file can
+/// begin no reader takes an item: the log is full there.
+fn has_address(start: &LogStart, offset: u64) -> bool {
+    let begins = start.base().checked_add(offset - FIRST_ITEM_OFFSET);
+    begins.is_some_and(|base| base <= MAX_LOG_OFFSET)
+}
+
 /// Reads `bytes` as recovery will: as records that follow what `before` has
 /// read. They must be exactly one item, of the kind `kind`. Returns the
 /// cursor behind the item.
@@ -297,8 +310,9 @@ enum Settled {
 
 /// Finds out whether the bytes of a failed append at `offset` of `file` are
 /// in the file, by recovery's own test: they are there in full, and they
-/// are what was written. `verifies` says whether recovery would take
-/// anything from other bytes of that length. Nothing is synced.
+/// are what was written. Whatever else stays behind `offset` is read
+/// back, and `verifies` says whether a recovery would take an item from
+/// it. Nothing is synced.
 fn settle(
     file: &LogFile,
     offset: u64,
@@ -319,10 +333,7 @@ fn settle(
             bytes.len()
         )));
     }
-    if len < whole {
-        return Settled::Torn;
-    }
-    let mut found = vec![0; bytes.len()];
+    let mut found = vec![0; (len - offset) as usize];
     if let Err(error) = file.read_exact_at(&mut found, offset) {
         return Settled::Unknown(error);
     }
@@ -330,8 +341,8 @@ fn settle(
         Settled::InLog
     } else if verifies(&found) {
         Settled::Unknown(io::Error::other(format!(
-            "after an append at offset {offset} failed, the file holds other bytes there that \
-             read as what was appended"
+            "after an append at offset {offset} failed, the file holds bytes there that are not \
+             what was appended and that a recovery would take"
         )))
     } else {
         Settled::Torn
@@ -676,7 +687,6 @@ impl LogStore {
     }
 
     /// Whether an append that was taken back still waits for a sync.
-    #[cfg(test)]
     pub(super) fn waits_for_sync(&self) -> bool {
         matches!(&self.tail().active, Some((file, _)) if file.is_taken_back())
     }
@@ -889,12 +899,18 @@ impl LogStore {
     /// the cut of CM9, which is made before the next commit and not by
     /// one.
     ///
+    /// When it returns `Ok`, no turn is due and a named file is ready, as
+    /// far as that can be said while others append. If an append or a turn
+    /// fails while it runs, it goes round again, and after a few rounds it
+    /// ends with what stands in the way, such as
+    /// [`LogError::CutNotDurable`] or [`LogError::NoSpare`].
+    ///
     /// If it fails, it can be called again.
     pub fn roll(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
         self.check_same_dir(manifest)?;
         self.sync()?;
         let mut turned = false;
-        for _ in 0..2 {
+        for _ in 0..ROLL_ROUNDS {
             turned |= self.rotate_if_ready()?;
             let (spare, uncut) = {
                 let tail = self.tail();
@@ -902,15 +918,26 @@ impl LogStore {
                 (tail.spare.as_ref().map(|(_, named)| *named), uncut)
             };
             match spare {
-                Some(true) if !uncut => return Ok(turned),
+                Some(true) if !uncut && !self.is_due() => return Ok(turned),
+                // A turn is due again: the file the log turned to takes
+                // nothing, or filled at once.
+                Some(true) if !uncut => continue,
                 Some(_) => {}
                 None => {
                     self.create()?;
                 }
             }
+            if uncut {
+                // The file takes no more items, so this makes it durable
+                // to its end, and the manifest names it closed.
+                self.sync()?;
+            }
             self.commit(manifest)?;
         }
-        Ok(turned | self.rotate_if_ready()?)
+        // Something failed in every round. What still stands in the way
+        // is the error, and the log has no file ready to turn to.
+        self.rotate()?;
+        Err(LogError::NoSpare)
     }
 
     /// Turns the log if a turn is due and it has a file to turn to.
@@ -941,7 +968,10 @@ impl LogStore {
         let address = file
             .start()
             .ok_or(FormatError::Wal(WalError::MissingStart))
-            .and_then(|start| start.address(offset))
+            .and_then(|start| match has_address(&start, offset) {
+                true => start.address(offset),
+                false => Err(WalError::AddressOutOfRange.into()),
+            })
             .map_err(LogError::format(file.path(), offset))?;
         let version = tail.latest.next().ok_or(LogError::Refused {
             offset: 0,
@@ -981,9 +1011,9 @@ impl LogStore {
     /// the log. When it returns [`LogError::NotAppended`], the group is not
     /// in the log and no crash brings it back: the commit has failed. When
     /// it returns [`LogError::TakenBack`], the group is not in the log, and
-    /// a crash can still bring it back until a sync of the log has
-    /// succeeded ([`Self::sync`]): then the commit has failed. When it
-    /// returns [`LogError::Unsettled`], neither is known.
+    /// a crash can still bring it back until [`Self::settle`] has returned
+    /// `Ok`: then the commit has failed. When it returns
+    /// [`LogError::Unsettled`], neither is known.
     pub fn append_group(&self, at: &GroupPlace, group: &[u8]) -> Result<Appended, LogError> {
         if at.session != self.session {
             return Err(LogError::WrongStore);
@@ -1059,6 +1089,12 @@ impl LogStore {
             at: LogPlace::new(file.id(), offset).map_err(refused(offset))?,
             end: LogPlace::new(file.id(), after.offset()).map_err(refused(after.offset()))?,
         };
+        if !file
+            .start()
+            .is_some_and(|start| has_address(&start, offset))
+        {
+            return Err(refused(offset)(WalError::AddressOutOfRange.into()));
+        }
 
         let error = match file.append(bytes) {
             Ok(found) if found == offset => {
@@ -1155,6 +1191,37 @@ impl LogStore {
     /// crash keeps of them is settled by the next open.
     pub fn sync(&self) -> Result<LogDurable, LogError> {
         self.sync_until(None)
+    }
+
+    /// Sees to it that no crash brings back an item whose append returned
+    /// [`LogError::TakenBack`]. Call it after that error, outside every
+    /// page step's lock, before anything relies on the item being gone: a
+    /// commit calls it before it reports that it failed.
+    ///
+    /// When it returns `Ok`, the item is out of the log for good: a sync
+    /// has made the file durable as the append left it, or a manifest
+    /// names the file closed. With nothing waiting it does nothing.
+    ///
+    /// When the sync fails, nothing keeps a crash from bringing the item
+    /// back. The append is unsettled, this returns
+    /// [`LogError::Unsettled`], and the log takes nothing more in this
+    /// session. It returns another error only when it could not try, as
+    /// when a file of an earlier session cannot be written again: it can
+    /// then be called again.
+    pub fn settle(&self) -> Result<(), LogError> {
+        if !self.waits_for_sync() {
+            return Ok(());
+        }
+        let Err(error) = self.sync() else {
+            return Ok(());
+        };
+        self.tail().check_settled()?;
+        // A manifest that names the file closed settles it as well.
+        if self.waits_for_sync() {
+            Err(error)
+        } else {
+            Ok(())
+        }
     }
 
     /// Makes the log durable through `place`: every item that ends at or

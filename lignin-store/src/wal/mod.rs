@@ -201,7 +201,7 @@
 //! | Failed | What the call returns | Left behind |
 //! | --- | --- | --- |
 //! | An append of an item, and the file has the length it had | [`LogError::TakenBack`] | The item is not in the log, and the file takes no more items. The file layer wrote nothing, or wrote and took it back, and what it took back a crash can still bring back, all of it, until the file as it is now is durable. The next sync of the log that succeeds makes it so, and so does a manifest that names the file closed. |
-//! | An append, and a part of the item stays in the file | [`LogError::NotAppended`] | The item is not in the log, and no crash completes it. A recovery finds the file valid up to the item before. The file takes no more items. |
+//! | An append, and a part of the item stays in the file | [`LogError::NotAppended`] | The item is not in the log, and no crash completes it. What stays is read back, and a recovery takes no item from it: it finds the file valid up to the item before. The file takes no more items. |
 //! | An append, and all of the item is in the file, as it was given | `Ok` | The item is in the log: the commit has happened (CM9). The file takes no more items, because its handle is not trusted with another append. |
 //! | An append, and the log cannot find out which of these holds: the length or the bytes cannot be read, or the file holds other bytes there that a recovery would take | [`LogError::Unsettled`] | The item may be in the log, now or after a crash. The log takes nothing more in this session. The next open settles it. |
 //! | A sync of a file this session writes | [`LogError::SyncFailed`] | Nothing behind what was durable becomes durable in this session: this and every later sync fail, without a call of the file layer. The log still takes items. |
@@ -211,9 +211,9 @@
 //! | [`LogStore::commit`] | as [`ManifestStore::update`] | The old manifest, or the manifest in doubt. A file that was created is not turned to until a manifest names it. |
 //! | The deletion of a dropped file | [`LogError::NotDeleted`] | The new manifest, in force, and the file, which the next call or the next session deletes. |
 //!
-//! **After a failed append the failed bytes are cut off before anything
-//! else is appended** (CM7, CM9 item 4). The file ends at its last whole
-//! item and takes no more, and the log does not turn to its next file
+//! **After a failed append of an item the failed bytes are cut off before
+//! anything else is appended** (CM7, CM9 item 4). The file ends at its last
+//! whole item and takes no more, and the log does not turn to its next file
 //! until a durable manifest names this one closed at that length
 //! ([`LogError::CutNotDurable`]). [`LogStore::roll`] makes the cut: it
 //! syncs the log, replaces the manifest and turns. So the cut is made by
@@ -221,22 +221,27 @@
 //! and until it is made the log takes no item (CM9 item 5): every append
 //! fails with [`LogError::NoActiveFile`]. Reads go on. The next file's
 //! start record says where this one ends (LG9), and the next commit takes
-//! the version of the one that failed.
+//! the version of the one that failed. A turn whose start record fails is
+//! another matter: the log has not turned, the file it would have turned
+//! to is given up, and the file the log ends in goes on taking items.
 //!
 //! **An append that was taken back can come back until the file is
 //! durable as it is.** [`LogError::TakenBack`] says that the file has the
 //! length it had: the file layer wrote nothing, or wrote and took it back,
 //! and the log cannot tell which. What was taken back a crash can still
 //! bring back, as the last item of the log. A sync of the log that
-//! succeeds ends that ([`LogStore::sync`]), and so does the manifest that
-//! names the file closed. The log does not sync here itself: an append is
-//! made under a page step's lock, and nothing waits for a sync there
-//! (D-059). So whoever must not see the item again waits for the sync. A
-//! commit does, before it reports that it failed (CM9 item 3), and if the
-//! sync fails the commit is unsettled. A page step does, before anything
-//! is done that its record would contradict, such as deleting a file the
-//! record names. After [`LogError::NotAppended`] there is nothing to wait
-//! for: no crash makes a part of an item an item.
+//! succeeds ends that, and so does the manifest that names the file
+//! closed where the item would begin. The log does not sync here itself:
+//! an append is made under a page step's lock, and nothing waits for a
+//! sync there (D-059). So whoever must not see the item again calls
+//! [`LogStore::settle`], which syncs if that is still needed and says how
+//! it went: `Ok`, and the item is out of the log for good, or
+//! [`LogError::Unsettled`], and the log takes nothing more. A commit
+//! calls it before it reports that it failed (CM9 item 3). A page step
+//! calls it before anything is done that its record would contradict,
+//! such as deleting a file the record names. After
+//! [`LogError::NotAppended`] there is nothing to wait for: what stays of
+//! the item was read back, and no recovery takes an item from it.
 //!
 //! **A failed sync cannot be made good** (`lignin_io::vfs`): the bytes that
 //! were not durable are unknown, and a later sync that succeeds does not
@@ -263,6 +268,7 @@
 //! | The same, in a file whose valid length covers its start record | [`LogError::Damaged`]. A manifest gives a file such a length only once the file before it is durable to its end, so the two must fit. |
 //! | A valid length inside the start record or inside an item | [`LogError::NotAtRecordEnd`]. A manifest of this log vouches for whole items. |
 //! | A file behind the end of the log for which the manifest vouches for more than its header | [`LogError::VouchedBehindEnd`]. The log would end before records that were durable. |
+//! | An item that begins behind the address 2^63 - 1 | A format error. The reader gives an item the addresses of a file that begins with it, and no file begins behind that address. The log appends no item there: it is full, after more bytes than a disk is written with in centuries. |
 //! | A file that is missing, shorter than its valid length, of another id or kind | An error. |
 //!
 //! When it has ended, [`LogReader::end`] gives the [`LogEnd`]: each file
@@ -360,17 +366,20 @@
 //!   with no item missing in it and nothing else in it
 //! - with every item that a sync reported durable
 //! - with no item whose append returned [`LogError::NotAppended`]
-//! - with no item whose append returned [`LogError::TakenBack`], once a
-//!   sync of the log has succeeded after it in the same session, or a
-//!   manifest has named its file closed
+//! - with no item whose append returned [`LogError::TakenBack`], once
+//!   [`LogStore::settle`] or a sync of the log has succeeded after it in
+//!   the same session, or a manifest has named its file closed where the
+//!   item would begin
 //!
 //! An item whose append returned [`LogError::TakenBack`], before that, or
 //! [`LogError::Unsettled`], is the last item of that run or is not in it.
 //! That holds into the next session, until its first roll has replaced the
-//! manifest: a sync of the next session does not settle it. From then on
-//! the item stays in the log or out of it. A session that must not show a
-//! state to which a crash can still add such an item rolls before it
-//! answers.
+//! manifest: a sync of the next session does not settle it. That roll
+//! names the file closed where the session found the log to end. If no
+//! crash had brought the item back, that is where the item would begin,
+//! and it stays out. If a crash had, the session read the item as the last
+//! of the log, and it stays in. A session that must not show a state to
+//! which a crash can still add such an item rolls before it answers.
 //!
 //! With a table checkpoint in force, the log file of its sample's place is
 //! among the files that are read, from its first item, and the item that
@@ -420,8 +429,9 @@
 //! - It reads the log with a [`LogReader`] before it opens it, and passes
 //!   what the reader found to [`LogStore::open`], with nothing written to
 //!   the directory in between. The log takes an end only of its own
-//!   directory, by the path, and only while every file has the length it
-//!   was read with ([`LogError::WrongLogEnd`]).
+//!   directory, by the path, and only while every file that holds
+//!   something of the log has the length it was read with
+//!   ([`LogError::WrongLogEnd`]).
 //! - It calls [`LogStore::roll`] before the session's first append, and
 //!   from then on whenever [`LogStore::is_due`], and from time to time:
 //!   outside a commit and outside a page step. Before the session ends it
@@ -439,15 +449,17 @@
 //!   the append returned `Ok`. A sync that fails then leaves the commit
 //!   published and not durable (`NotDurable`). After
 //!   [`LogError::NotAppended`] the commit has failed. After
-//!   [`LogError::TakenBack`] the commit calls [`LogStore::sync`], with the
-//!   lock on the counts given back: when that has returned `Ok` the commit
-//!   has failed, and when it fails, the commit is unsettled. Either way
-//!   the log takes no item until [`LogStore::roll`] has made the cut.
-//!   After [`LogError::Unsettled`] the session publishes nothing more.
+//!   [`LogError::TakenBack`] the commit calls [`LogStore::settle`], with
+//!   the lock on the counts given back: when that has returned `Ok` the
+//!   commit has failed, and when it returns [`LogError::Unsettled`], the
+//!   commit is unsettled. Either way the log takes no item until
+//!   [`LogStore::roll`] has made the cut. After [`LogError::Unsettled`]
+//!   the session publishes nothing more.
 //! - A page step appends its record under its own lock and installs its
 //!   change only when the append returned `Ok`. After
-//!   [`LogError::TakenBack`] it gives its lock back, and the log is synced
-//!   before anything is done that the record would contradict.
+//!   [`LogError::TakenBack`] it gives its lock back, and
+//!   [`LogStore::settle`] is called before anything is done that the
+//!   record would contradict.
 //! - It syncs no log file itself, under its name or under a hard link,
 //!   while the log is open.
 //! - It lets nothing but the log change the log files a manifest names:
