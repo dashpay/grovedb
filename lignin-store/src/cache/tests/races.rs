@@ -213,21 +213,10 @@ fn a_frame_that_two_hits_hold_is_freed_once_when_it_is_replaced() {
             .collect();
         threads.push({
             let pool = Arc::clone(&pool);
-            thread::spawn(move || {
-                let step = pool.page_step(page(1));
-                let current = step.current().expect("in the pool");
-                let mut blank = pool.blank();
-                blank.copy_from(&current);
-                content(1, 1, 1).write(&mut blank);
-                drop(step.replace(&current, blank).expect("nothing in the way"));
-            })
+            thread::spawn(move || step_once(&pool, 1))
         });
         join(threads);
-        assert_eq!(
-            lock(&pool.turnover.free).len(),
-            1,
-            "the frame that was replaced is free"
-        );
+        assert_eq!(free_frames(&pool), 1, "the frame that was replaced is free");
         assert_eq!(pool.census().published, 1);
         check(&pool, 0);
     });

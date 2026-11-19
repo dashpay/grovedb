@@ -55,12 +55,9 @@ impl std::fmt::Debug for Lanes {
 pub(super) struct Announcement<'l>(&'l AtomicU32);
 
 impl Announcement<'_> {
-    /// Takes the announcement back and gives the cell up.
-    ///
-    /// The store is `SeqCst`, as is the look at the frame that follows it:
-    /// whoever retires the frame marks it dead and then looks for
-    /// announcements, so one of the two sees the other, and a dead frame
-    /// whose last pin this was does not stay unnoticed.
+    /// Takes the announcement back and gives the cell up. The store is
+    /// `SeqCst`, as is the look at the frame that follows it
+    /// (`Frame::is_dead_after`).
     pub(super) fn withdraw(self) {
         self.0.store(VACANT, Ordering::SeqCst);
     }

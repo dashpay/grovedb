@@ -4,6 +4,7 @@
 use lignin_format::PageSize;
 
 use super::*;
+use crate::cache::frame::Moment;
 
 #[test]
 fn a_pool_is_as_many_frames_as_its_capacity_holds() {
@@ -229,11 +230,7 @@ fn a_load_that_cannot_be_is_refused() {
         })
     );
     assert_eq!(pool.census().published, 1);
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        3,
-        "every refused frame came back"
-    );
+    assert_eq!(free_frames(&pool), 3, "every refused frame came back");
     check(&pool, 0);
 }
 
@@ -250,7 +247,7 @@ fn a_second_load_of_one_page_version_gives_the_first_frame() {
     let second = loaded(pool.install_loaded(second, second_miss, version(3), None));
     assert_eq!(first.as_ptr(), second.as_ptr());
     assert_eq!(pool.census().published, 1);
-    assert_eq!(lock(&pool.turnover.free).len(), 2);
+    assert_eq!(free_frames(&pool), 2);
     check(&pool, 0);
 }
 
@@ -362,7 +359,7 @@ fn the_clock_gives_a_used_page_a_second_chance() {
     for raw in 1..=3 {
         drop(seed(&pool, content(raw, 1, 0), None));
     }
-    assert_eq!(lock(&pool.turnover.free).len(), 0);
+    assert_eq!(free_frames(&pool), 0);
 
     // Every page was used when it was loaded. The hand takes each mark off,
     // comes round, and evicts the first frame.
@@ -613,27 +610,21 @@ fn a_frame_that_was_taken_out_under_a_hit_is_free_when_the_hit_is_dropped() {
 
     // A page step replaces the frame, and a commit frees the page: the
     // version the reader holds is held for readers, and then reclaimed.
-    let step = pool.page_step(page(1));
-    let current = step.current().expect("in the pool");
-    let mut blank = pool.blank();
-    blank.copy_from(&current);
-    content(1, 1, 1).write(&mut blank);
-    drop(step.replace(&current, blank).expect("nothing in the way"));
-    drop((step, current));
-    assert_eq!(lock(&pool.turnover.free).len(), 1, "the reader holds it");
+    step_once(&pool, 1);
+    assert_eq!(free_frames(&pool), 1, "the reader holds it");
     assert_eq!(Content::read(&found), content(1, 1, 0));
 
     drop(found);
-    assert_eq!(lock(&pool.turnover.free).len(), 2, "the old frame is free");
+    assert_eq!(free_frames(&pool), 2, "the old frame is free");
     check(&pool, 0);
 
     let held = pool.get(page(1), version(1)).expect("unwritten");
     pool.free(page(1), version(2)).expect("a later commit");
     assert_eq!(pool.reclaim(&TestPins::at(2)), 1);
-    assert_eq!(lock(&pool.turnover.free).len(), 2, "the reader holds it");
+    assert_eq!(free_frames(&pool), 2, "the reader holds it");
     assert_eq!(Content::read(&held), content(1, 1, 1));
     drop(held);
-    assert_eq!(lock(&pool.turnover.free).len(), 3);
+    assert_eq!(free_frames(&pool), 3);
     assert_eq!(pool.census(), Census::default());
     check(&pool, 0);
 }
@@ -660,6 +651,7 @@ fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
 fn a_frame_takes_less_than_512_bytes_beside_its_page() {
     use crate::cache::{
         frame::{Arena, OwnedFrame},
+        lanes::Lanes,
         pool::Bucket,
     };
 
@@ -694,7 +686,7 @@ fn a_frame_takes_less_than_512_bytes_beside_its_page() {
             let more = pool.frames() + 1;
             let cost = more * (size + Arena::HEADER_LEN + size_of::<OwnedFrame>())
                 + (2 * more).next_power_of_two() * size_of::<Bucket>()
-                + Arena::lanes_for(more) * Arena::LANE_LEN;
+                + Lanes::count_for(more) * Lanes::LANE_LEN;
             assert!(cost > pool.capacity(), "{frames} frames of {size}");
         }
     }
@@ -709,7 +701,7 @@ fn a_part_of_the_table_is_a_cache_line_of_its_own() {
 
 #[test]
 fn a_hit_gives_way_to_a_change_of_its_part_of_the_table() {
-    use crate::cache::{frame::Unlocked, sync::Moment};
+    use crate::cache::frame::Unlocked;
 
     let pool = pool(2);
     drop(seed(&pool, content(1, 1, 0), None));
@@ -745,8 +737,6 @@ fn a_hit_gives_way_to_a_change_of_its_part_of_the_table() {
 
 #[test]
 fn a_frame_that_was_given_another_page_meanwhile_is_not_pinned() {
-    use crate::cache::sync::Moment;
-
     let pool = pool(2);
     drop(seed(&pool, content(1, 1, 0), None));
 
@@ -777,8 +767,6 @@ fn a_frame_that_was_given_another_page_meanwhile_is_not_pinned() {
 
 #[test]
 fn an_announcement_that_was_no_pin_leaves_no_dead_frame_behind() {
-    use crate::cache::sync::Moment;
-
     let pool = pool(3);
     drop(create(&pool, 1, 1));
 
@@ -788,23 +776,13 @@ fn an_announcement_that_was_no_pin_leaves_no_dead_frame_behind() {
     let found = pool
         .get_while(page(1), version(1), |moment| {
             if moment == Moment::Announced {
-                let step = pool.page_step(page(1));
-                let current = step.current().expect("in the pool");
-                let mut blank = pool.blank();
-                blank.copy_from(&current);
-                content(1, 1, 1).write(&mut blank);
-                drop(step.replace(&current, blank).expect("nothing in the way"));
-                drop((step, current));
-                assert_eq!(
-                    lock(&pool.turnover.free).len(),
-                    1,
-                    "the announcement keeps the frame"
-                );
+                step_once(&pool, 1);
+                assert_eq!(free_frames(&pool), 1, "the announcement keeps the frame");
             }
         })
         .expect("unwritten");
     assert_eq!(Content::read(&found), content(1, 1, 1));
-    assert_eq!(lock(&pool.turnover.free).len(), 2, "the old frame is free");
+    assert_eq!(free_frames(&pool), 2, "the old frame is free");
     drop(found);
     check(&pool, 0);
 }

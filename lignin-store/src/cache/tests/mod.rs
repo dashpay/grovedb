@@ -245,6 +245,23 @@ fn create<'p>(pool: &'p BufferPool, page: u32, born: u64) -> PageRef<'p> {
     pool.install(&copy, version(born)).expect("a commit")
 }
 
+/// How many frames are on the pool's free list.
+fn free_frames(pool: &BufferPool) -> usize {
+    lock(&pool.turnover.free).len()
+}
+
+/// One page step on `page`, whose current version is in the pool: its
+/// frame is replaced by one that holds the page one revision on.
+fn step_once(pool: &BufferPool, page: u32) {
+    let step = pool.page_step(self::page(page));
+    let current = step.current().expect("in the pool");
+    let mut blank = pool.blank();
+    blank.copy_from(&current);
+    let before = Content::read(&current);
+    content(before.page, before.born, before.revision + 1).write(&mut blank);
+    drop(step.replace(&current, blank).expect("nothing in the way"));
+}
+
 /// Pins and guards as a test sets them.
 #[derive(Debug, Default)]
 struct TestPins {

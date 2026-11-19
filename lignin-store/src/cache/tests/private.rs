@@ -48,11 +48,7 @@ fn a_page_is_made_private_once_for_an_owner() {
     let fourth = first.clone();
     assert_eq!(fourth.read().as_ptr(), first.read().as_ptr());
     assert_eq!(pool.page_step(page(1)).private_copies(), 1);
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        2,
-        "the spare frames came back"
-    );
+    assert_eq!(free_frames(&pool), 2, "the spare frames came back");
 
     // Another owner gets a copy of its own, of the committed page.
     let other = pool
@@ -83,11 +79,7 @@ fn a_copy_that_is_made_once_is_refused_while_the_owner_has_one() {
     assert_eq!(made(1).expect_err("a copy"), NotMade::AlreadyPrivate);
     assert_eq!(pool.page_step(page(1)).private_copies(), 1);
     assert_eq!(Content::read(&first.read()), content(1, 4, 0));
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        2,
-        "the spare frames came back"
-    );
+    assert_eq!(free_frames(&pool), 2, "the spare frames came back");
 
     // Another owner's copy is no reason to refuse, and the copy that the
     // sharing call made is one.
@@ -136,11 +128,7 @@ fn a_copy_that_is_made_once_is_refused_before_its_page_is_missed() {
         panic!("the owner has no copy");
     };
     assert_eq!((miss.page(), miss.at()), (page(1), version(5)));
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        2,
-        "the spare frame came back"
-    );
+    assert_eq!(free_frames(&pool), 2, "the spare frame came back");
     let loaded = load(&pool, &disk, miss).expect("on disk");
     let copy = once(1).expect("loaded");
     assert_eq!(Content::read(&copy.read()), content(1, 3, 0));
@@ -164,11 +152,7 @@ fn a_page_that_is_not_in_the_pool_is_loaded_before_it_is_made_private() {
         .make_private(owner(1), page(1), version(5))
         .expect_err("not in the pool");
     assert_eq!((miss.page(), miss.at()), (page(1), version(5)));
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        2,
-        "the spare frame came back"
-    );
+    assert_eq!(free_frames(&pool), 2, "the spare frame came back");
     drop(load(&pool, &disk, miss).expect("on disk"));
     let copy = pool
         .make_private(owner(1), page(1), version(5))
@@ -234,7 +218,7 @@ fn a_new_page_is_private_once() {
         })
     );
     assert!(pool.new_private(owner(2), page(1)).is_ok());
-    assert_eq!(lock(&pool.turnover.free).len(), 0);
+    assert_eq!(free_frames(&pool), 0);
     check(&pool, 0);
 }
 
@@ -400,17 +384,13 @@ fn a_discarded_copy_goes_with_its_last_handle() {
         .expect("in the pool");
     content(1, 9, 0).write(&mut copy.write().expect("private"));
     let stale = copy.clone();
-    assert_eq!(lock(&pool.turnover.free).len(), 0);
+    assert_eq!(free_frames(&pool), 0);
 
     pool.discard(&copy).expect("a private copy");
     drop(copy);
     assert_eq!(pool.page_step(page(1)).private_copies(), 0);
     assert!(pool.private(owner(1), page(1)).is_none());
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        0,
-        "a handle still pins the frame"
-    );
+    assert_eq!(free_frames(&pool), 0, "a handle still pins the frame");
     check(&pool, 1);
 
     // The handle that is left reads what the copy held, and changes nothing.
@@ -428,7 +408,7 @@ fn a_discarded_copy_goes_with_its_last_handle() {
         Some(CacheError::NotPrivate { page: page(1) })
     );
     drop(stale);
-    assert_eq!(lock(&pool.turnover.free).len(), 1, "the frame is free");
+    assert_eq!(free_frames(&pool), 1, "the frame is free");
     assert_eq!(
         Content::read(&pool.get(page(1), version(3)).expect("committed")),
         content(1, 3, 0)
@@ -687,10 +667,10 @@ fn a_handle_of_another_pool_is_refused() {
 
     // Neither pool was changed.
     assert_eq!(pool.census().published, 1);
-    assert_eq!(lock(&pool.turnover.free).len(), 3);
+    assert_eq!(free_frames(&pool), 3);
     assert_eq!(other.census().private, 1);
     assert_eq!(other.oldest_unwritten(), Some(version(3)));
-    assert_eq!(lock(&other.turnover.free).len(), 2);
+    assert_eq!(free_frames(&other), 2);
     drop((ours, theirs, their_copy));
     check(&pool, 0);
     check(&other, 0);

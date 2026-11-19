@@ -97,6 +97,8 @@
 //!   and the lanes, which find every announcement made before they are
 //!   looked through.
 
+// The atomics that are plain in every build: a model does not follow them.
+use std::sync::atomic as plain;
 use std::{
     alloc::{self, Layout},
     cell::UnsafeCell,
@@ -112,8 +114,8 @@ use super::{
     error::CacheError,
     lanes::{Announcement, Lanes},
     sync::{
-        self, settled_u64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Moment, Mutex, Ordering,
-        Padded, Reading, RwLock, RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
+        self, settled_u64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Mutex, Ordering, Padded,
+        Reading, RwLock, RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
     },
 };
 
@@ -177,8 +179,7 @@ pub(super) struct Frame {
     page: AtomicU32,
     kind: AtomicU8,
     flags: AtomicU8,
-    referenced: std::sync::atomic::AtomicBool,
-    overflow: bool,
+    referenced: plain::AtomicBool,
     born: AtomicU64,
     superseded: AtomicU64,
     next: AtomicPtr<Frame>,
@@ -214,7 +215,7 @@ impl fmt::Debug for Frame {
             .field("born", &self.born())
             .field("superseded", &self.superseded())
             .field("pins", &self.pins())
-            .field("overflow", &self.overflow)
+            .field("overflow", &self.is_overflow())
             .finish_non_exhaustive()
     }
 }
@@ -225,8 +226,7 @@ impl Frame {
             page: AtomicU32::new(0),
             kind: AtomicU8::new(kind::FREE),
             flags: AtomicU8::new(0),
-            referenced: std::sync::atomic::AtomicBool::new(false),
-            overflow: index == NO_INDEX,
+            referenced: plain::AtomicBool::new(false),
             born: AtomicU64::new(NO_VERSION),
             superseded: AtomicU64::new(NO_VERSION),
             next: AtomicPtr::new(ptr::null_mut()),
@@ -252,16 +252,18 @@ impl Frame {
     /// the exclusive latch of a private copy, or when a chain retires a
     /// frame.
     ///
-    /// The store is `SeqCst` for the one who retires a frame, which marks
-    /// it dead and then looks for announcements, against the one who takes
-    /// an announcement back and then looks whether the frame is dead
-    /// ([`Self::is_dead`]): one of the two sees the other.
+    /// The store is `SeqCst` for the one who retires a frame, against the
+    /// one who takes an announcement back ([`Self::is_dead_after`]).
     fn set_kind(&self, kind: u8) {
         self.kind.store(kind, Ordering::SeqCst);
     }
 
-    /// Whether the frame was retired and has not been made free since.
-    fn is_dead(&self) -> bool {
+    /// Takes back an announcement of this frame, and says whether the
+    /// frame is dead, in that order: whoever retires a frame marks it dead
+    /// and then looks for announcements, so one of the two sees the other,
+    /// and a dead frame whose last pin this was is not left unnoticed.
+    fn is_dead_after(&self, announcement: Announcement<'_>) -> bool {
+        announcement.withdraw();
         self.kind.load(Ordering::SeqCst) == kind::DEAD
     }
 
@@ -279,7 +281,7 @@ impl Frame {
 
     /// Whether the frame was allocated beside the arena.
     pub(super) fn is_overflow(&self) -> bool {
-        self.overflow
+        self.index == NO_INDEX
     }
 
     /// The page id the frame holds, or 0 for none.
@@ -324,12 +326,11 @@ impl Frame {
     }
 
     fn next(&self) -> Option<FramePtr> {
-        NonNull::new(self.next.load(Ordering::Acquire)).map(FramePtr)
+        pointer_of(self.next.load(Ordering::Acquire))
     }
 
     fn set_next(&self, next: Option<FramePtr>) {
-        let raw = next.map_or(ptr::null_mut(), |next| next.0.as_ptr());
-        self.next.store(raw, Ordering::Release);
+        self.next.store(raw_of(next), Ordering::Release);
     }
 
     /// Marks the frame as used, for the clock.
@@ -604,11 +605,10 @@ impl<'a> Pinned<'a> {
         let pointer = self.frame;
         match self.announced {
             Some(announcement) => {
-                announcement.withdraw();
                 // SAFETY: only an arena frame is announced (A6), and the
                 // header of an arena frame may be read by anyone (A1).
                 let frame = unsafe { pointer.frame() };
-                if frame.is_dead() {
+                if frame.is_dead_after(announcement) {
                     Unpinned::Dead
                 } else {
                     Unpinned::Done
@@ -857,11 +857,11 @@ pub(super) struct Links {
     first: AtomicPtr<Frame>,
     /// The first of the bucket's frames beside the arena. It is read and
     /// written under the lock only.
-    beside: std::sync::atomic::AtomicPtr<Frame>,
+    beside: plain::AtomicPtr<Frame>,
     /// How many times a commit has installed or freed a page of this
     /// bucket, or a page step has replaced a frame of it. It is read and
     /// written under the lock only.
-    stamp: std::sync::atomic::AtomicU64,
+    stamp: plain::AtomicU64,
 }
 
 /// A frame of a chain, for as long as the chain's lock is held.
@@ -941,8 +941,8 @@ impl Links {
         Self {
             changes: settled_u64(0),
             first: AtomicPtr::new(ptr::null_mut()),
-            beside: std::sync::atomic::AtomicPtr::new(ptr::null_mut()),
-            stamp: std::sync::atomic::AtomicU64::new(0),
+            beside: plain::AtomicPtr::new(ptr::null_mut()),
+            stamp: plain::AtomicU64::new(0),
         }
     }
 
@@ -951,7 +951,7 @@ impl Links {
     }
 
     fn beside(&self) -> Option<FramePtr> {
-        pointer_of(self.beside.load(std::sync::atomic::Ordering::Relaxed))
+        pointer_of(self.beside.load(plain::Ordering::Relaxed))
     }
 
     /// The frames of the bucket: its arena frames, and then those beside
@@ -967,7 +967,7 @@ impl Links {
     /// How many times a commit has installed or freed a page of this
     /// bucket, or a page step has replaced a frame of it.
     pub(super) fn stamp(&self) -> u64 {
-        self.stamp.load(std::sync::atomic::Ordering::Relaxed)
+        self.stamp.load(plain::Ordering::Relaxed)
     }
 
     /// Takes a frame out of the list it is linked in. The caller holds the
@@ -979,8 +979,7 @@ impl Links {
         });
         in_arena
             || self.unlink_from(self.beside(), pointer, |beside| {
-                self.beside
-                    .store(raw_of(beside), std::sync::atomic::Ordering::Relaxed);
+                self.beside.store(raw_of(beside), plain::Ordering::Relaxed);
             })
     }
 
@@ -1049,6 +1048,17 @@ impl Drop for ChainWrite<'_> {
         // The lock is given back after this, when the fields are dropped.
         self.links.changes.fetch_add(1, Ordering::SeqCst);
     }
+}
+
+/// A moment in a read that takes no lock ([`Chain::pin_unlocked`]), at
+/// which a test changes the pool under the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Moment {
+    /// The reader has picked a frame and has not announced it.
+    Picked,
+    /// The reader has announced the frame and has not looked at the count
+    /// of changes again.
+    Announced,
 }
 
 /// What became of a pin that was asked for with no lock
@@ -1147,8 +1157,7 @@ impl Chain {
         };
         at(Moment::Announced);
         if links.changes.load(Ordering::SeqCst) != before {
-            announcement.withdraw();
-            return if frame.is_dead() {
+            return if frame.is_dead_after(announcement) {
                 Unlocked::Dead
             } else {
                 Unlocked::Not
@@ -1185,12 +1194,11 @@ impl Chain {
 }
 
 impl ChainWrite<'_> {
-    /// Counts a commit that installed or freed a page of this bucket, or a
-    /// page step that replaced a frame of it.
-    pub(super) fn count_change(&self) {
-        self.links
-            .stamp
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    /// Stamps the bucket for a commit that installed or freed a page of
+    /// it, or a page step that replaced a frame of it: a load that began
+    /// before is turned back.
+    pub(super) fn advance_stamp(&self) {
+        self.links.stamp.fetch_add(1, plain::Ordering::Relaxed);
     }
 
     /// Links a frame its caller owned. From here on other threads can reach
@@ -1203,12 +1211,12 @@ impl ChainWrite<'_> {
             header.set_next(self.links.beside());
             self.links
                 .beside
-                .store(pointer.0.as_ptr(), std::sync::atomic::Ordering::Relaxed);
+                .store(raw_of(Some(pointer)), plain::Ordering::Relaxed);
         } else {
             header.set_next(self.links.first());
             self.links
                 .first
-                .store(pointer.0.as_ptr(), Ordering::Release);
+                .store(raw_of(Some(pointer)), Ordering::Release);
         }
         Entry {
             pointer,
@@ -1359,22 +1367,14 @@ impl Arena {
     /// The bytes one frame costs beside its page: its header.
     pub(super) const HEADER_LEN: usize = size_of::<Frame>();
 
-    /// The bytes one lane takes.
-    pub(super) const LANE_LEN: usize = Lanes::LANE_LEN;
-
-    /// How many lanes an arena of `count` frames has.
-    pub(super) fn lanes_for(count: usize) -> usize {
-        Lanes::count_for(count)
-    }
-
     /// The arena, and each of its frames, owned.
     pub(super) fn new(
         count: usize,
         frame_len: usize,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
-        static ARENAS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = ARENAS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        static ARENAS: plain::AtomicU64 = plain::AtomicU64::new(1);
+        let id = ARENAS.fetch_add(1, plain::Ordering::Relaxed);
         let layout = layout(frame_len, count)?;
         let last = u32::try_from(count - 1).map_err(|_| CacheError::CapacityTooLarge)?;
         if last >= NO_INDEX - 1 {
@@ -1443,7 +1443,7 @@ impl Arena {
 
     /// Whether a cell of a lane announces `frame` at the moment this looks
     /// at it. A frame beside the arena is never announced (A6).
-    pub(super) fn announces(&self, frame: &Frame) -> bool {
+    fn announces(&self, frame: &Frame) -> bool {
         !frame.is_overflow() && self.lanes.announces(frame.index)
     }
 
@@ -1464,9 +1464,10 @@ impl Arena {
         None
     }
 
-    /// Whether a retired frame has no pin: no announcement, and after that
-    /// no count (A6).
-    fn has_no_pin(&self, frame: &Frame) -> bool {
+    /// Whether a frame has no pin: no announcement, and after that no count
+    /// (A6). For a frame that can still be found in its bucket, the answer
+    /// is of one moment and decides nothing.
+    pub(super) fn has_no_pin(&self, frame: &Frame) -> bool {
         !self.announces(frame) && frame.pins() == 0
     }
 
@@ -1574,7 +1575,6 @@ mod layout {
             offset_of!(Frame, kind),
             offset_of!(Frame, flags),
             offset_of!(Frame, referenced),
-            offset_of!(Frame, overflow),
             offset_of!(Frame, born),
             offset_of!(Frame, superseded),
             offset_of!(Frame, next),

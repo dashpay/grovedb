@@ -8,11 +8,12 @@ use lignin_format::{CommitVersion, PageId, PageSize};
 use super::{
     error::CacheError,
     frame::{
-        flag, kind, Arena, Chain, Entry, Frame, Links, OwnedFrame, Pinned, Unlocked, Unpinned,
-        NO_VERSION,
+        flag, kind, Arena, Chain, Entry, Frame, Links, Moment, OwnedFrame, Pinned, Unlocked,
+        Unpinned, NO_VERSION,
     },
     guard::{Blank, PageRef},
-    sync::{lock, Counter, Moment, Mutex, Padded},
+    lanes::Lanes,
+    sync::{lock, Counter, Mutex, Padded},
 };
 use crate::alloc::Epoch;
 
@@ -230,19 +231,24 @@ fn stands_for(frame: &Frame, page: PageId, at: CommitVersion) -> bool {
 }
 
 impl BufferPool {
-    /// The bytes the fixed part of a pool of `count` frames takes: the
-    /// pages, their headers, their places on the free list, the table and
-    /// the lanes.
-    fn fixed_cost(count: usize, frame_len: usize) -> Option<usize> {
+    /// The bytes the fixed part of a pool takes: `count` pages of
+    /// `frame_len` bytes, their headers, their places on the free list, a
+    /// table of `buckets` parts and `lanes` lanes.
+    fn cost(count: usize, frame_len: usize, buckets: usize, lanes: usize) -> Option<usize> {
         let frame = frame_len
             .checked_add(Arena::HEADER_LEN)?
             .checked_add(size_of::<OwnedFrame>())?;
-        let buckets = Self::buckets_for(count)?.checked_mul(size_of::<Bucket>())?;
-        let lanes = Arena::lanes_for(count).checked_mul(Arena::LANE_LEN)?;
         count
             .checked_mul(frame)?
-            .checked_add(buckets)?
-            .checked_add(lanes)
+            .checked_add(buckets.checked_mul(size_of::<Bucket>())?)?
+            .checked_add(lanes.checked_mul(Lanes::LANE_LEN)?)
+    }
+
+    /// The bytes the fixed part of a pool of `count` frames takes, with the
+    /// table and the lanes such a pool is given.
+    fn fixed_cost(count: usize, frame_len: usize) -> Option<usize> {
+        let buckets = Self::buckets_for(count)?;
+        Self::cost(count, frame_len, buckets, Lanes::count_for(count))
     }
 
     /// The parts of the table of a pool of `count` frames: at least two for
@@ -332,9 +338,13 @@ impl BufferPool {
 
     /// The bytes the fixed part takes. It is at most [`Self::capacity`].
     pub fn fixed_memory(&self) -> usize {
-        self.arena.len() * (self.arena.frame_len() + Arena::HEADER_LEN + size_of::<OwnedFrame>())
-            + self.buckets.len() * size_of::<Bucket>()
-            + self.arena.lanes().len() * Arena::LANE_LEN
+        Self::cost(
+            self.arena.len(),
+            self.arena.frame_len(),
+            self.buckets.len(),
+            self.arena.lanes().len(),
+        )
+        .expect("it was allocated")
     }
 
     /// The bytes the pool has allocated now: the fixed part, every frame
@@ -385,7 +395,7 @@ impl BufferPool {
             let chain = bucket.chain.read();
             for entry in chain.iter() {
                 let frame = entry.frame();
-                let pinned = self.arena.announces(frame) || frame.pins() > 0;
+                let pinned = !self.arena.has_no_pin(frame);
                 let unevictable = pinned || !evictable(frame);
                 match frame.kind() {
                     kind::PUBLISHED => census.published += 1,
@@ -682,17 +692,17 @@ impl BufferPool {
     /// if nothing else keeps it, and so does a frame that was retired, if
     /// this was its last pin.
     pub(super) fn unpin(&self, pin: Pinned<'_>) {
-        let left = if !pin.is_announced() && pin.frame().is_overflow() {
-            let page = pin.frame().page_raw();
-            let mut chain = self.bucket(page).chain.write();
-            match chain.unpin_linked(&self.arena, pin, evictable) {
-                Some(frame) => Unpinned::Owned(frame),
-                None => Unpinned::Done,
+        if !pin.is_announced() && pin.frame().is_overflow() {
+            let chain = &self.bucket(pin.frame().page_raw()).chain;
+            // The lock is given back at the end of this statement, before
+            // the frame is.
+            let freed = chain.write().unpin_linked(&self.arena, pin, evictable);
+            if let Some(frame) = freed {
+                self.release(frame);
             }
-        } else {
-            pin.unpin()
-        };
-        match left {
+            return;
+        }
+        match pin.unpin() {
             Unpinned::Done => {}
             Unpinned::Owned(frame) => self.release(frame),
             Unpinned::Dead => self.release_dead(),

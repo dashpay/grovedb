@@ -345,7 +345,7 @@ impl BufferPool {
         frame.set_flags(flag::UNWRITTEN | (frame.flags() & flag::ATTACHED));
         let sealed = latch.publish();
         frame.touch();
-        chain.count_change();
+        chain.advance_stamp();
         // The reader's pin is taken under the table's lock, before a page
         // step can replace the frame.
         let frozen = copy.pin().again().into_frozen();
@@ -396,7 +396,7 @@ impl BufferPool {
                 });
             }
         }
-        chain.count_change();
+        chain.advance_stamp();
         drop(chain);
         let mut unwritten = lock(&self.turnover.unwritten);
         for entry in &held {
@@ -512,7 +512,7 @@ impl<'p> PageStep<'p> {
         frame.set_kind(kind::PUBLISHED);
         let frozen = chain.link(&pool.arena, frame).freeze(&pool.arena);
         chain.retire_pinned(&pool.arena, old.pointer());
-        chain.count_change();
+        chain.advance_stamp();
         drop(chain);
         if !owed {
             lock(&pool.turnover.unwritten).add(born, page);

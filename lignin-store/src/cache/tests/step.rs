@@ -69,7 +69,7 @@ fn a_page_step_puts_a_new_frame_in_place_of_the_current_version() {
     pool.mark_written(&new).expect("it is owed");
 
     drop((old, reader, current));
-    assert_eq!(lock(&pool.turnover.free).len(), 3, "the old frame is free");
+    assert_eq!(free_frames(&pool), 3, "the old frame is free");
     check(&pool, 0);
 }
 
@@ -109,11 +109,7 @@ fn a_page_step_is_refused_under_a_private_copy() {
         Some(StepRefusal::PrivateCopy)
     );
     drop(step);
-    assert_eq!(
-        lock(&pool.turnover.free).len(),
-        2,
-        "the refused frame came back"
-    );
+    assert_eq!(free_frames(&pool), 2, "the refused frame came back");
 
     // Once the copy is given up, the step goes through.
     pool.discard(&copy).expect("a private copy");

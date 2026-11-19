@@ -15,7 +15,7 @@ pub(super) use std::sync::{
     Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
 use std::{
-    ops::{Deref, DerefMut},
+    ops::Deref,
     sync::{PoisonError, TryLockError},
 };
 
@@ -42,7 +42,7 @@ impl Counter {
 
 /// A value on cache lines of its own, so that a thread that writes it does
 /// not slow the threads that read its neighbours.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 #[repr(align(128))]
 pub(super) struct Padded<T>(pub(super) T);
 
@@ -51,12 +51,6 @@ impl<T> Deref for Padded<T> {
 
     fn deref(&self) -> &T {
         &self.0
-    }
-}
-
-impl<T> DerefMut for Padded<T> {
-    fn deref_mut(&mut self) -> &mut T {
-        &mut self.0
     }
 }
 
@@ -90,11 +84,20 @@ pub(super) fn settled_usize(value: usize) -> AtomicUsize {
     atomic
 }
 
-/// The numbers of the threads that have ended, for the next threads to
-/// take, and the first number that no thread has had.
+/// The numbers that threads take and give back.
 #[cfg(not(loom))]
-static THREAD_NUMBERS: std::sync::Mutex<(Vec<usize>, usize)> =
-    std::sync::Mutex::new((Vec::new(), 0));
+struct ThreadNumbers {
+    /// Those of the threads that have ended, for the next threads to take.
+    free: Vec<usize>,
+    /// How many numbers have been made: the next one that is made.
+    made: usize,
+}
+
+#[cfg(not(loom))]
+static THREAD_NUMBERS: std::sync::Mutex<ThreadNumbers> = std::sync::Mutex::new(ThreadNumbers {
+    free: Vec::new(),
+    made: 0,
+});
 
 /// The number of one thread, given back when the thread ends.
 #[cfg(not(loom))]
@@ -106,9 +109,9 @@ impl ThreadNumber {
         let mut numbers = THREAD_NUMBERS
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        Self(numbers.0.pop().unwrap_or_else(|| {
-            numbers.1 += 1;
-            numbers.1 - 1
+        Self(numbers.free.pop().unwrap_or_else(|| {
+            numbers.made += 1;
+            numbers.made - 1
         }))
     }
 }
@@ -119,13 +122,13 @@ impl Drop for ThreadNumber {
         THREAD_NUMBERS
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .0
+            .free
             .push(self.0);
     }
 }
 
-/// A number for the calling thread, which it keeps until it ends: the
-/// smallest numbers that no running thread has are given out first, so the
+/// A number for the calling thread, which it keeps until it ends. A number
+/// that a thread gave back is given out before a new one is made, so the
 /// threads that run at one time have numbers below the most that ever ran
 /// at once.
 ///
@@ -236,15 +239,4 @@ impl Tracked {
             _access: self.cell.get_mut(),
         }
     }
-}
-
-/// A moment in a read that takes no lock, at which a test changes the pool
-/// under the reader.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Moment {
-    /// The reader has picked a frame and has not announced it.
-    Picked,
-    /// The reader has announced the frame and has not looked at the count
-    /// of changes again.
-    Announced,
 }
