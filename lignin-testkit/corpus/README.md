@@ -19,14 +19,14 @@ describes the design.
 Every trace names the commit of the engine it was recorded from, in its
 `engine` line: the newest commit that touched a workspace crate outside
 LigninDB. The corpus here was recorded from
-`2a79d035167b1e484ba66d53186396057658be9f` (`develop`, "indexed trees with a
-128-bit sum and the big sum axis", #1062). The workspace
+`2cfc1ce1f8e413cb97952f4c6b81128ae5576e89` (`develop`, "convert a tree with a
+64-bit sum to its 128-bit counterpart in place", #1063). The workspace
 manifest is not part of that: LigninDB adds its crates to it. `Cargo.lock`
 is not committed in this repository, so the commit pins GroveDB's own code
 and not the versions of its dependencies. `record` refuses to run when an
 engine crate has uncommitted changes.
 
-The pin has moved twice. The corpus was first recorded from
+The pin has moved three times. The corpus was first recorded from
 `22f163c2b82d9bc5c985a77034529a32ef9a7c04` (`develop`, "range aggregates and
 count offsets on a ProvableCountProvableBigSumTree"). When `develop` was
 merged into `feat/LigninDB` up to `f1016919`, it brought #1059, which takes
@@ -56,6 +56,26 @@ cases were added for them afterwards, recorded from the same pin:
   make such batches.
 - #1062 adds two indexed trees with a 128-bit sum and the axis they are
   ranked on. `wide-ranks` produces them.
+
+When `develop` was merged up to `2cfc1ce1`, every trace of both scales came
+out as it was but for its `engine` line again. That range is one commit,
+#1063:
+
+- It adds `GroveDb::convert_to_big_sum_tree`, on grove version 5. No
+  workload converts a tree yet.
+- It changes what `GroveDb::reconcile_indexed_tree_secondaries` writes on
+  grove version 5 when the rankings of the tree are damaged: every row it
+  removes leaves storage, a row no tree links is removed or written again,
+  and the row of an enclosing indexed tree follows. Grove versions 1 to 4
+  keep the repair they had. The streams repair trees whose rankings are in
+  step (`indexed-writes`, `wide-ranks`), where both forms of the repair
+  find no row to remove or to write.
+- A scan that a storage error cuts short is an error, on every grove
+  version. No scan of the corpus fails.
+
+One case was added with it, recorded from the same pin: `ranking-drift`,
+which holds what the repair is for on grove versions 1 to 4 (case 13
+below).
 
 ## Using it
 
@@ -99,7 +119,7 @@ from the branch that has the new workloads, and write into that branch's
 corpus:
 
 ```text
-git worktree add --detach <scratch>/pinned 2a79d035
+git worktree add --detach <scratch>/pinned 2cfc1ce1
 git -C <scratch>/pinned checkout <branch> -- Cargo.toml lignin-format lignin-io \
     lignin-store lignin-tree lignindb lignin-tools lignin-testkit
 cp <checkout of the branch>/Cargo.lock <scratch>/pinned/
@@ -108,11 +128,11 @@ cargo run --release -p lignin-testkit --bin lignin-golden -- record \
     --corpus <checkout of the branch>/lignin-testkit/corpus
 ```
 
-`2a79d035` is a commit of `develop`, so it has no LigninDB crate: the
+`2cfc1ce1` is a commit of `develop`, so it has no LigninDB crate: the
 checkout brings the branch's, with the manifest that lists them, and the
 copied `Cargo.lock` gives the build the branch's versions of the
 dependencies. None of these is an engine crate, so the traces come out
-naming `2a79d035`. A trace whose operations and recorded values did not change
+naming `2cfc1ce1`. A trace whose operations and recorded values did not change
 comes out byte for byte as it was, so `git status` shows what the new
 workloads added. Then replay on the branch itself: what was recorded from
 the pinned engine has to come out the same there.
@@ -244,8 +264,8 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 375 traces and 229,226 steps in 5.7 MB: for each
-grove version the 31 workloads of the suite, `suite` and 43 hand-written
+The standard scale is 380 traces and 229,366 steps in 5.7 MB: for each
+grove version the 31 workloads of the suite, `suite` and 44 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
 in a debug build, eight traces at a time.
@@ -309,7 +329,7 @@ digest` checkpoints in their place.
 
 ## Older grove versions: the hand-written cases
 
-BASE-01's generators steer around twelve behaviours of older grove versions
+BASE-01's generators steer around thirteen behaviours of older grove versions
 so that every stream applies and every read marked as proven proves. A node
 on such a version may have done exactly these things, so the corpus records
 them, as the engine returns them, on every grove version. Each case is a
@@ -488,14 +508,54 @@ the stored flags, and the batch fails with a storage cost mismatch
 (`StorageError::CostError`). Grove versions 1 to 4 do not take the answer of
 the second from a callback and refuse the batch (`CorruptedData`).
 
+**13. A ranking left out of step with its tree.**
+
+| Case | What it does | v1, v2, v3 | v4 | v5 |
+| --- | --- | --- | --- | --- |
+| `ranking-drift` | removes the entry at the root of a tree ranked by count, through the method of the tree and in a batch, reads the ranking, repairs the tree and reads the ranking again | 4 / 4 / 0 | 2 / 2 / 0 | 0 / 0 / 0 |
+
+To maintain a ranking, grove versions 1 to 4 read an entry back by key
+after the write (`apply_batch.indexed_mirror_entry_read` 0). Where that
+read meets a link the write did not load, it takes the record from storage,
+and the record of a removed entry is still there while the removal is
+pending. So the removal is taken for no change, and the row of the entry
+stays in the ranking. Whether it happens depends on the shape of the tree
+around the removed entry. The case builds the smallest tree in which it
+does, five entries with the removed one at the root, twice: one tree loses
+the entry through `GroveDb::delete_from_count_indexed_tree`, the other
+through a batch.
+
+- On grove versions 1 to 4 each tree then holds four entries and its
+  ranking five rows. The removal frees 160 bytes where grove version 5
+  frees 356.
+- Grove version 4 can neither read nor prove such a ranking: both fail on
+  the row whose entry is gone (`CorruptedData`). Grove versions 1 to 3
+  refuse to read any ranking (`NotSupported`), so there the row shows only
+  in the costs and in the root hash.
+- `GroveDb::reconcile_indexed_tree_secondaries` removes the row (196 bytes)
+  on grove versions 1 to 4, and the ranking of grove version 4 is read and
+  proven again. After both repairs the root hash is the one grove version 5
+  has had since the removals.
+- On grove version 5 the removal takes the row with it, the ranking is
+  read and proven at once, and the repair does not move the root hash.
+
+The other half of what was seen in a generated stream (BASE-01, `wide-ranks`
+on grove version 4: a ranking that lacks the row of an entry a batch
+wrote) is not in the case. Batches that insert, replace and delete entries
+of such trees left their rankings in step when it was looked for.
+
 `golden::legacy`'s tests run every case on every grove version and check
 these numbers, and `tests/golden.rs` checks that no other trace of the
 corpus has a failed operation or a proof that does not verify.
 
-One more behaviour stays in the generated streams: on grove versions 1 to 4,
-deleting from a count-indexed tree leaves orphan rows that `verify_grovedb`
-reports. The corpus records the costs, root hashes, results and proofs of
-those streams as they are. It does not record what `verify_grovedb` reports.
+The generated streams delete from indexed trees on grove versions 1 to 4
+as well, and `verify_grovedb` reports a row such a removal leaves. The
+corpus records the costs, root hashes, results and proofs of those streams
+as they are. It does not record what `verify_grovedb` reports. The removal
+and the repair of `indexed-writes` (steps 14 and 16) cost on grove version 4
+what they cost on grove version 5, and the repair frees nothing: that
+stream does not hold the drift, and `ranking-drift` is where the corpus
+holds it knowingly.
 
 ### Excluded: the deletes that panic
 
