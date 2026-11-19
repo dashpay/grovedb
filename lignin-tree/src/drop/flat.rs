@@ -5,14 +5,19 @@ use std::collections::HashSet;
 
 use lignin_format::{
     flat_page::{FlatPage, FlatValue},
-    value_log::{ValuePlace, ValuePointer},
+    value_log::ValuePointer,
     CommitVersion, PageId,
 };
+
+use lignin_store::values::ValueStoreError;
 
 use super::{
     error::DropError,
     merk::Progress,
-    step::{flat_page, is_bucket, place_of, sort_released, Busy, Reclaimer, Step},
+    step::{
+        damaged, flat_page, place_of, seen, sort_released, value_bytes, Busy, EntryRemoved,
+        Reclaimer, Step, LOOKS,
+    },
 };
 use crate::{
     flat::{Committed, FlatConfig, FlatPages, FlatPagesMut, FlatTree, StepLog, Unlinked},
@@ -25,9 +30,6 @@ const HEADER_KEY: [u8; 1] = [HEADER];
 const ID_LEN: usize = 8;
 const VERSION_LEN: usize = 8;
 const PAGE_LEN: usize = PageId::ENCODED_LEN + 2;
-
-/// How often a page is looked at again because a step came between.
-const LOOKS: usize = 16;
 
 /// What one lazy range delete left: the pages it took out of their tree
 /// without reading them.
@@ -232,7 +234,7 @@ impl FlatDrops {
 }
 
 /// What freeing the pages of lazy range deletes has done so far.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Default)]
 pub struct FlatReclaimed {
     /// The pages freed.
     pub pages_freed: u64,
@@ -243,6 +245,18 @@ pub struct FlatReclaimed {
     pub value_bytes: u64,
     /// The records taken out.
     pub records: u64,
+    /// The first count of live values that did not take the pointers of a
+    /// step as they were reported, if one did not. The step was made all
+    /// the same.
+    pub miscount: Option<ValueStoreError>,
+}
+
+impl FlatReclaimed {
+    fn miscounted(&mut self, miscount: Option<ValueStoreError>) {
+        if self.miscount.is_none() {
+            self.miscount = miscount;
+        }
+    }
 }
 
 /// One page that a range delete left, as the walk meets it.
@@ -270,7 +284,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// was freed, and is passed. Nothing but this reclaimer frees such a
     /// page, and no commit writes one, so the version tells.
     ///
-    /// The [`Wait`](super::Wait) for the range delete is over.
+    /// The [`Wait`](super::Wait) for the range delete is over, and `guard`
+    /// is the guard of the caller's operation. An error other than
+    /// [`DropError::Broken`] says that the step it came from changed
+    /// nothing.
     pub fn reclaim_flat<G: OperationGuard + ?Sized>(
         &self,
         drops: &FlatDrops,
@@ -288,7 +305,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             if left == 0 {
                 return Ok(Progress::More);
             }
-            match self.meet(drop, &config, top, guard, done)? {
+            match self.meet(drop, &config, top, done)? {
                 Met::Gone => drop_top(&mut walk, &mut on_way),
                 Met::Freed => {
                     left -= 1;
@@ -297,36 +314,42 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 Met::Above(below) => {
                     // No page is below itself, and none is named twice.
                     if let Some(twice) = below.iter().find(|left| !on_way.insert(left.page)) {
-                        return Err(DropError::Damaged {
-                            page: twice.page,
-                            what: "a page that the pages a range delete left name twice",
-                        });
+                        let what = "a page that the pages a range delete left name twice";
+                        return Err(damaged(twice.page, what));
                     }
                     walk.extend(below);
                 }
                 Met::Refused(busy) => return Ok(Progress::Blocked(busy)),
             }
         }
-        match self.remove_entry(&drops.tree, &FlatDrop::key(drop.id))? {
+        if left == 0 {
+            return Ok(Progress::More);
+        }
+        let key = FlatDrop::key(drop.id);
+        let pages = Committed::new(self.loader, self.values, guard, self.log.latest());
+        let Some(seen) = seen(&pages, &drops.tree, &key)? else {
+            return Ok(Progress::Done);
+        };
+        match self.remove_entry(&drops.tree, &key, &seen)? {
             Step::Refused(busy) => Ok(Progress::Blocked(busy)),
-            Step::Made(removed) => {
-                done.records += u64::from(removed);
+            Step::Made(EntryRemoved::Removed(miscount)) => {
+                done.records += 1;
+                done.miscounted(miscount);
                 Ok(Progress::Done)
             }
+            Step::Made(EntryRemoved::Absent | EntryRemoved::Changed) => Ok(Progress::Done),
         }
     }
 
     /// Looks at one page that the range delete left: names what is below
     /// it and still a page, or frees it.
-    fn meet<G: OperationGuard + ?Sized>(
+    fn meet(
         &self,
         drop: &FlatDrop,
         config: &FlatConfig,
         left: Unlinked,
-        guard: &G,
         done: &mut FlatReclaimed,
     ) -> Result<Met, DropError> {
-        let _ = guard;
         let page = left.page;
         for _ in 0..LOOKS {
             let Some(frame) = self.current(page)? else {
@@ -335,51 +358,34 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             if frame.born() > drop.newest_birth() {
                 return Ok(Met::Gone);
             }
-            let read = flat_page(&frame, page)?;
-            if left
-                .above
-                .is_some_and(|above| above.checked_sub(1) != Some(read.level()))
-            {
-                return Err(DropError::Damaged {
-                    page,
-                    what: "a page that is not one level below the branch that named it",
-                });
-            }
             let mut below = Vec::new();
             let mut released: Vec<ValuePointer> = Vec::new();
-            match read {
+            match flat_page(&frame, page, left.above)? {
                 FlatPage::Branch(branch) => {
                     let above = Some(branch.level());
                     for index in 0..=branch.len() {
-                        let page = branch.child(index).ok_or(DropError::Damaged {
-                            page,
-                            what: "a branch that names no child",
-                        })?;
+                        let child = branch.child(index);
+                        let page = child.ok_or(damaged(page, "a branch that names no child"))?;
                         below.push(Unlinked { page, above });
                     }
                 }
                 FlatPage::Leaf(leaf) => {
                     for (key, value) in leaf.iter() {
-                        match (is_bucket(config, key.len()), value) {
-                            (true, FlatValue::Inline(root)) => {
-                                let root = root.try_into().ok().and_then(PageId::decode);
-                                let page = root.ok_or(DropError::Damaged {
-                                    page,
-                                    what: "a bucket of long keys that names no page",
-                                })?;
+                        let is_bucket = key.len() > config.key_limit();
+                        match (is_bucket, value) {
+                            (true, value) => {
+                                let root = match value {
+                                    FlatValue::Inline(root) => root.try_into().ok(),
+                                    FlatValue::OutOfLine(_) => None,
+                                };
+                                let root = root.and_then(PageId::decode);
+                                let what = "a bucket of long keys that names no page";
+                                let page = root.ok_or(damaged(page, what))?;
                                 below.push(Unlinked { page, above: None });
-                            }
-                            (true, FlatValue::OutOfLine(_)) => {
-                                return Err(DropError::Damaged {
-                                    page,
-                                    what: "a bucket of long keys that names no page",
-                                })
                             }
                             (false, FlatValue::Inline(_)) => {}
                             (false, FlatValue::OutOfLine(place)) => {
-                                if let ValuePlace::Placed(pointer) = place_of(page, place)? {
-                                    released.push(pointer);
-                                }
+                                released.extend(place_of(page, place)?.pointer());
                             }
                         }
                     }
@@ -398,13 +404,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             match self.free_unlinked(&frame, &released)? {
                 None => continue,
                 Some(Step::Refused(busy)) => return Ok(Met::Refused(busy)),
-                Some(Step::Made(())) => {
+                Some(Step::Made(miscount)) => {
                     done.pages_freed += 1;
                     done.values += released.len() as u64;
-                    done.value_bytes += released
-                        .iter()
-                        .map(|pointer| u64::from(pointer.value_len()))
-                        .sum::<u64>();
+                    done.value_bytes += value_bytes(&released);
+                    done.miscounted(miscount);
                     return Ok(Met::Freed);
                 }
             }

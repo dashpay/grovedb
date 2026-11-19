@@ -9,22 +9,22 @@ use lignin_format::{
     tree_page::{Side, TreePage, TreePageMut},
     value_log::{ValuePlace, ValuePointer},
     wal::{write_reclaim, FlatChange, FlatRun, FlatRunWriter, Removed},
-    CellAddress, CommitVersion, FormatVersion, PageId, PageSize, SlotId,
+    CellAddress, CommitVersion, PageId, PageSize, SlotId,
 };
 use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, PageRef, ValueId},
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     table::{Link, PageTable},
-    values::{OwnersError, ValueChange, ValueStore},
+    values::{CountStep, OwnersError, ValueChange, ValueStore, ValueStoreError},
 };
 
 use super::error::DropError;
-use crate::flat::{FlatConfig, FlatTree, StepLog};
+use crate::flat::{FlatPages, FlatTree, StepLog};
 
 /// How often a step reads its page again because another step or a commit
 /// came between its look and its lock.
-const LOOKS: usize = 16;
+pub(super) const LOOKS: usize = 16;
 
 /// Why a step was not made now. The page is as it was, and the step is
 /// tried again later (`transactions.md` PV7).
@@ -57,6 +57,19 @@ pub(super) struct CellsRemoved {
     pub targets: Vec<CellAddress>,
     pub released: Vec<ValuePointer>,
     pub freed: bool,
+    /// Why the released pointers could not be counted as reported.
+    pub miscount: Option<ValueStoreError>,
+}
+
+/// What a step that looked for an entry of a flat leaf did.
+#[derive(Debug)]
+pub(super) enum EntryRemoved {
+    /// The entry is out of its leaf.
+    Removed(Option<ValueStoreError>),
+    /// No entry is under the key.
+    Absent,
+    /// Another entry is under the key than the one that was seen.
+    Changed,
 }
 
 /// The cells of one page that hang below some of its fragment roots.
@@ -72,12 +85,14 @@ pub(super) struct Fragment {
     pub pending: Vec<ValueId>,
 }
 
-fn damaged(page: PageId, what: &'static str) -> DropError {
+pub(super) fn damaged(page: PageId, what: &'static str) -> DropError {
     DropError::Damaged { page, what }
 }
 
-fn store(error: impl Into<OwnersError>) -> DropError {
-    DropError::Store(error.into())
+/// The error of a step whose record is in the log and that could not be
+/// finished.
+fn broken(page: PageId) -> impl Fn(OwnersError) -> DropError {
+    move |source| DropError::Broken { page, source }
 }
 
 /// The cells of `page` that are reached from the fragment roots `roots`
@@ -144,6 +159,66 @@ pub(super) fn fragment(page: &TreePage<'_>, roots: &[SlotId]) -> Result<Fragment
     Ok(found)
 }
 
+/// Puts the value pointers that the cells or entries of `page` hold in the
+/// order a record lists them in. No two hold one pointer.
+pub(super) fn sort_released(page: PageId, released: &mut [ValuePointer]) -> Result<(), DropError> {
+    released.sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
+    let twice = released
+        .windows(2)
+        .any(|pair| (pair[0].file(), pair[0].offset()) == (pair[1].file(), pair[1].offset()));
+    match twice {
+        true => Err(damaged(page, "one value pointer that two hold")),
+        false => Ok(()),
+    }
+}
+
+/// The bytes of the values that `released` pointed at.
+pub(super) fn value_bytes(released: &[ValuePointer]) -> u64 {
+    let lens = released
+        .iter()
+        .map(|pointer| u64::from(pointer.value_len()));
+    lens.sum()
+}
+
+/// The entry under one key of a flat leaf, as it was read: what tells it
+/// from another entry that is under the key later.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Seen {
+    Inline(Vec<u8>),
+    /// The 16 bytes of the place of a value out of line.
+    OutOfLine(Vec<u8>),
+}
+
+impl Seen {
+    fn of(value: FlatValue<'_>) -> Self {
+        match value {
+            FlatValue::Inline(bytes) => Self::Inline(bytes.to_vec()),
+            FlatValue::OutOfLine(place) => Self::OutOfLine(place.to_vec()),
+        }
+    }
+}
+
+/// The entry under the stored key `key` of `tree`, as `pages` have it.
+pub(super) fn seen<P: FlatPages + ?Sized>(
+    pages: &P,
+    tree: &FlatTree,
+    key: &[u8],
+) -> Result<Option<Seen>, DropError> {
+    let (mut page, mut above) = (tree.root(), None::<u8>);
+    loop {
+        let frame = pages.page(page)?;
+        match flat_page(&frame, page, above)? {
+            FlatPage::Leaf(leaf) => return Ok(leaf.get(key).map(Seen::of)),
+            FlatPage::Branch(branch) => {
+                above = Some(branch.level());
+                page = branch
+                    .child_for(key)
+                    .ok_or(damaged(page, "a branch that names no child"))?;
+            }
+        }
+    }
+}
+
 /// What the reclaimer works on: the pages of a store, its page ids, the
 /// counts of its value log and its log.
 ///
@@ -165,7 +240,7 @@ pub struct Reclaimer<'s, L> {
     pub(super) values: &'s ValueStore,
     page_size: PageSize,
     pub(super) log: L,
-    pub(super) buffers: RefCell<LoadBuffers>,
+    buffers: RefCell<LoadBuffers>,
 }
 
 impl<'s, L: StepLog> Reclaimer<'s, L> {
@@ -212,40 +287,78 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         }
     }
 
-    /// Whether a step on `page` would be refused now for a private copy.
-    pub(super) fn is_copied(&self, page: PageId) -> bool {
-        self.pool.page_step(page).private_copies() != 0
+    /// The tree page `page` as it is now, with the cells below `roots`.
+    fn look(&self, page: PageId, roots: &[SlotId]) -> Result<(PageRef<'s>, Fragment), DropError> {
+        let frame = self
+            .current(page)?
+            .ok_or(damaged(page, "no page where a cell of the subtree was"))?;
+        let view = TreePage::from_validated(&frame, FRAME_FORMAT)
+            .map_err(|_| damaged(page, "no tree page where a cell of the subtree was"))?;
+        if view.id() != page {
+            return Err(damaged(page, "the image of another page"));
+        }
+        let found = fragment(&view, roots)?;
+        Ok((frame, found))
+    }
+
+    /// Why a step that takes the cells below `roots` out of `page` would be
+    /// refused now, if it would: without a change, and without a promise.
+    pub(super) fn would_wait(
+        &self,
+        page: PageId,
+        roots: &[SlotId],
+    ) -> Result<Option<Busy>, DropError> {
+        let (frame, found) = self.look(page, roots)?;
+        if self.pool.page_step(page).private_copies() != 0 {
+            return Ok(Some(Busy::Copied));
+        }
+        let empties = found.slots.len() == tree_page(&frame)?.cell_count();
+        let newborn = empties && self.log.latest() <= frame.born();
+        Ok(newborn.then_some(Busy::Newborn))
     }
 
     /// Gives the page its free link, tells the pool, and retires the id:
     /// the page was freed with `version` by a step whose record is in the
     /// log. The page table goes first, as the pool asks.
     fn free(&self, page: PageId, version: CommitVersion) -> Result<(), DropError> {
-        self.table.push(page, Link::free(version)).map_err(store)?;
-        self.pool.free(page, version).map_err(store)?;
-        self.ids.free(page, version).map_err(store)
+        let broken = broken(page);
+        self.table
+            .push(page, Link::free(version))
+            .map_err(|error| broken(error.into()))?;
+        self.pool
+            .free(page, version)
+            .map_err(|error| broken(error.into()))?;
+        self.ids
+            .free(page, version)
+            .map_err(|error| broken(error.into()))
+    }
+
+    /// Takes `released` off the counts of live values, at the end of a step
+    /// that is made. A count that does not take them as reported is the
+    /// value log's to keep safe, and does not undo the step.
+    fn count(&self, counts: CountStep<'_>, released: &[ValuePointer]) -> Option<ValueStoreError> {
+        let mut change = ValueChange::new();
+        for &pointer in released {
+            change.release(pointer);
+        }
+        counts.apply(&change, self.log.latest()).err()
     }
 
     /// One page step: takes the cells that hang below the fragment roots
     /// `roots` of the tree page `page`, inside that page, out of it. A
     /// page that keeps no cell is freed in the same step, with the latest
     /// version.
+    ///
+    /// An error other than [`DropError::Broken`] says that nothing was
+    /// changed.
     pub(super) fn remove_cells(
         &self,
         page: PageId,
         roots: &[SlotId],
     ) -> Result<Step<CellsRemoved>, DropError> {
         for _ in 0..LOOKS {
-            let frame = self
-                .current(page)?
-                .ok_or(damaged(page, "no page where a cell of the subtree was"))?;
-            let view = TreePage::from_validated(&frame, FRAME_FORMAT)
-                .map_err(|_| damaged(page, "no tree page where a cell of the subtree was"))?;
-            if view.id() != page {
-                return Err(damaged(page, "the image of another page"));
-            }
-            let found = fragment(&view, roots)?;
-            let empties = found.slots.len() == view.cell_count();
+            let (frame, found) = self.look(page, roots)?;
+            let empties = found.slots.len() == tree_page(&frame)?.cell_count();
 
             // What the page is afterwards is made before any lock is taken.
             let mut after = None;
@@ -264,7 +377,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 for name in &found.pending {
                     blank.detach(*name);
                 }
-                TreePage::from_validated(&blank, FRAME_FORMAT)?
+                tree_page(&blank)?
                     .check_fragments()
                     .map_err(|_| damaged(page, "a cell that stays names a cell of the subtree"))?;
                 after = Some(blank);
@@ -288,32 +401,25 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 false => Some(Removed::Tree(DeltaRun::decode(&run, FRAME_FORMAT)?)),
             };
             let mut record = Vec::new();
-            write_reclaim(
-                page,
-                removed,
-                freed,
-                found.released.iter().copied(),
-                &mut record,
-            )?;
+            let released = found.released.iter().copied();
+            write_reclaim(page, removed, freed, released, &mut record)?;
             self.log.append(&record).map_err(DropError::Store)?;
             if let Some(blank) = after {
-                step.replace(&frame, blank).map_err(store)?;
+                let replaced = step.replace(&frame, blank);
+                replaced.map_err(|refusal| broken(page)(refusal.into()))?;
             }
             drop(step);
             if let Some(version) = freed {
                 self.free(page, version)?;
             }
-            let mut change = ValueChange::new();
-            for &pointer in &found.released {
-                change.release(pointer);
-            }
-            counts.apply(&change, self.log.latest())?;
+            let miscount = self.count(counts, &found.released);
             return Ok(Step::Made(CellsRemoved {
                 cells: found.slots.len() as u64,
                 bytes: found.bytes,
                 targets: found.targets,
                 released: found.released,
                 freed: empties,
+                miscount,
             }));
         }
         Ok(Step::Refused(Busy::Contended))
@@ -327,14 +433,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             let frame = self
                 .current(page)?
                 .ok_or(damaged(page, "a flat tree that names no page"))?;
-            let read = flat_page(&frame, page)?;
-            if above.is_some_and(|above| above.checked_sub(1) != Some(read.level())) {
-                return Err(damaged(
-                    page,
-                    "a page that is not one level below the branch that names it",
-                ));
-            }
-            let FlatPage::Branch(branch) = read else {
+            let FlatPage::Branch(branch) = flat_page(&frame, page, above)? else {
                 return Ok((page, frame));
             };
             above = Some(branch.level());
@@ -345,19 +444,27 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     }
 
     /// One page step: takes the entry under `key` out of its leaf in
-    /// `tree`, and releases the value pointer it held. Returns whether
-    /// there was such an entry.
+    /// `tree`, if it is the entry that was `seen`, and releases the value
+    /// pointer it held.
+    ///
+    /// **The entry is taken out only as it was seen** (PV7, check 2): a
+    /// write can have put another record under the key since, and that one
+    /// is not the reclaimer's.
     ///
     /// The leaf keeps its place in the tree and its prefix, also with no
     /// entry left: a page step changes one leaf and nothing else
     /// ([`flat`](crate::flat), choice 12). `key` is no longer than the
     /// tree stores a key as it is: an entry of the tree of a bucket is not
     /// taken out here.
+    ///
+    /// An error other than [`DropError::Broken`] says that nothing was
+    /// changed.
     pub(super) fn remove_entry(
         &self,
         tree: &FlatTree,
         key: &[u8],
-    ) -> Result<Step<bool>, DropError> {
+        seen: &Seen,
+    ) -> Result<Step<EntryRemoved>, DropError> {
         let config = tree.config();
         if key.len() > config.key_limit() {
             return Err(DropError::Record("a key that is kept in a bucket"));
@@ -366,8 +473,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             let (page, frame) = self.leaf_of(tree, key)?;
             let leaf = flat_leaf(&frame, page)?;
             let Some(value) = leaf.get(key) else {
-                return Ok(Step::Made(false));
+                return Ok(Step::Made(EntryRemoved::Absent));
             };
+            if Seen::of(value) != *seen {
+                return Ok(Step::Made(EntryRemoved::Changed));
+            }
             let place = match value {
                 FlatValue::Inline(_) => None,
                 FlatValue::OutOfLine(bytes) => Some(place_of(page, bytes)?),
@@ -378,12 +488,8 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             removes.finish()?;
             let removes = FlatRun::decode(&run, FRAME_FORMAT)?;
             let mut image = Vec::new();
-            removes.apply(
-                Some(leaf.as_bytes()),
-                FRAME_FORMAT,
-                config.capacity(),
-                &mut image,
-            )?;
+            let capacity = config.capacity();
+            removes.apply(Some(leaf.as_bytes()), FRAME_FORMAT, capacity, &mut image)?;
             let mut blank = self.pool.blank();
             blank.copy_from(&frame);
             let (head, tail) = blank
@@ -405,22 +511,14 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 continue;
             }
             let mut record = Vec::new();
-            write_reclaim(
-                page,
-                Some(Removed::Flat(removes)),
-                None,
-                released,
-                &mut record,
-            )?;
+            let removed = Some(Removed::Flat(removes));
+            write_reclaim(page, removed, None, released, &mut record)?;
             self.log.append(&record).map_err(DropError::Store)?;
-            step.replace(&frame, blank).map_err(store)?;
+            let replaced = step.replace(&frame, blank);
+            replaced.map_err(|refusal| broken(page)(refusal.into()))?;
             drop(step);
-            let mut change = ValueChange::new();
-            if let Some(pointer) = released {
-                change.release(pointer);
-            }
-            counts.apply(&change, self.log.latest())?;
-            return Ok(Step::Made(true));
+            let miscount = self.count(counts, released.as_slice());
+            return Ok(Step::Made(EntryRemoved::Removed(miscount)));
         }
         Ok(Step::Refused(Busy::Contended))
     }
@@ -430,12 +528,13 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// `released` that its entries hold, in ascending order.
     ///
     /// Returns `None` if `frame` is not how the page is stored any more:
-    /// the caller looks again.
+    /// the caller looks again. An error other than [`DropError::Broken`]
+    /// says that nothing was changed.
     pub(super) fn free_unlinked(
         &self,
         frame: &PageRef<'s>,
         released: &[ValuePointer],
-    ) -> Result<Option<Step<()>>, DropError> {
+    ) -> Result<Option<Step<Option<ValueStoreError>>>, DropError> {
         let page = frame.page();
         let counts = self.values.step()?;
         let step = self.pool.page_step(page);
@@ -450,52 +549,44 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             return Ok(Some(Step::Refused(Busy::Newborn)));
         }
         let mut record = Vec::new();
-        write_reclaim(
-            page,
-            None,
-            Some(latest),
-            released.iter().copied(),
-            &mut record,
-        )?;
+        let listed = released.iter().copied();
+        write_reclaim(page, None, Some(latest), listed, &mut record)?;
         self.log.append(&record).map_err(DropError::Store)?;
         drop(step);
         self.free(page, latest)?;
-        let mut change = ValueChange::new();
-        for &pointer in released {
-            change.release(pointer);
-        }
-        counts.apply(&change, self.log.latest())?;
-        Ok(Some(Step::Made(())))
+        Ok(Some(Step::Made(self.count(counts, released))))
     }
 }
 
-/// The flat page in `frame`, which was read as `page`.
-pub(super) fn flat_page<'a>(frame: &'a [u8], page: PageId) -> Result<FlatPage<'a>, DropError> {
+fn tree_page(frame: &[u8]) -> Result<TreePage<'_>, DropError> {
+    Ok(TreePage::from_validated(frame, FRAME_FORMAT)?)
+}
+
+/// The flat page in `frame`, which was read as `page`, below a branch of
+/// the level `above`.
+pub(super) fn flat_page(
+    frame: &[u8],
+    page: PageId,
+    above: Option<u8>,
+) -> Result<FlatPage<'_>, DropError> {
     let read = FlatPage::from_validated(frame, FRAME_FORMAT)
         .map_err(|_| damaged(page, "no flat page where a flat tree names one"))?;
     if read.id() != page {
         return Err(damaged(page, "the image of another page"));
     }
+    if above.is_some_and(|above| above.checked_sub(1) != Some(read.level())) {
+        return Err(damaged(
+            page,
+            "a page that is not one level below the branch that names it",
+        ));
+    }
     Ok(read)
 }
 
-fn flat_leaf<'a>(frame: &'a [u8], page: PageId) -> Result<FlatLeaf<'a>, DropError> {
-    flat_page(frame, page)?
+fn flat_leaf(frame: &[u8], page: PageId) -> Result<FlatLeaf<'_>, DropError> {
+    flat_page(frame, page, None)?
         .leaf()
         .ok_or(damaged(page, "a branch where a leaf must be"))
-}
-
-/// Puts the value pointers that the cells or entries of `page` hold in the
-/// order a record lists them in. No two hold one pointer.
-pub(super) fn sort_released(page: PageId, released: &mut [ValuePointer]) -> Result<(), DropError> {
-    released.sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
-    let twice = released
-        .windows(2)
-        .any(|pair| (pair[0].file(), pair[0].offset()) == (pair[1].file(), pair[1].offset()));
-    match twice {
-        true => Err(damaged(page, "one value pointer that two hold")),
-        false => Ok(()),
-    }
 }
 
 /// The place that the 16 bytes of a value out of line are.
@@ -505,11 +596,3 @@ pub(super) fn place_of(page: PageId, bytes: &[u8]) -> Result<ValuePlace, DropErr
         .map_err(|_| damaged(page, "a value out of line that is no place"))?;
     Ok(ValuePlace::decode(bytes)?)
 }
-
-/// The sizes of the flat pages of a store, for whoever reads them without
-/// a tree.
-pub(super) const fn is_bucket(config: &FlatConfig, stored_key_len: usize) -> bool {
-    stored_key_len > config.key_limit()
-}
-
-const _: FormatVersion = FRAME_FORMAT;

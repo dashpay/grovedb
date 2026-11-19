@@ -4,14 +4,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_format::{PageId, SlotId};
+use lignin_store::values::ValueStoreError;
 
 use super::{
     error::DropError,
-    step::{Busy, Reclaimer, Step},
+    step::{seen, value_bytes, Busy, EntryRemoved, Reclaimer, Step},
 };
 use crate::{
     directory::{record::dropped_key, Directory, DirectoryError, Dropped, MerkId, Prefix},
-    flat::{Committed, StepLog},
+    flat::{Committed, FlatPages, StepLog},
     OperationGuard,
 };
 
@@ -84,6 +85,7 @@ pub struct Reclaim {
     /// The pages to look at next, the last found first.
     next: Vec<PageId>,
     done: Reclaimed,
+    miscount: Option<ValueStoreError>,
 }
 
 impl Reclaim {
@@ -95,6 +97,7 @@ impl Reclaim {
             pending: BTreeMap::new(),
             next: Vec::new(),
             done: Reclaimed::default(),
+            miscount: None,
         }
     }
 
@@ -124,9 +127,23 @@ impl Reclaim {
         self.pending.values().map(BTreeSet::len).sum()
     }
 
+    /// The first count of live values that did not take the pointers of a
+    /// step as they were reported, if one did not. The step was made all
+    /// the same, and the value log keeps the file it could not count
+    /// (`lignin_store::values`).
+    pub const fn miscount(&self) -> Option<&ValueStoreError> {
+        self.miscount.as_ref()
+    }
+
     fn found(&mut self, page: PageId, slot: SlotId) {
         self.pending.entry(page).or_default().insert(slot);
         self.next.push(page);
+    }
+
+    fn miscounted(&mut self, miscount: Option<ValueStoreError>) {
+        if self.miscount.is_none() {
+            self.miscount = miscount;
+        }
     }
 }
 
@@ -139,8 +156,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// the caller's operation. The [`Wait`](super::Wait) for the drop is
     /// over.
     ///
-    /// After an error the reclaiming is given up: a later call fails with
-    /// [`DropError::GivenUp`], and what was left stays where it is.
+    /// An error says that the step it came from changed nothing, and the
+    /// call can be made again, with one exception: after
+    /// [`DropError::Broken`] the reclaiming is given up, a later call fails
+    /// with [`DropError::GivenUp`], and what was left stays where it is.
     pub fn reclaim<G: OperationGuard + ?Sized>(
         &self,
         reclaim: &mut Reclaim,
@@ -153,7 +172,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             Phase::GivenUp => return Err(DropError::GivenUp),
             Phase::Records | Phase::Cells => self.advance(reclaim, directory, guard, steps),
         };
-        if made.is_err() {
+        if matches!(made, Err(DropError::Broken { .. })) {
             reclaim.phase = Phase::GivenUp;
         }
         made
@@ -171,7 +190,8 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             if left == 0 {
                 return Ok(Progress::More);
             }
-            if let Some(busy) = self.records(reclaim, directory, guard, &mut left)? {
+            let pages = Committed::new(self.loader, self.values, guard, self.log.latest());
+            if let Some(busy) = self.records(reclaim, directory, &pages, &mut left)? {
                 return Ok(Progress::Blocked(busy));
             }
         }
@@ -181,21 +201,23 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// One Merk's records: those of an innermost Merk below the dropped
     /// one, or, when none is left below, the dropped Merk's own. Returns
     /// why it could not be done now, if it could not.
-    fn records<G: OperationGuard + ?Sized>(
+    ///
+    /// `pages` are the pages of one version, which the records are read
+    /// from. Each is then taken out of the latest version only as it was
+    /// read here.
+    fn records<P: FlatPages + ?Sized>(
         &self,
         reclaim: &mut Reclaim,
         directory: &Directory,
-        guard: &G,
+        pages: &P,
         left: &mut usize,
     ) -> Result<Option<Busy>, DropError> {
-        let pages = Committed::new(self.loader, self.values, guard, self.log.latest());
-        let id = reclaim.dropped.id;
         // The first Merk below, and the first below that one, down to one
         // that has none below it. No Merk is deeper than an entry can say.
-        let mut parent = id;
+        let mut parent = reclaim.dropped.id;
         let mut innermost = None;
         for _ in 0..=usize::from(u16::MAX) {
-            let Some(child) = directory.children(parent).next(&pages)? else {
+            let Some(child) = directory.children(parent).next(pages)? else {
                 break;
             };
             let below = child.id;
@@ -203,36 +225,71 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             parent = below;
         }
         let Some((parent, child)) = innermost else {
-            return self.own_record(reclaim, directory);
+            return self.own_record(reclaim, directory, pages);
         };
-        for key in directory.left_by(&pages, parent, &child)? {
-            match self.remove_entry(directory.tree(), &key)? {
-                Step::Made(removed) => reclaim.done.records += u64::from(removed),
-                Step::Refused(busy) => return Ok(Some(busy)),
+        for key in directory.left_by(pages, parent, &child)? {
+            match self.remove_record(reclaim, directory, pages, &key)? {
+                Some(busy) => return Ok(Some(busy)),
+                None => *left = left.saturating_sub(1),
             }
-            *left = left.saturating_sub(1);
         }
         reclaim.done.merks.push((child.prefix, child.id));
         Ok(None)
     }
 
-    /// The dropped Merk's own record, which goes when no record of a Merk
-    /// below it is left, and before any of its cells.
-    fn own_record(
+    /// Takes the record under `key` out of the directory, as `pages` have
+    /// it. A record that is gone, or is another one by now, is passed.
+    fn remove_record<P: FlatPages + ?Sized>(
         &self,
         reclaim: &mut Reclaim,
         directory: &Directory,
+        pages: &P,
+        key: &[u8],
+    ) -> Result<Option<Busy>, DropError> {
+        let Some(seen) = seen(pages, directory.tree(), key)? else {
+            return Ok(None);
+        };
+        match self.remove_entry(directory.tree(), key, &seen)? {
+            Step::Refused(busy) => Ok(Some(busy)),
+            Step::Made(EntryRemoved::Removed(miscount)) => {
+                reclaim.done.records += 1;
+                reclaim.miscounted(miscount);
+                Ok(None)
+            }
+            Step::Made(EntryRemoved::Absent | EntryRemoved::Changed) => Ok(None),
+        }
+    }
+
+    /// The dropped Merk's own record, which goes when no record of a Merk
+    /// below it is left, and before any of its cells.
+    fn own_record<P: FlatPages + ?Sized>(
+        &self,
+        reclaim: &mut Reclaim,
+        directory: &Directory,
+        pages: &P,
     ) -> Result<Option<Busy>, DropError> {
         let Dropped { id, root } = reclaim.dropped;
+        let key = dropped_key(id);
+        let Some(seen) = seen(pages, directory.tree(), &key)? else {
+            return Err(DirectoryError::NotDropped { id }.into());
+        };
         // The cells are known by nothing but this from the next step on.
-        // It is not taken while the first of them could not follow.
-        if root.is_some_and(|root| self.is_copied(root.page())) {
-            return Ok(Some(Busy::Copied));
+        // It is not taken while the first of them could not follow, or
+        // while the root is not what a drop leaves.
+        if let Some(root) = root
+            && let Some(busy) = self.would_wait(root.page(), &[root.slot()])?
+        {
+            return Ok(Some(busy));
         }
-        match self.remove_entry(directory.tree(), &dropped_key(id))? {
+        match self.remove_entry(directory.tree(), &key, &seen)? {
             Step::Refused(busy) => return Ok(Some(busy)),
-            Step::Made(false) => return Err(DirectoryError::NotDropped { id }.into()),
-            Step::Made(true) => reclaim.done.records += 1,
+            Step::Made(EntryRemoved::Absent | EntryRemoved::Changed) => {
+                return Err(DirectoryError::NotDropped { id }.into())
+            }
+            Step::Made(EntryRemoved::Removed(miscount)) => {
+                reclaim.done.records += 1;
+                reclaim.miscounted(miscount);
+            }
         }
         match root {
             Some(root) => {
@@ -249,6 +306,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     fn cells(&self, reclaim: &mut Reclaim, steps: usize) -> Result<Progress, DropError> {
         let mut waiting = Vec::new();
         let mut refused = None;
+        let mut failed = None;
         let mut left = steps;
         while let Some(page) = reclaim.next.pop() {
             let Some(roots) = reclaim.pending.get(&page) else {
@@ -258,28 +316,31 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 reclaim.next.push(page);
                 break;
             }
-            left -= 1;
             let roots: Vec<SlotId> = roots.iter().copied().collect();
-            match self.remove_cells(page, &roots)? {
-                Step::Refused(busy) => {
+            match self.remove_cells(page, &roots) {
+                Err(error) => {
+                    // The page is looked at again by the next call.
+                    waiting.push(page);
+                    failed = Some(error);
+                    break;
+                }
+                Ok(Step::Refused(busy)) => {
                     waiting.push(page);
                     refused = Some(busy);
                 }
-                Step::Made(removed) => {
+                Ok(Step::Made(removed)) => {
+                    left -= 1;
                     reclaim.pending.remove(&page);
                     let done = &mut reclaim.done;
                     done.cells += removed.cells;
                     done.cell_bytes += removed.bytes;
                     done.values += removed.released.len() as u64;
-                    done.value_bytes += removed
-                        .released
-                        .iter()
-                        .map(|pointer| u64::from(pointer.value_len()))
-                        .sum::<u64>();
+                    done.value_bytes += value_bytes(&removed.released);
                     match removed.freed {
                         true => done.pages_freed += 1,
                         false => done.pages_written += 1,
                     }
+                    reclaim.miscounted(removed.miscount);
                     for target in removed.targets {
                         reclaim.found(target.page(), target.slot());
                     }
@@ -287,11 +348,14 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             }
         }
         let blocked = reclaim.next.is_empty() && !waiting.is_empty();
-        // The pages that were refused are looked at again by the next call,
-        // after what was found since.
+        // The pages that were refused are looked at again after what was
+        // found since.
         waiting.reverse();
         waiting.append(&mut reclaim.next);
         reclaim.next = waiting;
+        if let Some(error) = failed {
+            return Err(error);
+        }
         if reclaim.pending.is_empty() {
             reclaim.next.clear();
             reclaim.phase = Phase::Done;

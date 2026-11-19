@@ -12,11 +12,9 @@ use crate::{directory::DirectoryError, flat::FlatError, fragment::FragmentError}
 
 /// Why a drop, or a step of reclaiming, failed.
 ///
-/// A step that failed with [`Self::Damaged`], [`Self::Format`],
-/// [`Self::Load`], [`Self::Directory`] or [`Self::Flat`] has changed
-/// nothing. [`Self::Store`] and [`Self::Values`] can come after the step's
-/// record is in the log: what was being reclaimed is then given up, as
-/// [`Reclaim`](super::Reclaim) says.
+/// A step of reclaiming that failed has changed nothing, and is made again
+/// later, unless the error is [`Self::Broken`]. A drop that failed says
+/// what it left with its own documentation ([`unlink`](super::unlink)).
 #[derive(Debug)]
 pub enum DropError {
     /// The subtree directory refused, or could not be read.
@@ -31,9 +29,17 @@ pub enum DropError {
     Load(LoadError),
     /// The counts of live values could not be changed as reported.
     Values(ValueStoreError),
-    /// The log, the buffer pool, the page table or the page ids refused a
-    /// step.
+    /// The log did not take the record of a step. Nothing was changed.
     Store(OwnersError),
+    /// The record of a step is in the log, and the buffer pool, the page
+    /// table or the page ids refused what the record says: the store is
+    /// not as its log has it. What was being reclaimed is given up.
+    Broken {
+        /// The page of the step.
+        page: PageId,
+        /// What refused.
+        source: OwnersError,
+    },
     /// What a dropped subtree left is not as a drop leaves it: the walk met
     /// something that no cell of it can be.
     Damaged {
@@ -46,8 +52,7 @@ pub enum DropError {
     Record(&'static str),
     /// Every id of a record of unlinked pages was given out.
     IdsExhausted,
-    /// Reclaiming was asked to go on with something that an earlier error
-    /// gave up.
+    /// Reclaiming was asked to go on after [`Self::Broken`].
     GivenUp,
 }
 
@@ -61,12 +66,16 @@ impl fmt::Display for DropError {
             Self::Load(error) => write!(f, "subtree drop: {error}"),
             Self::Values(error) => write!(f, "subtree drop: {error}"),
             Self::Store(error) => write!(f, "subtree drop: {error}"),
+            Self::Broken { page, source } => write!(
+                f,
+                "the step on page {page} is in the log and was not made: {source}"
+            ),
             Self::Damaged { page, what } => {
                 write!(f, "what a dropped subtree left in page {page}: {what}")
             }
             Self::Record(what) => write!(f, "record of unlinked pages: {what}"),
             Self::IdsExhausted => write!(f, "every id of a record of unlinked pages was given out"),
-            Self::GivenUp => write!(f, "reclaiming was given up after an error"),
+            Self::GivenUp => write!(f, "reclaiming was given up after a step that broke"),
         }
     }
 }
@@ -80,7 +89,7 @@ impl Error for DropError {
             Self::Format(error) => Some(error),
             Self::Load(error) => Some(error),
             Self::Values(error) => Some(error),
-            Self::Store(error) => Some(&**error),
+            Self::Store(error) | Self::Broken { source: error, .. } => Some(&**error),
             _ => None,
         }
     }
