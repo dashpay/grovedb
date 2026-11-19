@@ -746,11 +746,23 @@ impl Replay<'_> {
                 self.tally.reads_charged += 2;
                 self.tally.bytes_loaded += 2 * found.1.storage_loaded_bytes;
             }
+            // RocksDB can hold a record under the key of a node that left its
+            // tree: a row that the repair of a released version unlinked
+            // (GroveDB #1063). The mirror was handed the removal, as
+            // LigninDB was, so the lookup is compared with the mirror's.
+            let mirrored = self
+                .mirror
+                .get_transactional_storage_context_by_subtree_prefix(
+                    *prefix,
+                    None,
+                    mirror_transaction,
+                )
+                .unwrap();
             for key in &change.removed {
                 let held = store.has_node(key);
                 assert_eq!(
                     held.cost,
-                    stored.has_node(key).cost,
+                    mirrored.has_node(key).cost,
                     "what the lookup of the removed node under {key:?} is charged"
                 );
                 let held = held.value.expect("the node is read");

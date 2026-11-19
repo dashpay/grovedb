@@ -892,9 +892,10 @@ A handle is opened with no grove version on every engine: `Engine::subtree` take
 **The corpus.** GroveDB does not run on LigninDB before GROVE-01, so the corpus is replayed on RocksDB and what each operation did to the nodes of every Merk is handed to the store (node-store.md, "How it is checked"). Since MERK-03 the same change sets also go, call for call, to a second RocksDB storage that holds nothing else, and the replay compares:
 
 - **Every batch.** Staging a change set costs the same on both, and so does the application of the batch. Each written node is given one of the costs a writer gives, by turns: none, that of a new node and that of an update, whose value cost the storage layer checks against the record (K3), and a cost that is taken as given, with bytes freed as plain numbers and by owner and epoch. Each removed node is given a cost or none. The replay itself hands every node over with no cost; the change set it fills (`Billed`) gives the costs, the same to both engines. The second storage is committed whenever the LigninDB transaction is, so a removal with no cost meets the same committed state on both.
-- **Every read.** Each node that is read back, after the write that changed it and after each commit, is read on both engines at the same cost: a seek and the length of RocksDB's record, which the store works out from the cell. A lookup of a written node that reads no value (`has_node`) costs the same again, and a lookup of a removed node what it costs on RocksDB.
+- **Every read.** Each node that is read back, after the write that changed it and after each commit, is read on both engines at the same cost: a seek and the length of RocksDB's record, which the store works out from the cell. A lookup of a written node that reads no value (`has_node`) costs the same again, and a lookup of a removed node what it costs on the second storage.
+- **A row that no node links.** Since the sync with `develop` `2cfc1ce1` the corpus holds the state of item 6 of section 15.4: on grove versions 1 to 4 the hand-written case `legacy-ranking-drift` leaves, under GroveDB, a row of a ranking whose record RocksDB keeps and no node links. The replay hands the store what the tree saw, the removal of the node, and the second storage the same, so the two are charged alike and hold no record there. RocksDB under GroveDB does: a lookup of that key loads the row there and nothing on the store.
 
-On the standard corpus, 375 traces on grove versions 1 to 5, replayed 563 times: 269,896 batches of 4,166,015 written and 106,617 removed nodes were charged the same on both (4,326,014 seeks, 2.3 GB of stored bytes), 53,382 of the removals with no cost (8.0 MB loaded from the committed state), and 11,450,671 reads (8.0 GB loaded).
+On the standard corpus, 380 traces on grove versions 1 to 5, replayed 570 times: 237,713 batches of 3,622,666 written and 99,656 removed nodes were charged the same on both (3,772,227 seeks, 2.2 GB of stored bytes), 49,905 of the removals with no cost (5.8 MB loaded from the committed state), and 9,541,396 reads (7.1 GB loaded).
 
 What this shows and what it does not:
 
@@ -903,27 +904,27 @@ What this shows and what it does not:
 
 ### 15.6 Sensitivity
 
-A check that cannot fail shows nothing, so 29 faults were put into the store and into `node_record_len_from_sizes`, one at a time, and the checks run on each: the tests of `merk/src/store/lignin/tests/cost.rs` with the N1 tests of `merk/src/cost_model.rs`, and for the faults that reach a node the corpus replay on two traces, `v3/balances` (sum trees, no removal) and `v5/delete-heavy`. Every fault is found. The second column names the tests that fail: **N1** for the tests of the record length, **Merk** for the Merk on both engines, **seam** for the history of seam operations, **D2** and **D2 tree** for the two tests of removals with no cost, **fetch** for the one seek of a fetch, **ledger** for the ledger, and **refused** for the node that has no record length.
+A check that cannot fail shows nothing, so 30 faults were put into the store and into `node_record_len_from_sizes`, one at a time, and the checks run on each: the tests of `merk/src/store/lignin/tests/cost.rs` with the N1 tests of `merk/src/cost_model.rs`, and for the faults that reach a node the corpus replay on two traces, `v3/balances` (sum trees, no removal) and `v5/delete-heavy`. Every fault is found. The second column names the tests that fail: **N1** for the tests of the record length, **Merk** for the Merk on both engines, **seam** for the history of seam operations, **D2** and **D2 tree** for the two tests of removals with no cost, **fetch** for the one seek of a fetch, **conversion** for the conversion to a 128-bit sum, **unlinked** for the removal of a key that is no node, **ledger** for the ledger, and **refused** for the node that has no record length.
 
 | Fault | Tests of the store that fail | Corpus replay |
 | --- | --- | --- |
-| N1 of a cell: one byte more | N1, Merk, seam, D2, D2 tree, fetch | both traces fail |
-| N1 of a cell: the child's aggregate left out | N1, Merk, D2 tree | both fail |
-| N1 of a cell: the child's key length left out | N1, Merk, D2 tree, fetch | both fail |
-| N1 of a cell: the feature measured as a basic node's | N1, Merk, seam, D2 tree | both fail |
-| N1 of a written node: one byte more | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
-| R1: a deferred handle's read charged nothing | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
-| R1: a seek for each cell the transaction read for a fetch | Merk, seam, D2, D2 tree, fetch | both fail |
-| R1 of `has_node`: the value's length left out | seam, fetch | both fail |
-| R2: an immediate handle's read charged as a deferred one's | Merk, seam, fetch | not run |
-| `W-tx`: a staged commit charged a seek | Merk, seam, D2, D2 tree, refused | both fail |
-| W1 left out: the stored key of a new node is not added | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
+| N1 of a cell: one byte more | N1, Merk, seam, D2, D2 tree, fetch, conversion, unlinked | both traces fail |
+| N1 of a cell: the child's aggregate left out | N1, Merk, D2 tree, conversion | both traces fail |
+| N1 of a cell: the child's key length left out | N1, Merk, D2 tree, fetch, conversion | both traces fail |
+| N1 of a cell: the feature measured as a basic node's | N1, Merk, seam, D2 tree, conversion | both traces fail |
+| N1 of a written node: one byte more | Merk, seam, D2, D2 tree, fetch, conversion, unlinked, ledger | both traces fail |
+| R1: a deferred handle's read charged nothing | Merk, seam, D2, D2 tree, fetch, conversion, unlinked, ledger | both traces fail |
+| R1: a seek for each cell the transaction read for a fetch | Merk, seam, D2, D2 tree, fetch, conversion, unlinked | both traces fail |
+| R1 of `has_node`: the value's length left out | seam, fetch, unlinked | both traces fail |
+| R2: an immediate handle's read charged as a deferred one's | Merk, seam, fetch, conversion | not run |
+| `W-tx`: a staged commit charged a seek | Merk, seam, D2, D2 tree, conversion, unlinked, refused | both traces fail |
+| W1 left out: the stored key of a new node is not added | Merk, seam, D2, D2 tree, fetch, conversion, unlinked, ledger | both traces fail |
 | W3: the root key charged as an aux record | Merk, seam | not run |
-| The stored key of a record measured without the prefix | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
-| D1: a removal with a cost charged as one with none | Merk, seam | `delete-heavy` fails |
+| The stored key of a record measured without the prefix | Merk, seam, D2, D2 tree, fetch, conversion, unlinked, ledger | both traces fail |
+| D1: a removal with a cost charged as one with none | Merk, seam, conversion, unlinked | `delete-heavy` fails |
 | D2 of a node: charged from the transaction's view | seam, D2, D2 tree | `delete-heavy` fails |
 | D2 of a record that is no node: charged from the transaction's view | Merk, seam | not run |
-| D2: a key the committed state lacks charged as a record of one byte | seam, D2, D2 tree | `delete-heavy` fails |
+| D2: a key the committed state lacks charged as a record of one byte | seam, D2, D2 tree, unlinked | `delete-heavy` fails |
 | B1: the records that are no nodes charged after the nodes | Merk, seam | not run |
 | B1: nodes charged by key and not by subtree first | seam | `balances` fails |
 | B1: nodes charged in the order they were given, puts before removals | Merk, seam | `balances` fails |
@@ -931,15 +932,19 @@ A check that cannot fail shows nothing, so 29 faults were put into the store and
 | B1: storage cost charged for a batch with a refused put | seam | not run |
 | A batch: a delete stands against an earlier put of the same record | seam | not run |
 | M1: a write made directly through an immediate handle charged a seek | Merk, seam | not run |
-| M2: the cost of an immediate handle's commit dropped | Merk, seam, ledger | not run |
-| M2: an immediate change set charged without the sizes of a node's links | Merk, seam | not run |
+| M2: the cost of an immediate handle's commit dropped | Merk, seam, conversion, unlinked, ledger | not run |
+| M2: an immediate change set charged without the sizes of a node's links | Merk, seam, conversion | not run |
 | A refused node write charged a seek | refused | not run |
+| The comparison that keeps a value left out: every stated value is written | conversion | not run |
 | A charge made beside the model, with the model's number | ledger | not run |
 | A charge of the model that is dropped: a read asks the model twice | ledger | not run |
 
-Three things the run showed:
+How the table was made, and what it showed:
 
+- The second column is of the tests as they are: the run was made on the last commit that changed `cost.rs`. The third is of the replay before its last change, which compares the lookup of a removed node with the second storage and no longer with GroveDB's. Each fault the replay finds, it finds by another comparison.
+- A fault counts as found only where a test fails with its own assertion. Unchanged, the store passes every one of these checks.
 - The last two faults change no number the store reports, so no comparison with RocksDB sees them. The ledger does.
+- The fault before them is no fault in a charge: with it the store charges what RocksDB charges and writes every value again. The conversion test finds it by counting the values written.
 - The first run of the faults found two holes in the replay, which then passed with a seek charged for a staged commit and with `has_node` measured without the value. The replay compares both now.
 - Charging from the transaction's view in D2 is found by the replay as well as by the tests of the store: on `delete-heavy` it removes, with no cost, nodes that its own transaction wrote, and compares what each batch is charged.
 
