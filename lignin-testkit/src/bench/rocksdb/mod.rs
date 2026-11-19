@@ -339,7 +339,7 @@ impl Engine for RocksDbEngine {
 /// The write transaction of one block on [`RocksDbEngine`], and a snapshot
 /// read transaction while the block holds one open.
 ///
-/// It does what [`Outcome`] asks of the caller of [`apply`], as
+/// It does what [`Outcome`] asks of the caller of [`apply()`], as
 /// [`crate::workload::Transactions`] does, but keeps the block's transaction
 /// itself so a commit is timed alone, without starting the next block's.
 /// A snapshot lives within one block: a commit with one open is refused, as

@@ -48,6 +48,19 @@ const COUNT_AXIS: u8 = 0;
 /// The axis tag of the secondary Merk of a `ProvableSumIndexedTree`
 /// (`IndexAxis::Sum`).
 const SUM_AXIS: u8 = 1;
+/// The axis tag of the secondary Merk of a `ProvableBigSumIndexedTree`
+/// (`IndexAxis::BigSum`).
+const BIG_SUM_AXIS: u8 = 3;
+
+/// The tag of the storage namespace the secondary Merk of an axis is kept
+/// in. The big sum axis keeps its rows in the namespace of the sum axis: a
+/// tree has one of the two or the other, by the width of its sum.
+fn axis_storage_tag(axis: u8) -> u8 {
+    match axis {
+        BIG_SUM_AXIS => SUM_AXIS,
+        own => own,
+    }
+}
 
 type NoValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
 
@@ -555,7 +568,9 @@ impl<'db> Walk<'_, 'db> {
                 let created = match axis {
                     None => self.grove.add_merk(primary, Some(path.clone()), None, id),
                     Some(axis) => {
-                        let prefix = RocksDbStorage::secondary_prefix_for(&primary, *axis).unwrap();
+                        let prefix =
+                            RocksDbStorage::secondary_prefix_for(&primary, axis_storage_tag(*axis))
+                                .unwrap();
                         self.grove.add_merk(prefix, None, Some(*axis), id)
                     }
                 };
@@ -582,7 +597,12 @@ fn hosted_roots(element: &Element) -> Vec<(Option<u8>, Option<Vec<u8>>)> {
             (None, primary.clone()),
             (Some(COUNT_AXIS), secondary.clone()),
         ],
-        Element::ProvableCountProvableSumIndexedTree(primary, _, _, axes, _) => {
+        Element::ProvableBigSumIndexedTree(primary, secondary, ..) => vec![
+            (None, primary.clone()),
+            (Some(BIG_SUM_AXIS), secondary.clone()),
+        ],
+        Element::ProvableCountProvableSumIndexedTree(primary, _, _, axes, _)
+        | Element::ProvableCountProvableBigSumIndexedTree(primary, _, _, axes, _) => {
             std::iter::once((None, primary.clone()))
                 .chain(axes.iter().map(|(axis, root)| (Some(*axis), root.clone())))
                 .collect()

@@ -6,13 +6,14 @@
 
 use grovedb::{
     AggregateSumPathQuery, AxisQuery, Element, PathQuery, Query as GroveQuery, QueryItem as Item,
-    SizedQuery, TreeType,
+    TreeType,
 };
 use grovedb_merk::proofs::query::{AggregateFold, AggregateSumQuery, IndexAxis};
 
 use super::{
-    insert, item, path, provable_count_provable_sum_tree, provable_count_tree, provable_sum_tree,
-    query, BatchOp, Case, Op, Query, QueryItem, Read, Write, HOST, SIBLING, TOP,
+    case, insert, insert_only, item, path, provable_count_provable_sum_tree, provable_count_tree,
+    provable_sum_tree, proven, query, sized, BatchOp, Case, Op, Query, QueryItem, Read, Write,
+    HOST, SIBLING, TOP,
 };
 
 const GROUPS: &[u8] = b"groups";
@@ -23,34 +24,6 @@ const BY_COUNT: &[u8] = b"by-count";
 /// group of trees.
 fn row(row: u8) -> Vec<u8> {
     vec![b'r', b'0' + row]
-}
-
-/// A path query that is run and, whatever the grove version, proven.
-fn proven(path_query: PathQuery) -> Op {
-    Op::Read(Read::PathQuery {
-        query: Box::new(path_query),
-        proven: true,
-    })
-}
-
-fn sized(at: &[&[u8]], query: GroveQuery, limit: Option<u16>, offset: Option<u16>) -> PathQuery {
-    PathQuery::new(path(at), SizedQuery::new(query, limit, offset))
-}
-
-fn insert_only(at: &[&[u8]], key: &[u8], element: Element) -> BatchOp {
-    BatchOp::InsertOnly {
-        path: path(at),
-        key: key.to_vec(),
-        element,
-    }
-}
-
-fn case(name: &str, about: &str, ops: Vec<Op>) -> Case {
-    Case {
-        name: name.to_string(),
-        about: about.to_string(),
-        ops,
-    }
 }
 
 /// `TOP` holding a `HOST` tree of the given element with `rows` rows, each

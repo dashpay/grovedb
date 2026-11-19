@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-filled-tree-wrapped
+seed 0x0
+grove-version 2
+engine 2a79d035167b1e484ba66d53186396057658be9f
+workload legacy-filled-tree-wrapped
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c6c06rbf92
+  step 1
+  # Batch([InsertOnly { path: [[116, 111, 112]], key: [102, 105, 108, 108, 101, 100], element: sum_tree: None 0 }])
+  cost seeks=6 loaded=150 added=128 replaced=77 removed=- hashes=12 sinsemilla=0
+  root e2125ff394e6fa23bd829004b0fc00bc6c4df3760159c172d7ce218d65e0e345
+cb7ddrbf92
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root e2125ff394e6fa23bd829004b0fc00bc6c4df3760159c172d7ce218d65e0e345
+cd152e844arbf92
+  step 3
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [97, 108, 111, 110, 101], element: non_counted(sum_tree: None 0) }])
+  # failed: invalid batch operation error: non-counted elements may only be inserted into non-provable count-bearing trees (CountTree or CountSumTree); Provable* count trees commit the count cryptographically and cannot host NonCounted children
+  cost seeks=1 loaded=89 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidBatchOperation
+  root e2125ff394e6fa23bd829004b0fc00bc6c4df3760159c172d7ce218d65e0e345
+cb7ddrbf92
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root e2125ff394e6fa23bd829004b0fc00bc6c4df3760159c172d7ce218d65e0e345
+c95dbvbb7c
+  step 5
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+ca457rb360
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [116, 114, 101, 101], element: non_counted(sum_tree: None 0) }, InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], key: [101, 110, 116, 114, 121], element: sum_item: 5 }])
+  cost seeks=10 loaded=317 added=313 replaced=166 removed=- hashes=23 sinsemilla=0
+  root 0bb12e7a23a3f53fc7c016f8c48826f049555f7d3a9d6a9fbd5e71ae419dff5a
+cb7ddrb360
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 0bb12e7a23a3f53fc7c016f8c48826f049555f7d3a9d6a9fbd5e71ae419dff5a
+c1937v6508
+  step 8
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=3 loaded=511 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564 74726565 0f040105656e7472790a00
+  skipped 0
+cf524vf1afq809dp88ea
+  step 9
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit… (441 characters)
+  cost seeks=3 loaded=507 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564/74726565 656e747279 030a00
+  skipped 0
+  prove-cost seeks=8 loaded=576 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 189 00310403746f70000a02010666696c6c656400e2309b22417e5c3f1c4fc570194e228c2f7d009322f48c636ca801b89caea5900103746f7033040666696c6c65640009040104747265650a00ab42b07ac6c7f04f49700434ca9a585ee3c3cebe7ac9d6205da91eeaffb41fe3010666696c6c656433040474726565000b0f040105656e7472790a00baeed3d1dc9e49d23914a2ed18c856306742eb4487d8b44067f5b7bd13647ef90104747265650c0305656e7472790003030a000001
+  verification verified
+stream 10 a0ceaea023e9bbe3c41fe126693194001aceb43bf5fce4f8b2cced3e1b61cca2
+tally failed=1 unproved=0 unverified=0
+end 10 9f0be337e6b87cc84cbad4a2709325aad58d3ea329e67124ef8b0bb62fe1dd14

@@ -1,0 +1,83 @@
+lignin-golden-trace 1
+name legacy-full-handover
+seed 0x0
+grove-version 5
+engine 2a79d035167b1e484ba66d53186396057658be9f
+workload legacy-full-handover
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+cb7ddreb64
+  step 1
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c8a9crf6bd
+  step 2
+  # FlagsBatch([InsertOnly { path: [[116, 111, 112]], key: [112, 97, 105, 100], element: item: [hex: 78787878..78787878, str: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx][hex: 02070707..07070000, str: \u{2}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}] }])
+  cost seeks=6 loaded=150 added=223 replaced=77 removed=- hashes=11 sinsemilla=0
+  root 63e681dd51cc7d794e1fd917569326b44eaf674b44e1c3f6195107b6cb8f4064
+cb7ddrf6bd
+  step 3
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 63e681dd51cc7d794e1fd917569326b44eaf674b44e1c3f6195107b6cb8f4064
+c38b3rab18
+  step 4
+  # FlagsBatch([Replace { path: [[116, 111, 112]], key: [112, 97, 105, 100], element: item: [hex: 78787878..78787878, str: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx][hex: 02070707..07070001, str: \u{2}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}] }])
+  cost seeks=7 loaded=301 added=144 replaced=263 removed=- hashes=13 sinsemilla=0
+  root 177d117b87c669893a37beb028b9052313316957d8aa5b14557591b38e00a6d3
+cb7ddrab18
+  step 5
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 177d117b87c669893a37beb028b9052313316957d8aa5b14557591b38e00a6d3
+c7195v7ade
+  step 6
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true })
+  cost seeks=3 loaded=722 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70 70616964 00b47878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780127030707070707070707070707070707070707070707070707070707070707070707000000019001
+  skipped 0
+c4adbrb02c
+  step 7
+  # FlagsHandoverBatch(HandoverBatch { ops: [Replace { path: [[116, 111, 112]], key: [112, 97, 105, 100], element: item: [hex: 78787878..78787878, str: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx][hex: 02090909..09090002, str: \u{2}\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t\t] }], full_handover_owners: {[7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7, 7… (411 characters)
+  cost seeks=7 loaded=445 added=485 replaced=77 removed={0707070707070707070707070707070707070707070707070707070707070707/0=226,0707070707070707070707070707070707070707070707070707070707070707/1=141} hashes=15 sinsemilla=0
+  root 7c9e66268d11277dc356827ebee1b656862f790c2c017cf6590a16dd64b1cf8f
+cb7ddrb02c
+  step 8
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 7c9e66268d11277dc356827ebee1b656862f790c2c017cf6590a16dd64b1cf8f
+c6e72vb4d5
+  step 9
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true })
+  cost seeks=3 loaded=840 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70 70616964 00fb012c78787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787801230209090909090909090909090909090909090909090909090909090909090909090002
+  skipped 0
+c238br615f
+  step 10
+  # FlagsHandoverBatch(HandoverBatch { ops: [Replace { path: [[116, 111, 112]], key: [112, 97, 105, 100], element: item: [hex: 78787878..78787878, str: xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx][hex: 02070707..07070003, str: \u{2}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}\u{7}] }], full_handover_ow… (411 characters)
+  cost seeks=7 loaded=563 added=123 replaced=525 removed=- hashes=17 sinsemilla=0
+  root 68a7872510a461a06d289bba591f3e096e65bed19feb3436a1645f67b013344c
+cb7ddr615f
+  step 11
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 68a7872510a461a06d289bba591f3e096e65bed19feb3436a1645f67b013344c
+cbfefv0b85
+  step 12
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, raw: true })
+  cost seeks=3 loaded=963 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70 70616964 00fb01a47878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878787878780126030707070707070707070707070707070707070707070707070707070707070707000200037b
+  skipped 0
+stream 13 ff6b1387a4d87693cf91c8ab2e9a1f89e4ebc0b39d00a4c9a68be2594d944912
+tally failed=0 unproved=0 unverified=0
+end 13 a035ca6ebb4afaa0632f8eeded339f3dc81f62c166cf24779bce68bc032527dc

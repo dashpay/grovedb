@@ -113,6 +113,10 @@ use super::op::{
     AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, PartialBatch, Prove, Query, QueryItem,
     Read, TransactionOp, TreeRead, Write,
 };
+// Used where `GroveDb` has no savepoint methods of its own: the engine the
+// corpus is pinned to.
+#[allow(unused_imports)]
+use super::pinned::Savepoints as _;
 
 /// What applying an [`Op`] produced.
 #[derive(Debug)]
@@ -401,12 +405,12 @@ fn apply_transaction_op(
             open.and_then(|transaction| db.rollback_transaction(transaction))
                 .map(|()| Outcome::RolledBack),
         ),
-        TransactionOp::SetSavepoint => free(open.map(|transaction| {
-            transaction.set_savepoint();
-            Outcome::SavepointSet
-        })),
+        TransactionOp::SetSavepoint => free(
+            open.and_then(|transaction| db.set_savepoint(transaction))
+                .map(|()| Outcome::SavepointSet),
+        ),
         TransactionOp::RollbackToSavepoint => free(
-            open.and_then(|transaction| transaction.rollback_to_savepoint().map_err(Error::from))
+            open.and_then(|transaction| db.rollback_to_savepoint(transaction))
                 .map(|()| Outcome::RolledBack),
         ),
         TransactionOp::Abandon => free(Ok(Outcome::Abandoned)),
@@ -1362,6 +1366,21 @@ fn apply_write(
                     transaction,
                     grove_version,
                 ),
+                IndexedTree::BigSum => db.insert_into_provable_big_sum_indexed_tree(
+                    path,
+                    key,
+                    element,
+                    transaction,
+                    grove_version,
+                ),
+                IndexedTree::CountBigSum => db
+                    .insert_into_provable_count_provable_big_sum_indexed_tree(
+                        path,
+                        key,
+                        element,
+                        transaction,
+                        grove_version,
+                    ),
             }
             .map_ok(written)
         }
@@ -1380,6 +1399,19 @@ fn apply_write(
                     transaction,
                     grove_version,
                 ),
+                IndexedTree::BigSum => db.delete_from_provable_big_sum_indexed_tree(
+                    path,
+                    key,
+                    transaction,
+                    grove_version,
+                ),
+                IndexedTree::CountBigSum => db
+                    .delete_from_provable_count_provable_big_sum_indexed_tree(
+                        path,
+                        key,
+                        transaction,
+                        grove_version,
+                    ),
             }
             .map_ok(Outcome::Flag)
         }

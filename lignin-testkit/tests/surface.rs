@@ -435,9 +435,23 @@ fn a_classification_is_what_apply_does() {
                     ),
                     "{name} is listed as called by {caller}, which is not produced"
                 );
+                // A method of the transaction and the method of `GroveDb`
+                // that sets the same thing through the engine have one
+                // name. Calls are followed by name, so the two are one
+                // function here: what can be checked is that a function
+                // of that name in GroveDB calls one of that name.
+                let named_alike = name.strip_prefix(TRANSACTION) == Some(*caller);
                 let caller = caller.strip_prefix(TRANSACTION).unwrap_or(caller);
+                let calls_its_name = || {
+                    let calls = sources.grovedb.calls.get(caller);
+                    calls.is_some_and(|calls| calls.contains(method))
+                };
                 assert!(
-                    caller != method && sources.reached_from(caller).contains(method),
+                    if named_alike {
+                        calls_its_name()
+                    } else {
+                        caller != method && sources.reached_from(caller).contains(method)
+                    },
                     "{name} is listed as called by {caller}, which does not lead to it"
                 );
                 assert!(
@@ -474,7 +488,9 @@ fn a_classification_is_what_apply_does() {
 fn the_checks_tell_calls_apart() {
     let calls = calls_of_apply();
     assert!(applied(&calls, "get_raw"));
-    assert!(applied(&calls, "Transaction::set_savepoint"));
+    assert!(applied(&calls, "Transaction::is_snapshot_read"));
+    assert!(applied(&calls, "set_savepoint"));
+    assert!(!applied(&calls, "Transaction::set_savepoint"));
     // `apply.rs` calls `get` on no database and `commit` on no transaction:
     // the first is `GroveDb::get`, the second `GroveDb::commit_transaction`.
     assert!(applied(&calls, "get"));

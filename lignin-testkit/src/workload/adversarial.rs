@@ -10,6 +10,7 @@
 //! type of tree, batches applied in two segments ([`PartialBatches`]), and
 //! every way a query pages, budgets and ranks ([`Pagination`]).
 
+mod capped_layers;
 mod chunks;
 mod drops;
 mod epochs;
@@ -20,11 +21,13 @@ mod partial;
 mod stock;
 mod tree_deletes;
 mod typed;
+mod wide_ranks;
 mod wide_sums;
 
 use std::collections::BTreeSet;
 
 pub use self::{
+    capped_layers::{CappedLayers, MAX_CAPPED_KEYS, MAX_CAPPED_ROUNDS, MIN_CAPPED_KEYS},
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
     epochs::{FlagEpochs, MAX_LADDER_RUNGS},
@@ -34,6 +37,7 @@ pub use self::{
     partial::PartialBatches,
     tree_deletes::{TreeDeletes, MIN_TREE_DELETE_ITEMS},
     typed::TypedReads,
+    wide_ranks::{WideRanks, MAX_WIDE_RANK_ENTRIES, MAX_WIDE_RANK_ROUNDS, MIN_WIDE_RANK_ENTRIES},
     wide_sums::{WideSums, MIN_WIDE_SUM_ENTRIES},
 };
 
@@ -47,6 +51,17 @@ use super::{
     zoo::TreeKind,
     Features, Prepared, Stream,
 };
+
+/// A sum close to the largest an `i64` holds, negative one time in four:
+/// two of them that are credits add up to more than an `i64` holds.
+fn wide_sum(rng: &mut Rng) -> i64 {
+    let sum = i64::MAX - rng.below(1 << 40) as i64;
+    if rng.chance(1, 4) {
+        -sum
+    } else {
+        sum
+    }
+}
 
 /// The longest key GroveDB accepts.
 pub const MAX_KEY_LEN: u32 = 255;
@@ -74,6 +89,8 @@ const DOMAIN_CHUNKS: u64 = 0xAD0D;
 const DOMAIN_EPOCHS: u64 = 0xAD0E;
 const DOMAIN_TREE_DELETES: u64 = 0xAD0F;
 const DOMAIN_WIDE_SUMS: u64 = 0xAD10;
+const DOMAIN_WIDE_RANKS: u64 = 0xAD11;
+const DOMAIN_CAPPED_LAYERS: u64 = 0xAD12;
 
 /// Chains of trees nested `depth` levels deep.
 ///

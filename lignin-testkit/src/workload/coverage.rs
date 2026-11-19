@@ -19,10 +19,10 @@
 use std::collections::BTreeSet;
 
 use grovedb::{
-    element::reference_path::ReferencePathType, AggregateKind, AxisTraversal, Element, PathQuery,
-    PathQueryShape, Query, TreeType,
+    element::reference_path::ReferencePathType, AggregateKind, AxisQuery, AxisTraversal, Element,
+    PathQuery, PathQueryShape, Query, TreeType,
 };
-use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
+use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, proofs::query::IndexAxis};
 
 use super::{
     flags::{Histories, Update},
@@ -295,8 +295,8 @@ operations! {
     "rollbacks and savepoints":
         Rollback = "`GroveDb::rollback_transaction`.",
         Abandon = "A transaction dropped without a commit.",
-        Savepoint = "`Transaction::set_savepoint`.",
-        SavepointRollback = "`Transaction::rollback_to_savepoint`.",
+        Savepoint = "`GroveDb::set_savepoint`.",
+        SavepointRollback = "`GroveDb::rollback_to_savepoint`.",
         NestedSavepoint = "A savepoint set while another is on the stack.",
         SavepointKept = "A savepoint still on the stack when its transaction commits.",
         SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",
@@ -341,6 +341,31 @@ operations! {
         TreeDeleteRewrittenInTransaction =
             "A tree deleted with what it holds by a transaction that wrote into it first.",
         TreeDeleteCommitted = "A tree deleted with what it holds as it was committed.";
+    "indexed trees with a 128-bit sum":
+        IndexedInsertBigSum = "`GroveDb::insert_into_provable_big_sum_indexed_tree`.",
+        IndexedInsertCountBigSum =
+            "`GroveDb::insert_into_provable_count_provable_big_sum_indexed_tree`.",
+        IndexedDeleteBigSum = "`GroveDb::delete_from_provable_big_sum_indexed_tree`.",
+        IndexedDeleteCountBigSum =
+            "`GroveDb::delete_from_provable_count_provable_big_sum_indexed_tree`.",
+        BigSumAxisRankedPage = "A page of an indexed tree in the order of its 128-bit sums.",
+        BigSumAxisBounded = "The entries of an indexed tree whose 128-bit sum is in a range.",
+        BigSumAxisRankOfKey = "The rank of a key among the 128-bit sums of an indexed tree.",
+        BigSumAxisPopulation = "How many entries have a 128-bit sum in a range.",
+        BranchedBigSumAxisRead =
+            "One read in the order of the 128-bit sums for each of several indexed trees.";
+    "limits over subqueries":
+        CappedLayer =
+            "`Query::limit` on a query node that has subqueries: a limit in force on the layer \
+             the node walks.",
+        InheritedCap =
+            "A layer with subqueries and no limit of its own under the limit of a query node \
+             above it.",
+        CappedLayerInBranch =
+            "A capped layer on one branch of a query, which is what `PathQuery::merge` makes \
+             of a page.";
+    "trees a batch creates and fills":
+        FilledTreeBatch = "A batch that inserts a tree and writes into it.";
 }
 
 impl Features {
@@ -353,7 +378,19 @@ impl Features {
             }
             Operation::CountOffsetPage => self.v1_proofs,
             Operation::InstanceOffset => self.instance_offsets,
-            Operation::InstanceLimit => self.instance_limits,
+            Operation::InstanceLimit
+            | Operation::CappedLayer
+            | Operation::InheritedCap
+            | Operation::CappedLayerInBranch => self.instance_limits,
+            Operation::IndexedInsertBigSum
+            | Operation::IndexedInsertCountBigSum
+            | Operation::IndexedDeleteBigSum
+            | Operation::IndexedDeleteCountBigSum => self.big_sum_tree_twins,
+            Operation::BigSumAxisRankedPage
+            | Operation::BigSumAxisBounded
+            | Operation::BigSumAxisRankOfKey
+            | Operation::BigSumAxisPopulation
+            | Operation::BranchedBigSumAxisRead => self.big_sum_axis,
             Operation::SumBudgetWindow
             | Operation::AxisRankedPage
             | Operation::AxisBounded
@@ -477,7 +514,8 @@ impl Features {
             | Operation::TreeDeleteRewrittenInTransaction
             | Operation::TreeDeleteCommitted
             | Operation::FlagsHandoverBatch
-            | Operation::FlagsHandover => true,
+            | Operation::FlagsHandover
+            | Operation::FilledTreeBatch => true,
             Operation::FlagsRemoved | Operation::PartialFlagsHistoryDropped => {
                 self.flag_length_changes
             }
@@ -573,6 +611,9 @@ impl Coverage {
                 | BatchOp::DeleteTree { .. }
                 | BatchOp::Append { .. } => {}
             }
+        }
+        if fills_a_tree_it_creates(op) {
+            self.produced(Operation::FilledTreeBatch);
         }
         match op {
             Op::PartialBatch(_) => self.produced(Operation::PartialBatch),
@@ -883,11 +924,15 @@ fn write_operation(write: &Write) -> Operation {
             IndexedTree::Count => Operation::IndexedInsertCount,
             IndexedTree::Sum => Operation::IndexedInsertSum,
             IndexedTree::CountSum => Operation::IndexedInsertCountSum,
+            IndexedTree::BigSum => Operation::IndexedInsertBigSum,
+            IndexedTree::CountBigSum => Operation::IndexedInsertCountBigSum,
         },
         Write::IndexedDelete { tree, .. } => match tree {
             IndexedTree::Count => Operation::IndexedDeleteCount,
             IndexedTree::Sum => Operation::IndexedDeleteSum,
             IndexedTree::CountSum => Operation::IndexedDeleteCountSum,
+            IndexedTree::BigSum => Operation::IndexedDeleteBigSum,
+            IndexedTree::CountBigSum => Operation::IndexedDeleteCountBigSum,
         },
         Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
         Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
@@ -1015,6 +1060,7 @@ fn selection_operations(path_query: &PathQuery) -> Vec<Operation> {
     if query.has_instance_limit_anywhere() {
         operations.push(Operation::InstanceLimit);
     }
+    capped_layers(query, false, false, &mut operations);
     if query.has_instance_offset_anywhere() {
         operations.push(Operation::InstanceOffset);
     }
@@ -1041,11 +1087,17 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
             }
         }
     }
-    let axis_operation = |traversal: &AxisTraversal| match traversal {
-        AxisTraversal::RankedPage { .. } => Operation::AxisRankedPage,
-        AxisTraversal::Bounded { .. } => Operation::AxisBounded,
-        AxisTraversal::RankOfKey { .. } => Operation::AxisRankOfKey,
-        AxisTraversal::AggregateOverValueRange { .. } => Operation::AxisAggregate,
+    let axis_operation = |axis: &AxisQuery| match (&axis.traversal, axis.axis) {
+        (AxisTraversal::RankedPage { .. }, IndexAxis::BigSum) => Operation::BigSumAxisRankedPage,
+        (AxisTraversal::Bounded { .. }, IndexAxis::BigSum) => Operation::BigSumAxisBounded,
+        (AxisTraversal::RankOfKey { .. }, IndexAxis::BigSum) => Operation::BigSumAxisRankOfKey,
+        (AxisTraversal::AggregateOverValueRange { .. }, IndexAxis::BigSum) => {
+            Operation::BigSumAxisPopulation
+        }
+        (AxisTraversal::RankedPage { .. }, _) => Operation::AxisRankedPage,
+        (AxisTraversal::Bounded { .. }, _) => Operation::AxisBounded,
+        (AxisTraversal::RankOfKey { .. }, _) => Operation::AxisRankOfKey,
+        (AxisTraversal::AggregateOverValueRange { .. }, _) => Operation::AxisAggregate,
     };
     match shape {
         PathQueryShape::AggregateLeaf { kind, .. } => operations.push(match kind {
@@ -1059,16 +1111,69 @@ fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
             AggregateKind::CountAndSum => Operation::AggregateCountAndSumPerKey,
         }),
         PathQueryShape::AxisRead { axis } => {
-            operations.push(axis_operation(&axis.traversal));
+            operations.push(axis_operation(axis));
         }
         PathQueryShape::BranchedAxisRead { axis, .. } => {
-            operations.push(Operation::BranchedAxisRead);
-            operations.push(axis_operation(&axis.traversal));
+            operations.push(match axis.axis {
+                IndexAxis::BigSum => Operation::BranchedBigSumAxisRead,
+                _ => Operation::BranchedAxisRead,
+            });
+            operations.push(axis_operation(axis));
         }
         PathQueryShape::SumBudget { .. } => operations.push(Operation::SumBudgetWindow),
         PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {}
     }
     operations
+}
+
+/// The limits of query nodes that are in force on a layer with subqueries.
+///
+/// `inherited` says that a node above `query` has a limit, and `in_branch`
+/// that `query` is reached through a conditional branch.
+fn capped_layers(query: &Query, inherited: bool, in_branch: bool, operations: &mut Vec<Operation>) {
+    let capped = query.limit.is_some();
+    if query.has_subquery() {
+        if capped {
+            operations.push(Operation::CappedLayer);
+            if in_branch {
+                operations.push(Operation::CappedLayerInBranch);
+            }
+        } else if inherited {
+            operations.push(Operation::InheritedCap);
+        }
+    }
+    let inherited = inherited || capped;
+    if let Some(subquery) = query.default_subquery_branch.subquery.as_deref() {
+        capped_layers(subquery, inherited, in_branch, operations);
+    }
+    let branches = query.conditional_subquery_branches.iter().flatten();
+    for subquery in branches.filter_map(|(_, branch)| branch.subquery.as_deref()) {
+        capped_layers(subquery, inherited, true, operations);
+    }
+}
+
+/// Whether a batch inserts a tree and has another operation at or below
+/// the path of that tree.
+fn fills_a_tree_it_creates(op: &Op) -> bool {
+    let created: Vec<Path> = op
+        .batch_ops()
+        .filter_map(|op| match op {
+            BatchOp::InsertOrReplace { path, key, element }
+            | BatchOp::InsertOnly { path, key, element }
+            | BatchOp::InsertIfNotExists { path, key, element }
+            | BatchOp::Replace { path, key, element }
+                if element.is_any_tree() =>
+            {
+                let mut tree = path.clone();
+                tree.push(key.clone());
+                Some(tree)
+            }
+            _ => None,
+        })
+        .collect();
+    op.batch_ops()
+        .map(BatchOp::path)
+        .any(|path| created.iter().any(|tree| path.starts_with(tree)))
 }
 
 fn has_conditional_subquery(query: &Query) -> bool {

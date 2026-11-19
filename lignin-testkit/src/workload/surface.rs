@@ -111,11 +111,6 @@ const DUMP_LOAD: Status = Status::LeftOut(
 
 const AGGREGATE_READER: Status = inside("run_path_query");
 
-const WIDE_INDEXED_ENTRY: Status = Status::LeftOut(
-    "writes an entry of an indexed tree with a 128-bit sum, which GroveDB #1062 added and no \
-     workload produces yet; the BASE-01 follow-up that produces the two trees owes the call",
-);
-
 /// Every public method of `GroveDb`, the methods of the traits implemented
 /// for it included, and every public method of the transaction it hands
 /// out under the name `Transaction::…`, in alphabetical order.
@@ -128,16 +123,9 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ("Transaction::rollback", inside("rollback_transaction")),
     (
         "Transaction::rollback_to_savepoint",
-        produced(&[Operation::SavepointRollback]),
+        inside("rollback_to_savepoint"),
     ),
-    (
-        "Transaction::set_savepoint",
-        produced(&[
-            Operation::Savepoint,
-            Operation::NestedSavepoint,
-            Operation::SavepointKept,
-        ]),
-    ),
+    ("Transaction::set_savepoint", inside("set_savepoint")),
     (
         "Transaction::snapshot_age",
         Status::LeftOut(
@@ -182,6 +170,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::FlatDropInBatch,
             Operation::DeleteUpTreeBuilt,
             Operation::DeleteBuilt,
+            Operation::FilledTreeBatch,
         ]),
     ),
     (
@@ -301,11 +290,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "delete_from_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedDeleteBigSum]),
     ),
     (
         "delete_from_provable_count_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedDeleteCountBigSum]),
     ),
     (
         "delete_from_provable_count_provable_sum_indexed_tree",
@@ -441,11 +430,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "insert_into_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedInsertBigSum]),
     ),
     (
         "insert_into_provable_count_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedInsertCountBigSum]),
     ),
     (
         "insert_into_provable_count_provable_sum_indexed_tree",
@@ -609,13 +598,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "rollback_to_savepoint",
-        Status::LeftOut(
-            "`Transaction::rollback_to_savepoint` reached through the engine, which refuses it \
-             while a write scope of the transaction is open. No stream opens a scope, so on \
-             RocksDB it is the operation the streams reach through the transaction. An engine \
-             with a transaction of its own has no other way to it: the BASE-01 follow-up owes \
-             `workload::apply` the call",
-        ),
+        produced(&[Operation::SavepointRollback]),
     ),
     ("rollback_transaction", produced(&[Operation::Rollback])),
     ("root_hash", produced(&[Operation::RootChunk])),
@@ -641,17 +624,23 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::AxisRankOfKey,
             Operation::AxisAggregate,
             Operation::BranchedAxisRead,
+            Operation::BigSumAxisRankedPage,
+            Operation::BigSumAxisBounded,
+            Operation::BigSumAxisRankOfKey,
+            Operation::BigSumAxisPopulation,
+            Operation::BranchedBigSumAxisRead,
+            Operation::CappedLayer,
+            Operation::InheritedCap,
+            Operation::CappedLayerInBranch,
         ]),
     ),
     (
         "set_savepoint",
-        Status::LeftOut(
-            "`Transaction::set_savepoint` reached through the engine, which refuses it while a \
-             write scope of the transaction is open. No stream opens a scope, so on RocksDB it \
-             is the operation the streams reach through the transaction. An engine with a \
-             transaction of its own has no other way to it: the BASE-01 follow-up owes \
-             `workload::apply` the call",
-        ),
+        produced(&[
+            Operation::Savepoint,
+            Operation::NestedSavepoint,
+            Operation::SavepointKept,
+        ]),
     ),
     (
         "start_snapshot_read_transaction",

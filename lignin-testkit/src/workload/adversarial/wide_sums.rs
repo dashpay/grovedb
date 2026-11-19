@@ -6,7 +6,7 @@ use grovedb::{
 };
 use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 
-use super::DOMAIN_WIDE_SUMS;
+use super::{wide_sum, DOMAIN_WIDE_SUMS};
 use crate::workload::{
     build::{self, batch, batch::insert_or_queue, child, path, storage_flags},
     op::{self, BatchOp, Op, Path, Prove, Read},
@@ -190,12 +190,7 @@ impl Generator {
     /// credits are more than an `i64` holds.
     fn amount(&mut self) -> Element {
         let amount = if self.wide {
-            let amount = i64::MAX - self.rng.below(1 << 40) as i64;
-            if self.rng.chance(1, 4) {
-                -amount
-            } else {
-                amount
-            }
+            wide_sum(&mut self.rng)
         } else {
             build::sum(&mut self.rng)
         };

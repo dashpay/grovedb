@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-filled-tree-axes-out-of-order
+seed 0x0
+grove-version 5
+engine 2a79d035167b1e484ba66d53186396057658be9f
+workload legacy-filled-tree-axes-out-of-order
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c8c12re483
+  step 1
+  # Batch([InsertOnly { path: [[116, 111, 112]], key: [102, 105, 108, 108, 101, 100], element: tree: None }])
+  cost seeks=6 loaded=150 added=119 replaced=77 removed=- hashes=12 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+c2442e844are483
+  step 3
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [97, 108, 111, 110, 101], element: provable_count_provable_sum_indexed_tree: primary=None, count: 0, sum: 0, axes: [(1, None), (0, None)] }])
+  # failed: invalid batch operation error: a ProvableCountProvableSumIndexedTree must have canonical axes (1..=3 entries, sorted ascending by tag, no duplicates, tags in 0..=2)
+  cost seeks=1 loaded=80 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  failed InvalidBatchOperation
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+c95dbvbb7c
+  step 5
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+cdc07e844are483
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [116, 114, 101, 101], element: provable_count_provable_sum_indexed_tree: primary=None, count: 0, sum: 0, axes: [(1, None), (0, None)] }, InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], key: [101, 110, 116, 114, 121], element: item_with_sum_item: [hex: 656e747279, str: entry… (407 characters)
+  # failed: invalid batch operation error: a ProvableCountProvableSumIndexedTree must have canonical axes (1..=3 entries, sorted ascending by tag, no duplicates, tags in 0..=2)
+  cost seeks=2 loaded=160 added=0 replaced=0 removed=- hashes=4 sinsemilla=0
+  failed InvalidBatchOperation
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+c95dbvbb7c
+  step 8
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+c95dbvbb7cqca5bpb851
+  step 9
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit… (441 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+  prove-cost seeks=4 loaded=227 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  proof 105 0100310403746f70000a02010666696c6c6564009aed15c71b6126bea7e6ad53713910ad5b23daee4ba5d3ce66dc80db63cbd9c90103746f70002d040666696c6c65640003020000651929e1747381a16157515e5447625502f3a79843859a0a929d24c605c0b23a00
+  verification verified
+stream 10 9ba030fcdcbaf82f0d55ef80dc9f0cec4d8a287d4305ea53c21a37521b300d47
+tally failed=2 unproved=0 unverified=0
+end 10 c06f5f5fd1b490c32cbbeac713f26b4efb8d6513c199e7810fe484758eef7c8d
