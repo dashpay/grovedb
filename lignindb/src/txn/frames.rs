@@ -87,6 +87,16 @@ impl Refused {
     }
 }
 
+/// Whether `error` is a refusal of the directory, which changes no page:
+/// every error but a failed or a damaged flat keyspace
+/// ([`DirectoryError`]).
+fn refuses(error: &DirectoryError) -> bool {
+    !matches!(
+        error,
+        DirectoryError::Flat(_) | DirectoryError::Damaged { .. }
+    )
+}
+
 /// What the tests arm and count in the write of an operation, on their own
 /// thread.
 #[cfg(all(test, not(loom)))]
@@ -103,7 +113,8 @@ pub(crate) mod probe {
     }
 
     /// The next write panics once the tree pages have taken its batch,
-    /// before the subtree directory is told.
+    /// and a drop of the batch is made, before the subtrees of the batch
+    /// are entered and the directory is told the roots.
     pub(crate) fn panic_next() {
         PANIC.set(true);
     }
@@ -846,7 +857,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // unlinked pages says which version its writer read at
         // (`lignin_tree::drop`, "What the callers do").
         let columns = path.keyspaces.columns();
-        let (drops, at) = (path.flat_drops, self.base);
+        let mut flats = Flats {
+            pages: &mut *self.flat,
+            columns: &columns,
+            drops: &path.flat_drops,
+            at: self.base,
+        };
         // A Merk that leaves keeps its cells in their pages, so a handle
         // into them would still be followed. Every handle that was read
         // before ends here: the write is made under a new lease, and
@@ -872,12 +888,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         false => Left::Cleared(left.subtree.as_bytes()),
                     })
                     .collect();
-                let mut flats = Flats {
-                    pages: &mut *self.flat,
-                    columns: &columns,
-                    drops: &drops,
-                    at,
-                };
                 drop::unlink(
                     &mut self.fragments,
                     &mut self.tree,
@@ -936,13 +946,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         probe::strike();
 
         // The directory: the Merks that are entered, each so that it starts
-        // with no flat record, and then every root the write changed.
-        let mut flats = Flats {
-            pages: &mut *self.flat,
-            columns: &columns,
-            drops: &drops,
-            at,
-        };
+        // with no flat record, and then every root the write changed. A
+        // subtree that the directory refuses has changed no page: where
+        // nothing of the batch was written before it, the frames are as
+        // they were.
+        let mut untouched = merks.is_empty() && view.leaving.is_empty();
         for write in batch.subtrees {
             let SubtreeWrite::Enter {
                 subtree,
@@ -957,14 +965,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 key: host.key,
                 position: host.position,
             });
-            drop::enter(
-                &self.directory,
-                &mut flats,
-                subtree.as_bytes(),
-                tree_type,
-                host,
-            )
-            .map_err(Refused::dropping)?;
+            let prefix = subtree.as_bytes();
+            match drop::enter(&self.directory, &mut flats, prefix, tree_type, host) {
+                Ok(_) => untouched = false,
+                Err(DropError::Directory(error)) if untouched && refuses(&error) => {
+                    return Err(Refused::clean(error));
+                }
+                Err(error) => return Err(Refused::dropping(error)),
+            }
         }
         let moved: HashMap<CellAddress, CellAddress> = (report.carried.iter())
             .map(|carried| (carried.from, carried.to.address()))
