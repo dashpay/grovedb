@@ -49,7 +49,7 @@ use lignin_tree::{
 
 use crate::{
     commit::{CommitError, CommitState, Committer, Published},
-    snapshot::{ReadPath, Reclaim, Versions},
+    snapshot::{Directories, ReadPath, Reclaim, Versions},
     txn::{path::Store, Batch, Commits, KeySet, Keyspaces, Subtree, TxnError, WritePath, WriteTxn},
     verify::{self, Finding, Grove, Options, Place, Report, Rule, Scope},
 };
@@ -200,6 +200,9 @@ pub struct Db {
     pub vfs: Arc<dyn Vfs>,
     pub dir: PathBuf,
     keyspaces: OnceLock<Keyspaces>,
+    /// The handles on the subtree directory that the store keeps for its
+    /// readers, as the engine does: every commit puts its own there.
+    pub directories: Directories,
     directory: OnceLock<FlatTree>,
     flat_drops: OnceLock<FlatDrops>,
     used: Mutex<BTreeSet<PageId>>,
@@ -270,6 +273,7 @@ impl Reclaim for Hook {
             .ids_released
             .fetch_add(released.len() as u64, Ordering::Relaxed);
         self.0.pool.reclaim(pins);
+        self.0.directories.reclaim(pins);
     }
 }
 
@@ -342,6 +346,7 @@ impl Db {
             vfs,
             dir: dir.to_path_buf(),
             keyspaces: OnceLock::new(),
+            directories: Directories::empty(),
             directory: OnceLock::new(),
             flat_drops: OnceLock::new(),
             used: Mutex::new(BTreeSet::new()),
@@ -506,6 +511,7 @@ impl Db {
         }
         drop(counts);
         self.commits.record(commit, Default::default());
+        self.directories.set(commit, directory);
         versions.publish(commit).expect("the first version");
         drop(lock);
     }
@@ -727,6 +733,7 @@ impl Db {
             commits: &self.commits,
             stats: &self.stats,
             directory: self.directory(),
+            directories: &self.directories,
             flat_drops: self.flat_drops(),
         };
         WritePath::new(
@@ -739,8 +746,12 @@ impl Db {
 
     /// The read path of this store under its `versions`.
     pub fn reads<'s>(&'s self, versions: &'s Versions) -> ReadPath<'s> {
-        let (keyspaces, directory) = (self.keyspaces(), self.directory());
-        ReadPath::new(versions, self.loader()).with_records(&self.values, keyspaces, directory)
+        let keyspaces = self.keyspaces();
+        ReadPath::new(versions, self.loader()).with_records(
+            &self.values,
+            keyspaces,
+            &self.directories,
+        )
     }
 
     /// The committed flat pages at `at`, for the operation that holds

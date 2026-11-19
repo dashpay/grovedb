@@ -15,6 +15,7 @@ use lignin_store::{
     alloc::PageAllocator,
     cache::{BufferPool, CacheError, OwnerId, PrivateRef},
     load::{LoadBuffers, PageLoader},
+    stats::Stats,
     values::ValueStore,
 };
 use lignin_tree::{
@@ -40,6 +41,10 @@ pub(crate) trait NodePages {
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, TxnError>;
+
+    /// The counts of the store these pages are of, which are told of every
+    /// search by key from the root of a Merk ([`find`]).
+    fn stats(&self) -> Option<&Stats>;
 }
 
 /// The committed tree pages of a store, as the operation that holds
@@ -51,6 +56,8 @@ pub(crate) struct CommittedPages<'a, 's> {
     pub(crate) at: CommitVersion,
     pub(crate) lease: Lease,
     pub(crate) buffers: &'a mut LoadBuffers,
+    /// The counts of the store.
+    pub(crate) stats: &'s Stats,
 }
 
 impl<'a> CommittedPages<'a, '_> {
@@ -72,6 +79,10 @@ impl NodePages for CommittedPages<'_, '_> {
         let frame = self.loader.get(page, self.at, self.buffers)?;
         Ok(read(NodePage::open(&frame, self.lease)?))
     }
+
+    fn stats(&self) -> Option<&Stats> {
+        Some(self.stats)
+    }
 }
 
 /// Finds the node under `key` in the Merk whose root cell is at `root`, by
@@ -79,12 +90,17 @@ impl NodePages for CommittedPages<'_, '_> {
 /// a node's and to the right where it is larger (`transactions.md` RD5).
 ///
 /// This is the keyed lookup that a kept location is the shortcut for
-/// (PN8). It reads one cell for each level.
+/// (PN8). It reads one cell for each level, and a search of a Merk that
+/// has a node is counted as one keyed lookup of the store
+/// ([`Stats::count_keyed_lookups`]).
 pub(crate) fn find<P: NodePages>(
     pages: &mut P,
     root: Option<CellAddress>,
     key: &[u8],
 ) -> Result<Option<CellAddress>, TxnError> {
+    if let Some(stats) = pages.stats().filter(|_| root.is_some()) {
+        stats.count_keyed_lookups(1);
+    }
     let mut next = root;
     for _ in 0..MAX_DEPTH {
         let Some(address) = next else {
@@ -224,6 +240,8 @@ pub(crate) struct TreePages<'s> {
     /// whichever Merk it is in.
     pub(crate) behind_keys: HashSet<Box<[u8]>>,
     buffers: LoadBuffers,
+    /// The counts of the store, if the pages were given them.
+    stats: Option<&'s Stats>,
 }
 
 impl<'s> TreePages<'s> {
@@ -250,7 +268,15 @@ impl<'s> TreePages<'s> {
             behind: HashSet::new(),
             behind_keys: HashSet::new(),
             buffers: LoadBuffers::new(),
+            stats: None,
         }
+    }
+
+    /// The same pages, which tell `stats` of every search by key from the
+    /// root of a Merk.
+    pub(crate) fn counted_in(mut self, stats: &'s Stats) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     /// The lease the pages are read and changed under.
@@ -420,6 +446,10 @@ impl NodePages for TreePages<'_> {
                 Ok(read(NodePage::open(&frame, self.lease)?))
             }
         }
+    }
+
+    fn stats(&self) -> Option<&Stats> {
+        self.stats
     }
 }
 

@@ -14,16 +14,16 @@ use lignin_store::{
     values::ValueStore,
 };
 use lignin_tree::{
-    directory::{Directory, DirectoryError},
+    directory::Directory,
     drop::{self, FlatDrops},
-    flat::{Committed, FlatPages, FlatTree, Private},
+    flat::{Committed, FlatTree, Private},
     fragment::Layout,
     node::Lease,
     value::InlinePolicy,
 };
 
-use super::{commits::Commits, key::Column, pages::CommittedPages, txn::WriteTxn};
-use crate::snapshot::{OperationGuard, Versions};
+use super::{commits::Commits, error::TxnError, key::Column, pages::CommittedPages, txn::WriteTxn};
+use crate::snapshot::{Directories, OperationGuard, Versions};
 
 /// The committed flat pages of one version, as one operation reads them:
 /// they borrow the operation's guard, and so does every page they hand out
@@ -114,6 +114,9 @@ pub struct WritePath<'s> {
     pub(crate) stats: &'s Stats,
     /// The keyspace of the subtree directory (`lignin_tree::directory`).
     pub(crate) directory: FlatTree,
+    /// The handles on the subtree directory that the engine keeps, one for
+    /// each version that is read ([`Directories`]).
+    pub(crate) directories: &'s Directories,
     /// The keyspace of the pages that drops unlinked and that wait to be
     /// freed (`lignin_tree::drop`).
     pub(crate) flat_drops: FlatDrops,
@@ -123,10 +126,6 @@ pub struct WritePath<'s> {
 }
 
 /// The parts of a store that a [`WritePath`] is made of.
-#[cfg_attr(
-    any(not(any(test, feature = "testing")), loom),
-    expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-)]
 pub(crate) struct Store<'s> {
     pub(crate) versions: &'s Versions,
     pub(crate) loader: PageLoader<'s>,
@@ -139,6 +138,10 @@ pub(crate) struct Store<'s> {
     /// The keyspace of the store's subtree directory: its root page, which
     /// is the same for good, and the configuration of its pages.
     pub(crate) directory: FlatTree,
+    /// The handles on the subtree directory that are kept for the store's
+    /// readers. A commit puts the handle of its version there before it
+    /// publishes the version.
+    pub(crate) directories: &'s Directories,
     /// The keyspace of the pages that the drops of the store unlinked and
     /// that wait to be freed: its root page, which is the same for good,
     /// and the configuration of its pages. Its records are entries of the
@@ -151,10 +154,6 @@ impl<'s> WritePath<'s> {
     /// its records in `keyspaces`, its Merk nodes laid out by `layout`, and
     /// the values of its nodes in their cells up to the threshold of
     /// `inline`. The caller vouches that all of them are of one store.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-    )]
     pub(crate) fn new(
         store: Store<'s>,
         keyspaces: Keyspaces,
@@ -170,6 +169,7 @@ impl<'s> WritePath<'s> {
             commits: store.commits,
             stats: store.stats,
             directory: store.directory,
+            directories: store.directories,
             flat_drops: store.flat_drops,
             keyspaces,
             layout,
@@ -220,17 +220,25 @@ impl<'s> WritePath<'s> {
         self.flat_drops
     }
 
-    /// The subtree directory as `pages` have it: the committed pages of
-    /// one version, or the pages of a write transaction.
+    /// The subtree directory of the committed version `at`: a copy of the
+    /// handle the engine keeps for it ([`Directories`]).
     ///
-    /// A handle is of the pages it was loaded from
-    /// (`lignin_tree::directory`): it is loaded for every version that is
-    /// read, and for the frames of a transaction whenever they are made.
-    pub(crate) fn load_directory<P: FlatPages + ?Sized>(
-        &self,
-        pages: &P,
-    ) -> Result<Directory, DirectoryError> {
-        Directory::load(pages, self.directory.root(), self.directory.config())
+    /// No handle is loaded for a version that is read
+    /// (`lignin_tree::directory`, "A handle is of the pages it was loaded
+    /// from"): one that is loaded after a later commit landed and what a
+    /// drop left was reclaimed takes a subtree that was below the dropped
+    /// one for a subtree in use. `at` is a version the caller pins, or the
+    /// latest version it read under the guard it holds, and for both a
+    /// handle is kept.
+    pub(crate) fn directory_at(&self, at: CommitVersion) -> Result<Directory, TxnError> {
+        self.directories.at(at).ok_or(TxnError::Damaged(
+            "no handle on the subtree directory is kept for a version that is read",
+        ))
+    }
+
+    /// The handles on the subtree directory that the engine keeps.
+    pub(crate) fn directories(&self) -> &'s Directories {
+        self.directories
     }
 
     /// Begins a write transaction (`transactions.md` WT1). Any number of
@@ -268,6 +276,7 @@ impl<'s> WritePath<'s> {
             at: version,
             lease,
             buffers,
+            stats: self.stats,
         }
     }
 

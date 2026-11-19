@@ -523,9 +523,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// Frames with no copy, over the committed pages of the version `at`,
     /// which the transaction keeps pinned for as long as it has them.
     ///
-    /// The subtree directory is loaded from those pages here, so frames
-    /// that are made again have it as their pages do: after a commit of
-    /// another landed, and after a rollback.
+    /// Their handle on the subtree directory is a copy of the one the
+    /// engine keeps for `at` ([`WritePath::directory_at`]), so frames that
+    /// are made again have it as their pages do: after a commit of another
+    /// landed, and after a rollback.
     pub(crate) fn new(
         path: &WritePath<'s>,
         guard: &'g OperationGuard<'s>,
@@ -536,10 +537,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let size = path.layout.page_size();
         let flat = FlatWriter::new(path.committed(guard, at), path.pool, owner, path.ids);
         Ok(Self {
-            tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size),
+            tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size)
+                .counted_in(path.stats),
             values: TreeValues::new(path.inline),
             source: ValueSource::new(path.values, path.loader, at),
-            directory: path.load_directory(&flat)?,
+            directory: path.directory_at(at)?,
             dropped: Vec::new(),
             flat: FlatFrames(Some(flat)),
             hashes: Hashes::new(),

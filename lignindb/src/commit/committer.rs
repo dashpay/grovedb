@@ -144,10 +144,6 @@ impl<'s> Committer<'s> {
     /// `write_back`, with `table` and `log` the page table and the log
     /// that write-back works on. The caller vouches that all of them are
     /// of one store, and `state` is what that store's commits share.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-    )]
     pub(crate) fn new(
         path: WritePath<'s>,
         write_back: WriteBack<'s>,
@@ -565,6 +561,10 @@ impl<'s> Committer<'s> {
         // up holds nothing back and tells nobody.
         drop(pin);
         path.commits.record(version, keys);
+        // The handle on the subtree directory of the new version is kept
+        // before the version is published: whoever reads the version
+        // finds its handle, and loads none.
+        path.directories().set(version, directory.clone());
         if let Err(error) = path.versions.publish(version) {
             return Err(self.halted(version, error.into()));
         }
