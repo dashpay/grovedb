@@ -10,7 +10,7 @@ use std::{
 };
 
 use lignin_format::FileId;
-use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
+use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
 use lignin_store::segment::{read_manifest, FileNames, ManifestStore};
 
 use super::error::CheckpointError;
@@ -69,6 +69,9 @@ pub(super) struct Target {
     /// The names given to files in the target, linked or to be copied.
     files: Vec<PathBuf>,
     waiting: Vec<Waiting>,
+    /// The lock of the target as a database directory, held while it is
+    /// made: whoever opens a directory takes it first.
+    lock: Option<Box<dyn VfsLock>>,
     pub(super) linked: usize,
     pub(super) copied: usize,
     pub(super) copied_bytes: u64,
@@ -76,8 +79,14 @@ pub(super) struct Target {
 
 impl Target {
     /// Refuses a target that is there, as a directory or as anything else,
-    /// before anything is done for it. [`Self::make`] is what decides.
+    /// and one with no directory above it, before anything is done for it.
+    /// [`Self::make`] is what decides.
     pub(super) fn refuse_existing(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
+        if parent_of(dir).is_none() {
+            return Err(CheckpointError::NoParent {
+                target: dir.to_path_buf(),
+            });
+        }
         match vfs.read_dir(dir) {
             Ok(_) => {}
             Err(error) if error.kind() == ErrorKind::NotADirectory => {}
@@ -89,7 +98,9 @@ impl Target {
     }
 
     /// Makes the directory `dir`, which must not be there, in a directory
-    /// that is.
+    /// that is, and takes its lock: a manifest is written under the lock
+    /// of its directory (`lignin_store::segment`), and nobody that takes
+    /// the lock opens a target that is being made.
     pub(super) fn make(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<Self, CheckpointError> {
         let Some(parent) = parent_of(dir) else {
             return Err(CheckpointError::NoParent {
@@ -102,17 +113,27 @@ impl Target {
             },
             _ => CheckpointError::io("create the directory", dir)(source),
         })?;
-        Ok(Self {
+        let mut made = Self {
             vfs,
             dir: dir.to_path_buf(),
             parent: parent.to_path_buf(),
             dirs: Vec::new(),
             files: Vec::new(),
             waiting: Vec::new(),
+            lock: None,
             linked: 0,
             copied: 0,
             copied_bytes: 0,
-        })
+        };
+        let lock_path = dir.join(LOCK_FILE_NAME);
+        match made.vfs.lock(&lock_path) {
+            Ok(lock) => made.lock = Some(lock),
+            Err(source) => {
+                made.remove();
+                return Err(CheckpointError::io("lock", &lock_path)(source));
+            }
+        }
+        Ok(made)
     }
 
     pub(super) fn dir(&self) -> &Path {
@@ -259,8 +280,9 @@ impl Target {
 
     /// Takes away what this creation made, as far as the file layer lets
     /// it: the manifest first, so that what is left is no checkpoint, then
-    /// the files, the directories and the target. Nothing else is touched,
-    /// and what cannot be removed stays for the caller to remove.
+    /// the files, the directories, the lock file and the target. Nothing
+    /// else is touched, and what cannot be removed stays for the caller to
+    /// remove.
     pub(super) fn remove(self) {
         let vfs = &*self.vfs;
         for name in [ManifestStore::FILE_NAME, ManifestStore::TEMP_FILE_NAME] {
@@ -274,6 +296,8 @@ impl Target {
         for dir in self.dirs.iter().rev() {
             let _ = vfs.remove_dir(dir);
         }
+        let _ = vfs.remove_file(&self.dir.join(LOCK_FILE_NAME));
+        drop(self.lock);
         let _ = vfs.remove_dir(&self.dir);
         let _ = vfs.sync_dir(&self.parent);
     }
@@ -312,9 +336,10 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// then.
 ///
 /// This call is the careful way. It removes nothing unless the directory
-/// has a manifest of this engine ([`CheckpointError::NotADatabase`]) and no
-/// handle has it open ([`CheckpointError::Open`]): it takes the directory's
-/// lock for the time of the removal. A checkpoint is a database like any
+/// has a manifest of this engine, or is what a deletion that was cut short
+/// left of one ([`CheckpointError::NotADatabase`]), and no handle has it
+/// open ([`CheckpointError::Open`]): it takes the directory's lock for the
+/// time of the removal. A checkpoint is a database like any
 /// other once it is made, so the call cannot tell one from a database that
 /// was created, and deletes that too.
 ///

@@ -267,7 +267,10 @@ impl<'s> Checkpointer<'s> {
     /// it while it links. So the manifest is only tried under the commit
     /// lock: where it is taken, the commit lock is given back, the
     /// manifest is waited for, and both are taken anew. A commit so waits
-    /// for the reads below and for nothing else (CK5, CM8).
+    /// for the reads below and for nothing else (CK5, CM8). The tries are
+    /// not counted: each one that fails has waited for a holder of the
+    /// manifest that has finished, and a bound would have to wait for the
+    /// manifest under the commit lock again.
     fn sample(&self) -> Result<(Sample<'s>, MutexGuard<'s, ManifestStore>), CheckpointError> {
         let stores = self.write_back.stores();
         let (commits, manifest) = loop {
@@ -430,8 +433,8 @@ impl<'s> Checkpointer<'s> {
         // Every name in the target is durable before the target's own name
         // is, and that before the manifest is written: the name of a
         // database directory is durable before its first manifest
-        // (`lignin_store::segment`), and a target that a power cut leaves
-        // has its files or does not exist.
+        // (`lignin_store::segment`). From here on, a target that a power
+        // cut leaves has every one of its files.
         target.sync_names()?;
         target.sync_parent()?;
         let mut last_file_ids = named.last_file_ids();

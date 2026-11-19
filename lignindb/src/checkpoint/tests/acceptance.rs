@@ -204,7 +204,7 @@ fn a_checkpoint_is_a_database_of_its_own() {
                 .expect("a name")
         })
         .collect();
-    let own = ["MANIFEST", "seg", "table", "val", "wal"];
+    let own = ["LOCK", "MANIFEST", "seg", "table", "val", "wal"];
     assert!(
         entries.iter().all(|entry| own.contains(&entry.as_str())),
         "{entries:?}"
@@ -501,16 +501,13 @@ fn an_existing_target_is_refused_and_left_untouched() {
         matches!(refused, Err(CheckpointError::TargetExists { .. })),
         "{refused:?}"
     );
-    let refused = checkpointer(&db, &versions).create(Path::new("/"));
-    assert!(
-        matches!(refused, Err(CheckpointError::TargetExists { .. })),
-        "{refused:?}"
-    );
-    let refused = checkpointer(&db, &versions).create(Path::new(""));
-    assert!(
-        matches!(refused, Err(CheckpointError::NoParent { .. })),
-        "{refused:?}"
-    );
+    for nowhere in ["/", ""] {
+        let refused = checkpointer(&db, &versions).create(Path::new(nowhere));
+        assert!(
+            matches!(refused, Err(CheckpointError::NoParent { .. })),
+            "{nowhere:?}: {refused:?}"
+        );
+    }
     // The directory above the target is the caller's to make.
     let orphan = db.dir.join("not-there").join("1");
     let refused = checkpointer(&db, &versions).create(&orphan);

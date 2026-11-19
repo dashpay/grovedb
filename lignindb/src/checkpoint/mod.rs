@@ -63,7 +63,7 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
-//! | 3 | The target is made, a new directory. | nothing |
+//! | 3 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. | the lock of the target, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the log ends, and the durable manifest. A session whose log holds a commit it has not published is refused. The version is pinned, and the whole log and the value-log files are held (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the target, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
@@ -253,9 +253,10 @@
 //! or if the engine keeps any other file there that an open needs, the
 //! checkpoint has to have it: [`Checkpointer::carrying`] names such files,
 //! and each is linked or copied in step 5, before the manifest is written.
-//! A checkpoint takes nothing else from the database directory: not the
-//! lock file, and not what somebody else keeps there, such as the
-//! directory of the checkpoints themselves (P-03, P-14).
+//! A checkpoint takes nothing else from the database directory: not what
+//! somebody else keeps there, such as the directory of the checkpoints
+//! themselves (P-03, P-14), and not the lock file. Its own lock file is
+//! made with it.
 //!
 //! # Deleting a checkpoint, and removing one that is open
 //!
@@ -286,8 +287,10 @@
 //!     directory of the store in it and no manifest, and, since a creation
 //!     can be cut before its first link, one that is empty and lies where
 //!     checkpoints are made. The store's own opens refuse the first kind
-//!     once a file with data is linked there, since no manifest names it.
-//!     Nothing refuses the second kind. A rename of a directory in the
+//!     where a segment, a value-log file or a log file with data is left
+//!     there, since no manifest names it. They do not refuse one that is
+//!     left with a table checkpoint alone or with empty directories, and
+//!     nothing refuses the second kind. A rename of a directory in the
 //!     file layer would let a creation build under another name and
 //!     appear whole, and is the owner's to decide on.
 //!   - If it keeps a file beside the store's, whoever makes checkpoints
