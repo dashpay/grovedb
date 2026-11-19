@@ -428,6 +428,27 @@ impl fmt::Debug for LigninBatch {
     }
 }
 
+/// What enters `subtree` in the subtree directory as a tree of
+/// `tree_type`: its place among the subtrees of its host is the place of
+/// its prefix in [`LigninHost::hosted`].
+pub(super) fn entering(subtree: &LigninSubtree, tree_type: &[u8]) -> Result<SubtreeChange, Error> {
+    let host = match &subtree.host {
+        None => None,
+        Some(host) => {
+            let position = (host.hosted.iter())
+                .position(|hosted| *hosted == subtree.prefix)
+                .and_then(|position| u8::try_from(position).ok())
+                .ok_or_else(|| refused("a subtree is not among those its host hosts"))?;
+            Some((host.subtree, host.key.clone(), position))
+        }
+    };
+    Ok(SubtreeChange::Enter {
+        subtree: subtree.prefix,
+        tree_type: tree_type.to_vec(),
+        host,
+    })
+}
+
 fn keyspace_order(keyspace: Keyspace) -> u8 {
     let order = MODEL.batch_order();
     order
@@ -461,21 +482,7 @@ impl LigninBatch {
     /// data in a flat keyspace. Its place among the subtrees of its host
     /// is the place of its prefix in [`LigninHost::hosted`].
     pub fn enter(&self, subtree: &LigninSubtree, tree_type: &[u8]) -> Result<(), Error> {
-        let host = match &subtree.host {
-            None => None,
-            Some(host) => {
-                let position = (host.hosted.iter())
-                    .position(|hosted| *hosted == subtree.prefix)
-                    .and_then(|position| u8::try_from(position).ok())
-                    .ok_or_else(|| refused("a subtree is not among those its host hosts"))?;
-                Some((host.subtree, host.key.clone(), position))
-            }
-        };
-        let enter = SubtreeChange::Enter {
-            subtree: subtree.prefix,
-            tree_type: tree_type.to_vec(),
-            host,
-        };
+        let enter = entering(subtree, tree_type)?;
         self.staged().subtrees.push(enter);
         Ok(())
     }

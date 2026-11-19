@@ -34,6 +34,7 @@
 //! | --- | --- |
 //! | [`WriteTxn::get`], [`WriteTxn::node`] | the transaction's newest write that covers the key, and with none the record of the latest committed state at the moment of the call (RD3) |
 //! | [`WriteTxn::follow`], [`WriteTxn::child`] | the same record, through a node handle while that is good (PN8) |
+//! | [`WriteTxn::subtree`] | what the subtree directory holds of a subtree ([`SubtreeView`]): the transaction's own enters, drops, clears and roots, and for a subtree it has not written the entry of the latest committed state |
 //! | [`WriteTxn::committed_get`], [`WriteTxn::committed_node`] | the record of the latest committed state, whatever the transaction wrote there (RD10) |
 //! | [`Cursor`], from [`WriteTxn::cursor`] for flat records and from [`WriteTxn::merk_cursor`] for the nodes of a Merk | the committed records of the version the cursor was opened on, merged with the transaction's writes as they are at each step (RD6) |
 //!
@@ -387,7 +388,7 @@ pub use key::{Column, KeySet, Subtree, Unit};
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
 pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};
-pub use view::{LinkView, NodeView};
+pub use view::{LinkView, NodeView, SubtreeView};
 pub use write::{
     Applied, Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
     SubtreeWrite, ValuePut,

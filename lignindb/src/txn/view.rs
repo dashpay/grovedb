@@ -6,6 +6,7 @@ use std::fmt;
 use lignin_format::tree_page::{Hash, Side};
 use lignin_store::values::ValueStore;
 use lignin_tree::{
+    directory::Entry,
     hash::Stale,
     node::{NodeHandle, NodeRef, PinnedNode},
     value::{read_value, TreeValues, ValueBuf, ValueSource},
@@ -13,8 +14,44 @@ use lignin_tree::{
 
 use super::{
     error::TxnError,
+    key::Subtree,
+    write::HostPut,
     write_set::{hash_of, EntryId, Kind, LinkEntry, NodeEntry, WriteSet},
 };
+
+/// What the subtree directory holds of an entered subtree, as an operation
+/// of a write transaction reads it ([`lignin_tree::directory`]): the
+/// transaction's own enters, drops, clears and roots, and for a subtree it
+/// has not written the entry of the latest committed state.
+///
+/// It borrows what the operation read: an entry of the directory, or the
+/// transaction's write set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SubtreeView<'a> {
+    /// The key of the root node of the subtree's Merk, or `None` for a
+    /// Merk with no node and for a tree that keeps its data flat.
+    pub root_key: Option<&'a [u8]>,
+    /// The tree type: the bytes the subtree was entered with.
+    pub tree_type: &'a [u8],
+    /// The element that hosts the subtree, or `None` for the root of the
+    /// grove and for a Merk that stands alone.
+    pub host: Option<HostPut<'a>>,
+}
+
+impl<'a> SubtreeView<'a> {
+    /// The view of an entry of the directory.
+    pub(crate) fn of(entry: &'a Entry) -> Self {
+        Self {
+            root_key: entry.root().map(|root| root.key),
+            tree_type: entry.tree_type(),
+            host: entry.host().map(|host| HostPut {
+                subtree: Subtree::new(*host.parent),
+                key: host.key,
+                position: host.position,
+            }),
+        }
+    }
+}
 
 /// A link of a node: what Merk keeps about a child in its parent.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

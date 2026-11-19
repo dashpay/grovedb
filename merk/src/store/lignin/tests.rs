@@ -20,7 +20,8 @@ use lignindb::{
 
 use super::{
     access::{Access, Child, Location, Prefix, StoredNode, Write, Written},
-    LigninApplied, LigninBatch, LigninHost, LigninNodeStore, LigninSubtree, LigninWriter, Mode,
+    LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore, LigninSubtree,
+    LigninWriter, Mode,
 };
 use crate::{
     cost_model::Keyspace,
@@ -29,33 +30,34 @@ use crate::{
     Error, Link, Merk, Op, TreeFeatureType, TreeType,
 };
 
-const NO_VALUE_DEFINED_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> =
-    None;
+pub(super) const NO_VALUE_DEFINED_COST: Option<
+    fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+> = None;
 
 const ROOT: LigninSubtree = LigninSubtree::alone([0; 32]);
 
-fn version() -> &'static GroveVersion {
+pub(super) fn version() -> &'static GroveVersion {
     GroveVersion::latest()
 }
 
 /// A LigninDB store on disk, with the stand-in commit of the engine's own
 /// transaction tests.
-struct Lignin {
+pub(super) struct Lignin {
     db: Arc<Db>,
     versions: Versions,
 }
 
 impl Lignin {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let (db, versions) = Db::new(512);
         Self { db, versions }
     }
 
-    fn path(&self) -> WritePath<'_> {
+    pub(super) fn path(&self) -> WritePath<'_> {
         self.db.path(&self.versions)
     }
 
-    fn commit(&self, transaction: &WriteTxn<'_>) -> Outcome {
+    pub(super) fn commit(&self, transaction: &WriteTxn<'_>) -> Outcome {
         self.db
             .commit(&self.versions, transaction)
             .expect("the transaction commits")
@@ -83,7 +85,10 @@ fn open<'db, S: NodeStore<'db>>(store: S, tree_type: TreeType) -> Merk<S> {
         .expect("the Merk opens")
 }
 
-fn apply<'db, S: NodeStore<'db>>(merk: &mut Merk<S>, batch: &[(Vec<u8>, Op)]) -> OperationCost {
+pub(super) fn apply<'db, S: NodeStore<'db>>(
+    merk: &mut Merk<S>,
+    batch: &[(Vec<u8>, Op)],
+) -> OperationCost {
     let applied = merk.apply::<_, Vec<u8>>(batch, &[], None, version());
     applied.value.expect("the batch applies");
     applied.cost
@@ -1347,6 +1352,10 @@ impl Access for Unsteady<'_> {
         self.under.child(subtree, parent, left)
     }
 
+    fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
+        self.under.subtree(subtree)
+    }
+
     fn record(
         &self,
         keyspace: Keyspace,
@@ -1394,6 +1403,7 @@ fn a_node_whose_location_went_stale_between_two_reads_is_read_again() {
     let transaction_view = unsteady(5, 0);
     let store = LigninNodeStore::new(&transaction_view, ROOT, Mode::Deferred(None));
     assert_same_records(&records(&store, root.clone()), &expected, "read again");
+    assert_eq!(store.entry().unwrap().unwrap().root_key, root);
 
     // It is not read again for ever.
     let transaction_view = unsteady(usize::MAX, 0);

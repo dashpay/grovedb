@@ -80,8 +80,10 @@
 //!   each on to the subtree directory ([`LigninBatch::enter`],
 //!   [`LigninBatch::drop_subtree`]), and names a Merk in the host a batch
 //!   writes with it ([`LigninHost`]). Saying them is GroveDB's, which
-//!   knows the elements (MERK-04, GROVE-01, GROVE-05). A dropped subtree's
-//!   nodes are not charged here.
+//!   knows the elements (GROVE-01, GROVE-05). What the directory holds of
+//!   a subtree is read through its handle ([`LigninNodeStore::entry`]),
+//!   and a Merk is opened by it (`Merk::open_from_directory`). A dropped
+//!   subtree's nodes are not charged here.
 //! - **The clear of a subtree**, which the transaction offers beside the
 //!   drop. What a clear takes is GROVE-05's to state. Until then a Merk
 //!   loses its nodes one by one, by key, as on RocksDB.
@@ -89,7 +91,10 @@
 
 mod access;
 mod change_set;
+mod directory;
 mod feature;
+#[cfg(all(test, feature = "rocksdb_storage"))]
+mod open_tests;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
 
@@ -105,6 +110,7 @@ use self::access::{Access, Child, Location, StoredLink, StoredNode};
 pub use self::{
     access::LigninWriter,
     change_set::{LigninApplied, LigninBatch, LigninChangeSet, PreparedNode},
+    directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
 };
 use super::{NodeChange, NodeCursor, NodeStore};
 use crate::{

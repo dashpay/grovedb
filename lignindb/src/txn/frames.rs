@@ -572,8 +572,15 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// or that is below a Merk the transaction dropped or cleared
     /// (`transactions.md` CV9).
     pub(crate) fn root(&self, subtree: &Subtree) -> Result<Option<CellAddress>, TxnError> {
-        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        let entry = self.entry(subtree)?;
         Ok(entry.and_then(|entry| entry.root().map(|root| root.address)))
+    }
+
+    /// What the directory holds of `subtree`, as the transaction sees it:
+    /// nothing for a subtree that is not entered, or that is below a Merk
+    /// the transaction dropped or cleared.
+    pub(crate) fn entry(&self, subtree: &Subtree) -> Result<Option<Entry>, TxnError> {
+        Ok(self.directory.open(&*self.flat, subtree.as_bytes())?)
     }
 
     /// What `batch` does to subtrees as a whole, checked against the

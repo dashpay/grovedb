@@ -13,6 +13,7 @@ use super::{
     arena::{Arena, ArenaMark, Span},
     error::BatchError,
     key::{in_range, ranges_meet, Column, KeySet, Subtree, Unit},
+    view::SubtreeView,
     write::{
         Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, SubtreeWrite,
         ValuePut,
@@ -193,6 +194,22 @@ pub(crate) enum Own<'a> {
     Put(&'a [u8]),
     /// A put of a Merk node.
     Node(EntryId),
+}
+
+/// What a transaction's own writes say of a subtree as a whole.
+pub(crate) enum OwnSubtree<'a> {
+    /// No write of the transaction entered the subtree or took it out: it
+    /// is what the committed state has. `root` is the key of the root its
+    /// writes left its Merk with, if one of them set the root, or cleared
+    /// the subtree.
+    Unwritten { root: Option<Option<&'a [u8]>> },
+    /// The transaction entered the subtree in its operation `op`, and
+    /// this is what it holds of it since, unless a later operation took a
+    /// subtree above it ([`WriteSet::left_after`]).
+    Entered { view: SubtreeView<'a>, op: usize },
+    /// The transaction dropped the subtree, or dropped or cleared one
+    /// above it after it had written this one.
+    Gone,
 }
 
 /// The writes of one unit, by key.
@@ -960,6 +977,15 @@ impl WriteSet {
         })
     }
 
+    /// The operation in which the transaction entered `subtree` last, if
+    /// it entered it.
+    pub(crate) fn entered_in(&self, subtree: &Subtree) -> Option<usize> {
+        let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, .. } if entered == subtree);
+        (0..self.ops.len())
+            .rev()
+            .find(|op| self.op_subtrees(*op).iter().any(enters))
+    }
+
     /// Checks `batch` against what the transaction has written: the data
     /// column of a subtree holds the nodes of a Merk or flat records, and
     /// not both (ST1).
@@ -1009,6 +1035,78 @@ impl WriteSet {
             }
         }
         None
+    }
+
+    /// What the transaction's writes say of `subtree` as a whole: whether
+    /// they entered it or took it out, and the root they left its Merk
+    /// with. It is what a transaction with no frames answers from, as
+    /// [`Self::rooted`] is.
+    pub(crate) fn subtree(&self, subtree: &Subtree) -> OwnSubtree<'_> {
+        let mut root: Option<Option<&[u8]>> = None;
+        for op in (0..self.ops.len()).rev() {
+            // In one operation the change sets come last, the enters
+            // before them, and the drops and the clears first.
+            let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
+            if root.is_none() {
+                let set =
+                    |merk: &MerkEntry| (merk.subtree == *subtree).then_some(merk.root).flatten();
+                let stated = self.merks[merks_from..merks_to].iter().rev().find_map(set);
+                root = stated.map(|root| root.map(|key| self.arena.get(key)));
+            }
+            let named = self.op_subtrees(op);
+            let entered = named.iter().rev().find_map(|entry| match entry {
+                SubtreeEntry::Enter {
+                    subtree: entered,
+                    tree_type,
+                    host,
+                } if entered == subtree => Some((*tree_type, *host)),
+                _ => None,
+            });
+            if let Some((tree_type, host)) = entered {
+                let view = SubtreeView {
+                    root_key: root.flatten(),
+                    tree_type: self.arena.get(tree_type),
+                    host: host.map(|(subtree, key, position)| HostPut {
+                        subtree,
+                        key: self.arena.get(key),
+                        position,
+                    }),
+                };
+                return OwnSubtree::Entered { view, op };
+            }
+            // What the operation wrote of a subtree below one that it
+            // dropped or cleared went with it: the entry of the drop or the
+            // clear names it.
+            let before = |bound: usize| self.leaving.partition_point(|id| (*id as usize) < bound);
+            let mut cut = (self.leaving[before(entries_from)..before(entries_to)].iter())
+                .flat_map(|id| Self::cut(&self.arena, &self.entries[*id as usize]));
+            let dropped = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Drop(named) if named == subtree);
+            if named.iter().any(dropped) || cut.any(|cut| cut == *subtree) {
+                return OwnSubtree::Gone;
+            }
+            let cleared = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Clear(named) if named == subtree);
+            if named.iter().any(cleared) {
+                // A cleared Merk has no node until a later write gives it
+                // one.
+                root = root.or(Some(None));
+            }
+        }
+        OwnSubtree::Unwritten { root }
+    }
+
+    /// The subtrees that the operations after `op` dropped or cleared,
+    /// oldest first.
+    ///
+    /// A subtree that the transaction entered and has not written is in
+    /// the entry of no drop: whether it went with a subtree above it is
+    /// asked of these.
+    pub(crate) fn left_after(&self, op: usize) -> Vec<Subtree> {
+        let later = (op + 1..self.ops.len()).flat_map(|op| self.op_subtrees(op));
+        let left = later.filter_map(|entry| match entry {
+            SubtreeEntry::Drop(subtree) | SubtreeEntry::Clear(subtree) => Some(*subtree),
+            SubtreeEntry::Enter { .. } => None,
+        });
+        left.collect()
     }
 
     /// The first key of the range delete `id`, and the key it ends before.

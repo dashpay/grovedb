@@ -12,7 +12,7 @@ use lignin_tree::{
 };
 
 use super::{
-    model::{self, value, OwnedBatch, OwnedMerk, OwnedSubtree},
+    model::{self, value, OwnedBatch, OwnedMerk, OwnedSubtree, Val},
     store::{Db, Outcome, Rng, ENTERED, TREE_TYPE},
     *,
 };
@@ -1266,4 +1266,812 @@ fn a_new_root_in_the_cell_a_carried_root_left_keeps_both_merks_whole() {
         seen.0 > 0,
         "no write gave a Merk its root in the cell a carried root left"
     );
+}
+
+/// What a transaction is shown of a subtree: the key of its root, its
+/// tree type and its host.
+type Shown = Option<(Option<Vec<u8>>, Vec<u8>, Option<(Subtree, Vec<u8>, u8)>)>;
+
+fn shown_of(view: Option<SubtreeView<'_>>) -> Shown {
+    view.map(|view| {
+        let host = (view.host).map(|host| (host.subtree, host.key.to_vec(), host.position));
+        (
+            view.root_key.map(<[u8]>::to_vec),
+            view.tree_type.to_vec(),
+            host,
+        )
+    })
+}
+
+fn shown(tx: &Tx<'_>, name: u8) -> Shown {
+    (tx.txn.subtree(model::subtree(name), shown_of)).expect("the directory is read")
+}
+
+/// The key of the root of the Merk `name`, as the model of `tx` has it.
+fn model_root(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Option<Vec<u8>> {
+    let unit = Unit::data(model::subtree(name));
+    let view = tx.model.borrow().view(&world.model.records, unit);
+    model::records(&Committed::items(&view)).0
+}
+
+/// A subtree that stands alone, with the root its Merk has for `tx`.
+fn alone(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Shown {
+    Some((model_root(world, tx, name), TREE_TYPE.to_vec(), None))
+}
+
+/// Checks that a transaction with frames and one that serves its records
+/// by key are shown the same of every subtree of `names`.
+fn same<'s>(world: &World<'s>, framed: &Tx<'s>, by_key: &Tx<'s>, names: &[u8], at: &str) {
+    for name in names {
+        assert_eq!(shown(framed, *name), shown(by_key, *name), "{name}, {at}");
+    }
+    assert!(framed.txn.stats().base.is_some(), "frames, {at}");
+    assert_eq!(by_key.txn.stats().base, None, "no frames, {at}");
+    world.check(framed);
+    world.check(by_key);
+}
+
+/// Applies the batch that `batch` makes for each of `txs` to it.
+fn both<'s>(
+    world: &World<'s>,
+    txs: [&Tx<'s>; 2],
+    batch: impl Fn(&World<'s>, &Tx<'s>) -> OwnedBatch,
+) {
+    for tx in txs {
+        (world.apply(tx, &batch(world, tx))).expect("the batch is applied");
+    }
+}
+
+/// The open by prefix (`lignin_tree::directory`): a transaction is shown
+/// what the directory holds of a subtree, with its own enters, drops,
+/// clears and roots in it, and the same whether it has frames or serves
+/// its records by key.
+#[test]
+fn a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it() {
+    const NEW: u8 = ENTERED + 12;
+    const HOSTED: u8 = ENTERED + 13;
+    const UPPER: u8 = ENTERED + 14;
+    const MIDDLE: u8 = ENTERED + 15;
+    const LOWER: u8 = ENTERED + 16;
+    const NESTED: u8 = ENTERED + 17;
+    let names = [
+        1, 4, 5, OUTER, INNER, NEW, HOSTED, UPPER, MIDDLE, LOWER, NESTED,
+    ];
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let below_outer = Some((model::subtree(OUTER), b"host".to_vec(), 0));
+
+    // A transaction that has written nothing reads the committed entries,
+    // and none where no subtree is entered.
+    let tx = world.begin();
+    assert_eq!(shown(&tx, OUTER), None);
+    assert_eq!(shown(&tx, 1), Some((None, TREE_TYPE.to_vec(), None)));
+    // Its own enters and roots are in what it is shown, and in nothing
+    // another transaction is shown before it commits.
+    let reader = world.begin();
+    planted(&world, &tx);
+    assert!(model_root(&world, &tx, OUTER).is_some());
+    assert_eq!(shown(&tx, OUTER), alone(&world, &tx, OUTER));
+    let inner = model_root(&world, &tx, INNER);
+    assert!(inner.is_some());
+    assert_eq!(
+        shown(&tx, INNER),
+        Some((inner.clone(), TREE_TYPE.to_vec(), below_outer.clone()))
+    );
+    assert_eq!((shown(&reader, OUTER), shown(&reader, INNER)), (None, None));
+    // A scope reads what its transaction does. The entry of a Merk is of
+    // the Merk's unit: a read outside the scopes is refused where an open
+    // scope writes that unit, and nowhere else.
+    world.edit(&tx, 5, |items| {
+        for index in 0..5u8 {
+            items.insert(vec![b'k', index], vec![index; 20]);
+        }
+    });
+    world.edit(&tx, 4, |items| {
+        drop(items.insert(b"solo".to_vec(), vec![4; 20]))
+    });
+    let scope = tx.txn.scope().expect("a scope");
+    let through_inner = Some((inner.clone(), TREE_TYPE.to_vec(), below_outer.clone()));
+    let through = scope.subtree(model::subtree(INNER), shown_of);
+    assert_eq!(through.expect("the directory is read"), through_inner);
+    let outside = tx.txn.subtree(model::subtree(INNER), shown_of);
+    assert_eq!(outside.expect("a unit that is only read"), through_inner);
+    const CLAIMED: u8 = ENTERED + 19;
+    (subtrees(vec![enter(CLAIMED)]).with(|batch| scope.apply(batch))).expect("an enter");
+    assert_eq!(
+        (scope.subtree(model::subtree(CLAIMED), shown_of)).expect("its own write"),
+        Some((None, TREE_TYPE.to_vec(), None))
+    );
+    let outside = tx.txn.subtree(model::subtree(CLAIMED), shown_of);
+    assert!(
+        matches!(outside, Err(TxnError::ScopeOverlap { unit }) if unit == Unit::data(model::subtree(CLAIMED)))
+    );
+    scope.rollback();
+    assert_eq!(shown(&tx, CLAIMED), None);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    assert_eq!(
+        shown(&reader, INNER),
+        Some((inner, TREE_TYPE.to_vec(), below_outer.clone()))
+    );
+
+    // Two transactions make the same writes. One keeps its frames. The
+    // other has a write that a commit outside meets, so it has no frames
+    // and answers from its write set over the committed directory.
+    let framed = world.begin();
+    let by_key = world.begin();
+    world.write(&by_key, vec![put(aux(1), b"met", b"1")]);
+    let met = OwnedBatch {
+        records: vec![put(aux(1), b"met", b"2")],
+        ..OwnedBatch::default()
+    };
+    world.write_outside(&met, &[&framed, &by_key]);
+    let fresh = |items: &[(&[u8], &[u8])]| {
+        let items = (items.iter())
+            .map(|(key, value)| (key.to_vec(), value.to_vec()))
+            .collect();
+        OwnedMerk::change(model::subtree(NEW), &BTreeMap::new(), &items)
+    };
+    // A change set gives a Merk another root.
+    let before = model_root(&world, &framed, INNER);
+    both(&world, [&framed, &by_key], |world, tx| {
+        let root = model_root(world, tx, INNER).expect("a root");
+        inner_batch(world, tx, |items| {
+            items.remove(&root);
+            for index in 0..9u8 {
+                items.insert(vec![b'n', index], vec![index; 30]);
+            }
+        })
+    });
+    let after = model_root(&world, &framed, INNER);
+    assert_ne!(before, after, "the root of the Merk is another node");
+    assert_eq!(
+        shown(&framed, INNER),
+        Some((after, TREE_TYPE.to_vec(), below_outer.clone()))
+    );
+    assert_eq!(shown(&framed, OUTER), alone(&world, &framed, OUTER));
+    same(&world, &framed, &by_key, &names, "after a change set");
+
+    // A subtree the transaction enters: with no node, and then with the
+    // root a later change set gives it.
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![enter(NEW)])
+    });
+    assert_eq!(shown(&framed, NEW), Some((None, TREE_TYPE.to_vec(), None)));
+    same(&world, &framed, &by_key, &names, "after an enter");
+    both(&world, [&framed, &by_key], |_, _| OwnedBatch {
+        merks: vec![fresh(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")])],
+        ..OwnedBatch::default()
+    });
+    assert!(model_root(&world, &framed, NEW).is_some());
+    assert_eq!(shown(&framed, NEW), alone(&world, &framed, NEW));
+    same(&world, &framed, &by_key, &names, "after the first nodes");
+
+    // A clear leaves the subtree entered with no node, and a change set
+    // in the batch of a clear gives the Merk its root.
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Clear(model::subtree(NEW))])
+    });
+    assert_eq!(shown(&framed, NEW), Some((None, TREE_TYPE.to_vec(), None)));
+    same(&world, &framed, &by_key, &names, "after a clear");
+    both(&world, [&framed, &by_key], |_, _| OwnedBatch {
+        merks: vec![fresh(&[(b"x", b"7")])],
+        subtrees: vec![OwnedSubtree::Clear(model::subtree(NEW))],
+        ..OwnedBatch::default()
+    });
+    assert_eq!(
+        shown(&framed, NEW),
+        Some((Some(b"x".to_vec()), TREE_TYPE.to_vec(), None))
+    );
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after a clear with a change set",
+    );
+
+    // A drop takes the subtree out, and an enter in the batch of a drop
+    // leaves it entered with no node.
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![enter(NEW), OwnedSubtree::Drop(model::subtree(NEW))])
+    });
+    assert_eq!(shown(&framed, NEW), Some((None, TREE_TYPE.to_vec(), None)));
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after a drop and an enter",
+    );
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Drop(model::subtree(NEW))])
+    });
+    assert_eq!(shown(&framed, NEW), None);
+    same(&world, &framed, &by_key, &names, "after a drop");
+
+    // A clear of a committed Merk leaves it entered, with no node.
+    assert!(model_root(&world, &framed, 5).is_some());
+    assert_eq!(shown(&framed, 5), alone(&world, &framed, 5));
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Clear(model::subtree(5))])
+    });
+    assert_eq!(shown(&framed, 5), Some((None, TREE_TYPE.to_vec(), None)));
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after a clear of a committed Merk",
+    );
+    both(&world, [&framed, &by_key], |world, tx| OwnedBatch {
+        merks: vec![world.merk(tx, 5, |items| {
+            drop(items.insert(b"again".to_vec(), vec![6; 20]))
+        })],
+        ..OwnedBatch::default()
+    });
+    assert_eq!(
+        shown(&framed, 5),
+        Some((Some(b"again".to_vec()), TREE_TYPE.to_vec(), None))
+    );
+    same(&world, &framed, &by_key, &names, "after a write of it");
+
+    // A change set that removes the last node of a Merk states that it
+    // has no root, with no clear: of a committed Merk, and of one the
+    // transaction wrote.
+    for name in [4, 5] {
+        assert!(shown(&framed, name).is_some_and(|(root, ..)| root.is_some()));
+        both(&world, [&framed, &by_key], |world, tx| {
+            let merk = world.merk(tx, name, |items| items.clear());
+            assert_eq!(merk.root, Some(None), "the change set states no root");
+            OwnedBatch {
+                merks: vec![merk],
+                ..OwnedBatch::default()
+            }
+        });
+        assert_eq!(shown(&framed, name), Some((None, TREE_TYPE.to_vec(), None)));
+    }
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after the last nodes went",
+    );
+
+    // A subtree that is entered and not written goes with a subtree above
+    // it that is cleared: under one the transaction entered and wrote,
+    // and under one it entered and did not write.
+    let below = |host: u8, key: &[u8]| Some((model::subtree(host), key.to_vec(), 0));
+    both(&world, [&framed, &by_key], |_, _| OwnedBatch {
+        merks: vec![OwnedMerk::change(
+            model::subtree(UPPER),
+            &BTreeMap::new(),
+            &Items::from([(b"h".to_vec(), b"tree".to_vec())]),
+        )],
+        subtrees: vec![enter(UPPER)],
+        ..OwnedBatch::default()
+    });
+    both(&world, [&framed, &by_key], |world, tx| {
+        let middle = OwnedMerk::change(
+            model::subtree(MIDDLE),
+            &BTreeMap::new(),
+            &Items::from([(b"k".to_vec(), b"tree".to_vec())]),
+        );
+        let mut upper = world.merk(tx, UPPER, |items| {
+            drop(items.insert(b"h".to_vec(), b"a tree".to_vec()))
+        });
+        (upper.hosted).insert(b"h".to_vec(), vec![model::subtree(MIDDLE)]);
+        OwnedBatch {
+            merks: vec![middle, upper],
+            subtrees: vec![hosted(MIDDLE, UPPER, b"h")],
+            ..OwnedBatch::default()
+        }
+    });
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![hosted(LOWER, MIDDLE, b"k")])
+    });
+    assert_eq!(
+        shown(&framed, MIDDLE),
+        Some((Some(b"k".to_vec()), TREE_TYPE.to_vec(), below(UPPER, b"h")))
+    );
+    assert_eq!(
+        shown(&framed, LOWER),
+        Some((None, TREE_TYPE.to_vec(), below(MIDDLE, b"k")))
+    );
+    same(&world, &framed, &by_key, &names, "after the enters below");
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Clear(model::subtree(UPPER))])
+    });
+    assert_eq!(
+        shown(&framed, UPPER),
+        Some((None, TREE_TYPE.to_vec(), None))
+    );
+    assert_eq!(
+        (shown(&framed, MIDDLE), shown(&framed, LOWER)),
+        (None, None)
+    );
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after the clear above them",
+    );
+
+    // And under a committed subtree, which is dropped below.
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![hosted(HOSTED, OUTER, b"left")])
+    });
+    assert_eq!(
+        shown(&framed, HOSTED),
+        Some((None, TREE_TYPE.to_vec(), below(OUTER, b"left")))
+    );
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![hosted(NESTED, INNER, b"n\x00")])
+    });
+    assert_eq!(
+        shown(&framed, NESTED),
+        Some((None, TREE_TYPE.to_vec(), below(INNER, b"n\x00")))
+    );
+    same(&world, &framed, &by_key, &names, "after an enter below");
+
+    // A drop takes the subtrees below with it: the one the transaction
+    // had written, and for a transaction that has not written it the
+    // committed one.
+    let unwritten = world.begin();
+    world.write(&unwritten, vec![put(aux(1), b"met", b"3")]);
+    let met = OwnedBatch {
+        records: vec![put(aux(1), b"met", b"4")],
+        ..OwnedBatch::default()
+    };
+    world.write_outside(&met, &[&framed, &by_key, &unwritten]);
+    assert_eq!(
+        shown(&unwritten, INNER),
+        Some((
+            model_root(&world, &unwritten, INNER),
+            TREE_TYPE.to_vec(),
+            below_outer.clone()
+        ))
+    );
+    assert_eq!(unwritten.txn.stats().base, None);
+    drop_outer(&world, &unwritten);
+    assert_eq!(
+        (shown(&unwritten, OUTER), shown(&unwritten, INNER)),
+        (None, None)
+    );
+    for tx in [&framed, &by_key] {
+        drop_outer(&world, tx);
+    }
+    assert_eq!((shown(&framed, OUTER), shown(&framed, INNER)), (None, None));
+    assert_eq!(
+        (shown(&framed, HOSTED), shown(&framed, NESTED)),
+        (None, None)
+    );
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after the drop of the subtree above",
+    );
+
+    // The transaction with frames commits what it wrote, and the next
+    // reader is shown the same.
+    let expected: Vec<Shown> = names.iter().map(|name| shown(&framed, *name)).collect();
+    let others = [&by_key, &unwritten];
+    assert!(matches!(
+        world.commit(framed, &others),
+        Outcome::Committed(_)
+    ));
+    let reader = world.begin();
+    let found: Vec<Shown> = names.iter().map(|name| shown(&reader, *name)).collect();
+    assert_eq!(found, expected);
+    world.check_committed();
+
+    // A subtree that left with one above it stays out when the subtree
+    // that hosted it is entered again, under another host: what is asked
+    // is where its host was when the drop came, and not where it is now.
+    const ABOVE: u8 = ENTERED + 20;
+    const HOST: u8 = ENTERED + 21;
+    const UNDER: u8 = ENTERED + 22;
+    let names = [5, ABOVE, HOST, UNDER];
+    let tx = world.begin();
+    let batch = OwnedBatch {
+        merks: vec![OwnedMerk::change(
+            model::subtree(ABOVE),
+            &BTreeMap::new(),
+            &Items::from([(b"h".to_vec(), b"tree".to_vec())]),
+        )],
+        subtrees: vec![enter(ABOVE)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree above");
+    let host = OwnedMerk::change(
+        model::subtree(HOST),
+        &BTreeMap::new(),
+        &Items::from([(b"k".to_vec(), b"tree".to_vec())]),
+    );
+    let mut above = world.merk(&tx, ABOVE, |items| {
+        drop(items.insert(b"h".to_vec(), b"a tree".to_vec()))
+    });
+    (above.hosted).insert(b"h".to_vec(), vec![model::subtree(HOST)]);
+    let batch = OwnedBatch {
+        merks: vec![host, above],
+        subtrees: vec![hosted(HOST, ABOVE, b"h")],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree that hosts");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let framed = world.begin();
+    let by_key = world.begin();
+    world.write(&by_key, vec![put(aux(1), b"met", b"5")]);
+    let met = OwnedBatch {
+        records: vec![put(aux(1), b"met", b"6")],
+        ..OwnedBatch::default()
+    };
+    world.write_outside(&met, &[&framed, &by_key]);
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![hosted(UNDER, HOST, b"k")])
+    });
+    assert_eq!(
+        shown(&framed, UNDER),
+        Some((None, TREE_TYPE.to_vec(), below(HOST, b"k")))
+    );
+    same(&world, &framed, &by_key, &names, "after the enter");
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Drop(model::subtree(ABOVE))])
+    });
+    assert_eq!((shown(&framed, HOST), shown(&framed, UNDER)), (None, None));
+    same(&world, &framed, &by_key, &names, "after the drop above");
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![hosted(HOST, 5, b"again")])
+    });
+    assert_eq!(
+        shown(&framed, HOST),
+        Some((None, TREE_TYPE.to_vec(), below(5, b"again")))
+    );
+    assert_eq!(shown(&framed, UNDER), None);
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after the host is entered again",
+    );
+
+    // A subtree that one batch enters with the subtree of its host stays
+    // when a subtree beside them is dropped.
+    const PAIR_HOST: u8 = ENTERED + 23;
+    const PAIR: u8 = ENTERED + 24;
+    both(&world, [&framed, &by_key], |_, _| {
+        let mut host = OwnedMerk::change(
+            model::subtree(PAIR_HOST),
+            &BTreeMap::new(),
+            &Items::from([(b"k".to_vec(), b"tree".to_vec())]),
+        );
+        (host.hosted).insert(b"k".to_vec(), vec![model::subtree(PAIR)]);
+        OwnedBatch {
+            merks: vec![host],
+            subtrees: vec![enter(PAIR_HOST), hosted(PAIR, PAIR_HOST, b"k")],
+            ..OwnedBatch::default()
+        }
+    });
+    both(&world, [&framed, &by_key], |_, _| {
+        subtrees(vec![OwnedSubtree::Drop(model::subtree(3))])
+    });
+    assert_eq!(shown(&framed, 3), None);
+    assert_eq!(
+        shown(&framed, PAIR),
+        Some((None, TREE_TYPE.to_vec(), below(PAIR_HOST, b"k")))
+    );
+    let names = [3, PAIR_HOST, PAIR];
+    same(&world, &framed, &by_key, &names, "after a drop beside them");
+}
+
+/// The element that hosts a subtree of a random run: the name of the
+/// subtree it is in, and its key.
+type HostedBy = Option<(u8, Vec<u8>)>;
+
+/// What a random run knows of the subtrees its two transactions hold: the
+/// element that hosts each one, and the items of its Merk.
+#[derive(Debug, Clone, Default)]
+struct Held {
+    live: BTreeMap<u8, (HostedBy, Items)>,
+}
+
+impl Held {
+    fn host(&self, name: u8) -> Option<(Subtree, Vec<u8>, u8)> {
+        let (host, _) = &self.live[&name];
+        (host.as_ref()).map(|(host, key)| (model::subtree(*host), key.clone(), 0))
+    }
+
+    fn shown(&self, name: u8) -> Shown {
+        let (_, items) = self.live.get(&name)?;
+        Some((model::records(items).0, TREE_TYPE.to_vec(), self.host(name)))
+    }
+
+    /// The subtrees below `name`, at any depth.
+    fn below(&self, name: u8) -> Vec<u8> {
+        let mut below = vec![name];
+        let mut at = 0;
+        while at < below.len() {
+            for (other, (host, _)) in &self.live {
+                let hosted = host.as_ref().is_some_and(|(host, _)| *host == below[at]);
+                if hosted && !below.contains(other) {
+                    below.push(*other);
+                }
+            }
+            at += 1;
+        }
+        below.split_off(1)
+    }
+
+    /// Takes out what is below `name`, and its items: a clear, and the
+    /// first half of a drop.
+    fn empty(&mut self, name: u8) {
+        if self.live[&name].1.is_empty() {
+            return;
+        }
+        for below in self.below(name) {
+            self.live.remove(&below);
+        }
+        self.live.get_mut(&name).expect("a live subtree").1.clear();
+    }
+
+    /// The change set that makes of the Merk `name` the Merk `edit` leaves,
+    /// which this takes in. A Merk under an element is written without its
+    /// host, so it is anchored.
+    fn change(&mut self, name: u8, edit: impl FnOnce(&mut Items)) -> OwnedMerk {
+        let (host, items) = self.live.get_mut(&name).expect("a live subtree");
+        let view = (model::records(items).1.into_iter())
+            .map(|(key, node)| (key, Val::Node(node)))
+            .collect();
+        edit(items);
+        let mut merk = OwnedMerk::change(model::subtree(name), &view, items);
+        merk.anchored = host.is_some();
+        merk
+    }
+}
+
+/// One random run, and how many answers it compared while one of the two
+/// transactions had no frames: of subtrees that are entered, and of
+/// subtrees that are not.
+fn random_run(seed: u64) -> (usize, usize) {
+    const POOL: [u8; 10] = [
+        20,
+        21,
+        OUTER,
+        INNER,
+        ENTERED + 30,
+        ENTERED + 31,
+        ENTERED + 32,
+        ENTERED + 33,
+        ENTERED + 34,
+        ENTERED + 35,
+    ];
+    const STEPS: usize = 70;
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(seed);
+
+    // The committed state: a Merk with one below it, as `planted` makes
+    // them, and two Merks of the store that have no node.
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    let mut held = Held::default();
+    let outer = [
+        (b"host".to_vec(), b"tree".to_vec()),
+        (b"left".to_vec(), vec![1; 40]),
+        (b"right".to_vec(), vec![2; 300]),
+    ];
+    let inner = [
+        (b"one".to_vec(), vec![3; 20]),
+        (b"two".to_vec(), vec![4; 20]),
+    ];
+    (held.live).insert(OUTER, (None, Items::from(outer)));
+    (held.live).insert(INNER, (Some((OUTER, b"host".to_vec())), Items::from(inner)));
+    held.live.insert(20, (None, Items::new()));
+    held.live.insert(21, (None, Items::new()));
+
+    // One transaction keeps its frames. The other has a write that a
+    // commit outside meets at some step, and serves its records by key
+    // from there.
+    let framed = world.begin();
+    let by_key = world.begin();
+    world.write(&framed, vec![put(aux(2), b"own", b"1")]);
+    world.write(&by_key, vec![put(aux(1), b"met", b"1")]);
+    // A third makes its writes through a scope that is opened beside
+    // another: they are kept in its write set, and its frames do not show
+    // them until the scope merges, before each mark and each rollback.
+    let beside = world.begin();
+    world.write(&beside, vec![put(aux(2), b"own", b"1")]);
+    let open = || {
+        let idle = beside.txn.scope().expect("a scope");
+        let writer = beside.txn.scope().expect("a scope beside it");
+        assert!(idle.is_laid_out() && !writer.is_laid_out());
+        (idle, writer)
+    };
+    let mut scopes = Some(open());
+    let met_at = rng.below(STEPS / 3);
+    let mut marks: Vec<(Mark, Mark, Mark, Held)> = Vec::new();
+    let (mut entered, mut gone, mut unlaid) = (0, 0, 0);
+    for step in 0..STEPS {
+        if step == met_at {
+            let met = OwnedBatch {
+                records: vec![put(aux(1), b"met", b"2")],
+                ..OwnedBatch::default()
+            };
+            world.write_outside(&met, &[]);
+        }
+        let live: Vec<u8> = held.live.keys().copied().collect();
+        let pick = |rng: &mut Rng, from: &[u8]| from[rng.below(from.len())];
+        let mut batch = OwnedBatch::default();
+        // With no subtree to write, one is entered.
+        let what = match live.is_empty() {
+            true => 0,
+            false => rng.below(100),
+        };
+        let at = format!("seed {seed}, step {step}, {what}");
+        match what {
+            // A subtree is entered under an element, which the batch
+            // writes, or with no host.
+            0..30 => {
+                let free: Vec<u8> = (POOL.into_iter())
+                    .filter(|name| !held.live.contains_key(name))
+                    .collect();
+                if free.is_empty() {
+                    continue;
+                }
+                let name = pick(&mut rng, &free);
+                let hosted = !live.is_empty() && !rng.chance(15);
+                let host = hosted.then(|| pick(&mut rng, &live));
+                let host = host.map(|host| (host, vec![b'h', name]));
+                if let Some((host, key)) = &host {
+                    let mut merk = held.change(*host, |items| {
+                        drop(items.insert(key.clone(), b"tree".to_vec()))
+                    });
+                    (merk.hosted).insert(key.clone(), vec![model::subtree(name)]);
+                    batch.merks.push(merk);
+                }
+                held.live.insert(name, (host, Items::new()));
+                let entered = OwnedSubtree::Enter(model::subtree(name), held.host(name));
+                batch.subtrees.push(entered);
+            }
+            // A Merk is written: nodes that host nothing come and go.
+            30..55 => {
+                let name = pick(&mut rng, &live);
+                let merk = held.change(name, |items| {
+                    for _ in 0..1 + rng.below(3) {
+                        let key = vec![b'n', rng.below(7) as u8];
+                        match rng.chance(30) {
+                            true => drop(items.remove(&key)),
+                            false => drop(items.insert(key, vec![rng.below(250) as u8; 12])),
+                        }
+                    }
+                });
+                if merk.nodes.is_empty() && merk.removed.is_empty() {
+                    continue;
+                }
+                batch.merks.push(merk);
+            }
+            // A subtree is cleared.
+            55..67 => {
+                let name = pick(&mut rng, &live);
+                held.empty(name);
+                let cleared = OwnedSubtree::Clear(model::subtree(name));
+                batch.subtrees.push(cleared);
+            }
+            // A subtree is dropped, with the element that hosted it, or
+            // dropped and entered again in one batch.
+            67..88 => {
+                let name = pick(&mut rng, &live);
+                held.empty(name);
+                let dropped = OwnedSubtree::Drop(model::subtree(name));
+                if what < 80 {
+                    let (host, _) = held.live.remove(&name).expect("a live subtree");
+                    if let Some((host, key)) = host {
+                        let merk = held.change(host, |items| drop(items.remove(&key)));
+                        batch.merks.push(merk);
+                    }
+                } else {
+                    let entered = OwnedSubtree::Enter(model::subtree(name), held.host(name));
+                    batch.subtrees.push(entered);
+                }
+                batch.subtrees.push(dropped);
+            }
+            // A place to go back to, and a rollback to one.
+            88..94 => {
+                let (idle, writer) = scopes.take().expect("the scopes");
+                writer.merge();
+                idle.merge();
+                marks.push((
+                    framed.txn.mark(),
+                    by_key.txn.mark(),
+                    beside.txn.mark(),
+                    held.clone(),
+                ));
+                scopes = Some(open());
+                continue;
+            }
+            _ => {
+                if marks.is_empty() {
+                    continue;
+                }
+                marks.truncate(1 + rng.below(marks.len()));
+                let (framed_mark, by_key_mark, beside_mark, before) = marks.pop().expect("a mark");
+                assert!(framed.txn.rewind(framed_mark) && by_key.txn.rewind(by_key_mark));
+                let (idle, writer) = scopes.take().expect("the scopes");
+                writer.merge();
+                idle.merge();
+                assert!(beside.txn.rewind(beside_mark));
+                scopes = Some(open());
+                held = before;
+            }
+        }
+        if !batch.merks.is_empty() || !batch.subtrees.is_empty() {
+            for tx in [&framed, &by_key] {
+                let scope = tx.txn.scope().expect("a scope");
+                let applied = batch.with(|batch| scope.apply(batch));
+                scope.merge();
+                if let Err(error) = applied {
+                    panic!("{at}: {error}, {batch:?}");
+                }
+            }
+            let (_, writer) = scopes.as_ref().expect("the scopes");
+            if let Err(error) = batch.with(|batch| writer.apply(batch)) {
+                panic!("{at}, beside: {error}, {batch:?}");
+            }
+        }
+        let (_, writer) = scopes.as_ref().expect("the scopes");
+        assert!(!writer.is_laid_out(), "{at}");
+        for name in POOL {
+            let expected = held.shown(name);
+            assert_eq!(shown(&framed, name), expected, "{name} with frames, {at}");
+            assert_eq!(shown(&by_key, name), expected, "{name} by key, {at}");
+            let through = writer.subtree(model::subtree(name), shown_of);
+            let through = through.expect("the directory is read");
+            assert_eq!(through, expected, "{name} beside a scope, {at}");
+            unlaid += 1;
+            if step >= met_at {
+                entered += usize::from(expected.is_some());
+                gone += usize::from(expected.is_none());
+            }
+        }
+        assert!(beside.txn.stats().base.is_some(), "frames beside, {at}");
+        assert!(framed.txn.stats().base.is_some(), "frames, {at}");
+        if step >= met_at {
+            assert_eq!(by_key.txn.stats().base, None, "no frames, {at}");
+        }
+    }
+    // The scope's writes are laid out when it merges, and the frames then
+    // show what it was shown.
+    let (idle, writer) = scopes.take().expect("the scopes");
+    writer.merge();
+    idle.merge();
+    for name in POOL {
+        assert_eq!(shown(&beside, name), held.shown(name), "{name}, merged");
+    }
+    assert!(unlaid > STEPS);
+    (entered, gone)
+}
+
+/// The open by prefix of a transaction that serves its records by key,
+/// and of a scope whose writes are not laid out, is the open of a
+/// transaction that has its frames: three transactions are taken through
+/// the same random enters, writes, clears, drops and rollbacks, one of
+/// them met by a commit outside and one writing through a scope that was
+/// opened beside another, and each shows of every subtree what the run's
+/// own account of them has.
+#[test]
+fn a_transaction_with_no_frames_opens_the_subtrees_one_with_frames_opens() {
+    let (mut entered, mut gone) = (0, 0);
+    for seed in 900..960 {
+        let compared = random_run(seed);
+        entered += compared.0;
+        gone += compared.1;
+    }
+    println!("{entered} answers of entered subtrees, {gone} of subtrees that are not");
+    assert!(entered > 5_000 && gone > 5_000);
 }
