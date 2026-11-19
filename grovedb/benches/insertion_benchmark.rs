@@ -1,25 +1,25 @@
 //! Insertion Benchmark
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use criterion::{criterion_group, criterion_main, Criterion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb::{Element, GroveDb};
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use rand::prelude::*;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use tempfile::TempDir;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const N_ITEMS: usize = 10_000;
 
 const EMPTY_PATH: SubtreePath<'static, [u8; 0]> = SubtreePath::empty();
 
 /// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
 /// without a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -57,7 +57,7 @@ pub fn insertion_benchmark_without_transaction(c: &mut Criterion) {
 
 /// Benchmark function to insert '''N_ITEMS''' key-values into an empty tree
 /// with a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -96,7 +96,7 @@ pub fn insertion_benchmark_with_transaction(c: &mut Criterion) {
 }
 
 /// Benchmark function to insert 10 root leaves without a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -122,7 +122,7 @@ pub fn root_leaf_insertion_benchmark_without_transaction(c: &mut Criterion) {
 }
 
 /// Benchmark function to insert 10 root leaves with a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -151,7 +151,7 @@ pub fn root_leaf_insertion_benchmark_with_transaction(c: &mut Criterion) {
 
 /// Benchmark function to insert a subtree nested within 10 higher subtrees
 /// and insert key-values into it without a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -193,7 +193,7 @@ pub fn deeply_nested_insertion_benchmark_without_transaction(c: &mut Criterion) 
 
 /// Benchmark function to insert a subtree nested within 10 higher subtrees
 /// and insert key-values into it with a transaction
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().unwrap();
@@ -235,7 +235,7 @@ pub fn deeply_nested_insertion_benchmark_with_transaction(c: &mut Criterion) {
     });
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_group!(
     benches,
     insertion_benchmark_without_transaction,
@@ -245,5 +245,5 @@ criterion_group!(
     deeply_nested_insertion_benchmark_without_transaction,
     deeply_nested_insertion_benchmark_with_transaction,
 );
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_main!(benches);

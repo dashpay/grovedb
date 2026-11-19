@@ -72,22 +72,27 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
 [[bench]]
 name = "insertion_benchmark"
 harness = false
+required-features = ["rocksdb_storage"]
 
 [[bench]]
 name = "proof_generation_benchmark"
 harness = false
+required-features = ["rocksdb_storage"]
 
 [[bench]]
 name = "branch_chunk_queries"
 harness = false
+required-features = ["rocksdb_storage"]
 
 [[bench]]
 name = "cidx_benchmark"
 harness = false
+required-features = ["rocksdb_storage"]
 
 [[bench]]
 name = "bulk_range_scan_benchmark"
 harness = false
+required-features = ["rocksdb_storage"]
 
 [features]
 default = ["full", "estimated_costs"]

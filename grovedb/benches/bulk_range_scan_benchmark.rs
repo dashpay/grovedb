@@ -13,29 +13,29 @@
 //! 4. **Full scan**: walking the entire tree page by page with proofs, the
 //!    shielded-pool-style sync flow.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb::{Element, GroveDb};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 use tempfile::TempDir;
 
 /// Total number of entries appended to the tree.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const N_ENTRIES: u32 = 4096;
 
 /// Chunk power of the tree: chunk size = 2^6 = 64 entries, so the tree holds
 /// 64 completed chunks with the buffer empty.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const CHUNK_POWER: u8 = 6;
 
 /// Size of each entry in bytes (a 32-byte commitment plus a small payload).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 const ENTRY_SIZE: usize = 96;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 fn setup_db() -> (TempDir, GroveDb) {
     let grove_version = GroveVersion::latest();
     let dir = TempDir::new().expect("cannot create temp dir");
@@ -65,7 +65,7 @@ fn setup_db() -> (TempDir, GroveDb) {
 
 /// Read one page of entries at various page sizes, starting mid-tree so the
 /// page is not chunk-aligned.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn paged_read(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db) = setup_db();
@@ -93,7 +93,7 @@ pub fn paged_read(c: &mut Criterion) {
 }
 
 /// Prove one page at various page sizes.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn paged_proof_generation(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db) = setup_db();
@@ -120,7 +120,7 @@ pub fn paged_proof_generation(c: &mut Criterion) {
 }
 
 /// Verify one page proof at various page sizes.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn paged_proof_verification(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db) = setup_db();
@@ -152,7 +152,7 @@ pub fn paged_proof_verification(c: &mut Criterion) {
 }
 
 /// Walk the entire tree with proved pages of 256 — the client sync flow.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 pub fn full_paged_scan_with_proofs(c: &mut Criterion) {
     let grove_version = GroveVersion::latest();
     let (_dir, db) = setup_db();
@@ -187,7 +187,7 @@ pub fn full_paged_scan_with_proofs(c: &mut Criterion) {
     });
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_group!(
     name = benches;
     config = Criterion::default().sample_size(10);
@@ -196,8 +196,8 @@ criterion_group!(
         paged_proof_verification,
         full_paged_scan_with_proofs
 );
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 criterion_main!(benches);
 
-#[cfg(not(feature = "minimal"))]
+#[cfg(not(feature = "rocksdb_storage"))]
 fn main() {}

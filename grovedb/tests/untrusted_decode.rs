@@ -1,5 +1,5 @@
 //! Client-visible query/proof types compose in an untrusted-only request.
-#![cfg(any(feature = "minimal", feature = "verify"))]
+#![cfg(any(feature = "engine_generic", feature = "verify"))]
 
 use bincode::{BorrowDecodeUntrusted, Decode, DecodeUntrusted, Encode};
 use grovedb::{
