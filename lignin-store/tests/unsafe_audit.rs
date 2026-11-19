@@ -6,7 +6,8 @@
 //! and the audit differ:
 //!
 //! - the keyword `unsafe` is in the files the audit lists and in no other
-//!   file of a LigninDB crate, whatever target the file belongs to
+//!   file of a LigninDB crate, whatever target the file belongs to, and in
+//!   no documentation test
 //! - every library forbids unsafe code, the two that may hold some deny it,
 //!   and the one `allow` is the one on the buffer pool's `frame` module
 //! - every unsafe block and `unsafe impl` has a `SAFETY:` comment directly
@@ -14,6 +15,8 @@
 //! - the unsafe code of the buffer pool is, site for site, what the audit's
 //!   inventory lists, and every test the inventory names exists and is not
 //!   ignored
+//! - the places of the buffer pool that hand out a way to reach a frame are
+//!   as many as the audit read
 //!
 //! It reads source text. It does not run under Miri, which has nothing to
 //! check in it.
@@ -40,12 +43,17 @@ const CACHE: &str = "lignin-store/src/cache";
 /// allow it. Every other library forbids it.
 const DENY: [&str; 2] = ["lignin-io/src/lib.rs", "lignin-store/src/lib.rs"];
 
-/// The one `allow`, and the line that follows it.
-const ALLOW: (&str, &str) = ("lignin-store/src/cache/mod.rs", "mod frame;");
+/// The file with the one `allow`, and the module it is on.
+const ALLOW: (&str, &str) = ("lignin-store/src/cache/mod.rs", "frame");
 
 /// What is scanned beside the directories of the LigninDB crates: the code
 /// another crate holds for LigninDB.
 const ALSO: [&str; 1] = ["merk/src/store/lignin"];
+
+/// What may leave a named test, or the module it is in, out of a build: the
+/// build of the tests itself, and a build for a model, where every test but
+/// the models is left out.
+const CONDITIONS: [&str; 3] = ["cfg(test)", "cfg(not(loom))", "cfg(all(test,not(loom)))"];
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -110,7 +118,7 @@ fn comment_end(chars: &[char], i: usize) -> Option<usize> {
                     break;
                 }
             }
-            Some(at.min(chars.len()))
+            Some(at)
         }
         _ => None,
     }
@@ -128,22 +136,30 @@ fn char_end(chars: &[char], i: usize) -> Option<usize> {
     }
 }
 
-/// The source with every comment and every string and character literal
-/// turned into spaces. Line breaks stay, so a place in the result is the
-/// same place in the source.
-fn blank(source: &str) -> String {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Code,
+    Comment,
+    Literal,
+}
+
+/// The source in two copies of its own shape: its code, with every comment
+/// and every string and character literal turned into spaces, and its
+/// comments, with everything else turned into spaces. Line breaks stay in
+/// both, so a line of either is the same line of the source.
+fn split(source: &str) -> (String, String) {
     let chars: Vec<char> = source.chars().collect();
-    let mut out = String::with_capacity(source.len());
+    let mut code = String::with_capacity(source.len());
+    let mut comments = String::with_capacity(source.len());
     let mut i = 0;
     while i < chars.len() {
         let c = chars[i];
-        // Where what begins here ends, and whether it is blanked.
-        let (end, blanked) = if let Some(end) = comment_end(&chars, i) {
-            (end, true)
+        let (end, part) = if let Some(end) = comment_end(&chars, i) {
+            (end, Part::Comment)
         } else if c == '"' {
-            (string_end(&chars, i), true)
+            (string_end(&chars, i), Part::Literal)
         } else if c == '\'' {
-            char_end(&chars, i).map_or((i + 1, false), |end| (end, true))
+            char_end(&chars, i).map_or((i + 1, Part::Code), |end| (end, Part::Literal))
         } else if is_ident(c) {
             let word_end = (i..chars.len())
                 .find(|&at| !is_ident(chars[at]))
@@ -154,21 +170,26 @@ fn blank(source: &str) -> String {
                 .flatten();
             let prefixed = matches!(word.as_str(), "b" | "c") && chars.get(word_end) == Some(&'"');
             match raw {
-                Some(end) => (end, true),
-                None if prefixed => (string_end(&chars, word_end), true),
-                None => (word_end, false),
+                Some(end) => (end, Part::Literal),
+                None if prefixed => (string_end(&chars, word_end), Part::Literal),
+                None => (word_end, Part::Code),
             }
         } else {
-            (i + 1, false)
+            (i + 1, Part::Code)
         };
-        out.extend(chars[i..end].iter().map(|&c| match c {
-            '\n' => '\n',
-            _ if blanked => ' ',
-            c => c,
-        }));
+        for &c in &chars[i..end] {
+            let space = if c == '\n' { '\n' } else { ' ' };
+            code.push(if part == Part::Code { c } else { space });
+            comments.push(if part == Part::Comment { c } else { space });
+        }
         i = end;
     }
-    out
+    (code, comments)
+}
+
+/// The code of a source: [`split`] without the comments.
+fn blank(source: &str) -> String {
+    split(source).0
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -177,8 +198,11 @@ enum Token {
     Punct(char),
 }
 
+/// A token and the line it is on.
+type Placed = (Token, usize);
+
 /// The words and the punctuation of a blanked source, each with its line.
-fn tokens(blanked: &str) -> Vec<(Token, usize)> {
+fn tokens(blanked: &str) -> Vec<Placed> {
     let mut tokens = Vec::new();
     let mut line = 1;
     let mut chars = blanked.chars().peekable();
@@ -197,6 +221,169 @@ fn tokens(blanked: &str) -> Vec<(Token, usize)> {
         }
     }
     tokens
+}
+
+fn is_word(tokens: &[Placed], at: usize, word: &str) -> bool {
+    matches!(tokens.get(at), Some((Token::Word(found), _)) if found == word)
+}
+
+fn is_punct(tokens: &[Placed], at: usize, punct: char) -> bool {
+    matches!(tokens.get(at), Some((Token::Punct(found), _)) if *found == punct)
+}
+
+/// Tokens as text with no spaces: `cfg(not(loom))`.
+fn render(tokens: &[Placed]) -> String {
+    tokens
+        .iter()
+        .map(|(token, _)| match token {
+            Token::Word(word) => word.clone(),
+            Token::Punct(punct) => punct.to_string(),
+        })
+        .collect()
+}
+
+/// The bracket that matches the one at `at`, which opens a group if
+/// `forward` and closes one otherwise.
+fn matching(tokens: &[Placed], at: usize, forward: bool) -> Option<usize> {
+    let pairs = [('(', ')'), ('[', ']'), ('{', '}')];
+    let Token::Punct(here) = tokens[at].0 else {
+        return None;
+    };
+    let (open, close) = pairs
+        .into_iter()
+        .find(|&(open, close)| here == if forward { open } else { close })?;
+    let mut depth = 0i64;
+    let mut walk: Box<dyn Iterator<Item = usize>> = if forward {
+        Box::new(at..tokens.len())
+    } else {
+        Box::new((0..=at).rev())
+    };
+    walk.find(|&other| {
+        if is_punct(tokens, other, open) {
+            depth += 1;
+        } else if is_punct(tokens, other, close) {
+            depth -= 1;
+        }
+        depth == 0
+    })
+}
+
+/// The outer attributes of the item whose keyword is at `at`, each as
+/// [`render`] gives it: `test`, `cfg(not(loom))`. Documentation between
+/// them is no token, and the words an item begins with (`pub(super)`,
+/// `unsafe`) are passed over.
+fn attributes_before(tokens: &[Placed], mut at: usize) -> Vec<String> {
+    let qualifiers = ["pub", "unsafe", "const", "async", "extern", "default"];
+    let mut attributes = Vec::new();
+    while at > 0 {
+        let before = at - 1;
+        let open = matching(tokens, before, false).filter(|&open| open > 0);
+        at = match open {
+            _ if qualifiers.iter().any(|word| is_word(tokens, before, word)) => before,
+            Some(open) if is_punct(tokens, before, ')') && is_word(tokens, open - 1, "pub") => {
+                open - 1
+            }
+            Some(open) if is_punct(tokens, before, ']') && is_punct(tokens, open - 1, '#') => {
+                attributes.push(render(&tokens[open + 1..before]));
+                open - 1
+            }
+            _ => break,
+        };
+    }
+    attributes
+}
+
+/// The inner attributes of a source (`#![…]`), each with the number of
+/// braces it is inside: none for an attribute of the file itself.
+fn inner_attributes(tokens: &[Placed]) -> Vec<(usize, String)> {
+    let mut depth = 0usize;
+    let mut found = Vec::new();
+    for at in 0..tokens.len() {
+        if is_punct(tokens, at, '{') {
+            depth += 1;
+        } else if is_punct(tokens, at, '}') {
+            depth = depth.saturating_sub(1);
+        } else if is_punct(tokens, at, '#') && is_punct(tokens, at + 1, '!') {
+            let close = is_punct(tokens, at + 2, '[')
+                .then(|| matching(tokens, at + 2, true))
+                .flatten();
+            if let Some(close) = close {
+                found.push((depth, render(&tokens[at + 3..close])));
+            }
+        }
+    }
+    found
+}
+
+/// Whether an attribute is a condition on the build that names the build
+/// of the tests.
+fn is_for_tests(attribute: &str) -> bool {
+    attribute.starts_with("cfg(") && attribute.split(|c| !is_ident(c)).any(|word| word == "test")
+}
+
+/// A module that is written where it is declared: the tokens of its braces,
+/// and its outer attributes.
+struct Module {
+    open: usize,
+    close: usize,
+    attributes: Vec<String>,
+}
+
+fn modules(tokens: &[Placed]) -> Vec<Module> {
+    (0..tokens.len())
+        .filter(|&at| is_word(tokens, at, "mod") && is_punct(tokens, at + 2, '{'))
+        .filter_map(|at| {
+            matching(tokens, at + 2, true).map(|close| Module {
+                open: at + 2,
+                close,
+                attributes: attributes_before(tokens, at),
+            })
+        })
+        .collect()
+}
+
+/// The tokens of a source without its test modules: the modules whose
+/// attributes name the build of the tests.
+fn library(tokens: &[Placed]) -> Vec<Placed> {
+    let tests: Vec<Module> = modules(tokens)
+        .into_iter()
+        .filter(|module| {
+            module
+                .attributes
+                .iter()
+                .any(|attribute| is_for_tests(attribute))
+        })
+        .collect();
+    let in_tests = |at: usize| {
+        tests
+            .iter()
+            .any(|module| module.open <= at && at <= module.close)
+    };
+    (0..tokens.len())
+        .filter(|&at| !in_tests(at))
+        .map(|at| tokens[at].clone())
+        .collect()
+}
+
+/// How many times the words and punctuation of `pattern` follow one another
+/// in the tokens, where they do not declare a type or a function and are
+/// not the return type before a function's body.
+fn occurrences(tokens: &[Placed], pattern: &str) -> usize {
+    let wanted = self::tokens(pattern);
+    let matches = |at: usize| {
+        wanted.iter().enumerate().all(|(offset, (token, _))| {
+            tokens.get(at + offset).map(|found| &found.0) == Some(token)
+        })
+    };
+    let declares = |at: usize| {
+        at > 0
+            && (is_word(tokens, at - 1, "struct")
+                || is_word(tokens, at - 1, "fn")
+                || (at > 1 && is_punct(tokens, at - 2, '-') && is_punct(tokens, at - 1, '>')))
+    };
+    (0..tokens.len())
+        .filter(|&at| matches(at) && !declares(at))
+        .count()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -233,15 +420,17 @@ enum Scope {
 }
 
 /// The name of a type or a trait as a header writes it: the last word
-/// before its generic arguments.
+/// outside generic arguments and before any `where`.
 fn last_name(header: &[Token]) -> String {
     let mut name = String::new();
+    let mut depth = 0;
     for token in header {
         match token {
-            Token::Punct('<') => break,
+            Token::Punct('<') => depth += 1,
+            Token::Punct('>') => depth -= 1,
             Token::Word(word) if word == "where" => break,
-            Token::Word(word) => name.clone_from(word),
-            Token::Punct(_) => {}
+            Token::Word(word) if depth == 0 => name.clone_from(word),
+            _ => {}
         }
     }
     name
@@ -257,23 +446,7 @@ fn scope_of(header: &[Token]) -> Scope {
     match header.first().and_then(word).as_deref() {
         Some("fn") => Scope::Fn(header.get(1).and_then(word).unwrap_or_default()),
         Some("impl") => {
-            let mut rest = &header[1..];
-            if rest.first() == Some(&Token::Punct('<')) {
-                let mut depth = 0;
-                let mut end = 0;
-                for (at, token) in rest.iter().enumerate() {
-                    match token {
-                        Token::Punct('<') => depth += 1,
-                        Token::Punct('>') => depth -= 1,
-                        _ => {}
-                    }
-                    if depth == 0 {
-                        end = at + 1;
-                        break;
-                    }
-                }
-                rest = &rest[end..];
-            }
+            let rest = &header[1..];
             let mut depth = 0;
             let mut split = None;
             for (at, token) in rest.iter().enumerate() {
@@ -320,16 +493,22 @@ fn sites(source: &str) -> Vec<Site> {
                     Scope::Impl { of, for_trait } => Some((of.clone(), for_trait.is_some())),
                     _ => None,
                 });
-                let function = scopes.iter().rev().find_map(|scope| match scope {
-                    Scope::Fn(name) => Some(name.clone()),
-                    _ => None,
-                });
+                let function = if kind == Kind::Fn {
+                    match tokens.get(at + 2) {
+                        Some((Token::Word(function), _)) => Some(function.clone()),
+                        _ => Some(String::new()),
+                    }
+                } else {
+                    scopes.iter().rev().find_map(|scope| match scope {
+                        Scope::Fn(name) => Some(name.clone()),
+                        _ => None,
+                    })
+                };
                 let name = match kind {
                     Kind::Impl => {
-                        let end = tokens[at..]
-                            .iter()
-                            .position(|(token, _)| *token == Token::Punct('{'))
-                            .map_or(tokens.len(), |end| at + end);
+                        let end = (at..tokens.len())
+                            .find(|&end| is_punct(&tokens, end, '{'))
+                            .unwrap_or(tokens.len());
                         let header: Vec<Token> = tokens[at + 1..end]
                             .iter()
                             .map(|(token, _)| token.clone())
@@ -343,22 +522,11 @@ fn sites(source: &str) -> Vec<Site> {
                             _ => String::from("impl"),
                         }
                     }
-                    Kind::Fn => {
-                        let function = match tokens.get(at + 2) {
-                            Some((Token::Word(function), _)) => function.clone(),
-                            _ => String::new(),
-                        };
-                        match &of {
-                            Some((of, _)) => format!("{of}::{function}"),
-                            None => function,
-                        }
-                    }
-                    Kind::Block | Kind::Other => match (&of, function) {
-                        (Some((of, _)), Some(function)) => format!("{of}::{function}"),
-                        (None, Some(function)) => function,
-                        (Some((of, _)), None) => of.clone(),
-                        (None, None) => String::new(),
-                    },
+                    _ => [of.as_ref().map(|(of, _)| of.clone()), function]
+                        .into_iter()
+                        .flatten()
+                        .collect::<Vec<_>>()
+                        .join("::"),
                 };
                 sites.push(Site {
                     name,
@@ -400,40 +568,94 @@ fn sites(source: &str) -> Vec<Site> {
     sites
 }
 
-/// What is wrong with the comments of a source's unsafe code: nothing, if
-/// every block and `unsafe impl` has a `SAFETY:` comment directly above its
-/// line, and every `unsafe fn` that is not a trait's method has a
-/// `# Safety` section in its documentation.
+/// What is wrong with the comments of a source's unsafe code. Nothing, if:
+///
+/// - every block and `unsafe impl` has a comment directly above its line,
+///   with only attributes between, one of whose lines begins `// SAFETY:`
+/// - every `unsafe fn` that is not a trait's method has a `# Safety`
+///   heading in the documentation directly above it
+/// - no two of them share a line, and so a comment
+///
+/// A line counts as a comment only if it is one in the source: text inside
+/// a string does not.
 fn undocumented(source: &str) -> Vec<String> {
-    let lines: Vec<&str> = source.lines().map(str::trim).collect();
-    let above = |line: usize, comment: &str| {
-        lines[..line - 1]
-            .iter()
+    let (code, comments) = split(source);
+    let code: Vec<&str> = code.lines().map(str::trim).collect();
+    let comments: Vec<&str> = comments.lines().map(str::trim).collect();
+    let above = |line: usize| {
+        (0..line - 1)
             .rev()
-            .skip_while(|above| above.starts_with("#["))
-            .take_while(|above| above.starts_with(comment))
-            .map(|above| above.to_string())
+            .skip_while(|&at| code[at].starts_with("#["))
+            .take_while(|&at| {
+                code[at].is_empty() && comments.get(at).is_some_and(|c| !c.is_empty())
+            })
+            .map(|at| comments[at])
             .collect::<Vec<_>>()
     };
+    let mut taken = BTreeSet::new();
     sites(source)
         .into_iter()
-        .filter(|site| match site.kind {
-            Kind::Block | Kind::Impl => !above(site.line, "//")
-                .iter()
-                .any(|comment| !comment.starts_with("///") && comment.contains("SAFETY:")),
-            Kind::Fn => {
-                !site.of_trait
-                    && !above(site.line, "///")
-                        .iter()
-                        .any(|doc| doc.contains("# Safety"))
-            }
-            Kind::Other => true,
+        .filter(|site| {
+            let alone = taken.insert(site.line);
+            let documented = match site.kind {
+                Kind::Block | Kind::Impl => above(site.line)
+                    .iter()
+                    .any(|comment| comment.starts_with("// SAFETY:")),
+                Kind::Fn => {
+                    site.of_trait
+                        || above(site.line)
+                            .iter()
+                            .any(|doc| doc.trim_end() == "/// # Safety")
+                }
+                Kind::Other => false,
+            };
+            !(alone && documented)
         })
         .map(|site| format!("line {}: {:?} {}", site.line, site.kind, site.name))
         .collect()
 }
 
+/// The code of a source's documentation tests: what its doc comments hold
+/// between code fences that rustdoc takes for Rust, line for line, and
+/// nothing else.
+fn documentation_tests(source: &str) -> String {
+    let is_rust = |info: &str| {
+        info.split(|c: char| c == ',' || c.is_whitespace())
+            .filter(|word| !word.is_empty())
+            .all(|word| {
+                let plain = ["rust", "ignore", "should_panic", "no_run", "compile_fail"];
+                plain.contains(&word) || word.starts_with("edition") || word.starts_with("ignore-")
+            })
+    };
+    // Outside a fence, or inside one that is Rust or is not.
+    let mut fence: Option<bool> = None;
+    let lines: Vec<String> = split(source)
+        .1
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            let Some(doc) = line
+                .strip_prefix("///")
+                .or_else(|| line.strip_prefix("//!"))
+            else {
+                fence = None;
+                return String::new();
+            };
+            match (doc.trim().strip_prefix("```"), fence) {
+                (Some(info), None) => fence = Some(is_rust(info)),
+                (Some(_), Some(_)) => fence = None,
+                (None, Some(true)) => return doc.to_string(),
+                (None, _) => {}
+            }
+            String::new()
+        })
+        .collect();
+    lines.join("\n")
+}
+
 /// Every `.rs` file under `directory`, by its path from the workspace root.
+/// A directory `target` that Cargo made is not source, and neither is a
+/// hidden one.
 fn rust_files(root: &Path, directory: &Path, files: &mut BTreeMap<String, String>) {
     let mut entries: Vec<_> = fs::read_dir(directory)
         .unwrap_or_else(|error| panic!("{}: {error}", directory.display()))
@@ -446,7 +668,8 @@ fn rust_files(root: &Path, directory: &Path, files: &mut BTreeMap<String, String
             .and_then(|name| name.to_str())
             .unwrap_or("");
         if path.is_dir() {
-            if name != "target" && !name.starts_with('.') {
+            let built = name == "target" && path.join("CACHEDIR.TAG").exists();
+            if !built && !name.starts_with('.') {
                 rust_files(root, &path, files);
             }
         } else if name.ends_with(".rs") {
@@ -467,29 +690,27 @@ fn rust_files(root: &Path, directory: &Path, files: &mut BTreeMap<String, String
 /// whose name begins with `lignin`, and what [`ALSO`] names.
 fn sources() -> &'static BTreeMap<String, String> {
     static SOURCES: OnceLock<BTreeMap<String, String>> = OnceLock::new();
-    SOURCES.get_or_init(read_sources)
-}
-
-fn read_sources() -> BTreeMap<String, String> {
-    let root = root();
-    let mut files = BTreeMap::new();
-    let mut crates = 0;
-    for entry in fs::read_dir(&root).expect("the workspace root") {
-        let path = entry.expect("a directory entry").path();
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("");
-        if path.is_dir() && name.starts_with("lignin") {
-            crates += 1;
-            rust_files(&root, &path, &mut files);
+    SOURCES.get_or_init(|| {
+        let root = root();
+        let mut files = BTreeMap::new();
+        let mut crates = 0;
+        for entry in fs::read_dir(&root).expect("the workspace root") {
+            let path = entry.expect("a directory entry").path();
+            let name = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("");
+            if path.is_dir() && name.starts_with("lignin") {
+                crates += 1;
+                rust_files(&root, &path, &mut files);
+            }
         }
-    }
-    assert!(crates >= 7, "the LigninDB crates are beside this one");
-    for also in ALSO {
-        rust_files(&root, &root.join(also), &mut files);
-    }
-    files
+        assert!(crates >= 7, "the LigninDB crates are beside this one");
+        for also in ALSO {
+            rust_files(&root, &root.join(also), &mut files);
+        }
+        files
+    })
 }
 
 /// The rows of one table of the audit, between `<!-- {name}:start -->` and
@@ -504,7 +725,7 @@ fn table(audit: &str, name: &str) -> Vec<Vec<String>> {
     let to = audit
         .find(&end)
         .unwrap_or_else(|| panic!("the audit has no {end}"));
-    audit[from..to]
+    let rows: Vec<Vec<String>> = audit[from..to]
         .lines()
         .filter(|line| line.starts_with("| `"))
         .map(|line| {
@@ -513,7 +734,9 @@ fn table(audit: &str, name: &str) -> Vec<Vec<String>> {
                 .map(|cell| cell.trim().to_string())
                 .collect()
         })
-        .collect()
+        .collect();
+    assert!(!rows.is_empty(), "the table `{name}` of the audit has rows");
+    rows
 }
 
 /// The names a cell holds in backticks.
@@ -551,14 +774,14 @@ fn keys(sites: &[Site]) -> Vec<String> {
 #[test]
 fn unsafe_code_is_in_the_files_the_audit_lists_and_nowhere_else() {
     let audit = audit();
-    let mut listed: BTreeSet<String> = table(&audit, "allocators")
-        .iter()
-        .map(|row| names(&row[0])[0].clone())
-        .collect();
-    assert_eq!(listed.len(), table(&audit, "allocators").len());
+    let rows = table(&audit, "allocators");
+    let mut listed: BTreeSet<String> = rows.iter().map(|row| names(&row[0])[0].clone()).collect();
+    assert_eq!(listed.len(), rows.len());
     listed.insert(FRAME.to_string());
 
-    let found: BTreeSet<String> = sources()
+    let sources = sources();
+    assert!(sources.len() > 300, "{} files were read", sources.len());
+    let found: BTreeSet<String> = sources
         .iter()
         .filter(|(_, source)| !sites(source).is_empty())
         .map(|(file, _)| file.clone())
@@ -567,6 +790,16 @@ fn unsafe_code_is_in_the_files_the_audit_lists_and_nowhere_else() {
         found, listed,
         "the files with unsafe code, against those {AUDIT} lists"
     );
+
+    // A documentation test is a target of its own, which no lint of its
+    // crate reaches.
+    for (file, source) in sources {
+        let found = sites(&documentation_tests(source));
+        assert!(
+            found.is_empty(),
+            "{file} has unsafe code in a documentation test: {found:?}"
+        );
+    }
 }
 
 /// The path a `#[path]` attribute names, from the workspace root: it is
@@ -584,16 +817,65 @@ fn resolved(file: &str, path: &str) -> String {
     parts.join("/")
 }
 
+/// Whether the source is a crate that has `#![{level}(unsafe_code)]` as an
+/// attribute of its own, and not of a module inside it.
+fn has_crate_lint(source: &str, level: &str) -> bool {
+    inner_attributes(&tokens(&blank(source))).contains(&(0, format!("{level}(unsafe_code)")))
+}
+
 /// Whether `file` is a source of a library that forbids unsafe code: the
-/// compiler then holds everything that file brings in to the lint.
+/// compiler then holds everything that file brings in to the lint. A crate
+/// with a binary beside its library is not taken for one, since a file
+/// under its `src` can be the binary's.
 fn in_a_library_that_forbids(sources: &BTreeMap<String, String>, file: &str) -> bool {
-    let binary = file.contains("/src/bin/") || file.ends_with("/src/main.rs");
-    !binary
-        && file.rfind("/src/").is_some_and(|at| {
-            sources
-                .get(&format!("{}/src/lib.rs", &file[..at]))
-                .is_some_and(|library| blank(library).contains("#![forbid(unsafe_code)]"))
+    file.rfind("/src/").is_some_and(|at| {
+        let own = |name: &str| format!("{}/src/{name}", &file[..at]);
+        !file[at..].starts_with("/src/bin/")
+            && !sources.contains_key(&own("main.rs"))
+            && sources
+                .get(&own("lib.rs"))
+                .is_some_and(|library| has_crate_lint(library, "forbid"))
+    })
+}
+
+/// Whether the token at `at` is inside an attribute.
+fn in_attribute(tokens: &[Placed], at: usize) -> bool {
+    let mut depth = 0;
+    for before in (0..at).rev() {
+        match tokens[before].0 {
+            Token::Punct(']') => depth += 1,
+            Token::Punct('[') if depth > 0 => depth -= 1,
+            Token::Punct('[') => {
+                return before > 0
+                    && (is_punct(tokens, before - 1, '#') || is_punct(tokens, before - 1, '!'));
+            }
+            Token::Punct(';' | '{' | '}') => return false,
+            _ => {}
+        }
+    }
+    false
+}
+
+/// The files that the `path` attributes of a source name, as they are
+/// written.
+fn paths(source: &str) -> Vec<String> {
+    let tokens = tokens(&blank(source));
+    let lines: Vec<&str> = source.lines().collect();
+    (0..tokens.len())
+        .filter(|&at| {
+            is_word(&tokens, at, "path")
+                && is_punct(&tokens, at + 1, '=')
+                && in_attribute(&tokens, at)
         })
+        .map(|at| {
+            let line = lines[tokens[at].1 - 1];
+            let after = &line[line.find("path").expect("the word is on its line")..];
+            names(&after.replace('"', "`"))
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| panic!("a path on the line of its attribute: {line}"))
+        })
+        .collect()
 }
 
 /// A crate can compile a file from anywhere: a module with a `#[path]`, or
@@ -604,48 +886,47 @@ fn in_a_library_that_forbids(sources: &BTreeMap<String, String>, file: &str) -> 
 #[test]
 fn everything_a_crate_compiles_is_among_the_files_that_are_read() {
     let sources = sources();
-    let mut paths = 0;
+    let mut found = 0;
     for (file, source) in sources {
         assert_eq!(
-            occurrences(source, "include!("),
+            occurrences(&tokens(&blank(source)), "include!"),
             0,
             "{file} includes a file as source, which the scan cannot follow"
         );
-        for line in source.lines() {
-            let Some(path) = line.trim().strip_prefix("#[path = \"") else {
-                continue;
-            };
-            let path = path.split('"').next().expect("a first part");
-            let target = resolved(file, path);
+        for path in paths(source) {
+            let target = resolved(file, &path);
             assert!(
                 sources.contains_key(&target) || in_a_library_that_forbids(sources, file),
                 "{file} compiles {target}, which the scan does not read"
             );
-            paths += 1;
+            found += 1;
         }
     }
     assert!(
-        paths >= 2,
+        found >= 2,
         "the two modules of `lignindb` that share a file"
     );
-    assert!(in_a_library_that_forbids(
-        sources,
-        "lignin-tree/src/node/mod.rs"
-    ));
-    assert!(!in_a_library_that_forbids(
-        sources,
-        "lignin-store/src/cache/mod.rs"
-    ));
-    assert!(!in_a_library_that_forbids(
-        sources,
-        "lignin-tree/tests/node_alloc.rs"
-    ));
-    assert!(!in_a_library_that_forbids(
-        sources,
-        "lignin-testkit/src/bin/lignin-bench.rs"
-    ));
+
+    for (file, forbids) in [
+        ("lignin-tree/src/node/mod.rs", true),
+        ("lignin-store/src/cache/mod.rs", false),
+        ("lignin-tree/tests/node_alloc.rs", false),
+        ("lignin-testkit/src/bin/lignin-bench.rs", false),
+    ] {
+        assert_eq!(in_a_library_that_forbids(sources, file), forbids, "{file}");
+    }
     assert_eq!(resolved("a/src/b/c.rs", "../d/e.rs"), "a/src/d/e.rs");
     assert_eq!(resolved("a/src/b/c.rs", "./f.rs"), "a/src/b/f.rs");
+    let written = "#[path = \"a.rs\"]\nmod a;\n#[cfg_attr(unix, path = \"b.rs\")]\nmod b;\n\
+                   fn f() { let path = \"c.rs\"; }\n// #[path = \"d.rs\"]\n";
+    assert_eq!(paths(written), ["a.rs", "b.rs"]);
+    assert_eq!(
+        occurrences(
+            &tokens("include!(\"a\"); include! { b } included!()"),
+            "include!"
+        ),
+        2
+    );
 }
 
 #[test]
@@ -653,37 +934,43 @@ fn every_library_forbids_unsafe_code_and_one_module_is_allowed_it() {
     let sources = sources();
     let mut libraries = 0;
     for (file, source) in sources {
-        let blanked = blank(source);
-        let lint = |level: &str| blanked.contains(&format!("#![{level}(unsafe_code)]"));
         if file.ends_with("src/lib.rs") {
             libraries += 1;
             if DENY.contains(&file.as_str()) {
-                assert!(lint("deny") && !lint("forbid"), "{file} denies unsafe code");
+                assert!(
+                    has_crate_lint(source, "deny") && !has_crate_lint(source, "forbid"),
+                    "{file} denies unsafe code"
+                );
             } else {
-                assert!(lint("forbid"), "{file} forbids unsafe code");
+                assert!(
+                    has_crate_lint(source, "forbid"),
+                    "{file} forbids unsafe code"
+                );
             }
         }
-        let mentions = tokens(&blanked)
-            .iter()
-            .filter(|(token, _)| *token == Token::Word(String::from("unsafe_code")))
-            .count();
-        let expected = match file.as_str() {
-            file if file.ends_with("src/lib.rs") => 1,
-            file if file == ALLOW.0 => 1,
-            _ => 0,
-        };
-        assert_eq!(mentions, expected, "{file} names the lint `unsafe_code`");
+        let expected = usize::from(file.ends_with("src/lib.rs") || file == ALLOW.0);
+        assert_eq!(
+            occurrences(&tokens(&blank(source)), "unsafe_code"),
+            expected,
+            "{file} names the lint `unsafe_code`"
+        );
     }
     assert!(libraries >= 7, "{libraries} libraries");
 
-    let module = &sources[ALLOW.0];
-    let lines: Vec<&str> = module.lines().map(str::trim).collect();
-    let at = lines
-        .iter()
-        .position(|line| *line == "#[allow(unsafe_code)]")
-        .expect("the one allow");
-    assert_eq!(lines[at + 1], ALLOW.1);
+    let module = tokens(&blank(&sources[ALLOW.0]));
+    let declared = (0..module.len())
+        .find(|&at| is_word(&module, at, "mod") && is_word(&module, at + 1, ALLOW.1))
+        .expect("the module with the unsafe code");
+    assert_eq!(attributes_before(&module, declared), ["allow(unsafe_code)"]);
     assert!(sources.contains_key(FRAME));
+
+    let nested = "mod inner {\n    #![forbid(unsafe_code)]\n}\n";
+    assert!(!has_crate_lint(nested, "forbid"));
+    assert!(has_crate_lint(
+        "//! A crate.\n\n#![forbid(unsafe_code)]\n",
+        "forbid"
+    ));
+    assert!(!has_crate_lint("// #![forbid(unsafe_code)]\n", "forbid"));
 }
 
 #[test]
@@ -720,81 +1007,75 @@ fn the_inventory_is_the_unsafe_code_of_the_buffer_pool() {
     }
 }
 
-/// A source without its test modules, which begin at the first
-/// `#[cfg(all(test` that opens a line.
-fn library(source: &str) -> &str {
-    source
-        .find("\n#[cfg(all(test")
-        .map_or(source, |tests| &source[..tests])
-}
-
-/// How many times the words and punctuation of `pattern` follow one another
-/// in the source, where they do not declare a type or a function.
-fn occurrences(source: &str, pattern: &str) -> usize {
-    let found: Vec<Token> = tokens(&blank(source))
-        .into_iter()
-        .map(|(token, _)| token)
-        .collect();
-    let wanted: Vec<Token> = tokens(pattern)
-        .into_iter()
-        .map(|(token, _)| token)
-        .collect();
-    let declares = |at: usize| {
-        at > 0 && matches!(&found[at - 1], Token::Word(word) if word == "struct" || word == "fn")
-    };
-    (0..found.len())
-        .filter(|&at| found[at..].starts_with(&wanted) && !declares(at))
-        .count()
-}
-
 #[test]
 fn a_way_to_reach_a_frame_is_handed_out_where_the_audit_read_it() {
-    let source = &sources()[FRAME];
+    let library = library(&tokens(&blank(&sources()[FRAME])));
     let rows = table(&audit(), "trusted");
-    assert_eq!(rows.len(), 6);
+    assert_eq!(rows.len(), 11);
     for row in rows {
         let pattern = &names(&row[0])[0];
         let listed: usize = row[1].parse().expect("a number of places");
         assert_eq!(
-            occurrences(library(source), pattern),
+            occurrences(&library, pattern),
             listed,
             "`{pattern}` in {FRAME}, against {AUDIT}"
         );
     }
-    assert_eq!(occurrences("struct A(u8);\nfn a() -> A { A(1) }", "A("), 1);
+
+    let count = |source: &str, pattern: &str| occurrences(&library_of(source), pattern);
+    assert_eq!(count("struct A(u8);\nfn a() -> A { A(1) }", "A("), 1);
     assert_eq!(
-        occurrences("fn set(a: u8) {}\nfn b() { set(1); set(2) }", "set("),
+        count("fn set(a: u8) {}\nfn b() { set(1); set(2) }", "set("),
         2
     );
-    let with_tests = "fn b() { A(1) }\n#[cfg(all(test, x))]\nmod t { A(2) }";
-    assert_eq!(occurrences(with_tests, "A("), 2);
-    assert_eq!(occurrences(library(with_tests), "A("), 1);
+    assert_eq!(count("fn new() -> Self { Self { a: 1 } }", "Self {"), 1);
+    let with_tests = "#[cfg(all(test, not(loom)))]\nmod early { fn t() { A(0) } }\n\
+                      fn b() { A(1) }\n#[cfg(test)]\nmod late { fn t() { A(2) } }\nmod kept { fn c() { A(3) } }";
+    assert_eq!(count(with_tests, "A("), 2);
+    assert_eq!(occurrences(&tokens(with_tests), "A("), 4);
+}
+
+fn library_of(source: &str) -> Vec<Placed> {
+    library(&tokens(&blank(source)))
 }
 
 /// Whether `name` is a test of the source that runs wherever the tests run:
-/// a function with `#[test]` above it, and nothing above it that leaves it
-/// out.
+/// a function with `#[test]`, with nothing on it, on a module it is in or
+/// on its file that ignores it or leaves it out of a build. The conditions
+/// of [`CONDITIONS`] are let through, and for the function itself only the
+/// one that leaves it out of a build for a model.
 fn is_a_test_that_runs(source: &str, name: &str) -> bool {
-    let lines: Vec<&str> = source.lines().map(str::trim).collect();
-    let opening = format!("fn {name}(");
-    lines.iter().enumerate().any(|(at, line)| {
-        line.starts_with(&opening) && {
-            let attributes: Vec<&str> = lines[..at]
-                .iter()
-                .rev()
-                .take_while(|above| above.starts_with("#["))
-                .copied()
-                .collect();
-            // A test may be left out of a build for a model, where every
-            // test but the models is. Anything else that leaves it out, or
-            // ignores it, is refused.
-            attributes.contains(&"#[test]")
-                && !attributes.iter().any(|attribute| {
-                    attribute.contains("ignore")
-                        || (attribute.contains("cfg") && *attribute != "#[cfg(not(loom))]")
-                })
-        }
-    })
+    let tokens = tokens(&blank(source));
+    let Some(at) = (0..tokens.len()).find(|&at| {
+        is_word(&tokens, at, "fn")
+            && is_word(&tokens, at + 1, name)
+            && is_punct(&tokens, at + 2, '(')
+    }) else {
+        return false;
+    };
+    let passes = |attribute: &str, conditions: &[&str]| {
+        let ignores = attribute
+            .split(|c| !is_ident(c))
+            .any(|word| word == "ignore");
+        !ignores && (!attribute.starts_with("cfg") || conditions.contains(&attribute))
+    };
+    let own = attributes_before(&tokens, at);
+    let around = modules(&tokens)
+        .into_iter()
+        .filter(|module| module.open < at && at < module.close)
+        .flat_map(|module| module.attributes)
+        .chain(
+            inner_attributes(&tokens)
+                .into_iter()
+                .map(|(_, attribute)| attribute),
+        );
+    own.iter().any(|attribute| attribute == "test")
+        && own
+            .iter()
+            .all(|attribute| passes(attribute, &CONDITIONS[1..2]))
+        && around
+            .into_iter()
+            .all(|attribute| passes(&attribute, &CONDITIONS))
 }
 
 #[test]
@@ -824,7 +1105,9 @@ fn every_test_the_inventory_names_is_a_test_that_runs() {
     // allocator, and runs under it.
     for row in table(&audit, "allocators") {
         let file = &names(&row[0])[0];
-        for name in names(row.last().expect("a row has cells")) {
+        let tests = names(row.last().expect("a row has cells"));
+        assert!(!tests.is_empty(), "{file} names a test");
+        for name in tests {
             assert!(
                 is_a_test_that_runs(&sources[file], &name),
                 "{file}: {name} is not a test"
@@ -833,45 +1116,48 @@ fn every_test_the_inventory_names_is_a_test_that_runs() {
     }
 }
 
+/// The four methods of a counting allocator, as each of them is written:
+/// the method of `System` of the same name, with the same arguments.
+const HANDED_ON: [(&str, &str); 4] = [
+    ("alloc", "unsafe { System.alloc(layout) }"),
+    ("alloc_zeroed", "unsafe { System.alloc_zeroed(layout) }"),
+    (
+        "realloc",
+        "unsafe { System.realloc(ptr, layout, new_size) }",
+    ),
+    ("dealloc", "unsafe { System.dealloc(ptr, layout) }"),
+];
+
 #[test]
 fn a_counting_allocator_only_hands_on_to_the_system_allocator() {
     let sources = sources();
-    let rows = table(&audit(), "allocators");
-    assert!(!rows.is_empty());
-    for row in rows {
+    for row in table(&audit(), "allocators") {
         let file = &names(&row[0])[0];
         assert!(
             file.contains("/tests/"),
             "{file} is a test target, not a part of its crate"
         );
         let source = &sources[file];
-        let found = sites(source);
-        let of = |kind: Kind| found.iter().filter(|site| site.kind == kind).count();
-        assert_eq!(
-            (
-                of(Kind::Impl),
-                of(Kind::Fn),
-                of(Kind::Block),
-                of(Kind::Other)
-            ),
-            (1, 4, 4, 0),
-            "{file}"
-        );
-        assert!(
-            found.iter().all(|site| match site.kind {
-                Kind::Impl => site.name == "impl GlobalAlloc for CountingAllocator",
-                _ => site.name.starts_with("CountingAllocator::"),
-            }),
-            "{file}: {found:#?}"
-        );
-        let lines: Vec<&str> = source.lines().collect();
-        for site in found.iter().filter(|site| site.kind == Kind::Block) {
-            assert!(
-                lines[site.line - 1].trim().starts_with("unsafe { System."),
-                "{file}, line {}",
-                site.line
-            );
+        let lines: Vec<&str> = source.lines().map(str::trim).collect();
+        let found: Vec<(String, Kind, &str)> = sites(source)
+            .into_iter()
+            .map(|site| (site.name, site.kind, lines[site.line - 1]))
+            .collect();
+        let mut expected = vec![(
+            String::from("impl GlobalAlloc for CountingAllocator"),
+            Kind::Impl,
+            "unsafe impl GlobalAlloc for CountingAllocator {",
+        )];
+        for (method, block) in HANDED_ON {
+            let name = format!("CountingAllocator::{method}");
+            let header = lines
+                .iter()
+                .find(|line| line.starts_with(&format!("unsafe fn {method}(")))
+                .unwrap_or_else(|| panic!("{file} has no {method}"));
+            expected.push((name.clone(), Kind::Fn, header));
+            expected.push((name, Kind::Block, block));
         }
+        assert_eq!(found, expected, "{file}");
     }
 }
 
@@ -937,10 +1223,31 @@ fn free_block() {
 }
 
 unsafe extern "C" {}
+
+fn two_on_a_line() {
+    // SAFETY: one comment for two blocks.
+    (unsafe { free() }, unsafe { free() });
+}
+
+fn under_a_string() {
+    let _text = "
+    // SAFETY: text of a string, and no comment.
+    ";
+    unsafe { free() }
+}
+
+fn far_from_its_comment() {
+    // SAFETY: of the block, with a statement between.
+    let _between = 1;
+    unsafe { free() }
+}
+
+/// # Safety is named in passing, with no section.
+unsafe fn loosely_documented() {}
 "##;
-    let found = keys(&sites(source));
+    let found = sites(source);
     assert_eq!(
-        found,
+        keys(&found),
         [
             "impl Send for Holder | unsafe impl",
             "Holder::get | unsafe fn",
@@ -954,10 +1261,17 @@ unsafe extern "C" {}
             "free | unsafe fn",
             "free_block | block 1",
             " | other",
+            "two_on_a_line | block 1",
+            "two_on_a_line | block 2",
+            "under_a_string | block 1",
+            "far_from_its_comment | block 1",
+            "loosely_documented | unsafe fn",
         ]
     );
-    let lines: Vec<usize> = sites(source).iter().map(|site| site.line).collect();
-    assert_eq!(lines[0], 12, "a place in the blanked source is its place");
+    assert_eq!(
+        found[0].line, 12,
+        "a line of the code is its line in the source"
+    );
     assert_eq!(
         undocumented(source),
         [
@@ -967,25 +1281,102 @@ unsafe extern "C" {}
             "line 46: Block Counting::alloc",
             "line 50: Fn free",
             "line 58: Other ",
+            "line 62: Block two_on_a_line",
+            "line 69: Block under_a_string",
+            "line 75: Block far_from_its_comment",
+            "line 79: Fn loosely_documented",
         ]
     );
-    assert!(is_a_test_that_runs("#[test]\nfn one() {}", "one"));
-    assert!(!is_a_test_that_runs("fn one() {}", "one"));
-    assert!(!is_a_test_that_runs(
-        "#[test]\n#[ignore]\nfn one() {}",
-        "one"
-    ));
-    assert!(!is_a_test_that_runs(
-        "#[test]\n#[cfg_attr(miri, ignore)]\nfn one() {}",
-        "one"
-    ));
-    assert!(!is_a_test_that_runs("#[test]\nfn one() {}", "on"));
-    assert!(is_a_test_that_runs(
-        "#[cfg(not(loom))]\n#[test]\nfn one() {}",
-        "one"
-    ));
-    assert!(!is_a_test_that_runs(
-        "#[cfg(target_os = \"linux\")]\n#[test]\nfn one() {}",
-        "one"
-    ));
+}
+
+#[test]
+fn the_reader_knows_a_test_that_runs_from_one_that_is_left_out() {
+    for (source, name, runs) in [
+        ("#[test]\nfn one() {}", "one", true),
+        ("fn one() {}", "one", false),
+        ("#[test]\nfn one() {}", "on", false),
+        ("#[test]\n#[ignore]\nfn one() {}", "one", false),
+        (
+            "#[ignore = \"slow\"]\n/// Documented.\n#[test]\nfn one() {}",
+            "one",
+            false,
+        ),
+        (
+            "#[test]\n#[cfg_attr(miri, ignore)]\nfn one() {}",
+            "one",
+            false,
+        ),
+        (
+            "#[cfg_attr(\n    miri,\n    ignore = \"no hard links\"\n)]\n#[test]\nfn one() {}",
+            "one",
+            false,
+        ),
+        ("#[cfg(not(loom))]\n#[test]\nfn one() {}", "one", true),
+        (
+            "#[cfg(target_os = \"linux\")]\n#[test]\nfn one() {}",
+            "one",
+            false,
+        ),
+        (
+            "#[test]\n#[should_panic(expected = \"no\")]\npub(crate) fn one() {}",
+            "one",
+            true,
+        ),
+        (
+            "#[cfg(all(test, not(loom)))]\nmod tests {\n    #[test]\n    fn one() {}\n}",
+            "one",
+            true,
+        ),
+        (
+            "#[cfg(not(miri))]\nmod tests {\n    #[test]\n    fn one() {}\n}",
+            "one",
+            false,
+        ),
+        ("#![cfg(not(miri))]\n#[test]\nfn one() {}", "one", false),
+        (
+            "#![cfg(not(loom))]\n#![allow(dead_code)]\n#[test]\nfn one() {}",
+            "one",
+            true,
+        ),
+        (
+            "#[cfg(not(miri))]\nmod other {}\n#[test]\nfn one() {}",
+            "one",
+            true,
+        ),
+    ] {
+        assert_eq!(is_a_test_that_runs(source, name), runs, "{source:?} {name}");
+    }
+}
+
+#[test]
+fn the_reader_finds_the_code_of_documentation_tests() {
+    let source = "\
+/// Prose with the word unsafe { in it }.
+///
+/// ```
+/// let x = unsafe { *pointer };
+/// ```
+///
+/// ```text
+/// unsafe { shown_as_text() }
+/// ```
+///
+/// ```no_run,edition2024
+/// unsafe fn second() {}
+/// ```
+fn documented() {}
+
+//! ```
+//! unsafe impl Send for Third {}
+//! ```
+
+// ```
+// unsafe { in_a_comment_that_is_no_documentation() }
+// ```
+";
+    let found: Vec<(Kind, usize)> = sites(&documentation_tests(source))
+        .iter()
+        .map(|site| (site.kind, site.line))
+        .collect();
+    assert_eq!(found, [(Kind::Block, 4), (Kind::Fn, 12), (Kind::Impl, 17)]);
 }

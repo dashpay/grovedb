@@ -203,8 +203,9 @@ pub(super) struct Frame {
 // atomics and a lock. Its content, behind `bytes` and `attached`, is reached
 // only through the unsafe methods below, whose callers keep rules A4 and A5,
 // so no thread writes content that another can read or write.
-unsafe impl Send for Frame {}
-// SAFETY: as above.
+//
+// A frame is not `Send`: nothing moves one to another thread. It stays
+// where it was allocated, and threads share it.
 unsafe impl Sync for Frame {}
 
 impl fmt::Debug for Frame {
@@ -354,14 +355,34 @@ impl Frame {
     /// Drops a pin. `true` says the frame was retired and this was its last
     /// pin.
     fn unpin(&self) -> bool {
-        let before = self.state.fetch_sub(1, Ordering::AcqRel);
+        Self::unpin_count(&self.state)
+    }
+
+    /// Drops a pin from a frame's count. `true` says the frame was retired
+    /// and this was its last pin.
+    ///
+    /// For a frame beside the arena this is given the count and not the
+    /// frame, as [`Self::retire_count`] is. From the moment the count says
+    /// that the frame has an owner, that owner can free it, on another
+    /// thread, before this call has returned. A call may outlive what a
+    /// reference to an atomic points to, as the last `drop` of an `Arc`
+    /// does. It may not outlive what a reference to a frame points to.
+    fn unpin_count(state: &AtomicU64) -> bool {
+        let before = state.fetch_sub(1, Ordering::AcqRel);
         debug_assert!(before & PINS > 0, "a frame was unpinned without a pin");
         before == RETIRED | 1
     }
 
     /// Marks the frame as retired. `true` says it has no pin.
     fn retire(&self) -> bool {
-        let before = self.state.fetch_or(RETIRED, Ordering::AcqRel);
+        Self::retire_count(&self.state)
+    }
+
+    /// Marks a frame as retired in its count. `true` says it has no pin.
+    /// If it has one, whoever gives back the last owns the frame from then
+    /// on ([`Self::unpin_count`]).
+    fn retire_count(state: &AtomicU64) -> bool {
+        let before = state.fetch_or(RETIRED, Ordering::AcqRel);
         debug_assert!(before & RETIRED == 0, "a frame was retired twice");
         before & PINS == 0
     }
@@ -1241,14 +1262,14 @@ impl ChainWrite<'_> {
         // SAFETY: the frame was linked in this chain until the line above,
         // under the chain's lock, so it was not freed (A2). It is not
         // retired yet, so no other thread can come to own it before it is
-        // marked retired below, after which the reference to an overflow
-        // frame is not used again.
+        // marked retired below. That step is taken on the count alone, and
+        // the reference to an overflow frame is not used after it.
         let frame = unsafe { pointer.frame() };
         frame.set_kind(kind::DEAD);
         if frame.is_overflow() {
-            // By A3: the frame is unlinked, it is never announced, and
-            // `retire` saw no pin.
-            return frame.retire().then_some(OwnedFrame(pointer));
+            // By A3: the frame is unlinked, it is never announced, and the
+            // count had no pin.
+            return Frame::retire_count(&frame.state).then_some(OwnedFrame(pointer));
         }
         arena.bury(pointer)
     }
@@ -1265,6 +1286,11 @@ impl ChainWrite<'_> {
     /// and `idle` holds for it, the frame is taken out of the chain in the
     /// same step, and the caller owns it. A retired frame whose last pin
     /// this was is owned as well.
+    ///
+    /// Under the lock of another bucket the frame is not found here and
+    /// stays where it is linked, with no pin. That breaks the pool's bound
+    /// on memory and nothing else: the pin is given back on the count
+    /// alone, and nothing of the frame is read after it.
     pub(super) fn unpin_linked(
         &mut self,
         arena: &Arena,
@@ -1275,8 +1301,9 @@ impl ChainWrite<'_> {
             pin.frame().is_overflow() && !pin.is_announced(),
             "an arena frame is unpinned with no lock"
         );
+        assert_eq!(pin.frame().home, arena.id, "a frame of another pool");
         let pointer = pin.frame;
-        if pin.frame().unpin() {
+        if Frame::unpin_count(&pin.frame().state) {
             // By A3: retired, which unlinked it, and this was the last pin
             // of a frame that is never announced.
             return Some(OwnedFrame(pointer));
@@ -1418,8 +1445,11 @@ impl Arena {
     }
 
     /// Whether a cell of a lane announces `frame` at the moment this looks
-    /// at it. A frame beside the arena is never announced (A6).
+    /// at it. A frame beside the arena is never announced (A6). A frame of
+    /// another arena is refused: it is announced in that arena's lanes,
+    /// where this would not look.
     fn announces(&self, frame: &Frame) -> bool {
+        assert_eq!(frame.home, self.id, "a frame of another pool");
         !frame.is_overflow() && self.lanes.announces(frame.index)
     }
 
@@ -1559,17 +1589,88 @@ mod tests {
         }
     }
 
+    /// What a refused call panicked with.
+    fn refusal<T>(call: impl FnOnce() -> T) -> String {
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(call));
+        let payload = caught.err().expect("the call is refused");
+        payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
+            .expect("a panic with a message")
+    }
+
     /// The frames of a chain are owned by whoever empties it because their
     /// pins borrow the arena that is borrowed mutably. That says nothing of
     /// a frame of another arena, so such a chain is left as it is.
     #[test]
-    #[should_panic(expected = "a frame of another pool")]
     fn a_chain_is_not_emptied_for_another_arena() {
-        let (arena, mut free) = Arena::new(1, 64).expect("a small arena");
+        let (mut arena, mut free) = Arena::new(1, 64).expect("a small arena");
         let (mut other, _free) = Arena::new(1, 64).expect("a small arena");
         let mut chain = Chain::new();
         chain.write().link(&arena, free.pop().expect("a frame"));
-        let _taken = chain.take_all(&mut other);
+
+        let refused = refusal(|| chain.take_all(&mut other).len());
+        assert!(refused.contains("a frame of another pool"), "{refused}");
+        assert_eq!(chain.read().iter().count(), 1, "nothing was unlinked");
+        assert_eq!(chain.take_all(&mut arena).len(), 1);
+    }
+
+    /// A pin is looked for in the lanes of the frame's own arena. Asked of
+    /// another arena, which would look in the wrong lanes and find the
+    /// frame free to take, the answer is a refusal, and the frame stays.
+    #[test]
+    fn a_frame_is_not_taken_out_for_another_arena() {
+        let (mut arena, mut free) = Arena::new(1, 64).expect("a small arena");
+        let (other, _free) = Arena::new(1, 64).expect("a small arena");
+        let mut chain = Chain::new();
+        let frame = free.pop().expect("a frame");
+        frame.set_kind(kind::PUBLISHED);
+        let pointer = chain.write().link(&arena, frame).pointer();
+
+        let refused = refusal(|| {
+            let mut chain = chain.write();
+            chain.take_unpinned(&other, pointer, |_| true).is_some()
+        });
+        assert!(refused.contains("a frame of another pool"), "{refused}");
+        assert_eq!(chain.read().iter().count(), 1, "nothing was unlinked");
+        let taken = chain.write().take_unpinned(&arena, pointer, |_| true);
+        assert!(taken.is_some());
+        assert!(chain.take_all(&mut arena).is_empty());
+    }
+
+    /// The last pin of a frame beside the arena goes while another thread
+    /// takes the frame out, and whichever of the two comes to own the frame
+    /// frees it at once, while the other may still be in the step that
+    /// made it so. The pin is given back under a lock that is not the
+    /// frame's bucket's, so no lock keeps the two apart: the frame is
+    /// owned once and freed once all the same, and Miri finds nothing that
+    /// still refers to it.
+    #[test]
+    fn a_frame_beside_the_arena_is_freed_once_whichever_lock_its_last_pin_goes_under() {
+        let rounds = if cfg!(miri) { 4 } else { 2_000 };
+        for _ in 0..rounds {
+            let (arena, _free) = Arena::new(1, 64).expect("a small arena");
+            let (home, elsewhere) = (Chain::new(), Chain::new());
+            let frame = arena.allocate_overflow();
+            frame.set_kind(kind::PUBLISHED);
+            let (pointer, pin) = {
+                let mut chain = home.write();
+                let entry = chain.link(&arena, frame);
+                (entry.pointer(), entry.pin(&arena))
+            };
+
+            let free =
+                |owned: Option<OwnedFrame>| owned.map(|frame| arena.free_overflow(frame)).is_some();
+            let freed = std::thread::scope(|scope| {
+                let retiring = scope.spawn(|| free(home.write().retire(&arena, pointer)));
+                let unpinning =
+                    scope.spawn(|| free(elsewhere.write().unpin_linked(&arena, pin, |_| true)));
+                [retiring, unpinning].map(|thread| thread.join().expect("no panic"))
+            });
+            assert_eq!(freed.iter().filter(|&&freed| freed).count(), 1, "{freed:?}");
+            assert_eq!(home.read().iter().count(), 0);
+        }
     }
 }
 

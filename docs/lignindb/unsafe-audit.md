@@ -2,13 +2,13 @@
 
 The rule is DEC-07 of the plan (dashpay/grovedb#1052): unsafe code is confined to the file layer (`lignin-io`) and the buffer pool (`lignin-store::cache`), which carry Miri and loom coverage, and every other LigninDB crate forbids it. This document is the audit of that rule (task VER-06): where the unsafe code is, what each piece of it rests on, which test reaches it, and what keeps all of that true after the audit.
 
-A test reads this document and the sources and fails when they differ: `lignin-store/tests/unsafe_audit.rs`. The two tables between the `inventory` and `allocators` markers below are its input, so they are changed with the code, in the same commit.
+A test reads this document and the sources and fails when they differ: `lignin-store/tests/unsafe_audit.rs`. Three tables below are its input, each between a pair of markers (`frame`, `trusted` and `allocators`), so they are changed with the code, in the same commit.
 
 ## 1. Where the unsafe code is
 
 | Place | Unsafe code | Lint |
 | --- | --- | --- |
-| `lignin-store/src/cache/frame.rs` | All of the buffer pool's: 38 blocks, 5 unsafe functions, 3 pairs of `unsafe impl Send` and `Sync`. | `lignin-store` has `#![deny(unsafe_code)]`, and `cache/mod.rs` has the one `#[allow(unsafe_code)]`, on `mod frame`. |
+| `lignin-store/src/cache/frame.rs` | All of the buffer pool's: 38 blocks, 5 unsafe functions, 5 `unsafe impl` of `Send` and `Sync`. | `lignin-store` has `#![deny(unsafe_code)]`, and `cache/mod.rs` has the one `#[allow(unsafe_code)]`, on `mod frame`. |
 | `lignin-io` | None. The file layer is written against `std` alone. | `#![deny(unsafe_code)]`, so that a later module (the direct I/O path, IO-03) can allow it for itself. |
 | `lignin-format`, `lignin-tree`, `lignindb`, `lignin-tools`, `lignin-testkit` and its `cost-model-storage` | None. | `#![forbid(unsafe_code)]` in each library. |
 | `merk/src/store/lignin` | None. | Merk's own lints; the scan below covers the directory. |
@@ -18,18 +18,18 @@ A test reads this document and the sources and fails when they differ: `lignin-s
 
 `lignin-store/tests/unsafe_audit.rs` runs with the crate's tests, so in CI on every platform the LigninDB crates are tested on. It reads every `.rs` file under every workspace directory whose name begins with `lignin`, and under `merk/src/store/lignin`, with comments and string and character literals blanked, and checks:
 
-1. **The keyword `unsafe` is in the files this document lists and in no other.** This holds for every target (libraries, binaries, tests, benches, build scripts), which a lint in a library does not.
-2. **Every library forbids unsafe code**, the two of section 1 deny it, and the lint `unsafe_code` is named nowhere else but in the one `allow`, which is on `mod frame`.
-3. **Every unsafe block and every `unsafe impl` has a comment with `SAFETY:` directly above its line**, and every `unsafe fn` that is not a trait's method has a `# Safety` section. `lignin-io` and `lignin-store` also deny `clippy::undocumented_unsafe_blocks`, so CI's clippy run says the same of their libraries.
+1. **The keyword `unsafe` is in the files this document lists and in no other.** This holds for every target (libraries, binaries, tests, benches, build scripts), which a lint in a library does not. It holds for the code of documentation tests as well, which is read from the doc comments.
+2. **Every library forbids unsafe code** as an attribute of the crate itself, the two of section 1 deny it, and the lint `unsafe_code` is named nowhere else but in the one `allow`, which is on `mod frame`.
+3. **Every unsafe block and every `unsafe impl` has a comment directly above its line, one of whose lines begins `// SAFETY:`**, and every `unsafe fn` that is not a trait's method has a `# Safety` section. Only attributes may stand between, and no two blocks share a line. `lignin-io` and `lignin-store` also deny `clippy::undocumented_unsafe_blocks`, so CI's clippy run says the same of their libraries.
 4. **The unsafe code of `frame.rs` is, site for site and in order, the inventory of section 4.** A block that is added, removed or moved to another function fails the test until the inventory is changed, which is the moment to read section 4 again.
-5. **Every test the inventory names exists**, has `#[test]`, and has no attribute that ignores it or leaves it out of a build.
+5. **Every test the inventory names exists** and has `#[test]`. Nothing on it, on a module it is in or on its file ignores it or leaves it out of a build, but for the build of a loom model, where every test but the models is left out.
 6. **The places that hand out a way to reach a frame are as many as section 4.3 counts.** They are safe code that the unsafe blocks trust.
-7. **Each counting allocator has the shape of section 5** and nothing more.
-8. **Every file a crate compiles is one the scan read, or is held to the lint by the compiler**: a module with a `#[path]` names a file among those that were read, or is in a library that forbids unsafe code (the cost model's stand-in for `grovedb-storage` takes three of that crate's files this way), and no file is brought in with `include!`.
+7. **Each counting allocator is, line for line, the shape of section 5**: the four methods, each the one call of `System`'s method of the same name with the same arguments.
+8. **Every file a crate compiles is one the scan read, or is held to the lint by the compiler**: a module with a `path` attribute names a file among those that were read, or is in a library that forbids unsafe code (the cost model's stand-in for `grovedb-storage` takes three of that crate's files this way), and no file is brought in with `include!`.
 
-The scan reads source text. Code that a macro of another crate expands to (`thread_local!`, for one) is that crate's, and is not seen. The engine's crates depend on two crates outside the workspace, `crc32c` and `lz4_flex` (with its safe encoder and decoder), both in `lignin-format`.
+What the scan is and is not. It reads source text with a small reader of its own, which knows comments, literals, attributes, modules and the headers of `impl` and `fn`. It was tried on changes that it must notice (31 of them; the task's report lists them). It is a tripwire for the forms this code is written in, not a proof about every form Rust allows: it does not expand macros, so code that a macro of another crate expands to (`thread_local!`, for one) is that crate's and is not seen, and the counts of section 4.3 are of the spellings the file uses. Where the reader meets something it does not understand, the inventory or the counts stop matching and the test fails. The engine's crates depend on two crates outside the workspace, `crc32c` and `lz4_flex` (with its safe encoder and decoder), both in `lignin-format`.
 
-What "a test that exercises it" means here: the named test executes the line of the unsafe block. That was measured once for this audit, test by test, with `-C instrument-coverage` (section 6), and every named test is deterministic and runs on one thread. The tests run under Miri as well (section 3), where executing the line is what lets Miri check it.
+What "a test that exercises it" means here: the named test executes the line of the unsafe block. That was measured once for this audit, test by test, with `-C instrument-coverage` (section 6). Every test named for a block or an unsafe function is deterministic and runs on one thread; the tests named for an `unsafe impl` of `Send` or `Sync` are the ones that cross threads. The tests run under Miri as well (section 3), where executing the line is what lets Miri check it.
 
 ## 3. Miri
 
@@ -66,8 +66,7 @@ Every unsafe block names the rule it relies on. The types of the file stand for 
 <!-- frame:start -->
 | Site | Kind | Rests on | What it does, and why that is allowed | Exercised by |
 | --- | --- | --- | --- | --- |
-| `impl Send for Frame` | unsafe impl | `A4`, `A5` | A header is atomics, a lock and fields that never change. The content behind `bytes` and `attached` is reached through the four unsafe methods below only. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
-| `impl Sync for Frame` | unsafe impl | `A4`, `A5` | As above. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
+| `impl Sync for Frame` | unsafe impl | `A4`, `A5` | A header is atomics, a lock and fields that never change. The content behind `bytes` and `attached` is reached through the four unsafe methods below only. A frame is not `Send`: nothing moves one. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
 | `Frame::bytes` | unsafe fn | `A5` | The frame's bytes as a shared slice. The caller says that nothing writes them while the slice lives. | `tests::basic::a_miss_is_loaded_and_then_hit` |
 | `Frame::bytes` | block 1 | `A5` | `from_raw_parts` over `len` bytes that were zeroed when they were allocated and live as long as the frame. | `tests::basic::a_miss_is_loaded_and_then_hit` |
 | `Frame::bytes_mut` | unsafe fn | `A4` | The frame's bytes as an exclusive slice. The caller says that it alone reaches them. | `tests::basic::a_miss_is_loaded_and_then_hit` |
@@ -101,7 +100,7 @@ Every unsafe block names the rule it relies on. The types of the file stand for 
 | `Links::unlink_from` | block 2 | `A1`, `A2` | The frame before the one that is taken out, which is linked in the same chain. | `tests::step::a_page_step_puts_a_new_frame_in_place_of_the_current_version` |
 | `Chain::pin_unlocked` | block 1 | `A1` | The walk of a reader with no lock: follows a pointer that was just checked to lie among the arena's headers, which live as long as the arena. | `tests::basic::a_hit_in_a_fixed_frame_is_pinned_without_a_count`, `tests::basic::a_read_with_no_lock_takes_page_versions_only` |
 | `ChainWrite::link` | block 1 | `A1` | The frame that was just linked, for as long as the chain stays borrowed. | `tests::basic::a_miss_is_loaded_and_then_hit` |
-| `ChainWrite::retire` | block 1 | `A2` | The frame that was just unlinked under the lock. It is not used after it is marked retired, from when another thread can own it. | `tests::step::a_page_step_puts_a_new_frame_in_place_of_the_current_version`, `tests::private::a_copy_beside_the_fixed_frames_is_freed_when_it_is_discarded` |
+| `ChainWrite::retire` | block 1 | `A2` | The frame that was just unlinked under the lock. It is marked retired on its count alone and is not used after that, from when another thread can own it. | `tests::step::a_page_step_puts_a_new_frame_in_place_of_the_current_version`, `tests::private::a_copy_beside_the_fixed_frames_is_freed_when_it_is_discarded` |
 | `allocate` | block 1 | the allocator's contract | `alloc_zeroed` with a layout whose size was just checked to be above zero. Zeroed, because a frame's bytes are handed out as a slice before anything is written to them. | `tests::basic::a_frame_can_be_read_before_anything_is_written_to_it`, `tests::basic::a_hit_in_a_frame_beside_the_fixed_ones_is_counted` |
 | `impl Send for Arena` | unsafe impl | `A1`, `A2` | The arena owns the headers and the block, which are reached through frames only. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
 | `impl Sync for Arena` | unsafe impl | `A1`, `A2` | As above. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
@@ -129,32 +128,42 @@ An unsafe block is as sound as the claim of its caller. In `frame.rs` the claims
 | `Frozen {` | 4 | Each is made of a frame that is a page version at that moment, under a pin or the chain's lock: `Pinned::into_frozen`, `Entry::freeze`, `Chain::pin_unlocked`. `Frozen::again` is a second pin on content that is frozen already. |
 | `Exclusive::new(` | 2 | `Pinned::write` and `Pinned::try_write`, with the frame's latch held for writing. It gives nothing for a frame that is not a private copy. |
 | `Shared::new(` | 2 | `Pinned::read` and `Pinned::try_read`, with the frame's latch held for reading. |
+| `Sealed {` | 1 | `Exclusive::publish`: the latch of a frame that was just published, with no access to its content. |
+| `Entry {` | 2 | A frame of a chain for as long as the chain is borrowed: `Entries::next` under the chain's lock, and `ChainWrite::link` for the frame it just linked. |
+| `ChainRead {` | 1 | `Chain::read`, with the bucket's lock taken to look. |
+| `ChainWrite {` | 1 | `Chain::write`, with the bucket's lock taken to change it and the change counted. |
+| `Self {` | 6 | The values the file's types make of themselves: a header (`Frame::new`), the two latch guards inside `Shared::new` and `Exclusive::new`, a bucket and its links (`Chain::new`, `Links::new`), and the arena (`Arena::new`). None is made as `Self(…)`. |
 | `set_kind(` | 4 | What a frame is decides who may write it. It changes for an owned frame (`OwnedFrame::set_kind`, `OwnedFrame::reset`), under the exclusive latch of a private copy (`Exclusive::publish`), and when a chain retires a frame (`ChainWrite::retire`). The method itself is private to the file. |
 <!-- trusted:end -->
 
-Three things outside `frame.rs` carry the rules, and were read for this audit:
+What these rest on outside the file, or on its callers, was read for this audit:
 
 - **`cache/lanes.rs`** (safe code): `Lanes::announces` finds every announcement that was made before it looked. Rule A6 rests on it as on a lock.
-- **`BufferPool::unpin`** (`cache/pool.rs`) is the one caller of `ChainWrite::unpin_linked`, and gives it the lock of the bucket that the frame's page is in. That is what lets a frame beside the arena leave in the same step as its last pin. Given another bucket's lock, the frame would stay in the table with no pin, against the pool's memory bound; no memory would be freed that anyone can reach.
-- **Every chain of a pool is given that pool's arena**, at every call (`cache/pool.rs`, `cache/write.rs`, `cache/flush.rs`). `ChainWrite::link`, `Entry::pin`, `Arena::free_overflow` and, since this audit, `Chain::take_all` each check that the frame is of the arena they are given, so a mistake there is a panic and not a frame freed under a pin.
+- **A function of `frame.rs` that is given an arena checks that the frame is of it**, so that a caller's mistake is a panic and not a frame owned under a pin: `ChainWrite::link`, `Entry::pin`, `Arena::free_overflow`, and since this audit `Chain::take_all`, `ChainWrite::unpin_linked` and `Arena::announces`, through which `ChainWrite::take_unpinned`, `Arena::bury` and `Arena::take_dead` look for a pin. Every caller in `cache/pool.rs`, `cache/write.rs` and `cache/flush.rs` passes the pool's own arena.
+- **`BufferPool::unpin`** (`cache/pool.rs`) is the one caller of `ChainWrite::unpin_linked`, and gives it the lock of the bucket that the frame's page is in. That is what lets a frame beside the arena leave in the same step as its last pin. Under another bucket's lock the frame would stay in the table with no pin, against the pool's bound on memory. It would not be a memory error, since this audit: the last step on a frame's count is taken on the count alone (finding 2 below).
 
 ### 4.4 What was read, and what was found
 
-Every unsafe block was read against the rule it names, together with the callers that make its claim true: all of `cache/frame.rs`, `lanes.rs`, `sync.rs`, `pool.rs`, `guard.rs`, `write.rs`, and the parts of `flush.rs` that reach a frame.
+Every unsafe block was read against the rule it names, together with the callers that make its claim true: all of `cache/frame.rs`, `lanes.rs`, `sync.rs`, `pool.rs`, `guard.rs`, `write.rs` and `flush.rs`.
 
-No unsound block was found. What was found and done:
+No block was found that is unsound as the pool uses it. Four things were found in the safe code around the blocks, where the soundness of a function that is safe to call was its caller's to keep, or a claim was made that nothing needs. Each is changed:
 
-1. **`Chain::take_all` took its caller's word for the arena.** It makes every frame of a chain owned on the ground that pins borrow the arena, which is borrowed mutably; that says nothing of a frame of another arena. The pool always passes its own, so nothing was wrong, but the function is safe to call and its soundness was the caller's. It now refuses a chain that holds a frame of another arena, before it unlinks anything (`frame::tests::a_chain_is_not_emptied_for_another_arena`).
-2. **A frame's bytes are read before they are written**, by design: a `Blank` is a slice from its first moment. That is sound only because the block and every frame beside it are allocated zeroed. No test read a frame first, so a change to `alloc` would have passed every test and Miri run. `tests::basic::a_frame_can_be_read_before_anything_is_written_to_it` now does, for a fixed frame and for one beside them.
-3. **`Send` and `Sync` of the pool's handles were stated by no test.** The three pairs of `unsafe impl` are what lets a pool and its handles cross threads, and a removed or weakened one shows only as a build error far from the cause. `tests::basic::the_handles_of_the_pool_can_go_to_other_threads` states it for each public type.
-4. **One branch was reached by accident only**: taking a dead frame from behind another dead frame (`Arena::take_dead`, block 2) was executed by one deterministic test, which is about something else. `tests::basic::a_dead_frame_is_made_free_while_another_still_waits` is the test for it.
-5. **The counting allocators of nine test targets had no safety comment.** Each has one now (section 5).
-6. **Binaries, integration tests and build scripts are crates of their own**, which a library's `#![forbid(unsafe_code)]` does not reach. The scan of section 2 does.
+1. **`Chain::take_all` took its caller's word for the arena.** It makes every frame of a chain owned on the ground that pins borrow the arena, which is borrowed mutably; that says nothing of a frame of another arena. It now refuses a chain that holds a frame of another arena, before it unlinks anything (`frame::tests::a_chain_is_not_emptied_for_another_arena`). `Arena::announces` took its caller's word in the same way: asked of another arena it looked in the wrong lanes, and a frame that a reader had announced would have been found free to take. It refuses now (`frame::tests::a_frame_is_not_taken_out_for_another_arena`), and so does `ChainWrite::unpin_linked`. The pool always passes its own arena, so nothing went wrong.
+2. **The last step on the count of a frame beside the arena was taken through a reference to the frame.** `Frame::unpin(&self)` and `Frame::retire(&self)` hold that reference until they return, and from the moment the count says so another thread can own the frame and free it. The pool keeps the two apart with the lock of the frame's bucket, which both sides take, so nothing was freed under a live reference; but `ChainWrite::unpin_linked` is safe to call with any bucket's lock, and with the wrong one a frame could be freed while the other thread was still inside the step that gave it up. That is undefined behaviour by Rust's borrow rules as Miri models them. Those two steps are now taken on the count alone (`Frame::unpin_count`, `Frame::retire_count`), as the last `drop` of an `Arc` takes its own, and nothing of the frame is read after them. `frame::tests::a_frame_beside_the_arena_is_freed_once_whichever_lock_its_last_pin_goes_under` runs the two sides under different locks; under Miri the code as it was fails that test, and the code as it is passes it.
+3. **`unsafe impl Send for Frame` was needed by nothing.** A frame is never moved to another thread: it stays where it was allocated and is shared, which `Sync` covers, and the arena has an `unsafe impl` of its own. The three engine crates build without it, so it is removed: one claim fewer to keep true.
+4. **`Send` and `Sync` of the pool's handles were stated by no test.** The five `unsafe impl` are what lets a pool and its handles cross threads, and a removed one shows only as a build error far from the cause. `tests::basic::the_handles_of_the_pool_can_go_to_other_threads` states it for each public type, and sends and shares them.
+
+What was found in the tests:
+
+5. **A frame's bytes are read before they are written**, by design: a `Blank` is a slice from its first moment. That is sound only because the block and every frame beside it are allocated zeroed. No test read a frame first, so a change to plain `alloc` passed every test and every Miri run. `tests::basic::a_frame_can_be_read_before_anything_is_written_to_it` does now, for a fixed frame and for one beside them, and Miri fails it on memory that was not zeroed.
+6. **One branch was reached by accident only**: taking a dead frame from behind another dead frame (`Arena::take_dead`, block 2) was executed by one deterministic test, which is about something else. `tests::basic::a_dead_frame_is_made_free_while_another_still_waits` is the test for it.
+7. **The counting allocators of nine test targets had no safety comment.** Each has one now (section 5).
+8. **Binaries, integration tests, build scripts and documentation tests are crates of their own**, which a library's `#![forbid(unsafe_code)]` does not reach. The scan of section 2 does.
 
 What this audit did not do, and where it is done:
 
-- **The `SeqCst` orders of A6.** The arguments in `frame.rs` ("why an announcement holds", "why what the announcer found is so") were read and followed step by step, and hold as written, on the orders the code has. That they are needed, each of them, is shown by the loom models and the planted faults of STORE-04's second unit (a weakened order fails a model). Exhaustive models and a ThreadSanitizer run are VER-05's.
-- **References that are alive while a frame is freed.** A `&Frame` argument is live until its function returns. For a frame beside the arena, the functions that can be the last to touch it (`Frame::unpin`, `Frame::retire`) run under the lock of the frame's bucket, and whoever frees the frame needs that lock or is the same thread, so no frame is freed under a live reference. Miri's two borrow models check exactly this, and report nothing.
+- **The `SeqCst` orders of A6.** The arguments in `frame.rs` ("why an announcement holds", "why what the announcer found is so") were read and followed step by step, and hold as written, on the orders the code has. That each order is needed is shown by the loom models and the planted faults of STORE-04's second unit (a weakened order fails a model). Exhaustive models and a ThreadSanitizer run are VER-05's.
+- **The planted faults of this audit are of memory, not of the rules.** Each breaks what one unsafe block needs (a length, a layout, a free, zeroed memory) and Miri has to report it; the task's report lists them. That the pool keeps A1 to A6 in every interleaving is what the loom models and STORE-04's planted faults show.
 
 ## 5. The counting allocators
 
@@ -174,7 +183,7 @@ Tests that promise "this path allocates nothing" measure it at the allocator. Ea
 | `lignin-tree/tests/node_alloc.rs` | `reading_a_node_allocates_nothing` |
 <!-- allocators:end -->
 
-The safety of each is the same and is stated in the file: the memory is what `System` gives and takes back, under the contract the caller keeps, and counting allocates nothing and does not unwind.
+The safety of each is the same and is stated in the file: the memory is what `System` gives and takes back, under the contract the caller keeps, and counting allocates nothing and does not unwind. The test holds each of them to that shape line for line, so a method that does anything but hand its arguments on fails it.
 
 ## 6. How the tests were matched to the blocks
 

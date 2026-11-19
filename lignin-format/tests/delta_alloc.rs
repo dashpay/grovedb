@@ -33,7 +33,7 @@ impl CountingAllocator {
 // the same method of `System`, so the memory is what `System` gives and takes
 // back under the contract the caller keeps. Counting adds to thread-local
 // cells that are constants at first and have no destructor, so it allocates
-// nothing, and it cannot unwind short of a count that passes 2^63.
+// nothing, and it cannot unwind short of a count that overflows 64 bits.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         Self::count();
