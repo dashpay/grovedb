@@ -31,8 +31,8 @@ mod tests {
     use crate::IndexedAxisEntrySliceExt;
 
     use crate::{
-        tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, TEST_LEAF},
-        Element, Error,
+        tests::{common::EMPTY_PATH, make_test_grovedb, SuiteBatch, TempGroveDb, TEST_LEAF},
+        Element, Engine, Error,
     };
 
     // -----------------------------------------------------------------
@@ -1080,7 +1080,6 @@ mod tests {
     /// rows and `delete` removes rows, both of which can rotate the AVL and
     /// therefore permanently change tree SHAPE (see the shape caveat on
     /// `reconcile_indexed_tree_secondaries`).
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn drift_axis_secondary(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
@@ -1092,7 +1091,7 @@ mod tests {
         use grovedb_merk::element::reconstruct::ElementReconstructExtensions;
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let owned: Vec<&[u8]> = indexed_path.to_vec();
         let path: SubtreePath<&[u8]> = owned.as_slice().into();
         let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
@@ -1223,11 +1222,10 @@ mod tests {
             .unwrap()
             .expect("propagate rebind");
         db.db
-            .storage()
-            .commit_multi_context_batch(batch, Some(&tx))
+            .apply_batch(batch, &tx)
             .unwrap()
             .expect("commit axis drift");
-        tx.commit().expect("tx commit");
+        db.commit_transaction(tx).unwrap().expect("tx commit");
     }
 
     /// Rebind a PCIT's parent element so its `secondary_root_key` names a
@@ -1532,7 +1530,6 @@ mod tests {
     // -----------------------------------------------------------------
 
     /// The repair as the released versions run it.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn as_released() -> GroveVersion {
         let mut version = GroveVersion::latest().clone();
         version
@@ -1545,7 +1542,6 @@ mod tests {
 
     /// The records an axis's secondary holds in storage, whether or not its
     /// Merk links them: what the ranking reads iterate.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn stored_rows(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
@@ -1570,7 +1566,6 @@ mod tests {
         stored
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn stored_row_keys(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
@@ -1619,7 +1614,6 @@ mod tests {
 
     const REAL_ROWS: &[(&[u8], i64)] = &[(b"a", 7), (b"b", -3)];
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn real_row_keys() -> Vec<Vec<u8>> {
         let mut keys: Vec<Vec<u8>> = REAL_ROWS
             .iter()
@@ -1631,7 +1625,6 @@ mod tests {
 
     /// A sum indexed tree at `[TEST_LEAF, psit]` with six rows no entry
     /// stands behind, spread between and around the two real ones.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     fn psit_with_stray_rows(gv: &GroveVersion) -> TempGroveDb {
         let db = make_test_grovedb(gv);
         make_psit_with(&db, b"psit", REAL_ROWS, gv);
@@ -1656,7 +1649,6 @@ mod tests {
     /// A repair removes its stray rows one Merk commit at a time, and
     /// removing one rewrites the nodes around it. Every removal must reach
     /// storage, where the ranking reads look.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_removes_every_stray_row_from_storage() {
         let gv = GroveVersion::latest();
@@ -1706,7 +1698,6 @@ mod tests {
     /// sum rows were. A sum row left in storage by a released repair, linked
     /// by no Merk, must go with the others: the ranking reads would take it
     /// for a big sum row.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_conversion_removes_the_sum_rows_no_merk_links() {
         let gv = GroveVersion::latest();
@@ -1750,7 +1741,6 @@ mod tests {
     /// When the repaired tree is an entry of another indexed tree, that
     /// tree's row for it binds the element's value hash, which a repair that
     /// changes a secondary changes.
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_of_a_nested_tree_refreshes_the_row_above_it() {
         let gv = GroveVersion::latest();
