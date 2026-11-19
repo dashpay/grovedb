@@ -85,6 +85,9 @@ pub fn read_value_from_view<I: NodeCursor>(
 /// when the view holds no such key, charging one seek and the bytes loaded. The
 /// iterator's own charges for reading the key, once to compare it and again
 /// inside its value read, are not billed.
+///
+/// A view that reports an error, after the seek or after the read of the
+/// record, did not read: that is a storage error and no missing key.
 fn stored_node_bytes<'v, I: NodeCursor>(
     view: &'v mut I,
     key: &[u8],
@@ -97,8 +100,9 @@ fn stored_node_bytes<'v, I: NodeCursor>(
         return Ok(None).wrap_with_cost(cost);
     }
     let bytes = view.value().unwrap();
-    if let Some(bytes) = bytes {
-        cost.storage_loaded_bytes += bytes.len() as u64;
+    match bytes {
+        Some(bytes) => cost.storage_loaded_bytes += bytes.len() as u64,
+        None => cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError)),
     }
     Ok(bytes).wrap_with_cost(cost)
 }
