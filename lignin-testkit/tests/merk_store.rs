@@ -43,13 +43,15 @@
 //!
 //! 6. Every change set that goes to LigninDB goes, call for call, to a
 //!    second RocksDB storage that holds nothing else, and the two batches
-//!    must cost the same when they are applied. Each written node is handed
-//!    over with one of the costs a writer gives, in turn: none, a new node
-//!    and an update whose value cost the storage layer checks against the
-//!    record, and a cost that is taken as given, with bytes freed as plain
-//!    numbers and by owner and epoch. Each removed node is handed over with
-//!    a writer's cost or with none, and one with none is charged from the
-//!    record the committed state holds. The second storage is committed
+//!    must cost the same when they are applied. Each written node is given
+//!    one of the costs a writer gives, in turn: none, that of a new node
+//!    and that of an update, whose value cost the storage layer checks
+//!    against the record, and a cost that is taken as given, with bytes
+//!    freed as plain numbers and by owner and epoch. Each removed node is
+//!    given a writer's cost or none, and one with none is charged from the
+//!    record the committed state holds. The costs are given by the change
+//!    set the replay fills (`Billed`), and the replay itself hands every
+//!    node over with none. The second storage is committed
 //!    whenever the LigninDB transaction is, so both have the same committed
 //!    state.
 //! 7. Every node that is read back, after a write and after a commit, is
@@ -208,9 +210,9 @@ fn freed(sectioned: bool, bytes: u32) -> StorageRemovedBytes {
 }
 
 /// The cost a writer gives with the `turn`th written node, by turns: none,
-/// a cost the storage layer checks against the record, and one it takes as
-/// given. `created` says whether the node is new to its Merk.
-fn write_cost(node: &TreeNode, created: bool, turn: u64) -> Option<NodeWriteCost> {
+/// that of a new node and that of an update, both of which the storage
+/// layer checks against the record, and one it takes as given.
+fn write_cost(node: &TreeNode, turn: u64) -> Option<NodeWriteCost> {
     let sizes = || {
         (
             node.feature_type()
@@ -242,9 +244,9 @@ fn write_cost(node: &TreeNode, created: bool, turn: u64) -> Option<NodeWriteCost
         .added_bytes;
     let paid = unbilled.storage_cost.added_bytes - key_cost;
 
-    let storage_cost = match (turn % 4, created) {
-        (0, _) => return None,
-        (1 | 2, true) => KeyValueStorageCost {
+    let storage_cost = match turn % 4 {
+        0 => return None,
+        1 => KeyValueStorageCost {
             value_storage_cost: StorageCost {
                 added_bytes: paid,
                 ..Default::default()
@@ -253,11 +255,11 @@ fn write_cost(node: &TreeNode, created: bool, turn: u64) -> Option<NodeWriteCost
             needs_value_verification: true,
             ..Default::default()
         },
-        (1 | 2, false) => KeyValueStorageCost {
+        2 => KeyValueStorageCost {
             value_storage_cost: StorageCost {
                 added_bytes: (turn % 5) as u32,
                 replaced_bytes: paid - (turn % 5) as u32,
-                removed_bytes: freed(turn % 4 == 2, (turn % 90) as u32),
+                removed_bytes: freed(turn % 8 == 2, (turn % 90) as u32),
             },
             needs_value_verification: true,
             ..Default::default()
@@ -283,7 +285,7 @@ fn write_cost(node: &TreeNode, created: bool, turn: u64) -> Option<NodeWriteCost
 /// The cost a writer gives with the `turn`th removed node: none for every
 /// other one, and otherwise bytes freed from the key and from the value.
 fn removal_cost(turn: u64) -> Option<KeyValueStorageCost> {
-    if turn % 2 == 0 {
+    if turn.is_multiple_of(2) {
         return None;
     }
     let cost = |sectioned, bytes| StorageCost {
@@ -295,6 +297,85 @@ fn removal_cost(turn: u64) -> Option<KeyValueStorageCost> {
         value_storage_cost: cost(turn % 8 == 1, (turn % 400) as u32),
         ..Default::default()
     })
+}
+
+/// What [`Billed::prepare_node`] keeps of a node for each engine: what its
+/// change set prepared, and the cost the node is put with.
+type BilledNode<L, M> = ((L, Option<NodeWriteCost>), (M, Option<NodeWriteCost>));
+
+/// The change set of one Merk on LigninDB with the change set of the same
+/// Merk on the mirror. Each change goes to both. The replay hands a node
+/// over with no cost, and each written and each removed node is given one
+/// of the costs a writer gives here, the same on both.
+struct Billed<L, M> {
+    lignin: L,
+    mirror: M,
+    /// How many nodes the replay has written and removed so far, which is
+    /// what the next one's cost is chosen by.
+    written: u64,
+    removed: u64,
+    uncosted_removals: u64,
+}
+
+impl<L: NodeChangeSet, M: NodeChangeSet> Billed<L, M> {
+    fn new(lignin: L, mirror: M, tally: &Tally) -> Self {
+        Self {
+            lignin,
+            mirror,
+            written: tally.nodes,
+            removed: tally.removed,
+            uncosted_removals: 0,
+        }
+    }
+
+    fn prepare_node(
+        &mut self,
+        node: &TreeNode,
+        change: NodeChange,
+    ) -> BilledNode<L::Prepared, M::Prepared> {
+        let turn = self.written;
+        self.written += 1;
+        (
+            (
+                self.lignin.prepare_node(node, change),
+                write_cost(node, turn),
+            ),
+            (
+                self.mirror.prepare_node(node, change),
+                write_cost(node, turn),
+            ),
+        )
+    }
+
+    fn put_node(
+        &mut self,
+        key: &[u8],
+        (lignin, mirror): BilledNode<L::Prepared, M::Prepared>,
+        unbilled: Option<NodeWriteCost>,
+    ) -> Result<(), Error> {
+        assert!(unbilled.is_none(), "the replay bills no node itself");
+        self.lignin.put_node(key, lignin.0, lignin.1)?;
+        self.mirror.put_node(key, mirror.0, mirror.1)
+    }
+
+    fn delete_node(&mut self, key: &[u8], unbilled: Option<KeyValueStorageCost>) {
+        assert!(unbilled.is_none(), "the replay bills no removal itself");
+        let cost = removal_cost(self.removed);
+        self.removed += 1;
+        self.uncosted_removals += u64::from(cost.is_none());
+        self.lignin.delete_node(key, cost.clone());
+        self.mirror.delete_node(key, cost);
+    }
+
+    fn state_root(&mut self, root_key: Option<&[u8]>) {
+        self.lignin.state_root(root_key);
+        self.mirror.state_root(root_key);
+    }
+
+    /// The two change sets, and how many nodes were removed with no cost.
+    fn into_parts(self) -> (L, M, u64) {
+        (self.lignin, self.mirror, self.uncosted_removals)
+    }
 }
 
 /// How the replay states the kind of a written node.
@@ -339,12 +420,12 @@ fn subtree(grove: &Grove, id: MerkId) -> LigninSubtree {
     }
 }
 
-/// Every node of the tree under `root`, as `(key, record)` in key order,
-/// with what the reads of all of them cost.
-fn records<'db, S: NodeStore<'db>>(
-    store: &S,
-    root: Option<Vec<u8>>,
-) -> (Vec<(Vec<u8>, Vec<u8>)>, OperationCost) {
+/// The nodes of a tree, as `(key, record)` in key order.
+type Records = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// Every node of the tree under `root`, with what the reads of all of them
+/// cost.
+fn records<'db, S: NodeStore<'db>>(store: &S, root: Option<Vec<u8>>) -> (Records, OperationCost) {
     let mut found = Vec::new();
     let mut cost = OperationCost::default();
     let mut ahead: Vec<Vec<u8>> = root.into_iter().collect();
@@ -554,12 +635,15 @@ impl Replay<'_> {
                     mirror_transaction,
                 )
                 .unwrap();
-            let mut mirror_set = NodeStore::change_set(&mirrored);
             let stored = rocks(*prefix);
             // A Merk the operation made has no node before it, whatever the
             // transaction holds under its prefix until the batch is applied.
             let fresh = changes.merks_created.contains(&change.merk);
-            let mut change_set = store.change_set();
+            let mut change_set = Billed::new(
+                store.change_set(),
+                NodeStore::change_set(&mirrored),
+                &self.tally,
+            );
             for (key, created, value_changed, links_changed) in &change.written {
                 let read = |node: CostResult<Option<TreeNode>, Error>| {
                     node.unwrap().expect("the node is read")
@@ -582,26 +666,20 @@ impl Replay<'_> {
                     (_, false, false, true) => NodeChange::StructureChanged,
                     (_, false, false, false) => NodeChange::HashOnly,
                 };
-                let (new, turn) = (fresh || *created, self.tally.nodes);
                 let prepared = change_set.prepare_node(&node, kind);
-                (change_set.put_node(key, prepared, write_cost(&node, new, turn)))
-                    .expect("the node is put");
-                let prepared = mirror_set.prepare_node(&node, kind);
-                (mirror_set.put_node(key, prepared, write_cost(&node, new, turn)))
-                    .expect("the node is put on the mirror");
+                (change_set.put_node(key, prepared, None)).expect("the node is put");
                 self.tally.nodes += 1;
                 self.tally.stated += u64::from(kind == NodeChange::ValueWritten);
                 self.tally.values_changed += u64::from(value_changed);
             }
             for key in &change.removed {
-                let cost = removal_cost(self.tally.removed);
-                self.tally.uncosted_removals += u64::from(cost.is_none());
-                change_set.delete_node(key, cost.clone());
-                mirror_set.delete_node(key, cost);
+                change_set.delete_node(key, None);
                 self.tally.removed += 1;
             }
             let root = grove.merk(change.merk).root;
             change_set.state_root(root.map(|root| &*grove.node(root).key));
+            let (change_set, mirror_set, uncosted_removals) = change_set.into_parts();
+            self.tally.uncosted_removals += uncosted_removals;
             let staged = store.commit(change_set);
             let mirror_staged = NodeStore::commit(&mirrored, mirror_set);
             assert_eq!(
