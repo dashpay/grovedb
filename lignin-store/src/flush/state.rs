@@ -87,6 +87,20 @@ impl Kept {
         self.folded.remove(&page);
     }
 
+    /// The page was freed at the version `at`: nothing older of it is
+    /// written back (`page-table.md` T18), so nothing older is kept. What
+    /// a later commit did to a page that was made again under the id
+    /// stays.
+    pub(super) fn freed(&mut self, page: PageId, at: u64) {
+        if let Some(changes) = self.pages.get_mut(&page) {
+            changes.retain(|kept| kept.born >= at);
+            if changes.is_empty() {
+                self.pages.remove(&page);
+            }
+        }
+        self.unfold_where(page, |born| born < at);
+    }
+
     /// The changes kept of `page`, oldest first.
     pub(super) fn changes(&self, page: PageId) -> Vec<Changes> {
         self.pages

@@ -265,9 +265,10 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// The life of a store with write-back: pages with values in and out of
 /// their cells, runs and base images, a consolidation, a value that waits
 /// for a private copy and is placed after the commit that carried it on,
-/// values moved under a checkpoint, a page freed with a change that was
-/// never written back, its id used again, and table checkpoints in
-/// between that take log files away.
+/// values moved under a checkpoint, a checkpoint that is put off because
+/// a page that a move changed cannot be written, a page freed with a
+/// change that was never written back, its id used again, and table
+/// checkpoints in between that take log files away.
 pub(super) fn life() -> Vec<Step> {
     vec![
         commit(&[
@@ -298,6 +299,15 @@ pub(super) fn life() -> Vec<Step> {
         Step::Checkpoint,
         Step::Release,
         Step::Checkpoint,
+        // A value of page 1 is moved, and the page then cannot be written:
+        // a checkpoint taken now would lack what the move did to the page,
+        // with the move's record before its sample, where no replay looks.
+        Step::Move(1, 2),
+        commit(&[insert((1, 3), b"f", long(6, 500))]),
+        Step::Hold(1),
+        Step::Checkpoint,
+        Step::Release,
+        Step::Checkpoint,
         commit(&[free(2), hash((1, 1), 7)]),
         Step::Pass,
         commit(&[hash((3, 2), 8)]),
@@ -309,14 +319,14 @@ pub(super) fn life() -> Vec<Step> {
 fn the_script_takes_checkpoints_drops_log_files_and_puts_a_checkpoint_off() {
     let ran = run(&life(), None);
     assert!(!ran.fs.is_powered_off());
-    assert_eq!(ran.latest, version(11));
+    assert_eq!(ran.latest, version(12));
     assert!(ran.checkpoints >= 5, "{} checkpoints", ran.checkpoints);
     assert!(
         ran.log_files_dropped >= 3,
         "{} log files dropped",
         ran.log_files_dropped
     );
-    assert_eq!(ran.put_off, 2);
+    assert_eq!(ran.put_off, 3);
     let mut tally = Tally::default();
     check(&ran, &PLANS, &mut tally);
     assert!(tally.states > 0);

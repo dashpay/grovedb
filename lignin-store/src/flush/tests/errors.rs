@@ -316,6 +316,18 @@ fn a_value_log_file_that_cannot_be_synced_is_left_for_another() {
     db.reopen().check_cold();
 }
 
+/// Puts other bytes, of another length, in place of those that are with
+/// the frame of `id` for its first pending value.
+fn shorten_the_value(db: &Db, id: PageId) {
+    let (_, pending) = db.pending(id)[0];
+    let step = db.pool.page_step(id);
+    let old = step.current().expect("the page");
+    let mut blank = db.pool.blank();
+    blank.copy_from(&old);
+    blank.attach(pending.id(), Arc::from(&b"too short"[..]));
+    step.replace(&old, blank).expect("replaced");
+}
+
 /// A pending value whose bytes are with its frame in another length than
 /// its cell states is not written anywhere. The pass reports it and goes
 /// on: the page stays as it is, and the other pages are written.
@@ -327,15 +339,7 @@ fn a_pending_value_without_bytes_of_its_length_is_refused() {
         insert((2, 1), b"b", long(2, 800)),
         insert((3, 1), b"c", inline(b"v")),
     ]);
-    let (_, pending) = db.pending(page(1))[0];
-    {
-        let step = db.pool.page_step(page(1));
-        let old = step.current().expect("the page");
-        let mut blank = db.pool.blank();
-        blank.copy_from(&old);
-        blank.attach(pending.id(), Arc::from(&b"too short"[..]));
-        step.replace(&old, blank).expect("replaced");
-    }
+    shorten_the_value(&db, page(1));
     for _ in 0..2 {
         let error = db.wb().pass().expect_err("the bytes are not the value");
         assert!(
@@ -361,6 +365,37 @@ fn a_pending_value_without_bytes_of_its_length_is_refused() {
         .expect_err("the page cannot be written");
     assert!(matches!(error, FlushError::PendingValue { .. }), "{error}");
     assert_eq!(db.stats().checkpoints, 0);
+}
+
+/// A frame whose bytes are no page cannot be written back. The pass says
+/// which page it is, leaves it, and writes the pages behind it.
+#[test]
+fn a_frame_that_is_no_page_is_left_and_the_pages_behind_it_are_written() {
+    let db = Db::new();
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"v")),
+        insert((2, 1), b"b", inline(b"w")),
+        insert((3, 1), b"c", long(1, 700)),
+    ]);
+    {
+        let step = db.pool.page_step(page(1));
+        let old = step.current().expect("the page");
+        let mut blank = db.pool.blank();
+        blank.fill(0);
+        step.replace(&old, blank).expect("replaced");
+    }
+    let error = db.wb().pass().expect_err("the frame is no page");
+    assert!(
+        matches!(error, FlushError::Page { page: id, .. } if id == page(1)),
+        "{error}"
+    );
+    let stats = db.stats();
+    assert_eq!((stats.base_blocks, stats.values_placed), (2, 1));
+    assert_eq!(db.state.unwritten(), 1);
+    assert_eq!(
+        (db.shape(page(2)), db.shape(page(3))),
+        ("B".into(), "B".into())
+    );
 }
 
 /// A commit frees a page while write-back writes its block. The page table
@@ -537,5 +572,46 @@ fn a_turn_that_cannot_roll_the_log_still_makes_its_pass() {
     assert!(
         matches!(error, FlushError::Log(LogError::SyncFailed { .. })),
         "{error}"
+    );
+}
+
+/// With the loop running, a page that cannot be written fails every turn.
+/// The turns write the other pages all the same, and a committer that
+/// waits for room is told that waiting does not help.
+#[test]
+fn a_page_that_cannot_be_written_holds_up_no_other_page_and_no_committer() {
+    let config = FlushConfig {
+        max_unwritten: 0,
+        idle: std::time::Duration::from_millis(2),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let db = Db::with(config);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", inline(b"v")),
+    ]);
+    shorten_the_value(&db, page(1));
+
+    let wb = db.wb();
+    let errors = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        scope.spawn(|| wb.run(|error| errors.lock().expect("the errors").push(error.to_string())));
+        let _stop = StopOnDrop(wb);
+        while !db.state.running.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        assert_eq!(wb.wait_for_room().expect("room"), Room::Stalled);
+        db.commit(&[hash((2, 1), 1)]);
+        assert_eq!(wb.wait_for_room().expect("room"), Room::Stalled);
+    });
+    assert_eq!(db.state.unwritten(), 1);
+    assert_eq!(db.shape(page(2)), "Bd");
+    let errors = errors.into_inner().expect("the errors");
+    assert!(!errors.is_empty());
+    assert!(
+        errors
+            .iter()
+            .all(|error| error.starts_with("a pending value of page 1")),
+        "{errors:?}"
     );
 }

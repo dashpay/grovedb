@@ -139,31 +139,39 @@ impl WriteBack<'_> {
             turns.begun += 1;
             turns.begun
         };
-        let turn = self.turn();
+        let (progress, turn) = self.turn();
         let mut turns = lock(&state.turns);
         turns.ended = number;
-        turns.progress = turn.as_ref().is_ok_and(Tick::progressed);
+        turns.progress = progress;
         drop(turns);
         state.turned.notify_all();
         turn
     }
 
-    fn turn(&self) -> Result<Tick, FlushError> {
+    /// One turn, and whether it moved anything on, which it can have done
+    /// though it failed.
+    fn turn(&self) -> (bool, Result<Tick, FlushError>) {
         let rolled = self.roll_log();
         let synced = self.sync_log_if_due();
         let (pass, passed) = self.pass_through();
-        let rolled = rolled?;
-        synced?;
-        passed?;
-        let checkpoint = match self.checkpoint_due() && pass.blocked == 0 {
-            true => Some(self.checkpoint()?),
-            false => None,
+        let turn = rolled.and_then(|rolled| {
+            synced?;
+            passed?;
+            let checkpoint = match self.checkpoint_due() && pass.blocked == 0 {
+                true => Some(self.checkpoint()?),
+                false => None,
+            };
+            Ok(Tick {
+                rolled,
+                pass,
+                checkpoint,
+            })
+        });
+        let progress = match &turn {
+            Ok(tick) => tick.progressed(),
+            Err(_) => pass.progressed(),
         };
-        Ok(Tick {
-            rolled,
-            pass,
-            checkpoint,
-        })
+        (progress, turn)
     }
 
     /// The background loop: [`Self::tick`], again and again, until

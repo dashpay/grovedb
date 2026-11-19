@@ -552,7 +552,9 @@ impl<'s> WriteBack<'s> {
             if let Some(freed) = links.last().filter(|link| link.kind == LinkKind::Free)
                 && born < freed.version
             {
-                // Nothing older than a free link is written back (T18).
+                // Nothing older than a free link is written back (T18),
+                // and nothing that was kept of it is needed.
+                lock(&self.state.kept).freed(page, freed.version.get());
                 continue;
             }
             let is_current = look.current && index + 1 == look.frames.len();
