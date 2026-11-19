@@ -47,7 +47,7 @@ mod non_merk_subtree_discovery_tests;
 // Tampers with raw storage via `GroveDb::raw_storage`, which is only
 // compiled under the `unsafe-dump-load` feature.
 mod instance_cap_layer_truncation_tests;
-#[cfg(feature = "unsafe-dump-load")]
+#[cfg(all(feature = "unsafe-dump-load", grovedb_test_engine = "rocksdb"))]
 mod non_merk_integrity_audit_tests;
 mod non_merk_limited_page_tests;
 mod non_merk_mmr_proof_shape_tests;
@@ -190,7 +190,6 @@ use grovedb_visualize::{Drawer, Visualize};
 use tempfile::TempDir;
 
 use self::common::EMPTY_PATH;
-use grovedb_storage::{Storage, StorageContext};
 
 use super::*;
 use crate::{
@@ -212,6 +211,9 @@ use crate::{
 pub type SuiteEngine = crate::RocksDbEngine;
 #[cfg(grovedb_test_engine = "pinned-reads")]
 pub type SuiteEngine = pinned_reads::PinnedReads;
+
+/// The batch of the suite's engine.
+pub type SuiteBatch = <SuiteEngine as Engine>::Batch;
 
 /// The number of records in the data keyspace of the subtree with `prefix`,
 /// as `transaction` reads it, or in the committed state with none.
@@ -3897,7 +3899,6 @@ mod general_tests {
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_subtree_pairs_iterator() {
         let grove_version = GroveVersion::latest();
@@ -3997,14 +3998,10 @@ mod general_tests {
         let storage_context = db
             .grove_db
             .db
-            .storage()
-            .get_transactional_storage_context(
-                [TEST_LEAF, b"subtree1"].as_ref().into(),
-                None,
-                &transaction,
-            )
+            .subtree([TEST_LEAF, b"subtree1"].as_ref().into(), None, &transaction)
             .unwrap();
-        let mut iter = Element::iterator(storage_context.raw_iter()).unwrap();
+        let mut iter =
+            Element::iterator(grovedb_merk::store::NodeStore::cursor(&storage_context)).unwrap();
         assert_eq!(
             iter.next_element(grove_version).unwrap().unwrap(),
             Some((b"key1".to_vec(), element))
@@ -4087,18 +4084,13 @@ mod general_tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
         let db = make_test_grovedb(grove_version);
         let transaction = db.start_transaction();
 
-        let storage = db
-            .db
-            .storage()
-            .get_transactional_storage_context(EMPTY_PATH, None, &transaction)
-            .unwrap();
+        let storage = db.db.subtree(EMPTY_PATH, None, &transaction).unwrap();
         let root_merk = Merk::open_base(
             storage,
             TreeType::NormalTree,
@@ -4114,7 +4106,6 @@ mod general_tests {
         assert!(root_key.is_some())
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_subtree() {
         let grove_version = GroveVersion::latest();
@@ -4204,8 +4195,7 @@ mod general_tests {
             let subtree_storage = db
                 .grove_db
                 .db
-                .storage()
-                .get_transactional_storage_context(
+                .subtree(
                     [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                     None,
                     &transaction,
@@ -4259,8 +4249,7 @@ mod general_tests {
         let subtree_storage = db
             .grove_db
             .db
-            .storage()
-            .get_transactional_storage_context(
+            .subtree(
                 [TEST_LEAF, b"key1", b"innertree"].as_ref().into(),
                 None,
                 &transaction,
@@ -4284,8 +4273,7 @@ mod general_tests {
         let subtree_storage = db
             .grove_db
             .db
-            .storage()
-            .get_transactional_storage_context(
+            .subtree(
                 [TEST_LEAF, b"key1", b"key2"].as_ref().into(),
                 None,
                 &transaction,

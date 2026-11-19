@@ -1326,12 +1326,11 @@ fn initial_segment_removal_keeps_its_own_declaration() {
 /// A skipped callback `DeleteTree(Skip)` must not erase the cleanup behavior
 /// of the `DeleteTree(DeleteChildren)` the initial segment executed at the
 /// same path: the removed subtree's storage is still cleaned.
-#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
     use crate::batch::SubelementsDeletionBehavior;
+    use crate::Engine;
     use grovedb_merk::TreeType;
-    use grovedb_storage::{Storage, StorageContext};
     let version = GroveVersion::latest();
     let db = make_test_grovedb(version);
     db.insert(
@@ -1382,11 +1381,12 @@ fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
     let tx = db.start_transaction();
     let storage = db
         .db
-        .storage()
-        .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
+        .subtree(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
         .unwrap();
     assert!(
-        storage.get(b"child").unwrap().unwrap().is_none(),
+        !grovedb_merk::store::NodeStore::has_node(&storage, b"child")
+            .unwrap()
+            .unwrap(),
         "the executed DeleteChildren must still clean the subtree's storage"
     );
     assert!(db
@@ -1627,12 +1627,11 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
 /// initial deletion is cleaned up: the cleanup walk still runs, so it still
 /// clears the subtree's storage and still refuses a participant the batch
 /// does not explicitly delete.
-#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn callback_delete_tree_cannot_erase_the_initial_segments_cleanup() {
     use crate::batch::SubelementsDeletionBehavior;
+    use crate::Engine;
     use grovedb_merk::TreeType;
-    use grovedb_storage::{Storage, StorageContext};
     let version = GroveVersion::latest();
     let seed = |db: &TempGroveDb, child: Element| {
         db.insert(
@@ -1683,11 +1682,12 @@ fn callback_delete_tree_cannot_erase_the_initial_segments_cleanup() {
     let tx = db.start_transaction();
     let storage = db
         .db
-        .storage()
-        .get_transactional_storage_context(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
+        .subtree(SubtreePath::from(&[TEST_LEAF, b"tree"]), None, &tx)
         .unwrap();
     assert!(
-        storage.get(b"value").unwrap().unwrap().is_none(),
+        !grovedb_merk::store::NodeStore::has_node(&storage, b"value")
+            .unwrap()
+            .unwrap(),
         "the initial DeleteChildren must still clean the subtree's storage"
     );
     drop(storage);

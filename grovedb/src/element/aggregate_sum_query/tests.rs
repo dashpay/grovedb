@@ -3,7 +3,6 @@ use grovedb_merk::proofs::query::AggregateSumQuery;
 use grovedb_merk::proofs::query::QueryItem;
 use grovedb_merk::tree::NULL_HASH;
 use grovedb_path::SubtreePath;
-use grovedb_storage::Storage;
 use grovedb_version::version::GroveVersion;
 
 use crate::element::aggregate_sum_query::{
@@ -11,6 +10,7 @@ use crate::element::aggregate_sum_query::{
 };
 use crate::merk_cache::MerkCache;
 use crate::reference_path::ReferencePathType;
+use crate::Engine;
 use crate::{
     tests::{make_test_sum_tree_grovedb, TEST_LEAF},
     AggregateSumPathQuery, Element, Error,
@@ -3086,7 +3086,6 @@ fn test_descending_reference_followed() {
     );
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn test_cyclic_reference_detected_in_aggregate_sum_query() {
     // Two references form a cycle: ref_a -> ref_b -> ref_a.
@@ -3143,8 +3142,7 @@ fn test_cyclic_reference_detected_in_aggregate_sum_query() {
         // Commit the batch to make the writes visible in the transaction
         let batch = cache.into_batch().unwrap().expect("should produce batch");
         db.db
-            .storage()
-            .commit_multi_context_batch(*batch, Some(&tx))
+            .apply_batch(*batch, &tx)
             .unwrap()
             .expect("should commit batch");
     }
@@ -3172,7 +3170,6 @@ fn test_cyclic_reference_detected_in_aggregate_sum_query() {
     );
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn test_self_referencing_element_detected_in_aggregate_sum_query() {
     // A reference that points to itself: ref_self -> ref_self.
@@ -3209,8 +3206,7 @@ fn test_self_referencing_element_detected_in_aggregate_sum_query() {
 
         let batch = cache.into_batch().unwrap().expect("should produce batch");
         db.db
-            .storage()
-            .commit_multi_context_batch(*batch, Some(&tx))
+            .apply_batch(*batch, &tx)
             .unwrap()
             .expect("should commit batch");
     }

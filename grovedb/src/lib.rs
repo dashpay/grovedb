@@ -485,7 +485,12 @@ impl GroveDb {
         let weak = Arc::downgrade(self);
         start_visualizer(weak, addr);
     }
+}
 
+/// The hatches to the storage of the RocksDB engine. No other engine has
+/// them, so they are on that engine by name.
+#[cfg(feature = "unsafe-dump-load")]
+impl GroveDb<RocksDbEngine> {
     /// Reborrow the underlying [`grovedb_storage::rocksdb_storage::RocksDbStorage`]
     /// for callers that need to use the public [`grovedb_storage::Storage`]
     /// trait directly — notably to open a [`grovedb_storage::StorageContext`]

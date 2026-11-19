@@ -20,16 +20,32 @@ use crate::{
     Element, Error, GroveDb, PathQuery, SizedQuery,
 };
 
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_commitment_tree::CommitmentTree;
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_path::SubtreePath;
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use grovedb_storage::{
     rocksdb_storage::{Options, RocksDbStorage, SstFileWriter},
     RawIterator, Storage, StorageContext,
 };
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 use tempfile::TempDir;
 
 /// Default chunk power for tests (2^10 = 1024, large enough that compaction
@@ -2589,7 +2605,11 @@ fn test_commitment_compaction_transaction_rollback() {
 // the source's, byte-for-byte, demonstrating the snapshot-bootstrap contract
 // described in `replace_subtree_root.rs`'s module docs.
 
-#[cfg(all(feature = "unsafe-dump-load", not(lignin_cost_model)))]
+#[cfg(all(
+    feature = "unsafe-dump-load",
+    grovedb_test_engine = "rocksdb",
+    not(lignin_cost_model)
+))]
 #[test]
 fn unsafe_dump_load_subtree_roundtrip_preserves_root_hash() {
     let grove_version = GroveVersion::latest();

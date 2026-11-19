@@ -309,6 +309,7 @@ jobs:
           fi
           cargo check -p grovedb --no-default-features --features engine_generic
           cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests
+          cargo test -p grovedb-merk --no-default-features --features minimal --lib
 
   formatting:
     name: Formatting

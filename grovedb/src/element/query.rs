@@ -1054,11 +1054,12 @@ pub(crate) fn get_path_query_internal<'db, E: Engine>(
 mod tests {
     use grovedb_element::Element;
     use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, proofs::Query};
-    use grovedb_storage::{Storage, StorageBatch};
+    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use crate::{
         element::query::{ElementQueryExtensions, QueryOptions},
+        engine::Engine,
         query_result_type::{
             KeyElementPair, QueryResultElement, QueryResultElements,
             QueryResultType::{
@@ -1343,7 +1344,6 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_range_query() {
         let grove_version = GroveVersion::latest();
@@ -1381,8 +1381,7 @@ mod tests {
             .expect("expected successful insertion");
 
         storage
-            .storage()
-            .commit_multi_context_batch(batch, None)
+            .apply_batch(batch, &transaction)
             .unwrap()
             .expect("expected successful batch commit");
 
@@ -1461,7 +1460,6 @@ mod tests {
         assert_eq!(skipped, 0);
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_range_inclusive_query() {
         let grove_version = GroveVersion::latest();
@@ -1500,8 +1498,7 @@ mod tests {
             .expect("expected successful insertion");
 
         storage
-            .storage()
-            .commit_multi_context_batch(batch, None)
+            .apply_batch(batch, &transaction)
             .unwrap()
             .expect("expected successful batch commit");
 
