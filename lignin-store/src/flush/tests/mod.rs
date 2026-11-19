@@ -7,6 +7,7 @@ mod chains;
 mod checkpoint;
 mod crash;
 mod errors;
+mod faults;
 mod recover;
 mod regroup;
 mod values;

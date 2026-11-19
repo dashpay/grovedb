@@ -17,7 +17,7 @@ use crate::segment::tests::sim::{crash_states, db_dir, shared, sim_fs, Plans};
 
 /// One step of a script.
 #[derive(Debug, Clone)]
-enum Step {
+pub(super) enum Step {
     Commit(Vec<Op>),
     Pass,
     Checkpoint,
@@ -33,7 +33,7 @@ enum Step {
     Release,
 }
 
-fn config() -> FlushConfig {
+pub(super) fn config() -> FlushConfig {
     FlushConfig {
         max_chain_deltas: 2,
         ..FlushConfig::new(Db::SIZE)
@@ -42,7 +42,7 @@ fn config() -> FlushConfig {
 
 /// Small log files, so that the log turns often and checkpoints have
 /// files to take out of it.
-fn log_options() -> LogOptions {
+pub(super) fn log_options() -> LogOptions {
     LogOptions {
         target_file_len: 600,
         ..LogOptions::default()
@@ -50,12 +50,12 @@ fn log_options() -> LogOptions {
 }
 
 /// How one run of a script ended.
-struct Ran {
-    fs: SimVfs,
-    model: Model,
+pub(super) struct Ran {
+    pub(super) fs: SimVfs,
+    pub(super) model: Model,
     /// The version the log was known to be durable through.
-    durable: CommitVersion,
-    latest: CommitVersion,
+    pub(super) durable: CommitVersion,
+    pub(super) latest: CommitVersion,
     checkpoints: u64,
     log_files_dropped: u64,
     put_off: u64,
@@ -84,33 +84,10 @@ fn run(script: &[Step], crash: Option<u64>) -> Ran {
         };
     };
     let steps = catch_unwind(AssertUnwindSafe(|| {
-        let wb = db.wb();
-        let mut held = None;
+        let mut session = Session::new(&db);
         for step in script {
-            let done = match step {
-                Step::Commit(ops) => Ok(db.commit(ops)).map(drop),
-                Step::Pass => wb.pass().map(drop),
-                Step::Checkpoint => wb.checkpoint().map(drop),
-                Step::Move(page_id, slot_id) => {
-                    Ok(db.move_value(page(*page_id), slot(*slot_id), false))
-                }
-                Step::SyncLog => wb.sync_log().map(drop),
-                Step::Hold(page_id) => {
-                    let mut txn = db.begin();
-                    txn.copy(page(*page_id));
-                    held = Some(txn);
-                    Ok(())
-                }
-                Step::HeldCommit(ops) => {
-                    held.take().expect("a transaction holds a copy").commit(ops);
-                    wb.place_ready().map(drop)
-                }
-                Step::Release => {
-                    held.take().expect("a transaction holds a copy").roll_back();
-                    wb.place_ready().map(drop)
-                }
-            };
-            if let Err(error) = done {
+            session.commits(step);
+            if let Err(error) = session.writes_back(step) {
                 assert!(
                     fs.is_powered_off(),
                     "{step:?} failed with the power on: {error}"
@@ -123,28 +100,87 @@ fn run(script: &[Step], crash: Option<u64>) -> Ran {
         steps.is_ok() || fs.is_powered_off(),
         "a step failed with the power on"
     );
-    let model = db
-        .model
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .clone();
-    let stats = db.stats();
-    Ran {
-        durable: db.log.durable().version,
-        latest: db.latest(),
-        checkpoints: stats.checkpoints,
-        log_files_dropped: stats.log_files_dropped,
-        put_off: stats.checkpoints_put_off,
-        model,
-        fs: fs.clone(),
+    Ran::of(&fs, &db)
+}
+
+impl Ran {
+    /// How things stand in `db`, which is on `fs`.
+    pub(super) fn of(fs: &SimVfs, db: &Db) -> Self {
+        let model = db
+            .model
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let stats = db.stats();
+        Self {
+            durable: db.log.durable().version,
+            latest: db.latest(),
+            checkpoints: stats.checkpoints,
+            log_files_dropped: stats.log_files_dropped,
+            put_off: stats.checkpoints_put_off,
+            model,
+            fs: fs.clone(),
+        }
+    }
+}
+
+/// A store that a script is run on, step by step.
+pub(super) struct Session<'d> {
+    db: &'d Db,
+    held: Option<Txn<'d>>,
+}
+
+impl<'d> Session<'d> {
+    pub(super) fn new(db: &'d Db) -> Self {
+        Self { db, held: None }
+    }
+
+    /// The part of `step` that is a committer's or the cleaner's.
+    pub(super) fn commits(&mut self, step: &Step) {
+        let db = self.db;
+        match step {
+            Step::Commit(ops) => drop(db.commit(ops)),
+            Step::Move(page_id, slot_id) => db.move_value(page(*page_id), slot(*slot_id), false),
+            Step::Hold(page_id) => {
+                let mut txn = db.begin();
+                txn.copy(page(*page_id));
+                self.held = Some(txn);
+            }
+            Step::HeldCommit(ops) => drop(self.take_held().commit(ops)),
+            Step::Release => self.take_held().roll_back(),
+            Step::Pass | Step::Checkpoint | Step::SyncLog => {}
+        }
+    }
+
+    /// The part of `step` that is write-back's.
+    pub(super) fn writes_back(&mut self, step: &Step) -> Result<(), FlushError> {
+        let wb = self.db.wb();
+        match step {
+            Step::Pass => wb.pass().map(drop),
+            Step::Checkpoint => wb.checkpoint().map(drop),
+            Step::SyncLog => wb.sync_log().map(drop),
+            Step::HeldCommit(_) | Step::Release => wb.place_ready().map(drop),
+            Step::Commit(_) | Step::Move(..) | Step::Hold(_) => Ok(()),
+        }
+    }
+
+    /// The transaction that holds a copy gives it up, if there is one.
+    pub(super) fn release(&mut self) {
+        if let Some(txn) = self.held.take() {
+            txn.roll_back();
+        }
+    }
+
+    fn take_held(&mut self) -> Txn<'d> {
+        self.held.take().expect("a transaction holds a copy")
     }
 }
 
 /// What the recoveries of one script came to.
 #[derive(Debug, Default)]
-struct Tally {
-    crashes: u64,
-    states: u64,
+pub(super) struct Tally {
+    pub(super) crashes: u64,
+    pub(super) states: u64,
     /// Recoveries that landed above the version known durable: commits
     /// that a crash kept though nobody had synced them.
     ahead: u64,
@@ -155,7 +191,7 @@ struct Tally {
 
 /// Recovers every state that a crash of `ran` can leave, as `plans` picks
 /// them, and checks each against the model.
-fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
+pub(super) fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
     let ids: Vec<PageId> = ran.model.pages.keys().copied().collect();
     let states = crash_states(&ran.fs.crash_image(), plans);
     tally.crashes += 1;
@@ -225,7 +261,7 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// values moved under a checkpoint, a page freed with a change that was
 /// never written back, its id used again, and table checkpoints in
 /// between that take log files away.
-fn life() -> Vec<Step> {
+pub(super) fn life() -> Vec<Step> {
     vec![
         commit(&[
             insert((1, 1), b"a", inline(b"one")),
@@ -279,7 +315,7 @@ fn the_script_takes_checkpoints_drops_log_files_and_puts_a_checkpoint_off() {
     assert!(tally.states > 0);
 }
 
-const PLANS: Plans = Plans {
+pub(super) const PLANS: Plans = Plans {
     every_plan_limit: 48,
     samples: 4,
 };
