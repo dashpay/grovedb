@@ -92,7 +92,9 @@ fn check_block(block: &Block<'_>, bytes: &[u8], max_payload_len: usize) {
 
 /// Reads the footer from the end of the valid part, as the manifest states
 /// its length. Bit 7 of `control` states one that is 8 bytes too long, and
-/// bits 5 and 6 pick where the bytes handed to the reader start.
+/// bits 5 and 6 pick where the bytes handed to the reader start. Each block
+/// the index lists is read at the length its entry states; no decoder sees
+/// both tags, so that the entry repeats the block's own (S16) is not held.
 fn footer(file: &[u8], version: FormatVersion, max_payload_len: usize, control: u8) {
     let stated = file.len() as u64 + u64::from(control >> 7) * 8;
     let tail_at = match control >> 5 & 3 {
@@ -142,7 +144,8 @@ fn footer(file: &[u8], version: FormatVersion, max_payload_len: usize, control: 
         let start = listed.offset as usize;
         let bytes = &file[start..start + listed.tag.block_len()];
         if let Some(block) = ok(Block::decode(version, bytes, max_payload_len)) {
-            assert_eq!(block.tag(), listed.tag);
+            assert_eq!(block.tag().block_len(), listed.tag.block_len());
+            check_block(&block, bytes, max_payload_len);
         }
     }
 }
