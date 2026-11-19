@@ -161,6 +161,17 @@ struct Op {
     subtrees: u32,
     /// A number no other operation of the set has, or had.
     serial: u64,
+    /// The open scope that made the operation, or zero for an operation
+    /// that is the transaction's: its scope has merged (SC6).
+    scope: u32,
+    /// Whether the transaction's frames show the operation. A scope that
+    /// was opened beside another lays its operations out when it merges
+    /// (`lignindb::scope`).
+    laid: bool,
+    /// The first-write version of the operation's entries (WT5).
+    first_write: CommitVersion,
+    /// The place of the arena before the operation's bytes.
+    arena: ArenaMark,
 }
 
 /// What the data column of a subtree holds in a write set (ST1).
@@ -184,7 +195,7 @@ pub(crate) enum Own<'a> {
 }
 
 /// The writes of one unit, by key.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 struct UnitIndex {
     /// The newest entry of each key that was put or deleted.
     keys: BTreeMap<Box<[u8]>, EntryId>,
@@ -206,6 +217,9 @@ pub struct Mark {
     arena: ArenaMark,
     /// The serial of the operation before the mark, or zero.
     last: u64,
+    /// How many changes the transaction's pending marks had taken (SC9):
+    /// the changes after the mark are undone with the writes after it.
+    pub(crate) pending: usize,
 }
 
 /// The write set (WT2): every write the transaction made, in order, with
@@ -213,7 +227,7 @@ pub struct Mark {
 ///
 /// The list is the truth (WT3). The index is derived from it: it gives the
 /// newest write that covers a key, and the written keys of a unit in order.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct WriteSet {
     entries: Vec<Entry>,
     ops: Vec<Op>,
@@ -353,6 +367,7 @@ impl WriteSet {
             subtrees: self.subtrees.len(),
             arena: self.arena.mark(),
             last: self.ops.last().map_or(0, |op| op.serial),
+            pending: 0,
         }
     }
 
@@ -519,6 +534,10 @@ impl WriteSet {
             merks: self.merks.len() as u32,
             subtrees: self.subtrees.len() as u32,
             serial: self.serial,
+            scope: 0,
+            laid: true,
+            first_write,
+            arena: self.arena.mark(),
         });
         for write in batch.subtrees {
             let entry = match *write {
@@ -611,6 +630,132 @@ impl WriteSet {
             }
         }
         first
+    }
+
+    /// Says that the open scope `scope` made the operation that was added
+    /// last, and whether the transaction's frames show it.
+    pub(crate) fn tag_last(&mut self, scope: u32, laid: bool) {
+        let op = self.ops.last_mut().expect("an operation was added");
+        (op.scope, op.laid) = (scope, laid);
+    }
+
+    /// Whether the transaction's frames show the operation `op`. Frames
+    /// that are made from the set pass over an operation they do not show.
+    pub(crate) fn laid(&self, op: usize) -> bool {
+        self.ops[op].laid
+    }
+
+    /// The operations of the open scope `scope`, oldest first.
+    pub(crate) fn ops_of(&self, scope: u32) -> Vec<usize> {
+        let ops = self.ops.iter().enumerate();
+        ops.filter_map(|(at, op)| (op.scope == scope).then_some(at))
+            .collect()
+    }
+
+    /// Makes the operations of the scope `scope` the transaction's (SC6),
+    /// all of them laid out.
+    pub(crate) fn merge_scope(&mut self, scope: u32) {
+        for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
+            (op.scope, op.laid) = (0, true);
+        }
+    }
+
+    /// The operations of the open scope `scope` are laid out: the
+    /// transaction's frames show them from here on.
+    pub(crate) fn lay_scope(&mut self, scope: u32) {
+        for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
+            op.laid = true;
+        }
+    }
+
+    /// The operation that the entry `id` is of.
+    fn op_of(&self, id: EntryId) -> usize {
+        self.ops.partition_point(|op| op.entries <= id) - 1
+    }
+
+    /// Whether the entry `id` is of an operation the transaction's frames
+    /// do not show.
+    pub(crate) fn unlaid(&self, id: EntryId) -> bool {
+        !self.ops[self.op_of(id)].laid
+    }
+
+    /// The subtrees that operations which are not laid out drop or clear,
+    /// oldest first.
+    pub(crate) fn unlaid_leaving(&self) -> Vec<Subtree> {
+        let unlaid = self.leaving.iter().filter(|id| self.unlaid(**id));
+        unlaid.map(|id| self.entry(*id).unit.subtree).collect()
+    }
+
+    /// The place before the operation `op`.
+    fn mark_at(&self, op: usize) -> Mark {
+        let this = self.ops[op];
+        Mark {
+            entries: this.entries as usize,
+            ops: op,
+            merks: this.merks as usize,
+            subtrees: this.subtrees as usize,
+            arena: this.arena,
+            last: op
+                .checked_sub(1)
+                .map_or(0, |before| self.ops[before].serial),
+            pending: 0,
+        }
+    }
+
+    /// The subtrees below the one it drops or clears that the operation
+    /// `op` covers: what [`Self::add`] was given as `cut`.
+    fn op_cut(&self, op: usize) -> Vec<Subtree> {
+        let (from, to, ..) = self.op_bounds(op);
+        let first = self.entries[from..to].first();
+        first.map_or_else(Vec::new, |entry| Self::cut(&self.arena, entry).collect())
+    }
+
+    /// Takes out every write of the open scope `scope`, with its
+    /// first-write version and its place in the overlap set (SC6, CF4),
+    /// and says whether there was one. The writes of every other scope and
+    /// of the transaction stay as they are, in their order.
+    ///
+    /// Where the scope's operations are the last of the set, this is a
+    /// rollback to the place before them. Where operations of others came
+    /// after one of them, those are added again behind what stays, each
+    /// with the first-write version, the serial and the place in the
+    /// overlap set it had: the set is copied for it, once.
+    pub(crate) fn remove_scope(&mut self, scope: u32) -> bool {
+        let Some(first) = self.ops.iter().position(|op| op.scope == scope) else {
+            return false;
+        };
+        let last = self.ops[first..].iter().all(|op| op.scope == scope);
+        let old = (!last).then(|| self.clone());
+        let removed = self.rewind(self.mark_at(first));
+        debug_assert!(removed, "the place before an operation of the set");
+        let Some(old) = old else {
+            return true;
+        };
+        for op in (first..old.ops.len()).filter(|op| old.ops[*op].scope != scope) {
+            let was = old.ops[op];
+            let hosted = old.hosted_lists(op);
+            let batch = old.batch(op, &hosted);
+            let (merks, subtrees) = (batch.merks(), batch.subtrees());
+            let batch = Batch {
+                records: batch.records(),
+                merks: &merks,
+                subtrees: &subtrees,
+            };
+            // A Merk that the operation gave its first root is stated as
+            // one that had none, and every other root is stated as it was
+            // kept: both come out as they went in.
+            let start = self.entries.len();
+            self.add(&batch, was.first_write, &old.made(op), &old.op_cut(op));
+            let added = self.ops.last_mut().expect("it was added");
+            (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
+            let (from, to, ..) = old.op_bounds(op);
+            for (entry, was) in self.entries[start..].iter_mut().zip(&old.entries[from..to]) {
+                entry.met = was.met;
+                self.met += usize::from(was.met);
+            }
+        }
+        self.serial = old.serial;
+        true
     }
 
     fn op_bounds(&self, op: usize) -> (usize, usize, usize, usize) {
@@ -864,6 +1009,17 @@ impl WriteSet {
         in_range(key, start, end)
     }
 
+    /// The entry of the transaction's newest write that covers the record
+    /// key `key` of `unit`, if it has one: what [`Self::own`] answers
+    /// from.
+    pub(crate) fn newest(&self, unit: Unit, key: &[u8]) -> Option<EntryId> {
+        let index = self.units.get(&unit)?;
+        let point = index.keys.get(key).copied();
+        let range =
+            (index.ranges.iter().rev().copied()).find(|range| self.range_holds(*range, key));
+        point.max(range)
+    }
+
     /// The transaction's newest write that covers the record key `key` of
     /// `unit` (RD3).
     pub(crate) fn own(&self, unit: Unit, key: &[u8]) -> Own<'_> {
@@ -1037,6 +1193,35 @@ impl WriteSet {
                 inside.for_each(|(_, id)| chain(*id, &mut met));
             }
         }
+        for id in met {
+            self.mark_met(id, version);
+        }
+    }
+
+    /// Puts into the overlap set every entry that covers a key of
+    /// `subtree`, in any column, and whose first-write version is before
+    /// `version`: a commit outside the transaction dropped the subtree, or
+    /// one it is below, with every record under it (CF5, CV9).
+    pub(crate) fn meet_subtree(&mut self, subtree: Subtree, version: CommitVersion) {
+        let covers = |entry: &Entry| {
+            let units = Self::covered(&self.arena, entry);
+            units.iter().any(|unit| unit.subtree == subtree)
+        };
+        let met: Vec<EntryId> = (0..self.entries.len() as EntryId)
+            .filter(|id| covers(self.entry(*id)))
+            .collect();
+        for id in met {
+            self.mark_met(id, version);
+        }
+    }
+
+    /// Puts into the overlap set every drop and clear of `subtree` whose
+    /// first-write version is before `version`: a commit outside the
+    /// transaction wrote a record below the subtree, which the drop
+    /// deletes (CF5).
+    pub(crate) fn meet_leaving(&mut self, subtree: Subtree, version: CommitVersion) {
+        let named = |id: &&EntryId| self.entry(**id).unit.subtree == subtree;
+        let met: Vec<EntryId> = self.leaving.iter().filter(named).copied().collect();
         for id in met {
             self.mark_met(id, version);
         }
