@@ -111,11 +111,6 @@ const DUMP_LOAD: Status = Status::LeftOut(
 
 const AGGREGATE_READER: Status = inside("run_path_query");
 
-const WIDE_INDEXED_ENTRY: Status = Status::LeftOut(
-    "writes an entry of an indexed tree with a 128-bit sum, which GroveDB #1062 added and no \
-     workload produces yet; the BASE-01 follow-up that produces the two trees owes the call",
-);
-
 /// Every public method of `GroveDb`, the methods of the traits implemented
 /// for it included, and every public method of the transaction it hands
 /// out under the name `Transaction::…`, in alphabetical order.
@@ -125,12 +120,12 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "Transaction::is_snapshot_read",
         produced(&[Operation::SnapshotRead]),
     ),
-    ("Transaction::set_savepoint", inside("set_savepoint")),
     ("Transaction::rollback", inside("rollback_transaction")),
     (
         "Transaction::rollback_to_savepoint",
         inside("rollback_to_savepoint"),
     ),
+    ("Transaction::set_savepoint", inside("set_savepoint")),
     (
         "Transaction::snapshot_age",
         Status::LeftOut(
@@ -175,6 +170,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::FlatDropInBatch,
             Operation::DeleteUpTreeBuilt,
             Operation::DeleteBuilt,
+            Operation::FilledTreeBatch,
         ]),
     ),
     (
@@ -294,11 +290,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "delete_from_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedDeleteBigSum]),
     ),
     (
         "delete_from_provable_count_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedDeleteCountBigSum]),
     ),
     (
         "delete_from_provable_count_provable_sum_indexed_tree",
@@ -434,11 +430,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "insert_into_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedInsertBigSum]),
     ),
     (
         "insert_into_provable_count_provable_big_sum_indexed_tree",
-        WIDE_INDEXED_ENTRY,
+        produced(&[Operation::IndexedInsertCountBigSum]),
     ),
     (
         "insert_into_provable_count_provable_sum_indexed_tree",
@@ -628,6 +624,14 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
             Operation::AxisRankOfKey,
             Operation::AxisAggregate,
             Operation::BranchedAxisRead,
+            Operation::BigSumAxisRankedPage,
+            Operation::BigSumAxisBounded,
+            Operation::BigSumAxisRankOfKey,
+            Operation::BigSumAxisPopulation,
+            Operation::BranchedBigSumAxisRead,
+            Operation::CappedLayer,
+            Operation::InheritedCap,
+            Operation::CappedLayerInBranch,
         ]),
     ),
     (

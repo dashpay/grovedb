@@ -1366,6 +1366,21 @@ fn apply_write(
                     transaction,
                     grove_version,
                 ),
+                IndexedTree::BigSum => db.insert_into_provable_big_sum_indexed_tree(
+                    path,
+                    key,
+                    element,
+                    transaction,
+                    grove_version,
+                ),
+                IndexedTree::CountBigSum => db
+                    .insert_into_provable_count_provable_big_sum_indexed_tree(
+                        path,
+                        key,
+                        element,
+                        transaction,
+                        grove_version,
+                    ),
             }
             .map_ok(written)
         }
@@ -1384,6 +1399,19 @@ fn apply_write(
                     transaction,
                     grove_version,
                 ),
+                IndexedTree::BigSum => db.delete_from_provable_big_sum_indexed_tree(
+                    path,
+                    key,
+                    transaction,
+                    grove_version,
+                ),
+                IndexedTree::CountBigSum => db
+                    .delete_from_provable_count_provable_big_sum_indexed_tree(
+                        path,
+                        key,
+                        transaction,
+                        grove_version,
+                    ),
             }
             .map_ok(Outcome::Flag)
         }

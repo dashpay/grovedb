@@ -320,8 +320,7 @@ pub enum Write {
     },
 }
 
-/// The three types of indexed tree, each written through methods of its
-/// own.
+/// The types of indexed tree, each written through methods of its own.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IndexedTree {
     /// `ProvableCountIndexedTree`: `…_count_indexed_tree`.
@@ -331,6 +330,11 @@ pub enum IndexedTree {
     /// `ProvableCountProvableSumIndexedTree`:
     /// `…_provable_count_provable_sum_indexed_tree`.
     CountSum,
+    /// `ProvableBigSumIndexedTree`: `…_provable_big_sum_indexed_tree`.
+    BigSum,
+    /// `ProvableCountProvableBigSumIndexedTree`:
+    /// `…_provable_count_provable_big_sum_indexed_tree`.
+    CountBigSum,
 }
 
 /// One operation of a batch.
@@ -1003,6 +1007,8 @@ impl IndexedTree {
             IndexedTree::Count => 0,
             IndexedTree::Sum => 1,
             IndexedTree::CountSum => 2,
+            IndexedTree::BigSum => 3,
+            IndexedTree::CountBigSum => 4,
         });
     }
 }
@@ -1130,6 +1136,24 @@ fn put_stop_height(out: &mut Vec<u8>, stop_path_height: Option<u16>) {
 }
 
 impl BatchOp {
+    /// The subtree the op works in: the tree an append goes to, and for
+    /// every other operation the tree that holds its key.
+    pub fn path(&self) -> &Path {
+        match self {
+            BatchOp::InsertOrReplace { path, .. }
+            | BatchOp::InsertOnly { path, .. }
+            | BatchOp::InsertIfNotExists { path, .. }
+            | BatchOp::Replace { path, .. }
+            | BatchOp::Patch { path, .. }
+            | BatchOp::RefreshReference { path, .. }
+            | BatchOp::Delete { path, .. }
+            | BatchOp::DeleteTree { path, .. }
+            | BatchOp::Append { path, .. }
+            | BatchOp::Move { path, .. }
+            | BatchOp::DropFlat { path, .. } => path,
+        }
+    }
+
     /// The element the op stores, if it stores one.
     pub fn element(&self) -> Option<&Element> {
         match self {

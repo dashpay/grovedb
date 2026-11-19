@@ -10,6 +10,7 @@
 //! type of tree, batches applied in two segments ([`PartialBatches`]), and
 //! every way a query pages, budgets and ranks ([`Pagination`]).
 
+mod capped_layers;
 mod chunks;
 mod drops;
 mod epochs;
@@ -20,11 +21,13 @@ mod partial;
 mod stock;
 mod tree_deletes;
 mod typed;
+mod wide_ranks;
 mod wide_sums;
 
 use std::collections::BTreeSet;
 
 pub use self::{
+    capped_layers::{CappedLayers, MIN_CAPPED_KEYS},
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
     epochs::{FlagEpochs, MAX_LADDER_RUNGS},
@@ -34,6 +37,7 @@ pub use self::{
     partial::PartialBatches,
     tree_deletes::{TreeDeletes, MIN_TREE_DELETE_ITEMS},
     typed::TypedReads,
+    wide_ranks::{WideRanks, MIN_WIDE_RANK_ENTRIES},
     wide_sums::{WideSums, MIN_WIDE_SUM_ENTRIES},
 };
 
@@ -74,6 +78,8 @@ const DOMAIN_CHUNKS: u64 = 0xAD0D;
 const DOMAIN_EPOCHS: u64 = 0xAD0E;
 const DOMAIN_TREE_DELETES: u64 = 0xAD0F;
 const DOMAIN_WIDE_SUMS: u64 = 0xAD10;
+const DOMAIN_WIDE_RANKS: u64 = 0xAD11;
+const DOMAIN_CAPPED_LAYERS: u64 = 0xAD12;
 
 /// Chains of trees nested `depth` levels deep.
 ///

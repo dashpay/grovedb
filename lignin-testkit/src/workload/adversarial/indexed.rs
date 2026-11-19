@@ -68,8 +68,10 @@ impl Indexed {
     fn entry(&self, rng: &mut Rng) -> Element {
         match self.tree {
             IndexedTree::Count => Element::new_item(value(rng, 1, 40)),
-            IndexedTree::Sum => Element::new_sum_item(sum(rng)),
-            IndexedTree::CountSum => Element::new_item_with_sum_item(value(rng, 1, 40), sum(rng)),
+            IndexedTree::Sum | IndexedTree::BigSum => Element::new_sum_item(sum(rng)),
+            IndexedTree::CountSum | IndexedTree::CountBigSum => {
+                Element::new_item_with_sum_item(value(rng, 1, 40), sum(rng))
+            }
         }
     }
 }

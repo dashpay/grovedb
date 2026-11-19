@@ -52,10 +52,11 @@ use lignin_testkit::{
     cost_model::rules,
     workload::{
         adversarial::{
-            ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops, IndexedWrites,
-            LargeValues, LongKeys, Moves, Pagination, PartialBatches, ReferenceChains,
-            TinySubtrees, TreeDeletes, TypedReads, WideSums, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH,
-            MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS, MIN_WIDE_SUM_ENTRIES,
+            CappedLayers, ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops,
+            IndexedWrites, LargeValues, LongKeys, Moves, Pagination, PartialBatches,
+            ReferenceChains, TinySubtrees, TreeDeletes, TypedReads, WideRanks, WideSums,
+            MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CAPPED_KEYS, MIN_CHUNKED_ROWS,
+            MIN_TREE_DELETE_ITEMS, MIN_WIDE_RANK_ENTRIES, MIN_WIDE_SUM_ENTRIES,
         },
         apply,
         coverage::{
@@ -95,6 +96,18 @@ const FLAG_CALLBACKS_GROUP: &str = "storage-flag callbacks";
 /// whole. These are states of trees the other groups' operations delete,
 /// so any workload that deletes a filled tree produces one.
 const TREE_DELETES_GROUP: &str = "deletes of filled trees";
+
+/// The group of a batch that inserts a tree and writes into it, which is a
+/// form of batch any workload may hold.
+const FILLED_TREES_GROUP: &str = "trees a batch creates and fills";
+
+/// The groups of the operations the fifth unit added, whose kinds and
+/// forms `tests/upstream.rs` pins.
+const LATER_GROUPS: [&str; 3] = [
+    "indexed trees with a 128-bit sum",
+    "limits over subqueries",
+    FILLED_TREES_GROUP,
+];
 
 const SEED: u64 = 1;
 const OTHER_SEED: u64 = 0x4C49_474E_494E;
@@ -1091,7 +1104,35 @@ fn check_answer(
             let mut unpaged = (**query).clone();
             unpaged.query.offset = None;
             unpaged.query.limit = None;
-            let (rows, _) = rows(db, &unpaged, false, transaction, grove_version);
+            // `GroveDb::query` refuses an indexed tree as a row, where
+            // this reader returns the aggregates it keeps. A query for keys
+            // is checked against `GroveDb::get` of each.
+            let selects = &unpaged.query.query;
+            let rows = if selects.has_only_keys() && !selects.has_subquery() {
+                let mut keys: Vec<&[u8]> = selects
+                    .items
+                    .iter()
+                    .map(|item| match item {
+                        grovedb::QueryItem::Key(key) => key.as_slice(),
+                        other => unreachable!("{other:?} is not a key"),
+                    })
+                    .collect();
+                keys.sort_unstable();
+                if !selects.left_to_right {
+                    keys.reverse();
+                }
+                keys.into_iter()
+                    .filter_map(|key| {
+                        let element = db
+                            .get(unpaged.path.as_slice(), key, transaction, grove_version)
+                            .unwrap()
+                            .ok()?;
+                        Some((unpaged.path.clone(), key.to_vec(), element))
+                    })
+                    .collect()
+            } else {
+                rows(db, &unpaged, false, transaction, grove_version).0
+            };
             let skip = usize::from(query.query.offset.unwrap_or(0));
             let limit = query.query.limit.map_or(usize::MAX, usize::from);
             let rows = rows.into_iter().skip(skip).take(limit);
@@ -1107,6 +1148,18 @@ fn check_answer(
                         QueryItemOrSumReturnType::BigSumValue(sum)
                     }
                     Element::CountBigSumTree(_, count, sum, _) => {
+                        QueryItemOrSumReturnType::CountBigSumValue(count, sum)
+                    }
+                    Element::ProvableSumIndexedTree(_, _, sum, _) => {
+                        QueryItemOrSumReturnType::SumValue(sum)
+                    }
+                    Element::ProvableBigSumIndexedTree(_, _, sum, _) => {
+                        QueryItemOrSumReturnType::BigSumValue(sum)
+                    }
+                    Element::ProvableCountProvableSumIndexedTree(_, count, sum, ..) => {
+                        QueryItemOrSumReturnType::CountSumValue(count, sum)
+                    }
+                    Element::ProvableCountProvableBigSumIndexedTree(_, count, sum, ..) => {
                         QueryItemOrSumReturnType::CountBigSumValue(count, sum)
                     }
                     other => panic!("{context}\nselects {other:?}"),
@@ -2078,6 +2131,26 @@ fn the_smallest_workloads_apply() {
             entries: MIN_WIDE_SUM_ENTRIES,
             features,
         }),
+        Workload::WideRanks(WideRanks {
+            rounds: 0,
+            entries: MIN_WIDE_RANK_ENTRIES,
+            features,
+        }),
+        Workload::WideRanks(WideRanks {
+            rounds: 4,
+            entries: MIN_WIDE_RANK_ENTRIES,
+            features,
+        }),
+        Workload::CappedLayers(CappedLayers {
+            keys: MIN_CAPPED_KEYS,
+            rounds: 0,
+            features,
+        }),
+        Workload::CappedLayers(CappedLayers {
+            keys: MIN_CAPPED_KEYS,
+            rounds: 6,
+            features,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -2167,13 +2240,12 @@ fn reads_do_not_change_the_writes() {
     }
 }
 
-/// The two trees the zoo does not hold: its streams were pinned before
-/// GroveDB had them, so `wide-sums` produces them.
-const NOT_IN_THE_ZOO: [&str; 2] = ["CountBigSumTree", "ProvableBigSumTree"];
-
-/// The element variants and tree types no workload produces yet: added
-/// upstream by #1062; a follow-up unit of BASE-01 produces them.
-const NOT_YET_PRODUCED: [&str; 2] = [
+/// The trees the zoo does not hold: its streams were pinned before GroveDB
+/// had them. `wide-sums` produces the first two and `wide-ranks` the two
+/// indexed ones.
+const NOT_IN_THE_ZOO: [&str; 4] = [
+    "CountBigSumTree",
+    "ProvableBigSumTree",
     "ProvableBigSumIndexedTree",
     "ProvableCountProvableBigSumIndexedTree",
 ];
@@ -2191,8 +2263,8 @@ fn the_suite_produces_every_element_variant_and_tree_type() {
             coverage.record(&op);
         }
     }
-    assert_eq!(coverage.missing_elements(), NOT_YET_PRODUCED);
-    assert_eq!(coverage.missing_tree_types(), NOT_YET_PRODUCED);
+    assert_eq!(coverage.missing_elements(), Vec::<&str>::new());
+    assert_eq!(coverage.missing_tree_types(), Vec::<&str>::new());
     assert_eq!(coverage.missing_reference_paths(), Vec::<&str>::new());
     println!(
         "{} element variants: {:?}",
@@ -2216,14 +2288,14 @@ fn the_suite_produces_every_element_variant_and_tree_type() {
     .stream(OTHER_SEED)
     .collect();
     let zoo = Coverage::of(&zoo);
-    let not_in_the_zoo = [NOT_IN_THE_ZOO, NOT_YET_PRODUCED].concat();
-    assert_eq!(zoo.missing_elements(), not_in_the_zoo);
-    assert_eq!(zoo.missing_tree_types(), not_in_the_zoo);
-    let ledgers: Vec<Op> = WideSums::default().stream(OTHER_SEED).collect();
-    let ledgers = Coverage::of(&ledgers);
+    assert_eq!(zoo.missing_elements(), NOT_IN_THE_ZOO);
+    assert_eq!(zoo.missing_tree_types(), NOT_IN_THE_ZOO);
+    let mut wide: Vec<Op> = WideSums::default().stream(OTHER_SEED).collect();
+    wide.extend(WideRanks::default().stream(OTHER_SEED));
+    let wide = Coverage::of(&wide);
     for name in NOT_IN_THE_ZOO {
-        assert!(ledgers.elements().contains(name), "{name}");
-        assert!(ledgers.tree_types().contains(name), "{name}");
+        assert!(wide.elements().contains(name), "{name}");
+        assert!(wide.tree_types().contains(name), "{name}");
     }
 }
 
@@ -2246,7 +2318,7 @@ fn the_operation_workloads_apply_for_many_seeds() {
     on_every_grove_version(|grove_version| {
         let features = Features::for_grove_version(grove_version);
         let workloads = operation_workloads(features);
-        assert_eq!(workloads.len(), 19);
+        assert_eq!(workloads.len(), 21);
         for workload in workloads {
             for seed in 2..2 + seeds {
                 let (_dir, db) = open();
@@ -2318,7 +2390,8 @@ fn the_suite_produces_every_operation() {
             .iter()
             .copied()
             .filter(|operation| {
-                operation.group() != FIRST_UNIT_GROUP && operation.group() != TREE_DELETES_GROUP
+                ![FIRST_UNIT_GROUP, TREE_DELETES_GROUP, FILLED_TREES_GROUP]
+                    .contains(&operation.group())
             })
             .collect();
         assert!(
@@ -2338,7 +2411,7 @@ fn coverage_reports_what_a_stream_lacks() {
         .map(|operation| operation.group())
         .collect();
     assert_eq!(groups, OPERATION_GROUPS.iter().copied().collect());
-    assert_eq!(OPERATION_GROUPS.len(), 18);
+    assert_eq!(OPERATION_GROUPS.len(), 21);
     let names: BTreeSet<&str> = Operation::ALL
         .iter()
         .map(|operation| operation.name())
@@ -2428,6 +2501,10 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("tree-deletes", 0x4c49474e494e, 96, "1473dddd7a7f218f5a36e7ef7c0b54fa32333e6ebf739d85a1a3be882c1dfc76"),
     ("wide-sums", 0x1, 173, "1e9465d289505ade8553142670b7c74710d77ee55c054a9d9cb7a9e3b98b59ef"),
     ("wide-sums", 0x4c49474e494e, 173, "c479a33b1ddada62a541ecda8be350404d4d22e25b2b0c8b48a371fa0a75e659"),
+    ("wide-ranks", 0x1, 195, "03a3dc32e2afc06cd3067c8fad772990b75f06fedefc3a583c581d4910e41691"),
+    ("wide-ranks", 0x4c49474e494e, 195, "f83e7dd1a1a9aaa91f536e0ad1d643d13ec064bbfc2d23861a59793cf20a917a"),
+    ("capped-layers", 0x1, 151, "f411b3ffbaa4bf1259444b8d22749f1aeb58e8330d124c6d2c9815f5b816be4d"),
+    ("capped-layers", 0x4c49474e494e, 158, "cb1d18540bcf71f884e9628ed1daf7b893b7dceb3cb97ea1dfeb36e5099970b3"),
 ];
 
 #[test]
@@ -2460,11 +2537,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 21889, "15c13f26bdda98faf0478d1c4e84bc052bb1c9a020d660e5a8f26b8d22ed3ad3"),
-    (2, 21889, "15c13f26bdda98faf0478d1c4e84bc052bb1c9a020d660e5a8f26b8d22ed3ad3"),
-    (3, 21913, "f08e647af002721e870fc775b609f1527cb935ceb3d998fd705096d00ea35ff3"),
-    (4, 22401, "7597b7bf528d5230e9f3a63941febedc05c40986cad5c4071f5c4d4ab04c21f8"),
-    (5, 22716, "d55699e7e926ce1f7a7871d6b91cc0322953f24fc5ef868e826826f8796635c8"),
+    (1, 22265, "6ff2244bf6ccf3aaea3e219e798cc56a5a4ca9090fead97935f4cb917de0577a"),
+    (2, 22265, "6ff2244bf6ccf3aaea3e219e798cc56a5a4ca9090fead97935f4cb917de0577a"),
+    (3, 22289, "30448ca4f45053c913a7d1983f7923141e5218db8d7fd571016835890c4281ff"),
+    (4, 22834, "7b328fe61b7fb472854a178d5e1b7048c82e18c4c29d24d7c9a0cc026a3cc3b6"),
+    (5, 23062, "0f9f2bc5669681de8a60361923cfb1a95d4a63221feff8b5d4eec4cb262c99cd"),
 ];
 
 #[test]
@@ -3120,6 +3197,7 @@ fn the_direct_kinds_have_a_pinned_encoding() {
                 && !SECOND_UNIT_GROUPS.contains(&operation.group())
                 && operation.group() != FLAG_CALLBACKS_GROUP
                 && operation.group() != TREE_DELETES_GROUP
+                && !LATER_GROUPS.contains(&operation.group())
         })
         .collect();
     assert_eq!(missing, Vec::<Operation>::new());
