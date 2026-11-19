@@ -1172,37 +1172,69 @@ fn a_handle_that_only_reads_refuses_every_write() {
     assert!(format!("{writer:?}").starts_with("LigninWriter"));
     try_writes(&LigninNodeStore::deferred(&writer, ROOT, None));
 
-    // While a scope is open, the transaction refuses a read made outside
-    // it. A read that was not performed is a storage error, and is charged
-    // as a lookup that found nothing.
+    // A read made outside every scope while one is open is the read of a
+    // scope that ends with the call (`transactions.md` SC3). Where no open
+    // scope holds the unit, it is made.
     let outside = LigninNodeStore::read_only(&transaction, ROOT);
     let seek = OperationCost {
         seek_count: 1,
         ..Default::default()
     };
-    let not_read = |cost: OperationCost, error: Error| {
-        assert_eq!(cost, seek);
-        assert!(matches!(error, Error::StorageError(_)), "{error:?}");
-        assert!(error.to_string().contains("another scope"), "{error}");
-    };
-    let read = outside.get_node(&be(1), NO_VALUE_DEFINED_COST, version());
-    not_read(read.cost, read.value.unwrap_err());
-    let read = outside.get_node_for_read(&be(1));
-    not_read(read.cost, read.value.unwrap_err());
-    let read = outside.has_node(&be(1));
-    not_read(read.cost, read.value.unwrap_err());
-    let read = outside.root_key();
-    not_read(read.cost, read.value.unwrap_err());
-    let read = outside.get_aux_record(b"k");
-    not_read(read.cost, read.value.unwrap_err());
     let link = Link::Reference {
         hash: [0; 32],
         child_heights: (0, 0),
         key: be(1),
         aggregate_data: AggregateData::NoAggregateData,
     };
+    let read = outside.get_node(&be(1), NO_VALUE_DEFINED_COST, version());
+    assert_eq!(read.cost, seek);
+    assert!(read.value.unwrap().is_none());
+    let read = outside.root_key();
+    assert_eq!(read.cost, seek);
+    assert_eq!(read.value.unwrap(), None);
+    let read = outside.get_aux_record(b"k");
+    assert_eq!(read.cost, seek);
+    assert_eq!(read.value.unwrap(), None);
+
+    // The scope writes a node, the root key and an aux record of the
+    // subtree, and holds those three units from then on. A read of one of
+    // them from outside is refused. A read that was not performed is a
+    // storage error, which names the unit, and is charged as a lookup that
+    // found nothing.
+    commit(&writer, &ROOT, &mut None, &[basic(2, b"v")]);
+    let holder = LigninNodeStore::immediate(&writer, ROOT);
+    holder.set_root_key(Some(b"k")).unwrap().unwrap();
+    let mut change_set = holder.change_set();
+    change_set.put_aux_record(b"k", b"aux", None).unwrap();
+    holder.commit(change_set).unwrap().unwrap();
+    let not_read = |cost: OperationCost, error: Error, column: &str| {
+        assert_eq!(cost, seek);
+        assert!(matches!(error, Error::StorageError(_)), "{error:?}");
+        let text = error.to_string();
+        assert!(text.contains("another open scope"), "{text}");
+        assert!(text.contains(&format!("holds {column} of 0000")), "{text}");
+    };
+    let read = outside.get_node(&be(1), NO_VALUE_DEFINED_COST, version());
+    not_read(read.cost, read.value.unwrap_err(), "data");
+    let read = outside.get_node_for_read(&be(1));
+    not_read(read.cost, read.value.unwrap_err(), "data");
+    let read = outside.has_node(&be(1));
+    not_read(read.cost, read.value.unwrap_err(), "data");
+    let read = outside.root_key();
+    not_read(read.cost, read.value.unwrap_err(), "roots");
+    let read = outside.get_aux_record(b"k");
+    not_read(read.cost, read.value.unwrap_err(), "aux");
     let read = outside.fetch_node(&link, NO_VALUE_DEFINED_COST.as_ref(), version());
-    not_read(read.cost, read.value.unwrap_err());
+    not_read(read.cost, read.value.unwrap_err(), "data");
+    // A unit that the scope does not hold is read from outside as before:
+    // another column of the subtree, and another subtree.
+    let read = outside.get_meta_record(b"k");
+    assert_eq!(read.cost, seek);
+    assert_eq!(read.value.unwrap(), None);
+    let elsewhere = LigninNodeStore::read_only(&transaction, LigninSubtree::alone([9; 32]));
+    let read = elsewhere.has_node(&be(1));
+    assert_eq!(read.cost, seek);
+    assert!(!read.value.unwrap());
 
     // A link whose key has no node is a key that was not found, charged as
     // the lookup.

@@ -18,7 +18,7 @@
 //! | --- | --- | --- |
 //! | [`LigninNodeStore::deferred`] | the transaction's view; nothing that is staged | staged in the [`LigninBatch`] it was opened with, or refused with none |
 //! | [`LigninNodeStore::immediate`] | the transaction's view, its own writes included | applied to the transaction at once, each commit as a write of its own |
-//! | [`LigninNodeStore::read_only`] | a transaction that has no scope open | refused |
+//! | [`LigninNodeStore::read_only`] | the transaction's view from outside every scope; a read of a unit that an open scope holds for writing is refused | refused |
 //!
 //! The first two read and write through a [`LigninWriter`], which is the
 //! write scope of one writer (`transactions.md` SC1). A handle and a Merk on
@@ -269,8 +269,9 @@ impl<'db> LigninNodeStore<'db> {
         Self::new(writer, subtree, Mode::Immediate)
     }
 
-    /// A handle of `subtree` that only reads, on a transaction that has no
-    /// scope open.
+    /// A handle of `subtree` that only reads, on the transaction itself and
+    /// outside every scope. A read of a unit that an open scope holds for
+    /// writing is refused (`transactions.md` SC3).
     pub fn read_only(transaction: &'db WriteTxn<'_>, subtree: LigninSubtree) -> Self {
         Self::new(transaction, subtree, Mode::ReadOnly)
     }
