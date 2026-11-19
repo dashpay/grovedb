@@ -64,6 +64,17 @@
 //! ([`NodeChangeSet::state_root`](super::NodeChangeSet::state_root)): the
 //! engine keeps the Merk's directory entry by it.
 //!
+//! # Hashes
+//!
+//! A cell stores the value hash, the key-value hash and the hash of each
+//! child as Merk holds them, and a read hands them to Merk as they are
+//! stored. A write states every hash Merk holds and leaves to the engine
+//! the hash of a child whose link is modified, which Merk has not made:
+//! on existing GroveVersions there is none, because a commit hashes its
+//! tree first. The rules by which the engine makes such a hash are Merk's,
+//! and [`hash`] has them, with what each state of a link means for the
+//! store. A node with a hash that is not made yet is not read.
+//!
 //! # Costs
 //!
 //! Every charge comes from the functions of [`cost_model`], with the sizes
@@ -97,6 +108,7 @@ mod access;
 mod change_set;
 mod directory;
 mod feature;
+pub mod hash;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod open_tests;
 #[cfg(all(test, feature = "rocksdb_storage"))]
@@ -311,6 +323,7 @@ impl<'db> LigninNodeStore<'db> {
             let Some(mut node) = self.access.node(prefix, key, hint, true)? else {
                 return Ok(None);
             };
+            hash::refuse_stale(node.stale)?;
             hint = None;
             let mut found = Vec::new();
             for (left, link) in [(true, &mut node.left), (false, &mut node.right)] {

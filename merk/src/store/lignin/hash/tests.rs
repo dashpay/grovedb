@@ -1,0 +1,1139 @@
+use std::{
+    collections::{BTreeSet, HashSet},
+    sync::Arc,
+};
+
+use grovedb_element::{reference_path::ReferencePathType, BackwardReference, Element};
+use grovedb_version::version::GroveVersion;
+use lignin_format::{
+    tree_page::{CellContent, CellValue, HashField, Side, TreeLink},
+    CellAddress, PageId, PageSize, SlotId,
+};
+use lignin_tree::{
+    hash::{HashRules, Stale},
+    node::{Lease, NodePage, NodePageMut, NodeRef},
+};
+use lignindb::{
+    snapshot::Versions,
+    txn::{
+        testing::{Db, Outcome},
+        Subtree, WritePath,
+    },
+};
+
+use super::{
+    aggregate_of, held_link, refuse_stale, stale_hashes, HashRefusal, MerkHashRules, StatedByWriter,
+};
+use crate::{
+    element::ElementExt,
+    store::{
+        lignin::{
+            feature::{encode_aggregate, encode_feature},
+            LigninNodeStore, LigninSubtree, LigninWriter,
+        },
+        NodeChange, NodeChangeSet, NodeStore,
+    },
+    tree::{
+        axes_digest, combine_hash, kv::KV, value_hash, AggregateData, NoopCommit, TreeNode,
+        TreeNodeInner, NULL_HASH,
+    },
+    CryptoHash, Error, Link, Merk, Op, TreeFeatureType, TreeType,
+};
+
+fn version() -> &'static GroveVersion {
+    GroveVersion::latest()
+}
+
+/// Every tree type whose data is a Merk.
+const TREE_TYPES: [TreeType; 17] = [
+    TreeType::NormalTree,
+    TreeType::SumTree,
+    TreeType::BigSumTree,
+    TreeType::CountTree,
+    TreeType::CountSumTree,
+    TreeType::CountBigSumTree,
+    TreeType::ProvableCountTree,
+    TreeType::ProvableCountSumTree,
+    TreeType::ProvableSumTree,
+    TreeType::ProvableBigSumTree,
+    TreeType::ProvableCountProvableSumTree,
+    TreeType::ProvableCountProvableBigSumTree,
+    TreeType::ProvableSumIndexedTree,
+    TreeType::ProvableBigSumIndexedTree,
+    TreeType::ProvableCountIndexedTree,
+    TreeType::ProvableCountProvableSumIndexedTree,
+    TreeType::ProvableCountProvableBigSumIndexedTree,
+];
+
+/// The feature of the node `n` of a tree of `tree_type`, with numbers of
+/// its own.
+fn feature(tree_type: TreeType, n: u64) -> TreeFeatureType {
+    use TreeFeatureType::*;
+    let (count, sum, big) = (n % 5 + 1, n as i64 * 3 - 20, (n as i128 - 7) << 70);
+    match tree_type.empty_tree_feature_type() {
+        BasicMerkNode => BasicMerkNode,
+        SummedMerkNode(_) => SummedMerkNode(sum),
+        BigSummedMerkNode(_) => BigSummedMerkNode(big),
+        CountedMerkNode(_) => CountedMerkNode(count),
+        CountedSummedMerkNode(..) => CountedSummedMerkNode(count, sum),
+        ProvableCountedMerkNode(_) => ProvableCountedMerkNode(count),
+        ProvableCountedSummedMerkNode(..) => ProvableCountedSummedMerkNode(count, sum),
+        ProvableSummedMerkNode(_) => ProvableSummedMerkNode(sum),
+        ProvableCountedAndProvableSummedMerkNode(..) => {
+            ProvableCountedAndProvableSummedMerkNode(count, sum)
+        }
+        ProvableCountedAndProvableBigSummedMerkNode(..) => {
+            ProvableCountedAndProvableBigSummedMerkNode(count, big)
+        }
+        CountedBigSummedMerkNode(..) => CountedBigSummedMerkNode(count, big),
+        ProvableBigSummedMerkNode(_) => ProvableBigSummedMerkNode(big),
+    }
+}
+
+fn key(n: u64) -> Vec<u8> {
+    n.to_be_bytes().to_vec()
+}
+
+/// An item as Merk stores it.
+fn item(n: u64) -> Vec<u8> {
+    let bytes = vec![n as u8; 1 + (n % 40) as usize];
+    Element::new_item(bytes).serialize(version()).unwrap()
+}
+
+/// A tree over `keys` that no commit has hashed: every link is modified.
+fn modified(keys: std::ops::Range<u64>, tree_type: TreeType) -> Option<TreeNode> {
+    if keys.is_empty() {
+        return None;
+    }
+    let middle = keys.start + (keys.end - keys.start) / 2;
+    let node = TreeNode::new(key(middle), item(middle), None, feature(tree_type, middle)).unwrap();
+    let node = node.attach(true, modified(keys.start..middle, tree_type));
+    let node = node
+        .unwrap()
+        .attach(false, modified(middle + 1..keys.end, tree_type));
+    Some(node.unwrap())
+}
+
+/// Hashes `tree` as a commit of Merk does, and keeps every node in memory.
+fn hashed(mut tree: TreeNode) -> TreeNode {
+    tree.commit(&mut NoopCommit {}, &|_, _| Ok(0))
+        .unwrap()
+        .unwrap();
+    tree
+}
+
+/// What a link that holds a hash holds.
+fn held(link: &Link) -> (CryptoHash, (u8, u8), AggregateData) {
+    match link {
+        Link::Reference {
+            hash,
+            child_heights,
+            aggregate_data,
+            ..
+        }
+        | Link::Loaded {
+            hash,
+            child_heights,
+            aggregate_data,
+            ..
+        }
+        | Link::Uncommitted {
+            hash,
+            child_heights,
+            aggregate_data,
+            ..
+        } => (*hash, *child_heights, *aggregate_data),
+        Link::Modified { .. } => panic!("a modified link holds no hash"),
+    }
+}
+
+/// Shows `read` the cell of `node` in a page of its own, with the roots
+/// `hosted` and every link of the node pointing into another page.
+fn with_cell<R>(
+    node: &TreeNode,
+    hosted: &[Option<CellAddress>],
+    read: impl FnOnce(NodeRef<'_>) -> R,
+) -> R {
+    let elsewhere = CellAddress::new(PageId::new(77).unwrap(), SlotId::from_index(0).unwrap());
+    let feature = encode_feature(&node.feature_type());
+    let links = [true, false].map(|left| {
+        node.link(left).map(|link| {
+            let (hash, heights, aggregate) = held(link);
+            let key_len = link.key().len() as u8;
+            (hash, heights, key_len, encode_aggregate(&aggregate))
+        })
+    });
+    let link = |at: usize| {
+        (links[at].as_ref()).map(|(hash, heights, key_len, aggregate)| TreeLink {
+            child: elsewhere,
+            hash,
+            heights: *heights,
+            child_key_len: *key_len,
+            aggregate: aggregate.as_slice(),
+        })
+    };
+    let content = CellContent {
+        key: node.key(),
+        feature: feature.as_slice(),
+        value_hash: node.value_hash(),
+        kv_hash: node.kv_hash(),
+        left: link(0),
+        right: link(1),
+        hosted_roots: hosted,
+        value: CellValue::Inline(node.value_as_slice()),
+        fragment_root: true,
+    };
+    let (size, lease) = (PageSize::DEFAULT, Lease::take());
+    let mut frame = vec![0; size.get()];
+    let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ()).unwrap();
+    let cell = page.insert(&content).unwrap();
+    let page = NodePage::open(&frame, lease).unwrap();
+    read(page.node(cell.slot()).expect("the cell that was inserted"))
+}
+
+/// The cell of a node with no child and the given parts.
+fn with_leaf<R>(
+    key: &[u8],
+    value: &[u8],
+    value_hash: CryptoHash,
+    read: impl FnOnce(NodeRef<'_>) -> R,
+) -> R {
+    let kv = KV::from_fields(
+        key.to_vec(),
+        value.to_vec(),
+        [9; 32],
+        value_hash,
+        TreeFeatureType::BasicMerkNode,
+    );
+    let node = TreeNode::new_with_tree_inner(TreeNodeInner {
+        marks: Default::default(),
+        left: None,
+        right: None,
+        kv,
+    });
+    with_cell(&node, &[], read)
+}
+
+/// Checks every hash that Merk holds of `node` and of what is below it
+/// against what the rules make of the cells, and returns the nodes it saw.
+fn check_below(rules: &mut MerkHashRules<'_>, node: &TreeNode, at: &str) -> usize {
+    let mut seen = 1;
+    let kv_hash = with_cell(node, &[], |cell| {
+        rules.kv_hash(cell.key(), cell.value_hash()).unwrap()
+    });
+    assert_eq!(&kv_hash, node.kv_hash(), "the key-value hash, {at}");
+    let own = with_cell(node, &[], |cell| {
+        let value = cell.value().inline().expect("a value in its cell");
+        rules.value_hash(cell, value, &[]).unwrap()
+    });
+    assert_eq!(&own, node.value_hash(), "the value hash, {at}");
+    for left in [true, false] {
+        let Some(link) = node.link(left) else {
+            continue;
+        };
+        let child = link.tree().expect("the child is in memory");
+        let made = with_cell(child, &[], |cell| rules.node_hash(cell).unwrap());
+        assert_eq!(&made, link.hash(), "the hash of a child, {at}");
+        seen += check_below(rules, child, at);
+    }
+    seen
+}
+
+#[test]
+fn the_rules_make_the_hashes_a_commit_of_merk_makes() {
+    let mut kinds = HashSet::new();
+    for tree_type in TREE_TYPES {
+        let at = format!("{tree_type:?}");
+        let tree = hashed(modified(0..23, tree_type).unwrap());
+        let mut rules = MerkHashRules::new(version());
+        assert_eq!(check_below(&mut rules, &tree, &at), 23);
+
+        // The hash of the root, which no cell stores, is the root hash of
+        // the Merk: by the tree's type for Merk, by the node's feature
+        // for the rule.
+        let root = with_cell(&tree, &[], |cell| rules.node_hash(cell).unwrap());
+        assert_eq!(root, tree.hash_for_link(tree_type).unwrap(), "{at}");
+        kinds.insert(std::mem::discriminant(&tree.feature_type()));
+
+        // 23 key-value hashes of one block, 23 value hashes of one, and
+        // 23 node hashes of two, as Merk's functions count them.
+        assert!(rules.cost().hash_node_calls >= 23 * 4, "{at}");
+        assert_eq!(rules.cost().seek_count, 0);
+    }
+    assert_eq!(kinds.len(), 12, "every feature a node of Merk has");
+}
+
+#[test]
+fn a_provable_feature_is_in_the_node_hash_and_another_is_not() {
+    let mut rules = MerkHashRules::new(version());
+    let mut hash_of = |tree_type| {
+        let tree = hashed(modified(0..3, tree_type).unwrap());
+        let plain = tree.hash().unwrap();
+        let made = with_cell(&tree, &[], |cell| rules.node_hash(cell).unwrap());
+        (made, plain)
+    };
+    for tree_type in [
+        TreeType::NormalTree,
+        TreeType::SumTree,
+        TreeType::BigSumTree,
+        TreeType::CountTree,
+        TreeType::CountSumTree,
+        TreeType::CountBigSumTree,
+    ] {
+        let (made, plain) = hash_of(tree_type);
+        assert_eq!(made, plain, "{tree_type:?}");
+    }
+    for tree_type in [
+        TreeType::ProvableCountTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableSumTree,
+        TreeType::ProvableBigSumTree,
+        TreeType::ProvableCountProvableSumTree,
+        TreeType::ProvableCountProvableBigSumTree,
+    ] {
+        let (made, plain) = hash_of(tree_type);
+        assert_ne!(made, plain, "{tree_type:?}");
+    }
+}
+
+fn path() -> ReferencePathType {
+    ReferencePathType::AbsolutePathReference(vec![b"a".to_vec(), b"b".to_vec()])
+}
+
+/// `element` with one referrer registered.
+fn referred(mut element: Element) -> Element {
+    let referrers = element
+        .backward_references_mut()
+        .expect("it takes referrers");
+    referrers.push(BackwardReference {
+        inverted_reference: path(),
+        cascade_on_update: false,
+    });
+    element
+}
+
+fn bytes(element: &Element) -> Vec<u8> {
+    element
+        .serialize(version())
+        .expect("the element serializes")
+}
+
+fn made(value: &[u8], hosted: &[Option<CryptoHash>]) -> Result<CryptoHash, HashRefusal> {
+    MerkHashRules::new(version()).element_value_hash(value, hosted)
+}
+
+#[test]
+fn the_value_hash_of_an_item_is_made_from_its_bytes() {
+    let items = [
+        Element::new_item(b"value".to_vec()),
+        Element::new_item_with_flags(vec![], Some(vec![1, 2])),
+        Element::new_sum_item(-7),
+        Element::new_item_with_sum_item(b"value".to_vec(), 5),
+        Element::new_non_counted(Element::new_item(b"value".to_vec())).unwrap(),
+        Element::new_non_counted(Element::new_sum_item(3)).unwrap(),
+    ];
+    for element in items {
+        let value = bytes(&element);
+        let node = KV::new(
+            b"key".to_vec(),
+            value.clone(),
+            None,
+            TreeFeatureType::BasicMerkNode,
+        )
+        .unwrap();
+        assert_eq!(made(&value, &[]).as_ref(), Ok(node.value_hash()));
+        assert_eq!(
+            made(&value, &[None]),
+            Err(HashRefusal::Hosted {
+                element: 0,
+                cell: 1
+            })
+        );
+    }
+}
+
+#[test]
+fn the_value_hash_of_an_item_with_referrers_leaves_the_referrers_out() {
+    let items = [
+        Element::new_item_allowing_bidirectional_references(b"value".to_vec()),
+        Element::new_sum_item_allowing_bidirectional_references(11),
+        Element::new_item_with_sum_item_allowing_bidirectional_references(b"value".to_vec(), 4),
+    ];
+    for element in items {
+        let alone = bytes(&element);
+        let element = referred(element);
+        let value = bytes(&element);
+        assert_ne!(value, alone);
+
+        let expected = element.logical_value_hash(version()).unwrap().unwrap();
+        assert_eq!(made(&value, &[]), Ok(expected));
+        assert_eq!(made(&alone, &[]), Ok(expected));
+        assert_eq!(expected, value_hash(&alone).unwrap());
+        assert_ne!(expected, value_hash(&value).unwrap());
+        assert!(matches!(
+            made(&value, &[None]),
+            Err(HashRefusal::Hosted { .. })
+        ));
+    }
+
+    // Bytes that carry the type of such an item and are none.
+    let value = bytes(&referred(
+        Element::new_item_allowing_bidirectional_references(vec![1; 9]),
+    ));
+    let refused = made(&value[..value.len() - 3], &[]).unwrap_err();
+    assert!(matches!(refused, HashRefusal::NotAnElement(_)), "{refused}");
+}
+
+#[test]
+fn the_value_hash_of_a_tree_is_combined_with_the_root_hash_of_its_merk() {
+    let trees = [
+        Element::empty_tree(),
+        Element::new_tree(Some(b"root".to_vec())),
+        Element::empty_sum_tree(),
+        Element::empty_big_sum_tree(),
+        Element::empty_count_tree(),
+        Element::empty_count_sum_tree(),
+        Element::empty_count_big_sum_tree(),
+        Element::empty_provable_count_tree(),
+        Element::empty_provable_count_sum_tree(),
+        Element::empty_provable_sum_tree(),
+        Element::empty_provable_big_sum_tree(),
+        Element::empty_provable_count_provable_sum_tree(),
+        Element::empty_provable_count_provable_big_sum_tree(),
+        Element::new_non_counted(Element::empty_tree()).unwrap(),
+        Element::new_not_summed(Element::empty_sum_tree()).unwrap(),
+        Element::new_not_counted_or_summed(Element::empty_count_sum_tree()).unwrap(),
+    ];
+    let root = [0xab; 32];
+    for element in trees {
+        let value = bytes(&element);
+        let layered = |root| {
+            let feature = TreeFeatureType::BasicMerkNode;
+            let node = KV::new_with_layered_value_hash(vec![1], value.clone(), 3, root, feature);
+            *node.unwrap().value_hash()
+        };
+        assert_eq!(made(&value, &[Some(root)]), Ok(layered(root)));
+        // A Merk with no root has the hash of an empty Merk.
+        assert_eq!(made(&value, &[None]), Ok(layered(NULL_HASH)));
+        assert_ne!(layered(root), layered(NULL_HASH));
+
+        // A cell that does not name the Merk is not taken for an empty one.
+        for hosted in [&[][..], &[None, None][..]] {
+            assert_eq!(
+                made(&value, hosted),
+                Err(HashRefusal::Hosted {
+                    element: 1,
+                    cell: hosted.len()
+                })
+            );
+        }
+    }
+
+    // What the rule counts is what Merk's functions count: a value hash
+    // and the combination.
+    let value = bytes(&Element::empty_tree());
+    let mut rules = MerkHashRules::new(version());
+    rules.element_value_hash(&value, &[Some(root)]).unwrap();
+    let own = value_hash(&value);
+    let expected =
+        own.cost().hash_node_calls + combine_hash(own.value(), &root).cost().hash_node_calls;
+    assert_eq!(rules.cost().hash_node_calls, expected);
+}
+
+#[test]
+fn the_value_hash_of_an_indexed_tree_is_combined_with_both_of_its_merks() {
+    let trees = [
+        Element::empty_provable_sum_indexed_tree(),
+        Element::empty_provable_count_indexed_tree(),
+        Element::empty_provable_big_sum_indexed_tree(),
+        Element::new_provable_sum_indexed_tree_with_root_keys_and_sum_value(
+            Some(vec![1]),
+            Some(vec![2]),
+            9,
+            None,
+        ),
+        Element::new_non_counted(Element::empty_provable_count_indexed_tree()).unwrap(),
+    ];
+    let (primary, secondary) = ([0x11; 32], [0x22; 32]);
+    for element in trees {
+        let value = bytes(&element);
+        let layered = |primary, secondary| {
+            let feature = TreeFeatureType::BasicMerkNode;
+            let node = KV::new_with_layered_value_hash_three(
+                vec![1],
+                value.clone(),
+                3,
+                primary,
+                secondary,
+                feature,
+            );
+            *node.unwrap().value_hash()
+        };
+        assert_eq!(
+            made(&value, &[Some(primary), Some(secondary)]),
+            Ok(layered(primary, secondary))
+        );
+        assert_eq!(
+            made(&value, &[Some(primary), None]),
+            Ok(layered(primary, NULL_HASH))
+        );
+        assert_eq!(
+            made(&value, &[None, None]),
+            Ok(layered(NULL_HASH, NULL_HASH))
+        );
+        assert_ne!(layered(primary, secondary), layered(secondary, primary));
+        assert_eq!(
+            made(&value, &[Some(primary)]),
+            Err(HashRefusal::Hosted {
+                element: 2,
+                cell: 1
+            })
+        );
+    }
+}
+
+#[test]
+fn the_value_hash_of_a_tree_with_axes_is_combined_with_the_digest_of_their_roots() {
+    let two = vec![(0, None), (2, Some(vec![7]))];
+    let three = vec![(0, None), (2, None), (3, None)];
+    let trees = [
+        (
+            Element::new_provable_count_provable_sum_indexed_tree(None, 0, 0, two.clone(), None)
+                .unwrap(),
+            two,
+        ),
+        (
+            Element::new_provable_count_provable_big_sum_indexed_tree(
+                Some(vec![5]),
+                3,
+                1 << 80,
+                three.clone(),
+                None,
+            )
+            .unwrap(),
+            three,
+        ),
+    ];
+    for (element, axes) in trees {
+        let value = bytes(&element);
+        let primary = [0x33; 32];
+        let roots: Vec<Option<CryptoHash>> = (0..axes.len() as u8)
+            .map(|n| (n != 1).then_some([0x40 + n; 32]))
+            .collect();
+        let tagged: Vec<(u8, CryptoHash)> = (axes.iter().zip(&roots))
+            .map(|((tag, _), root)| (*tag, root.unwrap_or(NULL_HASH)))
+            .collect();
+        let digest = axes_digest(&tagged).unwrap();
+        let expected = KV::new_with_layered_value_hash_three(
+            vec![1],
+            value.clone(),
+            3,
+            primary,
+            digest,
+            TreeFeatureType::BasicMerkNode,
+        );
+        let expected = *expected.unwrap().value_hash();
+
+        let mut hosted = vec![Some(primary)];
+        hosted.extend(&roots);
+        assert_eq!(made(&value, &hosted), Ok(expected));
+
+        // The axes are taken in the order the element lists them.
+        hosted[1..].reverse();
+        assert_ne!(made(&value, &hosted), Ok(expected));
+        hosted.pop();
+        assert_eq!(
+            made(&value, &hosted),
+            Err(HashRefusal::Hosted {
+                element: 1 + axes.len(),
+                cell: axes.len()
+            })
+        );
+    }
+}
+
+#[test]
+fn a_value_hash_that_only_its_writer_can_make_is_refused() {
+    let references = [
+        Element::new_reference(path()),
+        Element::new_reference_with_sum_item(path(), 3),
+        Element::new_bidirectional_reference(path()),
+        Element::new_non_counted(Element::new_reference(path())).unwrap(),
+    ];
+    let other_trees = [
+        Element::empty_commitment_tree(5).unwrap(),
+        Element::empty_mmr_tree(),
+        Element::empty_bulk_append_tree(5).unwrap(),
+        Element::empty_dense_tree(3),
+        Element::empty_private_document_store(32, 5).unwrap(),
+        Element::new_non_counted(Element::empty_mmr_tree()).unwrap(),
+    ];
+    let references = references
+        .iter()
+        .map(|element| (element, StatedByWriter::Reference));
+    let other_trees = (other_trees.iter()).map(|element| (element, StatedByWriter::NonMerkTree));
+    for (element, why) in references.chain(other_trees) {
+        let value = bytes(element);
+        let stored = [0x5c; 32];
+        for hosted in [&[][..], &[None][..], &[Some([1; 32])][..]] {
+            assert_eq!(made(&value, hosted), Err(HashRefusal::StatedByWriter(why)));
+        }
+
+        // As a rule of an evaluation it refuses, and the hash stays marked.
+        let refused = with_leaf(b"key", &value, stored, |cell| {
+            MerkHashRules::new(version()).value_hash(cell, &value, &[])
+        });
+        let refused = refused.expect_err("the rule refuses");
+        assert_eq!(
+            refused.downcast_ref::<HashRefusal>(),
+            Some(&HashRefusal::StatedByWriter(why))
+        );
+        assert!(refused.to_string().contains("its writer states it"));
+
+        // For a check it answers what the cell stores.
+        let answered = with_leaf(b"key", &value, stored, |cell| {
+            MerkHashRules::for_check(version()).value_hash(cell, &value, &[])
+        });
+        assert_eq!(answered.unwrap(), stored);
+    }
+}
+
+#[test]
+fn a_value_that_is_no_element_is_refused_also_for_a_check() {
+    let truncated_wrapper = &bytes(&Element::new_non_counted(Element::new_item(vec![1])).unwrap());
+    let values: [&[u8]; 3] = [&[], &[0xff, 1, 2], &truncated_wrapper[..1]];
+    for value in values {
+        for mut rules in [
+            MerkHashRules::new(version()),
+            MerkHashRules::for_check(version()),
+        ] {
+            let refused = with_leaf(b"key", value, [1; 32], |cell| {
+                rules.value_hash(cell, value, &[])
+            });
+            let refused = refused.expect_err("no element");
+            let refused = refused.downcast_ref::<HashRefusal>().expect("a refusal");
+            assert!(matches!(refused, HashRefusal::NotAnElement(_)), "{refused}");
+            assert!(refused.to_string().starts_with("the value is no element"));
+        }
+    }
+    // A cell that does not host what its element has is refused for a
+    // check as well.
+    let value = bytes(&Element::empty_tree());
+    let refused = with_leaf(b"key", &value, [1; 32], |cell| {
+        MerkHashRules::for_check(version()).value_hash(cell, &value, &[])
+    });
+    assert_eq!(
+        refused.unwrap_err().to_string(),
+        "the element has 1 Merks and its cell hosts 0"
+    );
+}
+
+#[test]
+fn the_key_value_hash_is_merks() {
+    let mut rules = MerkHashRules::new(version());
+    for key in [&b""[..], b"key", &[7; 255]] {
+        let node = KV::new(key.to_vec(), item(3), None, TreeFeatureType::BasicMerkNode).unwrap();
+        let made = rules.kv_hash(key, node.value_hash()).unwrap();
+        assert_eq!(&made, node.hash());
+    }
+}
+
+#[test]
+fn a_cell_that_holds_no_node_of_merk_is_refused() {
+    let node = hashed(modified(0..3, TreeType::SumTree).unwrap());
+    let elsewhere = CellAddress::new(PageId::new(77).unwrap(), SlotId::from_index(0).unwrap());
+    let refusal = |feature: &[u8], aggregate: &[u8]| {
+        let content = CellContent {
+            key: node.key(),
+            feature,
+            value_hash: node.value_hash(),
+            kv_hash: node.kv_hash(),
+            left: Some(TreeLink {
+                child: elsewhere,
+                hash: &[1; 32],
+                heights: (0, 0),
+                child_key_len: 8,
+                aggregate,
+            }),
+            right: None,
+            hosted_roots: &[],
+            value: CellValue::Inline(b""),
+            fragment_root: true,
+        };
+        let (size, lease) = (PageSize::DEFAULT, Lease::take());
+        let mut frame = vec![0; size.get()];
+        let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ()).unwrap();
+        let cell = page.insert(&content).unwrap();
+        let page = NodePage::open(&frame, lease).unwrap();
+        let cell = page.node(cell.slot()).unwrap();
+        let refused = MerkHashRules::new(version()).node_hash(cell);
+        refused.expect_err("no node of Merk").to_string()
+    };
+    let sum = |sum: i64| encode_feature(&TreeFeatureType::SummedMerkNode(sum));
+    let linked = |sum: i64| encode_aggregate(&AggregateData::Sum(sum));
+
+    let unknown = refusal(&[0xee], linked(1).as_slice());
+    assert!(
+        unknown.starts_with("the cell holds no node of Merk"),
+        "{unknown}"
+    );
+    assert!(unknown.contains("feature"), "{unknown}");
+    let cut = refusal(sum(1).as_slice(), &linked(1).as_slice()[..4]);
+    assert!(cut.contains("aggregate"), "{cut}");
+    // The aggregates of the node and of its child do not add up.
+    let over = refusal(sum(i64::MAX).as_slice(), linked(1).as_slice());
+    assert!(over.contains("overflow"), "{over}");
+}
+
+#[test]
+fn a_refusal_says_what_was_refused() {
+    let said = |refusal: HashRefusal| refusal.to_string();
+    assert!(said(HashRefusal::StatedByWriter(StatedByWriter::Reference)).contains("reference"));
+    assert!(said(HashRefusal::StatedByWriter(StatedByWriter::NonMerkTree)).contains("no Merk"));
+    assert!(said(HashRefusal::NotAnElement("why".to_owned())).ends_with("why"));
+    assert!(said(HashRefusal::Node("why".to_owned())).ends_with("why"));
+    let hosted = HashRefusal::Hosted {
+        element: 2,
+        cell: 1,
+    };
+    assert_eq!(said(hosted), "the element has 2 Merks and its cell hosts 1");
+
+    assert!(refuse_stale(Stale::NONE).is_ok());
+    let refused = refuse_stale(Stale::of(HashField::Child(Side::Left))).unwrap_err();
+    assert!(matches!(refused, Error::StorageError(_)), "{refused:?}");
+    assert!(refused.to_string().contains("hash of the left child"));
+}
+
+#[test]
+fn a_modified_link_is_the_one_whose_hash_merk_does_not_hold() {
+    let fresh = modified(0..7, TreeType::CountSumTree).unwrap();
+    let both: Stale = [Side::Left, Side::Right]
+        .map(HashField::Child)
+        .into_iter()
+        .collect();
+    assert_eq!(stale_hashes(&fresh), both);
+    assert!(held_link(fresh.link(true).unwrap()).unwrap().hash.is_none());
+    assert_eq!(stale_hashes(fresh.child(true).unwrap()), both);
+    let leaf = fresh.child(true).unwrap().child(false).unwrap();
+    assert_eq!(stale_hashes(leaf), Stale::NONE);
+
+    // Loaded: hashed by a commit and kept in memory.
+    let loaded = hashed(fresh.clone());
+    assert!(loaded.link(true).unwrap().is_stored());
+    assert_eq!(stale_hashes(&loaded), Stale::NONE);
+
+    // Reference: read from its record.
+    let stored = TreeNode::decode_raw(
+        &loaded.encode(),
+        loaded.key().to_vec(),
+        None::<fn(&[u8], &GroveVersion) -> Option<crate::tree::kv::ValueDefinedCostType>>,
+        version(),
+    )
+    .unwrap();
+    assert!(stored.link(true).unwrap().is_reference());
+    assert_eq!(stale_hashes(&stored), Stale::NONE);
+
+    // Uncommitted: changed since the last commit, and hashed since.
+    let uncommitted = |link: &Link| {
+        let (hash, child_heights, aggregate_data) = held(link);
+        Link::Uncommitted {
+            hash,
+            child_heights,
+            tree: link.tree().unwrap().clone(),
+            aggregate_data,
+        }
+    };
+    let mut one_side = loaded.clone();
+    one_side.inner.left = one_side.inner.left.as_ref().map(uncommitted);
+    assert!(one_side.link(true).unwrap().is_uncommitted());
+    assert_eq!(stale_hashes(&one_side), Stale::NONE);
+
+    // Every state but the modified one hands its hash, its heights and
+    // its aggregate over as they are.
+    for (node, left) in [
+        (&loaded, true),
+        (&loaded, false),
+        (&stored, true),
+        (&one_side, true),
+    ] {
+        let link = node.link(left).unwrap();
+        let handed = held_link(link).unwrap();
+        let (hash, heights, aggregate) = held(link);
+        assert_eq!(
+            (handed.hash, handed.heights, handed.aggregate),
+            (Some(hash), heights, aggregate)
+        );
+    }
+
+    // One modified side leaves the other as it is.
+    let mut mixed = loaded.clone();
+    mixed.inner.right = fresh.inner.right.clone();
+    assert_eq!(
+        stale_hashes(&mixed),
+        Stale::of(HashField::Child(Side::Right))
+    );
+}
+
+/// Compares what a modified link hands over, at every level, with the link
+/// a commit of Merk makes of it.
+fn same_as_committed(fresh: &TreeNode, committed: &TreeNode, at: &str) {
+    use ed::Encode;
+
+    for left in [true, false] {
+        let (Some(link), Some(after)) = (fresh.link(left), committed.link(left)) else {
+            assert!(fresh.link(left).is_none() && committed.link(left).is_none());
+            continue;
+        };
+        let handed = held_link(link).unwrap();
+        let (_, heights, aggregate) = held(after);
+        assert_eq!(handed.hash, None, "{at}");
+        assert_eq!(
+            (handed.heights, handed.aggregate),
+            (heights, aggregate),
+            "{at}"
+        );
+        assert_eq!(
+            handed.record_len(link.key().len()).unwrap(),
+            after.encoding_length().unwrap(),
+            "{at}"
+        );
+        same_as_committed(link.tree().unwrap(), after.tree().unwrap(), at);
+    }
+    assert_eq!(
+        aggregate_of(fresh).unwrap(),
+        committed.aggregate_data().unwrap(),
+        "{at}"
+    );
+}
+
+#[test]
+fn a_modified_link_is_handed_over_with_the_aggregate_a_commit_would_give_it() {
+    for tree_type in TREE_TYPES {
+        let fresh = modified(0..40, tree_type).unwrap();
+        let committed = hashed(fresh.clone());
+        same_as_committed(&fresh, &committed, &format!("{tree_type:?}"));
+    }
+
+    // Aggregates that do not add up are an error, as they are in a commit.
+    let child = TreeNode::new(key(1), item(1), None, TreeFeatureType::SummedMerkNode(1)).unwrap();
+    let parent = TreeNode::new(
+        key(2),
+        item(2),
+        None,
+        TreeFeatureType::SummedMerkNode(i64::MAX),
+    );
+    let parent = parent.unwrap().attach(true, Some(child)).unwrap();
+    let above = TreeNode::new(key(3), item(3), None, TreeFeatureType::SummedMerkNode(0)).unwrap();
+    let above = above.attach(true, Some(parent)).unwrap();
+    assert!(matches!(
+        held_link(above.link(true).unwrap()),
+        Err(Error::Overflow(_))
+    ));
+}
+
+/// A LigninDB store on disk with the stand-in commit of the engine's own
+/// tests, whose hash rules are not Merk's.
+struct Lignin {
+    db: Arc<Db>,
+    versions: Versions,
+}
+
+const SUBTREE: [u8; 32] = [0; 32];
+
+impl Lignin {
+    fn new() -> Self {
+        let (db, versions) = Db::new(512);
+        Self { db, versions }
+    }
+
+    fn path(&self) -> WritePath<'_> {
+        self.db.path(&self.versions)
+    }
+
+    fn rule_calls(&self) -> (u64, u64) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let counts = &self.db.counts;
+        (
+            counts.stale_nodes.load(Relaxed),
+            counts.rule_calls.load(Relaxed),
+        )
+    }
+}
+
+fn store<'db>(writer: &'db LigninWriter<'_, '_>) -> LigninNodeStore<'db> {
+    LigninNodeStore::immediate(writer, LigninSubtree::alone(SUBTREE))
+}
+
+/// Writes `nodes` and removes `removed` as one change set of the Merk
+/// whose root is `root`.
+fn write(
+    store: &LigninNodeStore<'_>,
+    nodes: &[(&TreeNode, NodeChange)],
+    removed: &[&[u8]],
+    root: &TreeNode,
+) {
+    let mut change_set = store.change_set();
+    change_set.state_root(Some(root.key()));
+    for key in removed {
+        change_set.delete_node(key, None);
+    }
+    for (node, change) in nodes {
+        let prepared = change_set.prepare_node(node, *change);
+        change_set.put_node(node.key(), prepared, None).unwrap();
+    }
+    store
+        .commit(change_set)
+        .unwrap()
+        .expect("the write is taken");
+}
+
+/// The stale hashes of the node under `key`, and the bytes its links have
+/// for the hashes of its children.
+fn stored_hashes<'t, 's>(
+    writer: LigninWriter<'t, 's>,
+    key: &[u8],
+) -> (Stale, [Option<CryptoHash>; 2], LigninWriter<'t, 's>) {
+    let scope = writer.into_scope();
+    let read = scope.node(Subtree::new(SUBTREE), key, |view| {
+        let view = view.expect("the node is there");
+        let links = Side::BOTH.map(|side| view.link(side).map(|link| *link.hash));
+        (view.stale(), links)
+    });
+    let (stale, links) = read.expect("the node is read");
+    (stale, links, LigninWriter::new(scope))
+}
+
+#[test]
+fn a_node_with_a_modified_link_leaves_that_hash_to_the_engine() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+
+    // A Merk of three nodes, hashed by Merk.
+    let tree = hashed(modified(10..13, TreeType::CountTree).unwrap());
+    let (left, right) = (tree.child(true).unwrap(), tree.child(false).unwrap());
+    let all = [
+        (left, NodeChange::ValueWritten),
+        (right, NodeChange::ValueWritten),
+        (&tree, NodeChange::ValueWritten),
+    ];
+    write(&store(&writer), &all, &[], &tree);
+    assert_eq!(transaction.stats().stale_nodes, 0);
+    let (stale, before, writer) = stored_hashes(writer, tree.key());
+    assert_eq!(stale, Stale::NONE);
+    assert_eq!(
+        before,
+        [true, false].map(|left| Some(*tree.child_hash(left)))
+    );
+
+    // The root again, with another node on its left that no commit has
+    // hashed, and a new node on the left of that one.
+    let below = TreeNode::new(key(4), item(4), None, feature(TreeType::CountTree, 4)).unwrap();
+    let other = TreeNode::new(key(5), item(5), None, feature(TreeType::CountTree, 5)).unwrap();
+    let other = other.attach(true, Some(below)).unwrap();
+    let mut root = tree.clone();
+    root.inner.left = None;
+    let root = root.attach(true, Some(other)).unwrap();
+    let other = root.child(true).unwrap();
+    let changed = [
+        (other.child(true).unwrap(), NodeChange::ValueWritten),
+        (other, NodeChange::ValueWritten),
+        (&root, NodeChange::StructureChanged),
+    ];
+    let handle = store(&writer);
+    write(&handle, &changed, &[left.key()], &root);
+    assert_eq!(transaction.stats().stale_nodes, 2);
+
+    // The store refuses to hand Merk a node with such a hash, and reads
+    // the nodes around it.
+    for stale in [root.key(), other.key()] {
+        let refused = handle.get_node(stale, None::<fn(&[u8], &GroveVersion) -> _>, version());
+        let refused = refused.unwrap().expect_err("a stale hash is no hash");
+        assert!(matches!(refused, Error::StorageError(_)), "{refused:?}");
+        assert!(
+            refused.to_string().contains("not all made yet"),
+            "{refused}"
+        );
+        assert!(handle.get_node_for_read(stale).unwrap().is_err());
+        assert!(handle.has_node(stale).unwrap().unwrap());
+    }
+    let read = handle.get_node(
+        right.key(),
+        None::<fn(&[u8], &GroveVersion) -> _>,
+        version(),
+    );
+    assert_eq!(read.unwrap().unwrap().unwrap().kv_hash(), right.kv_hash());
+    drop(handle);
+
+    // The link that was there keeps the bytes it had, so that the write
+    // changes no hash, and the link that is new has none.
+    let left_stale = Stale::of(HashField::Child(Side::Left));
+    let (stale, links, writer) = stored_hashes(writer, root.key());
+    assert_eq!(stale, left_stale);
+    assert_eq!(links, before);
+    let (stale, links, writer) = stored_hashes(writer, other.key());
+    assert_eq!(stale, left_stale);
+    assert_eq!(links, [Some(NULL_HASH), None]);
+
+    // The aggregate in the link is exact: a count of two below the root's
+    // left, as a commit of Merk would have it.
+    let expected = hashed(root.clone());
+    let committed = held(expected.link(true).unwrap());
+    let handed = held_link(root.link(true).unwrap()).unwrap();
+    assert_eq!(
+        (handed.heights, handed.aggregate),
+        (committed.1, committed.2)
+    );
+
+    // A later write of the node with the hash made takes the mark off.
+    let rehashed = expected.child(true).unwrap();
+    write(
+        &store(&writer),
+        &[(rehashed, NodeChange::HashOnly)],
+        &[],
+        &root,
+    );
+    assert_eq!(transaction.stats().stale_nodes, 1);
+    let (stale, links, writer) = stored_hashes(writer, other.key());
+    assert_eq!(stale, Stale::NONE);
+    assert_eq!(links, [Some(*rehashed.child_hash(true)), None]);
+
+    // The commit makes what is left, with the rules it is given.
+    writer.into_scope().merge();
+    assert_eq!(lignin.rule_calls(), (0, 0));
+    let outcome = lignin.db.commit(&lignin.versions, &transaction).unwrap();
+    assert!(matches!(outcome, Outcome::Committed(_)));
+    let (stale_nodes, rule_calls) = lignin.rule_calls();
+    assert_eq!(stale_nodes, 1);
+    assert!(rule_calls >= 1);
+}
+
+#[test]
+fn a_node_that_cannot_be_handed_over_is_refused_when_it_is_put() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let handle = store(&writer);
+
+    let sum = TreeFeatureType::SummedMerkNode;
+    let child = TreeNode::new(key(1), item(1), None, sum(1)).unwrap();
+    let parent = TreeNode::new(key(2), item(2), None, sum(i64::MAX)).unwrap();
+    let parent = parent.attach(true, Some(child)).unwrap();
+    let above = TreeNode::new(key(3), item(3), None, sum(0)).unwrap();
+    let above = above.attach(true, Some(parent)).unwrap();
+
+    let mut change_set = handle.change_set();
+    let prepared = change_set.prepare_node(&above, NodeChange::ValueWritten);
+    let refused = change_set.put_node(above.key(), prepared, None);
+    assert!(matches!(refused, Err(Error::Overflow(_))), "{refused:?}");
+    let refused = handle.write_node(&above, NodeChange::ValueWritten);
+    assert!(matches!(refused.unwrap(), Err(Error::Overflow(_))));
+    assert_eq!(transaction.stats().stale_nodes, 0);
+}
+
+struct Random(u64);
+
+impl Random {
+    fn below(&mut self, bound: u64) -> u64 {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        self.0 % bound
+    }
+}
+
+/// Reads the tree under `root` through `store` and checks every hash of
+/// every node against the rules. Returns the hash the rules make of the
+/// root and the nodes that were read.
+fn check_stored(
+    rules: &mut MerkHashRules<'_>,
+    store: &LigninNodeStore<'_>,
+    root: &[u8],
+    at: &str,
+) -> (CryptoHash, usize) {
+    let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
+    let node = store.get_node(root, no_cost, version()).unwrap();
+    let node = node.unwrap().expect("a node that is linked is stored");
+    let mut seen = 1;
+    with_cell(&node, &[], |cell| {
+        let value = cell.value().inline().expect("a value in its cell");
+        assert_eq!(
+            &rules.value_hash(cell, value, &[]).unwrap(),
+            node.value_hash()
+        );
+        let kv_hash = rules.kv_hash(cell.key(), cell.value_hash()).unwrap();
+        assert_eq!(&kv_hash, node.kv_hash(), "{at}");
+    });
+    for left in [true, false] {
+        if let Some(link) = node.link(left) {
+            let (below, nodes) = check_stored(rules, store, link.key(), at);
+            assert_eq!(&below, link.hash(), "the hash of a child, {at}");
+            seen += nodes;
+        }
+    }
+    (
+        with_cell(&node, &[], |cell| rules.node_hash(cell).unwrap()),
+        seen,
+    )
+}
+
+#[test]
+fn a_merk_makes_every_hash_itself_and_the_rules_make_the_same() {
+    for (n, tree_type) in TREE_TYPES.into_iter().enumerate() {
+        let at = format!("{tree_type:?}");
+        let lignin = Lignin::new();
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
+        let merk = Merk::open_base(store(&writer), tree_type, no_cost, version());
+        let mut merk = merk.unwrap().expect("the Merk opens");
+        let mut random = Random(0x9e37_79b9 + n as u64);
+        let mut live = BTreeSet::new();
+        for round in 0..12 {
+            let mut batch = std::collections::BTreeMap::new();
+            for _ in 0..1 + random.below(30) {
+                let k = random.below(160);
+                let op = match live.contains(&k) && random.below(4) == 0 {
+                    true => Op::Delete,
+                    false => Op::Put(item(random.below(1000)), feature(tree_type, k + round)),
+                };
+                batch.insert(key(k), op);
+            }
+            for (key, op) in &batch {
+                let k = u64::from_be_bytes(key.as_slice().try_into().unwrap());
+                match op {
+                    Op::Delete => live.remove(&k),
+                    _ => live.insert(k),
+                };
+            }
+            let batch: Vec<(Vec<u8>, Op)> = batch.into_iter().collect();
+            let applied = merk.apply::<_, Vec<u8>>(&batch, &[], None, version());
+            applied.unwrap().expect("the batch applies");
+
+            // Merk left no hash to the engine.
+            assert_eq!(transaction.stats().stale_nodes, 0, "{at}");
+            let Some(root) = merk.root_key() else {
+                assert!(live.is_empty());
+                assert_eq!(merk.root_hash().unwrap(), NULL_HASH);
+                continue;
+            };
+            let mut rules = MerkHashRules::new(version());
+            let (root_hash, nodes) = check_stored(&mut rules, &merk.storage, &root, &at);
+            assert_eq!(nodes, live.len(), "{at}");
+            assert_eq!(root_hash, merk.root_hash().unwrap(), "the root hash, {at}");
+        }
+        assert!(live.len() > 20, "{at}");
+        drop(merk);
+        writer.into_scope().merge();
+        let outcome = lignin.db.commit(&lignin.versions, &transaction).unwrap();
+        assert!(matches!(outcome, Outcome::Committed(_)));
+        assert_eq!(
+            lignin.rule_calls(),
+            (0, 0),
+            "no rule runs at the commit, {at}"
+        );
+    }
+}

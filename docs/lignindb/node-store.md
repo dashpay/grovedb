@@ -353,6 +353,34 @@ MERK-04. `Merk::open_base`, `open_standalone` and `open_layered_with_root_key` a
 
 **A Merk too deep for the directory.** An entry holds the ids of the Merks above it, and the directory refuses a Merk more than 65,535 Merks deep (D-079). Where a write through the store is refused for it, the store reports `Error::NotSupported`: it is the one failure of the engine that is not `Error::StorageError`, so that a caller tells a limit that a write met from a fault of the store. No read returns it, so the rule of [Errors](#errors) for failed reads stands. The store sees the refusal only where the transaction applies the enter to its frames. A transaction that a commit has overlapped takes the enter into its write set unchecked, and the refusal then comes from its commit, as `TxnError::Directory(TooDeep)`: mapping that one is for whoever calls the commit (GROVE-01). No test enters 65,536 Merks one inside the other, which would take entries of 17 GB in all; the test holds the mapping of the engine's error.
 
+### Hashes
+
+`merk::store::lignin::hash` (MERK-02) is the bridge between the hashes Merk holds and the lazy hashing of the tree layer (`lignin_tree::hash`). Its module documentation has the rules in full. In short:
+
+- **Stored as Merk holds them.** A cell stores the value hash, the key-value hash and the hash of each child, with the combined value hash of a reference and of a tree element as Merk made it. A write states them and a read returns them. The hash of a Merk's root is in no cell: it is the node hash of the root's cell.
+- **`MerkHashRules`** is Merk's hash rules as the engine's `HashRules`: `kv_digest_to_kv_hash` for the key-value hash, and for the hash of a node the function `TreeNode::commit` uses for the link of a parent, by the node's feature, with the aggregate `TreeNode::aggregate_data` makes of the feature and the aggregates in the links. The value hash goes by the element the value is, read from its type bytes as Merk's proofs read it:
+
+  | The value is | Its value hash |
+  | --- | --- |
+  | an item, a sum item, an item with a sum | `value_hash(value)` |
+  | an item that takes backward references | `value_hash` of its serialization with the referrers emptied (#1059) |
+  | a tree whose data is a Merk | `combine_hash(value_hash(value), root)`, with `NULL_HASH` for a Merk with no root |
+  | an indexed tree | `combine_hash_three(value_hash(value), primary, secondary)`, or with `axes_digest` of the secondaries for a tree with a list of axes |
+  | a reference of any kind; a tree whose data is no Merk | refused: its writer states it |
+  | no element | refused |
+
+  The roots are those the cell hosts, by position: the primary Merk, then the secondaries in the order the element lists them, which is the order of `LigninHost::hosted`. A cell that hosts another number of Merks than its element has is refused. `MerkHashRules::for_check` answers a value hash that only its writer can make with the stored one, for `lignin_tree::hash::check`, and is never used for an evaluation.
+- **The state of a link is the dirty flag of the child's hash.** `Reference`, `Loaded` and `Uncommitted` hold a hash, which is stated. `Modified` holds none: the hash is left to the engine (`NodePut::stale`), the link is written with the child's heights and with the aggregate `TreeNode::aggregate_data` makes of the child in memory, and where the cell had a link on that side its bytes are stated again, so that the write changes no hash. A value hash and a key-value hash are always held. On existing GroveVersions `TreeNode::commit` hashes every modified child before the node above is written, so no hash is left, nothing is marked and no rule runs at a commit.
+- **A stale hash is not read as a hash.** A read of a node that has one is refused as `Error::StorageError`, since `Link` has no state for a child that is not in memory and whose hash is unknown. `has_node` answers for such a node.
+
+How it is checked: `merk/src/store/lignin/hash/tests.rs` holds the rules against the hashes a commit of Merk makes, for every tree type and every kind of element, and the store against the marks of a transaction. `lignin-testkit/tests/merk_store.rs` checks, after every commit of the corpus replay, every committed cell with `lignin_tree::hash::check`; then overwrites every hash the rules can make in a copy of the pages, marks it and has one `Hashes::evaluate_all` make them all again, byte for byte the hashes RocksDB holds; and compares the hash the rules make of the grove's root with GroveDB's root hash.
+
+What MERK-02 left open:
+
+1. **The commit takes the rules from its caller** (TXN-05's `Committer::commit`). The stand-in commit of `lignindb::txn::testing` has rules of its own, so the tests of the store hold the marks and not the hashes that commit makes of them.
+2. **Nothing evaluates inside a scope.** A transaction that holds a stale hash cannot be read by Merk at that node before its commit. A writer that leaves hashes (iteration two) needs an evaluation it can ask for, with the caller's rules, or keeps what it wrote in memory.
+3. **A Merk that holds other values than elements** has value hashes these rules do not know: they are for GroveDB's Merks.
+
 ### Choices MERK-01 made
 
 1. **The location of a node is kept in the handle, by key**, and not in `Link` (see [Following a location](#following-a-location)).
@@ -414,7 +442,7 @@ MERK-04. `Merk::open_base`, `open_standalone` and `open_layered_with_root_key` a
 | SEAM-05 | Every storage charge Merk sees passes through this trait's return values, and every size Merk supplies is in `NodeWriteCost` or a `KeyValueStorageCost`. The recording context of `merk/src/store/recording.rs` shows each storage call with the sizes and cost information it was given and adds up the costs the calls returned, so a test can hold those while the place of the charging moves. |
 | SEAM-06 | `merk/src/store/mem.rs` is a second `NodeStore`, in memory, used by the tests here. It keeps of each written node only what its kind names and fails a commit whose result is not the node Merk wrote. It charges nothing, so it checks trees and proofs, not costs. |
 | MERK-01 | `fetch_node` takes the link and is defined by its key (RD5). `prepare_node` gets the node and the kind, so a value is copied only for `ValueWritten`. Every `put_node` and `delete_node` is one write of its key (ST6). |
-| MERK-02 | The kinds, and what they come from (`known_storage_cost` and the baseline for the value, `NodeMarks` for the children), are the dirty state to map. |
+| MERK-02 | The kinds, and what they come from (`known_storage_cost` and the baseline for the value, `NodeMarks` for the children), are the dirty state of a node's parts. The dirty state of its hashes is the state of its links ([Hashes](#hashes)). |
 | MERK-03 | The inputs of every charge are logical: `NodeWriteCost`, and the node itself for the record length (`cost_model::node_record_len`, and `node_record_len_from_sizes` for a node the store holds as a cell). Done: `cost-model.md`, section 15. |
 | MERK-04 | `root_key` and the root key operations of a change set are the whole of root handling. Nothing in Merk names the `roots` column. Done: see [Opening a Merk](#opening-a-merk). |
 | GROVE-01 | A subtree handle by prefix: `LigninNodeStore::entry` gives the host of a subtree, its tree type and its root key, and `Merk::open_from_directory` the Merk. The root Merk of a grove is entered once, through its handle (`LigninNodeStore::enter`). A Merk more than 65,535 Merks deep is `Error::NotSupported`. |

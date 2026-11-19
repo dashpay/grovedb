@@ -8,7 +8,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use lignin_format::tree_page::Side;
+use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
     Batch, Column, HostPut, Hosted, LinkPut, LinkView, MerkWrite, NodePut, NodeView, RecordWrite,
@@ -53,6 +53,9 @@ pub(super) struct StoredNode {
     pub(super) value: Option<Vec<u8>>,
     pub(super) left: Option<StoredLink>,
     pub(super) right: Option<StoredLink>,
+    /// Which of the hashes above are stale: no hash yet, whatever their
+    /// bytes. None is in a committed node.
+    pub(super) stale: Stale,
     /// Where the node's cell is. A node the transaction serves from its
     /// write set has no cell.
     pub(super) location: Option<Location>,
@@ -76,6 +79,9 @@ pub(super) enum Child {
 #[derive(Clone, Debug)]
 pub(super) struct LinkWrite {
     pub(super) key: Vec<u8>,
+    /// The child's hash. Where the write leaves it stale
+    /// ([`NodeWrite::stale`]) these bytes are no hash, and the bytes the
+    /// transaction holds in that link are written in their place.
     pub(super) hash: CryptoHash,
     pub(super) heights: (u8, u8),
     pub(super) aggregate: Tp12,
@@ -101,6 +107,9 @@ pub(super) struct NodeWrite {
     pub(super) left: Option<LinkWrite>,
     pub(super) right: Option<LinkWrite>,
     pub(super) value: ValueWrite,
+    /// The hashes above that Merk held none of when it wrote the node:
+    /// they are left to the engine (`store::lignin::hash`).
+    pub(super) stale: Stale,
     pub(super) hint: Option<Location>,
     /// The Merks the node's element hosts, by position, when the write
     /// names them. Without it the node keeps the ones it has.
@@ -292,6 +301,7 @@ fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Erro
         value,
         left: view.link(Side::Left).map(stored_link).transpose()?,
         right: view.link(Side::Right).map(stored_link).transpose()?,
+        stale: view.stale(),
         location: view.handle().map(Location),
     })
 }
@@ -473,31 +483,59 @@ fn read_subtree(reads: &impl Reads, subtree: &Prefix) -> Result<Option<LigninEnt
     Reads::subtree(reads, Subtree::new(*subtree), |view| view.map(entry)).map_err(fault)
 }
 
-/// Whether the transaction holds a node under the key of `node` whose value
-/// is `stated`, byte for byte. The bytes are compared, never a hash: a
-/// stored value can change while no hash does (`node-store.md`, "Errors").
-fn holds_value(
-    scope: &Scope<'_, '_>,
-    subtree: Subtree,
-    node: &NodeWrite,
-    stated: &[u8],
-) -> Result<bool, Error> {
+/// What the transaction holds under the key of a written node, as far as
+/// its write asks.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Held {
+    /// Whether it holds the value the write states, byte for byte.
+    value: bool,
+    /// The bytes it has for the hash of each child that the write leaves
+    /// stale, where it has a link on that side.
+    links: [Option<CryptoHash>; 2],
+}
+
+/// Reads what the transaction holds under the key of `node`, if the write
+/// states a value or leaves a hash stale. The bytes of a value are
+/// compared, never a hash: a stored value can change while no hash does
+/// (`node-store.md`, "Errors").
+fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodeWrite) -> Result<Held, Error> {
+    let stated = match &node.value {
+        ValueWrite::Stated(stated) => Some(stated.as_slice()),
+        ValueWrite::Kept => None,
+    };
+    if stated.is_none() && node.stale.is_empty() {
+        return Ok(Held::default());
+    }
     let hint = node.hint.map(|Location(handle)| handle);
-    Reads::node(scope, subtree, &node.key, hint, |view| match view {
-        // A value of another length is not read to be compared.
-        Some(view) if view.value_len() as usize == stated.len() => {
-            Ok(view.value(&mut ValueBuf::new())? == stated)
-        }
-        _ => Ok(false),
+    Reads::node(scope, subtree, &node.key, hint, |view| {
+        let Some(view) = view else {
+            return Ok(Held::default());
+        };
+        let value = match stated {
+            // A value of another length is not read to be compared.
+            Some(stated) if view.value_len() as usize == stated.len() => {
+                view.value(&mut ValueBuf::new())? == stated
+            }
+            _ => false,
+        };
+        let links = Side::BOTH.map(|side| {
+            let link = view.link(side);
+            let link = link.filter(|_| node.stale.has(HashField::Child(side)));
+            link.map(|link| *link.hash)
+        });
+        Ok(Held { value, links })
     })
     .and_then(|held| held)
     .map_err(fault)
 }
 
-fn link_put(link: &Option<LinkWrite>) -> Option<LinkPut<'_>> {
+/// A link as the transaction is handed it. For a hash the write leaves
+/// stale, `held` has the bytes the cell has there, which are stated again
+/// so that the write changes none of them (`NodePut::stale`).
+fn link_put<'a>(link: &'a Option<LinkWrite>, held: &'a Option<CryptoHash>) -> Option<LinkPut<'a>> {
     link.as_ref().map(|link| LinkPut {
         key: &link.key,
-        hash: &link.hash,
+        hash: held.as_ref().unwrap_or(&link.hash),
         heights: link.heights,
         aggregate: link.aggregate.as_slice(),
     })
@@ -507,24 +545,25 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
     let mut written = Written::default();
 
     // A stated value that the transaction holds already is kept where it
-    // is, so that a value is written only when it changed.
+    // is, so that a value is written only when it changed. A hash that is
+    // left stale keeps the bytes it has.
     let mut keep = Vec::with_capacity(write.merks.len());
     for merk in &write.merks {
         let subtree = Subtree::new(merk.subtree);
         let fresh = write.is_fresh(&merk.subtree);
         let mut kept = Vec::with_capacity(merk.nodes.len());
         for node in &merk.nodes {
-            kept.push(match &node.value {
-                ValueWrite::Kept => true,
-                ValueWrite::Stated(stated) => {
-                    let held = !fresh && holds_value(scope, subtree, node, stated)?;
-                    match held {
-                        true => written.values_kept += 1,
-                        false => written.values_written += 1,
-                    }
-                    held
+            let held = match fresh {
+                true => Held::default(),
+                false => held(scope, subtree, node)?,
+            };
+            if matches!(node.value, ValueWrite::Stated(_)) {
+                match held.value {
+                    true => written.values_kept += 1,
+                    false => written.values_written += 1,
                 }
-            });
+            }
+            kept.push(held);
         }
         keep.push(kept);
     }
@@ -546,19 +585,18 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
                     feature: node.feature.as_slice(),
                     value_hash: &node.value_hash,
                     kv_hash: &node.kv_hash,
-                    left: link_put(&node.left),
-                    right: link_put(&node.right),
+                    left: link_put(&node.left, &keep.links[0]),
+                    right: link_put(&node.right, &keep.links[1]),
                     hosted: match hosted {
                         None => Hosted::Keep,
                         Some(hosted) => Hosted::Set(hosted),
                     },
-                    value: match (&node.value, keep) {
+                    value: match (&node.value, keep.value) {
                         (ValueWrite::Stated(stated), false) => ValuePut::Value(stated),
                         _ => ValuePut::Keep,
                     },
                     at: node.hint.map(|Location(handle)| handle),
-                    // Merk makes every hash itself.
-                    stale: Stale::NONE,
+                    stale: node.stale,
                 });
             puts.collect()
         })
