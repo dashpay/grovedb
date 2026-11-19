@@ -459,7 +459,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        diff::engines::StandIn,
+        diff::{engines::StandIn, pair::testing::scratch},
         workload::{
             apply, apply::INSERT_OPTIONS, AppendEntry, BatchOp, IndexedTree, Op, Transactions,
             Write,
@@ -467,7 +467,7 @@ mod tests {
     };
 
     fn open<E: StreamEngine>() -> (tempfile::TempDir, GroveDb<E>) {
-        let dir = tempfile::tempdir().expect("a directory");
+        let dir = scratch();
         let db = GroveDb::open_with_engine(dir.path()).expect("a database");
         (dir, db)
     }

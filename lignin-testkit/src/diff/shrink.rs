@@ -246,7 +246,8 @@ mod tests {
         diff::{
             engines::{Fault, StandIn},
             pair::testing::{
-                added_by_the_last_of, rocksdb, stand_in, stand_in_with_a_stray_record, unhurried,
+                added_by_the_last_of, rocksdb, scratch, stand_in, stand_in_with_a_stray_record,
+                unhurried,
             },
         },
         golden::record::on_a_deep_stack,
@@ -281,7 +282,7 @@ mod tests {
         budget: Budget,
     ) -> (Divergence, Shrunk) {
         let reference = rocksdb();
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         on_a_deep_stack(|| {
             let divergence = run(
                 case,
@@ -412,7 +413,7 @@ mod tests {
             reference: Vec::new(),
             candidate: Vec::new(),
         };
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let shrunk = on_a_deep_stack(|| {
             shrink(
                 &case,
@@ -444,7 +445,7 @@ mod tests {
             reference: Vec::new(),
             candidate: Vec::new(),
         };
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let shrunk = on_a_deep_stack(|| {
             shrink(
                 &case,

@@ -650,9 +650,18 @@ pub(crate) mod testing {
         }
     }
 
+    /// A directory for the databases of a test: in memory where the machine
+    /// has such a directory. A shrinking runs its stream dozens of times,
+    /// and on a busy disk each run of them takes a minute.
+    pub(crate) fn scratch() -> tempfile::TempDir {
+        tempfile::tempdir_in("/dev/shm")
+            .or_else(|_| tempfile::tempdir())
+            .expect("a directory")
+    }
+
     /// The bytes the last of `ops` adds, on a fresh database.
     pub(crate) fn added_by_the_last_of(ops: &[Op]) -> u32 {
-        let dir = tempfile::tempdir().expect("a directory");
+        let dir = scratch();
         let db = GroveDb::open(dir.path()).expect("a database");
         let mut runner = Runner::new(&db, GroveVersion::latest()).expect("a runner");
         let mut added = 0;
@@ -711,7 +720,7 @@ mod tests {
         candidate: &Side<B>,
         stored_check: Stored,
     ) -> Run {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         on_a_deep_stack(|| {
             run(
                 case,
@@ -837,7 +846,7 @@ mod tests {
     #[test]
     fn a_run_stops_when_it_is_interrupted() {
         let case = case(vec![insert(b"a", vec![1]), Op::Commit]);
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let asked = Cell::new(0);
         let run = run(
             &case,
@@ -999,7 +1008,7 @@ mod tests {
         let closed = Side::<StandIn>::opened_by("closed", |_| {
             Err(grovedb::Error::InvalidInput("no database here"))
         });
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let refused = |candidate: &Side<StandIn>| {
             run(
                 &case(Vec::new()),

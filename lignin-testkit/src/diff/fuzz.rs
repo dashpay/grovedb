@@ -334,7 +334,7 @@ mod tests {
     use crate::diff::{
         engines::{Fault, StandIn},
         pair::{
-            testing::{rocksdb, stand_in, stand_in_that_opens, unhurried},
+            testing::{rocksdb, scratch, stand_in, stand_in_that_opens, unhurried},
             Part,
         },
     };
@@ -365,7 +365,7 @@ mod tests {
 
     #[test]
     fn a_run_of_so_many_cases_compares_them_all_and_ends_clean() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let mut reports = 0;
         let summary = fuzz(
             &rocksdb(),
@@ -416,7 +416,7 @@ mod tests {
 
     #[test]
     fn a_run_ends_when_its_time_is_up() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let duration = Duration::from_millis(1500);
         let summary = fuzzed(
             &stand_in(),
@@ -438,7 +438,7 @@ mod tests {
     /// one with the lowest number is reported all the same.
     #[test]
     fn a_run_ends_at_the_lowest_case_the_engines_differ_on_and_shrinks_it() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let candidate = StandIn::side(Fault::AddedByte { when_added: 0 });
         let run = |jobs, shrink| {
             fuzzed(
@@ -477,7 +477,7 @@ mod tests {
 
     #[test]
     fn a_case_both_engines_panic_on_is_cut_short_and_the_run_goes_on() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let fault = Fault::Panic { when_added: 0 };
         let summary = fuzz(
             &StandIn::side(fault),
@@ -502,7 +502,7 @@ mod tests {
 
     #[test]
     fn a_run_that_cannot_open_a_database_fails() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let closed = Side::<StandIn>::opened_by("closed", |_| {
             Err(grovedb::Error::InvalidInput("no database here"))
         });
@@ -530,7 +530,7 @@ mod tests {
     /// with what it said. It is not waited for.
     #[test]
     fn a_worker_that_panics_fails_the_run() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         // No grove version to draw a case for.
         let no_version = Settings {
             cases: Some(8),
@@ -553,7 +553,7 @@ mod tests {
     /// A stream that cannot be shrunk is reported as it was found.
     #[test]
     fn a_finding_is_kept_when_its_stream_cannot_be_shrunk() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let fault = Fault::AddedByte { when_added: 0 };
         let one_worker = Settings {
             cases: Some(400),
@@ -578,7 +578,7 @@ mod tests {
 
     #[test]
     fn the_bytes_under_a_directory_are_those_of_its_files() {
-        let dir = tempfile::tempdir().expect("a directory");
+        let dir = scratch();
         assert_eq!(bytes_under(dir.path()), 0);
         std::fs::write(dir.path().join("a"), [0; 10]).expect("a file");
         std::fs::create_dir(dir.path().join("inner")).expect("a directory");

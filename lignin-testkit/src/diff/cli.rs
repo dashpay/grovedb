@@ -449,7 +449,7 @@ mod tests {
     use crate::{
         diff::{
             fuzz::STORED_EVERY,
-            pair::testing::{rocksdb, stand_in_that_opens},
+            pair::testing::{rocksdb, scratch, stand_in_that_opens},
             shrink::Budget,
             Divergence, Part, Tally,
         },
@@ -561,7 +561,7 @@ mod tests {
 
     #[test]
     fn a_fuzzing_run_that_finds_nothing_exits_with_zero() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let (code, text) = ran("fuzz --cases 3 --jobs 2 --max-ops 60", scratch.path());
         assert_eq!(code, 0, "{text}");
         let lines: Vec<&str> = text.lines().collect();
@@ -580,9 +580,9 @@ mod tests {
 
     #[test]
     fn a_planted_fault_that_is_found_is_reported_shrunk_and_exits_with_zero() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let (code, text) = ran(
-            "seeded --fault added-byte:0 --duration 600 --shrink-seconds 3600 --jobs 2 \
+            "seeded --fault added-byte:0 --duration 600 --shrink-seconds 1000000 --jobs 2 \
              --max-ops 60",
             scratch.path(),
         );
@@ -619,7 +619,7 @@ mod tests {
 
     #[test]
     fn a_planted_fault_that_is_not_found_exits_with_one() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         // No batch adds four thousand million bytes.
         let (code, text) = ran(
             "seeded --fault added-byte:4000000000 --duration 1 --jobs 1 --max-ops 40",
@@ -634,7 +634,7 @@ mod tests {
 
     #[test]
     fn a_run_that_cannot_start_exits_with_two() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let missing = scratch.path().join("missing");
         for line in ["fuzz --cases 1", "case --seed 3", "seeded --duration 1"] {
             let (code, text) = ran(line, &missing);
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn a_case_the_candidate_panics_on_says_so() {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let (code, text) = ran(
             "case --seed 3 --fault panic:0 --max-ops 60 --stored-every 0",
             scratch.path(),
@@ -715,7 +715,7 @@ mod tests {
 
         // The case command: a candidate that opens once, for the run that
         // shows the divergence, and not again for the shrinking.
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let settings = Settings {
             seed: 3,
             scratch: scratch.path().to_path_buf(),
