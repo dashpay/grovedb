@@ -97,6 +97,48 @@ fn every_error_says_what_failed_and_where() {
             false,
         ),
         (
+            LogError::NotAtRecordEnd {
+                path: path(),
+                valid_len: 30,
+                offset: 20,
+            },
+            &["valid length 30", "begins at offset 20"],
+            false,
+        ),
+        (
+            LogError::VouchedBehindEnd {
+                path: path(),
+                valid_len: 900,
+            },
+            &["vouches for 900 bytes", "the log ends before that file"],
+            false,
+        ),
+        (LogError::ReaderFailed, &["has failed before"], false),
+        (
+            LogError::CutNotDurable { path: path() },
+            &["was taken back", "not been synced since"],
+            false,
+        ),
+        (
+            LogError::BeyondEnd {
+                place: place(7, 100),
+                end: Some(place(7, 60)),
+            },
+            &[
+                "through offset 100 of file 7",
+                "ends at offset 60 of file 7",
+            ],
+            false,
+        ),
+        (
+            LogError::BeyondEnd {
+                place: place(7, 100),
+                end: None,
+            },
+            &["through offset 100 of file 7", "holds nothing"],
+            false,
+        ),
+        (
             LogError::NotDeleted {
                 path: path(),
                 source: io(),

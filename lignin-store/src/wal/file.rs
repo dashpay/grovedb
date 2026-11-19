@@ -27,6 +27,7 @@ pub(super) struct LogFile {
     start: OnceLock<LogStart>,
     end: AtomicU64,
     finished: AtomicBool,
+    taken_back: AtomicBool,
     dead: AtomicBool,
     adopted: bool,
 }
@@ -42,6 +43,7 @@ impl LogFile {
             start: OnceLock::new(),
             end: AtomicU64::new(FileHeader::ENCODED_LEN as u64),
             finished: AtomicBool::new(false),
+            taken_back: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             adopted: false,
         }
@@ -75,6 +77,7 @@ impl LogFile {
             start: OnceLock::from(read.start()),
             end: AtomicU64::new(read.valid_len()),
             finished: AtomicBool::new(true),
+            taken_back: AtomicBool::new(false),
             dead: AtomicBool::new(false),
             adopted: true,
         })
@@ -124,6 +127,21 @@ impl LogFile {
 
     pub(super) fn finish(&self) {
         self.finished.store(true, Ordering::Release);
+    }
+
+    /// Whether an append to the file failed and left it with the length it
+    /// had, while the file as it is now is not known to be durable: a crash
+    /// could still bring back what the append wrote and took back.
+    pub(super) fn is_taken_back(&self) -> bool {
+        self.taken_back.load(Ordering::Acquire)
+    }
+
+    pub(super) fn take_back(&self) {
+        self.taken_back.store(true, Ordering::Release);
+    }
+
+    pub(super) fn cut(&self) {
+        self.taken_back.store(false, Ordering::Release);
     }
 
     /// Whether the file holds nothing and never will.

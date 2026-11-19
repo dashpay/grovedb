@@ -87,13 +87,19 @@ impl FileEnd {
 ///
 /// [`LogStore::open`](super::LogStore::open) takes it, so that the log is
 /// read once.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogEnd {
+    dir: PathBuf,
     files: Vec<FileEnd>,
     unread: Vec<FileId>,
 }
 
 impl LogEnd {
+    /// The database directory whose log was read.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
+
     /// The files the log is made of, in order, each as far as it is valid.
     pub fn files(&self) -> &[FileEnd] {
         &self.files
@@ -259,6 +265,14 @@ impl Current {
             if let Some(item) = scan.next() {
                 let end = self.offset + (scan.offset() - FIRST_ITEM_OFFSET);
                 let latest = scan.tail().latest();
+                let valid_len = self.named.valid_len();
+                if self.offset < valid_len && valid_len < end {
+                    return Err(LogError::NotAtRecordEnd {
+                        path: self.path.clone(),
+                        valid_len,
+                        offset: self.offset,
+                    });
+                }
                 let read = LogRead {
                     at: self.place(self.offset)?,
                     end: self.place(end)?,
@@ -280,7 +294,17 @@ impl Current {
             };
             let record_at = (failure.offset - FIRST_ITEM_OFFSET) as usize;
             let cut_short = match failure.error {
-                FormatError::Truncated { needed, .. } => Some(record_at.saturating_add(needed)),
+                FormatError::Truncated { .. } => {
+                    let record = &buf[at + PREFIX_LEN + record_at..];
+                    let record_len = match wal::record_len(record, self.version) {
+                        Ok(len) => Some(len),
+                        Err(FormatError::Truncated { needed, .. }) => Some(needed),
+                        Err(_) => None,
+                    };
+                    record_len
+                        .map(|len| record_at.saturating_add(len))
+                        .filter(|&whole| whole > have)
+                }
                 FormatError::Wal(WalError::UnfinishedGroup) => Some(have.saturating_add(1)),
                 _ => None,
             };
@@ -341,6 +365,7 @@ pub struct LogReader {
     current: Option<Current>,
     end: LogEnd,
     done: bool,
+    failed: bool,
     buf: Vec<u8>,
     window: usize,
 }
@@ -357,8 +382,13 @@ impl LogReader {
             named,
             next: 0,
             current: None,
-            end: LogEnd::default(),
+            end: LogEnd {
+                dir: dir.to_path_buf(),
+                files: Vec::new(),
+                unread: Vec::new(),
+            },
             done: false,
+            failed: false,
             buf: vec![0; PREFIX_LEN],
             window: DEFAULT_READ_WINDOW_LEN,
         }
@@ -381,31 +411,37 @@ impl LogReader {
     /// An error is not an end. It says that the directory does not hold the
     /// log its manifest names: a file is missing or too short, is not the
     /// log file of its name, or fails below its valid length
-    /// ([`LogError::Damaged`]). After an error the reader gives nothing
-    /// more.
+    /// ([`LogError::Damaged`]), or the manifest vouches for what the files
+    /// cannot hold. After an error the reader gives no item and no end of
+    /// the log: every later call fails with [`LogError::ReaderFailed`].
     pub fn next_item<T>(
+        &mut self,
+        visit: impl FnOnce(LogRead<'_>) -> T,
+    ) -> Result<Option<T>, LogError> {
+        if self.failed {
+            return Err(LogError::ReaderFailed);
+        }
+        self.read_item(visit).inspect_err(|_| {
+            self.failed = true;
+            self.current = None;
+        })
+    }
+
+    fn read_item<T>(
         &mut self,
         visit: impl FnOnce(LogRead<'_>) -> T,
     ) -> Result<Option<T>, LogError> {
         let mut visit = Some(visit);
         while !self.done {
-            let read = match self.current.as_mut() {
-                Some(current) => current.item(&mut self.buf, self.window, &mut visit),
-                None => {
-                    self.open_next().inspect_err(|_| self.done = true)?;
-                    continue;
-                }
+            let Some(current) = self.current.as_mut() else {
+                self.open_next()?;
+                continue;
             };
-            match read {
-                Ok(Some(visited)) => return Ok(Some(visited)),
-                Ok(None) => {
+            match current.item(&mut self.buf, self.window, &mut visit)? {
+                Some(visited) => return Ok(Some(visited)),
+                None => {
                     let ended = self.current.take().map(|current| current.ended());
                     self.end.files.extend(ended);
-                }
-                Err(error) => {
-                    self.done = true;
-                    self.current = None;
-                    return Err(error);
                 }
             }
         }
@@ -414,7 +450,7 @@ impl LogReader {
 
     /// Where the log ends, once [`Self::next_item`] has returned `None`.
     pub fn end(&self) -> Option<&LogEnd> {
-        self.done.then_some(&self.end)
+        (self.done && !self.failed).then_some(&self.end)
     }
 
     /// Reads the rest of the log, looking at no item, and returns where it
@@ -481,6 +517,13 @@ impl LogReader {
         // start record behind it is part of the tail: it may be torn, or
         // written for an end of the file before that a crash took away.
         let vouched = valid_len >= FIRST_ITEM_OFFSET;
+        if !vouched && valid_len != HEADER_LEN as u64 {
+            return Err(LogError::NotAtRecordEnd {
+                path,
+                valid_len,
+                offset: HEADER_LEN as u64,
+            });
+        }
         let start = match wal::read_file_start(first) {
             Ok((_, start)) => Some(start),
             Err(error) if vouched => return Err(damaged(HEADER_LEN as u64, error)),
@@ -501,6 +544,16 @@ impl LogReader {
             }
         };
         let Some(start) = continues else {
+            let behind = &self.named[self.next + 1..];
+            if let Some(vouched) = behind
+                .iter()
+                .find(|file| file.valid_len() > HEADER_LEN as u64)
+            {
+                return Err(LogError::VouchedBehindEnd {
+                    path: FileNames::WAL.path(&self.dir, vouched.id()),
+                    valid_len: vouched.valid_len(),
+                });
+            }
             let unread = self.named[self.next..].iter().map(LiveFile::id);
             self.end.unread.extend(unread);
             self.next = self.named.len();

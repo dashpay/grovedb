@@ -29,8 +29,10 @@ use lignin_format::{
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     segment::ManifestStore,
-    wal::{LogEnd, LogOptions, LogReader, LogStore, SyncPolicy},
+    wal::{LogOptions, LogReader, LogStore, SyncPolicy},
 };
+
+const NOT_COUNTED: &str = "/proc/self/io cannot be read here, so the calls cannot be counted";
 
 /// The `write` system calls this process has made, and the bytes they were
 /// given.
@@ -43,14 +45,14 @@ fn writes() -> Option<(u64, u64)> {
     Some((field("syscw:")?, field("wchar:")?))
 }
 
-fn commit(log: &LogStore, values: usize, pages: u32) -> usize {
+fn commit(log: &LogStore, values: usize, value_len: usize, pages: u32) -> usize {
     let at = log.next_group().expect("a place");
     let mut bytes = Vec::new();
     let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
     let owner = PageId::new(9).expect("a page");
     for value in 0..values {
         group
-            .value(owner, &vec![value as u8; 700 + 13 * value])
+            .value(owner, &vec![value as u8; value_len + 13 * value])
             .expect("a value");
     }
     for page in 1..=pages {
@@ -67,18 +69,16 @@ fn commit(log: &LogStore, values: usize, pages: u32) -> usize {
     }
     group.finish();
 
-    let before = writes();
+    let (calls, chars) = writes().expect(NOT_COUNTED);
     let appended = log.append_group(&at, &bytes).expect("an append");
-    let after = writes();
+    let (calls_after, chars_after) = writes().expect(NOT_COUNTED);
     log.sync_for_commit(&appended).expect("no sync is due");
-    if let (Some((calls, chars)), Some((calls_after, chars_after))) = (before, after) {
-        assert_eq!(calls_after - calls, 1, "one write system call for a commit");
-        assert_eq!(
-            chars_after - chars,
-            bytes.len() as u64,
-            "of the whole group"
-        );
-    }
+    assert_eq!(calls_after - calls, 1, "one write system call for a commit");
+    assert_eq!(
+        chars_after - chars,
+        bytes.len() as u64,
+        "of the whole group"
+    );
     bytes.len()
 }
 
@@ -99,20 +99,24 @@ fn a_commit_is_one_write_system_call() {
         sync: SyncPolicy::Never,
         ..LogOptions::default()
     };
-    let log = LogStore::open(&manifest, &LogEnd::default(), options).expect("a log");
+    let end = LogReader::new(vfs.clone(), &dir, manifest.manifest().unwrap())
+        .into_end()
+        .expect("an empty log");
+    let log = LogStore::open(&manifest, &end, options).expect("a log");
     log.roll(&mut manifest).expect("a first file");
 
-    if writes().is_none() {
-        eprintln!("/proc/self/io cannot be read here: the calls are not counted");
-    }
     let mut longest = 0;
     for round in 0..300 {
         // From a commit that changes nothing to a block of many pages with
         // several values: one record or a dozen, one call.
-        let len = commit(&log, round % 5, (round % 40) as u32);
+        let len = commit(&log, round % 5, 700, (round % 40) as u32);
         longest = longest.max(len);
     }
     assert!(longest > 4000, "{longest}");
+    // A group of several megabytes, whose values take many records each,
+    // is one call as well.
+    let len = commit(&log, 3, 3 << 20, 12);
+    assert!(len > 9 << 20, "{len}");
 
     let mut reader = LogReader::new(vfs, Path::new(&dir), manifest.manifest().unwrap());
     let mut commits = 0;
@@ -122,5 +126,5 @@ fn a_commit_is_one_write_system_call() {
     {
         commits += u32::from(is_commit);
     }
-    assert_eq!(commits, 300);
+    assert_eq!(commits, 301);
 }

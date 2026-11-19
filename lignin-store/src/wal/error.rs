@@ -46,9 +46,34 @@ pub enum LogError {
         /// What is wrong there.
         source: FormatError,
     },
+    /// The valid length the manifest gives a log file lies inside a record
+    /// or inside an item of the file. A manifest of this log vouches for
+    /// whole items only, so these files are not the ones it names.
+    NotAtRecordEnd {
+        /// The file.
+        path: PathBuf,
+        /// The valid length in the manifest.
+        valid_len: u64,
+        /// The file offset at which the record or the item begins that the
+        /// valid length lies in.
+        offset: u64,
+    },
+    /// The manifest vouches for records of a log file that the log does
+    /// not reach: the log ends in a file before it, behind everything the
+    /// manifest vouches for there. These files are not the ones the
+    /// manifest names, and nothing is taken for the end of the log.
+    VouchedBehindEnd {
+        /// The file the log does not reach.
+        path: PathBuf,
+        /// Its valid length in the manifest.
+        valid_len: u64,
+    },
+    /// The reader has failed before. It gives no item and no end of the
+    /// log.
+    ReaderFailed,
     /// The manifest could not be read or replaced.
     Manifest(SegmentStoreError),
-    /// A manifest of another directory was passed.
+    /// A manifest, or the end of a log, of another directory was passed.
     WrongDirectory {
         /// The directory of the log.
         expected: PathBuf,
@@ -153,9 +178,11 @@ pub enum LogError {
         /// What the call appends.
         expected: &'static str,
     },
-    /// The file layer failed the append. The item is not in the log, and no
-    /// crash brings it back. The log file takes no more items: turn to the
-    /// next one.
+    /// The file layer failed the append, and the item is not in the log.
+    /// The log file takes no more items. If the file layer wrote bytes of
+    /// the item and took them back, a crash can still bring the item back
+    /// until a sync of the log has succeeded: sync the log, then turn it to
+    /// its next file.
     NotAppended {
         /// The file.
         path: PathBuf,
@@ -171,6 +198,22 @@ pub enum LogError {
         path: PathBuf,
         /// The error that left it open.
         source: io::Error,
+    },
+    /// An append to the file the log ends in failed and was taken back,
+    /// and no sync has made the file durable as it is since. The log does
+    /// not turn to its next file until one has: a crash could bring the
+    /// item back, in front of everything appended after it. Sync the log.
+    CutNotDurable {
+        /// The file.
+        path: PathBuf,
+    },
+    /// The log does not reach the place it was to be made durable through:
+    /// nothing was appended there.
+    BeyondEnd {
+        /// The place asked for.
+        place: LogPlace,
+        /// Where the log ends.
+        end: Option<LogPlace>,
     },
     /// A sync of a log file failed, so nothing that was appended after the
     /// last sync that succeeded can be made durable in this session.
@@ -288,6 +331,22 @@ impl fmt::Display for LogError {
                 "{} is damaged at offset {offset}, below its valid length of {valid_len}: {source}",
                 path.display()
             ),
+            Self::NotAtRecordEnd {
+                path,
+                valid_len,
+                offset,
+            } => write!(
+                f,
+                "the valid length {valid_len} of {} lies inside what begins at offset {offset}",
+                path.display()
+            ),
+            Self::VouchedBehindEnd { path, valid_len } => write!(
+                f,
+                "the manifest vouches for {valid_len} bytes of {}, and the log ends before that \
+                 file",
+                path.display()
+            ),
+            Self::ReaderFailed => write!(f, "the reader of the log has failed before"),
             Self::Manifest(error) => write!(f, "{error}"),
             Self::WrongDirectory { expected, found } => write!(
                 f,
@@ -385,6 +444,25 @@ impl fmt::Display for LogError {
                  {source}",
                 path.display()
             ),
+            Self::CutNotDurable { path } => write!(
+                f,
+                "an append to {} was taken back, and the log has not been synced since",
+                path.display()
+            ),
+            Self::BeyondEnd { place, end } => {
+                write!(
+                    f,
+                    "the log is to be made durable through offset {} of file {}, and ",
+                    place.offset(),
+                    place.file()
+                )?;
+                match end {
+                    Some(end) => {
+                        write!(f, "ends at offset {} of file {}", end.offset(), end.file())
+                    }
+                    None => write!(f, "holds nothing"),
+                }
+            }
             Self::SyncFailed { path, source } => write!(
                 f,
                 "a sync of {} failed, so the log cannot be made durable in this session: {source}",

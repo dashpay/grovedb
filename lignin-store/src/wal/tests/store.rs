@@ -729,7 +729,9 @@ fn an_open_removes_the_log_files_no_manifest_names() {
     assert!(wal.join(log_name(1)).exists() && wal.join(log_name(2)).exists());
 
     // A file that was dropped and not yet deleted: its id is one the
-    // manifest records, and whatever it holds goes.
+    // manifest records, and whatever it holds goes. It goes once this
+    // session has replaced the manifest: the manifest it found may be one
+    // that a crash takes away again, for the one that names the file.
     std.db.roll().unwrap();
     assert!(
         !wal.join(log_name(2)).exists(),
@@ -738,7 +740,9 @@ fn an_open_removes_the_log_files_no_manifest_names() {
     let mut dropped = header(2).to_vec();
     dropped.extend_from_slice(b"items of a file that is gone");
     std::fs::write(wal.join(log_name(2)), &dropped).unwrap();
-    let std = std.reopen(LogOptions::default());
+    let mut std = std.reopen(LogOptions::default());
+    assert!(wal.join(log_name(2)).exists());
+    std.db.roll().unwrap();
     assert!(!wal.join(log_name(2)).exists());
 
     // A file above every id the manifest records that holds more than a
@@ -761,26 +765,48 @@ fn the_end_of_another_log_does_not_open_this_one() {
     let std = StdDb::new(LogOptions::default());
     let mut rng = Rng(13);
     let mut std = std;
+    let (_, stale) = std.db.read();
     std.db.commit(&mut rng).unwrap();
     std.db.log.sync().unwrap();
     std.db.log.commit(&mut std.db.manifest).unwrap();
     let (_, end) = std.db.read();
     let other = StdDb::new(LogOptions::default());
 
-    // The other database names its file with another length.
+    // The end of the log of another directory, whatever it holds.
     let error = LogStore::open(&other.db.manifest, &end, LogOptions::default()).unwrap_err();
+    assert!(
+        matches!(&error, LogError::WrongDirectory { expected, found }
+            if *expected == other.db.dir && *found == std.db.dir),
+        "{error}"
+    );
+    // An end that was read from an earlier manifest: the file has another
+    // length in this one.
+    let error = LogStore::open(&std.db.manifest, &stale, LogOptions::default()).unwrap_err();
     assert!(
         matches!(error, LogError::WrongLogEnd { file } if file == file_id(1)),
         "{error}"
     );
     // An end that knows nothing of a file the manifest names, and one that
     // knows a file the manifest does not name.
-    let error = LogStore::open(&std.db.manifest, &LogEnd::default(), LogOptions::default());
+    let nothing = LogReader::new(std.db.vfs.clone(), &std.db.dir, &empty_manifest())
+        .into_end()
+        .unwrap();
+    let error = LogStore::open(&std.db.manifest, &nothing, LogOptions::default());
     assert!(matches!(error, Err(LogError::WrongLogEnd { .. })));
     let dir = tempfile::tempdir().unwrap();
     let vfs: Arc<dyn Vfs> = Arc::new(FaultyVfs::without_syncs(Arc::new(StdVfs)));
-    let empty = ManifestStore::create(vfs, dir.path(), empty_manifest()).unwrap();
-    let error = LogStore::open(&empty, &end, LogOptions::default());
+    let empty = ManifestStore::create(vfs.clone(), dir.path(), empty_manifest()).unwrap();
+    let wal = dir.path().join("wal");
+    std::fs::create_dir(&wal).unwrap();
+    for file in std::fs::read_dir(std.db.dir.join("wal")).unwrap() {
+        let file = file.unwrap();
+        std::fs::copy(file.path(), wal.join(file.file_name())).unwrap();
+    }
+    let copied = LogReader::new(vfs, dir.path(), std.db.manifest.manifest().unwrap())
+        .into_end()
+        .unwrap();
+    assert_eq!(copied.files().len(), end.files().len());
+    let error = LogStore::open(&empty, &copied, LogOptions::default());
     assert!(matches!(error, Err(LogError::WrongLogEnd { .. })));
 
     // A manifest of another directory is not this log's.
@@ -1007,4 +1033,103 @@ fn the_log_is_kept_from_the_place_of_every_hold() {
         .cloned()
         .collect();
     assert_eq!(std.db.read().0, kept);
+}
+
+/// A database whose log has no file yet: the session has not rolled.
+fn unrolled() -> (TempDir, Db) {
+    let dir = tempfile::tempdir().unwrap();
+    let vfs: Arc<dyn Vfs> = Arc::new(FaultyVfs::without_syncs(Arc::new(StdVfs)));
+    ManifestStore::create(vfs.clone(), dir.path(), empty_manifest()).unwrap();
+    let db = Db::open(vfs, dir.path(), LogOptions::default()).unwrap();
+    (dir, db)
+}
+
+#[test]
+fn a_sync_through_a_place_covers_the_place_or_fails() {
+    let (_dir, mut db) = unrolled();
+    let beyond_end = |db: &Db, beyond: LogPlace| {
+        let end = db.log.end();
+        let error = db.log.sync_through(beyond).unwrap_err();
+        assert!(
+            matches!(error, LogError::BeyondEnd { place, end: found }
+                if place == beyond && found == end),
+            "{error}"
+        );
+    };
+    // A log that holds nothing was appended to nowhere.
+    assert_eq!(db.log.end(), None);
+    beyond_end(&db, place(1, FIRST));
+    db.roll().unwrap();
+
+    let mut rng = Rng(31);
+    db.commit(&mut rng).unwrap();
+    let end = db.log.end().unwrap();
+    // Behind the end of the file the log ends in, and in a file it has
+    // not turned to.
+    beyond_end(&db, place(1, end.offset() + 1));
+    beyond_end(&db, place(2, FIRST));
+    assert_eq!(db.log.durable().place, None, "nothing was synced for them");
+
+    // Up to its end, the log is durable through the place when the call
+    // returns.
+    assert_eq!(db.log.sync_through(end).unwrap().place, Some(end));
+}
+
+#[test]
+fn a_file_that_the_manifest_stops_naming_is_not_turned_to() {
+    let (_dir, mut db) = unrolled();
+    let spare = db.log.create().unwrap();
+    assert!(matches!(
+        db.log.rotate(),
+        Err(LogError::SpareNotNamed { file }) if file == spare
+    ));
+    db.log.commit(&mut db.manifest).unwrap();
+    assert_eq!(db.named(), [log_file(1, FileState::Open, HEADER)]);
+
+    // Something replaces the manifest with one that names no log file,
+    // and tells the log as it must. A file that no manifest names would
+    // not be read after a crash, whatever was appended to it.
+    let without_log = |current: &Manifest| -> Result<Manifest, LogError> {
+        let others = current.files().iter().copied();
+        let others = others.filter(|file| file.kind() != FileKind::Wal);
+        Ok(Manifest::new(
+            current.page_size(),
+            current.last_file_ids(),
+            current.table_checkpoint(),
+            others.collect(),
+        )
+        .unwrap())
+    };
+    db.manifest.update(without_log).unwrap();
+    db.log.manifest_replaced(&db.manifest).unwrap();
+    assert!(matches!(db.log.rotate(), Err(LogError::NoSpare)));
+    assert!(matches!(db.log.next_group(), Err(LogError::NoActiveFile)));
+    // No manifest may name the file again, so the log has given it up.
+    assert!(!db.dir.join("wal").join(log_name(1)).exists());
+    assert_eq!(db.log.files_named().unwrap(), []);
+
+    // The log goes on in a file with an id of its own.
+    assert!(db.roll().unwrap());
+    assert_eq!(db.log.end(), Some(place(2, FIRST)));
+    assert_eq!(db.named()[0].id(), file_id(2));
+}
+
+#[test]
+fn a_file_length_that_leaves_no_room_for_an_item_is_taken_as_one_that_does() {
+    for target_file_len in [0, HEADER, FIRST] {
+        let mut std = StdDb::new(small_files(target_file_len));
+        assert_eq!(std.db.log.options().target_file_len, FIRST + 1);
+        // A file that has its start record is not full, so the roll that
+        // turned to it has left the next one ready.
+        assert!(!std.db.log.is_due());
+        assert!(!std.db.log.rotate().unwrap());
+        let mut rng = Rng(33);
+        for file in 1..=4 {
+            let item = std.db.item(&mut rng).unwrap();
+            assert_eq!(item.at, place(file, FIRST));
+            assert!(std.db.log.is_due());
+            assert!(std.db.roll().unwrap());
+        }
+        assert_eq!(std.db.read().0.len(), 4);
+    }
 }

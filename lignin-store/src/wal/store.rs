@@ -83,7 +83,8 @@ pub struct LogOptions {
     /// The length at which a log file is full and the log turns to the
     /// next one ([`LogStore::rotate`]). An item is never split over two
     /// files, and the log goes on in a full file until it is turned, so a
-    /// file can end up longer.
+    /// file can end up longer. A length that leaves no room for an item
+    /// behind the start record is taken as one byte more than that.
     pub target_file_len: u64,
     /// When a commit makes the log durable.
     pub sync: SyncPolicy,
@@ -283,8 +284,9 @@ pub(super) fn check_item(
 enum Settled {
     /// All of its bytes are in the file, as they were given.
     InLog,
-    /// The file ends where it did, and a sync has made that durable: no
-    /// crash brings a byte of the append back.
+    /// The file ends where it did. The append wrote nothing, or what it
+    /// wrote was taken back, and a crash can bring that back until the
+    /// file as it is now is durable.
     Absent,
     /// A part of it, or bytes that are no item, stay behind the end of the
     /// log. No crash completes them.
@@ -295,8 +297,8 @@ enum Settled {
 
 /// Finds out whether the bytes of a failed append at `offset` of `file` are
 /// in the file, by recovery's own test: they are there in full, and they
-/// are what was written. `verifies` says whether other bytes of that
-/// length would pass for what was appended.
+/// are what was written. `verifies` says whether recovery would take
+/// anything from other bytes of that length. Nothing is synced.
 fn settle(
     file: &LogFile,
     offset: u64,
@@ -309,13 +311,7 @@ fn settle(
     };
     let whole = offset + bytes.len() as u64;
     if len == offset {
-        // The append was taken back, or wrote nothing. What it wrote and
-        // took back a crash can still bring back, all of it, until the
-        // file as it is now is durable.
-        return match file.sync() {
-            Ok(()) => Settled::Absent,
-            Err(error) => Settled::Unknown(error),
-        };
+        return Settled::Absent;
     }
     if len < offset || len > whole {
         return Settled::Unknown(io::Error::other(format!(
@@ -464,15 +460,20 @@ fn remove(vfs: &dyn Vfs, path: &Path) -> io::Result<()> {
     }
 }
 
+/// Removes what no manifest has ever named: a file that was created and
+/// not named, and what an interrupted rewrite left. Returns the files an
+/// earlier session dropped and did not delete, which a manifest before
+/// this one names.
 fn remove_unnamed(
     vfs: &dyn Vfs,
     dir: &Path,
     entries: &[DirEntry],
     named: &BTreeSet<FileId>,
     last_id: Option<FileId>,
-) -> Result<(), LogError> {
+) -> Result<BTreeMap<FileId, PathBuf>, LogError> {
     let wal_dir = FileNames::WAL.dir(dir);
     let mut unnamed = Vec::new();
+    let mut dropped = BTreeMap::new();
     for entry in entries {
         if entry.kind != EntryKind::File {
             continue;
@@ -494,21 +495,23 @@ fn remove_unnamed(
             continue;
         }
         let path = wal_dir.join(&entry.name);
-        if Some(id) > last_id {
-            let len = vfs
-                .open(&path, OpenMode::Read)
-                .and_then(|file| file.len())
-                .map_err(LogError::io("measure", &path))?;
-            if len > HEADER_LEN {
-                return Err(LogError::UnnamedFileHoldsItems { path, len });
-            }
+        if Some(id) <= last_id {
+            dropped.insert(id, path);
+            continue;
+        }
+        let len = vfs
+            .open(&path, OpenMode::Read)
+            .and_then(|file| file.len())
+            .map_err(LogError::io("measure", &path))?;
+        if len > HEADER_LEN {
+            return Err(LogError::UnnamedFileHoldsItems { path, len });
         }
         unnamed.push(path);
     }
     for path in unnamed {
         remove(vfs, &path).map_err(LogError::io("remove", &path))?;
     }
-    Ok(())
+    Ok(dropped)
 }
 
 /// The write-ahead log of one database directory.
@@ -555,13 +558,19 @@ impl LogStore {
     ///
     /// The files the manifest names that hold nothing of the log
     /// ([`LogEnd::unread`]) are taken out: the next manifest does not name
-    /// them, and they are deleted then. Every file in `wal/` with a log
-    /// file's name that the manifest does not name is removed at once: a
-    /// crash can leave one that was created and never named, or one that
-    /// was dropped and not yet deleted. If such a file has an id above the
-    /// last id in the manifest and holds more than a file header, the open
-    /// fails with [`LogError::UnnamedFileHoldsItems`] and removes nothing.
-    /// Other entries of `wal/` are left alone.
+    /// them, and they are deleted then. So is every file in `wal/` with a
+    /// log file's name and an id up to the last one in the manifest that
+    /// the manifest does not name: an earlier session dropped it and did
+    /// not delete it. It is not deleted before this session has replaced
+    /// the manifest, because the manifest the session before left may not
+    /// be durable, and a crash would then bring back the one that names
+    /// the file.
+    ///
+    /// A file with an id above the last one in the manifest was created
+    /// and never named. It is removed at once, with what an interrupted
+    /// rewrite of a log file left. If it holds more than a file header,
+    /// the open fails with [`LogError::UnnamedFileHoldsItems`] and removes
+    /// nothing. Other entries of `wal/` are left alone.
     ///
     /// `wal/` is created if it is missing, and its name is made durable
     /// either way.
@@ -573,6 +582,16 @@ impl LogStore {
         let current = manifest.manifest()?;
         let vfs = manifest.vfs().clone();
         let dir = manifest.dir().to_path_buf();
+        if end.dir() != dir {
+            return Err(LogError::WrongDirectory {
+                expected: dir,
+                found: end.dir().to_path_buf(),
+            });
+        }
+        let options = LogOptions {
+            target_file_len: options.target_file_len.max(FIRST_ITEM_OFFSET + 1),
+            ..options
+        };
 
         let mut read: BTreeMap<FileId, _> = end.files().iter().map(|f| (f.file(), f)).collect();
         let mut unread: BTreeSet<FileId> = end.unread().iter().copied().collect();
@@ -609,7 +628,7 @@ impl LogStore {
 
         let last_id = current.last_file_ids().wal;
         let entries = list_or_create_dir(&*vfs, &dir, &FileNames::WAL)?;
-        remove_unnamed(&*vfs, &dir, &entries, &named, last_id)?;
+        dropped.extend(remove_unnamed(&*vfs, &dir, &entries, &named, last_id)?);
 
         Ok(Self {
             vfs,
@@ -677,8 +696,10 @@ impl LogStore {
     /// while it has none. Before the session has turned to its first file
     /// it is where the log of the earlier sessions ends.
     ///
-    /// The place never goes back. Every item whose append has returned is
-    /// before it, so the record of every change that has reached a block is:
+    /// The place never goes back in a session, and the next session begins
+    /// at it unless a crash took items. Every item whose append has
+    /// returned is before it, so the record of every change that has
+    /// reached a block is:
     /// a page step appends its record before its change is written back.
     /// This is what [`TableCheckpoints::write`] asks for, before it copies
     /// its first chain and after its last (K14 of `page-table.md`).
@@ -759,6 +780,10 @@ impl LogStore {
     /// and appending its group, or that commit writes its group again
     /// ([`LogError::PlaceTaken`]).
     ///
+    /// After an append that failed and was taken back, the log turns only
+    /// once a sync has made the file durable as it is
+    /// ([`LogError::CutNotDurable`]): sync the log first.
+    ///
     /// If the file layer fails the append of the start record, the log has
     /// not turned ([`LogError::NotAppended`]), and the file it would have
     /// turned to is given up: create another one.
@@ -768,6 +793,11 @@ impl LogStore {
         let due = match &tail.active {
             Some((file, cursor)) if !file.is_finished() => {
                 cursor.offset() >= self.options.target_file_len
+            }
+            Some((file, _)) if file.is_taken_back() => {
+                return Err(LogError::CutNotDurable {
+                    path: file.path().to_path_buf(),
+                });
             }
             _ => true,
         };
@@ -940,10 +970,11 @@ impl LogStore {
     /// ([`LogError::PlaceTaken`]).
     ///
     /// When this returns `Ok`, the group is in the log: recovery takes the
-    /// commit whenever these bytes survive. When it returns
-    /// [`LogError::NotAppended`], the group is not in the log and no crash
-    /// brings it back: the commit has failed. When it returns
-    /// [`LogError::Unsettled`], neither is known.
+    /// commit whenever these bytes survive, and everything before them in
+    /// the log. When it returns [`LogError::NotAppended`], the group is not
+    /// in the log. A crash can still bring it back until a sync of the log
+    /// has succeeded ([`Self::sync`]): then the commit has failed. When it
+    /// returns [`LogError::Unsettled`], neither is known.
     pub fn append_group(&self, at: &GroupPlace, group: &[u8]) -> Result<Appended, LogError> {
         if at.session != self.session {
             return Err(LogError::WrongStore);
@@ -1036,13 +1067,13 @@ impl LogStore {
         let verifies = |found: &[u8]| {
             let mut cursor = before.clone();
             let mut at = 0;
-            while at < found.len() {
-                match cursor.step(&found[at..]) {
-                    Ok(step) => at += step.len,
-                    Err(_) => return false,
+            while let Ok(step) = cursor.step(&found[at..]) {
+                if step.ends_item {
+                    return true;
                 }
+                at += step.len;
             }
-            !cursor.in_group()
+            false
         };
         match settle(&file, offset, bytes, verifies) {
             Settled::InLog => {
@@ -1050,7 +1081,10 @@ impl LogStore {
                 self.finish(&file);
                 Ok(appended)
             }
-            Settled::Absent | Settled::Torn => {
+            settled @ (Settled::Absent | Settled::Torn) => {
+                if matches!(settled, Settled::Absent) {
+                    file.take_back();
+                }
                 self.finish(&file);
                 Err(LogError::NotAppended {
                     path: file.path().to_path_buf(),
@@ -1086,7 +1120,9 @@ impl LogStore {
     }
 
     /// Makes durable every item that was appended before this was called,
-    /// and returns how far the log is durable.
+    /// and returns how far the log is durable. It also makes durable the
+    /// end of a file that a failed append left with the length it had, so
+    /// that no crash brings that item back.
     ///
     /// It may run while items are appended, and no append waits for it.
     /// One sync runs at a time. The files are synced in the order of the
@@ -1113,33 +1149,32 @@ impl LogStore {
     /// If the log is durable through `place` already, nothing is synced.
     /// So of several threads that wait for their own items, one syncs for
     /// all that were appended before it began. It fails as [`Self::sync`]
-    /// does.
+    /// does, and for a place behind the end of the log, where nothing was
+    /// appended ([`LogError::BeyondEnd`]).
     pub fn sync_through(&self, place: LogPlace) -> Result<LogDurable, LogError> {
         self.sync_until(Some(place))
     }
 
     fn sync_until(&self, through: Option<LogPlace>) -> Result<LogDurable, LogError> {
         let _one_at_a_time = lock(&self.syncing);
-        {
+        let failed = {
             let files = self.files();
-            if let Some(failed) = &files.sync_failed {
-                return Err(LogError::SyncFailed {
-                    path: failed.path.clone(),
-                    source: failed.error(),
-                });
-            }
-            let covered = |place| files.durable.place.is_some_and(|durable| durable >= place);
-            if through.is_some_and(covered) {
-                return Ok(files.durable);
-            }
+            let failed = files.sync_failed.as_ref();
+            failed.map(|failed| (failed.path.clone(), failed.error()))
+        };
+        if let Some((path, source)) = failed {
+            return Err(self.sync_failed(&path, source));
         }
         let (end, latest) = {
             let tail = self.tail();
             (tail.end(), tail.latest)
         };
+        if let Some(place) = through.filter(|&place| Some(place) > end) {
+            return Err(LogError::BeyondEnd { place, end });
+        }
         let targets: Vec<(Arc<LogFile>, u64)> = {
             let files = self.files();
-            files
+            let targets: Vec<_> = files
                 .live
                 .values()
                 .filter(|entry| entry.file.start().is_some())
@@ -1149,19 +1184,27 @@ impl LogStore {
                         Some(end) if entry.file.id() == end.file() => end.offset(),
                         _ => entry.file.end(),
                     };
-                    (entry.durable_len < file_end).then(|| (entry.file.clone(), file_end))
+                    (entry.durable_len < file_end || entry.file.is_taken_back())
+                        .then(|| (entry.file.clone(), file_end))
                 })
-                .collect()
+                .collect();
+            let covered = |place| files.durable.place.is_some_and(|durable| durable >= place);
+            let cut_waits = targets.iter().any(|(file, _)| file.is_taken_back());
+            if through.is_some_and(covered) && !cut_waits {
+                return Ok(files.durable);
+            }
+            targets
         };
         for (file, file_end) in targets {
+            let taken_back = file.is_taken_back();
             if file.is_adopted() {
                 self.write_again(&file, file_end)?;
             } else if let Err(source) = file.sync() {
                 self.files_mut().sync_failed = Some(Sticky::of(file.path(), &source));
-                return Err(LogError::SyncFailed {
-                    path: file.path().to_path_buf(),
-                    source,
-                });
+                return Err(self.sync_failed(file.path(), source));
+            }
+            if taken_back {
+                file.cut();
             }
             if let Some(entry) = self.files_mut().live.get_mut(&file.id()) {
                 entry.durable_len = entry.durable_len.max(file_end);
@@ -1177,6 +1220,21 @@ impl LogStore {
         }
         files.last_sync = Instant::now();
         Ok(files.durable)
+    }
+
+    /// The error of a sync that failed, now or earlier in the session. An
+    /// append that was taken back and still waits for a sync is unsettled
+    /// from here on: nothing can keep a crash from bringing it back.
+    fn sync_failed(&self, path: &Path, source: io::Error) -> LogError {
+        let mut tail = self.tail();
+        let waits = matches!(&tail.active, Some((file, _)) if file.is_taken_back());
+        if waits && tail.unsettled.is_none() {
+            tail.unsettled = Some(Sticky::of(path, &source));
+        }
+        LogError::SyncFailed {
+            path: path.to_path_buf(),
+            source,
+        }
     }
 
     /// Makes durable a file of an earlier session whose end the manifest
@@ -1445,8 +1503,10 @@ impl LogStore {
     /// [`ManifestStore::update`] that returned `Ok`.
     ///
     /// A new file that the durable manifest names can be turned to from
-    /// now on. The file of a dropped log file that the durable manifest no
-    /// longer names is deleted.
+    /// now on. If the manifest no longer names the file the log would have
+    /// turned to, that file is given up, and the log needs another. The
+    /// file of a dropped log file that the durable manifest no longer
+    /// names is deleted.
     ///
     /// A file that cannot be deleted does not stop the rest: the call ends
     /// with [`LogError::NotDeleted`], and the next call tries the deletion
@@ -1454,8 +1514,18 @@ impl LogStore {
     pub fn manifest_replaced(&self, manifest: &ManifestStore) -> Result<(), LogError> {
         self.check_same_dir(manifest)?;
         let named: BTreeSet<FileId> = log_files(manifest.manifest()?).map(LiveFile::id).collect();
-        if let Some((spare, is_named)) = &mut self.tail().spare {
-            *is_named |= named.contains(&spare.id());
+        {
+            // A file that a manifest has stopped naming is given up: no
+            // manifest may name it again.
+            let mut tail = self.tail();
+            tail.spare = tail.spare.take().and_then(|(spare, was_named)| {
+                let is_named = named.contains(&spare.id());
+                if was_named && !is_named {
+                    spare.kill();
+                    return None;
+                }
+                Some((spare, is_named))
+            });
         }
 
         let unnamed: BTreeMap<FileId, PathBuf> = {

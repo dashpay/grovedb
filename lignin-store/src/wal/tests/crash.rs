@@ -129,3 +129,98 @@ fn a_database_goes_on_through_one_crash_after_another() {
     );
     assert!(total.states > 30_000 && total.appended > 3000, "{total:?}");
 }
+
+/// Two sessions, the second of which begins where the first ended with no
+/// crash, with the power cut after operation `cut` of the file system.
+/// Returns the run, and the numbers of the operations of the second
+/// session.
+fn a_session_after_another(seed: u64, cut: Option<u64>) -> (Run, std::ops::Range<u64>) {
+    let config = sim::traced(seed, [64, 512][seed as usize % 2]);
+    let mut run = Run::new(config, small_files(1500), FEW_STATES);
+    // The first session ends with items in two files that no sync covers.
+    for step in 0..16 {
+        run.append();
+        if step == 5 {
+            run.sync();
+        }
+        if step == 9 {
+            run.roll();
+        }
+    }
+    run.note_durable();
+    assert!(run.model.durable < run.model.items.len());
+    let from = run.fs.stats().ops;
+    if let Some(cut) = cut {
+        run.fs.crash_at(lignin_io::sim::CrashPoint::AfterOp(cut));
+    }
+
+    // The next session reads the log, opens it, rolls for the first time
+    // and goes on. With the power off, every call of it fails.
+    run.db = None;
+    if let Ok(read) = Run::read(&run.fs) {
+        run.model.check(&read, true).unwrap();
+        run.model.recovered(&read, false);
+        run.open(false);
+        for _ in 0..3 {
+            run.append();
+        }
+        run.sync();
+        run.roll();
+        run.append();
+        run.note_durable();
+    }
+    let to = run.fs.stats().ops;
+    (run, from..to)
+}
+
+#[test]
+fn a_power_cut_at_any_operation_of_a_first_roll_leaves_a_log_that_reads() {
+    use lignin_io::sim::{Event, OpKind};
+    let mut total = Stats::default();
+    let mut cuts = 0;
+    for seed in 1..=4 {
+        let (whole, ops) = a_session_after_another(seed, None);
+        assert_eq!(whole.stats.other_errors, 0);
+        // The session wrote again the files whose ends no manifest vouched
+        // for, so the cuts fall between its copy, its rename and the sync
+        // of the directory too.
+        let renames = whole
+            .fs
+            .trace()
+            .into_iter()
+            .filter(|event| {
+                matches!(event, Event::Op(op)
+                    if op.op > ops.start && op.kind == OpKind::Rename && op.path.ends_with(".log.tmp"))
+            })
+            .count();
+        assert!(renames >= 1, "{renames} files written again");
+
+        for cut in ops {
+            let (mut run, _) = a_session_after_another(seed, Some(cut));
+            assert!(run.fs.is_powered_off());
+            cuts += 1;
+            // Whatever the cut left, and whatever of it a crash keeps: the
+            // log reads, and holds what was durable.
+            run.check_crash_states();
+            // The session after it goes on from there.
+            run.crash(cut);
+            assert!(run.db.is_some(), "the directory opens after cut {cut}");
+            run.append();
+            run.sync();
+            run.note_durable();
+            run.check_crash_states();
+            let read = Run::read(&run.fs).unwrap();
+            run.model.check(&read, true).unwrap();
+            total.states += run.stats.states;
+            total.appended += run.stats.appended;
+            total.unsettled += run.stats.unsettled;
+            total.other_errors += run.stats.other_errors;
+            total.lost_in_a_crash += run.stats.lost_in_a_crash;
+        }
+    }
+    println!("{cuts} cuts: {total:?}");
+    assert!(
+        cuts > 250 && total.states > 15_000,
+        "{cuts} cuts, {total:?}"
+    );
+}

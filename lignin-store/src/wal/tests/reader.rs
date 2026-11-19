@@ -225,12 +225,16 @@ fn a_failure_below_the_valid_length_is_damage_and_not_an_end() {
                     && matches!(source, FormatError::ChecksumMismatch { .. })),
             "{file} at {at}: {error}"
         );
-        // After an error the reader gives nothing more.
+        // After an error the reader gives no item and no end of the log.
         let manifest = read_manifest(&fs, dir).unwrap();
         let mut reader = LogReader::new(vfs.clone(), dir, &manifest);
         while reader.next_item(|_| ()).is_ok_and(|read| read.is_some()) {}
-        assert_eq!(reader.next_item(|_| ()).unwrap(), None);
-        assert_eq!(reader.end().unwrap().files().len() as u32, file - 1);
+        assert!(matches!(
+            reader.next_item(|_| ()),
+            Err(LogError::ReaderFailed)
+        ));
+        assert!(reader.end().is_none());
+        assert!(matches!(reader.into_end(), Err(LogError::ReaderFailed)));
         put_file(&fs, &path, &whole);
     }
 
@@ -487,7 +491,7 @@ fn the_end_of_a_log_says_how_far_the_manifest_vouches_for_it() {
     let open = |file: u32, valid_len: u64| log_file(file, FileState::Open, valid_len);
 
     assert_eq!(
-        LogEnd::default().durable(),
+        durable(&[]).0,
         LogDurable {
             version: CommitVersion::EMPTY,
             place: None
@@ -527,4 +531,166 @@ fn the_end_of_a_log_says_how_far_the_manifest_vouches_for_it() {
     ]);
     assert_eq!(found.place, end.place());
     assert_eq!(found.version, end.latest());
+}
+
+#[test]
+fn a_valid_length_inside_a_record_is_not_what_a_manifest_of_this_log_says() {
+    let mut rng = Rng(21);
+    let (bytes, ends, _) = crafted_file(1, LogStart::FIRST, 6, &mut rng);
+    let read = |state: FileState, valid_len: u64| {
+        let (_fs, vfs) = crafted(&[(log_file(1, state, valid_len), &bytes)]);
+        read_log(&vfs, sim::db_dir())
+    };
+    // A manifest vouches for the header alone, or for whole items.
+    for valid_len in ends.iter().copied().chain([HEADER, FIRST]) {
+        let (items, end) = read(FileState::Open, valid_len).unwrap();
+        assert_eq!(items.len(), 6);
+        assert_eq!(
+            end.durable().place,
+            LogPlace::new(file_id(1), valid_len).ok()
+        );
+    }
+    // Inside the start record.
+    for valid_len in [HEADER + 1, 30, FIRST - 1] {
+        let error = read(FileState::Open, valid_len).unwrap_err();
+        assert!(
+            matches!(&error, LogError::NotAtRecordEnd { valid_len: found, offset, .. }
+                if *found == valid_len && *offset == HEADER),
+            "{valid_len}: {error}"
+        );
+    }
+    // Inside an item of an open file, which is read whole behind it.
+    let mut begins = FIRST;
+    for &end in &ends {
+        for valid_len in [begins + 1, end - 1] {
+            let error = read(FileState::Open, valid_len).unwrap_err();
+            assert!(
+                matches!(&error, LogError::NotAtRecordEnd { valid_len: found, offset, .. }
+                    if *found == valid_len && *offset == begins),
+                "{valid_len}: {error}"
+            );
+            // A closed file ends at its valid length: the item is cut.
+            let error = read(FileState::Closed, valid_len).unwrap_err();
+            assert!(
+                matches!(&error, LogError::Damaged { offset, .. } if *offset == begins),
+                "{valid_len}: {error}"
+            );
+        }
+        begins = end;
+    }
+}
+
+#[test]
+fn a_file_the_manifest_vouches_for_behind_the_end_of_the_log_is_not_passed_over() {
+    let mut rng = Rng(22);
+    let dir = sim::db_dir();
+    let (first, first_ends, first_latest) = crafted_file(1, LogStart::FIRST, 4, &mut rng);
+    let next = LogStart::FIRST
+        .next(first.len() as u64, first_latest)
+        .unwrap();
+    let (second, _, second_latest) = crafted_file(2, next, 3, &mut rng);
+    let after = next.next(second.len() as u64, second_latest).unwrap();
+    let (third, third_ends, _) = crafted_file(3, after, 3, &mut rng);
+    let open = |file: u32, valid_len: u64| log_file(file, FileState::Open, valid_len);
+    let whole = log_file(1, FileState::Closed, first.len() as u64);
+    let behind_end = |files: &[(LiveFile, &[u8])], valid_len: u64| {
+        let (_fs, vfs) = crafted(files);
+        let error = read_log(&vfs, dir).unwrap_err();
+        assert!(
+            matches!(&error, LogError::VouchedBehindEnd { path, valid_len: found }
+                if *path == log_path(dir, 3) && *found == valid_len),
+            "{error}"
+        );
+    };
+
+    // The second file has no start record, and the manifest vouches for
+    // the start record of the third, or for items in it.
+    let header = &second[..HEADER as usize];
+    for valid_len in [FIRST, third_ends[0], third.len() as u64] {
+        behind_end(
+            &[
+                (whole, &first),
+                (open(2, HEADER), header),
+                (open(3, valid_len), &third),
+            ],
+            valid_len,
+        );
+    }
+    // The second file was written for an end of the first that is gone.
+    let cut = &first[..first_ends[1] as usize];
+    behind_end(
+        &[
+            (open(1, first_ends[0]), cut),
+            (open(2, HEADER), &second),
+            (open(3, FIRST), &third),
+        ],
+        FIRST,
+    );
+
+    // With nothing vouched for behind the end, the log ends there, and the
+    // files behind it hold nothing of it.
+    let (_fs, vfs) = crafted(&[
+        (open(1, first_ends[0]), cut),
+        (open(2, HEADER), &second),
+        (open(3, HEADER), &third),
+    ]);
+    let (items, end) = read_log(&vfs, dir).unwrap();
+    assert_eq!(items.len(), 2);
+    assert_eq!(end.unread(), [file_id(2), file_id(3)]);
+}
+
+#[test]
+fn a_record_that_is_there_whole_and_is_no_record_is_not_waited_for() {
+    let mut rng = Rng(23);
+    let dir = sim::db_dir();
+    let (mut bytes, ends, latest) = crafted_file(1, LogStart::FIRST, 5, &mut rng);
+    let good = bytes.len() as u64;
+    // A frame whose checksum verifies, around a part whose last entry
+    // lacks a byte: the format calls it truncated, and no further byte of
+    // the file completes it.
+    let mut whole = Vec::new();
+    let address = LogStart::FIRST.address(good).unwrap();
+    let mut group = GroupWriter::new(latest.next().unwrap(), address, &mut whole).unwrap();
+    group.freed(page(5)).unwrap();
+    group.finish();
+    assert_eq!(
+        wal::record_len(&whole, FormatVersion::V1).unwrap(),
+        whole.len()
+    );
+    let frame_len = lignin_format::RecordHeader::ENCODED_LEN;
+    let mut payload = whole[frame_len..whole.len() - 1].to_vec();
+    // The part says how long its entries are, behind its kind, its flags,
+    // its version and its number.
+    let entries_len = 1 + 1 + 8 + 4;
+    let stated = u32::from_le_bytes(payload[entries_len..entries_len + 4].try_into().unwrap());
+    payload[entries_len..entries_len + 4].copy_from_slice(&(stated - 1).to_le_bytes());
+    lignin_format::header::write_record(&payload, &mut bytes).unwrap();
+    let malformed_end = bytes.len();
+    bytes.extend(rng.bytes(300_000));
+
+    let reads = |bytes: &[u8], valid_len: u64| {
+        let (fs, vfs) = crafted(&[(log_file(1, FileState::Open, valid_len), bytes)]);
+        let before = fs.stats().ops;
+        let read = read_log_with(&vfs, dir, 64);
+        (read, fs.stats().ops - before)
+    };
+    let (read, ops) = reads(&bytes, ends[2]);
+    let (items, end) = read.unwrap();
+    assert_eq!(items.len(), 5);
+    assert_eq!(end.place(), Some(place(1, good)));
+    // What lies behind the record is not fetched: the reader makes the
+    // calls it makes when the file ends with the record.
+    let (short, short_ops) = reads(&bytes[..malformed_end], ends[2]);
+    assert_eq!(short.unwrap().0.len(), 5);
+    assert_eq!(ops, short_ops);
+
+    // Below the valid length it is damage, and is not waited for either.
+    let (read, damaged_ops) = reads(&bytes, malformed_end as u64);
+    let error = read.unwrap_err();
+    assert!(
+        matches!(&error, LogError::Damaged { offset, source: FormatError::Truncated { .. }, .. }
+            if *offset == good),
+        "{error}"
+    );
+    assert!(damaged_ops <= ops, "{damaged_ops} calls, {ops} to the end");
 }
