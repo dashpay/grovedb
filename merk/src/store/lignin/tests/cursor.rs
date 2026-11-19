@@ -424,6 +424,8 @@ fn with_both(
 
 #[test]
 fn a_cursor_shows_the_records_rocksdb_shows_and_charges_what_it_charges() {
+    // The thread of this test may have run another that walks.
+    EDGES.take();
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
         with_both(tree_type, 0x05ee_d000 + seed as u64, 5, &[], |both| {
             let walks = [
