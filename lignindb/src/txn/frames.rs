@@ -92,6 +92,9 @@ pub(crate) struct Frames<'s> {
     pub(crate) flat: FlatFrames<'s>,
     fragments: Fragments,
     key: Vec<u8>,
+    /// For each Merk of the batch that was applied last, whether it had no
+    /// root before.
+    empty: Vec<bool>,
 }
 
 /// The flat pages of the frames. When they are dropped, their copies are
@@ -138,8 +141,6 @@ impl Drop for FlatFrames<'_> {
 /// The nodes that the keys of one batch name, as the tree layer names them.
 struct Resolver<'a> {
     merks: &'a [MerkWrite<'a>],
-    /// The position of each Merk's first node among the nodes of the batch.
-    offsets: Vec<usize>,
     /// The root of each Merk before the batch.
     roots: Vec<Option<CellAddress>>,
     /// The nodes each Merk's change set writes, by key.
@@ -221,6 +222,7 @@ impl<'s> Frames<'s> {
             ))),
             fragments: Fragments::new(path.layout.clone()),
             key: Vec::new(),
+            empty: Vec::new(),
             base: at,
         }
     }
@@ -244,7 +246,7 @@ impl<'s> Frames<'s> {
                 merks: &merks,
             };
             frames
-                .apply(path, &batch)
+                .apply(path, &batch, Some(&set.made(op)))
                 .map_err(|refused| refused.error)?;
         }
         Ok(frames)
@@ -253,6 +255,12 @@ impl<'s> Frames<'s> {
     /// The version the frames are built over: *B(T)*.
     pub(crate) fn base(&self) -> CommitVersion {
         self.base
+    }
+
+    /// For each Merk of the batch that was applied last, whether it had no
+    /// root before.
+    pub(crate) fn empty_before(&self) -> &[bool] {
+        &self.empty
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -283,23 +291,20 @@ impl<'s> Frames<'s> {
         followed.ok().flatten()
     }
 
-    /// Gives the frames up: every copy is discarded and every page id the
-    /// transaction allocated goes back.
-    pub(crate) fn discard(&mut self) -> Result<(), TxnError> {
-        let tree = self.tree.discard();
-        let flat = self.flat.roll_back().map_err(TxnError::from);
-        tree.and(flat)
-    }
-
     /// Applies `batch` to the frames: the change sets of its Merks as one
     /// write of the tree layer, with each Merk's directory entry, and then
     /// its records.
     ///
-    /// The batch has passed [`check`](super::check::check).
+    /// The batch has passed [`check`](super::check::check). `made` is given
+    /// for a batch that is applied again (WT7): it says of each Merk
+    /// whether the transaction made its first node with this batch. Such a
+    /// Merk has to be empty still, and the batch is refused if it is not
+    /// (GM3).
     pub(crate) fn apply(
         &mut self,
         path: &WritePath<'s>,
         batch: &Batch<'_>,
+        made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
         let directory = path.directory;
         for record in batch.records {
@@ -313,7 +318,7 @@ impl<'s> Frames<'s> {
                 return Err(Refused::clean(BatchError::MerkRange { unit }));
             }
         }
-        let applied = self.apply_merks(path, batch.merks)?;
+        let applied = self.apply_merks(path, batch.merks, made)?;
         for record in batch.records {
             let tree = path.keyspaces.of(record.unit().column);
             let subtree = record.unit().subtree;
@@ -348,7 +353,9 @@ impl<'s> Frames<'s> {
         &mut self,
         path: &WritePath<'s>,
         merks: &[MerkWrite<'_>],
+        made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
+        self.empty.clear();
         if merks.is_empty() {
             return Ok(Applied::default());
         }
@@ -364,6 +371,16 @@ impl<'s> Frames<'s> {
             let root = directory.root(&self.flat, &merk.subtree);
             roots.push(root.map_err(|error| Refused::clean(TxnError::Directory(error)))?);
         }
+        self.empty.extend(roots.iter().map(Option::is_none));
+        let made = made.unwrap_or_default().iter();
+        for ((merk, made), empty) in merks.iter().zip(made).zip(&self.empty) {
+            // The transaction made the first node of this Merk, and it has
+            // a root now that is not the transaction's.
+            if *made && !*empty {
+                let subtree = merk.subtree;
+                return Err(Refused::clean(BatchError::RootTaken { subtree }));
+            }
+        }
         let written = (merks.iter().zip(&offsets))
             .map(|(merk, offset)| {
                 let nodes = merk.nodes.iter().enumerate();
@@ -375,7 +392,6 @@ impl<'s> Frames<'s> {
             .collect();
         let resolver = Resolver {
             merks,
-            offsets,
             roots,
             written,
             by_subtree,

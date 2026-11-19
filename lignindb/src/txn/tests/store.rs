@@ -23,7 +23,7 @@ use lignin_store::{
     cache::{BufferPool, OwnerId, PoolConfig},
     load::{LoadBuffers, PageLoader},
     segment::{ManifestStore, SegmentStore},
-    table::{Link, PageTable},
+    table::{Link, LinkError, PageTable},
     values::ValueStore,
 };
 use lignin_tree::{
@@ -167,6 +167,9 @@ pub struct Counts {
     pub ids_reused: AtomicU64,
     pub ids_released: AtomicU64,
     pub pages_freed: AtomicU64,
+    /// Pages freed that no segment ever held, under an id that was freed
+    /// before.
+    pub freed_unwritten: AtomicU64,
 }
 
 /// How a commit of the test store ended.
@@ -366,9 +369,17 @@ impl Db {
         }
         drop(used);
         for page in freed {
-            self.table
-                .push(page, Link::free(commit))
-                .expect("a free link");
+            // A page that was made under an id that had been freed, and
+            // that is freed again before write-back gave it a link, has
+            // the earlier free link as its newest: the table takes no
+            // second one.
+            match self.table.push(page, Link::free(commit)) {
+                Ok(()) => {}
+                Err(LinkError::AlreadyFree) => {
+                    self.counts.freed_unwritten.fetch_add(1, Ordering::Relaxed);
+                }
+                Err(error) => panic!("the free link of {page}: {error}"),
+            }
             self.pool.free(page, commit).expect("it is freed");
             self.ids.free(page, commit).expect("it is live");
             self.counts.pages_freed.fetch_add(1, Ordering::Relaxed);

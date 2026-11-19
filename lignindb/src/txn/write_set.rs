@@ -99,6 +99,9 @@ struct MerkEntry {
     /// `None` keeps the root.
     root: Option<Option<Span>>,
     anchored: bool,
+    /// Whether the Merk had no root when the operation wrote it, and the
+    /// transaction had not written it before.
+    made: bool,
     nodes: u32,
     removed: u32,
 }
@@ -362,14 +365,23 @@ impl WriteSet {
     /// The entries come in the order of [`Applied::nodes`](super::Applied):
     /// for each Merk its nodes and then its deletes, and the records last.
     /// The batch has passed [`check`](super::check::check).
-    pub(crate) fn add(&mut self, batch: &Batch<'_>, first_write: CommitVersion) -> EntryId {
+    ///
+    /// `empty` says of each Merk of the batch whether it had no root before
+    /// the operation.
+    pub(crate) fn add(
+        &mut self,
+        batch: &Batch<'_>,
+        first_write: CommitVersion,
+        empty: &[bool],
+    ) -> EntryId {
         let first = self.entries.len() as EntryId;
         self.ops.push(Op {
             entries: first,
             merks: self.merks.len() as u32,
         });
-        for merk in batch.merks {
+        for (merk, empty) in batch.merks.iter().zip(empty) {
             let unit = Unit::data(merk.subtree);
+            let made = *empty && !self.units.contains_key(&unit);
             for node in merk.nodes {
                 let hosted = match node.hosted {
                     Hosted::Keep => HostedEntry::Keep,
@@ -405,6 +417,7 @@ impl WriteSet {
                 subtree: merk.subtree,
                 root,
                 anchored: merk.anchored,
+                made,
                 nodes: merk.nodes.len() as u32,
                 removed: merk.removed.len() as u32,
             });
@@ -443,12 +456,11 @@ impl WriteSet {
         )
     }
 
-    /// The first-write version of the operation `op`.
-    pub(crate) fn op_first_write(&self, op: usize) -> Option<CommitVersion> {
-        let (from, to, ..) = self.op_bounds(op);
-        self.entries[from..to]
-            .first()
-            .map(|entry| entry.first_write)
+    /// For each Merk of the operation `op`, whether the transaction made
+    /// its first node with that operation: the Merk had no root then.
+    pub(crate) fn made(&self, op: usize) -> Vec<bool> {
+        let (.., from, to) = self.op_bounds(op);
+        self.merks[from..to].iter().map(|merk| merk.made).collect()
     }
 
     /// The Merks that the nodes of the operation `op` host, for

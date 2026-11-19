@@ -60,6 +60,16 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
+    /// The transaction made the first node of a Merk that was empty, and a
+    /// commit outside it has made one since, with no key in common. The
+    /// two roots cannot both stand, and the conflict rule did not see it:
+    /// whoever writes the first node of a Merk also writes a record that
+    /// every such writer writes, which on existing GroveVersions is the
+    /// element that hosts the Merk or the base root key (GM1, GM3).
+    RootTaken {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
     /// A range delete names a unit that the transaction cannot remove a
     /// range from: the Merk nodes of a subtree are dropped, not deleted by
     /// range (CV9, TREE-09).
@@ -93,6 +103,12 @@ impl fmt::Display for BatchError {
                 write!(
                     f,
                     "a node of the Merk {subtree} keeps a value it does not have"
+                )
+            }
+            Self::RootTaken { subtree } => {
+                write!(
+                    f,
+                    "the empty Merk {subtree} was given a root outside the transaction"
                 )
             }
             Self::MerkRange { unit } => {

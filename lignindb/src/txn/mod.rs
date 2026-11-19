@@ -29,3 +29,15 @@ pub use write::{
     Applied, Batch, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, ValuePut,
 };
 pub use write_set::Mark;
+
+/// The write half of a snapshot being read-only (`transactions.md` RD1,
+/// T-RD5): the entry point that writes through a transaction answers
+/// [`SnapshotError::ReadOnly`](crate::snapshot::SnapshotError::ReadOnly)
+/// for a snapshot, and changes nothing.
+impl crate::snapshot::Snapshot<'_> {
+    /// Refused: a snapshot is read-only.
+    pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, crate::snapshot::SnapshotError> {
+        let _ = batch;
+        Err(crate::snapshot::SnapshotError::ReadOnly)
+    }
+}

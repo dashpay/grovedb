@@ -195,12 +195,6 @@ impl<'s> TreePages<'s> {
         self.copies.len() + self.freed.len()
     }
 
-    /// The copies of the pages the transaction changed or made, in
-    /// ascending order of page id.
-    pub(crate) fn written(&self) -> impl Iterator<Item = (PageId, &TreeCopy<'s>)> {
-        self.copies.iter().map(|(page, copy)| (*page, copy))
-    }
-
     fn check_live(&self, page: PageId) -> Result<(), TxnError> {
         if self.freed.contains_key(&page) || self.unused.contains(&page) {
             return Err(TxnError::PageFreed { page });

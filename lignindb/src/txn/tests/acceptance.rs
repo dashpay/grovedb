@@ -25,7 +25,7 @@ fn filled(world: &mut World<'_>, rng: &mut Rng) {
     }
     records.push(put(meta, b"m", b"meta"));
     let merks = Vec::new();
-    let outcome = world.write_outside(&OwnedBatch { merks, records }, &mut []);
+    let outcome = world.write_outside(&OwnedBatch { merks, records }, &[]);
     assert!(matches!(outcome, Outcome::Committed(_)));
     for name in [1, 2] {
         world.edit_outside(
@@ -36,7 +36,7 @@ fn filled(world: &mut World<'_>, rng: &mut Rng) {
                     items.insert(key(index * 2), value(rng, len));
                 }
             },
-            &mut [],
+            &[],
         );
     }
     world.check_committed();
@@ -52,9 +52,9 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
     let before = world.latest();
     let snapshot = db.reads(&versions).snapshot();
 
-    let mut tx = world.begin();
+    let tx = world.begin();
     world.write(
-        &mut tx,
+        &tx,
         vec![
             put(aux, b"mine", b"uncommitted"),
             put(aux, &key(4), b"replaced"),
@@ -62,7 +62,7 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
             Write::Range(aux, key(20), Some(key(40))),
         ],
     );
-    world.edit(&mut tx, 1, |items| {
+    world.edit(&tx, 1, |items| {
         for index in 0..40 {
             items.insert(key(index * 2 + 1), value(&mut rng, 100));
         }
@@ -71,7 +71,7 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
         }
         items.insert(key(2), b"another value".to_vec());
     });
-    world.edit(&mut tx, 3, |items| {
+    world.edit(&tx, 3, |items| {
         items.insert(b"new".to_vec(), b"in a Merk the transaction made".to_vec());
     });
     // The transaction reads its own writes.
@@ -85,8 +85,8 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
     // one with writes of its own, a snapshot, and whoever reads the pages
     // of the latest version.
     world.check_committed();
-    let mut other = world.begin();
-    world.write(&mut other, vec![put(aux, b"other", b"also uncommitted")]);
+    let other = world.begin();
+    world.write(&other, vec![put(aux, b"other", b"also uncommitted")]);
     world.check(&other);
     world.check(&tx);
     assert_eq!(world.latest(), before, "nothing was committed");
@@ -97,7 +97,7 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
 
     // A rollback leaves nothing behind (WT9).
     tx.txn.rollback().expect("no scope is open");
-    tx.model = Default::default();
+    tx.forget();
     world.check(&tx);
     assert_eq!(tx.txn.stats().writes, 0);
     other.txn.rollback().expect("no scope is open");
@@ -107,15 +107,15 @@ fn uncommitted_changes_are_invisible_to_every_other_handle() {
 
     // The same writes, committed, are what everybody reads.
     world.write(
-        &mut tx,
+        &tx,
         vec![put(aux, b"mine", b"committed"), delete(aux, &key(6))],
     );
-    world.edit(&mut tx, 1, |items| {
+    world.edit(&tx, 1, |items| {
         items.insert(key(1), b"now it counts".to_vec());
         items.remove(&key(8));
     });
     world.check(&tx);
-    let outcome = world.commit(tx, &mut []);
+    let outcome = world.commit(tx, &[]);
     assert_eq!(outcome, Outcome::Committed(world.latest()));
     assert!(world.latest() > before);
     world.check_committed();

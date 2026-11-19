@@ -58,6 +58,12 @@ pub struct TxnStats {
     /// a commit outside the transaction (WT7), a rollback to a mark, or an
     /// operation that failed half way.
     pub rebuilds: u64,
+    /// How many reads of a node went through a handle that was still good
+    /// (PN8): no keyed lookup was made for them.
+    pub handles_followed: u64,
+    /// How many reads of a node found it by its key: in the write set, or
+    /// down from the root of its Merk.
+    pub keyed_reads: u64,
 }
 
 /// What a transaction keeps between its operations.
@@ -83,6 +89,8 @@ struct State<'s> {
     buffers: LoadBuffers,
     key: Vec<u8>,
     rebuilds: u64,
+    followed: u64,
+    keyed: u64,
 }
 
 impl State<'_> {
@@ -181,6 +189,8 @@ impl<'s> WriteTxn<'s> {
                 buffers: LoadBuffers::new(),
                 key: Vec::new(),
                 rebuilds: 0,
+                followed: 0,
+                keyed: 0,
             }),
         }
     }
@@ -233,6 +243,8 @@ impl<'s> WriteTxn<'s> {
             }),
             held_values: frames.map_or((0, 0), |frames| frames.values.held_bytes()),
             rebuilds: state.rebuilds,
+            handles_followed: state.followed,
+            keyed_reads: state.keyed,
         }
     }
 
@@ -406,9 +418,9 @@ impl<'s> WriteTxn<'s> {
         let Some(frames) = &mut state.frames else {
             return self.write_by_key(state, op, batch);
         };
-        match frames.apply(path, batch) {
+        match frames.apply(path, batch, None) {
             Ok(applied) => {
-                state.set.add(batch, op.at);
+                state.set.add(batch, op.at, frames.empty_before());
                 Ok(applied)
             }
             Err(refused) => {
@@ -448,9 +460,12 @@ impl<'s> WriteTxn<'s> {
             }
         }
         let mut kept = Vec::new();
+        let mut empty = Vec::with_capacity(batch.merks.len());
         let mut entry: EntryId = 0;
         for merk in batch.merks {
             let subtree = merk.subtree;
+            let root = path.directory.committed_root(&committed, &subtree);
+            empty.push(root.map_err(TxnError::Directory)?.is_none());
             for node in merk.nodes {
                 entry += 1;
                 if node.value != ValuePut::Keep {
@@ -482,7 +497,7 @@ impl<'s> WriteTxn<'s> {
             }
             entry += merk.removed.len() as EntryId;
         }
-        let first = state.set.add(batch, op.at);
+        let first = state.set.add(batch, op.at, &empty);
         for (offset, (value, out_of_line)) in kept {
             state.set.keep(first + offset, &value, out_of_line);
         }
@@ -597,15 +612,23 @@ impl<'s> WriteTxn<'s> {
             // where a good handle says, or where its key leads to.
             let followed = hint.and_then(|handle| frames.follow(handle, key));
             let at = match followed {
-                Some(at) => Some(at),
+                Some(at) => {
+                    state.followed += 1;
+                    Some(at)
+                }
                 None => {
+                    state.keyed += 1;
                     let root = frames.root(path, &subtree)?;
                     find(&mut frames.tree, root, key)?
                 }
             };
             return show_framed(frames, at, read);
         }
-        match state.set.own(Unit::data(subtree), key) {
+        let own = state.set.own(Unit::data(subtree), key);
+        if own != Own::Unwritten {
+            state.keyed += 1;
+        }
+        match own {
             Own::Node(id) => Ok(read(Some(NodeView::record(&state.set, id)))),
             Own::Deleted => Ok(read(None)),
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
@@ -627,8 +650,12 @@ impl<'s> WriteTxn<'s> {
                         resolved.ok().flatten()
                     });
                 let at = match followed {
-                    Some(at) => Some(at),
+                    Some(at) => {
+                        state.followed += 1;
+                        Some(at)
+                    }
                     None => {
+                        state.keyed += 1;
                         let root = self.committed_root(&op, &subtree)?;
                         find(&mut pages, root, key)?
                     }
@@ -685,6 +712,7 @@ impl<'s> WriteTxn<'s> {
             let Ok(Some(child)) = child else {
                 return Ok(None);
             };
+            state.followed += 1;
             return show_framed(frames, child, read).map(Some);
         }
         if parent.lease() != state.lease {
@@ -711,6 +739,7 @@ impl<'s> WriteTxn<'s> {
             state.key = key;
             return Ok(None);
         };
+        state.followed += 1;
         let shown = match child {
             None => Ok(read(None)),
             Some(address) => {

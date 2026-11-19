@@ -99,24 +99,21 @@ fn run(seed: u64, steps: usize, keys: usize) {
                 };
                 let this = &mut open[at];
                 if rng.chance(25) {
-                    this.marks
-                        .push((this.tx.txn.mark(), this.tx.model.writes.len()));
+                    let writes = this.tx.model.borrow().writes.len();
+                    this.marks.push((this.tx.txn.mark(), writes));
                 }
                 let batch = batch(&world, &this.tx, &mut rng, keys);
-                world.apply(&mut this.tx, &batch).unwrap_or_else(|error| {
+                world.apply(&this.tx, &batch).unwrap_or_else(|error| {
                     panic!("seed {seed}, step {step}: {error}");
                 });
                 world.check(&this.tx);
             }
             50..=64 => {
-                let mut tx = world.begin();
+                let tx = world.begin();
                 let batch = batch(&world, &tx, &mut rng, keys);
-                world
-                    .apply(&mut tx, &batch)
-                    .expect("a write with no transaction");
-                let mut others: Vec<&mut Tx<'_>> =
-                    open.iter_mut().map(|open| &mut open.tx).collect();
-                let outcome = world.commit(tx, &mut others);
+                (world.apply(&tx, &batch)).expect("a write with no transaction");
+                let others: Vec<&Tx<'_>> = open.iter().map(|open| &open.tx).collect();
+                let outcome = world.commit(tx, &others);
                 commits += usize::from(matches!(outcome, Outcome::Committed(_)));
                 world.check_committed();
             }
@@ -126,9 +123,8 @@ fn run(seed: u64, steps: usize, keys: usize) {
                 };
                 let done = open.swap_remove(at);
                 rebuilds += done.tx.txn.stats().rebuilds;
-                let mut others: Vec<&mut Tx<'_>> =
-                    open.iter_mut().map(|open| &mut open.tx).collect();
-                match world.commit(done.tx, &mut others) {
+                let others: Vec<&Tx<'_>> = open.iter().map(|open| &open.tx).collect();
+                match world.commit(done.tx, &others) {
                     Outcome::Committed(_) => commits += 1,
                     Outcome::Conflict => conflicts += 1,
                     Outcome::Empty => {}
@@ -141,7 +137,7 @@ fn run(seed: u64, steps: usize, keys: usize) {
                 };
                 let this = &mut open[at];
                 this.tx.txn.rollback().expect("no scope is open");
-                this.tx.model = Default::default();
+                this.tx.forget();
                 this.marks.clear();
                 world.check(&this.tx);
             }
@@ -157,7 +153,7 @@ fn run(seed: u64, steps: usize, keys: usize) {
                 let (mark, writes) = this.marks[to];
                 this.marks.truncate(to);
                 this.tx.txn.rewind(mark);
-                this.tx.model.writes.truncate(writes);
+                this.tx.model.borrow_mut().writes.truncate(writes);
                 world.check(&this.tx);
             }
             _ => {
