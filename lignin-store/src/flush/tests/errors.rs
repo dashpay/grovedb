@@ -357,7 +357,7 @@ fn a_value_log_file_that_cannot_be_synced_is_left_for_another() {
 
 /// Puts other bytes, of another length, in place of those that are with
 /// the frame of `id` for its first pending value.
-fn shorten_the_value(db: &Db, id: PageId) {
+pub(super) fn shorten_the_value(db: &Db, id: PageId) {
     let (_, pending) = db.pending(id)[0];
     let step = db.pool.page_step(id);
     let old = step.current().expect("the page");

@@ -271,6 +271,14 @@ impl<'s> WriteBack<'s> {
     /// One checkpoint is taken at a time, and a second call waits for the
     /// first.
     pub fn checkpoint(&self) -> Result<Checkpointed, FlushError> {
+        let checkpointed = self.try_checkpoint();
+        if checkpointed.is_err() {
+            count(&self.state.counters.checkpoints_failed, 1);
+        }
+        checkpointed
+    }
+
+    fn try_checkpoint(&self) -> Result<Checkpointed, FlushError> {
         let Stores {
             values,
             log,
@@ -349,6 +357,10 @@ impl<'s> WriteBack<'s> {
                 .collect(),
         };
         let info = checkpoints.write(table, covers, &sample, || log.end())?;
+        count(
+            &self.state.counters.checkpoint_bytes,
+            info.named().valid_len(),
+        );
         let named = Named {
             covers,
             place: Some(place),
@@ -431,6 +443,7 @@ impl<'s> WriteBack<'s> {
         if let Some(writer) = files.segment.take() {
             files.failed.push(writer);
         }
+        count(&self.state.counters.segment_syncs_failed, 1);
         self.state.segments_failed.store(true, Ordering::Release);
     }
 

@@ -21,9 +21,10 @@
 //! | `bytes_handed_per_transition` | write phases | B | [`Counters::node_record_bytes`] and [`Counters::other_record_bytes`] |
 //! | `bytes_logged_per_transition` | write phases | B | [`Counters::log_bytes`] |
 //! | `physical_bytes_per_transition` | write phases | B | [`Counters::physical_bytes`] |
-//! | `keyed_lookups_per_transition` | write phases | lookups | `OperationCost::seek_count` less one per record logged |
+//! | `keyed_lookups_per_transition` | write phases | lookups | [`Counters::keyed_lookups`] where the engine counts them; else `OperationCost::seek_count` less one per record logged |
 //! | `seeks_per_transition` | write phases | seeks | `OperationCost::seek_count` |
 //! | `hashes_per_transition` | write phases | calls | `OperationCost::hash_node_calls` |
+//! | `engine_hashes_per_transition` | write phases | calls | [`Counters::hashes`], where the engine counts them |
 //! | `node_record_*_share` | write phases | fraction | [`NodeAnatomy`], where the engine writes node records |
 //! | `size_on_disk` | `at-size`, `flushed` | B | file lengths in the database directory |
 //! | `point_proof_bytes`, `references_proof_bytes` | `warm` | B | proof lengths |

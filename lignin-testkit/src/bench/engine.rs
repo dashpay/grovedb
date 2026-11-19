@@ -10,7 +10,8 @@
 //! [`RocksDbEngine`](super::RocksDbEngine) implements it for today's
 //! engine. What LigninDB has to implement is the same trait over
 //! `GroveDb<LigninEngine>` (GROVE-01), with its counters read from
-//! `lignin-store::stats` (STORE-11):
+//! `lignin-store::stats` (STORE-11) through `Counters::from(&StoreStats)`,
+//! which fills every field:
 //!
 //! | `Counters` field | RocksDB | LigninDB |
 //! | --- | --- | --- |
@@ -20,7 +21,9 @@
 //! | `other_records`, `other_record_bytes` | every other log entry | flat keyspace records |
 //! | `flush_bytes` | SST bytes written by flushes | bytes written by the flusher |
 //! | `compaction_bytes` | SST bytes written by compactions | bytes written by the cleaner |
-//! | `page_reads`, `cache_hits` | not available | buffer pool reads and hits |
+//! | `page_reads`, `cache_hits` | not available | buffer pool misses and hits |
+//! | `keyed_lookups` | not available | searches by key the tree counted |
+//! | `hashes` | not available | hashes the tree counted |
 //!
 //! [`Engine::node_anatomy`] is RocksDB's alone: it splits the whole node
 //! records RocksDB is handed into keys, values, hashes and links, which is
@@ -32,6 +35,8 @@ use grovedb::PathQuery;
 use grovedb_costs::OperationCost;
 use grovedb_version::version::GroveVersion;
 use serde::{Deserialize, Serialize};
+
+use lignin_store::stats::StoreStats;
 
 use super::BenchError;
 use crate::workload::Op;
@@ -139,6 +144,55 @@ pub struct Counters {
     pub page_reads: Option<u64>,
     /// Page reads served by the cache, where the engine counts them.
     pub cache_hits: Option<u64>,
+    /// Searches by key, where the engine counts them. GroveDB's
+    /// `seek_count` is the same on every engine, so it cannot show the
+    /// lookups an engine saves (PERF-03).
+    #[serde(default)]
+    pub keyed_lookups: Option<u64>,
+    /// Hashes computed, where the engine counts them, beside what GroveDB
+    /// charges as `hash_node_calls`.
+    #[serde(default)]
+    pub hashes: Option<u64>,
+}
+
+impl From<&StoreStats> for Counters {
+    /// The counters of a LigninDB store. Every count of the prediction
+    /// table in [`StoreStats`] is named here, so a count added there does
+    /// not compile until it is given a place.
+    fn from(stats: &StoreStats) -> Self {
+        let &StoreStats {
+            log_bytes,
+            log_groups,
+            node_records,
+            node_record_bytes,
+            other_records,
+            other_record_bytes,
+            flush_bytes,
+            cleaner_bytes,
+            page_reads,
+            cache_hits,
+            hashes,
+            keyed_lookups,
+            watch: _,
+            log: _,
+            flush: _,
+            pool: _,
+        } = stats;
+        Counters {
+            log_bytes,
+            log_groups,
+            node_records,
+            node_record_bytes,
+            other_records,
+            other_record_bytes,
+            flush_bytes,
+            compaction_bytes: cleaner_bytes,
+            page_reads: Some(page_reads),
+            cache_hits: Some(cache_hits),
+            keyed_lookups: Some(keyed_lookups),
+            hashes: Some(hashes),
+        }
+    }
 }
 
 impl Counters {
@@ -170,6 +224,8 @@ impl Counters {
                 .saturating_sub(earlier.compaction_bytes),
             page_reads: optional(self.page_reads, earlier.page_reads),
             cache_hits: optional(self.cache_hits, earlier.cache_hits),
+            keyed_lookups: optional(self.keyed_lookups, earlier.keyed_lookups),
+            hashes: optional(self.hashes, earlier.hashes),
         }
     }
 }

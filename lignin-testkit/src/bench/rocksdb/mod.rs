@@ -328,6 +328,8 @@ impl Engine for RocksDbEngine {
             compaction_bytes: self.events.compaction_bytes,
             page_reads: None,
             cache_hits: None,
+            keyed_lookups: None,
+            hashes: None,
         })
     }
 

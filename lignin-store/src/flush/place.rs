@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 
-use lignin_format::{value_log::PendingValue, CommitVersion, PageId};
+use lignin_format::{value_log::PendingValue, CommitVersion, FormatVersion, PageId};
 
 use super::{
     config::count,
@@ -176,6 +176,10 @@ impl<'s> WriteBack<'s> {
         let counters = &self.state.counters;
         count(&counters.values_appended, 1);
         count(&counters.value_bytes, len as u64);
+        count(
+            &counters.value_stored_bytes,
+            pointer.extent_len(FormatVersion::CURRENT),
+        );
         Ok(Ready {
             page,
             cell,

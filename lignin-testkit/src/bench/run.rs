@@ -576,19 +576,30 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{engine} engine counters: compaction bytes"),
         ),
-        count_row(
-            "keyed_lookups_per_transition",
-            phase,
-            "lookups",
-            totals
-                .seek_count
-                .saturating_sub(counters.node_records + counters.other_records) as f64,
-            n,
-            &format!(
-                "{COST_SOURCE}: seek_count, less the one seek the storage layer charges for \
-                 each record it writes (the {engine} log's records)"
+        match counters.keyed_lookups {
+            Some(lookups) => count_row(
+                "keyed_lookups_per_transition",
+                phase,
+                "lookups",
+                lookups as f64,
+                n,
+                &format!("{engine} engine counters: searches by key"),
             ),
-        ),
+            None => count_row(
+                "keyed_lookups_per_transition",
+                phase,
+                "lookups",
+                totals
+                    .seek_count
+                    .saturating_sub(counters.node_records + counters.other_records)
+                    as f64,
+                n,
+                &format!(
+                    "{COST_SOURCE}: seek_count, less the one seek the storage layer charges \
+                     for each record it writes (the {engine} log's records)"
+                ),
+            ),
+        },
         count_row(
             "seeks_per_transition",
             phase,
@@ -614,6 +625,16 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             &format!("{COST_SOURCE}: storage_loaded_bytes"),
         ),
     ];
+    if let Some(hashes) = counters.hashes {
+        rows.push(count_row(
+            "engine_hashes_per_transition",
+            phase,
+            "calls",
+            hashes as f64,
+            n,
+            &format!("{engine} engine counters: hashes computed"),
+        ));
+    }
     if let Some(anatomy) = &totals.node_anatomy {
         let whole = anatomy.total();
         let source = format!(
@@ -1239,7 +1260,121 @@ pub(crate) fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::workload::PartialBatch;
+    use crate::{bench::Counters, workload::PartialBatch};
+
+    /// The acceptance test of STORE-11: every engine count of a write
+    /// phase's rows comes from LigninDB's `StoreStats`, each from the
+    /// field of its own.
+    #[test]
+    fn every_engine_count_is_read_from_the_store_stats() {
+        let stats = lignin_store::stats::StoreStats {
+            log_bytes: 1_000,
+            log_groups: 2,
+            node_records: 30,
+            node_record_bytes: 400,
+            other_records: 5,
+            other_record_bytes: 60,
+            flush_bytes: 7_000,
+            cleaner_bytes: 800,
+            page_reads: 9,
+            cache_hits: 90,
+            hashes: 110,
+            keyed_lookups: 12,
+            ..Default::default()
+        };
+        let counters = Counters::from(&stats);
+        assert_eq!(
+            counters,
+            Counters {
+                log_bytes: 1_000,
+                log_groups: 2,
+                node_records: 30,
+                node_record_bytes: 400,
+                other_records: 5,
+                other_record_bytes: 60,
+                flush_bytes: 7_000,
+                compaction_bytes: 800,
+                page_reads: Some(9),
+                cache_hits: Some(90),
+                keyed_lookups: Some(12),
+                hashes: Some(110),
+            }
+        );
+        assert_eq!(counters.since(&Counters::default()).keyed_lookups, None);
+        assert_eq!(
+            counters.since(&Counters::from(&Default::default())),
+            counters
+        );
+
+        let run = PhaseRun {
+            totals: PhaseTotals {
+                phase: "update".into(),
+                transitions: 2,
+                seek_count: 1_000,
+                hash_node_calls: 50,
+                counters,
+                ..Default::default()
+            },
+            transition_us: Vec::new(),
+            commit_ms: Vec::new(),
+            apply_meter: (None, None),
+            commit_meter: (None, None),
+        };
+        let rows = count_rows(&run, "lignindb");
+        let value = |id: &str| {
+            let row = rows
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap_or_else(|| panic!("no row {id}"));
+            (row.value, row.source.clone())
+        };
+        for (id, per_transition) in [
+            ("node_records_per_transition", 15.0),
+            ("other_records_per_transition", 2.5),
+            ("bytes_handed_per_transition", 230.0),
+            ("bytes_logged_per_transition", 500.0),
+            ("physical_bytes_per_transition", 4_400.0),
+            ("flush_bytes_per_transition", 3_500.0),
+            ("compaction_bytes_per_transition", 400.0),
+            ("keyed_lookups_per_transition", 6.0),
+            ("engine_hashes_per_transition", 55.0),
+        ] {
+            let (found, source) = value(id);
+            assert_eq!(found, per_transition, "{id}");
+            assert!(
+                source.starts_with("lignindb engine counters"),
+                "{id}: {source}"
+            );
+        }
+        assert_eq!(value("hashes_per_transition").0, 25.0);
+
+        // An engine that does not count lookups keeps the derivation from
+        // the seeks GroveDB charges, and has no row of engine hashes.
+        let mut run = run;
+        run.totals.counters.keyed_lookups = None;
+        run.totals.counters.hashes = None;
+        let rows = count_rows(&run, "rocksdb");
+        let lookups = rows
+            .iter()
+            .find(|row| row.id == "keyed_lookups_per_transition")
+            .expect("the row");
+        assert_eq!(lookups.value, (1_000.0 - 35.0) / 2.0);
+        assert!(!rows
+            .iter()
+            .any(|row| row.id == "engine_hashes_per_transition"));
+    }
+
+    /// Reports written before the engine counted lookups and hashes still
+    /// read, with neither counted.
+    #[test]
+    fn counters_without_lookups_or_hashes_still_read() {
+        let mut json = serde_json::to_value(Counters::default()).expect("json");
+        let fields = json.as_object_mut().expect("an object");
+        fields.remove("keyed_lookups");
+        fields.remove("hashes");
+        let counters: Counters = serde_json::from_value(json).expect("read");
+        assert_eq!(counters, Counters::default());
+    }
 
     #[test]
     fn logical_bytes_count_keys_and_elements_of_every_write() {

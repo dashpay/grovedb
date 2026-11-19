@@ -12,6 +12,7 @@ mod flat;
 mod measure;
 mod recover;
 mod regroup;
+mod stats;
 mod threads;
 mod values;
 

@@ -547,6 +547,67 @@ pub struct LogStore {
     holds: Arc<Holds>,
     /// Whether the log would turn to another file now.
     due: AtomicBool,
+    appended: Appends,
+}
+
+/// What a [`LogStore`] has appended since it was opened, by kind of item
+/// ([`LogStore::appended`]). An item counts once it is known to be in the
+/// log; one whose append failed does not count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LogAppends {
+    /// Commit groups.
+    pub groups: u64,
+    /// Their bytes, every record's frame included.
+    pub group_bytes: u64,
+    /// Records of background changes: page steps.
+    pub changes: u64,
+    /// Their bytes, frames included.
+    pub change_bytes: u64,
+    /// Table-checkpoint marks.
+    pub marks: u64,
+    /// Their bytes, frames included.
+    pub mark_bytes: u64,
+}
+
+impl LogAppends {
+    /// Every byte appended: groups, changes and marks.
+    pub fn bytes(&self) -> u64 {
+        self.group_bytes + self.change_bytes + self.mark_bytes
+    }
+}
+
+#[derive(Debug, Default)]
+struct Appends {
+    groups: AtomicU64,
+    group_bytes: AtomicU64,
+    changes: AtomicU64,
+    change_bytes: AtomicU64,
+    marks: AtomicU64,
+    mark_bytes: AtomicU64,
+}
+
+impl Appends {
+    fn count(&self, kind: ItemKind, len: usize) {
+        let (items, bytes) = match kind {
+            ItemKind::Group => (&self.groups, &self.group_bytes),
+            ItemKind::Change => (&self.changes, &self.change_bytes),
+            ItemKind::Mark => (&self.marks, &self.mark_bytes),
+        };
+        items.fetch_add(1, Ordering::Relaxed);
+        bytes.fetch_add(len as u64, Ordering::Relaxed);
+    }
+
+    fn read(&self) -> LogAppends {
+        let read = |counter: &AtomicU64| counter.load(Ordering::Relaxed);
+        LogAppends {
+            groups: read(&self.groups),
+            group_bytes: read(&self.group_bytes),
+            changes: read(&self.changes),
+            change_bytes: read(&self.change_bytes),
+            marks: read(&self.marks),
+            mark_bytes: read(&self.mark_bytes),
+        }
+    }
 }
 
 impl LogStore {
@@ -660,6 +721,7 @@ impl LogStore {
             }),
             holds: Arc::default(),
             due: AtomicBool::new(true),
+            appended: Appends::default(),
         })
     }
 
@@ -1029,7 +1091,7 @@ impl LogStore {
                 found: tail.active().ok().and(tail.end()),
             });
         }
-        self.append_checked(&mut tail, group, after)
+        self.append_checked(&mut tail, group, after, ItemKind::Group)
     }
 
     /// Appends the record of a background change: of one page step that
@@ -1070,7 +1132,7 @@ impl LogStore {
         let mut tail = self.tail();
         let (_, cursor) = tail.active()?;
         let after = check_item(cursor, record, kind)?;
-        self.append_checked(&mut tail, record, after)
+        self.append_checked(&mut tail, record, after, kind)
     }
 
     /// Appends `bytes`, which `after` has read as one item behind the end
@@ -1080,6 +1142,7 @@ impl LogStore {
         tail: &mut Tail,
         bytes: &[u8],
         after: LogCursor,
+        kind: ItemKind,
     ) -> Result<Appended, LogError> {
         let (file, before) = tail.active()?;
         let (file, before) = (file.clone(), before.clone());
@@ -1099,6 +1162,7 @@ impl LogStore {
         let error = match file.append(bytes) {
             Ok(found) if found == offset => {
                 self.took(tail, &file, after);
+                self.appended.count(kind, bytes.len());
                 return Ok(appended);
             }
             Ok(found) => {
@@ -1123,6 +1187,7 @@ impl LogStore {
         match settle(&file, offset, bytes, verifies) {
             Settled::InLog => {
                 self.took(tail, &file, after);
+                self.appended.count(kind, bytes.len());
                 self.finish(&file);
                 Ok(appended)
             }
@@ -1144,6 +1209,11 @@ impl LogStore {
             }
             Settled::Unknown(why) => Err(self.unsettle(tail, &file, why)),
         }
+    }
+
+    /// What this log has appended since it was opened.
+    pub fn appended(&self) -> LogAppends {
+        self.appended.read()
     }
 
     fn took(&self, tail: &mut Tail, file: &Arc<LogFile>, after: LogCursor) {
