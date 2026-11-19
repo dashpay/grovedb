@@ -12,7 +12,7 @@ impl Grove {
         self.directory.set_roots(&mut self.pages, changes)
     }
 
-    fn root_of(&self, keys: &[&str]) -> Option<(CellAddress, Vec<u8>)> {
+    fn root_of(&self, keys: &[&str]) -> RootAt {
         let entry = self.entry(keys);
         entry.root().map(|root| (root.address, root.key.to_vec()))
     }

@@ -17,7 +17,7 @@ struct Merk {
     path: Vec<Seg>,
     prefix: Prefix,
     id: MerkId,
-    root: Option<(CellAddress, Vec<u8>)>,
+    root: RootAt,
     tree_type: Vec<u8>,
     /// The Merk its host is in.
     parent: Option<usize>,
@@ -196,7 +196,7 @@ impl Model {
     }
 
     /// States roots to the directory, and takes them into the model.
-    fn state(&mut self, changes: &[(usize, Option<(CellAddress, Vec<u8>)>, bool)]) {
+    fn state(&mut self, changes: &[(usize, RootAt, bool)]) {
         let stated: Vec<RootChange<'_>> = changes
             .iter()
             .map(|(index, root, by_address)| {
@@ -282,7 +282,7 @@ impl Model {
     }
 
     fn roots(&mut self) {
-        let mut changes: Vec<(usize, Option<(CellAddress, Vec<u8>)>, bool)> = Vec::new();
+        let mut changes: Vec<(usize, RootAt, bool)> = Vec::new();
         let mut given_up = Vec::new();
         for _ in 0..1 + self.below(4) {
             let Some(index) = self.pick(|_| true) else {

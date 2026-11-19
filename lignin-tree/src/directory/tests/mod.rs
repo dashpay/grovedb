@@ -174,6 +174,9 @@ fn id(raw: u64) -> MerkId {
 /// among the host's.
 type Seg = (Vec<u8>, u8);
 
+/// The root of a Merk as a test keeps it: the cell, and the root's key.
+type RootAt = Option<(CellAddress, Vec<u8>)>;
+
 /// The prefix of the subtree at `path`, as these tests derive it: all zero
 /// for the root of the grove, and otherwise 32 bytes that follow from the
 /// whole path, as the hash of a path does.
@@ -190,7 +193,7 @@ fn prefix_of(path: &[Seg]) -> Prefix {
         mix(0xff);
         mix(key.len() as u8);
     }
-    for chunk in prefix.chunks_exact_mut(8) {
+    for chunk in prefix.as_chunks_mut::<8>().0 {
         state = state.wrapping_add(0x9e37_79b9_7f4a_7c15);
         let mut word = state;
         word = (word ^ (word >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);

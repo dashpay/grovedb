@@ -46,7 +46,7 @@ impl Grove {
 }
 
 /// What an entry holds that a move keeps.
-fn kept(entry: &Entry) -> (MerkId, Option<(CellAddress, Vec<u8>)>, Vec<u8>) {
+fn kept(entry: &Entry) -> (MerkId, RootAt, Vec<u8>) {
     let root = entry.root().map(|root| (root.address, root.key.to_vec()));
     (entry.id(), root, entry.tree_type().to_vec())
 }

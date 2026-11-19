@@ -411,8 +411,8 @@ impl Entry {
     /// The ids of the Merks the Merk is below, the outermost first. The
     /// last is the Merk its host is in.
     pub fn lineage(&self) -> impl DoubleEndedIterator<Item = MerkId> + '_ {
-        let ids = self.lineage_bytes().chunks_exact(MerkId::ENCODED_LEN);
-        ids.filter_map(|id| MerkId::decode(id.try_into().ok()?))
+        let (ids, _) = self.lineage_bytes().as_chunks();
+        ids.iter().filter_map(|id| MerkId::decode(*id))
     }
 
     /// The id of the Merk the host is in.

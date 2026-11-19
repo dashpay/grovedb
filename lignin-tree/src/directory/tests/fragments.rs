@@ -58,7 +58,7 @@ impl Kept {
     }
 
     /// The root of `merk` as the tree pages have it.
-    fn root(&self, merk: usize) -> Option<(CellAddress, Vec<u8>)> {
+    fn root(&self, merk: usize) -> RootAt {
         let root = &self.trees.nodes[self.trees.merks[merk].root?];
         Some((root.at.expect("a root has a cell"), root.key.clone()))
     }
@@ -72,7 +72,7 @@ impl Kept {
         while let Some((above, _)) = self.above(written[written.len() - 1]) {
             written.push(above);
         }
-        let roots: Vec<(Prefix, Option<(CellAddress, Vec<u8>)>)> = written
+        let roots: Vec<(Prefix, RootAt)> = written
             .iter()
             .map(|merk| (self.entered[merk], self.root(*merk)))
             .collect();
