@@ -1216,10 +1216,7 @@ mod tests {
     use super::*;
     use crate::{
         element::get::ElementFetchFromStorageExtensions,
-        test_utils::{
-            empty_path_merk, empty_path_merk_read_only, SuiteBatch, TempEngine, TempMerk,
-            TestEngine,
-        },
+        test_utils::{root_merk, SuiteBatch, TempEngine, TempMerk, TestEngine},
         TreeType,
     };
 
@@ -1388,7 +1385,7 @@ mod tests {
         let storage = TempEngine::new();
         let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let mut merk = root_merk(&*storage, &transaction, Some(&batch), grove_version);
 
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None, grove_version)
@@ -1402,7 +1399,7 @@ mod tests {
         storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
         let batch = SuiteBatch::default();
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let mut merk = root_merk(&*storage, &transaction, Some(&batch), grove_version);
         let element = Element::new_item(b"value2".to_vec());
         let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
@@ -1413,7 +1410,7 @@ mod tests {
         assert_eq!(delta.old, Some(Element::new_item(b"value".to_vec())),);
 
         storage.apply_batch(batch, &transaction).unwrap().unwrap();
-        let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
+        let merk = root_merk(&*storage, &transaction, None, grove_version);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true, grove_version)

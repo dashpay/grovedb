@@ -1,6 +1,7 @@
 use std::{env, process::exit};
 
 const TEST_ENGINES: &str = include_str!("test-engines.txt");
+const MANIFEST: &str = include_str!("Cargo.toml");
 const TEST_ENGINE_VARIABLE: &str = "GROVEDB_TEST_ENGINE";
 
 fn main() {
@@ -12,7 +13,8 @@ fn main() {
 /// Sets the cfg `grovedb_test_engine` to the engine the test suite of this build runs
 /// on: the one `GROVEDB_TEST_ENGINE` names, or the first of `test-engines.txt`. The cfg is
 /// set, with no value and with the name, only if the Cargo feature that
-/// compiles that engine is on. Without it the suite has no engine.
+/// compiles that engine is on. Without it the suite has no engine, which is
+/// an error if the variable asked for one.
 fn select_test_engine() {
     let engines: Vec<(&str, &str)> = TEST_ENGINES
         .lines()
@@ -33,6 +35,7 @@ fn select_test_engine() {
     let values: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
     println!("cargo::rerun-if-changed=build.rs");
     println!("cargo::rerun-if-changed=test-engines.txt");
+    println!("cargo::rerun-if-changed=Cargo.toml");
     println!("cargo::rerun-if-env-changed={TEST_ENGINE_VARIABLE}");
     println!(
         "cargo::rustc-check-cfg=cfg(grovedb_test_engine, values(none(), {}))",
@@ -53,11 +56,24 @@ fn select_test_engine() {
         );
         exit(1);
     };
+    if !MANIFEST.lines().any(|line| {
+        line.split_once('=')
+            .is_some_and(|(key, _)| key.trim() == feature)
+    }) {
+        eprintln!("grovedb/test-engines.txt: `{name}` names the feature `{feature}`, which grovedb has not");
+        exit(1);
+    }
     let feature_variable = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
     if env::var_os(feature_variable).is_some() {
         println!("cargo::rustc-cfg=grovedb_test_engine");
         println!("cargo::rustc-cfg=grovedb_test_engine=\"{name}\"");
         println!("cargo::rustc-env=GROVEDB_SUITE_ENGINE={name}");
+    } else if !named.is_empty() {
+        eprintln!(
+            "{TEST_ENGINE_VARIABLE}={named} selects an engine that is compiled with the feature \
+             `{feature}`, which is off in this build"
+        );
+        exit(1);
     }
 }
 

@@ -189,7 +189,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        test_utils::{empty_path_merk, empty_path_merk_read_only, make_batch_seq, TempMerk},
+        test_utils::{make_batch_seq, root_merk, TempMerk},
         tree::kv::ValueDefinedCostType,
         Merk, TreeType,
     };
@@ -281,13 +281,13 @@ mod tests {
         let transaction = engine.start_transaction();
         let batch = E::Batch::default();
 
-        let mut merk = empty_path_merk(&engine, &transaction, &batch, grove_version);
+        let mut merk = root_merk(&engine, &transaction, Some(&batch), grove_version);
         merk.apply::<_, Vec<_>>(&make_batch_seq(0..10), &[], None, grove_version)
             .unwrap()
             .expect("the batch applies");
         drop(merk);
         assert!(!holds(
-            &empty_path_merk_read_only(&engine, &transaction, grove_version),
+            &root_merk(&engine, &transaction, None, grove_version),
             3
         ));
 
@@ -296,14 +296,11 @@ mod tests {
             .unwrap()
             .expect("the batch is applied");
         assert!(holds(
-            &empty_path_merk_read_only(&engine, &transaction, grove_version),
+            &root_merk(&engine, &transaction, None, grove_version),
             3
         ));
         let other = engine.start_transaction();
-        assert!(!holds(
-            &empty_path_merk_read_only(&engine, &other, grove_version),
-            3
-        ));
+        assert!(!holds(&root_merk(&engine, &other, None, grove_version), 3));
         drop(other);
 
         engine
@@ -314,7 +311,7 @@ mod tests {
         let reopened = E::open(directory.path());
         let transaction = reopened.start_transaction();
         assert!(holds(
-            &empty_path_merk_read_only(&reopened, &transaction, grove_version),
+            &root_merk(&reopened, &transaction, None, grove_version),
             3
         ));
     }
@@ -338,7 +335,7 @@ mod tests {
         drop(merk);
 
         assert!(holds(
-            &empty_path_merk_read_only(&engine, &transaction, grove_version),
+            &root_merk(&engine, &transaction, None, grove_version),
             3
         ));
         let elsewhere: &[&[u8]] = &[b"elsewhere"];
@@ -372,7 +369,7 @@ mod tests {
         let transaction: SuiteTransaction = engine.start_transaction();
         let batch = SuiteBatch::default();
         let merk: Merk<SuiteSubtree> =
-            empty_path_merk(&*engine, &transaction, &batch, grove_version);
+            root_merk(&*engine, &transaction, Some(&batch), grove_version);
         assert!(merk.is_empty_tree().unwrap());
         let immediate: SuiteImmediateSubtree = engine
             .immediate_subtree(SubtreePath::empty(), &transaction)

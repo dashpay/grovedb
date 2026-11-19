@@ -14,7 +14,7 @@ GroveDB's and Merk's test suites name no storage engine. Each is built for one e
 | `MERK_TEST_ENGINE=node-store-only cargo test -p grovedb-merk` | the same suite on the engine of that name |
 | `.github/scripts/engine-suites.sh run` | both suites on every registered engine, one run after the other: every target on the first engine of a suite, the unit tests (`--lib`) on the others. Arguments follow `cargo test -p PACKAGE`. |
 
-A name that is not registered fails the build, and the message lists the names that are.
+A name that is not registered fails the build, and the message lists the names that are. So does a name whose engine is not compiled in: `GROVEDB_TEST_ENGINE=rocksdb` with the feature `rocksdb_storage` off is an error, not a run with no engine.
 
 The engine is a property of the build, not of the run: one test binary holds the suite for one engine. A second engine is a second build of the crate's tests, and of nothing below the crate.
 
@@ -31,7 +31,7 @@ A suite has a registry: a text file with one engine a line, the default first. A
 
 The crate's build script reads the registry and the variable. If the feature of the selected engine is on, it sets the cfg twice: with no value, which says that the suite has an engine, and with the selected name. It declares every registered name as a value of the cfg, so a `#[cfg(grovedb_test_engine = "..")]` with a name that is not registered is a warning, and an error under `-D warnings`.
 
-If the feature is off, the cfg is not set and the suite has no engine. That is the build with no engine compiled in ([`engine.md`](engine.md#features-and-engines)): `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests` and `cargo test -p grovedb-merk --no-default-features --features minimal --lib` run the tests that open no database. A test that opens one is under the cfg, not under the feature of an engine:
+If the feature is off and the variable is not set, the cfg is not set and the suite has no engine. A registry line whose feature the crate does not have fails the build. That is the build with no engine compiled in ([`engine.md`](engine.md#features-and-engines)): `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests` and `cargo test -p grovedb-merk --no-default-features --features minimal --lib` run the tests that open no database. A test that opens one is under the cfg, not under the feature of an engine:
 
 | Gate | What is under it |
 | --- | --- |
@@ -112,9 +112,9 @@ Besides these, the tests of `grovedb/src/engine/tests.rs` name `RocksDbEngine` a
 
 Thirteen tests that only read through RocksDB contexts, or committed a batch through the storage, go through `Engine` now (`Engine::subtree`, `Engine::apply_batch`, `NodeStore::cursor`, `NodeStore::has_node`) and run on every engine.
 
-One thing the second engine does not catch: `PinnedReads` is a type of its own, and its batch, transactions and handles are RocksDB's. A test that names `StorageBatch` (93 places write `StorageBatch::new()`), or calls a method of a storage context on a handle it opened through `Engine`, compiles on both engines of today. On an engine with types of its own it does not compile, so nothing can run on the wrong engine unseen, and `SuiteBatch` of the fixtures is the name to use instead.
+One thing the second engine does not catch: `PinnedReads` is a type of its own, and its batch, transactions and handles are RocksDB's. A test that names `StorageBatch` (many write `StorageBatch::new()`), or calls a method of a storage context on a handle it opened through `Engine`, compiles on both engines of today. On an engine with types of its own it does not compile, so nothing can run on the wrong engine unseen, and `SuiteBatch` of the fixtures is the name to use instead.
 
-What the suite still names of RocksDB, for an engine that is built without it (GROVE-10): the storage type parameter of the estimated-cost helpers, `::<RocksDbStorage>`, in 17 calls of tests of those helpers (the parameter is public API until OPS-10 folds it away); the context type in the imports of `coverage_lib_paths_tests.rs`, whose RocksDB-only helpers take it; and `PinnedReads` itself, which is under `rocksdb_storage`. The prefix of a path is not among them: the tests derive it with `grovedb_storage::prefix::build_prefix` and `secondary_prefix_for`, which name no engine.
+What the suite still names of RocksDB, for an engine that is built without it (GROVE-10): the storage type parameter of the estimated-cost helpers, `::<RocksDbStorage>`, in the tests that call those helpers by their public names (`misc_coverage_tests.rs`, `automatic_backward_references_tests.rs` and the two modules of `estimated_costs`; the parameter is public API until OPS-10 folds it away); the context type in the imports of `coverage_lib_paths_tests.rs`, whose RocksDB-only helpers take it; and `PinnedReads` itself, which is under `rocksdb_storage`. The prefix of a path is not among them: the tests derive it with `grovedb_storage::prefix::build_prefix` and `secondary_prefix_for`, which name no engine.
 
 What the list means for LigninDB: the behaviour each of these checks, most of it `verify_grovedb` finding a damaged store, has no test on an engine that is not RocksDB until that engine has a way to damage its own records. GROVE-10 decides which of them it needs.
 
@@ -146,7 +146,8 @@ It is the part of [`Engine`](engine.md) that a test of Merk uses, with the same 
 | `SuiteTransaction<'db>`, `SuiteBatch`, `SuiteSubtree<'a>`, `SuiteImmediateSubtree<'a>` | its associated types |
 | `TempEngine` | a database of `SuiteEngine` in a temporary directory |
 | `TempMerk` | a Merk of the root subtree on a `TempEngine`, with `commit`. It is `Merk<SuiteSubtree<'static>>`. |
-| `empty_path_merk`, `empty_path_merk_read_only` | a Merk of the root subtree on any `TestEngine` |
+| `root_merk` | a Merk of the root subtree on any `TestEngine`, writing to a batch or read-only |
+| `empty_path_merk`, `empty_path_merk_read_only` | as before: a Merk of the root subtree on a `Storage`, for callers outside the suite |
 
 A test of Merk names these and no storage type. Before this task 13 calls in `test_utils` and the test modules of seven files opened RocksDB contexts themselves (`TempStorage`, `Storage::get_transactional_storage_context`, `commit_multi_context_batch`). They call the trait now.
 
