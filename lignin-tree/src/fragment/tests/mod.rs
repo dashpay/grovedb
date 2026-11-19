@@ -1,5 +1,5 @@
 mod errors;
-mod grove;
+pub(crate) mod grove;
 mod property;
 mod rules;
 mod values;
@@ -33,10 +33,10 @@ fn address(page_raw: u32, slot_raw: u16) -> CellAddress {
 
 /// SplitMix64.
 #[derive(Debug, Clone)]
-struct Rng(u64);
+pub(crate) struct Rng(u64);
 
 impl Rng {
-    fn next(&mut self) -> u64 {
+    pub(crate) fn next(&mut self) -> u64 {
         self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = self.0;
         z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -44,7 +44,7 @@ impl Rng {
         z ^ (z >> 31)
     }
 
-    fn below(&mut self, bound: usize) -> usize {
+    pub(crate) fn below(&mut self, bound: usize) -> usize {
         (self.next() % bound as u64) as usize
     }
 
@@ -122,7 +122,7 @@ impl ChangeSink for Shadow {
 
 /// Tree pages in memory, as one write scope has them.
 #[derive(Debug)]
-struct Mem {
+pub(crate) struct Mem {
     size: PageSize,
     lease: Lease,
     frames: BTreeMap<PageId, Vec<u8>>,
@@ -159,7 +159,7 @@ impl Mem {
         }
     }
 
-    fn view(&self, page: PageId) -> NodePage<'_> {
+    pub(crate) fn view(&self, page: PageId) -> NodePage<'_> {
         NodePage::open(&self.frames[&page], self.lease).expect("a tree page")
     }
 
@@ -255,7 +255,7 @@ struct Logged {
 /// The values of the tests: a value log that records the owner of each
 /// value, and the values a commit has not put there yet.
 #[derive(Debug, Default)]
-struct Log {
+pub(crate) struct Log {
     logged: HashMap<ValuePointer, Logged>,
     /// The pending values by their id: the bytes, and the page that owns
     /// them once a cell holds them.

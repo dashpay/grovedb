@@ -199,7 +199,7 @@ mod report;
 mod write;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use error::{FragmentError, LayoutError, WriteError};
 pub use layout::{Layout, LayoutParams};

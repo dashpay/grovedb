@@ -6,7 +6,7 @@ mod model;
 mod moves;
 mod shape;
 mod steps;
-mod store;
+pub(crate) mod store;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 

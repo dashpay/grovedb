@@ -33,12 +33,12 @@ use crate::OperationGuard;
 /// The guard of a reader's operation, with a number to know it by. It
 /// keeps nothing here: nothing is reclaimed in these tests while a reader
 /// reads.
-struct Guard(u8);
+pub(crate) struct Guard(u8);
 
 impl OperationGuard for Guard {}
 
-type Reader<'s> = Committed<'s, 's, Guard>;
-type Writer<'s> = Private<'s, 's, Guard, &'s PageAllocator>;
+pub(crate) type Reader<'s> = Committed<'s, 's, Guard>;
+pub(crate) type Writer<'s> = Private<'s, 's, Guard, &'s PageAllocator>;
 
 fn version(raw: u64) -> CommitVersion {
     CommitVersion::new(raw).expect("a version")
@@ -59,7 +59,7 @@ fn pending_of(frame: &[u8]) -> Vec<(usize, PendingValue)> {
         .collect()
 }
 
-struct State {
+pub(crate) struct State {
     segment: SegmentWriter,
     value_writer: ValueWriter,
     log: Vec<u8>,
@@ -71,10 +71,10 @@ struct State {
 /// reduced to the steps the flat keyspace takes part in: a commit that
 /// writes one log group and installs the copies, and a write-back that
 /// places the pending values and writes the pages to a segment.
-struct Db {
+pub(crate) struct Db {
     _dir: TempDir,
     size: PageSize,
-    config: FlatConfig,
+    pub(crate) config: FlatConfig,
     segments: SegmentStore,
     table: PageTable,
     pool: BufferPool,
@@ -85,7 +85,7 @@ struct Db {
 }
 
 impl Db {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let size = PageSize::MIN;
         // In memory where there is such a place: the syncs of a store are
         // most of what these tests would wait for.
@@ -130,7 +130,7 @@ impl Db {
         }
     }
 
-    fn latest(&self) -> CommitVersion {
+    pub(crate) fn latest(&self) -> CommitVersion {
         version(self.state.borrow().latest)
     }
 
@@ -139,16 +139,16 @@ impl Db {
     }
 
     /// The committed pages at `at`.
-    fn reader_at(&self, at: CommitVersion) -> Reader<'_> {
+    pub(crate) fn reader_at(&self, at: CommitVersion) -> Reader<'_> {
         Committed::new(self.loader(), &self.values, &Guard(0), at)
     }
 
-    fn reader(&self) -> Reader<'_> {
+    pub(crate) fn reader(&self) -> Reader<'_> {
         self.reader_at(self.latest())
     }
 
     /// A writer over the latest version.
-    fn writer(&self) -> Writer<'_> {
+    pub(crate) fn writer(&self) -> Writer<'_> {
         let owner = {
             let mut state = self.state.borrow_mut();
             state.owners += 1;
@@ -159,7 +159,7 @@ impl Db {
 
     /// The committed pages at `at`, read through an empty buffer pool: each
     /// page comes from its segment.
-    fn cold<R>(&self, at: CommitVersion, read: impl FnOnce(&Reader<'_>) -> R) -> R {
+    pub(crate) fn cold<R>(&self, at: CommitVersion, read: impl FnOnce(&Reader<'_>) -> R) -> R {
         let pool = BufferPool::new(PoolConfig {
             page_size: self.size,
             capacity: 4 << 20,
@@ -177,7 +177,7 @@ impl Db {
     /// Commits `writer`: one group in the log, with the values, the runs of
     /// the pages in ascending order and the pointers released, and then the
     /// copies installed and the freed pages freed (`transactions.md` CM3).
-    fn commit(&self, mut writer: Writer<'_>) -> CommitVersion {
+    pub(crate) fn commit(&self, mut writer: Writer<'_>) -> CommitVersion {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         let version = version(state.latest + 1);
@@ -243,7 +243,7 @@ impl Db {
 
     /// Gives up `writer`: its copies are discarded, and the ids of the
     /// pages it made go back.
-    fn roll_back(&self, mut writer: Writer<'_>) {
+    pub(crate) fn roll_back(&self, mut writer: Writer<'_>) {
         writer.roll_back().expect("rolled back");
         assert_eq!(writer.written().chain(writer.freed()).count(), 0);
     }
@@ -251,7 +251,7 @@ impl Db {
     /// Write-back: every pending value of a current page is appended to
     /// the value log and given its pointer in a page step, and then every
     /// page version that no segment holds is written to one.
-    fn write_back(&self) {
+    pub(crate) fn write_back(&self) {
         let mut state = self.state.borrow_mut();
         let state = &mut *state;
         let latest = version(state.latest);
@@ -341,7 +341,7 @@ impl Db {
 
     /// The groups of the log, each as its values (owner and bytes), the
     /// pages it has runs of, the pages it freed and the pointers released.
-    fn groups(&self) -> Vec<Logged> {
+    pub(crate) fn groups(&self) -> Vec<Logged> {
         let state = self.state.borrow();
         let items = scan(&state.log).expect("a log");
         let mut groups = Vec::new();
@@ -401,11 +401,11 @@ impl Db {
 
 /// What one commit group says.
 #[derive(Debug, Default)]
-struct Logged {
+pub(crate) struct Logged {
     values: Vec<(PageId, PendingValue, Vec<u8>)>,
     /// Each page with a run, and the pending values its records hold.
-    runs: Vec<(PageId, Vec<PendingValue>)>,
-    freed: Vec<PageId>,
+    pub(crate) runs: Vec<(PageId, Vec<PendingValue>)>,
+    pub(crate) freed: Vec<PageId>,
     released: Vec<ValuePointer>,
 }
 

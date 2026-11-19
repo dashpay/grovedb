@@ -52,7 +52,8 @@ impl Directory {
     ///   the Merk that hosts has a root.
     /// - Every other entry is reached in the same way from the record of a
     ///   dropped Merk, and no lookup returns it.
-    /// - Every root has its record, and no id is held twice.
+    /// - Every root of a Merk in use has its record, every root record has
+    ///   its entry, and no id is held twice.
     /// - The handle has the dropped Merks that the pages have.
     ///
     /// What is not checked here needs the tree pages and the elements: that
@@ -63,34 +64,6 @@ impl Directory {
     pub fn check<P: FlatPages + ?Sized>(&self, pages: &P) -> Result<Census, DirectoryError> {
         let next = self.next_id(pages)?;
         let mut ids = HashSet::new();
-        let mut tops = Vec::new();
-        let (mut entries, mut rooted) = (0u64, 0u64);
-        let mut walk = self.entries();
-        while let Some((prefix, entry)) = walk.next(pages)? {
-            let key = entry_key(&prefix);
-            entries += 1;
-            if entry.id() >= next {
-                return Err(wrong(&key, "an id that was not given out"));
-            }
-            if !ids.insert(entry.id()) {
-                return Err(wrong(&key, "an id that another entry has"));
-            }
-            if let Some(root) = entry.root() {
-                rooted += 1;
-                if self.root_owner(pages, root.address)? != Some(prefix) {
-                    return Err(wrong(&key, "a root that has no record"));
-                }
-            }
-            if entry.host().is_none() {
-                tops.push((prefix, entry.id(), entry.root().is_some()));
-            }
-        }
-        let children = self.count(pages, RecordKind::Child)?;
-        if self.count(pages, RecordKind::Root)? != rooted {
-            let key = [RecordKind::Root.code()];
-            return Err(wrong(&key, "a root record of no entry"));
-        }
-
         let mut drops = Vec::new();
         let mut dead = BTreeSet::new();
         let mut walk = self.drops();
@@ -99,9 +72,7 @@ impl Directory {
             if dropped.id >= next {
                 return Err(wrong(&key, "an id that was not given out"));
             }
-            if !ids.insert(dropped.id) {
-                return Err(wrong(&key, "a dropped Merk that has an entry"));
-            }
+            ids.insert(dropped.id);
             if dropped.root.is_some() {
                 dead.insert(dropped.id);
             }
@@ -110,6 +81,37 @@ impl Directory {
         if dead != *self.dropped {
             let key = [RecordKind::Dropped.code()];
             return Err(wrong(&key, "the handle has other dropped Merks"));
+        }
+
+        let mut tops = Vec::new();
+        let (mut entries, mut roots) = (0u64, 0u64);
+        let mut walk = self.entries();
+        while let Some((prefix, entry)) = walk.next(pages)? {
+            let key = entry_key(&prefix);
+            entries += 1;
+            if entry.id() >= next {
+                return Err(wrong(&key, "an id that was not given out"));
+            }
+            if !ids.insert(entry.id()) {
+                return Err(wrong(&key, "an id that another Merk has"));
+            }
+            if let Some(root) = entry.root() {
+                // The reclaimer takes the record of a left-over root
+                // before the entry.
+                if self.root_owner(pages, root.address)? == Some(prefix) {
+                    roots += 1;
+                } else if self.is_live(&entry) {
+                    return Err(wrong(&key, "a root that has no record"));
+                }
+            }
+            if entry.host().is_none() {
+                tops.push((prefix, entry.id(), entry.root().is_some()));
+            }
+        }
+        let children = self.count(pages, RecordKind::Child)?;
+        if self.count(pages, RecordKind::Root)? != roots {
+            let key = [RecordKind::Root.code()];
+            return Err(wrong(&key, "a root record of no entry"));
         }
 
         let mut census = Census {

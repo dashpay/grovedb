@@ -425,7 +425,7 @@ mod store;
 mod tree;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use cursor::Cursor;
 pub use error::FlatError;
