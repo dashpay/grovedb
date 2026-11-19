@@ -1,4 +1,5 @@
 mod model;
+mod order;
 mod rules;
 mod storage_batch;
 mod txn;

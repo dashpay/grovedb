@@ -24,7 +24,7 @@ fn text(bytes: &[u8]) -> String {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Merk {
+pub(super) struct Merk {
     subtree: u8,
     /// Each put: its key, its value if it states one, and the Merks it
     /// names if it names them.
@@ -37,13 +37,13 @@ struct Merk {
 
 /// The write of a transaction that a batch is, in owned form.
 #[derive(Debug, Default, PartialEq, Eq)]
-struct Shape {
-    subtrees: Vec<String>,
+pub(super) struct Shape {
+    pub(super) subtrees: Vec<String>,
     merks: Vec<Merk>,
     records: Vec<String>,
 }
 
-fn shape<C>(resolved: &Resolved<C>) -> Shape {
+pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
     resolved.with_batch(|batch| Shape {
         subtrees: (batch.subtrees.iter())
             .map(|write| match write {
@@ -323,12 +323,23 @@ fn a_host_names_the_merks_it_hosts_and_a_merk_without_its_host_is_anchored() {
     assert_eq!(write.merks.len(), 1);
     assert!(write.merks[0].anchored);
 
-    // A delete of the host is no put of it.
-    let batch = StagedBatch::new();
-    batch.delete_node(subtree(A), b"h", ());
-    batch.host(subtree(A), b"h", &[subtree(C)]);
-    put(&batch, C, &inner, true);
-    assert!(resolved(batch).merks[1].anchored);
+    // An element that the batch deletes hosts nothing, whatever was said
+    // of it.
+    for delete_first in [true, false] {
+        let batch = StagedBatch::new();
+        if delete_first {
+            batch.delete_node(subtree(A), b"h", ());
+        }
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        if !delete_first {
+            batch.delete_node(subtree(A), b"h", ());
+        }
+        batch.enter(subtree(C), b"t");
+        put(&batch, C, &inner, true);
+        let write = resolved(batch);
+        assert!(!write.merks[1].anchored, "{delete_first}");
+        assert_eq!(write.subtrees, ["enter 3 as t"], "{delete_first}");
+    }
 
     // Nothing is said: the node keeps what it hosts, and the Merk stands
     // alone.
@@ -382,6 +393,184 @@ fn the_later_statement_of_what_an_element_hosts_stands() {
     put(&batch, A, &host, true);
     batch.delete_node(subtree(A), b"h", ());
     assert_eq!(resolved(batch).merks[0].nodes[0].2, Some(vec![C]));
+}
+
+#[test]
+fn a_delete_and_a_put_of_one_operation_leave_what_the_element_hosts() {
+    let host = leaf(b"h", b"element");
+    for delete_first in [true, false] {
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        batch.enter(subtree(C), b"t");
+        put(&batch, A, &host, true);
+        fill(&batch, C, b"old");
+        batch.next_operation();
+        // A rebalancing writes the element again, and says nothing of what
+        // it hosts.
+        if delete_first {
+            batch.delete_node(subtree(A), b"h", ());
+        }
+        put(&batch, A, &host, false);
+        if !delete_first {
+            batch.delete_node(subtree(A), b"h", ());
+        }
+        let write = resolved(batch);
+        assert_eq!(
+            write.subtrees,
+            ["enter 3 as t at 0 of 1/h"],
+            "{delete_first}"
+        );
+        let element = ("h".into(), Some("element".into()), Some(vec![C]));
+        assert_eq!(write.merks[0].nodes, [element], "{delete_first}");
+    }
+
+    // The subtree still hangs below: a later drop above takes it.
+    let batch = StagedBatch::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    put(&batch, A, &host, true);
+    fill(&batch, C, b"old");
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"h", ());
+    put(&batch, A, &host, false);
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    assert_eq!(resolved(batch).subtrees, ["drop 1"]);
+
+    // A node that is put after an earlier operation deleted it is new: it
+    // hosts nothing of what the element of before hosted.
+    let batch = StagedBatch::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    put(&batch, A, &host, true);
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"h", ());
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"h", ());
+    put(&batch, A, &host, true);
+    fill(&batch, C, b"left");
+    batch.drop_subtree(subtree(A));
+    let write = resolved(batch);
+    assert_eq!(write.merks[0].nodes, [node("h", Some("element"))]);
+    assert_eq!(write.merks[1].subtree, C, "nothing says it is below");
+}
+
+#[test]
+fn the_calls_of_one_operation_on_a_subtree_come_to_the_same_in_any_order() {
+    let shapes = |calls: [&dyn Fn(&StagedBatch); 2], before: &dyn Fn(&StagedBatch)| {
+        let both = [[0, 1], [1, 0]].map(|order| {
+            let batch = StagedBatch::new();
+            before(&batch);
+            batch.next_operation();
+            for at in order {
+                calls[at](&batch);
+            }
+            batch.resolve().map(|resolved| shape(&resolved))
+        });
+        let [one, other] = both;
+        assert_eq!(one, other);
+        one
+    };
+    let enter = |batch: &StagedBatch| batch.enter(subtree(A), b"t");
+    let drop = |batch: &StagedBatch| batch.drop_subtree(subtree(A));
+    let clear = |batch: &StagedBatch| batch.clear(subtree(A));
+    let keep = |batch: &StagedBatch| put(batch, A, &leaf(b"n", b"unused"), false);
+
+    // An earlier operation entered the subtree: the drop takes that enter
+    // back, and the enter is of a new one.
+    let write = shapes([&enter, &drop], &|batch| {
+        batch.enter(subtree(A), b"first");
+        fill(batch, A, b"old");
+    });
+    assert_eq!(
+        write.expect("no call is refused").subtrees,
+        ["enter 1 as t"]
+    );
+    // An earlier operation cleared it: the drop is of the subtree the
+    // transaction has.
+    let write = shapes([&enter, &drop], &|batch| batch.clear(subtree(A)));
+    assert_eq!(
+        write.expect("no call is refused").subtrees,
+        ["drop 1", "enter 1 as t"]
+    );
+    let entered = BatchError::Entered {
+        subtree: subtree(A),
+    };
+    assert_eq!(shapes([&enter, &clear], &|_| ()).err(), Some(entered));
+
+    // A node of the operation keeps no value that the leave comes before.
+    for leave in [&drop as &dyn Fn(&StagedBatch), &clear] {
+        let write = shapes([&keep, leave], &|batch| fill(batch, A, b"old"));
+        let write = write.expect("no call is refused");
+        assert_eq!(write.merks[0].nodes, [node("n", None)]);
+        assert_eq!(write.merks[0].root, None);
+    }
+}
+
+#[test]
+fn what_hangs_below_is_what_the_operation_and_those_before_it_said() {
+    // The operation that drops says the element hosts nothing any more,
+    // before the drop or after it.
+    for host_first in [true, false] {
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(B)]);
+        batch.host(subtree(B), b"g", &[subtree(C)]);
+        fill(&batch, B, b"old");
+        fill(&batch, C, b"old");
+        batch.next_operation();
+        if host_first {
+            batch.host(subtree(A), b"h", &[]);
+        }
+        batch.drop_subtree(subtree(A));
+        // What hung below before the operation goes, whatever the
+        // operation says hangs there now.
+        assert_eq!(batch.len(), 0, "{host_first}");
+        if !host_first {
+            batch.host(subtree(A), b"h", &[]);
+        }
+        assert!(!batch.is_empty());
+        let write = resolved(batch);
+        assert_eq!(write.subtrees, ["drop 1"], "{host_first}");
+    }
+
+    // The operation that drops is the first to say what hangs below.
+    for host_first in [true, false] {
+        let batch = StagedBatch::new();
+        fill(&batch, B, b"old");
+        fill(&batch, C, b"old");
+        batch.next_operation();
+        if host_first {
+            batch.host(subtree(A), b"h", &[subtree(B)]);
+            batch.host(subtree(B), b"g", &[subtree(C)]);
+        }
+        batch.drop_subtree(subtree(A));
+        // Asking in between does not change what the later calls come to.
+        assert_eq!(batch.len(), if host_first { 0 } else { 8 }, "{host_first}");
+        if !host_first {
+            batch.host(subtree(B), b"g", &[subtree(C)]);
+            assert_eq!(batch.len(), 8);
+            batch.host(subtree(A), b"h", &[subtree(B)]);
+        }
+        assert_eq!(batch.len(), 0, "{host_first}");
+        assert_eq!(resolved(batch).subtrees, ["drop 1"], "{host_first}");
+    }
+
+    // The subtrees that are entered come a host before what it hosts,
+    // whatever the order of the enters.
+    let batch = StagedBatch::<()>::new();
+    batch.enter(subtree(C), b"t");
+    batch.enter(subtree(D), b"t");
+    batch.enter(subtree(B), b"t");
+    batch.enter(subtree(A), b"t");
+    batch.host(subtree(B), b"g", &[subtree(C)]);
+    batch.host(subtree(A), b"h", &[subtree(B)]);
+    assert_eq!(
+        resolved(batch).subtrees,
+        [
+            "enter 4 as t",
+            "enter 1 as t",
+            "enter 2 as t at 0 of 1/h",
+            "enter 3 as t at 0 of 2/g"
+        ]
+    );
 }
 
 #[test]
@@ -829,7 +1018,27 @@ fn a_batch_and_what_it_holds_are_shown() {
         outcomes[3],
         "Delete { subtree: Subtree(01010101..), key: \"[hex: 63, str: c]\" }"
     );
-    assert!(outcomes[1] != outcomes[2] && resolved.outcomes().next() == resolved.outcomes().next());
+    // Two outcomes are equal where the key, the call and what it attached
+    // are.
+    let held: Vec<_> = resolved.outcomes().collect();
+    let (a, b) = (held[1], held[2]);
+    assert_ne!(a, b);
+    let Written::Node(b_node) = b.write else {
+        panic!("a node is held: {b:?}");
+    };
+    let as_a = crate::batch::Outcome {
+        key: a.key,
+        write: Written::Node(b_node),
+        ..a
+    };
+    assert_ne!(as_a, a, "another node under the key");
+    assert_eq!(
+        crate::batch::Outcome {
+            write: a.write,
+            ..as_a
+        },
+        a
+    );
 
     let batch = StagedBatch::<()>::new();
     batch.drop_subtree(subtree(A));

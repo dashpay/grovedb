@@ -8,10 +8,11 @@
 //!
 //! One test differs: `test_debug_output_batch_operation` expects the
 //! subtree in what an operation shows, which a storage batch has inside
-//! its key.
+//! its key. `the_tests_are_those_of_the_storage_crate` holds the others to
+//! the source of the storage crate.
 //!
-//! The tests run twice: with the data column holding flat records, and
-//! with the data column holding the nodes of a Merk.
+//! The other seven run twice: with the data column holding flat records,
+//! and with the data column holding the nodes of a Merk.
 
 use std::{fmt, ops::Add};
 
@@ -333,6 +334,79 @@ impl<const NODES: bool> Shim<NODES> {
     }
 }
 
+/// As in the storage crate, with the subtree in what an operation shows.
+#[test]
+fn test_debug_output_batch_operation() {
+    let op1 = AbstractBatchOperation::PutMeta {
+        key: b"key1".to_vec(),
+        value: b"value1".to_vec(),
+        cost_info: None,
+    };
+    let op2 = AbstractBatchOperation::DeleteRoot {
+        key: b"key1".to_vec(),
+        cost_info: None,
+    };
+    assert_eq!(
+        format!("{op1:?}"),
+        "PutMeta { subtree: Subtree(00000000..), key: \"[hex: 6b657931, str: key1]\", value: \"[hex: \
+         76616c756531, str: value1]\" }"
+    );
+    assert_eq!(
+        format!("{op2:?}"),
+        "DeleteRoot { subtree: Subtree(00000000..), key: \"[hex: 6b657931, str: key1]\" }"
+    );
+}
+
+/// The tests below are the tests of the storage crate: every test its
+/// `mod tests` has is here under its name, and each body but the one above
+/// is the same but for white space.
+#[test]
+fn the_tests_are_those_of_the_storage_crate() {
+    let theirs = include_str!("../../../../storage/src/storage.rs");
+    let theirs = &theirs[theirs
+        .find("mod tests {")
+        .expect("the tests of the storage crate")..];
+    let ours = include_str!("storage_batch.rs");
+    // A test is named where it is declared: `fn`, a space and the name.
+    let declared = ["fn", " test_"].concat();
+    let names = |source: &str| -> Vec<String> {
+        let tests = source.split(declared.as_str()).skip(1);
+        let mut names: Vec<String> = tests
+            .filter_map(|test| Some(["test_", test.split_once("()")?.0].concat()))
+            .collect();
+        names.sort();
+        names.dedup();
+        names
+    };
+    assert_eq!(names(ours), names(theirs));
+    assert_eq!(names(theirs).len(), 8);
+
+    let body = |source: &str, name: &str| -> String {
+        let from = source.find(&format!("fn {name}()")).expect("the test");
+        let mut depth = 0;
+        let mut body = String::new();
+        for at in source[from..].chars() {
+            match at {
+                '{' => depth += 1,
+                '}' => depth -= 1,
+                _ => {}
+            }
+            if !at.is_whitespace() {
+                body.push(at);
+            }
+            if at == '}' && depth == 0 {
+                break;
+            }
+        }
+        body
+    };
+    for name in names(theirs) {
+        if name != "test_debug_output_batch_operation" {
+            assert_eq!(body(ours, &name), body(theirs, &name), "{name}");
+        }
+    }
+}
+
 macro_rules! storage_batch_tests {
     ($data:ident, $nodes:literal) => {
         mod $data {
@@ -359,29 +433,6 @@ macro_rules! storage_batch_tests {
                     needs_value_verification: false,
                     prepaid: false,
                 }
-            }
-
-            #[test]
-            fn test_debug_output_batch_operation() {
-                let op1 = AbstractBatchOperation::PutMeta {
-                    key: b"key1".to_vec(),
-                    value: b"value1".to_vec(),
-                    cost_info: None,
-                };
-                let op2 = AbstractBatchOperation::DeleteRoot {
-                    key: b"key1".to_vec(),
-                    cost_info: None,
-                };
-                assert_eq!(
-                    format!("{op1:?}"),
-                    "PutMeta { subtree: Subtree(00000000..), key: \"[hex: 6b657931, str: \
-                     key1]\", value: \"[hex: 76616c756531, str: value1]\" }"
-                );
-                assert_eq!(
-                    format!("{op2:?}"),
-                    "DeleteRoot { subtree: Subtree(00000000..), key: \"[hex: 6b657931, str: \
-                     key1]\" }"
-                );
             }
 
             #[test]

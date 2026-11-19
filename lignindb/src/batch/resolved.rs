@@ -7,7 +7,7 @@ use lignin_tree::node::NodeHandle;
 
 use super::{
     node::StagedNode,
-    staged::{Leave, Staged, Write, ORDER},
+    staged::{Entry, Keys, Leave, Staged, SubtreeState, Write, ORDER},
 };
 use crate::txn::{
     Applied, Batch, BatchError, Column, HostPut, Hosted, MerkWrite, RecordWrite, RootPut, Scope,
@@ -114,12 +114,20 @@ impl<C> fmt::Debug for Resolved<C> {
 
 impl<C> Resolved<C> {
     pub(super) fn new(staged: Staged<C>) -> Result<Self, BatchError> {
-        if let Some(refused) = staged.refused {
+        let (staged, refused) = staged.finish();
+        if let Some(refused) = refused {
             return Err(refused);
         }
-        // Where a subtree hangs is what the later statement says.
+        // Where a subtree hangs is what the later statement says. An
+        // element that the batch deletes hosts nothing.
+        let data = &staged.columns[ORDER.len() - 1];
+        let deleted = |subtree: &Subtree, key: &[u8]| {
+            let held = data.get(subtree).and_then(|keys| keys.get(key));
+            held.is_some_and(|entry| matches!(entry.write, Write::Remove { .. }))
+        };
         let mut hosts: Vec<_> = (staged.hosts.iter())
             .flat_map(|(subtree, hosts)| hosts.iter().map(move |host| (*subtree, host)))
+            .filter(|(subtree, (key, _))| !deleted(subtree, key))
             .collect();
         hosts.sort_by_key(|(_, (_, host))| host.order);
         let mut hung = BTreeMap::new();
@@ -136,31 +144,43 @@ impl<C> Resolved<C> {
                 hung.insert(*hosted, at);
             }
         }
-        let left = |(subtree, state): (&Subtree, &super::staged::SubtreeState)| {
-            state.leave.map(|(leave, _)| (*subtree, leave))
-        };
+        let left = |(subtree, state): (&Subtree, &SubtreeState)| Some((*subtree, state.leave?));
         let leaves = staged.subtrees.iter().filter_map(left).collect();
+        // A subtree is entered after the one its host is in, where the
+        // batch enters both, and otherwise in the order the enters were
+        // made.
+        let entered = |subtree: &Subtree| {
+            let state = staged.subtrees.get(subtree);
+            state.and_then(|state| state.enter.as_ref())
+        };
+        let depth = |subtree: &Subtree| {
+            let hosts = std::iter::successors(hung.get(subtree), |at| hung.get(&at.subtree));
+            let entered = hosts.take_while(|at| entered(&at.subtree).is_some());
+            entered.take(staged.subtrees.len()).count()
+        };
         let mut enters: Vec<_> = (staged.subtrees.iter())
-            .filter_map(|(subtree, state)| Some((state.enter.as_ref()?.order, *subtree)))
+            .filter_map(|(subtree, state)| {
+                Some((depth(subtree), state.enter.as_ref()?.order, *subtree))
+            })
             .collect();
         enters.sort_unstable();
         Ok(Self {
+            enters: enters.into_iter().map(|(.., subtree)| subtree).collect(),
             staged,
             hung,
             leaves,
-            enters: enters.into_iter().map(|(_, subtree)| subtree).collect(),
         })
     }
 
     /// How many keys the batch holds an outcome for.
     pub fn len(&self) -> usize {
-        self.staged.len()
+        self.staged.count()
     }
 
     /// Whether the batch writes nothing: its application adds nothing to
     /// the transaction (`transactions.md` GM0).
     pub fn is_empty(&self) -> bool {
-        self.staged.is_empty()
+        self.staged.count() == 0 && self.staged.subtrees.is_empty()
     }
 
     /// The outcome of each key, in the order a storage batch is iterated
@@ -174,7 +194,7 @@ impl<C> Resolved<C> {
                     key,
                     write: match &entry.write {
                         Write::Record(value) => Written::Record(value),
-                        Write::Node(node) => Written::Node(node),
+                        Write::Node { node, .. } => Written::Node(node),
                         Write::Remove { node: false, .. } => Written::Removed,
                         Write::Remove { node: true, .. } => Written::NodeRemoved,
                     },
@@ -197,14 +217,14 @@ impl<C> Resolved<C> {
 
     /// The subtrees whose data column holds an outcome for a node, with
     /// those outcomes: the Merks of the write.
-    fn merks(&self) -> impl Iterator<Item = (Subtree, &super::staged::Keys<C>)> {
+    fn merks(&self) -> impl Iterator<Item = (Subtree, &Keys<C>)> {
         let data = &self.staged.columns[ORDER.len() - 1];
         (data.iter())
             .filter(|(_, keys)| {
-                let is_node = |entry: &super::staged::Entry<C>| {
+                let is_node = |entry: &Entry<C>| {
                     matches!(
                         entry.write,
-                        Write::Node(_) | Write::Remove { node: true, .. }
+                        Write::Node { .. } | Write::Remove { node: true, .. }
                     )
                 };
                 keys.values().any(is_node)
@@ -216,7 +236,7 @@ impl<C> Resolved<C> {
     fn puts(&self, subtree: Subtree, key: &[u8]) -> bool {
         let data = &self.staged.columns[ORDER.len() - 1];
         let held = data.get(&subtree).and_then(|keys| keys.get(key));
-        held.is_some_and(|entry| matches!(entry.write, Write::Node(_)))
+        held.is_some_and(|entry| matches!(entry.write, Write::Node { .. }))
     }
 
     /// Calls `run` with the batch as one write of a transaction: each key
@@ -238,7 +258,7 @@ impl<C> Resolved<C> {
             let (mut puts, mut removed) = (Vec::new(), Vec::new());
             for (key, entry) in keys {
                 match &entry.write {
-                    Write::Node(node) => {
+                    Write::Node { node, .. } => {
                         let hosted = hosts.and_then(|hosts| hosts.get(key));
                         puts.push(node.as_put(match hosted {
                             Some(host) => Hosted::Set(&host.hosted),
@@ -305,7 +325,7 @@ impl<C> Resolved<C> {
         let nodes = self.merks().flat_map(|(subtree, keys)| {
             let puts = keys
                 .iter()
-                .filter(|(_, entry)| matches!(entry.write, Write::Node(_)));
+                .filter(|(_, entry)| matches!(entry.write, Write::Node { .. }));
             puts.map(move |(key, _)| (subtree, &**key))
         });
         (nodes.zip(&applied.nodes)).map(|((subtree, key), handle)| (subtree, key, *handle))

@@ -54,41 +54,54 @@
 //! what it attached. Across a boundary the later operation wins. The
 //! column is a part of the key, and so is the subtree.
 //!
-//! [`StagedBatch::merge`] makes the calls of another batch again in the
-//! generation this batch is in, so a delete of the other does not take the
-//! place of an outcome of that generation. [`StagedBatch::merge_overwriting`]
-//! makes the other batch a later operation, and what follows later still.
+//! **The order of the calls of one operation does not matter**, where no
+//! two of them say the same thing of the same key: every rule below takes
+//! the calls of an operation together. Of two puts of one key, two
+//! statements of what one element hosts and two elements that name one
+//! subtree, the later stands.
+//!
+//! [`StagedBatch::merge`] makes again, in the generation this batch is in,
+//! the calls that the other batch holds an outcome of: so a delete of the
+//! other does not take the place of an outcome of that generation.
+//! [`StagedBatch::merge_overwriting`] makes the other batch a later
+//! operation, and what follows later still.
 //!
 //! Each call attaches a value of the batch's type parameter, which stays
 //! with the outcome if the call stands and goes with it if it does not: it
 //! is where the layer above keeps what the write is charged, so that only
 //! the survivor is charged (`cost-model.md` B1). The engine does not look
-//! at it.
+//! at it, and drops it under the batch's lock: its `Drop` must not call
+//! the batch.
 //!
 //! # What a node adds to a record
 //!
 //! A node is put as Merk hands it to storage: every part stated
-//! ([`NodePut`]), and the batch holds the node as
-//! the outcome of its key. Two parts of a node are stated against what is
-//! there before the put, and a batch has to say what that is:
+//! ([`NodePut`]), and the batch holds the node as the outcome of its key.
+//! Two parts of a node are stated against what is there before the put,
+//! and a batch has to say what that is:
 //!
 //! - **A node that keeps its value**
 //!   ([`ValuePut::Keep`](crate::txn::ValuePut::Keep)) keeps the value the
-//!   node has when the call is made: the value of the put the batch holds
-//!   for the key, and with none the value the transaction has when the
-//!   batch is applied. So a Merk that stays open across operations writes
-//!   a value once and then only hashes, and the value is not lost with the
-//!   put it came in. Where an earlier operation of the batch removed the
-//!   node, there is no value to keep, and the batch is refused
-//!   ([`BatchError::NoValue`]), as the
-//!   transaction would refuse the second of the two operations. A delete
-//!   of the same generation does not count, in either order: the put wins
-//!   over it, and keeps what the node had without it.
+//!   node has in the batch before its operation: the value of the node the
+//!   batch holds under the key, and with none the value the transaction
+//!   has when the batch is applied. So a Merk that stays open across
+//!   operations writes a value once and then only hashes, and the value is
+//!   not lost with the put it came in. Where an earlier operation of the
+//!   batch removed the node, there is no value to keep, and the batch is
+//!   refused ([`BatchError::NoValue`]), as the transaction would refuse the
+//!   second of the two operations. A delete of the same operation does not
+//!   count, in either order: the put wins over it, and keeps what the node
+//!   had without it. A drop or a clear of the same operation does count, in
+//!   either order: it comes before the put, which then keeps the value the
+//!   transaction has, and that is none.
 //! - **The Merks a node hosts** are kept by the element
 //!   ([`StagedBatch::host`]), and a put that states them
-//!   ([`Hosted::Set`](crate::txn::Hosted::Set)) is such a statement. The
-//!   later statement stands. A delete of the node that stands takes the
-//!   statement with it.
+//!   ([`Hosted::Set`](crate::txn::Hosted::Set)) is such a statement. A put
+//!   that keeps them names what its element was last said to host. What
+//!   was said of an element is said of the node under its key until an
+//!   operation removes that node: an element that the batch deletes hosts
+//!   nothing, and a node that a later operation puts under the key is
+//!   new, and hosts what is said from that operation on.
 //!
 //! The root of a Merk ([`StagedBatch::set_root`]) is held as a record is:
 //! a root key is a put, and "no root" is a delete. So it stays in step
@@ -107,12 +120,16 @@
 //! - a Merk with an outcome for a node is anchored where an element was
 //!   said to host it and the batch holds no put of that element's node;
 //! - a subtree that is entered has that element as its host, at its place
-//!   in the list.
+//!   in the list, and is entered after the subtree its host is in where
+//!   the batch enters both.
 //!
 //! So the caller says what an element hosts whenever it writes a Merk the
 //! element hosts or the element itself, with the whole list, by position.
 //! A Merk of which nothing is said stands alone, as the root of a grove
-//! does.
+//! does. The pointer in a host that the batch does not write is behind
+//! once an anchored Merk has another root, until a later batch of the
+//! transaction writes the host (T3): never on existing GroveVersions,
+//! where every operation writes the path up to the root of the grove.
 //!
 //! # Subtrees
 //!
@@ -127,24 +144,31 @@
 //!   operation.
 //! - **It takes what earlier operations staged below the subtree too**, in
 //!   every column, with their enters, drops and clears: a drop names the
-//!   outermost subtree. Below is what the batch was told hangs there
-//!   ([`StagedBatch::host`]). A write below that it was not told of stays,
-//!   and the transaction refuses the batch
+//!   outermost subtree. Below is what hung there before the operation and
+//!   what the operation itself says hangs there
+//!   ([`StagedBatch::host`]). A write below that the batch was not told of
+//!   stays, and the transaction refuses the batch
 //!   ([`BatchError::NotEntered`]).
 //! - **A drop takes back the enter of an earlier operation**: the subtree
 //!   was the batch's own, and the transaction never sees it. A clear of
 //!   such a subtree leaves the enter.
-//! - **An enter and a drop of one operation** are a drop of the subtree
-//!   the transaction has, and then the enter of a new one.
+//! - **An enter and a drop of one operation** are the drop of the subtree
+//!   as it was before the operation, and then the enter of a new one.
+//!
+//! What a leave takes out is taken out when its operation ends, at
+//! [`StagedBatch::next_operation`] or when the batch is resolved or
+//! merged, when everything the operation says is known.
+//! [`StagedBatch::len`] and [`StagedBatch::is_empty`] say what the batch
+//! holds once it has.
 //!
 //! A call that no outcome can stand for is refused when the batch is
 //! resolved, with the error the transaction would give the operation that
-//! made it: a second enter ([`BatchError::Entered`]),
-//! a drop or a clear of a subtree that an earlier operation dropped
-//! ([`BatchError::NotEntered`]), and
-//! two of one kind in one operation
-//! ([`BatchError::SubtreeTwice`]).
-//! A batch that is refused applies nothing.
+//! made it: an enter of a subtree that an earlier operation entered or
+//! cleared ([`BatchError::Entered`]), a drop or a clear of a subtree that
+//! an earlier operation dropped ([`BatchError::NotEntered`]), and two
+//! enters or two leaves of one subtree in one operation
+//! ([`BatchError::SubtreeTwice`]). A batch that is refused applies
+//! nothing.
 //!
 //! # What is not here
 //!
@@ -157,6 +181,10 @@
 //!   attached.
 //! - **Which subtree is below which.** The batch knows no path and reads
 //!   no directory: it is a function of the calls made on it.
+//! - **Nodes and flat records in one data column.** The transaction
+//!   refuses such a batch
+//!   ([`BatchError::NotFlat`]); a node
+//!   that keeps its value over a flat record keeps the transaction's.
 //! - **Whether a stated value is the one the transaction holds.** A value
 //!   that is stated is written. Leaving equal bytes where they are is the
 //!   node store's (MERK-01), which reads the transaction before it puts.
@@ -224,13 +252,16 @@ impl<C> StagedBatch<C> {
         self.staged.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
-    /// How many keys the batch holds an outcome for.
+    /// How many keys the batch holds an outcome for, once the drops and
+    /// the clears of the operation it is in have taken out what they take
+    /// the place of.
     pub fn len(&self) -> usize {
         self.staged().len()
     }
 
     /// Whether nothing is staged that an application would write: no
-    /// outcome of a key, and no enter, drop or clear.
+    /// outcome of a key, and no enter, drop or clear. A batch with a call
+    /// that is refused is not empty.
     pub fn is_empty(&self) -> bool {
         self.staged().is_empty()
     }
@@ -247,8 +278,9 @@ impl<C> StagedBatch<C> {
         Self::of(std::mem::take(&mut *self.staged()))
     }
 
-    /// Makes the calls that `other` holds an outcome of again on this
-    /// batch, in the generation it is in.
+    /// Makes again on this batch, in the generation it is in, every call
+    /// that `other` holds an outcome of. What `other` says of the subtrees
+    /// comes first, then its outcomes.
     pub fn merge(&self, other: Self) {
         self.staged().merge(other.into_staged());
     }
