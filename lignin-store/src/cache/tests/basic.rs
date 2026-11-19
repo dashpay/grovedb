@@ -641,6 +641,11 @@ fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
         (300, 128),
         (5_000, 128),
     ] {
+        // Miri has nothing more to find in a large pool than in a small
+        // one, and takes gigabytes over it.
+        if cfg!(miri) && frames > 300 {
+            continue;
+        }
         let pool = BufferPool::with_frames(frames, 8, 1, 0).expect("a small pool");
         assert_eq!(pool.arena.lanes().len(), lanes, "{frames} frames");
     }
@@ -805,8 +810,9 @@ fn a_frame_can_be_read_before_anything_is_written_to_it() {
 /// A pool is shared by every thread of a store, and what it hands out goes
 /// where the work goes: a page that was read to another thread, a latch to
 /// the threads that read under it. The compiler lets them only because the
-/// frames, their pointers and the arena are declared safe to send and to
-/// share (`frame.rs`), which this test would not build without. A model
+/// frames are declared safe to share, and their pointers and the arena safe
+/// to send and to share (`frame.rs`), which this test would not build
+/// without. A model
 /// keeps what it checks in the handles, and they stay on their threads.
 #[cfg(not(loom))]
 #[test]
@@ -841,6 +847,17 @@ fn the_handles_of_the_pool_can_go_to_other_threads() {
     pool.discard(&copy).expect("a private copy");
     drop((copy, found));
     check(&pool, 0);
+
+    // A pool goes to another thread whole, with what it holds, and is read
+    // and dropped there.
+    std::thread::spawn(move || {
+        let found = pool.get(page(1), version(1)).expect("in the pool");
+        assert_eq!(Content::read(&found), content(1, 1, 0));
+        drop(found);
+        drop(pool);
+    })
+    .join()
+    .expect("the thread did not panic");
 }
 
 /// Two frames that were taken out while readers held them wait together.

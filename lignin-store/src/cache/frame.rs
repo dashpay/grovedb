@@ -204,8 +204,9 @@ pub(super) struct Frame {
 // only through the unsafe methods below, whose callers keep rules A4 and A5,
 // so no thread writes content that another can read or write.
 //
-// A frame is not `Send`: nothing moves one to another thread. It stays
-// where it was allocated, and threads share it.
+// No `Send` is declared for a frame: none is moved by value to another
+// thread. A frame stays at its address and threads share it. The arena
+// that owns it says for itself why it may change threads.
 unsafe impl Sync for Frame {}
 
 impl fmt::Debug for Frame {
@@ -1353,12 +1354,17 @@ pub(super) struct Arena {
     dead: Padded<Mutex<Option<FramePtr>>>,
 }
 
-// SAFETY: the arena owns its headers and its block, which are reached only
-// through the frames, and those are `Send` and `Sync`. Its lanes and its
-// list of dead frames are atomics and a lock around a pointer that is only
-// an address.
+// SAFETY: the arena owns its headers and its block, and nothing else frees
+// them. An arena that goes to another thread takes them along at the
+// addresses they have, and that thread may use and drop them: a header
+// holds atomics, a lock, attached values (shared buffers that any thread
+// may drop) and a pointer into the block, and none of these is bound to
+// the thread that made it. The lanes and the list of dead frames are
+// atomics and a lock around a pointer that is only an address.
 unsafe impl Send for Arena {}
-// SAFETY: as above.
+// SAFETY: what the arena holds itself is never changed, is atomic or is
+// behind a lock, and its headers are shared as frames are (`Sync for
+// Frame`): their content under rules A4 and A5.
 unsafe impl Sync for Arena {}
 
 impl fmt::Debug for Arena {

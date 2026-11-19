@@ -141,6 +141,50 @@ enum Part {
     Code,
     Comment,
     Literal,
+    /// The `r#` of a raw identifier.
+    RawPrefix,
+}
+
+/// The pieces of a source, in order: where each begins and ends, and what
+/// it is. A comment or a literal is one piece. Code comes a word or a
+/// character at a time.
+fn parts(chars: &[char]) -> Vec<(usize, usize, Part)> {
+    let mut parts = Vec::new();
+    let mut i = 0;
+    while i < chars.len() {
+        let c = chars[i];
+        let (end, part) = if let Some(end) = comment_end(chars, i) {
+            (end, Part::Comment)
+        } else if c == '"' {
+            (string_end(chars, i), Part::Literal)
+        } else if c == '\'' {
+            char_end(chars, i).map_or((i + 1, Part::Code), |end| (end, Part::Literal))
+        } else if is_ident(c) {
+            let word_end = (i..chars.len())
+                .find(|&at| !is_ident(chars[at]))
+                .unwrap_or(chars.len());
+            let word: String = chars[i..word_end].iter().collect();
+            let raw = matches!(word.as_str(), "r" | "br" | "cr")
+                .then(|| raw_string_end(chars, word_end))
+                .flatten();
+            let prefixed = matches!(word.as_str(), "b" | "c") && chars.get(word_end) == Some(&'"');
+            // `r#name` is the name, whatever keyword it spells.
+            let raw_name = word == "r"
+                && chars.get(word_end) == Some(&'#')
+                && chars.get(word_end + 1).copied().is_some_and(is_ident);
+            match raw {
+                Some(end) => (end, Part::Literal),
+                None if prefixed => (string_end(chars, word_end), Part::Literal),
+                None if raw_name => (word_end + 1, Part::RawPrefix),
+                None => (word_end, Part::Code),
+            }
+        } else {
+            (i + 1, Part::Code)
+        };
+        parts.push((i, end, part));
+        i = end;
+    }
+    parts
 }
 
 /// The source in two copies of its own shape: its code, with every comment
@@ -151,38 +195,17 @@ fn split(source: &str) -> (String, String) {
     let chars: Vec<char> = source.chars().collect();
     let mut code = String::with_capacity(source.len());
     let mut comments = String::with_capacity(source.len());
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        let (end, part) = if let Some(end) = comment_end(&chars, i) {
-            (end, Part::Comment)
-        } else if c == '"' {
-            (string_end(&chars, i), Part::Literal)
-        } else if c == '\'' {
-            char_end(&chars, i).map_or((i + 1, Part::Code), |end| (end, Part::Literal))
-        } else if is_ident(c) {
-            let word_end = (i..chars.len())
-                .find(|&at| !is_ident(chars[at]))
-                .unwrap_or(chars.len());
-            let word: String = chars[i..word_end].iter().collect();
-            let raw = matches!(word.as_str(), "r" | "br" | "cr")
-                .then(|| raw_string_end(&chars, word_end))
-                .flatten();
-            let prefixed = matches!(word.as_str(), "b" | "c") && chars.get(word_end) == Some(&'"');
-            match raw {
-                Some(end) => (end, Part::Literal),
-                None if prefixed => (string_end(&chars, word_end), Part::Literal),
-                None => (word_end, Part::Code),
-            }
-        } else {
-            (i + 1, Part::Code)
-        };
-        for &c in &chars[i..end] {
+    for (start, end, part) in parts(&chars) {
+        for &c in &chars[start..end] {
             let space = if c == '\n' { '\n' } else { ' ' };
-            code.push(if part == Part::Code { c } else { space });
+            code.push(match part {
+                Part::Code => c,
+                // Joined to the name that follows, as one word.
+                Part::RawPrefix => '_',
+                Part::Comment | Part::Literal => space,
+            });
             comments.push(if part == Part::Comment { c } else { space });
         }
-        i = end;
     }
     (code, comments)
 }
@@ -315,10 +338,11 @@ fn inner_attributes(tokens: &[Placed]) -> Vec<(usize, String)> {
     found
 }
 
-/// Whether an attribute is a condition on the build that names the build
-/// of the tests.
+/// Whether an attribute leaves its item out of every build but that of
+/// the tests: `cfg(test)`, or `cfg(all(test, …))`. A condition that only
+/// names the tests (`cfg(not(test))`, `cfg(any(test, …))`) does not.
 fn is_for_tests(attribute: &str) -> bool {
-    attribute.starts_with("cfg(") && attribute.split(|c| !is_ident(c)).any(|word| word == "test")
+    attribute == "cfg(test)" || attribute.starts_with("cfg(all(test,")
 }
 
 /// A module that is written where it is declared: the tokens of its braces,
@@ -653,6 +677,20 @@ fn documentation_tests(source: &str) -> String {
     lines.join("\n")
 }
 
+/// Whether a source has a block documentation comment (`/** */`, `/*! */`),
+/// whose documentation tests [`documentation_tests`] does not read.
+fn has_block_documentation(source: &str) -> bool {
+    let chars: Vec<char> = source.chars().collect();
+    parts(&chars).into_iter().any(|(start, end, part)| {
+        part == Part::Comment
+            && match chars[start..end] {
+                ['/', '*', '!', ..] => true,
+                ['/', '*', '*', after, ..] => !matches!(after, '*' | '/'),
+                _ => false,
+            }
+    })
+}
+
 /// Every `.rs` file under `directory`, by its path from the workspace root.
 /// A directory `target` that Cargo made is not source, and neither is a
 /// hidden one.
@@ -709,6 +747,7 @@ fn sources() -> &'static BTreeMap<String, String> {
         for also in ALSO {
             rust_files(&root, &root.join(also), &mut files);
         }
+        assert!(files.len() > 300, "{} files were read", files.len());
         files
     })
 }
@@ -780,7 +819,6 @@ fn unsafe_code_is_in_the_files_the_audit_lists_and_nowhere_else() {
     listed.insert(FRAME.to_string());
 
     let sources = sources();
-    assert!(sources.len() > 300, "{} files were read", sources.len());
     let found: BTreeSet<String> = sources
         .iter()
         .filter(|(_, source)| !sites(source).is_empty())
@@ -794,6 +832,10 @@ fn unsafe_code_is_in_the_files_the_audit_lists_and_nowhere_else() {
     // A documentation test is a target of its own, which no lint of its
     // crate reaches.
     for (file, source) in sources {
+        assert!(
+            !has_block_documentation(source),
+            "{file} has a block documentation comment, which the scan does not read"
+        );
         let found = sites(&documentation_tests(source));
         assert!(
             found.is_empty(),
@@ -868,12 +910,16 @@ fn paths(source: &str) -> Vec<String> {
                 && in_attribute(&tokens, at)
         })
         .map(|at| {
-            let line = lines[tokens[at].1 - 1];
-            let after = &line[line.find("path").expect("the word is on its line")..];
-            names(&after.replace('"', "`"))
-                .into_iter()
-                .next()
-                .unwrap_or_else(|| panic!("a path on the line of its attribute: {line}"))
+            // The literal is no token: it is read from the source, from the
+            // line of the word on, between the first two quotes after it.
+            let from = tokens[at].1 - 1;
+            let rest = lines[from..].join("\n");
+            let after = &rest[rest.find("path").expect("the word is on its line")..];
+            after
+                .split('"')
+                .nth(1)
+                .unwrap_or_else(|| panic!("a path after its attribute: {}", lines[from]))
+                .to_string()
         })
         .collect()
 }
@@ -920,6 +966,8 @@ fn everything_a_crate_compiles_is_among_the_files_that_are_read() {
     let written = "#[path = \"a.rs\"]\nmod a;\n#[cfg_attr(unix, path = \"b.rs\")]\nmod b;\n\
                    fn f() { let path = \"c.rs\"; }\n// #[path = \"d.rs\"]\n";
     assert_eq!(paths(written), ["a.rs", "b.rs"]);
+    let spread = "#[path =\n    \"a.rs\"]\nmod a;\n#[path = r#\"b.rs\"#]\nmod b;\n";
+    assert_eq!(paths(spread), ["a.rs", "b.rs"]);
     assert_eq!(
         occurrences(
             &tokens("include!(\"a\"); include! { b } included!()"),
@@ -1030,9 +1078,11 @@ fn a_way_to_reach_a_frame_is_handed_out_where_the_audit_read_it() {
     );
     assert_eq!(count("fn new() -> Self { Self { a: 1 } }", "Self {"), 1);
     let with_tests = "#[cfg(all(test, not(loom)))]\nmod early { fn t() { A(0) } }\n\
-                      fn b() { A(1) }\n#[cfg(test)]\nmod late { fn t() { A(2) } }\nmod kept { fn c() { A(3) } }";
-    assert_eq!(count(with_tests, "A("), 2);
-    assert_eq!(occurrences(&tokens(with_tests), "A("), 4);
+                      fn b() { A(1) }\n#[cfg(test)]\nmod late { fn t() { A(2) } }\nmod kept { fn c() { A(3) } }\n\
+                      #[cfg(not(test))]\nmod shipped { fn d() { A(4) } }\n\
+                      #[cfg(any(test, feature = \"x\"))]\nmod either { fn e() { A(5) } }";
+    assert_eq!(count(with_tests, "A("), 4);
+    assert_eq!(occurrences(&tokens(with_tests), "A("), 6);
 }
 
 fn library_of(source: &str) -> Vec<Placed> {
@@ -1046,11 +1096,16 @@ fn library_of(source: &str) -> Vec<Placed> {
 /// one that leaves it out of a build for a model.
 fn is_a_test_that_runs(source: &str, name: &str) -> bool {
     let tokens = tokens(&blank(source));
-    let Some(at) = (0..tokens.len()).find(|&at| {
-        is_word(&tokens, at, "fn")
-            && is_word(&tokens, at + 1, name)
-            && is_punct(&tokens, at + 2, '(')
-    }) else {
+    let found: Vec<usize> = (0..tokens.len())
+        .filter(|&at| {
+            is_word(&tokens, at, "fn")
+                && is_word(&tokens, at + 1, name)
+                && is_punct(&tokens, at + 2, '(')
+        })
+        .collect();
+    // Two functions of one name in a file, in two modules, are not told
+    // apart: neither is taken.
+    let [at] = found[..] else {
         return false;
     };
     let passes = |attribute: &str, conditions: &[&str]| {
@@ -1268,6 +1323,7 @@ unsafe fn loosely_documented() {}
             "loosely_documented | unsafe fn",
         ]
     );
+    assert!(sites("fn a_raw_name(r#unsafe: u8) -> u8 { r#unsafe }").is_empty());
     assert_eq!(
         found[0].line, 12,
         "a line of the code is its line in the source"
@@ -1343,6 +1399,11 @@ fn the_reader_knows_a_test_that_runs_from_one_that_is_left_out() {
             "one",
             true,
         ),
+        (
+            "mod a {\n    #[test]\n    #[ignore]\n    fn one() {}\n}\nmod b {\n    #[test]\n    fn one() {}\n}",
+            "one",
+            false,
+        ),
     ] {
         assert_eq!(is_a_test_that_runs(source, name), runs, "{source:?} {name}");
     }
@@ -1379,4 +1440,12 @@ fn documented() {}
         .map(|site| (site.kind, site.line))
         .collect();
     assert_eq!(found, [(Kind::Block, 4), (Kind::Fn, 12), (Kind::Impl, 17)]);
+    assert!(!has_block_documentation(source));
+    assert!(!has_block_documentation(
+        "/* A comment. */ /*** Stars. ***/ /**/ \"/** text */\""
+    ));
+    assert!(has_block_documentation(
+        "/** Documentation. */\nfn documented() {}"
+    ));
+    assert!(has_block_documentation("/*! Documentation of the file. */"));
 }
