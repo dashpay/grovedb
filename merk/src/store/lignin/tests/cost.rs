@@ -27,7 +27,7 @@ use grovedb_costs::{
     CostResult,
 };
 use grovedb_query::QueryItem;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError, StorageContext};
 use grovedb_version::version::GROVE_VERSIONS;
 
 use super::*;
@@ -35,6 +35,8 @@ use crate::{
     cost_model::HANDLE_COST_MODEL,
     proofs::{query::count_offset::ProverCountOffsetResult, Query},
     store::NodeWriteCost,
+    tree::kv::KV,
+    tree::tree_feature_type::NodeType,
 };
 
 type Tx<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
@@ -60,11 +62,16 @@ fn value_defined_cost(value: &[u8], _: &GroveVersion) -> Option<ValueDefinedCost
 
 const VALUE_DEFINED_COST: Option<CostFn> = Some(value_defined_cost);
 
-fn old_specialized_cost(value: &[u8]) -> Result<u32, Error> {
+/// What a node of a tree of `node_type` costs as it is stored, from its key
+/// and its value: what a client gives Merk to bill a node against.
+fn stored_cost(key: &[u8], value: &[u8], node_type: NodeType) -> Result<u32, Error> {
+    let key_len = key.len() as u32;
     Ok(match value.first() {
-        Some(b'S') => SPECIALIZED,
-        Some(b'T') => LAYERED,
-        _ => value.len() as u32,
+        Some(b'S') => KV::node_value_byte_cost_size(key_len, SPECIALIZED, node_type),
+        Some(b'T') => {
+            KV::layered_value_byte_cost_size_for_key_and_value_lengths(key_len, LAYERED, node_type)
+        }
+        _ => KV::node_value_byte_cost_size(key_len, value.len() as u32, node_type),
     })
 }
 
@@ -237,11 +244,12 @@ fn apply_as_a_client<'db, S: NodeStore<'db>>(
     aux: &[(Vec<u8>, Op, Option<KeyValueStorageCost>)],
     grove_version: &GroveVersion,
 ) -> (OperationCost, Ended) {
+    let node_type = merk.tree_type.inner_node_type();
     done(merk.apply_with_costs_just_in_time_value_update(
         batch,
         aux,
         None,
-        &|_key, value| old_specialized_cost(value),
+        &|key, value| stored_cost(key, value, node_type),
         VALUE_DEFINED_COST.as_ref(),
         &|_old, _new| Ok(None),
         &mut |_cost, old, new| keep_the_epoch(old, new),
@@ -905,6 +913,34 @@ fn deferred_on_lignin(writer: &LigninWriter<'_, '_>, script: &Script) -> Act {
     (steps, Some((applied.cost, ended)))
 }
 
+fn unstaged_on_rocks(rocks: &TempStorage, transaction: &Tx<'_>, script: &Script) -> Played {
+    let open = |prefix| {
+        rocks
+            .get_transactional_storage_context_by_subtree_prefix(prefix, None, transaction)
+            .unwrap()
+    };
+    run_script(open, script)
+}
+
+fn unstaged_on_lignin(writer: &LigninWriter<'_, '_>, script: &Script) -> Played {
+    let open = |prefix| LigninNodeStore::deferred(writer, LigninSubtree::alone(prefix), None);
+    run_script(open, script)
+}
+
+fn immediate_on_rocks(rocks: &TempStorage, transaction: &Tx<'_>, script: &Script) -> Played {
+    let open = |prefix| {
+        rocks
+            .get_immediate_storage_context_by_subtree_prefix(prefix, transaction)
+            .unwrap()
+    };
+    run_script(open, script)
+}
+
+fn immediate_on_lignin(writer: &LigninWriter<'_, '_>, script: &Script) -> Played {
+    let open = |prefix| LigninNodeStore::immediate(writer, LigninSubtree::alone(prefix));
+    run_script(open, script)
+}
+
 /// One part of a history that is played on each engine.
 #[derive(Clone, Debug)]
 enum Part {
@@ -930,26 +966,8 @@ fn play_on_rocks(history: &[Part]) -> Vec<Act> {
     for part in history {
         acts.push(match part {
             Part::Deferred(script) => deferred_on_rocks(&rocks, &transaction, script),
-            Part::Unstaged(script) => {
-                let open = |prefix| {
-                    rocks
-                        .get_transactional_storage_context_by_subtree_prefix(
-                            prefix,
-                            None,
-                            &transaction,
-                        )
-                        .unwrap()
-                };
-                (run_script(open, script), None)
-            }
-            Part::Immediate(script) => {
-                let open = |prefix| {
-                    rocks
-                        .get_immediate_storage_context_by_subtree_prefix(prefix, &transaction)
-                        .unwrap()
-                };
-                (run_script(open, script), None)
-            }
+            Part::Unstaged(script) => (unstaged_on_rocks(&rocks, &transaction, script), None),
+            Part::Immediate(script) => (immediate_on_rocks(&rocks, &transaction, script), None),
             Part::NotTaken(script) => {
                 deferred_on_rocks(&rocks, &rocks.start_snapshot_read_transaction(), script)
             }
@@ -973,16 +991,8 @@ fn play_on_lignin(history: &[Part], mut after: impl FnMut(&Part, &Act)) -> Vec<A
     for part in history {
         let act = match part {
             Part::Deferred(script) | Part::NotTaken(script) => deferred_on_lignin(&writer, script),
-            Part::Unstaged(script) => {
-                let open =
-                    |prefix| LigninNodeStore::deferred(&writer, LigninSubtree::alone(prefix), None);
-                (run_script(open, script), None)
-            }
-            Part::Immediate(script) => {
-                let open =
-                    |prefix| LigninNodeStore::immediate(&writer, LigninSubtree::alone(prefix));
-                (run_script(open, script), None)
-            }
+            Part::Unstaged(script) => (unstaged_on_lignin(&writer, script), None),
+            Part::Immediate(script) => (immediate_on_lignin(&writer, script), None),
             Part::Commit => {
                 writer.into_scope().merge();
                 assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
@@ -1657,6 +1667,126 @@ fn the_nodes_of_a_merk_removed_with_no_cost_are_charged_as_committed() {
 }
 
 #[test]
+fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
+    // The repair of an indexed tree's ranking removes a row that no node of
+    // the ranking's Merk links, with a cost it worked out itself, in a
+    // change set that states no root (GroveDB #1063). On RocksDB such a
+    // row is a record under the Merk's prefix. The store holds no record
+    // that no link leads to, so it has nothing to remove.
+    let a = plain(b"a", 40);
+    let orphan = b"orphan".to_vec();
+    let cost = freeing(Freed::Plain(39), Freed::Plain(120));
+    let removal = |cost| {
+        vec![step(
+            10,
+            Step::Commit(vec![Change::Delete(orphan.clone(), cost)]),
+        )]
+    };
+    let mut the_tree = every_read(10, &a.key);
+    the_tree.push(step(10, Step::Has(orphan.clone())));
+    let charged = |seek_count, removed| OperationCost {
+        seek_count,
+        storage_cost: StorageCost {
+            removed_bytes: StorageRemovedBytes::BasicStorageRemoval(removed),
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    let rocks = TempStorage::new();
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let first = vec![put_lone(10, &a, NodeChange::ValueWritten, Bill::New)];
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let rocks_tx = rocks.start_transaction();
+    assert_eq!(
+        deferred_on_lignin(&writer, &first),
+        deferred_on_rocks(&rocks, &rocks_tx, &first)
+    );
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+    rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut rocks_tx = rocks.start_transaction();
+
+    // With the cost the repair gives, the removal is charged as any removal
+    // with a cost is: one seek and the bytes the writer says it frees. It
+    // is one write of the key in the transaction, and the tree is read as
+    // before.
+    let writes = transaction.stats().writes;
+    let found = deferred_on_lignin(&writer, &removal(cost.clone()));
+    assert_eq!(
+        found,
+        deferred_on_rocks(&rocks, &rocks_tx, &removal(cost.clone()))
+    );
+    assert_eq!(found.1, Some((charged(1, 159), Ended::Done)));
+    assert_eq!(transaction.stats().writes - writes, 1);
+    let read = unstaged_on_lignin(&writer, &the_tree);
+    assert_eq!(read, unstaged_on_rocks(&rocks, &rocks_tx, &the_tree));
+    assert_eq!(read.last(), Some(&(seek_and_load(0), Ended::Held(false))));
+
+    // RocksDB is charged the same when it holds a record under the key
+    // that no node links, which is what the repair removes there: a
+    // removal with a cost measures nothing.
+    let record = [7; 120];
+    let under_the_merk = rocks
+        .get_immediate_storage_context_by_subtree_prefix(at(10), &rocks_tx)
+        .unwrap();
+    StorageContext::put(&under_the_merk, &orphan, &record, None, None)
+        .unwrap()
+        .expect("the record is put");
+    rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+    rocks_tx = rocks.start_transaction();
+    let held = vec![step(10, Step::Has(orphan.clone()))];
+    let is_held = |held: bool| vec![(seek_and_load(if held { 120 } else { 0 }), Ended::Held(held))];
+    assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(true));
+    let on_rocks = deferred_on_rocks(&rocks, &rocks_tx, &removal(cost.clone()));
+    assert_eq!(on_rocks, found);
+    assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(false));
+    // Removed with no cost, such a record is measured where it is
+    // committed. That is a charge the store cannot make while it holds no
+    // such record, and the repair does not ask for it.
+    let measured = deferred_on_rocks(&rocks, &rocks_tx, &removal(None));
+    let from_the_record = OperationCost {
+        storage_loaded_bytes: 120,
+        ..charged(2, 38 + 120 + 1 + 1)
+    };
+    assert_eq!(measured.1, Some((from_the_record, Ended::Done)));
+    rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+    rocks_tx = rocks.start_transaction();
+
+    // With no cost and no such record, it is charged as the removal of a
+    // key the committed state lacks: two seeks, nothing loaded, and the
+    // stored key and an empty record removed, each with the byte of its
+    // length.
+    let found = deferred_on_lignin(&writer, &removal(None));
+    assert_eq!(found, deferred_on_rocks(&rocks, &rocks_tx, &removal(None)));
+    assert_eq!(found.1, Some((charged(2, 38 + 1 + 1), Ended::Done)));
+
+    // An immediate handle charges the seek, and the bytes of a cost.
+    let both: Script = [removal(cost), removal(None)].concat();
+    let found = immediate_on_lignin(&writer, &both);
+    assert_eq!(found, immediate_on_rocks(&rocks, &rocks_tx, &both));
+    let taken = Ended::Committed { refused: 0 };
+    let none_removed = OperationCost::with_seek_count(1);
+    assert_eq!(
+        found,
+        [(charged(1, 159), taken.clone()), (none_removed, taken)]
+    );
+
+    // What the transaction commits is the tree it had.
+    assert_eq!(
+        unstaged_on_lignin(&writer, &the_tree),
+        unstaged_on_rocks(&rocks, &rocks_tx, &the_tree)
+    );
+    writer.into_scope().merge();
+    assert_ne!(lignin.commit(&transaction), Outcome::Conflict);
+    assert_eq!(lignin.root_in_directory(at(10)), Some(a.key));
+}
+
+#[test]
 fn a_node_that_has_no_record_length_is_not_written() {
     let lignin = Lignin::new();
     let path = lignin.path();
@@ -1699,4 +1829,274 @@ fn a_node_that_has_no_record_length_is_not_written() {
     }
     assert!(staged.is_empty());
     assert_eq!(transaction.stats().writes, 0);
+}
+
+/// What a conversion to a 128-bit sum ended in: the tree type, the root
+/// hash and the root key it left, or the refusal.
+type Converted = Result<(TreeType, [u8; 32], Option<Vec<u8>>), Ended>;
+
+/// Converts `merk` as a client whose values decide nothing of what a node
+/// contributes, and returns the Merk if it was converted.
+fn convert_as_a_client<'db, S: NodeStore<'db>>(
+    merk: Merk<S>,
+    grove_version: &GroveVersion,
+) -> (OperationCost, Option<Merk<S>>, Converted) {
+    let node_type = merk.tree_type.inner_node_type();
+    let converted = merk.convert_to_big_sum_tree(
+        &|_key, _value, _widened| Ok(()),
+        &|key, value| stored_cost(key, value, node_type),
+        VALUE_DEFINED_COST.as_ref(),
+        grove_version,
+    );
+    match converted.value {
+        Ok(merk) => {
+            let left = (merk.tree_type, merk.root_hash().unwrap(), merk.root_key());
+            (converted.cost, Some(merk), Ok(left))
+        }
+        Err(error) => (converted.cost, None, Err(failed(error))),
+    }
+}
+
+/// The same Merk on RocksDB and on LigninDB is converted to the tree type
+/// with a 128-bit sum (GroveDB #1063): every node is written again with a
+/// wider feature and wider aggregates in its links, and no value changes.
+/// The conversion, the batch it stages and what is read afterwards cost
+/// the same on both, and LigninDB writes no value. `nodes_of` is the tree
+/// type whose features the nodes of the Merk carry.
+fn a_conversion_costs_the_same(
+    grove_version: &GroveVersion,
+    (tree_type, nodes_of): (TreeType, TreeType),
+    immediate: bool,
+    seed: u64,
+) -> bool {
+    let at = |what: &str| {
+        format!(
+            "{what}: grove version {}, {tree_type:?}, immediate {immediate}, seed {seed}",
+            grove_version.protocol_version
+        )
+    };
+    let _arithmetic = use_basic_sectioned_removal_addition_version(
+        grove_version
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+    );
+    let prefix = [7; 32];
+    let subtree = LigninSubtree::alone(prefix);
+    let opened = Opened::Layered;
+    let rocks = TempStorage::new();
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let mut random = Random(seed);
+    let mut model = BTreeMap::new();
+    let keys = [3, 40, 77, 110].map(key);
+    let turn = seed as usize;
+
+    if immediate {
+        let rocks_tx = rocks.start_transaction();
+        let context = rocks
+            .get_immediate_storage_context_by_subtree_prefix(prefix, &rocks_tx)
+            .unwrap();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let store = LigninNodeStore::immediate(&writer, subtree);
+        let (_, mut on_rocks) = open_as(context, opened, &None, tree_type, grove_version);
+        let (_, mut on_lignin) = open_as(store, opened, &None, tree_type, grove_version);
+        for _ in 0..3 {
+            let batch = mixed_batch(&mut random, nodes_of, &mut model);
+            let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
+            let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
+            assert_eq!(found, expected, "{}", at("a batch before the conversion"));
+        }
+        let (expected_cost, on_rocks, expected) = convert_as_a_client(on_rocks, grove_version);
+        let (cost, on_lignin, found) = convert_as_a_client(on_lignin, grove_version);
+        assert_eq!(found, expected, "{}", at("the conversion"));
+        assert_eq!(cost, expected_cost, "{}", at("the cost of the conversion"));
+        let (Some(on_rocks), Some(on_lignin)) = (on_rocks, on_lignin) else {
+            return false;
+        };
+        assert_eq!(
+            read_as_a_client(&on_lignin, &keys, turn, grove_version),
+            read_as_a_client(&on_rocks, &keys, turn, grove_version),
+            "{}",
+            at("the reads of the converted tree")
+        );
+        let root = on_rocks.root_key();
+        assert_same_records(
+            &records(&on_lignin.storage, root.clone()),
+            &records(&on_rocks.storage, root),
+            &at("the converted tree"),
+        );
+        return true;
+    }
+
+    let mut root: Option<Vec<u8>> = None;
+    let mut transaction = path.begin();
+    let mut writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut rocks_tx = rocks.start_transaction();
+    // The first two batches are committed and the third is not, so the
+    // conversion meets nodes of the committed state and nodes that the
+    // transaction wrote.
+    for round in 0..3 {
+        let batch = mixed_batch(&mut random, nodes_of, &mut model);
+        let storage_batch = StorageBatch::new();
+        let context = rocks
+            .get_transactional_storage_context_by_subtree_prefix(
+                prefix,
+                Some(&storage_batch),
+                &rocks_tx,
+            )
+            .unwrap();
+        let staged = LigninBatch::new();
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+        let (_, mut on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
+        let (_, mut on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
+        let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
+        let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
+        assert_eq!(found, expected, "{}", at("a batch before the conversion"));
+        root = on_rocks.root_key();
+        drop((on_rocks, on_lignin));
+        let expected = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
+        let found = staged.apply(&writer);
+        assert_eq!(found.cost, expected.cost, "{}", at("a batch applied"));
+        (expected.value).expect("the batch is applied on RocksDB");
+        found.value.expect("the batch is applied");
+        if round == 1 {
+            rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+            rocks_tx = rocks.start_transaction();
+            writer.into_scope().merge();
+            assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+            transaction = path.begin();
+            writer = LigninWriter::new(transaction.scope().unwrap());
+        }
+    }
+
+    let storage_batch = StorageBatch::new();
+    let context = rocks
+        .get_transactional_storage_context_by_subtree_prefix(
+            prefix,
+            Some(&storage_batch),
+            &rocks_tx,
+        )
+        .unwrap();
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
+    let (_, on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
+    let (_, on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
+    let (expected_cost, on_rocks, expected) = convert_as_a_client(on_rocks, grove_version);
+    let (cost, on_lignin, found) = convert_as_a_client(on_lignin, grove_version);
+    assert_eq!(found, expected, "{}", at("the conversion"));
+    assert_eq!(cost, expected_cost, "{}", at("the cost of the conversion"));
+    drop((on_rocks, on_lignin));
+    let expected = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
+    let read_before = reads(&transaction);
+    let applied = staged.apply(&writer);
+    let read_after = reads(&transaction);
+    assert_eq!(
+        applied.cost,
+        expected.cost,
+        "{}",
+        at("the batch of the conversion")
+    );
+    (expected.value).expect("the batch of the conversion is applied on RocksDB");
+    let applied = applied
+        .value
+        .expect("the batch of the conversion is applied");
+    let Ok((wide, _, root)) = found else {
+        return false;
+    };
+
+    // Every node was written, as on RocksDB, and no value was: the store
+    // held the bytes of each.
+    let context = rocks
+        .get_transactional_storage_context_by_subtree_prefix(prefix, None, &rocks_tx)
+        .unwrap();
+    let store = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+    let stored = records(&context, root.clone());
+    assert_same_records(
+        &records(&store, root.clone()),
+        &stored,
+        &at("the converted tree"),
+    );
+    let nodes = stored.len();
+    assert_eq!(
+        (applied.values_written, applied.values_kept),
+        (0, nodes),
+        "{}",
+        at("the values of the converted tree")
+    );
+    // What keeping them took: one read of each node, where the conversion
+    // had seen it, with the bytes of its value. No key was looked up, and
+    // none of it is in the cost.
+    assert_eq!(
+        (read_after.0 - read_before.0, read_after.1 - read_before.1),
+        (0, nodes as u64),
+        "{}",
+        at("the reads that kept the values")
+    );
+    // The batch was one put for each node, and each grew by 8 bytes for
+    // the wider feature of its own and by 8 for the wider aggregate in its
+    // parent's link, and by one more where the length of its cost takes
+    // another byte to say.
+    let growth = expected.cost.storage_cost.added_bytes as usize;
+    assert_eq!(expected.cost.seek_count as usize, nodes);
+    assert!(
+        nodes > 0 && (16 * nodes..=17 * nodes).contains(&growth),
+        "{growth} bytes added to {nodes} nodes"
+    );
+    let (expected, on_rocks) = open_as(context, opened, &root, wide, grove_version);
+    let (cost, on_lignin) = open_as(store, opened, &root, wide, grove_version);
+    assert_eq!(cost, expected, "{}", at("the open of the converted tree"));
+    assert_eq!(
+        read_as_a_client(&on_lignin, &keys, turn, grove_version),
+        read_as_a_client(&on_rocks, &keys, turn, grove_version),
+        "{}",
+        at("the reads of the converted tree")
+    );
+    true
+}
+
+#[test]
+fn a_conversion_to_a_big_sum_tree_costs_what_it_costs_on_rocksdb() {
+    // The primary of an indexed tree is a Merk with the nodes of the tree
+    // it mirrors. Its rows are nodes of other Merks, which GroveDB removes
+    // and puts under wider keys.
+    let indexed = [
+        (TreeType::ProvableSumIndexedTree, TreeType::ProvableSumTree),
+        (
+            TreeType::ProvableCountProvableSumIndexedTree,
+            TreeType::ProvableCountProvableSumTree,
+        ),
+    ];
+    let tree_types: Vec<_> = (TREE_TYPES.into_iter())
+        .map(|tree_type| (tree_type, tree_type))
+        .chain(indexed)
+        .collect();
+    let mut converted = Vec::new();
+    for (v, grove_version) in GROVE_VERSIONS.iter().enumerate() {
+        for (n, tree_type) in tree_types.iter().enumerate() {
+            let seed = 0x2545_F491 + (v * 16 + n) as u64;
+            for immediate in [false, true] {
+                if a_conversion_costs_the_same(grove_version, *tree_type, immediate, seed) {
+                    converted.push((v + 1, tree_type.0, immediate));
+                }
+            }
+        }
+    }
+    // The grove version that has the conversion converts each of the seven
+    // tree types that keep a 64-bit sum, in both ways of writing. Every
+    // other conversion is refused, on both engines alike.
+    let narrow = [
+        TreeType::SumTree,
+        TreeType::CountSumTree,
+        TreeType::ProvableCountSumTree,
+        TreeType::ProvableSumTree,
+        TreeType::ProvableCountProvableSumTree,
+        TreeType::ProvableSumIndexedTree,
+        TreeType::ProvableCountProvableSumIndexedTree,
+    ];
+    let expected: Vec<_> = (narrow.into_iter())
+        .flat_map(|tree_type| [(5, tree_type, false), (5, tree_type, true)])
+        .collect();
+    assert_eq!(converted, expected);
 }
