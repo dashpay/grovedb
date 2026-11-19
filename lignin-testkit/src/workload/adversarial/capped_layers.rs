@@ -22,6 +22,10 @@ const LOOKUPS: u16 = 4;
 /// keys before it and after it.
 pub const MIN_CAPPED_KEYS: u32 = 8;
 
+/// The most keys [`CappedLayers`] starts its index with: far below where
+/// the number a key is made of would not fit its four bytes.
+pub const MAX_CAPPED_KEYS: u32 = 1 << 20;
+
 /// The most rounds [`CappedLayers`] runs: the documents a round adds to the
 /// second index have keys of one byte each.
 pub const MAX_CAPPED_ROUNDS: u32 = 32;
@@ -70,7 +74,8 @@ pub const MAX_CAPPED_ROUNDS: u32 = 32;
 /// does not, so that proof does not verify.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CappedLayers {
-    /// How many keys the index starts with, at least [`MIN_CAPPED_KEYS`].
+    /// How many keys the index starts with, from [`MIN_CAPPED_KEYS`] to
+    /// [`MAX_CAPPED_KEYS`].
     pub keys: u32,
     /// How many rounds of writes and reads to run, at most
     /// [`MAX_CAPPED_ROUNDS`].
@@ -114,8 +119,8 @@ impl CappedLayers {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
         assert!(
-            self.keys >= MIN_CAPPED_KEYS,
-            "the index starts with at least {MIN_CAPPED_KEYS} keys"
+            (MIN_CAPPED_KEYS..=MAX_CAPPED_KEYS).contains(&self.keys),
+            "the index starts with {MIN_CAPPED_KEYS} to {MAX_CAPPED_KEYS} keys"
         );
         assert!(
             self.rounds <= MAX_CAPPED_ROUNDS,

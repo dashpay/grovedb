@@ -39,7 +39,7 @@ that range (#1056, #1055, #1061) changed no trace.
 
 When `develop` was merged up to `2a79d035`, every trace of both scales came
 out as it was but for its `engine` line: the four commits of that range
-reached nothing the corpus held then. Two workloads and eight hand-written
+reached nothing the corpus held then. Two workloads and eleven hand-written
 cases were added for them afterwards, recorded from the same pin:
 
 - #1058 can end the proof of a layer early, on grove version 5, when the

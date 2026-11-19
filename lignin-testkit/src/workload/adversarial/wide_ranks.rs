@@ -22,6 +22,14 @@ const RANKED: &[u8] = b"ranked";
 /// round writes two of them again and deletes two others.
 pub const MIN_WIDE_RANK_ENTRIES: u32 = 4;
 
+/// The most amounts a round of [`WideRanks`] adds to a tree, and the most
+/// rounds it runs: a key is made of a number of four bytes, and a stream
+/// of this size uses a few million of them.
+pub const MAX_WIDE_RANK_ENTRIES: u32 = 1000;
+
+/// See [`MAX_WIDE_RANK_ENTRIES`].
+pub const MAX_WIDE_RANK_ROUNDS: u32 = 1000;
+
 /// How many rounds of [`WideRanks`] create a tree under `boards`.
 const BOARD_ROUNDS: u32 = 3;
 
@@ -61,10 +69,10 @@ const BOARD_ROUNDS: u32 = 3;
 /// for each of several trees under `boards`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WideRanks {
-    /// How many rounds to run.
+    /// How many rounds to run, at most [`MAX_WIDE_RANK_ROUNDS`].
     pub rounds: u32,
-    /// How many amounts a round adds to each tree, at least
-    /// [`MIN_WIDE_RANK_ENTRIES`].
+    /// How many amounts a round adds to each tree, from
+    /// [`MIN_WIDE_RANK_ENTRIES`] to [`MAX_WIDE_RANK_ENTRIES`].
     pub entries: u32,
     /// What the target grove version can store.
     pub features: Features,
@@ -184,8 +192,12 @@ impl WideRanks {
     /// The stream for `seed`.
     pub fn stream(&self, seed: u64) -> Stream {
         assert!(
-            self.entries >= MIN_WIDE_RANK_ENTRIES,
-            "a round adds at least {MIN_WIDE_RANK_ENTRIES} entries"
+            (MIN_WIDE_RANK_ENTRIES..=MAX_WIDE_RANK_ENTRIES).contains(&self.entries),
+            "a round adds {MIN_WIDE_RANK_ENTRIES} to {MAX_WIDE_RANK_ENTRIES} entries"
+        );
+        assert!(
+            self.rounds <= MAX_WIDE_RANK_ROUNDS,
+            "at most {MAX_WIDE_RANK_ROUNDS} rounds"
         );
         let mut generator = Generator {
             rng: Rng::derive(seed, DOMAIN_WIDE_RANKS, 0),

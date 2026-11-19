@@ -55,8 +55,8 @@ use lignin_testkit::{
             CappedLayers, ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops,
             IndexedWrites, LargeValues, LongKeys, Moves, Pagination, PartialBatches,
             ReferenceChains, TinySubtrees, TreeDeletes, TypedReads, WideRanks, WideSums,
-            MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CAPPED_KEYS, MIN_CHUNKED_ROWS,
-            MIN_TREE_DELETE_ITEMS, MIN_WIDE_RANK_ENTRIES, MIN_WIDE_SUM_ENTRIES,
+            MAX_CAPPED_ROUNDS, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CAPPED_KEYS,
+            MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS, MIN_WIDE_RANK_ENTRIES, MIN_WIDE_SUM_ENTRIES,
         },
         apply,
         coverage::{
@@ -1106,7 +1106,10 @@ fn check_answer(
             unpaged.query.limit = None;
             // `GroveDb::query` refuses an indexed tree as a row, where
             // this reader returns the aggregates it keeps. A query for keys
-            // is checked against `GroveDb::get` of each.
+            // is checked against `GroveDb::get` of each: like every check
+            // here, one reader against another. What the indexed trees
+            // must hold is checked against a model of the writes in
+            // `tests/upstream.rs`.
             let selects = &unpaged.query.query;
             let rows = if selects.has_only_keys() && !selects.has_subquery() {
                 let mut keys: Vec<&[u8]> = selects
@@ -2191,6 +2194,21 @@ fn the_largest_parameters_do_not_overflow() {
         features: Features::ALL,
     };
     assert!(ladder.stream(SEED).count() > MAX_LADDER_RUNGS as usize);
+
+    // The most rounds over the smallest index: every round has a key of
+    // its own for the document it adds to the second index.
+    let pages = CappedLayers {
+        keys: MIN_CAPPED_KEYS,
+        rounds: MAX_CAPPED_ROUNDS,
+        features: Features::ALL,
+    };
+    let (_dir, db) = open();
+    run(
+        "capped-layers",
+        &db,
+        pages.stream(SEED),
+        GroveVersion::latest(),
+    );
 }
 
 /// A benchmark can compare a workload with and without its reads: the

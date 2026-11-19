@@ -27,7 +27,7 @@ mod wide_sums;
 use std::collections::BTreeSet;
 
 pub use self::{
-    capped_layers::{CappedLayers, MAX_CAPPED_ROUNDS, MIN_CAPPED_KEYS},
+    capped_layers::{CappedLayers, MAX_CAPPED_KEYS, MAX_CAPPED_ROUNDS, MIN_CAPPED_KEYS},
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
     epochs::{FlagEpochs, MAX_LADDER_RUNGS},
@@ -37,7 +37,7 @@ pub use self::{
     partial::PartialBatches,
     tree_deletes::{TreeDeletes, MIN_TREE_DELETE_ITEMS},
     typed::TypedReads,
-    wide_ranks::{WideRanks, MIN_WIDE_RANK_ENTRIES},
+    wide_ranks::{WideRanks, MAX_WIDE_RANK_ENTRIES, MAX_WIDE_RANK_ROUNDS, MIN_WIDE_RANK_ENTRIES},
     wide_sums::{WideSums, MIN_WIDE_SUM_ENTRIES},
 };
 
