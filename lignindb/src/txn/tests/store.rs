@@ -52,13 +52,27 @@ fn locked<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 
 /// The subtree directory of the tests: one flat tree that holds, under the
 /// 32 bytes of a subtree, the address of the root cell of its Merk.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Roots {
     tree: OnceLock<FlatTree>,
     /// How many entries were written.
     pub writes: AtomicU64,
     /// How many times a root that went along with its host was looked for.
     pub moves: AtomicU64,
+    /// How many more writes of an entry succeed before one fails;
+    /// `u64::MAX` for all of them.
+    pub writes_left: AtomicU64,
+}
+
+impl Default for Roots {
+    fn default() -> Self {
+        Self {
+            tree: OnceLock::new(),
+            writes: AtomicU64::new(0),
+            moves: AtomicU64::new(0),
+            writes_left: AtomicU64::new(u64::MAX),
+        }
+    }
 }
 
 impl Roots {
@@ -126,6 +140,14 @@ impl Directory for Roots {
         root: Option<CellAddress>,
     ) -> Result<(), DirectoryError> {
         self.writes.fetch_add(1, Ordering::Relaxed);
+        match self.writes_left.load(Ordering::Relaxed) {
+            u64::MAX => {}
+            0 => {
+                self.writes_left.store(u64::MAX, Ordering::Relaxed);
+                return Err("the directory was told to fail".into());
+            }
+            left => self.writes_left.store(left - 1, Ordering::Relaxed),
+        }
         match root {
             Some(root) => self.tree().put(pages, subtree.as_bytes(), &root.encode())?,
             None => {
