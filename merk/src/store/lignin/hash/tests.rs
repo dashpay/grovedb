@@ -27,7 +27,7 @@ use crate::{
     store::{
         lignin::{
             feature::{encode_aggregate, encode_feature},
-            LigninNodeStore, LigninSubtree, LigninWriter,
+            LigninBatch, LigninNodeStore, LigninSubtree, LigninWriter,
         },
         NodeChange, NodeChangeSet, NodeStore,
     },
@@ -443,7 +443,6 @@ fn the_value_hash_of_a_tree_is_combined_with_the_root_hash_of_its_merk() {
 fn a_tree_that_old_versions_insert_as_a_plain_value_has_either_hash_until_it_has_a_root() {
     let inserted_plain = [
         Element::empty_count_sum_tree(),
-        Element::empty_count_big_sum_tree(),
         Element::empty_provable_count_tree(),
         Element::empty_provable_count_sum_tree(),
         Element::new_non_counted(Element::empty_provable_count_tree()).unwrap(),
@@ -484,6 +483,8 @@ fn a_tree_that_old_versions_insert_as_a_plain_value_has_either_hash_until_it_has
     // Every other value has one hash.
     let others = [
         Element::empty_tree(),
+        // No version that inserts a tree as a plain value has this one.
+        Element::empty_count_big_sum_tree(),
         Element::empty_sum_tree(),
         Element::empty_count_tree(),
         Element::empty_provable_sum_tree(),
@@ -1150,6 +1151,41 @@ fn same_hashes(store: &LigninNodeStore<'_>, expected: &TreeNode, at: &str) -> us
         nodes += same_hashes(store, below.tree().unwrap(), at);
     }
     nodes
+}
+
+#[test]
+fn a_modified_child_that_is_not_written_with_its_parent_is_refused() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let fresh = modified(0..3, TreeType::NormalTree).unwrap();
+
+    // The root and its left child: the hash of the right child would be
+    // made of whatever is stored under its key.
+    let without_right = |store: &LigninNodeStore<'_>| {
+        let mut change_set = store.change_set();
+        change_set.state_root(Some(fresh.key()));
+        for node in [fresh.child(true).unwrap(), &fresh] {
+            let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
+            change_set.put_node(node.key(), prepared, None).unwrap();
+        }
+        let refused = store.commit(change_set).unwrap();
+        let refused = refused.expect_err("a child is not written");
+        assert!(matches!(refused, Error::StorageError(_)), "{refused:?}");
+        assert!(refused.to_string().contains("not written with its parent"));
+    };
+    let immediate = store(&writer);
+    without_right(&immediate);
+    let refused = immediate.write_node(&fresh, NodeChange::ValueWritten);
+    assert!(matches!(refused.unwrap(), Err(Error::StorageError(_))));
+    assert!(!immediate.has_node(fresh.key()).unwrap().unwrap());
+
+    let batch = LigninBatch::new();
+    let subtree = LigninSubtree::alone(SUBTREE);
+    without_right(&LigninNodeStore::deferred(&writer, subtree, Some(&batch)));
+    assert!(batch.is_empty());
+    assert_eq!(transaction.stats().stale_nodes, 0);
 }
 
 #[test]

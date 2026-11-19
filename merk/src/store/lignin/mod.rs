@@ -407,11 +407,15 @@ impl<'db> LigninNodeStore<'db> {
                     .wrap_with_cost(MODEL.refused_write())
             }
             Mode::Deferred(Some(batch)) => {
-                batch.stage(change_set).wrap_with_cost(MODEL.staged_write())
+                let staged = change_set.check_stale();
+                let staged = staged.and_then(|()| batch.stage(change_set));
+                staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {
+                let checked = change_set.check_stale();
                 let (cost, write) = change_set.into_write();
-                self.apply(&write).wrap_with_cost(match is_commit {
+                let applied = checked.and_then(|()| self.apply(&write));
+                applied.wrap_with_cost(match is_commit {
                     true => cost,
                     false => MODEL.write_immediate(),
                 })

@@ -57,6 +57,11 @@ pub struct Made {
     /// Those among them of a tree with no root that has the hash of its
     /// insert as a plain value.
     pub inserted_plain: u64,
+    /// The cells that host a secondary Merk with a root, and those among
+    /// them whose element has a list of axes: where the order of the
+    /// hosted roots is in the value hash.
+    pub with_secondary: u64,
+    pub with_axes: u64,
 }
 
 /// The committed tree pages at one version, with the pages that were
@@ -158,6 +163,7 @@ pub fn check(
     let mut values = no_values.reader(&source);
 
     // Every cell that a root of a Merk reaches.
+    let mut made = Made::default();
     let mut cells = Vec::new();
     let mut hosted_roots = HashSet::new();
     let mut ahead: Vec<CellAddress> = roots.values().copied().collect();
@@ -185,6 +191,10 @@ pub fn check(
         });
         let (cell, below, hosted) = read.expect("the page is read");
         ahead.extend(below.into_iter().flatten());
+        if hosted.iter().skip(1).any(Option::is_some) {
+            made.with_secondary += 1;
+            made.with_axes += u64::from(hosted.len() > 2);
+        }
         hosted_roots.extend(hosted.into_iter().flatten());
         cells.push(cell);
     }
@@ -200,7 +210,6 @@ pub fn check(
     // 2. Made by the engine. Every hash the rules can make is marked, and
     //    its bytes are turned over so that none is right by having been
     //    left.
-    let mut made = Made::default();
     let mut hashes = Hashes::new();
     let mut classify = MerkHashRules::new(grove_version);
     let mut buffer = Vec::new();
@@ -277,5 +286,10 @@ pub fn check(
             "the root of {subtree} is hosted by no cell"
         );
     }
+    let roots: HashSet<&CellAddress> = roots.values().collect();
+    assert!(
+        hosted_roots.iter().all(|hosted| roots.contains(hosted)),
+        "a cell hosts a root that is the root of no Merk"
+    );
     made
 }

@@ -57,23 +57,24 @@
 //! position the cell has no pointer for: a cell points at the root of
 //! every Merk it hosts that has one (`tree-layout.md` C3, `tree-page.md`
 //! TP15), and the cell of a tree whose Merk never had a node hosts none.
-//! A cell that hosts more Merks than its element has is refused.
+//! A cell that hosts more Merks than its element has is refused: whoever
+//! writes another element over a tree drops the tree's Merks or names what
+//! the new element hosts, so that a cell hosts what its element has.
 //!
 //! **A tree's value hash is the one a write below it gives it.** The value
 //! hash of a tree element goes stale when a Merk it hosts gets another
 //! root, and Merk then puts the element with the combined hash, on every
 //! GroveVersion. That is the hash the rule makes. The insert of the element
 //! itself is another matter, and its hash is its writer's to state:
-//! `GROVE_V1` and `GROVE_V2` insert a count sum tree, a count big sum tree,
-//! a provable count tree and a provable count sum tree outside a batch as
-//! plain values (`add_element_on_transaction` v0, frozen for the chain
-//! that was built with it). Such an element has `value_hash(value)` until
-//! something is written below it, and the combined hash from then on, also
-//! once its Merk is empty again, with the same bytes. So for these four
-//! types the bytes and the roots do not say which of the two an element
-//! with no root has ([`MerkHashRules::value_hash_at_insert`]). Whoever
-//! copies existing nodes, a load or a migration, hands over the value
-//! hashes they have.
+//! `GROVE_V1` and `GROVE_V2` insert a count sum tree, a provable count
+//! tree and a provable count sum tree outside a batch as plain values
+//! (`add_element_on_transaction` v0, frozen for the chain that was built
+//! with it). Such an element has `value_hash(value)` until something is
+//! written below it, and the combined hash from then on, also once its
+//! Merk is empty again, with the same bytes. So for these three types the
+//! bytes and the roots do not say which of the two an element with no root
+//! has ([`MerkHashRules::value_hash_at_insert`]). Whoever copies existing
+//! nodes, a load or a migration, hands over the value hashes they have.
 //!
 //! A refused hash stays marked, and its evaluation stops
 //! ([`HashRefusal`]). A commit whose evaluation stops has failed, and its
@@ -95,9 +96,11 @@
 //! the cell stores, so the check reports nothing for it and still compares
 //! the key-value hash and the hashes of the children. It answers the same
 //! way for a tree with no root whose cell stores the hash its insert gave
-//! it as a plain value, which is as right as the combined one. It is for
-//! a check only: it does not make those hashes, so an evaluation with it
-//! would leave a stale value hash in its cell and take the mark off.
+//! it as a plain value, which is as right as the combined one. A cell does
+//! not say under which GroveVersion its element was inserted, so that hash
+//! is taken whatever the version of the rules. It is for a check only: it
+//! does not make those hashes, so an evaluation with it would leave a stale
+//! value hash in its cell and take the mark off.
 //!
 //! # What Merk holds when it writes a node
 //!
@@ -118,12 +121,19 @@
 //! On existing GroveVersions no node is written with a modified link:
 //! `TreeNode::commit` hashes every modified child before the node above it
 //! is written. So every hash is stated, nothing is marked and no rule runs
-//! at the commit. A writer that stops hashing below the root, as iteration
-//! two does at a stop point, hands over modified links, and the store then
-//! writes what Merk holds: the link with the child's heights and its
-//! aggregate, which are no hashes and are exact in every write, and no
-//! hash. The aggregate of a modified child is made from the child in
-//! memory, by `TreeNode::aggregate_data` as in a commit.
+//! at the commit. A writer that leaves the hashing of a Merk to the engine
+//! hands over modified links, and the store then writes what Merk holds:
+//! the link with the child's heights and its aggregate, which are no
+//! hashes and are exact in every write, and no hash. The aggregate of a
+//! modified child is made from the child in memory, by
+//! `TreeNode::aggregate_data` as in a commit.
+//!
+//! The engine makes the hash of a child from the child's cell. So a child
+//! under a modified link is written in the same change set as its parent,
+//! as a commit of Merk writes a modified child before the node above it:
+//! a change set that leaves the hash of a child and does not write the
+//! child is refused, because its hash would be made of the child as it was
+//! before.
 //!
 //! The other way round, a hash that is stale in the transaction is no hash
 //! to hand to Merk: a `Link` has no state for a child that is not in
@@ -265,9 +275,7 @@ impl ValueHash {
                 Self::IndexedByAxes
             }
             _ if element.is_indexed_tree() => Self::Indexed,
-            CountSumTree | CountBigSumTree | ProvableCountTree | ProvableCountSumTree => {
-                Self::TreeInsertedPlain
-            }
+            CountSumTree | ProvableCountTree | ProvableCountSumTree => Self::TreeInsertedPlain,
             _ => Self::Tree,
         })
     }
@@ -434,7 +442,7 @@ impl<'v> MerkHashRules<'v> {
     /// The value hash an element with the bytes `value` has from its
     /// insert until something is written below it, where that is not the
     /// hash [`Self::element_value_hash`] makes: `value_hash(value)` for a
-    /// tree of one of the four types that `GROVE_V1` and `GROVE_V2` insert
+    /// tree of one of the three types that `GROVE_V1` and `GROVE_V2` insert
     /// as a plain value, and `None` for every other value.
     ///
     /// A cell of such a tree that hosts no root stores this hash or the
@@ -565,6 +573,10 @@ pub(super) fn held_link(link: &Link) -> Result<HeldLink, Error> {
 /// The aggregate of `node`, also where a child of it is modified and has
 /// no aggregate in its link yet: that child's is made first, from the
 /// child in memory.
+///
+/// Nothing is kept of it, so the aggregate of a modified child is made
+/// again for every node above it that is written. A writer that leaves
+/// whole subtrees to the engine will want to keep them.
 fn aggregate_of(node: &TreeNode) -> Result<AggregateData, Error> {
     let modified = |left| matches!(node.link(left), Some(Link::Modified { .. }));
     if !modified(true) && !modified(false) {

@@ -1,7 +1,7 @@
 //! The change set of a Merk on LigninDB, and the batch of one operation.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -11,6 +11,7 @@ use grovedb_costs::{
     CostsExt, OperationCost,
 };
 use grovedb_storage::Error as StorageError;
+use lignin_format::tree_page::{HashField, Side};
 
 use super::{
     access::{
@@ -201,6 +202,30 @@ impl LigninChangeSet {
         for (node, _) in &mut self.nodes {
             node.hint = hints.get(&node.key).copied();
         }
+    }
+
+    /// Refuses a change set that leaves the hash of a child to the engine
+    /// and does not write the child: the engine makes that hash from the
+    /// child's cell, which would be the child as it was before.
+    pub(super) fn check_stale(&self) -> Result<(), Error> {
+        let mut written: Option<HashSet<&[u8]>> = None;
+        for (node, _) in self.nodes.iter().filter(|(node, _)| !node.stale.is_empty()) {
+            let written = written.get_or_insert_with(|| {
+                let keys = self.nodes.iter().map(|(node, _)| node.key.as_slice());
+                keys.collect()
+            });
+            for (side, link) in [(Side::Left, &node.left), (Side::Right, &node.right)] {
+                let stale = node.stale.has(HashField::Child(side));
+                let child = link.as_ref().filter(|_| stale);
+                if child.is_some_and(|child| !written.contains(child.key.as_slice())) {
+                    return Err(refused(
+                        "the hash of a child is left to the engine, and the child is not \
+                         written with its parent",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn record(

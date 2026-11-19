@@ -211,6 +211,8 @@ impl Tally {
         self.hashed.hashes += other.hashed.hashes;
         self.hashed.stated += other.hashed.stated;
         self.hashed.inserted_plain += other.hashed.inserted_plain;
+        self.hashed.with_secondary += other.hashed.with_secondary;
+        self.hashed.with_axes += other.hashed.with_axes;
     }
 }
 
