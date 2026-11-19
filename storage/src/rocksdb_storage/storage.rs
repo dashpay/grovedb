@@ -36,7 +36,7 @@ use std::{
 
 use error::Error;
 use grovedb_costs::{
-    cost_model::{BatchCharge, Keyspace, StorageCostModel},
+    cost_model::{BatchCharge, Keyspace},
     storage_cost::key_value_cost::KeyValueStorageCost,
     CostContext, CostResult, CostsExt, OperationCost,
 };
@@ -61,9 +61,9 @@ use crate::{
 
 pub type SubtreePrefix = [u8; 32];
 
-/// The cost rules the RocksDB engine charges by. Every charge of this
-/// module and of the storage contexts is one of its functions.
-pub(crate) const COST_MODEL: StorageCostModel = StorageCostModel::V0;
+// The cost rules the RocksDB engine charges by. Every charge of this
+// module and of the storage contexts is one of its functions.
+pub(crate) use crate::COST_MODEL;
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -397,80 +397,24 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, Vec<u8>)
-    where
-        B: AsRef<[u8]>,
-    {
-        let segments_iter = path.into_reverse_iter();
-        let mut res = Vec::new();
-        let mut lengths = Vec::new();
-
-        for s in segments_iter {
-            res.extend_from_slice(s);
-            lengths.push(u8::try_from(s.len()).expect(
-                "path segment length must not exceed 255 bytes; \
-                 this is enforced at insert time via validate_key_length",
-            ));
-        }
-
-        // Note: this uses native-endian encoding. Changing to big-endian would
-        // be a breaking change since the output is hashed with Blake3 to produce
-        // subtree prefixes stored in RocksDB — existing databases would become
-        // unreadable. In practice GroveDB only targets little-endian platforms
-        // (x86_64, aarch64), so this is not a portability concern.
-        res.extend(lengths.len().to_ne_bytes());
-        res.extend_from_slice(&lengths);
-        (res, lengths)
-    }
-
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
-    /// in `subtrees` map by tree path;
+    /// in `subtrees` map by tree path. It is [`crate::prefix::build_prefix`],
+    /// which names no engine.
     pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<SubtreePrefix>
     where
         B: AsRef<[u8]>,
     {
-        let (body, segment_lens) = Self::build_prefix_body(path);
-        let prefix = if segment_lens.is_empty() {
-            SubtreePrefix::default()
-        } else {
-            SubtreePrefix::from(blake3::hash(&body))
-        };
-        prefix.wrap_with_cost(COST_MODEL.open_by_path(segment_lens.into_iter().map(usize::from)))
+        crate::prefix::build_prefix(path)
     }
 
-    /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
-    /// element (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
-    /// `ProvableCountProvableSumIndexedTree`) whose primary prefix is
-    /// given and whose axis is identified by `axis_tag`.
-    ///
-    /// Per S2-B (generalized): `secondary_prefix = Blake3(primary_prefix ‖
-    /// axis_tag)`. The axis tag byte is the `IndexAxis` value carried by
-    /// `grovedb-element::indexed::IndexAxis` (`0 = count`, `1 = sum`,
-    /// `2 = avg`). PCPSIT carries 1..=3 secondaries — one per axis — and
-    /// each lives at a distinct prefix derived via this function.
-    ///
-    /// Three useful properties hold:
-    /// - **Primary parity with `Tree`.** The primary prefix is unchanged
-    ///   from `build_prefix` for the same path, so an indexed-tree's
-    ///   primary Merk lives where a `Tree` would.
-    /// - **Collision-free secondary.** The secondary's Blake3 input is a
-    ///   33-byte block (prefix ‖ axis_tag) that no path-derived prefix can
-    ///   produce — `build_prefix_body` always ends with per-segment length
-    ///   bytes, never a single tag byte after a 32-byte block.
-    /// - **Per-axis isolation.** Different `axis_tag` values map the same
-    ///   primary to different storage namespaces, so a PCPSIT's count /
-    ///   sum / avg secondaries do not collide with each other.
-    ///
-    /// Cost: one Blake3 call (33 bytes fits in a single 64-byte block).
+    /// Derive the per-axis secondary `SubtreePrefix` of an indexed-tree
+    /// element from its primary prefix and its axis tag. It is
+    /// [`crate::prefix::secondary_prefix_for`], which names no engine.
     pub fn secondary_prefix_for(
         primary_prefix: &SubtreePrefix,
         axis_tag: u8,
     ) -> CostContext<SubtreePrefix> {
-        // 33 bytes (prefix + tag) fits within one Blake3 block.
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(primary_prefix);
-        hasher.update(&[axis_tag]);
-        SubtreePrefix::from(hasher.finalize()).wrap_with_cost(COST_MODEL.secondary_prefix())
+        crate::prefix::secondary_prefix_for(primary_prefix, axis_tag)
     }
 
     /// Returns the write batch, with costs and pending costs

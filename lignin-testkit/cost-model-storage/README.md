@@ -28,6 +28,8 @@ At the reference scale a trace has a digest every 1,000 steps, so a difference i
 
 `src/error.rs` is the error enum of the real crate with the model's stand-in where that one holds a RocksDB error. The commit outcomes and the write scope errors are written out there a second time, so a change to them in `storage/src/error.rs` has to be made in both.
 
+`src/prefix.rs` is the real crate's `prefix` module, the derivation of a subtree's prefix, written out a second time for the same reason as the rest: what it charges comes from the model's rules, not from the rules they are checked against. GroveDB calls the two functions there since SEAM-07, where it called them on `RocksDbStorage`.
+
 When the corpus grows, run `check.sh` again: it replays whatever `lignin-testkit/corpus` holds.
 
 ## What the model does not do
