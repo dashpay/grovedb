@@ -10,7 +10,11 @@
 //! - The costs the store reports add up to what the cost model handed out
 //!   (`cost-model.md` 14.2).
 
-use std::{collections::HashMap, fmt};
+use std::{
+    cmp::Ordering,
+    collections::{BTreeSet, HashMap},
+    fmt,
+};
 
 use ed::Encode;
 use grovedb_costs::{
@@ -180,19 +184,109 @@ fn value_of(kind: Kind, n: u64) -> Vec<u8> {
     value
 }
 
+/// The places of the comparison: the keys a Merk of it may hold.
+const PLACES: u64 = 120;
+
+/// The key of place `k`. Its first byte tells the places apart and orders
+/// them, and up to three more give keys of four lengths. Place 0 has the
+/// empty key.
+fn place(k: u64) -> Vec<u8> {
+    if k == 0 {
+        return Vec::new();
+    }
+    let mut key = vec![k as u8];
+    key.resize(1 + (k % 4) as usize, 0xA5);
+    key
+}
+
 fn put_of(tree_type: TreeType, kind: Kind, n: u64) -> Op {
     let (value, feature) = (value_of(kind, n), feature(tree_type, n));
-    match kind {
-        Kind::Plain if n.is_multiple_of(9) => {
-            Op::PutCombinedReference(value, [n as u8; 32], feature)
+    let (hash, other_hash) = ([n as u8; 32], [!(n as u8); 32]);
+    match (kind, n % 9, n % 4) {
+        (Kind::Plain, 0, _) => Op::PutCombinedReference(value, hash, feature),
+        // The value has no flags, so no callback rewrites it and the hash
+        // that is provided stands.
+        (Kind::Plain, 1, _) => {
+            let end_hash = n.is_multiple_of(2).then_some(other_hash);
+            Op::PutWithProvidedValueHash(value, hash, end_hash, feature)
         }
-        Kind::Plain | Kind::Flagged => Op::Put(value, feature),
-        Kind::Specialized => Op::PutWithSpecializedCost(value, SPECIALIZED, feature),
-        Kind::Layered if n.is_multiple_of(2) => {
-            Op::PutLayeredReference(value, LAYERED, [n as u8; 32], feature)
+        (Kind::Plain | Kind::Flagged, ..) => Op::Put(value, feature),
+        (Kind::Specialized, ..) => Op::PutWithSpecializedCost(value, SPECIALIZED, feature),
+        (Kind::Layered, _, 0) => Op::PutLayeredReference(value, LAYERED, hash, feature),
+        (Kind::Layered, _, 1) => Op::ReplaceLayeredReference(value, LAYERED, hash, feature),
+        (Kind::Layered, _, 2) => {
+            Op::PutLayeredCountIndexedReference(value, LAYERED, hash, other_hash, feature)
         }
-        Kind::Layered => Op::ReplaceLayeredReference(value, LAYERED, [n as u8; 32], feature),
+        (Kind::Layered, ..) => {
+            Op::ReplaceLayeredCountIndexedReference(value, LAYERED, hash, other_hash, feature)
+        }
     }
+}
+
+/// Every operation of a Merk batch, by name.
+const OPS: [&str; 14] = [
+    "Put",
+    "PutWithSpecializedCost",
+    "PutCombinedReference",
+    "PutWithProvidedValueHash",
+    "PutLayeredReference",
+    "ReplaceLayeredReference",
+    "PutLayeredCountIndexedReference",
+    "ReplaceLayeredCountIndexedReference",
+    "Delete",
+    "DeleteMaybeSpecialized",
+    "DeleteLayered",
+    "DeleteLayeredMaybeSpecialized",
+    "PutMoved",
+    "DeleteMoved",
+];
+
+fn name_of(op: &Op) -> &'static str {
+    match op {
+        Op::Put(..) => "Put",
+        Op::PutWithSpecializedCost(..) => "PutWithSpecializedCost",
+        Op::PutCombinedReference(..) => "PutCombinedReference",
+        Op::PutWithProvidedValueHash(..) => "PutWithProvidedValueHash",
+        Op::PutLayeredReference(..) => "PutLayeredReference",
+        Op::ReplaceLayeredReference(..) => "ReplaceLayeredReference",
+        Op::PutLayeredCountIndexedReference(..) => "PutLayeredCountIndexedReference",
+        Op::ReplaceLayeredCountIndexedReference(..) => "ReplaceLayeredCountIndexedReference",
+        Op::Delete => "Delete",
+        Op::DeleteMaybeSpecialized => "DeleteMaybeSpecialized",
+        Op::DeleteLayered => "DeleteLayered",
+        Op::DeleteLayeredMaybeSpecialized => "DeleteLayeredMaybeSpecialized",
+        Op::PutMoved(..) => "PutMoved",
+        Op::DeleteMoved => "DeleteMoved",
+    }
+}
+
+/// An element a batch moves to another key, as GroveDB renames a key.
+#[derive(Clone, Debug)]
+struct Move {
+    from: Vec<u8>,
+    to: Vec<u8>,
+    feature: TreeFeatureType,
+    /// The feature of the element at `to`, where that one moves to `from`
+    /// in the same batch.
+    swapped_with: Option<TreeFeatureType>,
+}
+
+/// What the comparison met, so that what it is said to cover is counted
+/// and not assumed.
+#[derive(Default)]
+struct Seen {
+    /// The kinds of read that were charged a seek.
+    charged: Charged,
+    /// The operations that were issued, by name.
+    ops: BTreeSet<&'static str>,
+    moved_to_a_longer_key: usize,
+    moved_to_a_shorter_key: usize,
+    traded_places: usize,
+    /// The reads of an element that moves that were the first read of a
+    /// Merk just opened and were charged a seek.
+    observed_cold: usize,
+    /// The walks of every link of a Merk just opened.
+    walked_cold: usize,
 }
 
 fn delete_of(kind: Kind, n: u64) -> Op {
@@ -205,16 +299,19 @@ fn delete_of(kind: Kind, n: u64) -> Op {
 }
 
 /// One batch over a small key space: new keys, values of another kind put
-/// over what a key holds, values put again as they are, and removals, in
-/// key order.
+/// over what a key holds, values put again as they are, and removals. In
+/// every other batch an element the batch does not write moves to a place
+/// the batch does not write: to one that is free, or to one whose element
+/// moves back in its stead.
 fn mixed_batch(
     random: &mut Random,
     tree_type: TreeType,
     model: &mut BTreeMap<u64, (Kind, u64)>,
-) -> Vec<(Vec<u8>, Op)> {
+    seen: &mut Seen,
+) -> (BTreeMap<Vec<u8>, Op>, Option<Move>) {
     let mut batch = BTreeMap::new();
     for _ in 0..1 + random.below(16) {
-        let k = random.below(120);
+        let k = random.below(PLACES);
         let op = match (model.get(&k).copied(), random.below(10)) {
             (Some((kind, n)), 0..=2) => {
                 model.remove(&k);
@@ -233,9 +330,100 @@ fn mixed_batch(
                 put_of(tree_type, kind, n)
             }
         };
-        batch.insert(key(k), op);
+        batch.insert(k, op);
     }
-    batch.into_iter().collect()
+
+    let held: Vec<u64> = (model.keys().copied())
+        .filter(|k| !batch.contains_key(k))
+        .collect();
+    let mut moved = None;
+    if !held.is_empty() && random.below(2) == 0 {
+        let from = held[random.below(held.len() as u64) as usize];
+        let to = random.below(PLACES);
+        if to != from && !batch.contains_key(&to) {
+            let (kind, n) = model.remove(&from).expect("the place is held");
+            let swapped_with = model.insert(to, (kind, n)).map(|other| {
+                model.insert(from, other);
+                feature(tree_type, other.1)
+            });
+            match (
+                swapped_with.is_some(),
+                place(to).len().cmp(&place(from).len()),
+            ) {
+                (true, _) => seen.traded_places += 1,
+                (false, Ordering::Greater) => seen.moved_to_a_longer_key += 1,
+                (false, Ordering::Less) => seen.moved_to_a_shorter_key += 1,
+                (false, Ordering::Equal) => {}
+            }
+            moved = Some(Move {
+                from: place(from),
+                to: place(to),
+                feature: feature(tree_type, n),
+                swapped_with,
+            });
+        }
+    }
+    let batch = (batch.into_iter()).map(|(k, op)| (place(k), op)).collect();
+    (batch, moved)
+}
+
+/// A batch as a client writes it. An element that moves is read first, as
+/// GroveDB reads it: its value and value hash at the key it leaves, and
+/// whether the key it moves to is taken. Those reads keep the nodes they
+/// fetch, and the batch is applied to the Merk they left. The operations
+/// of the batch are named in `issued`.
+fn write_as_a_client<'db, S: NodeStore<'db>>(
+    merk: &mut Merk<S>,
+    ops: &BTreeMap<Vec<u8>, Op>,
+    moved: &Option<Move>,
+    aux: &[(Vec<u8>, Op, Option<KeyValueStorageCost>)],
+    issued: &mut BTreeSet<&'static str>,
+    grove_version: &GroveVersion,
+) -> Vec<(OperationCost, String)> {
+    let cost_fn = VALUE_DEFINED_COST.as_ref();
+    let mut calls = Vec::new();
+    let mut batch = ops.clone();
+    if let Some(moved) = moved {
+        let mut element_at = |key: &[u8]| {
+            let observed = merk.observe_value_and_value_hash(key, cost_fn, grove_version);
+            let element = (observed.value.as_ref().ok().cloned().flatten())
+                .expect("the element that moves is held");
+            calls.push(told(observed));
+            element
+        };
+        let (value, value_hash) = element_at(&moved.from);
+        let from_len = moved.from.len() as u32;
+        batch.insert(
+            moved.to.clone(),
+            Op::PutMoved(value, value_hash, from_len, moved.feature),
+        );
+        match moved.swapped_with {
+            Some(feature) => {
+                let (value, value_hash) = element_at(&moved.to);
+                let to_len = moved.to.len() as u32;
+                batch.insert(
+                    moved.from.clone(),
+                    Op::PutMoved(value, value_hash, to_len, feature),
+                );
+            }
+            None => {
+                let mut taken = None;
+                let held = merk.observe_old_value(
+                    &moved.to,
+                    cost_fn,
+                    &mut |_, value: &[u8]| taken = Some(value.to_vec()),
+                    grove_version,
+                );
+                calls.push(told(held.map_ok(|held| (held, taken))));
+                batch.insert(moved.from.clone(), Op::DeleteMoved);
+            }
+        }
+    }
+    let batch: Vec<_> = batch.into_iter().collect();
+    issued.extend(batch.iter().map(|(_, op)| name_of(op)));
+    let (cost, ended) = apply_as_a_client(merk, &batch, aux, grove_version);
+    calls.push((cost, format!("{ended:?}")));
+    calls
 }
 
 fn apply_as_a_client<'db, S: NodeStore<'db>>(
@@ -327,7 +515,7 @@ fn between(a: &[u8], b: &[u8]) -> QueryItem {
 
 /// How many reads [`read_as_a_client`] makes of the tree, and then of each
 /// key.
-const TREE_READS: usize = 16;
+const TREE_READS: usize = 18;
 const KEY_READS: usize = 9;
 
 /// Which kinds of read were charged a seek.
@@ -347,14 +535,15 @@ fn mark_charged(charged: &mut Charged, reads: &[(OperationCost, String)]) {
 /// Every read of a Merk the comparison makes, each with what it cost. Of
 /// the tree: an aux record, a proof, the aggregates of a range with their
 /// proofs, which a tree type that keeps none of the kind refuses, the
-/// query of a trunk, the proofs of a page that is skipped to by count, and
-/// the root hash. Then, of each of the four `keys`, the reads by key and
-/// the query of a branch.
+/// query of a trunk, the proofs of a page that is skipped to by count, the
+/// two reads of a key that keep the nodes they fetch, and the root hash.
+/// Then, of each of the four `keys`, the reads by key and the query of a
+/// branch.
 ///
 /// A read that walks the tree is charged the fetches of the nodes no read
 /// before it loaded. So the reads of the tree are made in another order
 /// with every `turn`, and each of them is the first read of a Merk in one
-/// turn of sixteen.
+/// turn of eighteen.
 fn read_as_a_client<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     keys: &[Vec<u8>; 4],
@@ -395,6 +584,17 @@ fn read_as_a_client<'db, S: NodeStore<'db>>(
             told(proved.map_ok(page))
         },
         &|| {
+            let mut value = None;
+            let mut observer = |_: &[u8], observed: &[u8]| value = Some(observed.to_vec());
+            let cost_fn = VALUE_DEFINED_COST.as_ref();
+            let held = merk.observe_old_value(b, cost_fn, &mut observer, grove_version);
+            told(held.map_ok(|held| (held, value)))
+        },
+        &|| {
+            let cost_fn = VALUE_DEFINED_COST.as_ref();
+            told(merk.observe_value_and_value_hash(c, cost_fn, grove_version))
+        },
+        &|| {
             let hash = merk.root_hash();
             (hash.cost, format!("{:?}", hash.value))
         },
@@ -425,6 +625,19 @@ fn read_as_a_client<'db, S: NodeStore<'db>>(
     reads
 }
 
+/// The keys every link of a Merk leads to, read twice, each walk with what
+/// it cost: the first fetches every node the Merk has not loaded, and the
+/// second finds them loaded.
+fn walk_as_a_client<'db, S: NodeStore<'db>>(
+    merk: &Merk<S>,
+    grove_version: &GroveVersion,
+) -> [(OperationCost, Result<BTreeSet<Vec<u8>>, String>); 2] {
+    [(); 2].map(|()| {
+        let walked = merk.linked_keys(VALUE_DEFINED_COST.as_ref(), grove_version);
+        (walked.cost, walked.value.map_err(|error| error.to_string()))
+    })
+}
+
 /// The same Merk on RocksDB and on LigninDB, written by the same batches:
 /// every call costs the same on both.
 fn a_merk_costs_the_same(
@@ -434,7 +647,7 @@ fn a_merk_costs_the_same(
     immediate: bool,
     seed: u64,
     rounds: usize,
-    charged: &mut Charged,
+    seen: &mut Seen,
 ) {
     let at = |round: usize, what: &str| {
         format!(
@@ -478,10 +691,24 @@ fn a_merk_costs_the_same(
         let (cost, mut on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
         assert_eq!(cost, expected, "{}", at(0, "the open"));
         for round in 1..=rounds {
-            let batch = mixed_batch(&mut random, tree_type, &mut model);
+            let (batch, moved) = mixed_batch(&mut random, tree_type, &mut model, seen);
             let aux = aux_of(round);
-            let expected = apply_as_a_client(&mut on_rocks, &batch, &aux, grove_version);
-            let found = apply_as_a_client(&mut on_lignin, &batch, &aux, grove_version);
+            let expected = write_as_a_client(
+                &mut on_rocks,
+                &batch,
+                &moved,
+                &aux,
+                &mut seen.ops,
+                grove_version,
+            );
+            let found = write_as_a_client(
+                &mut on_lignin,
+                &batch,
+                &moved,
+                &aux,
+                &mut seen.ops,
+                grove_version,
+            );
             assert_eq!(found, expected, "{}", at(round, "the batch"));
             assert_eq!(
                 meta_as_a_client(&mut on_lignin, round),
@@ -489,13 +716,21 @@ fn a_merk_costs_the_same(
                 "{}",
                 at(round, "the meta record")
             );
-            let keys = [(); 4].map(|()| key(random.below(120)));
+            let keys = [(); 4].map(|()| place(random.below(PLACES)));
             assert_eq!(
                 read_as_a_client(&on_lignin, &keys, round, grove_version),
                 read_as_a_client(&on_rocks, &keys, round, grove_version),
                 "{}",
                 at(round, "the reads")
             );
+            let walked = walk_as_a_client(&on_lignin, grove_version);
+            assert_eq!(
+                walked,
+                walk_as_a_client(&on_rocks, grove_version),
+                "{}",
+                at(round, "the walks of every link")
+            );
+            assert_eq!(walked[0].1, Ok(held(&model)), "{}", at(round, "the keys"));
         }
         return;
     }
@@ -504,7 +739,7 @@ fn a_merk_costs_the_same(
     let mut writer = LigninWriter::new(transaction.scope().unwrap());
     let mut rocks_tx = rocks.start_transaction();
     for round in 1..=rounds {
-        let batch = mixed_batch(&mut random, tree_type, &mut model);
+        let (batch, moved) = mixed_batch(&mut random, tree_type, &mut model, seen);
         let aux = aux_of(round);
 
         // The Merk is opened, written and committed into a batch.
@@ -521,9 +756,26 @@ fn a_merk_costs_the_same(
         let (expected, mut on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
         let (cost, mut on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
         assert_eq!(cost, expected, "{}", at(round, "the open"));
-        let expected = apply_as_a_client(&mut on_rocks, &batch, &aux, grove_version);
-        let found = apply_as_a_client(&mut on_lignin, &batch, &aux, grove_version);
+        let expected = write_as_a_client(
+            &mut on_rocks,
+            &batch,
+            &moved,
+            &aux,
+            &mut seen.ops,
+            grove_version,
+        );
+        let found = write_as_a_client(
+            &mut on_lignin,
+            &batch,
+            &moved,
+            &aux,
+            &mut seen.ops,
+            grove_version,
+        );
         assert_eq!(found, expected, "{}", at(round, "the batch"));
+        if moved.is_some() && found[0].0.seek_count > 0 {
+            seen.observed_cold += 1;
+        }
         assert_eq!(
             meta_as_a_client(&mut on_lignin, round),
             meta_as_a_client(&mut on_rocks, round),
@@ -575,7 +827,7 @@ fn a_merk_costs_the_same(
             "{}",
             at(round, "the meta record that is read")
         );
-        let keys = [(); 4].map(|()| key(random.below(120)));
+        let keys = [(); 4].map(|()| place(random.below(PLACES)));
         let found = read_as_a_client(&on_lignin, &keys, round, grove_version);
         assert_eq!(
             found,
@@ -583,13 +835,44 @@ fn a_merk_costs_the_same(
             "{}",
             at(round, "the reads")
         );
-        mark_charged(charged, &found);
+        mark_charged(&mut seen.charged, &found);
+        drop((on_rocks, on_lignin));
+
+        // A Merk that was opened for a walk of every link has loaded its
+        // root and fetches every other node once.
+        let context = rocks
+            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &rocks_tx)
+            .unwrap();
+        let store = LigninNodeStore::deferred(&writer, subtree.clone(), None);
+        let (_, on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
+        let (_, on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
+        let walked = walk_as_a_client(&on_lignin, grove_version);
+        assert_eq!(
+            walked,
+            walk_as_a_client(&on_rocks, grove_version),
+            "{}",
+            at(round, "the walks of every link")
+        );
+        let [(cold, keys), (warm, _)] = walked;
+        assert_eq!(keys, Ok(held(&model)), "{}", at(round, "the keys"));
+        assert_eq!(
+            (cold.seek_count as usize, warm.seek_count),
+            (model.len().saturating_sub(1), 0),
+            "{}",
+            at(round, "the fetches of the walks")
+        );
+        seen.walked_cold += usize::from(cold.seek_count > 0);
     }
+}
+
+/// The keys of the places a model of the comparison holds.
+fn held(model: &BTreeMap<u64, (Kind, u64)>) -> BTreeSet<Vec<u8>> {
+    model.keys().map(|k| place(*k)).collect()
 }
 
 #[test]
 fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
-    let mut charged = [false; TREE_READS + KEY_READS];
+    let mut seen = Seen::default();
     for (v, grove_version) in GROVE_VERSIONS.iter().enumerate() {
         for (n, tree_type) in TREE_TYPES.into_iter().enumerate() {
             let seed = 0x5851_F42D + (v * 16 + n) as u64;
@@ -609,7 +892,7 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
                     immediate,
                     seed,
                     rounds,
-                    &mut charged,
+                    &mut seen,
                 );
             }
         }
@@ -618,7 +901,20 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
     // for the root hash, which reads nothing.
     let mut expected = [true; TREE_READS + KEY_READS];
     expected[TREE_READS - 1] = false;
-    assert_eq!(charged, expected);
+    assert_eq!(seen.charged, expected);
+    // Every operation of a batch was issued, an element moved to a longer
+    // key, to a shorter one and into the place of another, and the reads
+    // that keep their nodes and the walk of every link met a Merk that had
+    // loaded nothing but its root.
+    assert_eq!(seen.ops, BTreeSet::from(OPS));
+    let met = [
+        seen.moved_to_a_longer_key,
+        seen.moved_to_a_shorter_key,
+        seen.traded_places,
+        seen.observed_cold,
+        seen.walked_cold,
+    ];
+    assert!(met.iter().all(|met| *met >= 50), "{met:?}");
 }
 
 fn at(n: u8) -> Prefix {
@@ -1295,6 +1591,11 @@ fn history() -> Vec<Part> {
                 ),
             ]),
         ),
+        // Two commits whose removals add up otherwise by `+` than by `+=`
+        // under the first arithmetic: a section of the owner that plain
+        // bytes are counted to, then plain bytes.
+        put_lone(31, &p, NodeChange::ValueWritten, Bill::New),
+        delete_lone(31, &p, freeing(Freed::Nothing, Freed::Sectioned(0, 60))),
         put_lone(31, &p, NodeChange::ValueWritten, Bill::New),
         delete_lone(31, &p, freeing(key_freed, Freed::Plain(100))),
     ]);
@@ -1398,10 +1699,20 @@ fn every_operation_of_the_store_costs_what_it_costs_on_rocksdb() {
     }
 }
 
-fn sum_of(act: &Act) -> OperationCost {
+/// The costs of an act, in the order they were reported.
+fn costs_of(act: &Act) -> impl Iterator<Item = OperationCost> + '_ {
     let (steps, applied) = act;
-    let costs = steps.iter().chain(applied).map(|(cost, _)| cost.clone());
-    costs.fold(OperationCost::default(), |sum, cost| sum + cost)
+    steps.iter().chain(applied).map(|(cost, _)| cost.clone())
+}
+
+/// What an act cost, added up as the ledger adds: each cost to the sum
+/// before it, in order.
+fn sum_of(act: &Act) -> OperationCost {
+    let mut sum = OperationCost::default();
+    for cost in costs_of(act) {
+        sum += cost;
+    }
+    sum
 }
 
 #[test]
@@ -1412,18 +1723,31 @@ fn the_store_reports_what_the_model_hands_out_and_nothing_else() {
     // charge of the model that the store dropped in the second only. The
     // test asks the model for no charge itself.
     let history = history();
-    let mut total = OperationCost::default();
-    ledger::take();
-    play_on_lignin(&history, |part, act| {
-        let reported = sum_of(act);
-        assert_eq!(reported, ledger::take(), "{part:?}");
-        total += reported;
-    });
-    assert!(total.seek_count > 120, "{total:?}");
-    assert!(total.storage_loaded_bytes > 2_000, "{total:?}");
-    assert!(total.storage_cost.added_bytes > 1_500, "{total:?}");
-    assert!(total.storage_cost.replaced_bytes > 100, "{total:?}");
-    assert!(total.storage_cost.removed_bytes.has_removal(), "{total:?}");
+    for arithmetic in [0, 1] {
+        let _arithmetic = use_basic_sectioned_removal_addition_version(arithmetic);
+        let mut total = OperationCost::default();
+        let mut ordered = 0;
+        ledger::take();
+        play_on_lignin(&history, |part, act| {
+            let reported = sum_of(act);
+            assert_eq!(
+                reported,
+                ledger::take(),
+                "arithmetic {arithmetic}, {part:?}"
+            );
+            // The order of the sum is part of it: under the first
+            // arithmetic some act adds up to another sum by `+`.
+            let by_plus = costs_of(act).fold(OperationCost::default(), |sum, cost| sum + cost);
+            ordered += usize::from(by_plus != reported);
+            total += reported;
+        });
+        assert_eq!(ordered > 0, arithmetic == 0);
+        assert!(total.seek_count > 120, "{total:?}");
+        assert!(total.storage_loaded_bytes > 2_000, "{total:?}");
+        assert!(total.storage_cost.added_bytes > 1_500, "{total:?}");
+        assert!(total.storage_cost.replaced_bytes > 100, "{total:?}");
+        assert!(total.storage_cost.removed_bytes.has_removal(), "{total:?}");
+    }
 }
 
 fn seek_and_load(loaded: usize) -> OperationCost {
@@ -1800,7 +2124,7 @@ fn a_node_that_has_no_record_length_is_not_written() {
         key: vec![1; 256],
         aggregate_data: AggregateData::NoAggregateData,
     };
-    let node = TreeNode::from_fields(
+    let overlong = TreeNode::from_fields(
         be(2),
         b"value".to_vec(),
         [7; 32],
@@ -1809,23 +2133,39 @@ fn a_node_that_has_no_record_length_is_not_written() {
         TreeFeatureType::BasicMerkNode,
     )
     .unwrap();
+    // A link to a child that is modified and not committed has no encoding
+    // either, and no hash: Merk commits a child before it writes the
+    // parent, and a writer that does not is refused the same.
+    let leaf = |n: u64| {
+        TreeNode::new(
+            be(n),
+            b"value".to_vec(),
+            None,
+            TreeFeatureType::BasicMerkNode,
+        )
+        .unwrap()
+    };
+    let uncommitted = leaf(2).attach(true, Some(leaf(1))).unwrap();
+    assert!(uncommitted.link(true).is_some_and(Link::is_modified));
 
     let staged = LigninBatch::new();
-    for store in [
-        LigninNodeStore::deferred(&writer, ROOT, Some(&staged)),
-        LigninNodeStore::immediate(&writer, ROOT),
-    ] {
-        let written = store.write_node(&node, NodeChange::ValueWritten);
-        assert_eq!(written.cost, OperationCost::default());
-        assert!(matches!(written.value, Err(Error::EdError(_))));
+    for node in [&overlong, &uncommitted] {
+        for store in [
+            LigninNodeStore::deferred(&writer, ROOT, Some(&staged)),
+            LigninNodeStore::immediate(&writer, ROOT),
+        ] {
+            let written = store.write_node(node, NodeChange::ValueWritten);
+            assert_eq!(written.cost, OperationCost::default());
+            assert!(matches!(written.value, Err(Error::EdError(_))));
 
-        let mut change_set = store.change_set();
-        let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
-        let put = change_set.put_node(node.key(), prepared, None);
-        assert!(matches!(put, Err(Error::EdError(_))));
-        let committed = store.commit(change_set);
-        assert_eq!(committed.cost, OperationCost::default());
-        committed.value.expect("a change set with nothing in it");
+            let mut change_set = store.change_set();
+            let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
+            let put = change_set.put_node(node.key(), prepared, None);
+            assert!(matches!(put, Err(Error::EdError(_))));
+            let committed = store.commit(change_set);
+            assert_eq!(committed.cost, OperationCost::default());
+            committed.value.expect("a change set with nothing in it");
+        }
     }
     assert!(staged.is_empty());
     assert_eq!(transaction.stats().writes, 0);
@@ -1889,7 +2229,8 @@ fn a_conversion_costs_the_same(
     let path = lignin.path();
     let mut random = Random(seed);
     let mut model = BTreeMap::new();
-    let keys = [3, 40, 77, 110].map(key);
+    let mut seen = Seen::default();
+    let keys = [3, 40, 77, 110].map(place);
     let turn = seed as usize;
 
     if immediate {
@@ -1903,13 +2244,27 @@ fn a_conversion_costs_the_same(
         let (_, mut on_rocks) = open_as(context, opened, &None, tree_type, grove_version);
         let (_, mut on_lignin) = open_as(store, opened, &None, tree_type, grove_version);
         for _ in 0..3 {
-            let batch = mixed_batch(&mut random, nodes_of, &mut model);
-            let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
-            let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
+            let (batch, moved) = mixed_batch(&mut random, nodes_of, &mut model, &mut seen);
+            let expected = write_as_a_client(
+                &mut on_rocks,
+                &batch,
+                &moved,
+                &[],
+                &mut seen.ops,
+                grove_version,
+            );
+            let found = write_as_a_client(
+                &mut on_lignin,
+                &batch,
+                &moved,
+                &[],
+                &mut seen.ops,
+                grove_version,
+            );
             assert_eq!(found, expected, "{}", at("a batch before the conversion"));
             assert_eq!(
-                found.1,
-                Ended::Done,
+                found.last().map(|(_, ended)| ended.as_str()),
+                Some("Done"),
                 "{}",
                 at("a batch before the conversion")
             );
@@ -1949,7 +2304,7 @@ fn a_conversion_costs_the_same(
     // conversion meets nodes of the committed state and nodes that the
     // transaction wrote.
     for round in 0..3 {
-        let batch = mixed_batch(&mut random, nodes_of, &mut model);
+        let (batch, moved) = mixed_batch(&mut random, nodes_of, &mut model, &mut seen);
         let storage_batch = StorageBatch::new();
         let context = rocks
             .get_transactional_storage_context_by_subtree_prefix(
@@ -1962,12 +2317,26 @@ fn a_conversion_costs_the_same(
         let store = LigninNodeStore::deferred(&writer, subtree.clone(), Some(&staged));
         let (_, mut on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
         let (_, mut on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
-        let expected = apply_as_a_client(&mut on_rocks, &batch, &[], grove_version);
-        let found = apply_as_a_client(&mut on_lignin, &batch, &[], grove_version);
+        let expected = write_as_a_client(
+            &mut on_rocks,
+            &batch,
+            &moved,
+            &[],
+            &mut seen.ops,
+            grove_version,
+        );
+        let found = write_as_a_client(
+            &mut on_lignin,
+            &batch,
+            &moved,
+            &[],
+            &mut seen.ops,
+            grove_version,
+        );
         assert_eq!(found, expected, "{}", at("a batch before the conversion"));
         assert_eq!(
-            found.1,
-            Ended::Done,
+            found.last().map(|(_, ended)| ended.as_str()),
+            Some("Done"),
             "{}",
             at("a batch before the conversion")
         );
