@@ -137,6 +137,16 @@ comes out byte for byte as it was, so `git status` shows what the new
 workloads added. Then replay on the branch itself: what was recorded from
 the pinned engine has to come out the same there.
 
+The crate builds against either engine with no switch to set. Its build
+script looks for the `Engine` seam next to it (`grovedb/src/engine/mod.rs`).
+Where the seam is, `workload::apply` and the runner of the corpus are
+generic over the engine, and the differential fuzzer (`lignin-testkit::diff`)
+is compiled. Against the pinned engine, whose `GroveDb` names RocksDB, they
+are on the one engine there is and the fuzzer is left out. `workload/pinned.rs`
+holds the two forms. `LIGNIN_TESTKIT_PINNED_FORM=1 cargo check -p
+lignin-testkit --lib --bins` builds the second form on the branch: a quick
+check that a change to the crate left the recipe working.
+
 ## What is recorded
 
 For each grove version (`v1` to `v5`):

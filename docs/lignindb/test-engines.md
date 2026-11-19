@@ -165,6 +165,30 @@ The crates of the append-only trees (`grovedb-merkle-mountain-range`, `grovedb-b
 
 Their suites on an engine are GroveDB's: `mmr_tree_tests`, `bulk_append_tree_tests`, `dense_tree_tests`, `commitment_tree_tests`, `private_document_store_tests`, `clear_append_tree_tests` and the other modules of `grovedb/src/tests` that insert into these trees, prove them and replicate them. They open their database with the fixtures, so they run on every engine registered for GroveDB.
 
+## The workloads and the differential fuzzer
+
+`lignin-testkit` applies its workload streams to a database of any engine: `workload::apply`, `workload::Transactions` and the runner of the golden corpus (`golden::run::Runner`) are generic over `E: StreamEngine`. A `StreamEngine` is an `Engine` with one function more, `is_snapshot_read(&Transaction) -> bool`. A write transaction and a snapshot read transaction are one type of an engine, and the seam has no way to ask which a value is: whoever started it knows. `apply` is handed its transaction by its caller and refuses a step that is given the wrong kind, so it has to ask. `RocksDbEngine` answers in `lignin-testkit/src/workload/apply.rs`.
+
+The crate is also built against the engine the golden corpus is pinned to, which is upstream's and has no seam (`lignin-testkit/corpus/README.md`). There the engine parameter is gone and the fuzzer is left out, by a cfg the crate's build script sets, `grovedb_engine_seam`.
+
+The differential fuzzer (`lignin-testkit::diff`, VER-01) applies random operation streams to two engines and compares them after every step. The two are type aliases in `lignin-testkit/src/diff/engines.rs`:
+
+| Alias | Engine |
+| --- | --- |
+| `Reference` | `RocksDbEngine` |
+| `Candidate` | `StandIn`, until LigninDB's engine is named there (GROVE-10) |
+
+`StandIn` is RocksDB behind an `Engine` implementation of the test kit's own: the engine that stands in for LigninDB until it exists. Like `PinnedReads`, which lives in GroveDB's test build and cannot be named from another crate, it gives a read that was given no transaction a snapshot read transaction (RD2). It can also be opened with a planted defect (`Fault`), a cost that is one byte off for one size of write, which the fuzzer's own acceptance test has to find (`lignin-diff seeded`, `lignin-testkit/tests/diff.rs`). That test keeps planting its defect in `StandIn` whatever `Candidate` names.
+
+Registering an engine with the fuzzer is two things: `impl StreamEngine` for it, and its name in `Candidate`.
+
+| Command | What runs |
+| --- | --- |
+| `cargo run --release -p lignin-testkit --bin lignin-diff -- fuzz --duration SECONDS` | `Reference` against `Candidate`, until they differ or the time is up |
+| `cargo run --release -p lignin-testkit --bin lignin-diff -- seeded` | `Reference` against a `StandIn` with a planted defect: fails unless the fuzzer finds it within a minute |
+| `cargo run --release -p lignin-testkit --bin lignin-diff -- case --seed SEED` | the one case a run reported, again |
+| `cargo test -p lignin-testkit --test diff` | both, for as long as a test may take |
+
 ## CI
 
 `.github/workflows/grovedb.yml`:
