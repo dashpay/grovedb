@@ -86,6 +86,8 @@ pub(super) struct Replay<'s> {
     max_pages: usize,
     /// The number of rebuilt pages at which the next such write is made.
     spill_at: usize,
+    /// The items that were replayed since the last one.
+    since_spill: usize,
     segment_len: u64,
 
     /// The pages that replay has changed and no block holds.
@@ -137,6 +139,7 @@ impl<'s> Replay<'s> {
             place,
             max_pages,
             spill_at: max_pages,
+            since_spill: 0,
             segment_len: flush.config().segment_len,
             pages: HashMap::new(),
             dropped: BTreeSet::new(),
@@ -181,7 +184,14 @@ impl<'s> Replay<'s> {
             self.flush
                 .replayed(group.map(|version| (version, read.at)), len);
         }
-        if self.pages.len() >= self.spill_at {
+        // More pages than replay keeps are written to a segment: when
+        // that many have come since the last time, and again once as many
+        // items were replayed as pages are kept, because a page that could
+        // not be written then, for its pending value, may have had the
+        // value placed since.
+        self.since_spill += 1;
+        let kept = self.pages.len();
+        if kept >= self.spill_at || (kept >= self.max_pages && self.since_spill >= kept) {
             self.spill(manifest)?;
         }
         Ok(())
@@ -609,12 +619,12 @@ impl<'s> Replay<'s> {
             let Some(rebuilt) = self.pages.get(&page) else {
                 continue;
             };
-            self.image.clear();
-            let pending = page::write_image(&rebuilt.bytes, &mut self.image)
-                .map_err(|source| RecoveryError::Rebuilt { page, source })?;
-            if pending {
+            let not_a_page = |source| RecoveryError::Rebuilt { page, source };
+            if has_pending(&rebuilt.bytes).map_err(not_a_page)? {
                 continue;
             }
+            self.image.clear();
+            page::write_image(&rebuilt.bytes, &mut self.image).map_err(not_a_page)?;
             let Some(rebuilt) = self.pages.remove(&page) else {
                 continue;
             };
@@ -629,6 +639,7 @@ impl<'s> Replay<'s> {
         }
         self.spare.truncate(self.max_pages);
         self.spill_at = self.pages.len() + self.max_pages;
+        self.since_spill = 0;
         Ok(())
     }
 
@@ -789,6 +800,15 @@ impl<'s> Replay<'s> {
     pub(super) fn into_parts(self) -> (ValueRecovery, alloc::Recovery, RecoveryReport) {
         (self.counts, self.ids, self.report)
     }
+}
+
+/// Whether the page in `frame` has a value that is not in the value log
+/// yet. Such a page is written to no segment (`page-delta.md` PD16).
+fn has_pending(frame: &[u8]) -> Result<bool, FormatError> {
+    Ok(match page::kind_of(frame) {
+        PageKind::Tree => TreePage::from_validated(frame, FRAME_FORMAT)?.has_pending_value(),
+        PageKind::Flat => FlatPage::from_validated(frame, FRAME_FORMAT)?.has_pending_value(),
+    })
 }
 
 /// Whether the page in `frame` still has what a reclaiming step took out
