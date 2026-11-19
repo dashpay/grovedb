@@ -160,6 +160,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// call can be made again, with one exception: after
     /// [`DropError::Broken`] the reclaiming is given up, a later call fails
     /// with [`DropError::GivenUp`], and what was left stays where it is.
+    ///
+    /// A page that is not what a drop leaves ([`DropError::Damaged`]) is
+    /// not changed, and the cells in the other pages go all the same: the
+    /// call ends with the error of the first such page, and what hangs
+    /// below that page stays.
     pub fn reclaim<G: OperationGuard + ?Sized>(
         &self,
         reclaim: &mut Reclaim,
@@ -319,10 +324,15 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             let roots: Vec<SlotId> = roots.iter().copied().collect();
             match self.remove_cells(page, &roots) {
                 Err(error) => {
-                    // The page is looked at again by the next call.
+                    // The page is looked at again by the next call. A
+                    // page that is not what a drop leaves does not keep
+                    // the others from going.
                     waiting.push(page);
-                    failed = Some(error);
-                    break;
+                    let of_the_page = matches!(error, DropError::Damaged { .. });
+                    failed.get_or_insert(error);
+                    if !of_the_page {
+                        break;
+                    }
                 }
                 Ok(Step::Refused(busy)) => {
                     waiting.push(page);

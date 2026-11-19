@@ -2,7 +2,10 @@
 //! and to the directory, as the Merks of a write transaction would, and
 //! knows which of its nodes a drop left behind.
 
-use std::collections::{BTreeSet, HashMap};
+use std::{
+    collections::{BTreeSet, HashMap},
+    time::{Duration, Instant},
+};
 
 use lignin_format::{
     tree_page::{CellValue, Hash, Side},
@@ -57,6 +60,9 @@ pub(in crate::drop) struct Grove {
     pub merks: Vec<Merk>,
     pub fragments: Fragments,
     pub directory: Directory,
+    /// How long the last drop took in [`unlink`]: the write to the tree
+    /// pages and to the directory, without what this model does around it.
+    pub unlinked_in: Option<Duration>,
     dirty: BTreeSet<usize>,
     removed: Vec<CellAddress>,
     by_address: HashMap<CellAddress, usize>,
@@ -74,6 +80,7 @@ impl Grove {
             merks: Vec::new(),
             fragments: Fragments::new(layout),
             directory,
+            unlinked_in: None,
             dirty: BTreeSet::new(),
             removed: Vec::new(),
             by_address: HashMap::new(),
@@ -153,43 +160,6 @@ impl Grove {
         }
         self.mark(node);
         node
-    }
-
-    /// Puts the node `node` of `merk` below `parent` on `side`, or makes it
-    /// the root: for a tree whose shape is given.
-    pub fn place(
-        &mut self,
-        merk: usize,
-        parent: Option<(usize, Side)>,
-        key: &[u8],
-        value: &[u8],
-    ) -> usize {
-        let node = self.nodes.len();
-        self.nodes.push(Node {
-            merk,
-            key: key.to_vec(),
-            value: value.to_vec(),
-            left: None,
-            right: None,
-            parent: parent.map(|(parent, _)| parent),
-            hosted: Vec::new(),
-            at: None,
-            alive: true,
-            left_behind: false,
-            new_value: true,
-        });
-        match parent {
-            None => self.merks[merk].root = Some(node),
-            Some((parent, Side::Left)) => self.nodes[parent].left = Some(node),
-            Some((parent, Side::Right)) => self.nodes[parent].right = Some(node),
-        }
-        self.dirty.insert(node);
-        node
-    }
-
-    /// Marks `node` and every node above it as written.
-    pub fn touch(&mut self, node: usize) {
-        self.mark(node);
     }
 
     /// Makes `node` the host of one more Merk, and returns that Merk.
@@ -426,6 +396,7 @@ impl Grove {
                     false => Leaving::Dropped(prefix),
                 })
                 .collect();
+            let began = Instant::now();
             let done = unlink(
                 &mut self.fragments,
                 &mut txn.tree,
@@ -436,6 +407,7 @@ impl Grove {
                 &leaving,
             )
             .expect("the Merks are dropped");
+            self.unlinked_in = Some(began.elapsed());
             (done.report, done.left)
         };
 

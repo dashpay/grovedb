@@ -115,6 +115,8 @@ pub(super) struct Db {
     pub ids: PageAllocator,
     manifest: Mutex<ManifestStore>,
     pub log: Mutex<Vec<u8>>,
+    /// Where the log file that `log` is begins in the log.
+    log_start: Mutex<LogStart>,
     latest: AtomicU64,
     owners: AtomicU64,
     files: Mutex<Files>,
@@ -165,6 +167,7 @@ impl Db {
             ids: PageAllocator::new(),
             manifest: Mutex::new(manifest),
             log: Mutex::new(log),
+            log_start: Mutex::new(LogStart::FIRST),
             latest: AtomicU64::new(0),
             owners: AtomicU64::new(0),
             files: Mutex::new(Files {
@@ -189,6 +192,17 @@ impl Db {
         tree.put(&mut txn.flat, b"tick", &next).expect("a put");
         drop(scratch);
         self.commit(txn)
+    }
+
+    /// Forgets the log up to here, as a checkpoint lets it be forgotten.
+    /// No value is pending: the last commit was written back.
+    pub fn trim_log(&self) {
+        let mut log = self.log.lock().expect("the log");
+        let mut start = self.log_start.lock().expect("the start");
+        let base = start.base() + log.len() as u64;
+        *start = LogStart::new(base, self.latest()).expect("a start");
+        log.clear();
+        write_file_start(FileId::MIN, &start, &mut log).expect("a log file");
     }
 
     /// Gives the ids of the freed pages back, and drops the page versions
@@ -286,9 +300,8 @@ impl Db {
         let mut unchanged = Vec::new();
         {
             let mut log = self.log.lock().expect("the log");
-            let address = LogStart::FIRST
-                .address(log.len() as u64)
-                .expect("an address");
+            let start = *self.log_start.lock().expect("the start");
+            let address = start.address(log.len() as u64).expect("an address");
             let mut group = GroupWriter::new(version, address, &mut log).expect("a group");
             flat.log_values(&mut group).expect("the flat values");
             values

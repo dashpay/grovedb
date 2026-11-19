@@ -13,7 +13,7 @@ use lignin_format::{
 };
 use lignin_store::{
     alloc::PageAllocator,
-    cache::{BufferPool, PageRef, ValueId},
+    cache::{Blank, BufferPool, PageRef, ValueId},
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     table::{Link, PageTable},
     values::{CountStep, OwnersError, ValueChange, ValueStore, ValueStoreError},
@@ -70,6 +70,18 @@ pub(super) enum EntryRemoved {
     Absent,
     /// Another entry is under the key than the one that was seen.
     Changed,
+}
+
+/// A step on a tree page that is ready to be made.
+struct Prepared<'s> {
+    /// The page as it was looked at.
+    frame: PageRef<'s>,
+    /// The cells that go.
+    found: Fragment,
+    /// The page without them, or `None` if it keeps no cell.
+    after: Option<Blank<'s>>,
+    /// The records that take them out, if the page keeps a cell.
+    run: Vec<u8>,
 }
 
 /// The cells of one page that hang below some of its fragment roots.
@@ -287,8 +299,9 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         }
     }
 
-    /// The tree page `page` as it is now, with the cells below `roots`.
-    fn look(&self, page: PageId, roots: &[SlotId]) -> Result<(PageRef<'s>, Fragment), DropError> {
+    /// A step that takes the cells below `roots` out of the tree page
+    /// `page`, made ready on the page as it is now. Nothing is changed.
+    fn prepare(&self, page: PageId, roots: &[SlotId]) -> Result<Prepared<'s>, DropError> {
         let frame = self
             .current(page)?
             .ok_or(damaged(page, "no page where a cell of the subtree was"))?;
@@ -298,22 +311,55 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             return Err(damaged(page, "the image of another page"));
         }
         let found = fragment(&view, roots)?;
-        Ok((frame, found))
+        let mut run = Vec::new();
+        if found.slots.len() == view.cell_count() {
+            let after = None;
+            return Ok(Prepared {
+                frame,
+                found,
+                after,
+                run,
+            });
+        }
+        let mut blank = self.pool.blank();
+        blank.copy_from(&frame);
+        let mut copy = TreePageMut::open(&mut blank, self.page_size, FRAME_FORMAT)?;
+        let mut removes = DeltaRunWriter::new(page, None, &mut run);
+        for &slot in &found.slots {
+            let remove = Delta::Remove { slot };
+            remove.apply(&mut copy)?;
+            removes.push(&remove)?;
+        }
+        removes.finish()?;
+        for name in &found.pending {
+            blank.detach(*name);
+        }
+        TreePage::from_validated(&blank, FRAME_FORMAT)?
+            .check_fragments()
+            .map_err(|_| damaged(page, "a cell that stays names a cell of the subtree"))?;
+        let after = Some(blank);
+        Ok(Prepared {
+            frame,
+            found,
+            after,
+            run,
+        })
     }
 
     /// Why a step that takes the cells below `roots` out of `page` would be
     /// refused now, if it would: without a change, and without a promise.
+    /// The step is made ready as [`Self::remove_cells`] makes it, so a page
+    /// that such a step fails on fails here.
     pub(super) fn would_wait(
         &self,
         page: PageId,
         roots: &[SlotId],
     ) -> Result<Option<Busy>, DropError> {
-        let (frame, found) = self.look(page, roots)?;
+        let ready = self.prepare(page, roots)?;
         if self.pool.page_step(page).private_copies() != 0 {
             return Ok(Some(Busy::Copied));
         }
-        let empties = found.slots.len() == tree_page(&frame)?.cell_count();
-        let newborn = empties && self.log.latest() <= frame.born();
+        let newborn = ready.after.is_none() && self.log.latest() <= ready.frame.born();
         Ok(newborn.then_some(Busy::Newborn))
     }
 
@@ -357,31 +403,14 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         roots: &[SlotId],
     ) -> Result<Step<CellsRemoved>, DropError> {
         for _ in 0..LOOKS {
-            let (frame, found) = self.look(page, roots)?;
-            let empties = found.slots.len() == tree_page(&frame)?.cell_count();
-
             // What the page is afterwards is made before any lock is taken.
-            let mut after = None;
-            let mut run = Vec::new();
-            if !empties {
-                let mut blank = self.pool.blank();
-                blank.copy_from(&frame);
-                let mut copy = TreePageMut::open(&mut blank, self.page_size, FRAME_FORMAT)?;
-                let mut removes = DeltaRunWriter::new(page, None, &mut run);
-                for &slot in &found.slots {
-                    let remove = Delta::Remove { slot };
-                    remove.apply(&mut copy)?;
-                    removes.push(&remove)?;
-                }
-                removes.finish()?;
-                for name in &found.pending {
-                    blank.detach(*name);
-                }
-                tree_page(&blank)?
-                    .check_fragments()
-                    .map_err(|_| damaged(page, "a cell that stays names a cell of the subtree"))?;
-                after = Some(blank);
-            }
+            let Prepared {
+                frame,
+                found,
+                after,
+                run,
+            } = self.prepare(page, roots)?;
+            let empties = after.is_none();
 
             let counts = self.values.step()?;
             let step = self.pool.page_step(page);
@@ -556,10 +585,6 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         self.free(page, latest)?;
         Ok(Some(Step::Made(self.count(counts, released))))
     }
-}
-
-fn tree_page(frame: &[u8]) -> Result<TreePage<'_>, DropError> {
-    Ok(TreePage::from_validated(frame, FRAME_FORMAT)?)
 }
 
 /// The flat page in `frame`, which was read as `page`, below a branch of
