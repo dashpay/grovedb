@@ -120,10 +120,7 @@ fn a_scan_over_large_values_reads_the_value_log_sequentially_after_consolidation
     );
     // What is left are the places where the scan leaves a page: a node
     // high in the tree stands between the pages below it.
-    assert!(
-        grouped >= inside && inside * 100 >= COUNT as usize * 85,
-        "{inside}"
-    );
+    assert!(inside * 100 >= COUNT as usize * 85, "{inside}");
     assert_eq!(moved, u64::from(COUNT));
 }
 

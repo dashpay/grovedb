@@ -251,12 +251,12 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
         };
         let counts = store.step()?;
         let step = self.pool.page_step(page);
-        let made = self.repoint(&step, &frame, born, from, to)?;
-        if made.is_ok() {
-            let counted = counts.apply(&ValueChange::moved(from, to), self.log.latest());
-            *miscount = miscount.take().or(counted.err());
+        if let Err(refusal) = self.repoint(&step, &frame, born, from, to)? {
+            return Ok(Err(refusal));
         }
-        Ok(made)
+        let counted = counts.apply(&ValueChange::moved(from, to), self.log.latest());
+        *miscount = miscount.take().or(counted.err());
+        Ok(Ok(()))
     }
 }
 
