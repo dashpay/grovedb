@@ -6,7 +6,10 @@
 
 use std::sync::atomic::Ordering;
 
-use lignin_tree::drop::{Busy, Progress};
+use lignin_tree::{
+    directory::DirectoryError,
+    drop::{Busy, Progress},
+};
 
 use super::{
     model::{self, value, OwnedBatch, OwnedSubtree},
@@ -210,6 +213,9 @@ enum Between {
     /// after it are taken back, which makes the frames again with the
     /// drop in them.
     Rewind,
+    /// An operation after the drop fails with pages changed: the frames
+    /// are made again from the write set, with the drop in it (WT10).
+    Refusal,
 }
 
 /// Drops a subtree with pages of committed flat records, and with records
@@ -229,6 +235,23 @@ fn dropped_and_swept(between: Between) -> (u64, usize, u64) {
     let rebuilds = tx.txn.stats().rebuilds;
     match between {
         Between::Nothing | Between::Commit => drop_it(&world, &tx),
+        Between::Refusal => {
+            drop_it(&world, &tx);
+            // Two subtrees at one place of one host: the first is entered,
+            // and the directory refuses the second.
+            let host = (model::subtree(BEFORE), vec![b'n', 0], 0);
+            let enter =
+                |name: u8| OwnedSubtree::Enter(model::subtree(ENTERED + name), Some(host.clone()));
+            let error = world.apply(&tx, &subtrees(vec![enter(30), enter(31)]));
+            let error = error.expect_err("the host has a subtree there");
+            assert!(
+                matches!(
+                    &error,
+                    TxnError::Directory(DirectoryError::HostTaken { position: 0, .. })
+                ),
+                "{error}"
+            );
+        }
         Between::Rewind => {
             let (mark, writes) = (tx.txn.mark(), tx.model.borrow().writes.len());
             drop_it(&world, &tx);
@@ -256,7 +279,7 @@ fn dropped_and_swept(between: Between) -> (u64, usize, u64) {
     }
     let made_again = match between {
         Between::Nothing => 0,
-        Between::Commit => 1,
+        Between::Commit | Between::Refusal => 1,
         Between::Rewind => 2,
     };
     assert_eq!(tx.txn.stats().rebuilds, rebuilds + made_again);
@@ -314,7 +337,8 @@ fn dropped_and_swept(between: Between) -> (u64, usize, u64) {
 /// transaction whose frames are made again over another base, after a
 /// commit outside or a rewind, makes the drop again with that base. With
 /// the base of the first time, the pages it wrote itself would be taken
-/// for pages of a later commit and never be freed.
+/// for pages of a later commit and never be freed. Frames that are made
+/// again after an operation failed make the drop again as well.
 #[test]
 fn a_drop_that_is_made_again_over_another_base_leaves_every_page_to_be_freed_once() {
     let plain = dropped_and_swept(Between::Nothing);
@@ -326,6 +350,66 @@ fn a_drop_that_is_made_again_over_another_base_leaves_every_page_to_be_freed_onc
     assert!(plain.0 >= 20, "the pages between the two ends: {plain:?}");
     assert_eq!(dropped_and_swept(Between::Commit), plain);
     assert_eq!(dropped_and_swept(Between::Rewind), plain);
+    assert_eq!(dropped_and_swept(Between::Refusal), plain);
+}
+
+/// The data of a subtree that keeps it flat goes with the drop as the
+/// records of its other columns do: nothing is under the prefix in the
+/// data column afterwards, for the transaction and in the pages, and a
+/// subtree that is entered there again has only what is written since.
+#[test]
+fn a_drop_takes_the_flat_data_of_a_subtree() {
+    let (db, versions) = Db::new(256);
+    let mut world = World::new(&db, &versions);
+    let subtree = model::subtree(DROPPED);
+    let data = model::unit(Column::Data, DROPPED);
+    let enter = || subtrees(vec![OwnedSubtree::Enter(subtree, None)]);
+    let in_pages = |column: Column, key: &[u8]| {
+        let guard = versions.guard();
+        let pages = db.committed(&guard, guard.latest());
+        let stored = [&subtree.as_bytes()[..], key].concat();
+        let tree = db.keyspaces().of(column);
+        (tree.get(&pages, &stored, &mut Vec::new())).expect("a read")
+    };
+
+    let tx = world.begin();
+    world.apply(&tx, &enter()).expect("the subtree is entered");
+    let written = [
+        put(data, b"d1", b"1"),
+        put(data, b"d2", b"2"),
+        put(aux(DROPPED), b"a", b"3"),
+    ];
+    world.write(&tx, written.to_vec());
+    assert!(committed(world.commit(tx, &[])));
+    assert!(in_pages(Column::Data, b"d1") && in_pages(Column::Aux, b"a"));
+
+    let tx = world.begin();
+    drop_it(&world, &tx);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    for (column, key) in [
+        (Column::Data, &b"d1"[..]),
+        (Column::Data, b"d2"),
+        (Column::Aux, b"a"),
+    ] {
+        assert!(!in_pages(column, key), "{column:?}");
+    }
+
+    let tx = world.begin();
+    world.apply(&tx, &enter()).expect("it is entered again");
+    world.write(&tx, vec![put(data, b"d3", b"3")]);
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let snapshot = db.reads(&versions).snapshot();
+    let operation = snapshot.operation();
+    let opened = operation.open(subtree).expect("a lookup");
+    let mut cursor = opened.expect("the subtree").cursor(Column::Data);
+    cursor.seek_to_first().expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"d3"[..]));
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), None);
 }
 
 /// TREE-09 asked for this of the task that runs a reclaimer beside a writer
