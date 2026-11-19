@@ -282,6 +282,59 @@ mod tests {
         assert_eq!(taken(&mut again, 5), [5]);
     }
 
+    /// Every way two commits can interleave with a transaction that starts
+    /// to watch, reads the latest version for its first write, and later
+    /// takes the key sets up to the latest version it reads then: it is
+    /// given exactly the commits after its first-write version (CF3).
+    #[test]
+    fn a_transaction_is_given_every_commit_after_its_first_write_in_every_interleaving() {
+        // The committer records a key set and then publishes the version,
+        // twice. The transaction's three steps fall between those four.
+        let mut interleavings = 0;
+        for places in 0u32..1 << 7 {
+            if places.count_ones() != 3 {
+                continue;
+            }
+            interleavings += 1;
+            let commits = Commits::new(version(10));
+            let mut latest = version(10);
+            let (mut committer, mut reader) = (0, 0);
+            let mut watch = None;
+            let mut first_write = None;
+            let mut taken = None;
+            for step in 0..7 {
+                if places & (1 << step) == 0 {
+                    let commit = version(11 + committer / 2);
+                    match committer % 2 {
+                        0 => commits.record(commit, keys(b"k")),
+                        _ => latest = commit,
+                    }
+                    committer += 1;
+                    continue;
+                }
+                match reader {
+                    0 => watch = Some(commits.watch()),
+                    1 => first_write = Some(latest),
+                    _ => {
+                        let mut out = Vec::new();
+                        (watch.as_mut().expect("it watches")).take(latest, &mut out);
+                        taken = Some((latest, out));
+                    }
+                }
+                reader += 1;
+            }
+            let (first_write, (upto, taken)) = (first_write.unwrap(), taken.unwrap());
+            let taken: Vec<u64> = taken.iter().map(|(version, _)| version.get()).collect();
+            let after: Vec<u64> = (first_write.get() + 1..=upto.get()).collect();
+            assert!(
+                after.iter().all(|version| taken.contains(version)),
+                "{places:07b}: first write at {first_write:?}, taken {taken:?} up to {upto:?}"
+            );
+            assert!(taken.iter().all(|version| *version <= upto.get()));
+        }
+        assert_eq!(interleavings, 35);
+    }
+
     #[test]
     #[should_panic(expected = "is recorded after")]
     fn a_version_is_recorded_once() {

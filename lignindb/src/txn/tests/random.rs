@@ -66,10 +66,16 @@ fn batch<'s>(world: &World<'s>, tx: &Tx<'s>, rng: &mut Rng, keys: usize) -> Owne
                 }
                 6..=8 => delete(unit, &key),
                 _ => {
+                    // Mostly a range that holds keys, sometimes one that
+                    // ends before it starts, which holds none.
                     let end = rng.chance(70).then(|| {
                         let mut end = key.clone();
                         end.push(b'5');
-                        format!("k{:03}", rng.below(keys)).into_bytes().max(end)
+                        let other = format!("k{:03}", rng.below(keys)).into_bytes();
+                        match rng.chance(85) {
+                            true => other.max(end),
+                            false => other,
+                        }
                     });
                     Write::Range(unit, key, end)
                 }

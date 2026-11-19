@@ -7,6 +7,7 @@ mod handles;
 mod random;
 mod reads;
 mod rebase;
+mod threads;
 mod trees;
 
 use std::{

@@ -127,11 +127,11 @@ impl UnitKeys {
         end: Option<&'a [u8]>,
     ) -> impl Iterator<Item = &'a [u8]> + 'a {
         let upper = end.map_or(Bound::Unbounded, Bound::Excluded);
-        let empty = end.is_some_and(|end| end <= start);
-        self.keys
-            .range::<[u8], _>((Bound::Included(start), upper))
-            .filter(move |_| !empty)
-            .map(|key| &**key)
+        // An interval that ends at or before its start holds no key, and is
+        // not one a map can be asked for.
+        let inside = (!end.is_some_and(|end| end <= start))
+            .then(|| self.keys.range::<[u8], _>((Bound::Included(start), upper)));
+        inside.into_iter().flatten().map(|key| &**key)
     }
 }
 
@@ -258,6 +258,9 @@ mod tests {
         assert!(!set.meets_range(aux, b"a", Some(b"k")));
         // An interval that ends where it starts holds no key.
         assert!(!set.meets_range(aux, b"k", Some(b"k")));
+        assert!(!set.meets_range(aux, b"z", Some(b"a")));
+        assert_eq!(set.units[&aux].keys_in(b"z", Some(b"a")).count(), 0);
+        assert_eq!(set.units[&aux].keys_in(b"a", Some(b"z")).count(), 1);
     }
 
     #[test]

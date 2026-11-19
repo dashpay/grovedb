@@ -798,3 +798,283 @@ impl ConcatBytes for [Subtree] {
         bytes
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+    use crate::txn::key::Column;
+
+    fn version(raw: u64) -> CommitVersion {
+        CommitVersion::new(raw).expect("a version")
+    }
+
+    fn unit(name: u8) -> Unit {
+        Unit::new(Column::Aux, Subtree::new([name; 32]))
+    }
+
+    /// SplitMix64.
+    struct Rng(u64);
+
+    impl Rng {
+        fn below(&mut self, bound: usize) -> usize {
+            self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            let mut z = self.0;
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            ((z ^ (z >> 31)) % bound as u64) as usize
+        }
+    }
+
+    /// One write, as the model keeps it.
+    #[derive(Debug, Clone, PartialEq)]
+    enum Model {
+        Put(Unit, Vec<u8>, Vec<u8>),
+        Delete(Unit, Vec<u8>),
+        Range(Unit, Vec<u8>, Option<Vec<u8>>),
+    }
+
+    impl Model {
+        fn covers(&self, of: Unit, key: &[u8]) -> bool {
+            match self {
+                Self::Put(unit, at, _) | Self::Delete(unit, at) => *unit == of && at == key,
+                Self::Range(unit, start, end) => {
+                    *unit == of && in_range(key, start, end.as_deref())
+                }
+            }
+        }
+
+        fn write(&self) -> RecordWrite<'_> {
+            match self {
+                Self::Put(unit, key, value) => RecordWrite::Put {
+                    unit: *unit,
+                    key,
+                    value,
+                },
+                Self::Delete(unit, key) => RecordWrite::Delete { unit: *unit, key },
+                Self::Range(unit, start, end) => RecordWrite::DeleteRange {
+                    unit: *unit,
+                    start,
+                    end: end.as_deref(),
+                },
+            }
+        }
+    }
+
+    fn key(rng: &mut Rng) -> Vec<u8> {
+        vec![b'a' + rng.below(12) as u8]
+    }
+
+    fn draw(rng: &mut Rng) -> Model {
+        let unit = unit(rng.below(2) as u8);
+        match rng.below(10) {
+            0..=5 => Model::Put(unit, key(rng), vec![rng.below(250) as u8; rng.below(5)]),
+            6..=7 => Model::Delete(unit, key(rng)),
+            _ => {
+                let start = key(rng);
+                let end = (rng.below(3) > 0).then(|| key(rng));
+                Model::Range(unit, start, end)
+            }
+        }
+    }
+
+    /// The write set answers as a list of its writes does: the newest write
+    /// that covers a key, the written keys in order, the key set, and the
+    /// overlap set of the conflict rule, through any number of rollbacks to
+    /// a mark.
+    #[test]
+    fn the_index_agrees_with_the_list_of_writes() {
+        for seed in 0..40 {
+            let mut rng = Rng(seed);
+            let mut set = WriteSet::new();
+            // Each write with its first-write version and whether it is met.
+            let mut model: Vec<(Model, u64, bool)> = Vec::new();
+            let mut marks = vec![(set.mark(), 0)];
+            let mut latest = 1;
+            for _ in 0..200 {
+                match rng.below(10) {
+                    0..=5 => {
+                        let write = draw(&mut rng);
+                        let records = [write.write()];
+                        let batch = Batch {
+                            records: &records,
+                            merks: &[],
+                        };
+                        set.add(&batch, version(latest), &[]);
+                        model.push((write, latest, false));
+                    }
+                    6 => marks.push((set.mark(), model.len())),
+                    7 => {
+                        let to = rng.below(marks.len());
+                        let (mark, len) = marks[to];
+                        marks.truncate(to + 1);
+                        assert_eq!(set.is_after(mark), model.len() > len);
+                        set.rewind(mark);
+                        model.truncate(len);
+                    }
+                    _ => {
+                        // A commit outside, of one write.
+                        latest += 1;
+                        let foreign = draw(&mut rng);
+                        let mut keys = KeySet::new();
+                        match &foreign {
+                            Model::Put(unit, key, _) | Model::Delete(unit, key) => {
+                                keys.key(*unit, key);
+                            }
+                            Model::Range(unit, start, end) => {
+                                keys.range(*unit, start, end.as_deref());
+                            }
+                        }
+                        set.meet(version(latest), &keys);
+                        for (own, first_write, met) in &mut model {
+                            let meets = match (&*own, &foreign) {
+                                (Model::Range(unit, start, end), Model::Range(of, from, to)) => {
+                                    unit == of
+                                        && ranges_meet(
+                                            (start, end.as_deref()),
+                                            (from, to.as_deref()),
+                                        )
+                                }
+                                (
+                                    range @ Model::Range(..),
+                                    Model::Put(of, at, _) | Model::Delete(of, at),
+                                )
+                                | (Model::Put(of, at, _) | Model::Delete(of, at), range) => {
+                                    range.covers(*of, at)
+                                }
+                            };
+                            *met |= meets && *first_write < latest;
+                        }
+                    }
+                }
+                assert_eq!(set.len(), model.len(), "seed {seed}");
+                assert_eq!(set.is_empty(), model.is_empty());
+                assert_eq!(set.ops(), model.len());
+                let met = model.iter().filter(|(.., met)| *met).count();
+                assert_eq!(set.met(), met, "seed {seed}: the overlap set");
+                let mut expected_keys = KeySet::new();
+                for name in 0..2 {
+                    let unit = unit(name);
+                    let mut written = BTreeMap::new();
+                    for byte in b'a'..b'a' + 12 {
+                        let key = [byte];
+                        let newest = model
+                            .iter()
+                            .rev()
+                            .find(|(write, ..)| write.covers(unit, &key));
+                        let expected = match newest.map(|(write, ..)| write) {
+                            None => Own::Unwritten,
+                            Some(Model::Put(_, _, value)) => Own::Put(value),
+                            Some(_) => Own::Deleted,
+                        };
+                        assert_eq!(set.own(unit, &key), expected, "seed {seed}: {key:?}");
+                        let hidden = model.iter().any(|(write, ..)| {
+                            matches!(write, Model::Range(..)) && write.covers(unit, &key)
+                        });
+                        assert_eq!(set.hides(unit, &key), hidden);
+                        let point = model.iter().any(|(write, ..)| {
+                            !matches!(write, Model::Range(..)) && write.covers(unit, &key)
+                        });
+                        if point {
+                            written.insert(key.to_vec(), ());
+                            expected_keys.key(unit, &key);
+                        }
+                    }
+                    for (write, ..) in &model {
+                        if let Model::Range(of, start, end) = write
+                            && *of == unit
+                        {
+                            expected_keys.range(unit, start, end.as_deref());
+                        }
+                    }
+                    // The written keys, from both ends and from the middle.
+                    let keys: Vec<&Vec<u8>> = written.keys().collect();
+                    let all = (Bound::Unbounded, Bound::Unbounded);
+                    assert_eq!(
+                        set.written_key(unit, all, false),
+                        keys.first().map(|key| &key[..])
+                    );
+                    assert_eq!(
+                        set.written_key(unit, all, true),
+                        keys.last().map(|key| &key[..])
+                    );
+                    let from = (Bound::Excluded(&b"f"[..]), Bound::Unbounded);
+                    let next = keys.iter().find(|key| &key[..] > &b"f"[..]);
+                    assert_eq!(set.written_key(unit, from, false), next.map(|key| &key[..]));
+                    let none = (Bound::Excluded(&b"f"[..]), Bound::Excluded(&b"f"[..]));
+                    assert_eq!(set.written_key(unit, none, false), None);
+                    let inverted = (Bound::Included(&b"g"[..]), Bound::Included(&b"f"[..]));
+                    assert_eq!(set.written_key(unit, inverted, true), None);
+                }
+                let mut ours = set.key_set();
+                for keys in ours.units.values_mut() {
+                    keys.ranges.sort();
+                }
+                for keys in expected_keys.units.values_mut() {
+                    keys.ranges.sort();
+                    keys.ranges.dedup();
+                }
+                assert_eq!(ours, expected_keys, "seed {seed}: the key set");
+            }
+            // Every operation is the batch it was added as.
+            for (op, (write, first_write, _)) in model.iter().enumerate() {
+                let hosted = set.hosted_lists(op);
+                let batch = set.batch(op, &hosted);
+                assert_eq!(batch.records(), [write.write()]);
+                assert!(batch.merks().is_empty() && set.made(op).is_empty());
+                assert_eq!(set.entry(op as EntryId).first_write, version(*first_write));
+            }
+            set.clear();
+            assert!(set.is_empty() && set.met() == 0 && set.bytes() == 0);
+            assert_eq!(set.own(unit(0), b"a"), Own::Unwritten);
+        }
+    }
+
+    /// A commit that drops a subtree or wipes the database meets every
+    /// write under it, of every kind (CF5).
+    #[test]
+    fn a_dropped_subtree_and_a_wipe_meet_every_write_under_them() {
+        let mut set = WriteSet::new();
+        let records = [
+            RecordWrite::Put {
+                unit: unit(1),
+                key: b"k",
+                value: b"1",
+            },
+            RecordWrite::Put {
+                unit: unit(1),
+                key: b"k",
+                value: b"2",
+            },
+            RecordWrite::DeleteRange {
+                unit: unit(1),
+                start: b"a",
+                end: None,
+            },
+            RecordWrite::Delete {
+                unit: unit(2),
+                key: b"k",
+            },
+        ];
+        for record in &records {
+            let batch = Batch {
+                records: std::slice::from_ref(record),
+                merks: &[],
+            };
+            set.add(&batch, version(3), &[]);
+        }
+        let mut dropped = KeySet::new();
+        dropped.subtree(unit(1).subtree);
+        // A commit at the first-write version, or before it, is not after
+        // it.
+        set.meet(version(3), &dropped);
+        assert_eq!(set.met(), 0);
+        set.meet(version(4), &dropped);
+        assert_eq!(set.met(), 3, "both puts of the key and the range");
+        let mut wipe = KeySet::new();
+        wipe.everything();
+        set.meet(version(5), &wipe);
+        assert_eq!(set.met(), 4);
+    }
+}
