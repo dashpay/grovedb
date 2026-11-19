@@ -1,7 +1,7 @@
 //! The lazy range delete of a flat keyspace, and the freeing of the pages
 //! it left.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_format::{value_log::ValuePointer, PageId};
 use lignin_store::alloc::PageState;
@@ -514,4 +514,84 @@ fn a_record_or_a_page_that_is_not_one_is_refused() {
     let refused = drops.unlink_prefix(&mut txn.flat, &tree, b"", at);
     assert!(matches!(refused, Err(DropError::IdsExhausted)));
     db.roll_back(txn);
+}
+
+/// The pages a lazy range delete left, under ids that named other pages
+/// before and that write-back has not written: the newest link of each id
+/// is the free link of the earlier page, the page table takes no second
+/// one, and the freeing goes on. The pool and the id are told of each free
+/// once, and what the freeing reports counts the pages.
+#[test]
+fn unlinked_pages_under_reused_ids_that_no_segment_holds_are_freed_without_a_link() {
+    let Built {
+        db,
+        tree,
+        drops,
+        mut model,
+    } = build(6_000);
+    // The first life of the ids: a range that is unlinked and freed. Its
+    // pages were written back, so each gets its free link.
+    let (start, end) = (key(500), key(5_500));
+    let mut txn = db.begin();
+    let at = txn.tree.at;
+    (drops.unlink_range(&mut txn.flat, &tree, &start, Some(&end), at)).expect("unlinked");
+    db.commit(txn);
+    model.retain(|key, _| *key < start || *key >= end);
+    db.tick();
+    let first = free_all(&db, &drops, usize::MAX);
+    assert!(first.pages_freed > 4, "{first:?}");
+    assert_eq!(first.pages_never_linked, 0, "every page had a block");
+    let released: BTreeSet<PageId> = db.reclaim_ids().into_iter().collect();
+    assert!(released.len() > 4);
+
+    // The second life: the records are put again, into pages under those
+    // ids, and nothing is written back.
+    for chunk in 0..10 {
+        let mut txn = db.begin();
+        for n in 500 + chunk * 500..1_000 + chunk * 500 {
+            tree.put(&mut txn.flat, &key(n), &value(n)).expect("a put");
+            model.insert(key(n), value(n));
+        }
+        db.commit(txn);
+    }
+    assert_eq!(flat_records(&db, &tree).len(), model.len());
+    let live = |page: &&PageId| db.state(**page) == PageState::Live;
+    let reused: BTreeSet<PageId> = released.iter().filter(live).copied().collect();
+    assert!(reused.len() > 4, "{} ids were used again", reused.len());
+
+    let mut txn = db.begin();
+    let at = txn.tree.at;
+    (drops.unlink_range(&mut txn.flat, &tree, &start, Some(&end), at)).expect("unlinked");
+    db.commit(txn);
+    model.retain(|key, _| *key < start || *key >= end);
+    db.tick();
+    let steps = db.reclaims().len();
+    let second = free_all(&db, &drops, usize::MAX);
+    assert!(second.pages_freed > 4, "{second:?}");
+
+    let freed: Vec<PageId> = (db.reclaims()[steps..].iter())
+        .filter(|(_, freed, ..)| freed.is_some())
+        .map(|(page, ..)| *page)
+        .collect();
+    let once: BTreeSet<PageId> = freed.iter().copied().collect();
+    assert_eq!(once.len(), freed.len(), "a page was freed twice");
+    assert_eq!(once.len() as u64, second.pages_freed);
+    let never_linked = once.intersection(&reused).count() as u64;
+    assert!(
+        never_linked > 4,
+        "{never_linked} of {} freed pages",
+        once.len()
+    );
+    assert_eq!(second.pages_never_linked, never_linked);
+    for page in &once {
+        assert_eq!(db.state(*page), PageState::Retired, "{page}");
+        assert!(db.current(*page).is_none(), "{page} is still a page");
+    }
+    // What is left reads as the model has it, written back and not.
+    let records: Model = flat_records(&db, &tree).into_iter().collect();
+    assert_eq!(records, model);
+    db.write_back();
+    let records: Model = flat_records(&db, &tree).into_iter().collect();
+    assert_eq!(records, model);
+    db.check_counts(&held(&db, &[&tree, drops.tree()]));
 }
