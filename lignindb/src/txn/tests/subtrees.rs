@@ -20,8 +20,8 @@ use crate::txn::frames::{probe, root_changes};
 
 /// A subtree that no store of the tests has entered, and one that its node
 /// `host` hosts.
-const OUTER: u8 = ENTERED + 10;
-const INNER: u8 = ENTERED + 11;
+pub(super) const OUTER: u8 = ENTERED + 10;
+pub(super) const INNER: u8 = ENTERED + 11;
 
 /// The keys and values of one Merk.
 type Items = BTreeMap<Vec<u8>, Vec<u8>>;
@@ -65,7 +65,7 @@ fn node_count(tx: &Tx<'_>, name: u8, keys: &[&[u8]]) -> usize {
 /// A batch that enters `OUTER` with three nodes and flat records beside
 /// them, and `INNER` under its node `host`, with two nodes and flat
 /// records of its own.
-fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
+pub(super) fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
     let mut outer = world.merk(tx, OUTER, |items| {
         items.insert(b"host".to_vec(), b"tree".to_vec());
         items.insert(b"left".to_vec(), vec![1; 40]);
@@ -92,7 +92,7 @@ fn planted<'s>(world: &World<'s>, tx: &Tx<'s>) {
 
 /// Drops `OUTER` through `tx`. The drop names that subtree alone: the
 /// model works out what is below it, as the transaction has to.
-fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
+pub(super) fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
     let batch = subtrees(vec![OwnedSubtree::Drop(model::subtree(OUTER))]);
     world.apply(tx, &batch).expect("the subtree is dropped");
 }
@@ -115,7 +115,7 @@ fn inner_batch<'s>(world: &World<'s>, tx: &Tx<'s>, edit: impl FnOnce(&mut Items)
 }
 
 /// The flat records that [`planted`] puts under `OUTER` and `INNER`.
-fn planted_records() -> [(Unit, &'static [u8]); 5] {
+pub(super) fn planted_records() -> [(Unit, &'static [u8]); 5] {
     [
         (aux(OUTER), b"a"),
         (model::unit(Column::Meta, OUTER), b"m"),

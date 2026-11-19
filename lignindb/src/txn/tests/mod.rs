@@ -10,6 +10,7 @@ mod errors;
 mod handles;
 mod hashes;
 pub(crate) mod random;
+mod readers;
 mod reads;
 
 mod rebase;

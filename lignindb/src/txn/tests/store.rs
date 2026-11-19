@@ -235,6 +235,9 @@ pub struct Swept {
     pub flat: FlatReclaimed,
     /// Why something is left, if something is.
     pub blocked: Option<Busy>,
+    /// Whether nothing was begun, because a reader from before a drop is
+    /// still there.
+    pub waiting: bool,
 }
 
 struct Hook(Arc<Db>);
@@ -493,8 +496,7 @@ impl Db {
         let (merks, flat_drops, mut wait) = self.left(versions);
         let mut swept = Swept::default();
         if !wait.poll(versions) {
-            // A reader from before a drop is still there.
-            swept.blocked = Some(Busy::Copied);
+            swept.waiting = true;
             return swept;
         }
         for mut reclaim in merks {
@@ -577,7 +579,8 @@ impl Db {
 
     /// The read path of this store under its `versions`.
     pub fn reads<'s>(&'s self, versions: &'s Versions) -> ReadPath<'s> {
-        ReadPath::new(versions, self.loader())
+        let (keyspaces, directory) = (self.keyspaces(), self.directory());
+        ReadPath::new(versions, self.loader()).with_records(&self.values, keyspaces, directory)
     }
 
     /// The committed flat pages at `at`, for the operation that holds

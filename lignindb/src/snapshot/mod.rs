@@ -163,6 +163,32 @@
 //!   it is inside this crate. Its [`Reclaim`] runs the store's reclaimers, and its
 //!   [`Reclaim::wake`] lets background work know.
 //!
+//! # The records of a subtree
+//!
+//! A reader finds the records of a subtree through the subtree directory
+//! of the version it reads ([`Operation::open`], `tree-layout.md` D6): in
+//! every column, the records under a prefix are those of the entry that
+//! the directory has under it, and where it has no entry in use there is
+//! no record to read. So a subtree that was dropped, and every subtree
+//! that was below it, is gone for every reader from the drop's version on,
+//! in every column, while what it left waits in the pages to be reclaimed;
+//! and a snapshot from before the drop reads all of it for as long as it
+//! is held (`transactions.md` CV9, T-CL1).
+//!
+//! [`Opened`] is a subtree that was opened, and the flat records of the
+//! subtree are read through it alone: by key, and under a cursor
+//! ([`RecordCursor`]). The root of its Merk is in its entry, and the nodes
+//! are read from there ([`Operation::nodes`]).
+//!
+//! A handle on the directory is of the pages it was loaded from. A
+//! snapshot loads one for its version when it first opens a subtree and
+//! keeps it for its life; an operation that pins no version loads one for
+//! the version it reads. The load is one walk of the records of what
+//! waits to be reclaimed, which finds nothing in a store where nothing
+//! does. An engine that keeps the handle of the latest version, as the
+//! directory expects of it, gives each reader a copy in its place
+//! (TXN-07).
+//!
 //! # Models and tests
 //!
 //! - `tests/loom.rs`: the race of PN4, the same for a guard, a pin that
@@ -179,6 +205,7 @@
 
 mod error;
 mod read;
+mod records;
 mod slots;
 mod sync;
 mod versions;
@@ -188,4 +215,5 @@ mod tests;
 
 pub use error::{PublishError, SnapshotError};
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
+pub use records::{Kept, Opened, ReadError, RecordCursor};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};

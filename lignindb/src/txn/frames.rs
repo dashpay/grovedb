@@ -69,12 +69,20 @@ impl Refused {
             DropError::Load(error) => TxnError::Load(error),
             DropError::Values(error) => TxnError::Values(error),
             DropError::Damaged { what, .. } | DropError::Record(what) => TxnError::Damaged(what),
+            // The numbers of the records of unlinked pages ran out, which
+            // is no damage: it is said as the directory says it of the ids
+            // it gives out.
+            DropError::IdsExhausted => TxnError::Directory(DirectoryError::IdsExhausted),
+            // A Merk that is named with one it is below is refused by the
+            // frames before the drop is asked.
+            DropError::Below { prefix } => {
+                let subtree = Subtree::new(prefix);
+                TxnError::Batch(BatchError::NotEntered { subtree })
+            }
             // The others are of reclaiming, which no write makes.
-            DropError::Below { .. }
-            | DropError::IdsExhausted
-            | DropError::Store(_)
-            | DropError::Broken { .. }
-            | DropError::GivenUp => TxnError::Damaged("a drop that could not be recorded"),
+            DropError::Store(_) | DropError::Broken { .. } | DropError::GivenUp => {
+                TxnError::Damaged("an error of reclaiming, where nothing is reclaimed")
+            }
         })
     }
 }
