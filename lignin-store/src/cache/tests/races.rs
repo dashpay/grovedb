@@ -260,20 +260,24 @@ fn of_two_makers_of_one_copy_one_is_refused() {
 
 /// The two ways to make a copy, side by side for one owner and page: the
 /// caller that takes whatever copy there is gets the one copy, and the
-/// caller that must have made its copy is given it only if no copy was
-/// there. Whoever is refused has not changed the page.
+/// caller that must have made its copy is refused whenever the other one
+/// had its copy before it asked. Whoever is refused has not changed the
+/// page.
 #[test]
 fn a_maker_that_must_be_first_is_refused_beside_one_that_shares() {
     model(3, || {
         let pool = Arc::new(pool(2));
         drop(seed(&pool, content(1, 1, 0), None));
         let first = Arc::new(SharedU64::new(0));
+        let shared = Arc::new(SharedU64::new(0));
+        shared.store(0, Ordering::SeqCst);
         let sharing = {
-            let pool = Arc::clone(&pool);
+            let (pool, shared) = (Arc::clone(&pool), Arc::clone(&shared));
             thread::spawn(move || {
                 let copy = pool
                     .make_private(owner(1), page(1), version(1))
                     .expect("in the pool");
+                shared.store(1, Ordering::SeqCst);
                 let mut latch = copy.write().expect("private");
                 let before = Content::read(&latch);
                 content(1, 1, before.revision + 1).write(&mut latch);
@@ -281,17 +285,20 @@ fn a_maker_that_must_be_first_is_refused_beside_one_that_shares() {
         };
         let alone = {
             let (pool, first) = (Arc::clone(&pool), Arc::clone(&first));
-            thread::spawn(
-                move || match pool.make_private_once(owner(1), page(1), version(1)) {
+            let shared = Arc::clone(&shared);
+            thread::spawn(move || {
+                let there = shared.load(Ordering::SeqCst) == 1;
+                match pool.make_private_once(owner(1), page(1), version(1)) {
                     Ok(copy) => {
+                        assert!(!there, "a copy was there, and was given again");
                         let mut latch = copy.write().expect("private");
                         let before = Content::read(&latch);
                         content(1, 1, before.revision + 10).write(&mut latch);
                         first.store(1, Ordering::SeqCst);
                     }
                     Err(refused) => assert_eq!(refused, NotMade::AlreadyPrivate),
-                },
-            )
+                }
+            })
         };
         join(vec![sharing, alone]);
         let revision = if first.load(Ordering::SeqCst) == 1 {

@@ -215,8 +215,9 @@
 //! yet lives with the frame of its page (WT4, FL7). Its cell in a tree
 //! page, or its entry in a flat leaf, holds a pending value, and the pool
 //! keeps the bytes beside the page under the eight bytes that name that
-//! pending value ([`ValueId`], `log-format.md` LG21): one name for a value
-//! that is not placed yet, in the page, in the log and here. The pool does
+//! pending value ([`ValueId`]): what the page holds for the value is its
+//! name here, and from its commit on that is its address in the log
+//! (`log-format.md` LG21). The pool does
 //! not look at the bytes, and compares the names only:
 //! [`ExclusiveLatch::attach`] on a private copy, [`PageRef::attached`] to
 //! read one. They are shared, not copied, when a page is copied.

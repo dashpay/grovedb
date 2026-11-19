@@ -101,10 +101,11 @@ impl BufferPool {
     /// ([`NotMade::AlreadyPrivate`]) if the owner has a copy of the page.
     ///
     /// That the owner has no copy is found in the page step that makes the
-    /// copy. So of any number of callers that ask for one owner and page at
-    /// the same moment one is given the copy and every other one is
-    /// refused, and whoever is given a copy is the only one who was: an
-    /// owner whose pages have one writer each needs no check of its own.
+    /// copy. So of any number of callers that ask this way for one owner
+    /// and page at the same moment, one is given the copy and every other
+    /// one is refused: an owner whose pages have one writer each, all of
+    /// which ask this way, needs no check of its own. A caller of
+    /// [`Self::make_private`] is given the copy all the same.
     ///
     /// A copy that exists is found before the page version to copy is
     /// looked for, so [`NotMade::Miss`] says as well that the owner had no
