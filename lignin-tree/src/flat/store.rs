@@ -3,7 +3,7 @@
 
 use std::{
     cell::RefCell,
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     ops::Deref,
     sync::{
@@ -121,6 +121,12 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized> Committed<'s, 'r, G> {
 
     /// The same pages at the same version, for the operation that holds
     /// `guard`: a reader that goes on in another operation.
+    ///
+    /// The version is one the caller has pinned through both operations.
+    /// A reader with no pin does not go on this way: the latest version it
+    /// read under one guard can be reclaimed once that guard is dropped,
+    /// whatever guard is held then (PN5, PN6), so it reads the latest
+    /// version again under `guard` and begins with [`Self::new`].
     pub fn under<'q, H: OperationGuard + ?Sized>(self, guard: &'q H) -> Committed<'s, 'q, H>
     where
         's: 'q,
@@ -379,6 +385,11 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
     /// The writer, with all it holds, for the operation that holds `guard`:
     /// it reads the committed pages it read, at the same version, under
     /// that guard from now on.
+    ///
+    /// The version is one the transaction has pinned through both
+    /// operations, as for [`Committed::under`]. A transaction that reads
+    /// at another version from now on has rebased: it gives the writer up
+    /// and makes its pages again (WT7).
     pub fn under<'q, H: OperationGuard + ?Sized>(self, guard: &'q H) -> Private<'s, 'q, H, I>
     where
         's: 'q,
@@ -672,9 +683,41 @@ fn attach(
         latch.detach(name);
     }
     for (_, pending) in pending(latch)? {
-        let name = pending.id();
-        let held = values.get(&name).ok_or(FlatError::NoValue { page })?;
-        latch.attach(name, Arc::clone(&held.bytes));
+        let held = held(values, pending, page)?;
+        latch.attach(pending.id(), Arc::clone(&held.bytes));
+    }
+    Ok(())
+}
+
+/// The value of `values` that `pending`, which an entry of `page` holds,
+/// names: one that is as long as the entry says.
+fn held(
+    values: &HashMap<ValueId, Held>,
+    pending: PendingValue,
+    page: PageId,
+) -> Result<&Held, FlatError> {
+    values
+        .get(&pending.id())
+        .filter(|held| held.bytes.len() == pending.value_len() as usize)
+        .ok_or(FlatError::NoValue { page })
+}
+
+/// Checks that each pending value the leaf `image` of `page` holds is one
+/// of `values`, as long as its entry says, and held by that entry alone.
+fn check_values(
+    image: &[u8],
+    page: PageId,
+    values: &HashMap<ValueId, Held>,
+) -> Result<(), FlatError> {
+    let mut names = HashSet::new();
+    for (_, pending) in pending(image)? {
+        held(values, pending, page)?;
+        if !names.insert(pending.id()) {
+            return Err(FlatError::Damaged {
+                page,
+                what: "two entries that hold one pending value",
+            });
+        }
     }
     Ok(())
 }
@@ -757,12 +800,17 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> FlatPagesMut for Privat
     fn write(&mut self, page: PageId, image: &[u8]) -> Result<(), FlatError> {
         let own = self.own(page)?;
         let mut latch = own.frame.write()?;
-        let Some((head, tail)) = latch.split_at_mut_checked(image.len()) else {
+        if image.len() > latch.len() {
             return Err(FlatError::Damaged {
                 page,
                 what: "an image longer than a frame",
             });
-        };
+        }
+        // An image whose values the writer does not hold as its entries
+        // say is refused before the copy changes: what the copy holds and
+        // what is with its frame stay as they were.
+        check_values(image, page, &own.values)?;
+        let (head, tail) = latch.split_at_mut(image.len());
         head.copy_from_slice(image);
         tail.fill(0);
         attach(&mut latch, page, &own.values)?;

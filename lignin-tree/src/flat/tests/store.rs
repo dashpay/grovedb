@@ -30,9 +30,10 @@ use super::{
 };
 use crate::OperationGuard;
 
-/// The guard of a reader's operation, which keeps nothing here: nothing is
-/// reclaimed in these tests while a reader reads.
-struct Guard;
+/// The guard of a reader's operation, with a number to know it by. It
+/// keeps nothing here: nothing is reclaimed in these tests while a reader
+/// reads.
+struct Guard(u8);
 
 impl OperationGuard for Guard {}
 
@@ -139,7 +140,7 @@ impl Db {
 
     /// The committed pages at `at`.
     fn reader_at(&self, at: CommitVersion) -> Reader<'_> {
-        Committed::new(self.loader(), &self.values, &Guard, at)
+        Committed::new(self.loader(), &self.values, &Guard(0), at)
     }
 
     fn reader(&self) -> Reader<'_> {
@@ -168,7 +169,7 @@ impl Db {
         read(&Committed::new(
             loader.expect("a loader"),
             &self.values,
-            &Guard,
+            &Guard(0),
             at,
         ))
     }
@@ -965,7 +966,7 @@ fn a_writer_copies_a_page_that_the_pool_does_not_hold() {
     })
     .expect("a pool");
     let loader = PageLoader::new(&pool, &db.table, &db.segments, db.size).expect("a loader");
-    let base = Committed::new(loader, &db.values, &Guard, first);
+    let base = Committed::new(loader, &db.values, &Guard(0), first);
     let mut writer = Private::new(base, &pool, OwnerId::new(1), &db.ids);
     assert_eq!(pool.stats().misses, 0);
     for n in (0..60).step_by(2) {
@@ -1516,16 +1517,16 @@ fn a_writer_goes_on_under_the_guard_of_its_next_operation() {
     db.commit(writer);
     let at = db.latest();
 
-    let (first, second) = (Guard, Guard);
+    let (first, second) = (Guard(1), Guard(2));
     let base = Committed::new(db.loader(), &db.values, &first, at);
-    assert!(std::ptr::eq(base.guard(), &first));
+    assert_eq!(base.guard().0, 1);
     let owner = OwnerId::new(77);
     let mut writer = Private::new(base, &db.pool, owner, &db.ids);
     tree.put(&mut writer, b"b", &big(2)).expect("a put");
     let revision = writer.revision();
 
     let mut writer = writer.under(&second);
-    assert!(std::ptr::eq(writer.base().guard(), &second));
+    assert_eq!(writer.base().guard().0, 2);
     assert_eq!(writer.base().at(), at);
     assert_eq!(writer.revision(), revision);
     assert_eq!(writer.written().collect::<Vec<_>>(), [tree.root()]);
@@ -1544,7 +1545,7 @@ fn a_writer_goes_on_under_the_guard_of_its_next_operation() {
 
     // A reader goes on the same way.
     let reader = Committed::new(db.loader(), &db.values, &first, at).under(&second);
-    assert!(std::ptr::eq(reader.guard(), &second));
+    assert_eq!(reader.guard().0, 2);
     assert_eq!(get(&reader, &tree, b"c"), None);
     assert_eq!(
         format!("{reader:?}"),
@@ -1574,7 +1575,7 @@ fn of_two_writers_under_one_owner_one_is_refused_its_page() {
             let start = &start;
             move || {
                 let loader = PageLoader::new(pool, table, segments, size).expect("a loader");
-                let base = Committed::new(loader, values, &Guard, at);
+                let base = Committed::new(loader, values, &Guard(0), at);
                 let mut writer = Private::new(base, pool, owner, ids);
                 start.wait();
                 let put = tree.put(&mut writer, b"b", value);
@@ -1606,4 +1607,70 @@ fn of_two_writers_under_one_owner_one_is_refused_its_page() {
         assert_eq!(pool.page_step(root).private_copies(), 0);
     }
     assert_eq!(get(&db.reader(), &tree, b"b"), None);
+}
+
+/// An image whose pending values the writer does not hold as its entries
+/// say is refused before the copy changes: the copy's bytes, and the bytes
+/// that are with its frame, are as they were, so no entry is left with a
+/// name that its bytes are not under.
+#[test]
+fn a_write_whose_values_the_writer_does_not_hold_changes_nothing() {
+    let db = Db::new();
+    let mut writer = db.writer();
+    let owner = OwnerId::new(db.state.borrow().owners);
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    let root = tree.root();
+    let first = vec![9; db.config.max_inline() + 1];
+    tree.put(&mut writer, b"a", &first).expect("a put");
+    let one = writer.hold_value(root, &[1; 2_000]).expect("held");
+    let two = writer.hold_value(root, &[2; 3_000]).expect("held");
+    let image = |values: [PendingValue; 2]| {
+        let mut leaf =
+            lignin_format::flat_page::FlatLeafBuilder::new(root, b"", db.config.capacity())
+                .expect("a leaf");
+        for (key, value) in [b"x", b"y"].into_iter().zip(values) {
+            let place = ValuePlace::Pending(value).encode();
+            leaf.push(key, FlatValue::OutOfLine(&place))
+                .expect("an entry");
+        }
+        leaf.finish()
+    };
+    let copy = || {
+        let copy = db.pool.private(owner, root).expect("the writer's copy");
+        let latch = copy.read();
+        let attached = latch.attachments().map(|(name, bytes)| (name, bytes.len()));
+        let [attached, held] = attached_and_held(&latch, attached.collect());
+        assert_eq!(attached, held);
+        (latch.to_vec(), attached)
+    };
+    let before = copy();
+    assert_eq!(before.1.len(), 1);
+
+    // The second entry says another length than its value has.
+    let shorter = PendingValue::new(two.id(), 2_500).expect("a pending value");
+    let refused = writer.write(root, &image([one, shorter]));
+    assert!(matches!(refused, Err(FlatError::NoValue { page }) if page == root));
+    assert!(copy() == before);
+    // Two entries hold one value.
+    let refused = writer.write(root, &image([one, one]));
+    assert!(matches!(
+        refused,
+        Err(FlatError::Damaged { page, what }) if page == root
+            && what == "two entries that hold one pending value"
+    ));
+    assert!(copy() == before);
+    assert_eq!(get(&writer, &tree, b"a"), Some(first));
+
+    // The image whose entries say what the writer holds is taken, and its
+    // commit names both values.
+    writer.write(root, &image([one, two])).expect("written");
+    let (_, names) = copy();
+    assert_eq!(names, {
+        let mut names = [(one.id(), 2_000), (two.id(), 3_000)];
+        names.sort_unstable();
+        names
+    });
+    db.commit(writer);
+    assert_eq!(get(&db.reader(), &tree, b"x"), Some(vec![1; 2_000]));
+    assert_eq!(get(&db.reader(), &tree, b"y"), Some(vec![2; 3_000]));
 }
