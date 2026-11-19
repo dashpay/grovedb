@@ -247,7 +247,7 @@ pub(super) fn read_local_count_page<'db, E: Engine>(
     .wrap_with_cost(cost)
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use super::*;
     use crate::{element::query::ElementQueryExtensions, Query};

@@ -861,5 +861,5 @@ impl ElementAggregateSumQueryExtensions for Element {
 }
 
 #[cfg(feature = "engine_generic")]
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests;

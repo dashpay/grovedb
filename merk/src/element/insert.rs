@@ -1211,8 +1211,7 @@ impl ElementInsertToStorageExtensions for Element {
     }
 }
 
-#[cfg(all(feature = "minimal", feature = "test_utils"))]
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use super::*;
     use crate::{

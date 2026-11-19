@@ -1323,10 +1323,10 @@ fn initial_segment_removal_keeps_its_own_declaration() {
     }
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 /// A skipped callback `DeleteTree(Skip)` must not erase the cleanup behavior
 /// of the `DeleteTree(DeleteChildren)` the initial segment executed at the
 /// same path: the removed subtree's storage is still cleaned.
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn skipped_callback_delete_keeps_the_executed_deletions_cleanup() {
     use crate::batch::SubelementsDeletionBehavior;
@@ -1622,12 +1622,12 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
         .is_ok());
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 /// A callback `DeleteTree(DontCheckWithNoCleanup)` at the same key as an
 /// initial-segment `DeleteTree(DeleteChildren)` must not change how the
 /// initial deletion is cleaned up: the cleanup walk still runs, so it still
 /// clears the subtree's storage and still refuses a participant the batch
 /// does not explicitly delete.
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn callback_delete_tree_cannot_erase_the_initial_segments_cleanup() {
     use crate::batch::SubelementsDeletionBehavior;

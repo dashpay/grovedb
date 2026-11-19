@@ -107,7 +107,6 @@ mod tests {
         }
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Drift the count secondary of a PCIT away from its primary while keeping
     /// the tree *structurally* sound: the rows are added/removed directly, then
     /// the parent element is rebound to the secondary's new `(root_hash,
@@ -119,6 +118,7 @@ mod tests {
     /// from a stale root, find nothing, and leave the row behind. What reconcile
     /// is specified to fix is a *coherent* secondary carrying the wrong content,
     /// which is what this produces.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn drift_secondary(
         db: &TempGroveDb,
         pcit_path: &[&[u8]],
@@ -275,7 +275,6 @@ mod tests {
     // Repair: delete rows the primary does not justify
     // -----------------------------------------------------------------
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A secondary row with no matching primary entry (`__cidx_secondary_orphan__`)
     /// must be deleted by reconcile.
     ///
@@ -285,6 +284,7 @@ mod tests {
     /// rather than whatever shape the incremental inserts happened to leave
     /// behind. `reconcile_is_shape_deterministic_regardless_of_how_the_index_drifted`
     /// pins that canonical shape directly.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_deletes_a_secondary_orphan() {
         let gv = GroveVersion::latest();
@@ -351,9 +351,9 @@ mod tests {
     // Repair: insert rows the primary requires
     // -----------------------------------------------------------------
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A primary entry with no secondary row (`__cidx_primary_orphan__`) must be
     /// re-indexed by reconcile at the count the primary actually records.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_reinserts_a_missing_secondary_row() {
         let gv = GroveVersion::latest();
@@ -408,11 +408,11 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Both repair directions in one pass, against a non-trivial count: the row
     /// for `a` is at the wrong count, so reconcile must delete `(7, "a")` *and*
     /// insert `(1, "a")`. Pins that the deletion set and the insertion set are
     /// computed independently rather than one being derived from the other.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_moves_a_row_that_sits_at_the_wrong_count() {
         let gv = GroveVersion::latest();
@@ -467,7 +467,6 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The rebuild replays the desired keyset from a `BTreeSet`, so the repaired
     /// secondary's AVL shape — and therefore the `combine_hash_three` parent
     /// binding and the GroveDB root hash — depends only on the primary's
@@ -477,6 +476,7 @@ mod tests {
     /// and end up with identical bytes; a hashed iteration order in step 6 would
     /// break it. Three databases with the same primary but three unrelated kinds
     /// of drift must reconcile to one root hash.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_is_shape_deterministic_regardless_of_how_the_index_drifted() {
         let gv = GroveVersion::latest();
@@ -530,11 +530,11 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Reconcile must derive counts from the primary's *aggregates*, not assume
     /// every entry contributes 1. A PCIT whose children are `ProvableCountTree`
     /// subtrees carries their descendant counts, and the repaired secondary must
     /// rank by those.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_uses_the_primary_aggregate_count_for_each_row() {
         let gv = GroveVersion::latest();
@@ -676,12 +676,12 @@ mod tests {
         }
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A primary key longer than the 247-byte cidx ceiling cannot be mirrored:
     /// `sort_key ‖ item_key` would exceed Merk's 256-byte limit. Every write
     /// door refuses such a key, so reaching it means the primary was written by
     /// something that bypassed the check — reconcile must fail closed rather
     /// than synthesize an oversize secondary key.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_refuses_a_primary_key_over_the_cidx_ceiling() {
         let gv = GroveVersion::latest();
@@ -815,7 +815,6 @@ mod tests {
         }
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A secondary row whose key is shorter than the axis's 8-byte sort prefix
     /// carries no recoverable `(count, original_key)` pair. Every place that
     /// decodes a row must raise `CorruptedData` naming the axis and the
@@ -828,6 +827,7 @@ mod tests {
     /// `offset > 0` skips by counted descent and decodes only *returned* rows,
     /// so its skip phase deliberately does not error — that contract is
     /// asserted here too.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_short_secondary_key_is_reported_by_every_shape_that_decodes_it() {
         let gv = GroveVersion::latest();
@@ -1070,7 +1070,6 @@ mod tests {
         }
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Axis-aware sibling of [`drift_secondary`]: edit rows in ONE axis
     /// secondary of any indexed variant, then rebind the parent element to
     /// every axis's current `(root_hash, root_key)` so the damage is a
@@ -1082,6 +1081,7 @@ mod tests {
     /// rows and `delete` removes rows, both of which can rotate the AVL and
     /// therefore permanently change tree SHAPE (see the shape caveat on
     /// `reconcile_indexed_tree_secondaries`).
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn drift_axis_secondary(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
@@ -1231,12 +1231,12 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rebind a PCIT's parent element so its `secondary_root_key` names a
     /// key that does not exist in the count secondary, leaving every row
     /// and hash otherwise intact. Produces the state a counted read must
     /// treat as corruption: the element is readable and valid, but the
     /// root it names resolves to nothing.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn rebind_count_secondary_root_key_to(
         db: &TempGroveDb,
         pcit_path: &[&[u8]],
@@ -1320,7 +1320,6 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A parent element whose `secondary_root_key` names a node that does
     /// not exist must fail loud through the counted path. The pinned view
     /// read the element itself, so a dangling root key is corruption, not
@@ -1328,6 +1327,7 @@ mod tests {
     /// an empty or truncated page. The offset-0 iterator path, which
     /// never consults the root key, still reads the physical rows: the
     /// contrast is the two-views posture the design doc records.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_dangling_secondary_root_key_fails_loud_through_the_counted_path() {
         let gv = GroveVersion::latest();
@@ -1364,10 +1364,10 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// PSIT: an orphan row in the sum secondary is removed and the root
     /// returns to the pristine twin's — the repair covers the sum axis, not
     /// just count.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_repairs_a_psit_orphan_row() {
         let gv = GroveVersion::latest();
@@ -1404,13 +1404,13 @@ mod tests {
         assert_clean(&db, gv);
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// PCPSIT: a row at the CORRECT avg sort key carrying a damaged payload
     /// must be rewritten. Key-presence alone cannot detect this — it is the
     /// content-compare path the count-only reconcile never needed. The
     /// damage is an IN-PLACE overwrite (no delete), so the tree shape is
     /// untouched and pristine-equality is the correct expectation per the
     /// shape caveat on the repair API.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_rewrites_a_payload_damaged_avg_row() {
         let gv = GroveVersion::latest();
@@ -1450,11 +1450,11 @@ mod tests {
         assert_clean(&db, gv);
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Two PCPSITs damaged DIFFERENTLY (a ghost row on the sum axis, a
     /// deleted row on the avg axis) must both reconcile back to the pristine
     /// twin's root — canonical content repair across axes, with damage whose
     /// undo restores the previous shape.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_pcpsit_is_canonical_regardless_of_which_axis_drifted() {
         let gv = GroveVersion::latest();

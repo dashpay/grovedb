@@ -16,9 +16,7 @@ mod tests {
     use crate::BackwardsReferences;
     use grovedb_element::indexed::IndexAxis;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageBatch, StorageContext};
     use grovedb_version::version::GroveVersion;
 
     use crate::{
@@ -27,13 +25,13 @@ mod tests {
         Element, Error,
     };
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Seed a stale ("drifted") raw KV directly into an indexed tree's
     /// per-axis secondary storage namespace, bypassing the primary. This
     /// mirrors a bug where the secondary index fails to be mirror-cleaned
     /// while the primary is emptied, leaving orphan rows at
     /// `Blake3(primary_prefix ‖ axis_tag)`. Returns the secondary prefix
     /// so the caller can scan it before/after delete.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn seed_stale_secondary_row(
         db: &crate::GroveDb,
         primary_path: &[&[u8]],
@@ -70,9 +68,9 @@ mod tests {
         secondary_prefix
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Assert whether the secondary namespace at `secondary_prefix` has
     /// any rows.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn secondary_namespace_non_empty(db: &crate::GroveDb, secondary_prefix: [u8; 32]) -> bool {
         crate::tests::data_keyspace_len(db, secondary_prefix, None) > 0
     }

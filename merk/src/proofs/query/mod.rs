@@ -2,11 +2,11 @@
 // grovedb_merk::proofs::query::*
 pub use grovedb_query::*;
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod limit_cut_bound_tests;
 #[cfg(test)]
 mod merk_integration_tests;
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod wide_tree_aggregate_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]

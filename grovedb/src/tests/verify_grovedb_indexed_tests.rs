@@ -48,10 +48,10 @@ mod tests {
         k
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Manually delete an entry from a PCIT secondary at the given
     /// secondary key, then commit. Used to introduce drift between
     /// primary and secondary for content-consistency testing.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcit_secondary_delete(
         db: &crate::GroveDb,
         cidx_primary_path: &[&[u8]],
@@ -110,8 +110,8 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Manually insert a bogus orphan into a PCIT secondary.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcit_secondary_insert_orphan(
         db: &crate::GroveDb,
         cidx_primary_path: &[&[u8]],
@@ -1205,9 +1205,9 @@ mod tests {
     // PSIT corruption detection
     // -----------------------------------------------------------------
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Manually delete an entry from a PSIT secondary at the given
     /// secondary key.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_psit_secondary_delete(
         db: &crate::GroveDb,
         psit_primary_path: &[&[u8]],
@@ -1470,9 +1470,9 @@ mod tests {
         k
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Manually delete an entry from a PCPSIT axis secondary at the
     /// given key, then commit.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcpsit_axis_secondary_delete(
         db: &crate::GroveDb,
         pcpsit_primary_path: &[&[u8]],
@@ -2013,7 +2013,6 @@ mod tests {
         assert_verify_passes(&db, grove_version);
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// PSIT drift must stay visible AFTER a later write re-heals the parent
     /// hash over the drifted secondary.
     ///
@@ -2022,6 +2021,7 @@ mod tests {
     /// re-derives the parent's value_hash from the drifted secondary's
     /// current root, at which point the chain is internally consistent again
     /// and the drift is invisible without a per-entry content walk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_psit_drift_survives_hash_reheal_and_is_still_detected() {
         let grove_version = GroveVersion::latest();
@@ -2092,11 +2092,11 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Same re-heal scenario as the PSIT case, but on a multi-axis PCPSIT:
     /// drift on ONE axis must remain visible after a later write re-derives
     /// the axes digest over the drifted axis, and must be attributed to the
     /// axis it happened on.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_pcpsit_axis_drift_survives_hash_reheal_and_names_the_axis() {
         let grove_version = GroveVersion::latest();

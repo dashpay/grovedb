@@ -41,19 +41,19 @@ mod tests {
         path.into()
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Derived storage prefix of an indexed primary's per-axis secondary
     /// namespace (`Blake3(primary_prefix ‖ axis_tag)`).
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn axis_secondary_prefix(primary_path: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
         let primary_prefix = RocksDbStorage::build_prefix(subtree_path(primary_path)).unwrap();
         RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write a raw key/value straight into a subtree's data namespace,
     /// bypassing the Merk tree structure entirely. The row is invisible to
     /// tree traversal but IS visible to the raw iteration that
     /// `verify_grovedb`'s content walks use.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn raw_put_in_subtree(db: &GroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
         let tx = db.start_transaction();
         let batch = StorageBatch::new();
@@ -75,12 +75,12 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Same, but into an indexed primary's per-axis secondary namespace.
     /// Insert a row into an axis secondary through the Merk API, so the
     /// stored bytes are a real node the integrity walk can decode. Raw
     /// storage puts are only usable for malformed-key cases, which the walk
     /// reports before it reaches the payload decode.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn insert_into_axis_secondary(
         db: &GroveDb,
         primary_path: &[&[u8]],
@@ -166,10 +166,10 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Insert an element straight into a subtree's Merk, bypassing the
     /// grovedb-level insert API (and therefore the indexed-tree secondary
     /// mirroring and key-length validation).
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn merk_insert_element(
         db: &GroveDb,
         path: &[&[u8]],
@@ -202,7 +202,6 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rewrite the axes list of an existing PCPSIT element in place.
     ///
     /// The constructors and the insert path validate axis tags, but
@@ -211,6 +210,7 @@ mod tests {
     /// consumer that reads the list back. Because the key already exists,
     /// this is a replace: the parent Merk's shape (and therefore its own
     /// root key, held one level further up) is untouched.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn corrupt_pcpsit_axes(
         db: &GroveDb,
         parent_path: &[&[u8]],
@@ -265,7 +265,6 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Drive `propagate_changes_with_transaction_with_initial_deferred`
     /// directly, seeding its `merk_cache` with the Merk at `path`. This is
     /// the entry point every mutating operation funnels through; calling it
@@ -274,6 +273,7 @@ mod tests {
     ///
     /// Commits only when propagation succeeded, so a rejected propagation
     /// leaves the database byte-identical.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn propagate_from(
         db: &GroveDb,
         path: &[&[u8]],

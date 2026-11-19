@@ -1050,7 +1050,7 @@ pub(crate) fn get_path_query_internal<'db, E: Engine>(
     )
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use grovedb_element::Element;
     use grovedb_merk::{element::insert::ElementInsertToStorageExtensions, proofs::Query};

@@ -27,7 +27,7 @@ mod tests {
     use grovedb_element::indexed::IndexAxis;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+    use grovedb_storage::rocksdb_storage::RocksDbStorage;
     use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
     use crate::{

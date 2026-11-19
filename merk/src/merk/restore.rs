@@ -1310,7 +1310,7 @@ fn own_contribution_from_subtree_total(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_path::SubtreePath;
 

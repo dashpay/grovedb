@@ -1145,7 +1145,7 @@ pub fn key_exists_as_boundary_in_proof(proof_bytes: &[u8], key: &[u8]) -> Result
     Ok(false)
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod provable_sum_tree_bound_regression_tests {
     //! Regression coverage for a Codex-flagged bug: the lower- and
     //! upper-bound `last_push` checks in `execute_proof` accepted
@@ -1279,7 +1279,7 @@ mod provable_sum_tree_bound_regression_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod provable_count_provable_sum_tree_bound_regression_tests {
     //! Dual-axis parallel of `provable_sum_tree_bound_regression_tests`.
     //!
@@ -1646,7 +1646,7 @@ mod proof_stream_direction_tests {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod limit_mode_tests {
     //! `ProofLimitMode::UpperBound` lets a verifier accept a proof the
     //! prover cut short at a limit no greater than the verifier's, without

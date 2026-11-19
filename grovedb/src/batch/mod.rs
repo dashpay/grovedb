@@ -24,29 +24,29 @@ mod conditional_insert_target;
 mod filled_tree_insert_checks;
 mod mode;
 mod move_element;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod multi_insert_cost_tests;
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod just_in_time_cost_tests;
 /// Just-in-time reference update handling for batch operations.
 pub mod just_in_time_reference_update;
 mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod replacement_accounting_cost_tests;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 pub(crate) mod replacement_test_support;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod same_batch_reference_prediction_tests;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod single_deletion_cost_tests;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod single_insert_cost_tests;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod single_sum_item_deletion_cost_tests;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod single_sum_item_insert_cost_tests;
 
 use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
@@ -8821,7 +8821,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
 
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;

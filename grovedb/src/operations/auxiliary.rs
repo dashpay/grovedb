@@ -293,7 +293,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use crate::{tests::make_empty_grovedb, GroveDb, TransactionArg};
 

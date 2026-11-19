@@ -29,10 +29,7 @@ mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_merk::tree_type::TreeType;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{pending_prefix_drops_namespace, RocksDbStorage},
-        RawIterator, Storage, StorageContext,
-    };
+    use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageContext};
     use grovedb_version::version::{v3::GROVE_V3, GroveVersion};
 
     use crate::{
@@ -128,9 +125,9 @@ mod tests {
             .collect()
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `value` at `key` straight into the data storage of the subtree
     /// at `path`, bypassing Merk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn put_raw(db: &TempGroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
         let tx = db.start_transaction();
         let storage = db
@@ -146,9 +143,9 @@ mod tests {
         db.commit_transaction(tx).unwrap().expect("commit raw put");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The bytes stored at `key` in the data storage of the subtree at
     /// `path`, read without Merk.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn get_raw_bytes(db: &TempGroveDb, path: &[&[u8]], key: &[u8]) -> Vec<u8> {
         let tx = db.start_transaction();
         let storage = db

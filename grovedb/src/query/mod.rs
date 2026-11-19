@@ -1865,7 +1865,7 @@ mod tests {
     use grovedb_version::version::GroveVersion;
     use indexmap::IndexMap;
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     use crate::tests::{common::compare_result_tuples, make_deep_tree, TEST_LEAF};
     use crate::{
         query::{HasSubquery, SinglePathSubquery},
@@ -1873,7 +1873,7 @@ mod tests {
         Element, Error, GroveDb, PathQuery, SizedQuery,
     };
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_same_path_different_query_merge() {
         let grove_version = GroveVersion::latest();
@@ -1922,7 +1922,7 @@ mod tests {
         assert_eq!(result_set_tree.len(), 2);
     }
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_different_same_length_path_with_different_query_merge() {
         let grove_version = GroveVersion::latest();
@@ -2209,7 +2209,7 @@ mod tests {
         compare_result_tuples(proved_result_set_merged, expected_result_set);
     }
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_different_length_paths_merge() {
         let grove_version = GroveVersion::latest();
@@ -2296,7 +2296,7 @@ mod tests {
         compare_result_tuples(result_set_merged, expected_result_set);
     }
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_same_path_and_different_path_query_merge() {
         let grove_version = GroveVersion::latest();
@@ -2362,7 +2362,7 @@ mod tests {
         assert_eq!(result_set.len(), 4);
     }
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_equal_path_merge() {
         let grove_version = GroveVersion::latest();
@@ -2827,7 +2827,7 @@ mod tests {
         }
     }
 
-    #[cfg(feature = "rocksdb_storage")]
+    #[cfg(grovedb_test_engine)]
     #[test]
     fn test_conditional_subquery_refusing_elements() {
         let grove_version = GroveVersion::latest();

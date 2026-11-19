@@ -28,16 +28,18 @@
 
 //! Test utils
 
-#[cfg(feature = "full")]
 mod engine;
+#[cfg(merk_test_engine)]
 mod temp_merk;
 
 use std::{convert::TryInto, ops::Range};
 
-#[cfg(feature = "full")]
+pub use engine::{NodeStoreOnly, TestEngine};
+#[cfg(feature = "rocksdb_storage")]
+pub use engine::{NodeStoreOnlyEngine, RocksDbTestEngine};
+#[cfg(merk_test_engine)]
 pub use engine::{
-    NodeStoreOnly, NodeStoreOnlyEngine, RocksDbTestEngine, SuiteBatch, SuiteEngine,
-    SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine, TestEngine,
+    SuiteBatch, SuiteEngine, SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine,
 };
 use grovedb_costs::storage_cost::{
     removal::StorageRemovedBytes::BasicStorageRemoval, transition::ElementFlagsUpdate,
@@ -45,6 +47,7 @@ use grovedb_costs::storage_cost::{
 use grovedb_path::SubtreePath;
 use grovedb_version::version::GroveVersion;
 use rand::prelude::*;
+#[cfg(merk_test_engine)]
 pub use temp_merk::TempMerk;
 
 use crate::{
@@ -316,7 +319,6 @@ pub fn make_tree_seq_with_start_key(
     tree
 }
 /// Shortcut to open a Merk of the root subtree on an engine, with a batch
-#[cfg(feature = "full")]
 pub fn empty_path_merk<'db, E: TestEngine>(
     engine: &'db E,
     transaction: &'db E::Transaction<'_>,
@@ -336,7 +338,6 @@ pub fn empty_path_merk<'db, E: TestEngine>(
 }
 
 /// Shortcut to open a Merk of the root subtree on an engine for read only
-#[cfg(feature = "full")]
 pub fn empty_path_merk_read_only<'db, E: TestEngine>(
     engine: &'db E,
     transaction: &'db E::Transaction<'_>,

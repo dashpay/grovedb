@@ -4692,7 +4692,7 @@ mod secondary_key_codec_tests {
         }
     }
 }
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod direct_axis_mirror_tests {
     //! Direct-drive tests for `mirror_indexed_axis_to_secondary`.
     //!

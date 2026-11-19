@@ -29,7 +29,7 @@ mod tests {
         tree::{combine_hash, value_hash},
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
+    use grovedb_storage::rocksdb_storage::RocksDbStorage;
     use grovedb_version::version::{
         v1::GROVE_V1, v2::GROVE_V2, v3::GROVE_V3, v4::GROVE_V4, GroveVersion,
     };

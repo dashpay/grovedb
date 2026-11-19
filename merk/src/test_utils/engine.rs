@@ -9,19 +9,29 @@
 //! `cargo test -p grovedb-merk` runs the suite on the first engine of that
 //! file, and `MERK_TEST_ENGINE=<name> cargo test -p grovedb-merk` on another.
 
-use std::{ops::Deref, path::Path};
+//!
+//! The suite has an engine where the Cargo feature of the selected engine is
+//! on, and then the cfg `merk_test_engine` is set. Without it there is only
+//! the trait, and the tests that open a store are left out of the build.
+
+#[cfg(feature = "rocksdb_storage")]
+mod rocksdb;
+#[cfg(merk_test_engine)]
+mod suite;
+
+use std::path::Path;
 
 use grovedb_costs::{CostContext, CostResult};
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::{
-        PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionContext, RocksDbStorage,
-    },
-    Error, Storage, StorageBatch,
-};
+use grovedb_storage::Error;
 use grovedb_version::version::GroveVersion;
-use tempfile::TempDir;
 
+#[cfg(feature = "rocksdb_storage")]
+pub use self::rocksdb::{NodeStoreOnlyEngine, RocksDbTestEngine};
+#[cfg(merk_test_engine)]
+pub use self::suite::{
+    SuiteBatch, SuiteEngine, SuiteImmediateSubtree, SuiteSubtree, SuiteTransaction, TempEngine,
+};
 use crate::{
     store::{NodeChange, NodeStore},
     tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
@@ -87,89 +97,10 @@ pub trait TestEngine: Sized {
     ) -> CostResult<(), Error>;
 }
 
-/// RocksDB: a handle is the storage context of its subtree, which is a
-/// `NodeStore` through the adapter of `store::kv`.
-pub struct RocksDbTestEngine {
-    storage: RocksDbStorage,
-}
-
-impl RocksDbTestEngine {
-    /// The storage underneath, for a test that is about RocksDB.
-    pub fn storage(&self) -> &RocksDbStorage {
-        &self.storage
-    }
-}
-
-impl TestEngine for RocksDbTestEngine {
-    type Batch = StorageBatch;
-    type ImmediateSubtree<'a> = PrefixedRocksDbImmediateStorageContext<'a>;
-    type Subtree<'a> = PrefixedRocksDbTransactionContext<'a>;
-    type Transaction<'db> = <RocksDbStorage as Storage<'db>>::Transaction;
-
-    fn open(path: &Path) -> Self {
-        RocksDbTestEngine {
-            storage: RocksDbStorage::default_rocksdb_with_path(path)
-                .expect("cannot open rocksdb storage"),
-        }
-    }
-
-    fn start_transaction(&self) -> Self::Transaction<'_> {
-        self.storage.start_transaction()
-    }
-
-    fn commit_transaction(&self, transaction: Self::Transaction<'_>) -> CostResult<(), Error> {
-        self.storage.commit_transaction(transaction)
-    }
-
-    fn subtree<'a, 'b, B>(
-        &'a self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'a StorageBatch>,
-        transaction: &'a Self::Transaction<'_>,
-    ) -> CostContext<Self::Subtree<'a>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        self.storage
-            .get_transactional_storage_context(path, batch, transaction)
-    }
-
-    fn immediate_subtree<'a, 'b, B>(
-        &'a self,
-        path: SubtreePath<'b, B>,
-        transaction: &'a Self::Transaction<'_>,
-    ) -> CostContext<Self::ImmediateSubtree<'a>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        self.storage
-            .get_immediate_storage_context(path, transaction)
-    }
-
-    fn apply_batch(
-        &self,
-        batch: StorageBatch,
-        transaction: &Self::Transaction<'_>,
-    ) -> CostResult<(), Error> {
-        self.storage
-            .commit_multi_context_batch(batch, Some(transaction))
-    }
-}
-
-/// RocksDB behind handles that are a [`NodeStore`] and nothing else.
-///
-/// A handle of [`RocksDbTestEngine`] is a storage context as well, so a test
-/// that reads or writes records through it compiles there. Here it does not:
-/// the suite on this engine is the part of the suite that a store which is not
-/// a storage context can run.
-pub struct NodeStoreOnlyEngine {
-    engine: RocksDbTestEngine,
-}
-
 /// A handle that passes every call of [`NodeStore`] on to the handle it
 /// wraps, and offers nothing else of it.
 pub struct NodeStoreOnly<S> {
-    store: S,
+    pub(super) store: S,
 }
 
 impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
@@ -249,114 +180,7 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
     }
 }
 
-impl TestEngine for NodeStoreOnlyEngine {
-    type Batch = <RocksDbTestEngine as TestEngine>::Batch;
-    type ImmediateSubtree<'a> =
-        NodeStoreOnly<<RocksDbTestEngine as TestEngine>::ImmediateSubtree<'a>>;
-    type Subtree<'a> = NodeStoreOnly<<RocksDbTestEngine as TestEngine>::Subtree<'a>>;
-    type Transaction<'db> = <RocksDbTestEngine as TestEngine>::Transaction<'db>;
-
-    fn open(path: &Path) -> Self {
-        NodeStoreOnlyEngine {
-            engine: RocksDbTestEngine::open(path),
-        }
-    }
-
-    fn start_transaction(&self) -> Self::Transaction<'_> {
-        self.engine.start_transaction()
-    }
-
-    fn commit_transaction(&self, transaction: Self::Transaction<'_>) -> CostResult<(), Error> {
-        self.engine.commit_transaction(transaction)
-    }
-
-    fn subtree<'a, 'b, B>(
-        &'a self,
-        path: SubtreePath<'b, B>,
-        batch: Option<&'a Self::Batch>,
-        transaction: &'a Self::Transaction<'_>,
-    ) -> CostContext<Self::Subtree<'a>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        self.engine
-            .subtree(path, batch, transaction)
-            .map(|store| NodeStoreOnly { store })
-    }
-
-    fn immediate_subtree<'a, 'b, B>(
-        &'a self,
-        path: SubtreePath<'b, B>,
-        transaction: &'a Self::Transaction<'_>,
-    ) -> CostContext<Self::ImmediateSubtree<'a>>
-    where
-        B: AsRef<[u8]> + 'b,
-    {
-        self.engine
-            .immediate_subtree(path, transaction)
-            .map(|store| NodeStoreOnly { store })
-    }
-
-    fn apply_batch(
-        &self,
-        batch: Self::Batch,
-        transaction: &Self::Transaction<'_>,
-    ) -> CostResult<(), Error> {
-        self.engine.apply_batch(batch, transaction)
-    }
-}
-
-/// The engine this build of the suite runs on: the one `MERK_TEST_ENGINE`
-/// names, or the first of `merk/test-engines.txt`.
-#[cfg(merk_test_engine = "rocksdb")]
-pub type SuiteEngine = RocksDbTestEngine;
-/// The engine this build of the suite runs on: the one `MERK_TEST_ENGINE`
-/// names, or the first of `merk/test-engines.txt`.
-#[cfg(merk_test_engine = "node-store-only")]
-pub type SuiteEngine = NodeStoreOnlyEngine;
-
-/// A transaction of the suite's engine.
-pub type SuiteTransaction<'db> = <SuiteEngine as TestEngine>::Transaction<'db>;
-/// The batch of the suite's engine.
-pub type SuiteBatch = <SuiteEngine as TestEngine>::Batch;
-/// A deferred subtree handle of the suite's engine.
-pub type SuiteSubtree<'a> = <SuiteEngine as TestEngine>::Subtree<'a>;
-/// An immediate subtree handle of the suite's engine.
-pub type SuiteImmediateSubtree<'a> = <SuiteEngine as TestEngine>::ImmediateSubtree<'a>;
-
-/// A database of the suite's engine in a temporary directory, removed when
-/// this is dropped.
-pub struct TempEngine {
-    engine: SuiteEngine,
-    _dir: TempDir,
-}
-
-impl TempEngine {
-    /// A new, empty database.
-    pub fn new() -> Self {
-        let dir = TempDir::new().expect("cannot create a temporary directory");
-        TempEngine {
-            engine: SuiteEngine::open(dir.path()),
-            _dir: dir,
-        }
-    }
-}
-
-impl Default for TempEngine {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Deref for TempEngine {
-    type Target = SuiteEngine;
-
-    fn deref(&self) -> &SuiteEngine {
-        &self.engine
-    }
-}
-
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use std::any::type_name;
 
@@ -377,6 +201,7 @@ mod tests {
             .lines()
             .map(str::trim)
             .filter(|line| !line.is_empty() && !line.starts_with('#'))
+            .filter_map(|line| line.split_whitespace().next())
             .collect()
     }
 
@@ -557,7 +382,7 @@ mod tests {
 
     #[test]
     fn the_storage_of_the_rocksdb_engine_is_the_one_its_handles_write() {
-        use grovedb_storage::StorageContext;
+        use grovedb_storage::{Storage, StorageContext};
 
         let grove_version = GroveVersion::latest();
         let directory = tempfile::TempDir::new().expect("a temporary directory");

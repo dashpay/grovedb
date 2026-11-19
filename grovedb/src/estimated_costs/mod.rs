@@ -29,6 +29,6 @@
 //! Estimated costs
 
 mod average_case_costs;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod storage_parameter_tests;
 mod worst_case_costs;

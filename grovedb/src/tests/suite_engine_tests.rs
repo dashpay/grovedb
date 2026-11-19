@@ -18,6 +18,7 @@ fn registered() -> Vec<&'static str> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| line.split_whitespace().next())
         .collect()
 }
 
@@ -66,7 +67,10 @@ fn the_suite_is_built_for_the_selected_engine() {
             "{name} is {expected}, and the suite runs on {engine}"
         );
     }
-    println!("grovedb suite engine: {name} ({})", type_name::<SuiteEngine>());
+    println!(
+        "grovedb suite engine: {name} ({})",
+        type_name::<SuiteEngine>()
+    );
 }
 
 #[test]
@@ -90,7 +94,10 @@ fn the_fixtures_and_the_constructors_open_the_suite_engine() {
         .unwrap()
         .expect("an insert");
     assert_eq!(
-        opened.root_hash(None, grove_version).unwrap().expect("a root hash"),
+        opened
+            .root_hash(None, grove_version)
+            .unwrap()
+            .expect("a root hash"),
         {
             let one_leaf = make_empty_grovedb();
             one_leaf
@@ -104,7 +111,10 @@ fn the_fixtures_and_the_constructors_open_the_suite_engine() {
                 )
                 .unwrap()
                 .expect("an insert");
-            one_leaf.root_hash(None, grove_version).unwrap().expect("a root hash")
+            one_leaf
+                .root_hash(None, grove_version)
+                .unwrap()
+                .expect("a root hash")
         }
     );
 }

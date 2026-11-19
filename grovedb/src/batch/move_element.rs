@@ -853,7 +853,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},

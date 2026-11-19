@@ -2380,10 +2380,10 @@ fn plain_writes_still_route_through_pre_v4_dispatch() {
     );
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 /// `verify_grovedb` recomputes the combined (inner ‖ backrefs) hash for
 /// backward-references items and reports nodes whose stored value hash
 /// does not match — e.g. one written with a corrupt provided hash.
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn verify_grovedb_reports_corrupt_provided_value_hashes() {
     use grovedb_merk::{tree::Op as MerkOp, TreeFeatureType};
@@ -3427,9 +3427,9 @@ fn automatic_delete_handles_specialized_descendants() {
         .is_empty());
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 /// `verify_grovedb` audits reciprocity: a forged referrer entry naming a
 /// position that does not point back is reported.
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn verify_grovedb_reports_forged_referrer_entries() {
     use grovedb_merk::{tree::Op as MerkOp, TreeFeatureType};
@@ -3848,11 +3848,11 @@ fn proof_generation_respects_bidi_max_hop() {
     );
 }
 
-#[cfg(grovedb_test_engine = "rocksdb")]
 /// The reciprocity audit reports BOTH directions: a live edge whose
 /// target lost its registration (planted via a direct merk write with a
 /// consistent hash, so only the forward-membership audit can see it) and
 /// a corrupt empty inverse path.
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     use grovedb_merk::{element::ElementExt, tree::Op as MerkOp, TreeFeatureType};

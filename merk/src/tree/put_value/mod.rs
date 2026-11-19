@@ -185,7 +185,7 @@ impl TreeNode {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_costs::storage_cost::{
         removal::StorageRemovedBytes::{BasicStorageRemoval, NoStorageRemoval},

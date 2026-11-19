@@ -632,7 +632,7 @@ impl ElementFetchFromStoragePrivateExtensions for Element {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_path::SubtreePath;
 

@@ -9,7 +9,8 @@
 #                                   other; ARGS follow `cargo test -p PACKAGE`
 #
 # A suite is a package, the variable that selects its engine and its
-# registry: a file with one engine name a line, the default first.
+# registry: a file with one engine a line, its name first, and the default
+# engine first.
 set -euo pipefail
 
 repo=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -22,7 +23,7 @@ SUITES
 }
 
 engines() {
-    grep -vE '^[[:space:]]*(#|$)' "$repo/$1"
+    grep -vE '^[[:space:]]*(#|$)' "$repo/$1" | awk '{ print $1 }'
 }
 
 case "${1:-}" in
@@ -46,7 +47,7 @@ run)
     done < <(suites)
     ;;
 *)
-    sed -n '2,12p' "${BASH_SOURCE[0]}" >&2
+    sed -n '2,13p' "${BASH_SOURCE[0]}" >&2
     exit 2
     ;;
 esac

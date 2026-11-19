@@ -65,13 +65,13 @@ mod tests {
         path.iter().map(|segment| segment.to_vec()).collect()
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `element` at `key` of the tree at `path` with `feature_type` as
     /// its node's own aggregate, whatever the element is worth, then
     /// propagate. Propagation re-derives every hash and every ancestor's
     /// recorded aggregate from the Merk, so the database stays consistent in
     /// everything `verify_grovedb` compared before: only the node's stored
     /// aggregate and its element disagree.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn plant_node_aggregate(
         db: &GroveDb,
         path: &[&[u8]],
@@ -109,9 +109,9 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Assert the only issue is the recomputed-aggregate one at `path`, with
     /// the given labels.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_only_aggregate_issue(
         issues: &VerificationIssues,
         path: &[&[u8]],
@@ -136,11 +136,11 @@ mod tests {
         );
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `element` at `key` of the tree at `path` with `feature_type` as
     /// its node's own aggregate and commit, without propagating. For a
     /// planted value that makes the tree's stored aggregate unreadable:
     /// propagation reads that aggregate and fails.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn plant_node_aggregate_without_propagating(
         db: &GroveDb,
         path: &[&[u8]],
@@ -173,9 +173,9 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The root key the indexed tree element records for its `axis`
     /// secondary.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn recorded_secondary_root_key(indexed_tree: &Element, axis: IndexAxis) -> Option<Vec<u8>> {
         match indexed_tree.underlying() {
             Element::ProvableCountIndexedTree(_, secondary_root_key, ..)
@@ -190,7 +190,6 @@ mod tests {
         }
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// In the `axis` secondary of the indexed tree at `tree_path`, write the
     /// row at `row_key` (the row of the entry `item_key`) back unchanged with
     /// `feature_type` as its node's own aggregate, and commit. Every row
@@ -198,6 +197,7 @@ mod tests {
     /// the node's stored aggregate and its row disagree. Nothing is
     /// propagated: rewriting an existing key leaves the secondary's root key
     /// where the indexed tree element records it.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn plant_secondary_row_aggregate(
         db: &GroveDb,
         tree_path: &[&[u8]],
@@ -265,11 +265,11 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rebind the count indexed tree element at `tree_path` to the root
     /// hashes its primary and its secondary have now, and propagate, so the
     /// hash chain is whole again after a write to the secondary. The element
     /// records the primary's aggregate, or `recorded` when one is given.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn rebind_count_indexed_tree(
         db: &GroveDb,
         tree_path: &[&[u8]],
@@ -342,8 +342,8 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The root hash of the Merk of the tree at `path`.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn root_hash(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> CryptoHash {
         let tx = db.start_transaction();
         let path: SubtreePath<&[u8]> = path.into();
@@ -354,9 +354,9 @@ mod tests {
             .unwrap()
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The reason the Merk of the tree at `path` gives for not being able to
     /// read its stored aggregate.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn unreadable_aggregate_reason(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> String {
         let tx = db.start_transaction();
         let path: SubtreePath<&[u8]> = path.into();
@@ -744,9 +744,9 @@ mod tests {
     // Indexed tree secondaries
     // -----------------------------------------------------------------
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A count indexed tree at `[TEST_LEAF, cidx]` holding the items `a`,
     /// `b` and `c`.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn make_count_indexed_tree(db: &GroveDb, gv: &GroveVersion) {
         insert(
             db,
@@ -1231,8 +1231,8 @@ mod tests {
     // A stored aggregate of another kind than the tree's
     // -----------------------------------------------------------------
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// One node of every feature type.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn every_feature_type() -> [TreeFeatureType; 9] {
         [
             TreeFeatureType::BasicMerkNode,
@@ -1247,9 +1247,9 @@ mod tests {
         ]
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The label for a root node whose aggregate is not of the kind the
     /// tree's root hash commits to.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn another_kind_label(stored: AggregateData, tree_type: TreeType) -> String {
         format!(
             "stored aggregate {stored:?} is not the kind the root hash of a {tree_type:?} commits \
@@ -1257,8 +1257,8 @@ mod tests {
         )
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The aggregate the Merk of the tree at `path` stores.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn stored_aggregate(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> AggregateData {
         let tx = db.start_transaction();
         let path: SubtreePath<&[u8]> = path.into();
@@ -1269,9 +1269,9 @@ mod tests {
             .expect("the stored aggregate can be read")
     }
 
-    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The aggregate the count secondary of the indexed tree at `tree_path`
     /// stores.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn count_secondary_stored_aggregate(
         db: &GroveDb,
         tree_path: &[&[u8]],

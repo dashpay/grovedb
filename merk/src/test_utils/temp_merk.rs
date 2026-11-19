@@ -28,20 +28,14 @@
 
 //! Temp merk test utils
 
-#[cfg(feature = "full")]
 use std::ops::{Deref, DerefMut};
 
-#[cfg(feature = "full")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "full")]
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "full")]
 use super::engine::{SuiteBatch, SuiteSubtree, SuiteTransaction, TempEngine, TestEngine};
-#[cfg(feature = "full")]
 use crate::{tree::kv::ValueDefinedCostType, Merk, TreeType};
 
-#[cfg(feature = "full")]
 /// Wraps a Merk instance and deletes it from disk it once it goes out of scope.
 ///
 /// The Merk is on the engine the suite runs on
@@ -55,7 +49,6 @@ pub struct TempMerk {
     pub tree_type: TreeType,
 }
 
-#[cfg(feature = "full")]
 impl TempMerk {
     /// Opens a `TempMerk` at the given file path, creating a new one if it
     /// does not exist.
@@ -121,7 +114,6 @@ impl TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
 impl Drop for TempMerk {
     fn drop(&mut self) {
         unsafe {
@@ -137,14 +129,12 @@ impl Drop for TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
 impl Default for TempMerk {
     fn default() -> Self {
         Self::new(GroveVersion::latest())
     }
 }
 
-#[cfg(feature = "full")]
 impl Deref for TempMerk {
     type Target = Merk<SuiteSubtree<'static>>;
 
@@ -153,7 +143,6 @@ impl Deref for TempMerk {
     }
 }
 
-#[cfg(feature = "full")]
 impl DerefMut for TempMerk {
     fn deref_mut(&mut self) -> &mut Merk<SuiteSubtree<'static>> {
         &mut self.merk

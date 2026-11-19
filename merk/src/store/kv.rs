@@ -177,7 +177,7 @@ where
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use std::collections::BTreeSet;
 

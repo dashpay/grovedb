@@ -133,18 +133,13 @@
 #![allow(clippy::result_large_err)]
 // Intentional drops to release borrows before re-borrowing
 #![allow(clippy::drop_non_drop)]
-// A test build with no storage engine compiles the tests that open no
-// database. What only the other tests call or import is unused there.
-#![cfg_attr(
-    all(test, not(feature = "rocksdb_storage")),
-    allow(dead_code, unused_imports)
-)]
-// A test build for an engine other than RocksDB leaves out the tests that
-// reach under RocksDB, and with them the only users of some imports.
-#![cfg_attr(
-    all(test, not(grovedb_test_engine = "rocksdb")),
-    allow(unused_imports)
-)]
+// A test build whose suite has no engine compiles the tests that open no
+// database. What only the other tests call is unused there.
+#![cfg_attr(all(test, not(grovedb_test_engine)), allow(dead_code))]
+// A test build for an engine other than RocksDB, or for none, leaves out the
+// tests that reach under RocksDB, and with them the only users of some
+// imports.
+#![cfg_attr(all(test, not(grovedb_test_engine = "rocksdb")), allow(unused_imports))]
 
 #[cfg(feature = "engine_generic")]
 pub mod batch;
@@ -177,9 +172,9 @@ pub mod reference_path;
 #[cfg(feature = "engine_generic")]
 /// State replication and synchronization support.
 pub mod replication;
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests;
-#[cfg(all(test, feature = "engine_generic", not(feature = "rocksdb_storage")))]
+#[cfg(all(test, feature = "engine_generic", not(grovedb_test_engine)))]
 #[path = "tests_without_engine.rs"]
 mod tests;
 #[cfg(feature = "engine_generic")]
@@ -202,12 +197,12 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::ElementFlags;
+#[cfg(feature = "rocksdb_storage")]
+use engine::DefaultEngine;
 #[cfg(feature = "engine_generic")]
 pub use engine::Engine;
 #[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
 use engine::NoEngine;
-#[cfg(feature = "rocksdb_storage")]
-use engine::DefaultEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::RocksDbEngine;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
@@ -4892,7 +4887,7 @@ mod aggregate_consistency_labels_tests {
 }
 
 /// Test-only helpers for verifying internal storage state.
-#[cfg(all(test, feature = "rocksdb_storage"))]
+#[cfg(all(test, grovedb_test_engine))]
 impl GroveDb {
     /// Read a raw key from a subtree's transactional storage context.
     ///
