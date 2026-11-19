@@ -24,8 +24,10 @@ serde_json = { version = "1", features = ["float_roundtrip"] }
 tempfile = { workspace = true }
 
 [dev-dependencies]
+grovedb-merk = { version = "6.1.1", path = "../merk", features = ["lignin_storage"] }
 lignin-format = { version = "6.1.1", path = "../lignin-format" }
 lignin-io = { version = "6.1.1", path = "../lignin-io" }
 lignin-store = { version = "6.1.1", path = "../lignin-store" }
 lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
+lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }
 syn = { version = "2", features = ["full", "visit"] }
