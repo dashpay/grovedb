@@ -60,16 +60,7 @@ impl<'s> WriteBack<'s> {
     /// checkpoint that covers less or whose sample is from an earlier
     /// place.
     pub fn adopt(&self, in_force: Option<&CheckpointInfo>) -> Result<(), FlushError> {
-        let place = in_force.and_then(CheckpointInfo::log_kept_from);
-        let hold = self.stores.log.hold_from(place)?;
-        let mut checkpoints = lock(&self.state.checkpoints);
-        checkpoints.last_sample = place;
-        checkpoints.in_force = Some(Named {
-            covers: in_force.map_or(CommitVersion::EMPTY, CheckpointInfo::covers),
-            place,
-            _hold: hold,
-        });
-        Ok(())
+        Ok(self.state.adopt(self.stores.log, in_force)?)
     }
 
     /// Makes the log durable, and tells the value log that every change to

@@ -500,7 +500,7 @@
 mod checkpoint;
 mod config;
 mod error;
-mod page;
+pub(crate) mod page;
 mod place;
 mod run;
 mod state;

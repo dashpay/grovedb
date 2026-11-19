@@ -20,7 +20,7 @@ use crate::{
     segment::SegmentWriter,
     table::{CheckpointInfo, Link, LogPlace},
     values::{ValueHold, ValueWriter},
-    wal::LogHold,
+    wal::{LogError, LogHold, LogStore},
 };
 
 pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -415,5 +415,63 @@ impl FlushState {
     pub(super) fn wake(&self) {
         *lock(&self.wake) = true;
         self.woken.notify_all();
+    }
+
+    /// Keeps the log for the table checkpoint the manifest names, which
+    /// `in_force` is, or the whole log if it names none: what
+    /// [`WriteBack::adopt`](super::WriteBack::adopt) does, for whoever has
+    /// the log and no view of the stores yet.
+    pub(crate) fn adopt(
+        &self,
+        log: &LogStore,
+        in_force: Option<&CheckpointInfo>,
+    ) -> Result<(), LogError> {
+        let place = in_force.and_then(CheckpointInfo::log_kept_from);
+        let hold = log.hold_from(place)?;
+        let mut checkpoints = lock(&self.checkpoints);
+        checkpoints.last_sample = place;
+        checkpoints.in_force = Some(Named {
+            covers: in_force.map_or(CommitVersion::EMPTY, CheckpointInfo::covers),
+            place,
+            _hold: hold,
+        });
+        Ok(())
+    }
+
+    /// Notes an item of the log that a recovery replayed and that the
+    /// table checkpoint in force does not cover: `len` bytes of log, which
+    /// are the group of the commit `group`, beginning at that place, if
+    /// the item is one.
+    ///
+    /// Write-back then knows how much log is held ([`WriteBack::log_held`])
+    /// and where the group of each replayed commit begins, which is what
+    /// it drops log files by once a checkpoint covers the commit. It is
+    /// told nothing of the pages: a page that a recovery rebuilt is
+    /// written as a base image.
+    ///
+    /// [`WriteBack::log_held`]: super::WriteBack::log_held
+    pub(crate) fn replayed(&self, group: Option<(CommitVersion, LogPlace)>, len: u64) {
+        let mut kept = lock(&self.kept);
+        let before = self.logged_in_all.fetch_add(len, Ordering::Relaxed);
+        if let Some((version, at)) = group {
+            kept.group_at(version.get(), at, before);
+        }
+        drop(kept);
+        self.logged.fetch_add(len, Ordering::Relaxed);
+    }
+
+    /// Notes that the page version of `page` which a recovery has put into
+    /// the pool holds the changes of every replayed commit from `oldest`
+    /// on, and that no block holds any of them.
+    ///
+    /// The pool lists that page version under the commit that bore it,
+    /// which is the newest of those commits. Without this note write-back
+    /// would take the commits before it for written back, and a table
+    /// checkpoint could cover them while their changes to the page are in
+    /// the log alone. With it they wait, as the changes of a page version
+    /// that is kept for its readers do, for the block of the page's next
+    /// version that is written.
+    pub(crate) fn replayed_page(&self, page: PageId, oldest: CommitVersion) {
+        lock(&self.kept).fold(page, oldest.get());
     }
 }

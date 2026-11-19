@@ -12,7 +12,10 @@ use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use lignin_io::sim::{CrashImage, CrashPoint, SimConfig, SimVfs};
 
-use super::{recover::recover, *};
+use super::{
+    recover::{recover, the_store_recovers_the_same},
+    *,
+};
 use crate::segment::tests::sim::{crash_states, db_dir, shared, sim_fs, Plans};
 
 /// One step of a script.
@@ -66,7 +69,7 @@ pub(super) struct Ran {
 
 /// Runs `script` on a new store, with the power going off after `crash`
 /// changes to what a crash can leave, if that many are made.
-fn run(script: &[Step], crash: Option<u64>) -> Ran {
+pub(super) fn run(script: &[Step], crash: Option<u64>) -> Ran {
     let fs = sim_fs(SimConfig::new(11));
     if let Some(changes) = crash {
         fs.crash_at(CrashPoint::AfterChange(changes));
@@ -197,6 +200,9 @@ pub(super) struct Tally {
     /// Recoveries that replayed commits on a checkpoint.
     replayed: u64,
     from_checkpoint: u64,
+    /// Pages that the store's recovery wrote to a segment while it read
+    /// the log, when it was made to keep one page in memory.
+    spilled: u64,
 }
 
 /// Recovers every state that a crash of `ran` can leave, as `plans` picks
@@ -249,6 +255,8 @@ pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &
                 }
             }
         }
+        // The store's own recovery lands on the same state, twice.
+        tally.spilled += the_store_recovers_the_same(shared(&state), db_dir(), &ids, &recovered);
         tally.states += 1;
         tally.ahead += u64::from(landed > ran.durable);
         tally.replayed += u64::from(landed > recovered.covers);
@@ -256,15 +264,15 @@ pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &
     }
 }
 
-fn commit(ops: &[Op]) -> Step {
+pub(super) fn commit(ops: &[Op]) -> Step {
     Step::Commit(ops.to_vec())
 }
 
-fn free(id: u32) -> Op {
+pub(super) fn free(id: u32) -> Op {
     Op::Free { page: page(id) }
 }
 
-fn flat(id: u32, entries: &[(&[u8], Val)]) -> Step {
+pub(super) fn flat(id: u32, entries: &[(&[u8], Val)]) -> Step {
     let entries = entries
         .iter()
         .map(|(key, value)| (key.to_vec(), value.clone()));
@@ -391,4 +399,6 @@ fn a_crash_at_any_point_recovers_one_committed_version_whole() {
     assert!(tally.ahead > 100, "{tally:?}");
     assert!(tally.replayed > 100, "{tally:?}");
     assert!(tally.from_checkpoint > tally.states / 2, "{tally:?}");
+    assert!(tally.spilled > tally.replayed, "{tally:?}");
+    println!("{tally:?}");
 }
