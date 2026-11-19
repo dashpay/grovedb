@@ -256,6 +256,8 @@ enum Opened {
     Base,
     /// With its root key given, as under a parent element.
     Layered,
+    /// With its root key in a record of its own that it gives a cost for.
+    Standalone,
 }
 
 fn open_as<'db, S: NodeStore<'db>>(
@@ -274,8 +276,34 @@ fn open_as<'db, S: NodeStore<'db>>(
             VALUE_DEFINED_COST,
             grove_version,
         ),
+        Opened::Standalone => {
+            Merk::open_standalone(store, tree_type, VALUE_DEFINED_COST, grove_version)
+        }
     };
     (merk.cost, merk.value.expect("the Merk opens"))
+}
+
+/// The meta record a round of the comparison writes, reads or removes, with
+/// what that cost.
+fn meta_as_a_client<'db, S: NodeStore<'db>>(
+    merk: &mut Merk<S>,
+    round: usize,
+) -> (OperationCost, String) {
+    let key = b"meta".to_vec();
+    match round % 4 {
+        0 => {
+            let put = merk.put_meta(key, vec![round as u8; round % 23]);
+            (put.cost, format!("{:?}", put.value.is_ok()))
+        }
+        3 => {
+            let deleted = merk.delete_meta(&key);
+            (deleted.cost, format!("{:?}", deleted.value.is_ok()))
+        }
+        _ => {
+            let read = merk.get_meta(key);
+            (read.cost, format!("{:?}", read.value))
+        }
+    }
 }
 
 /// Every read of a Merk the comparison makes, each with what it cost.
@@ -373,6 +401,12 @@ fn a_merk_costs_the_same(
             let expected = apply_as_a_client(&mut on_rocks, &batch, &aux, grove_version);
             let found = apply_as_a_client(&mut on_lignin, &batch, &aux, grove_version);
             assert_eq!(found, expected, "{}", at(round, "the batch"));
+            assert_eq!(
+                meta_as_a_client(&mut on_lignin, round),
+                meta_as_a_client(&mut on_rocks, round),
+                "{}",
+                at(round, "the meta record")
+            );
             let keys: Vec<_> = (0..4).map(|_| key(random.below(120))).collect();
             assert_eq!(
                 read_as_a_client(&on_lignin, &keys, grove_version),
@@ -408,6 +442,12 @@ fn a_merk_costs_the_same(
         let expected = apply_as_a_client(&mut on_rocks, &batch, &aux, grove_version);
         let found = apply_as_a_client(&mut on_lignin, &batch, &aux, grove_version);
         assert_eq!(found, expected, "{}", at(round, "the batch"));
+        assert_eq!(
+            meta_as_a_client(&mut on_lignin, round),
+            meta_as_a_client(&mut on_rocks, round),
+            "{}",
+            at(round, "the meta record")
+        );
         root = on_rocks.root_key();
         assert_eq!(on_lignin.root_key(), root, "{}", at(round, "the root key"));
         drop((on_rocks, on_lignin));
@@ -444,9 +484,15 @@ fn a_merk_costs_the_same(
             .get_transactional_storage_context_by_subtree_prefix(prefix, None, &rocks_tx)
             .unwrap();
         let store = LigninNodeStore::deferred(&writer, subtree.clone(), None);
-        let (expected, on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
-        let (cost, on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
+        let (expected, mut on_rocks) = open_as(context, opened, &root, tree_type, grove_version);
+        let (cost, mut on_lignin) = open_as(store, opened, &root, tree_type, grove_version);
         assert_eq!(cost, expected, "{}", at(round, "the open for a read"));
+        assert_eq!(
+            meta_as_a_client(&mut on_lignin, 1),
+            meta_as_a_client(&mut on_rocks, 1),
+            "{}",
+            at(round, "the meta record that is read")
+        );
         let keys: Vec<_> = (0..4).map(|_| key(random.below(120))).collect();
         assert_eq!(
             read_as_a_client(&on_lignin, &keys, grove_version),
@@ -463,10 +509,12 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
         for (n, tree_type) in TREE_TYPES.into_iter().enumerate() {
             let seed = 0x5851_F42D + (v * 16 + n) as u64;
             // Every tree type is written in each way on every grove
-            // version, in turn as a base Merk and as a layered one.
-            let opened = match (v + n) % 2 {
+            // version, in turn as a base Merk, a layered one and one that
+            // stands alone.
+            let opened = match (v + n) % 3 {
                 0 => Opened::Base,
-                _ => Opened::Layered,
+                1 => Opened::Layered,
+                _ => Opened::Standalone,
             };
             a_merk_costs_the_same(grove_version, tree_type, opened, false, seed, 18);
             a_merk_costs_the_same(grove_version, tree_type, opened, true, seed, 12);

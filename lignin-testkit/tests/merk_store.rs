@@ -35,6 +35,31 @@
 //! The Merk logic itself runs on RocksDB here. That it gives the same tree
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
 //! which run the same batches on both.
+//!
+//! # What the store charges (MERK-03)
+//!
+//! The replay also holds the store's charges to RocksDB's, on the nodes of
+//! the corpus:
+//!
+//! 6. Every change set that goes to LigninDB goes, call for call, to a
+//!    second RocksDB storage that holds nothing else, and the two batches
+//!    must cost the same when they are applied. Each written node is handed
+//!    over with one of the costs a writer gives, in turn: none, a new node
+//!    and an update whose value cost the storage layer checks against the
+//!    record, and a cost that is taken as given, with bytes freed as plain
+//!    numbers and by owner and epoch. Each removed node is handed over with
+//!    a writer's cost or with none, and one with none is charged from the
+//!    record the committed state holds. The second storage is committed
+//!    whenever the LigninDB transaction is, so both have the same committed
+//!    state.
+//! 7. Every node that is read back, after a write and after a commit, is
+//!    read on both engines, and the two reads must cost the same: a seek
+//!    and the length of RocksDB's record, which LigninDB works out from the
+//!    cell.
+//!
+//! The costs a writer gives are made up here. What Merk itself gives with
+//! a node, on every grove version, is held by the tests of
+//! `merk::store::lignin`, where a Merk runs on both engines.
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -47,16 +72,30 @@ use std::{
 };
 
 use grovedb::{GroveDb, Transaction};
-use grovedb_costs::CostResult;
+use grovedb_costs::{
+    storage_cost::{
+        key_value_cost::KeyValueStorageCost,
+        removal::{
+            use_basic_sectioned_removal_addition_version, StorageRemovalPerEpochByIdentifier,
+            StorageRemovedBytes,
+        },
+        StorageCost,
+    },
+    CostResult, OperationCost,
+};
 use grovedb_merk::{
+    cost_model::HANDLE_COST_MODEL,
     store::{
         lignin::{LigninBatch, LigninHost, LigninNodeStore, LigninSubtree, LigninWriter},
-        NodeChange, NodeChangeSet, NodeStore,
+        NodeChange, NodeChangeSet, NodeStore, NodeWriteCost,
     },
     tree::{kv::ValueDefinedCostType, TreeNode},
     Error,
 };
-use grovedb_storage::Storage;
+use grovedb_storage::{
+    rocksdb_storage::{test_utils::TempStorage, RocksDbStorage},
+    FlatStore, Storage, StorageBatch,
+};
 use grovedb_version::version::GroveVersion;
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_store::load::LoadBuffers;
@@ -118,6 +157,20 @@ struct Tally {
     values_kept: u64,
     /// The nodes compared with RocksDB's records.
     compared: u64,
+    /// The batches whose cost was compared with the cost of the same
+    /// batch on RocksDB, and the seeks and the stored bytes they were
+    /// charged.
+    batches_charged: u64,
+    seeks_charged: u64,
+    bytes_charged: u64,
+    /// The removals handed over with no cost, and the bytes they loaded
+    /// from the committed state.
+    uncosted_removals: u64,
+    committed_bytes_loaded: u64,
+    /// The reads whose cost was compared with the cost of the same read on
+    /// RocksDB, and the bytes they loaded.
+    reads_charged: u64,
+    bytes_loaded: u64,
 }
 
 impl Tally {
@@ -130,7 +183,117 @@ impl Tally {
         self.values_written += other.values_written;
         self.values_kept += other.values_kept;
         self.compared += other.compared;
+        self.batches_charged += other.batches_charged;
+        self.seeks_charged += other.seeks_charged;
+        self.bytes_charged += other.bytes_charged;
+        self.uncosted_removals += other.uncosted_removals;
+        self.committed_bytes_loaded += other.committed_bytes_loaded;
+        self.reads_charged += other.reads_charged;
+        self.bytes_loaded += other.bytes_loaded;
     }
+}
+
+/// The bytes a write frees, as plain numbers or by owner and epoch.
+fn freed(sectioned: bool, bytes: u32) -> StorageRemovedBytes {
+    if !sectioned {
+        return StorageRemovedBytes::BasicStorageRemoval(bytes);
+    }
+    let mut by_owner = StorageRemovalPerEpochByIdentifier::default();
+    by_owner
+        .entry([(bytes % 3) as u8; 32])
+        .or_default()
+        .insert((bytes % 7) as u16, bytes);
+    StorageRemovedBytes::SectionedStorageRemoval(by_owner)
+}
+
+/// The cost a writer gives with the `turn`th written node, by turns: none,
+/// a cost the storage layer checks against the record, and one it takes as
+/// given. `created` says whether the node is new to its Merk.
+fn write_cost(node: &TreeNode, created: bool, turn: u64) -> Option<NodeWriteCost> {
+    let sizes = || {
+        (
+            node.feature_type()
+                .tree_feature_specialized_type_and_length(),
+            node.child_ref_and_sum_size(true),
+            node.child_ref_and_sum_size(false),
+        )
+    };
+    // What the put is to pay for its value: what the storage layer charges
+    // a put of this record that comes with no cost, less the stored key
+    // (`cost-model.md` K1, K2).
+    let stored_key_len = HANDLE_COST_MODEL.stored_key_len(node.key().len());
+    let mut unbilled = OperationCost::default();
+    unbilled
+        .add_key_value_storage_costs(
+            stored_key_len as u32,
+            node.encoding_length() as u32,
+            Some(sizes()),
+            None,
+        )
+        .expect("a put with no cost of the writer's");
+    let new_key = KeyValueStorageCost {
+        new_node: true,
+        ..Default::default()
+    };
+    let key_cost = (HANDLE_COST_MODEL.complete_new_key_cost(Some(new_key), stored_key_len))
+        .expect("a cost stays a cost")
+        .key_storage_cost
+        .added_bytes;
+    let paid = unbilled.storage_cost.added_bytes - key_cost;
+
+    let storage_cost = match (turn % 4, created) {
+        (0, _) => return None,
+        (1 | 2, true) => KeyValueStorageCost {
+            value_storage_cost: StorageCost {
+                added_bytes: paid,
+                ..Default::default()
+            },
+            new_node: true,
+            needs_value_verification: true,
+            ..Default::default()
+        },
+        (1 | 2, false) => KeyValueStorageCost {
+            value_storage_cost: StorageCost {
+                added_bytes: (turn % 5) as u32,
+                replaced_bytes: paid - (turn % 5) as u32,
+                removed_bytes: freed(turn % 4 == 2, (turn % 90) as u32),
+            },
+            needs_value_verification: true,
+            ..Default::default()
+        },
+        _ => KeyValueStorageCost {
+            value_storage_cost: StorageCost {
+                added_bytes: (turn % 300) as u32,
+                replaced_bytes: (turn % 11) as u32,
+                removed_bytes: freed(turn % 8 == 3, (turn % 50) as u32),
+            },
+            ..Default::default()
+        },
+    };
+    let (feature, left_child, right_child) = sizes();
+    Some(NodeWriteCost {
+        feature,
+        left_child,
+        right_child,
+        storage_cost,
+    })
+}
+
+/// The cost a writer gives with the `turn`th removed node: none for every
+/// other one, and otherwise bytes freed from the key and from the value.
+fn removal_cost(turn: u64) -> Option<KeyValueStorageCost> {
+    if turn % 2 == 0 {
+        return None;
+    }
+    let cost = |sectioned, bytes| StorageCost {
+        removed_bytes: freed(sectioned, bytes),
+        ..Default::default()
+    };
+    Some(KeyValueStorageCost {
+        key_storage_cost: cost(turn % 4 == 3, 34 + (turn % 9) as u32),
+        value_storage_cost: cost(turn % 8 == 1, (turn % 400) as u32),
+        ..Default::default()
+    })
 }
 
 /// How the replay states the kind of a written node.
@@ -175,14 +338,19 @@ fn subtree(grove: &Grove, id: MerkId) -> LigninSubtree {
     }
 }
 
-/// Every node of the tree under `root`, as `(key, record)` in key order.
-fn records<'db, S: NodeStore<'db>>(store: &S, root: Option<Vec<u8>>) -> Vec<(Vec<u8>, Vec<u8>)> {
+/// Every node of the tree under `root`, as `(key, record)` in key order,
+/// with what the reads of all of them cost.
+fn records<'db, S: NodeStore<'db>>(
+    store: &S,
+    root: Option<Vec<u8>>,
+) -> (Vec<(Vec<u8>, Vec<u8>)>, OperationCost) {
     let mut found = Vec::new();
+    let mut cost = OperationCost::default();
     let mut ahead: Vec<Vec<u8>> = root.into_iter().collect();
     while let Some(key) = ahead.pop() {
         let node = store
             .get_node(&key, NO_VALUE_DEFINED_COST, GroveVersion::latest())
-            .unwrap()
+            .unwrap_add_cost(&mut cost)
             .expect("the node is read")
             .expect("a node that is linked is stored");
         for left in [true, false] {
@@ -191,7 +359,7 @@ fn records<'db, S: NodeStore<'db>>(store: &S, root: Option<Vec<u8>>) -> Vec<(Vec
         found.push((key, node.encode()));
     }
     found.sort();
-    found
+    (found, cost)
 }
 
 /// What one operation did to the nodes under one storage prefix.
@@ -246,8 +414,19 @@ fn by_prefix<'c>(grove: &'c Grove, changes: &'c ChangeSet) -> BTreeMap<Prefix, C
     by_prefix
 }
 
+type MirrorTransaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
+
 struct Replay<'a> {
     db: &'a GroveDb,
+    /// A RocksDB storage that is handed every change set LigninDB is
+    /// handed and nothing else: what each batch costs is compared with it.
+    mirror: &'a TempStorage,
+    /// How a plain removal and a sectioned one add up on the grove version
+    /// of the trace.
+    arithmetic: u16,
+    /// The subtrees that went with a drop and that the mirror still holds
+    /// the records of.
+    dropped: Vec<Prefix>,
     kinds: Kinds,
     /// The subtrees the replay has entered.
     entered: HashMap<Prefix, Entered>,
@@ -261,6 +440,7 @@ impl Replay<'_> {
     /// Forgets the entered subtree `prefix` and every subtree under it.
     fn forget(&mut self, prefix: Prefix) {
         self.entered.remove(&prefix);
+        self.dropped.push(prefix);
         let below = self.under.remove(&prefix).unwrap_or_default();
         for prefix in below.into_values().flatten() {
             self.forget(prefix);
@@ -329,10 +509,12 @@ impl Replay<'_> {
     }
 
     /// Hands LigninDB what one operation did to the nodes of every Merk, as
-    /// one batch, and compares each written node.
+    /// one batch, and compares each written node. The mirror is handed the
+    /// same change sets, and the two batches must cost the same.
     fn write(
         &mut self,
         writer: &LigninWriter<'_, '_>,
+        mirror_transaction: &MirrorTransaction<'_>,
         transaction: &Transaction,
         grove: &Grove,
         changes: &ChangeSet,
@@ -345,12 +527,33 @@ impl Replay<'_> {
         };
         let by_prefix = by_prefix(grove, changes);
         let version = GroveVersion::latest();
+        let _arithmetic = use_basic_sectioned_removal_addition_version(self.arithmetic);
 
         let batch = LigninBatch::new();
+        let mirror_batch = StorageBatch::new();
         self.subtrees(grove, changes, &batch);
+        // A dropped subtree loses its nodes on LigninDB with no write of
+        // each. The mirror loses them here, outside the batch that is
+        // compared, and like the drop inside its transaction.
+        for prefix in std::mem::take(&mut self.dropped) {
+            let gone = self
+                .mirror
+                .get_immediate_storage_context_by_subtree_prefix(prefix, mirror_transaction)
+                .unwrap();
+            (FlatStore::clear(&gone).unwrap()).expect("a dropped subtree is cleared");
+        }
         for (prefix, change) in &by_prefix {
             let subtree = subtree(grove, change.merk);
             let store = LigninNodeStore::deferred(writer, subtree, Some(&batch));
+            let mirrored = self
+                .mirror
+                .get_transactional_storage_context_by_subtree_prefix(
+                    *prefix,
+                    Some(&mirror_batch),
+                    mirror_transaction,
+                )
+                .unwrap();
+            let mut mirror_set = NodeStore::change_set(&mirrored);
             let stored = rocks(*prefix);
             // A Merk the operation made has no node before it, whatever the
             // transaction holds under its prefix until the batch is applied.
@@ -378,21 +581,50 @@ impl Replay<'_> {
                     (_, false, false, true) => NodeChange::StructureChanged,
                     (_, false, false, false) => NodeChange::HashOnly,
                 };
+                let (new, turn) = (fresh || *created, self.tally.nodes);
                 let prepared = change_set.prepare_node(&node, kind);
-                (change_set.put_node(key, prepared, None)).expect("the node is put");
+                (change_set.put_node(key, prepared, write_cost(&node, new, turn)))
+                    .expect("the node is put");
+                let prepared = mirror_set.prepare_node(&node, kind);
+                (mirror_set.put_node(key, prepared, write_cost(&node, new, turn)))
+                    .expect("the node is put on the mirror");
                 self.tally.nodes += 1;
                 self.tally.stated += u64::from(kind == NodeChange::ValueWritten);
                 self.tally.values_changed += u64::from(value_changed);
             }
             for key in &change.removed {
-                change_set.delete_node(key, None);
+                let cost = removal_cost(self.tally.removed);
+                self.tally.uncosted_removals += u64::from(cost.is_none());
+                change_set.delete_node(key, cost.clone());
+                mirror_set.delete_node(key, cost);
                 self.tally.removed += 1;
             }
             let root = grove.merk(change.merk).root;
             change_set.state_root(root.map(|root| &*grove.node(root).key));
             (store.commit(change_set).unwrap()).expect("the change set is staged");
+            (NodeStore::commit(&mirrored, mirror_set).unwrap())
+                .expect("the change set is staged on the mirror");
         }
-        let applied = (batch.apply(writer).unwrap()).expect("the batch is applied");
+        let expected = self
+            .mirror
+            .commit_multi_context_batch(mirror_batch, Some(mirror_transaction));
+        (expected.value).expect("the batch is applied on the mirror");
+        let applied = batch.apply(writer);
+        assert_eq!(
+            applied.cost,
+            expected.cost,
+            "what the batch of write {} is charged",
+            self.tally.writes + 1
+        );
+        let charged = &applied.cost;
+        self.tally.batches_charged += 1;
+        self.tally.seeks_charged += u64::from(charged.seek_count);
+        self.tally.bytes_charged += u64::from(charged.storage_cost.added_bytes)
+            + u64::from(charged.storage_cost.replaced_bytes);
+        // A batch loads nothing but the committed records of the nodes it
+        // removes with no cost.
+        self.tally.committed_bytes_loaded += charged.storage_loaded_bytes;
+        let applied = applied.value.expect("the batch is applied");
         self.tally.writes += 1;
         self.tally.values_written += applied.values_written as u64;
         self.tally.values_kept += applied.values_kept as u64;
@@ -402,21 +634,34 @@ impl Replay<'_> {
             let store = LigninNodeStore::deferred(writer, LigninSubtree::alone(*prefix), None);
             let stored = rocks(*prefix);
             for (key, ..) in &change.written {
+                // The read costs what it costs on RocksDB: a seek and the
+                // length of the record RocksDB holds.
                 let read = |node: CostResult<Option<TreeNode>, Error>| {
-                    let node = node.unwrap().expect("the node is read");
-                    node.map(|node| node.encode())
+                    let cost = node.cost;
+                    let node = node.value.expect("the node is read");
+                    (node.map(|node| node.encode()), cost)
                 };
+                let found = read(store.get_node(key, NO_VALUE_DEFINED_COST, version));
                 assert_eq!(
-                    read(store.get_node(key, NO_VALUE_DEFINED_COST, version)),
+                    found,
                     read(stored.get_node(key, NO_VALUE_DEFINED_COST, version)),
                     "the node under {key:?} of the Merk {path:?}, write {}",
                     self.tally.writes
                 );
                 self.tally.compared += 1;
+                self.tally.reads_charged += 1;
+                self.tally.bytes_loaded += found.1.storage_loaded_bytes;
             }
             for key in &change.removed {
-                let held = store.has_node(key).unwrap().expect("the node is read");
+                let held = store.has_node(key);
+                assert_eq!(
+                    held.cost,
+                    stored.has_node(key).cost,
+                    "what the lookup of the removed node under {key:?} is charged"
+                );
+                let held = held.value.expect("the node is read");
                 assert!(!held, "the node under {key:?} of the Merk {path:?} is gone");
+                self.tally.reads_charged += 1;
             }
         }
     }
@@ -440,9 +685,15 @@ impl Replay<'_> {
             let stored = storage
                 .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
                 .unwrap();
-            let expected = records(&stored, root.clone());
-            let found = records(&store, root);
+            let (expected, expected_cost) = records(&stored, root.clone());
+            let (found, cost) = records(&store, root);
             let path = &merk.path;
+            assert_eq!(
+                cost, expected_cost,
+                "what the reads of the nodes of the Merk {path:?} are charged"
+            );
+            self.tally.reads_charged += expected.len() as u64;
+            self.tally.bytes_loaded += cost.storage_loaded_bytes;
             assert_eq!(
                 found.len(),
                 expected.len(),
@@ -536,8 +787,16 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     let db = GroveDb::open(dir.path()).expect("a GroveDB");
     let (lignin, versions) = Db::new(1024);
     let path = lignin.path(&versions);
+    let mirror = TempStorage::new();
     let mut replay = Replay {
         db: &db,
+        mirror: &mirror,
+        arithmetic: spec
+            .grove_version
+            .grovedb_versions
+            .storage_costs
+            .add_basic_storage_removal_to_sectioned_storage_removal,
+        dropped: Vec::new(),
         kinds,
         // The store is made with the subtree of the root Merk entered.
         entered: HashMap::from([(
@@ -558,6 +817,7 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     while !ended {
         let transaction = path.begin();
         let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+        let mirror_transaction = mirror.start_transaction();
         ended = true;
         for op in ops.by_ref() {
             // A hand-written case may hold an operation that GroveDB
@@ -567,7 +827,8 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
             if changes.is_empty() {
                 continue;
             }
-            replay.write(&writer, transactions.block(), observer.grove(), &changes);
+            let (block, grove) = (transactions.block(), observer.grove());
+            replay.write(&writer, &mirror_transaction, block, grove, &changes);
             if replay.tally.writes.is_multiple_of(COMMIT_EVERY) {
                 ended = false;
                 break;
@@ -576,6 +837,9 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         writer.into_scope().merge();
         let outcome = lignin.commit(&versions, &transaction);
         assert_ne!(outcome.expect("a commit"), Outcome::Conflict);
+        // The mirror has the committed state LigninDB has, which a removal
+        // with no cost is charged from.
+        (mirror.commit_transaction(mirror_transaction).unwrap()).expect("the mirror commits");
 
         let committed = Committed::check(&lignin, &versions);
         let reader = path.begin();
@@ -590,6 +854,7 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     assert_eq!(tally.values_written, tally.values_changed, "{}", spec.name);
     assert_eq!(tally.values_kept, tally.stated - tally.values_changed);
     assert!(kinds == Kinds::Narrowest || tally.stated == tally.nodes);
+    assert_eq!(tally.batches_charged, tally.writes, "{}", spec.name);
     tally
 }
 
@@ -670,6 +935,19 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(
             tally.values_kept > 10_000 && tally.compared > tally.nodes,
+            "{tally:?}"
+        );
+        // The charges that were compared are of the size of the corpus.
+        assert!(
+            tally.seeks_charged > tally.nodes && tally.bytes_charged > 100_000_000,
+            "{tally:?}"
+        );
+        assert!(
+            tally.uncosted_removals > 10_000 && tally.committed_bytes_loaded > 1_000_000,
+            "{tally:?}"
+        );
+        assert!(
+            tally.reads_charged > tally.nodes && tally.bytes_loaded > 100_000_000,
             "{tally:?}"
         );
     }
