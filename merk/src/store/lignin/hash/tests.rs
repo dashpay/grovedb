@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     sync::Arc,
 };
 
@@ -32,8 +32,9 @@ use crate::{
         NodeChange, NodeChangeSet, NodeStore,
     },
     tree::{
-        axes_digest, combine_hash, kv::KV, value_hash, AggregateData, NoopCommit, TreeNode,
-        TreeNodeInner, NULL_HASH,
+        axes_digest, combine_hash,
+        kv::{ValueDefinedCostType, KV},
+        value_hash, AggregateData, NoopCommit, TreeNode, TreeNodeInner, NULL_HASH,
     },
     CryptoHash, Error, Link, Merk, Op, TreeFeatureType, TreeType,
 };
@@ -41,6 +42,9 @@ use crate::{
 fn version() -> &'static GroveVersion {
     GroveVersion::latest()
 }
+
+/// No value of the tests has a cost of its own.
+const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
 
 /// Every tree type whose data is a Merk.
 const TREE_TYPES: [TreeType; 17] = [
@@ -145,6 +149,21 @@ fn held(link: &Link) -> (CryptoHash, (u8, u8), AggregateData) {
     }
 }
 
+/// The address a link points at: a cell in another page.
+fn elsewhere() -> CellAddress {
+    CellAddress::new(PageId::new(77).unwrap(), SlotId::from_index(0).unwrap())
+}
+
+/// Shows `read` the cell of `content` in a page of its own.
+fn with_content<R>(content: &CellContent<'_>, read: impl FnOnce(NodeRef<'_>) -> R) -> R {
+    let (size, lease) = (PageSize::DEFAULT, Lease::take());
+    let mut frame = vec![0; size.get()];
+    let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ()).unwrap();
+    let cell = page.insert(content).unwrap();
+    let page = NodePage::open(&frame, lease).unwrap();
+    read(page.node(cell.slot()).expect("the cell that was inserted"))
+}
+
 /// Shows `read` the cell of `node` in a page of its own, with the roots
 /// `hosted` and every link of the node pointing into another page.
 fn with_cell<R>(
@@ -152,7 +171,6 @@ fn with_cell<R>(
     hosted: &[Option<CellAddress>],
     read: impl FnOnce(NodeRef<'_>) -> R,
 ) -> R {
-    let elsewhere = CellAddress::new(PageId::new(77).unwrap(), SlotId::from_index(0).unwrap());
     let feature = encode_feature(&node.feature_type());
     let links = [true, false].map(|left| {
         node.link(left).map(|link| {
@@ -163,7 +181,7 @@ fn with_cell<R>(
     });
     let link = |at: usize| {
         (links[at].as_ref()).map(|(hash, heights, key_len, aggregate)| TreeLink {
-            child: elsewhere,
+            child: elsewhere(),
             hash,
             heights: *heights,
             child_key_len: *key_len,
@@ -181,12 +199,7 @@ fn with_cell<R>(
         value: CellValue::Inline(node.value_as_slice()),
         fragment_root: true,
     };
-    let (size, lease) = (PageSize::DEFAULT, Lease::take());
-    let mut frame = vec![0; size.get()];
-    let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ()).unwrap();
-    let cell = page.insert(&content).unwrap();
-    let page = NodePage::open(&frame, lease).unwrap();
-    read(page.node(cell.slot()).expect("the cell that was inserted"))
+    with_content(&content, read)
 }
 
 /// The cell of a node with no child and the given parts.
@@ -216,15 +229,13 @@ fn with_leaf<R>(
 /// against what the rules make of the cells, and returns the nodes it saw.
 fn check_below(rules: &mut MerkHashRules<'_>, node: &TreeNode, at: &str) -> usize {
     let mut seen = 1;
-    let kv_hash = with_cell(node, &[], |cell| {
-        rules.kv_hash(cell.key(), cell.value_hash()).unwrap()
-    });
-    assert_eq!(&kv_hash, node.kv_hash(), "the key-value hash, {at}");
-    let own = with_cell(node, &[], |cell| {
+    with_cell(node, &[], |cell| {
+        let kv_hash = rules.kv_hash(cell.key(), cell.value_hash()).unwrap();
+        assert_eq!(&kv_hash, node.kv_hash(), "the key-value hash, {at}");
         let value = cell.value().inline().expect("a value in its cell");
-        rules.value_hash(cell, value, &[]).unwrap()
+        let own = rules.value_hash(cell, value, &[]).unwrap();
+        assert_eq!(&own, node.value_hash(), "the value hash, {at}");
     });
-    assert_eq!(&own, node.value_hash(), "the value hash, {at}");
     for left in [true, false] {
         let Some(link) = node.link(left) else {
             continue;
@@ -734,7 +745,6 @@ fn the_key_value_hash_is_merks() {
 #[test]
 fn a_cell_that_holds_no_node_of_merk_is_refused() {
     let node = hashed(modified(0..3, TreeType::SumTree).unwrap());
-    let elsewhere = CellAddress::new(PageId::new(77).unwrap(), SlotId::from_index(0).unwrap());
     let refusal = |feature: &[u8], aggregate: &[u8]| {
         let content = CellContent {
             key: node.key(),
@@ -742,7 +752,7 @@ fn a_cell_that_holds_no_node_of_merk_is_refused() {
             value_hash: node.value_hash(),
             kv_hash: node.kv_hash(),
             left: Some(TreeLink {
-                child: elsewhere,
+                child: elsewhere(),
                 hash: &[1; 32],
                 heights: (0, 0),
                 child_key_len: 8,
@@ -753,13 +763,9 @@ fn a_cell_that_holds_no_node_of_merk_is_refused() {
             value: CellValue::Inline(b""),
             fragment_root: true,
         };
-        let (size, lease) = (PageSize::DEFAULT, Lease::take());
-        let mut frame = vec![0; size.get()];
-        let mut page = NodePageMut::create(&mut frame, size, PageId::MIN, lease, ()).unwrap();
-        let cell = page.insert(&content).unwrap();
-        let page = NodePage::open(&frame, lease).unwrap();
-        let cell = page.node(cell.slot()).unwrap();
-        let refused = MerkHashRules::new(version()).node_hash(cell);
+        let refused = with_content(&content, |cell| {
+            MerkHashRules::new(version()).node_hash(cell)
+        });
         refused.expect_err("no node of Merk").to_string()
     };
     let sum = |sum: i64| encode_feature(&TreeFeatureType::SummedMerkNode(sum));
@@ -816,13 +822,8 @@ fn a_modified_link_is_the_one_whose_hash_merk_does_not_hold() {
     assert_eq!(stale_hashes(&loaded), Stale::NONE);
 
     // Reference: read from its record.
-    let stored = TreeNode::decode_raw(
-        &loaded.encode(),
-        loaded.key().to_vec(),
-        None::<fn(&[u8], &GroveVersion) -> Option<crate::tree::kv::ValueDefinedCostType>>,
-        version(),
-    )
-    .unwrap();
+    let stored =
+        TreeNode::decode_raw(&loaded.encode(), loaded.key().to_vec(), NO_COST, version()).unwrap();
     assert!(stored.link(true).unwrap().is_reference());
     assert_eq!(stale_hashes(&stored), Stale::NONE);
 
@@ -899,6 +900,17 @@ fn same_as_committed(fresh: &TreeNode, committed: &TreeNode, at: &str) {
     );
 }
 
+/// A tree of three modified nodes whose middle one has a sum that its
+/// child's sum takes past `i64::MAX`.
+fn overflowing() -> TreeNode {
+    let sum = TreeFeatureType::SummedMerkNode;
+    let child = TreeNode::new(key(1), item(1), None, sum(1)).unwrap();
+    let parent = TreeNode::new(key(2), item(2), None, sum(i64::MAX)).unwrap();
+    let parent = parent.attach(true, Some(child)).unwrap();
+    let above = TreeNode::new(key(3), item(3), None, sum(0)).unwrap();
+    above.attach(true, Some(parent)).unwrap()
+}
+
 #[test]
 fn a_modified_link_is_handed_over_with_the_aggregate_a_commit_would_give_it() {
     for tree_type in TREE_TYPES {
@@ -908,16 +920,7 @@ fn a_modified_link_is_handed_over_with_the_aggregate_a_commit_would_give_it() {
     }
 
     // Aggregates that do not add up are an error, as they are in a commit.
-    let child = TreeNode::new(key(1), item(1), None, TreeFeatureType::SummedMerkNode(1)).unwrap();
-    let parent = TreeNode::new(
-        key(2),
-        item(2),
-        None,
-        TreeFeatureType::SummedMerkNode(i64::MAX),
-    );
-    let parent = parent.unwrap().attach(true, Some(child)).unwrap();
-    let above = TreeNode::new(key(3), item(3), None, TreeFeatureType::SummedMerkNode(0)).unwrap();
-    let above = above.attach(true, Some(parent)).unwrap();
+    let above = overflowing();
     assert!(matches!(
         held_link(above.link(true).unwrap()),
         Err(Error::Overflow(_))
@@ -1041,7 +1044,7 @@ fn a_node_with_a_modified_link_leaves_that_hash_to_the_engine() {
     // The store refuses to hand Merk a node with such a hash, and reads
     // the nodes around it.
     for stale in [root.key(), other.key()] {
-        let refused = handle.get_node(stale, None::<fn(&[u8], &GroveVersion) -> _>, version());
+        let refused = handle.get_node(stale, NO_COST, version());
         let refused = refused.unwrap().expect_err("a stale hash is no hash");
         assert!(matches!(refused, Error::StorageError(_)), "{refused:?}");
         assert!(
@@ -1051,11 +1054,7 @@ fn a_node_with_a_modified_link_leaves_that_hash_to_the_engine() {
         assert!(handle.get_node_for_read(stale).unwrap().is_err());
         assert!(handle.has_node(stale).unwrap().unwrap());
     }
-    let read = handle.get_node(
-        right.key(),
-        None::<fn(&[u8], &GroveVersion) -> _>,
-        version(),
-    );
+    let read = handle.get_node(right.key(), NO_COST, version());
     assert_eq!(read.unwrap().unwrap().unwrap().kv_hash(), right.kv_hash());
     drop(handle);
 
@@ -1102,7 +1101,7 @@ fn a_node_with_a_modified_link_leaves_that_hash_to_the_engine() {
     assert_eq!(rules.cost().hash_node_calls, 2);
     let reader = path.begin();
     let committed = LigninNodeStore::read_only(&reader, LigninSubtree::alone(SUBTREE));
-    let read = committed.get_node(root.key(), None::<fn(&[u8], &GroveVersion) -> _>, version());
+    let read = committed.get_node(root.key(), NO_COST, version());
     let read = read.unwrap().unwrap().expect("the root is committed");
     for left in [true, false] {
         assert_eq!(
@@ -1130,8 +1129,7 @@ fn put_below(change_set: &mut impl NodeChangeSet, node: &TreeNode) -> usize {
 /// Compares the tree under the key of `expected` in `store` with
 /// `expected`, node by node and hash by hash.
 fn same_hashes(store: &LigninNodeStore<'_>, expected: &TreeNode, at: &str) -> usize {
-    let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
-    let read = store.get_node(expected.key(), no_cost, version()).unwrap();
+    let read = store.get_node(expected.key(), NO_COST, version()).unwrap();
     let read = read.unwrap().expect("the node is committed");
     assert_eq!(read.value_hash(), expected.value_hash(), "{at}");
     assert_eq!(read.kv_hash(), expected.kv_hash(), "{at}");
@@ -1247,12 +1245,11 @@ fn a_commit_makes_the_hashes_merk_left_out_as_merk_would_have() {
         let reader = path.begin();
         let committed = LigninNodeStore::read_only(&reader, LigninSubtree::alone(SUBTREE));
         assert_eq!(same_hashes(&committed, &expected, &at), 150);
-        let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
         let merk = Merk::open_layered_with_root_key(
             committed,
             Some(expected.key().to_vec()),
             tree_type,
-            no_cost,
+            NO_COST,
             version(),
         );
         let merk = merk.unwrap().expect("the Merk opens");
@@ -1271,13 +1268,7 @@ fn a_node_that_cannot_be_handed_over_is_refused_when_it_is_put() {
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
     let handle = store(&writer);
-
-    let sum = TreeFeatureType::SummedMerkNode;
-    let child = TreeNode::new(key(1), item(1), None, sum(1)).unwrap();
-    let parent = TreeNode::new(key(2), item(2), None, sum(i64::MAX)).unwrap();
-    let parent = parent.attach(true, Some(child)).unwrap();
-    let above = TreeNode::new(key(3), item(3), None, sum(0)).unwrap();
-    let above = above.attach(true, Some(parent)).unwrap();
+    let above = overflowing();
 
     let mut change_set = handle.change_set();
     let prepared = change_set.prepare_node(&above, NodeChange::ValueWritten);
@@ -1308,8 +1299,7 @@ fn check_stored(
     root: &[u8],
     at: &str,
 ) -> (CryptoHash, usize) {
-    let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
-    let node = store.get_node(root, no_cost, version()).unwrap();
+    let node = store.get_node(root, NO_COST, version()).unwrap();
     let node = node.unwrap().expect("a node that is linked is stored");
     let mut seen = 1;
     with_cell(&node, &[], |cell| {
@@ -1342,13 +1332,12 @@ fn a_merk_makes_every_hash_itself_and_the_rules_make_the_same() {
         let path = lignin.path();
         let transaction = path.begin();
         let writer = LigninWriter::new(transaction.scope().unwrap());
-        let no_cost = None::<fn(&[u8], &GroveVersion) -> _>;
-        let merk = Merk::open_base(store(&writer), tree_type, no_cost, version());
+        let merk = Merk::open_base(store(&writer), tree_type, NO_COST, version());
         let mut merk = merk.unwrap().expect("the Merk opens");
         let mut random = Random(0x9e37_79b9 + n as u64);
         let mut live = BTreeSet::new();
         for round in 0..12 {
-            let mut batch = std::collections::BTreeMap::new();
+            let mut batch = BTreeMap::new();
             for _ in 0..1 + random.below(30) {
                 let k = random.below(160);
                 let op = match live.contains(&k) && random.below(4) == 0 {

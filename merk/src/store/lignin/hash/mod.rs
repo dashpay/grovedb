@@ -263,21 +263,19 @@ impl ValueHash {
                 element.as_str()
             )));
         }
-        Ok(match element.base() {
+        match element.base() {
             CommitmentTree
             | MmrTree
             | BulkAppendTree
             | DenseAppendOnlyFixedSizeTree
-            | PrivateDocumentStore => {
-                return Err(HashRefusal::StatedByWriter(StatedByWriter::NonMerkTree))
-            }
+            | PrivateDocumentStore => Err(HashRefusal::StatedByWriter(StatedByWriter::NonMerkTree)),
             ProvableCountProvableSumIndexedTree | ProvableCountProvableBigSumIndexedTree => {
-                Self::IndexedByAxes
+                Ok(Self::IndexedByAxes)
             }
-            _ if element.is_indexed_tree() => Self::Indexed,
-            CountSumTree | ProvableCountTree | ProvableCountSumTree => Self::TreeInsertedPlain,
-            _ => Self::Tree,
-        })
+            _ if element.is_indexed_tree() => Ok(Self::Indexed),
+            CountSumTree | ProvableCountTree | ProvableCountSumTree => Ok(Self::TreeInsertedPlain),
+            _ => Ok(Self::Tree),
+        }
     }
 }
 
@@ -399,11 +397,10 @@ impl<'v> MerkHashRules<'v> {
             Some(None) | None => &NULL_HASH,
         };
         let mut cost = OperationCost::default();
-        let own = |bytes: &[u8], cost: &mut OperationCost| value_hash(bytes).unwrap_add_cost(cost);
         let made = match how {
             ValueHash::Plain => {
                 hosts(0)?;
-                own(value, &mut cost)
+                value_hash(value).unwrap_add_cost(&mut cost)
             }
             ValueHash::Stripped => {
                 hosts(0)?;
@@ -411,16 +408,16 @@ impl<'v> MerkHashRules<'v> {
                 let stripped = stripped
                     .serialize(self.grove_version)
                     .map_err(|error| HashRefusal::NotAnElement(error.to_string()))?;
-                own(&stripped, &mut cost)
+                value_hash(&stripped).unwrap_add_cost(&mut cost)
             }
             ValueHash::Tree | ValueHash::TreeInsertedPlain => {
                 hosts(1)?;
-                let own = own(value, &mut cost);
+                let own = value_hash(value).unwrap_add_cost(&mut cost);
                 combine_hash(&own, root(0)).unwrap_add_cost(&mut cost)
             }
             ValueHash::Indexed => {
                 hosts(2)?;
-                let own = own(value, &mut cost);
+                let own = value_hash(value).unwrap_add_cost(&mut cost);
                 combine_hash_three(&own, root(0), root(1)).unwrap_add_cost(&mut cost)
             }
             ValueHash::IndexedByAxes => {
@@ -430,7 +427,7 @@ impl<'v> MerkHashRules<'v> {
                 let axes: Vec<(u8, CryptoHash)> = (axes.iter().enumerate())
                     .map(|(at, (tag, _))| (*tag, *root(1 + at)))
                     .collect();
-                let own = own(value, &mut cost);
+                let own = value_hash(value).unwrap_add_cost(&mut cost);
                 let digest = axes_digest(&axes).unwrap_add_cost(&mut cost);
                 combine_hash_three(&own, root(0), &digest).unwrap_add_cost(&mut cost)
             }
