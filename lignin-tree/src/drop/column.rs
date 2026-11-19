@@ -2,16 +2,13 @@
 //! an enter write to them, and how the reclaimer takes out those of a
 //! subtree that was nested in a dropped one.
 
-use lignin_format::{
-    flat_page::{FlatPage, FlatValue},
-    CommitVersion, PageId,
-};
+use lignin_format::{flat_page::FlatPage, CommitVersion};
 use lignin_store::values::ValueStoreError;
 
 use super::{
     error::DropError,
     flat::FlatDrops,
-    step::{damaged, flat_page, value_bytes, Busy, Reclaimer, Step, LOOKS},
+    step::{bucket_root, damaged, flat_page, value_bytes, Busy, Reclaimer, Step, LOOKS},
 };
 use crate::{
     directory::{Directory, Host, MerkId, Prefix},
@@ -292,13 +289,8 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                     break;
                 }
                 if key.len() > config.key_limit() {
-                    let root = match value {
-                        FlatValue::Inline(root) => root.try_into().ok(),
-                        FlatValue::OutOfLine(_) => None,
-                    };
-                    let root = root.and_then(PageId::decode);
-                    let what = "a bucket of long keys that names no page";
-                    buckets.push((key, root.ok_or(damaged(page, what))?));
+                    let root = bucket_root(page, value)?;
+                    buckets.push((key, root));
                 } else {
                     keys.push(key);
                 }

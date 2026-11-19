@@ -16,7 +16,7 @@ use super::{
     *,
 };
 use crate::{
-    directory::{record::entry_key, DirectoryError, Host, Prefix},
+    directory::{record::entry_key, DirectoryError, Host},
     flat::{FlatConfig, FlatPages, FlatPagesMut, FlatTree},
 };
 
@@ -142,22 +142,6 @@ fn build_in(db: Db, records: usize) -> Built {
     }
 }
 
-/// The records that the column `column` stores under `prefix`, whatever
-/// the directory says of the prefix: what no reader does.
-fn raw<P: FlatPages + ?Sized>(pages: &P, grove: &Grove, prefix: &Prefix, column: usize) -> Records {
-    let column = &grove.columns[column];
-    let mut cursor = column.tree.cursor_within(&column.range(prefix));
-    cursor.seek_to_first(pages).expect("a seek");
-    let mut found = Records::new();
-    while cursor.valid() {
-        let mut value = Vec::new();
-        assert!(cursor.value(pages, &mut value).expect("a value"));
-        found.insert(cursor.key().expect("a key").to_vec(), value);
-        cursor.next(pages).expect("a step");
-    }
-    found
-}
-
 /// The leaf of `tree` that the stored key `key` is in, or would be, at the
 /// latest version.
 fn leaf_with(db: &Db, tree: &FlatTree, key: &[u8]) -> PageId {
@@ -171,15 +155,6 @@ fn leaf_with(db: &Db, tree: &FlatTree, key: &[u8]) -> PageId {
             }
             FlatPage::Leaf(_) => return page,
         }
-    }
-}
-
-fn flats<'a, 'd>(txn: &'a mut Txn<'d>, grove: &'a Grove) -> Flats<'a, Counted<Writer<'d>>> {
-    Flats {
-        at: txn.tree.at,
-        pages: &mut txn.flat,
-        columns: &grove.columns,
-        drops: &grove.drops,
     }
 }
 
@@ -241,9 +216,9 @@ fn a_drop_takes_the_flat_records_out_of_reach_and_reclaiming_takes_them_out() {
     // The records of the dropped Merk are out of the columns, and those of
     // the Merks below it are where they were: the drop walked nothing.
     for (column, (inner, deepest)) in had[1].iter().zip(&had[2]).enumerate() {
-        assert!(raw(&txn.flat, &grove, &prefixes[0], column).is_empty());
-        assert_eq!(&raw(&txn.flat, &grove, &prefixes[1], column), inner);
-        assert_eq!(&raw(&txn.flat, &grove, &prefixes[2], column), deepest);
+        assert!(grove.raw_flat(&txn.flat, &prefixes[0], column).is_empty());
+        assert_eq!(&grove.raw_flat(&txn.flat, &prefixes[1], column), inner);
+        assert_eq!(&grove.raw_flat(&txn.flat, &prefixes[2], column), deepest);
     }
     db.commit(txn);
 
@@ -329,7 +304,7 @@ fn a_merk_entered_again_before_the_reclaiming_starts_with_no_flat_record() {
             assert_eq!(found, Some(Records::new()));
             // Nothing is under the prefix for anyone: what was left there
             // went with the enter.
-            assert!(raw(&txn.flat, &grove, of, column).is_empty());
+            assert!(grove.raw_flat(&txn.flat, of, column).is_empty());
         }
     }
     for (n, (key, value)) in old_inner.iter().enumerate() {
@@ -394,7 +369,7 @@ fn a_merk_entered_again_during_the_reclaiming_keeps_its_flat_records() {
         // A call makes no more page steps than it was asked for.
         assert!(db.reclaims().len() <= steps + 1);
         grove.check(&db);
-        let left = raw(&db.reader(), &grove, &inner_prefix, 0);
+        let left = grove.raw_flat(&db.reader(), &inner_prefix, 0);
         if left.len() < old_inner.len() {
             break left;
         }
@@ -406,7 +381,7 @@ fn a_merk_entered_again_during_the_reclaiming_keeps_its_flat_records() {
     let inner_again = grove.host_under(under, inner_prefix);
     grove.put(inner_again, b"a node", b"of the Merk that is there now");
     grove.flush(&mut txn);
-    assert!(raw(&txn.flat, &grove, &inner_prefix, 0).is_empty());
+    assert!(grove.raw_flat(&txn.flat, &inner_prefix, 0).is_empty());
     for (key, value) in &old_inner {
         grove.put_flat(inner_again, 0, key, value);
     }
@@ -419,7 +394,7 @@ fn a_merk_entered_again_during_the_reclaiming_keeps_its_flat_records() {
     finish(&db, &directory, &mut reclaim, 1);
     assert!(reclaim.miscount().is_none());
     assert_eq!(
-        raw(&db.reader(), &grove, &inner_prefix, 0),
+        grove.raw_flat(&db.reader(), &inner_prefix, 0),
         grove.flat_of(inner_again, 0)
     );
     free_unlinked(&db, &db.drops());
@@ -514,7 +489,7 @@ fn a_leaf_that_a_commit_changed_since_the_look_loses_no_entry() {
     // The Merk that is there now has every record it was given.
     grove.check(&db);
     assert_eq!(
-        raw(&db.reader(), &grove, &inner_prefix, 0),
+        grove.raw_flat(&db.reader(), &inner_prefix, 0),
         grove.flat_of(inner_again, 0)
     );
     // And every value is released once: by the step that took its entry
@@ -634,7 +609,7 @@ fn the_flat_records_wait_while_a_writer_has_a_copy_of_their_leaf() {
     // The deepest Merk went before the inner one, and of the inner one no
     // record went: its first leaf is held.
     assert!(reclaim.reclaimed().flat_records > 0);
-    assert_eq!(raw(&db.reader(), &grove, &inner_prefix, 0), had);
+    assert_eq!(grove.raw_flat(&db.reader(), &inner_prefix, 0), had);
     db.commit(txn);
 
     finish(&db, &directory, &mut reclaim, usize::MAX);
@@ -729,7 +704,7 @@ fn an_enter_unlinks_what_a_left_over_entry_has_and_nothing_else() {
     let directory = grove.directory(&db);
     let entered = enter(
         &directory,
-        &mut flats(&mut txn, &grove),
+        &mut grove.flats(&mut txn),
         &new,
         b"tree",
         Some(host(b"a")),
@@ -742,7 +717,7 @@ fn an_enter_unlinks_what_a_left_over_entry_has_and_nothing_else() {
     let wrote = txn.flat.wrote.clone();
     let refused = enter(
         &directory,
-        &mut flats(&mut txn, &grove),
+        &mut grove.flats(&mut txn),
         &beside_prefix,
         b"tree",
         Some(host(b"b")),
@@ -762,18 +737,18 @@ fn an_enter_unlinks_what_a_left_over_entry_has_and_nothing_else() {
     let mut txn = db.begin();
     let directory = grove.directory(&db);
     for column in 0..3 {
-        assert!(!raw(&txn.flat, &grove, &inner_prefix, column).is_empty());
+        assert!(!grove.raw_flat(&txn.flat, &inner_prefix, column).is_empty());
     }
     let entered = enter(
         &directory,
-        &mut flats(&mut txn, &grove),
+        &mut grove.flats(&mut txn),
         &inner_prefix,
         b"tree",
         Some(host(b"c")),
     );
     entered.expect("entered");
     for column in 0..3 {
-        assert!(raw(&txn.flat, &grove, &inner_prefix, column).is_empty());
+        assert!(grove.raw_flat(&txn.flat, &inner_prefix, column).is_empty());
     }
     assert!(!txn.flat.wrote.is_disjoint(&of_columns(&db)));
     db.roll_back(txn);

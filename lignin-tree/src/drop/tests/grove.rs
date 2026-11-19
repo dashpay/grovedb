@@ -13,7 +13,7 @@ use lignin_format::{
 };
 use lignin_store::load::LoadBuffers;
 
-use super::{flat_records, Db, Txn, GUARD};
+use super::{flat_records, Counted, Db, Txn, Writer, GUARD};
 use crate::{
     directory::{Directory, Dropped, Host, Prefix, Root, RootChange},
     drop::{enter, unlink, Column, FlatDrops, Flats, Leaving},
@@ -361,14 +361,14 @@ impl Grove {
                 key,
                 position: *position,
             });
-            let mut flats = Flats {
-                pages: &mut txn.flat,
-                columns: &self.columns,
-                drops: &self.drops,
-                at: txn.tree.at,
-            };
-            enter(&self.directory, &mut flats, &prefix, b"tree", host)
-                .expect("the Merk is entered");
+            enter(
+                &self.directory,
+                &mut self.flats(txn),
+                &prefix,
+                b"tree",
+                host,
+            )
+            .expect("the Merk is entered");
             self.merks[merk].entered = true;
         }
         for (merk, column, key) in std::mem::take(&mut self.unwritten) {
@@ -527,6 +527,16 @@ impl Grove {
         (report, left)
     }
 
+    /// The flat side of an operation of `txn` on this grove.
+    pub fn flats<'a, 'd>(&'a self, txn: &'a mut Txn<'d>) -> Flats<'a, Counted<Writer<'d>>> {
+        Flats {
+            at: txn.tree.at,
+            pages: &mut txn.flat,
+            columns: &self.columns,
+            drops: &self.drops,
+        }
+    }
+
     /// The key that the column `column` stores the record `key` of `merk`
     /// under.
     pub fn stored_key(&self, merk: usize, column: usize, key: &[u8]) -> Vec<u8> {
@@ -546,6 +556,18 @@ impl Grove {
         column: usize,
     ) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
         directory.open(pages, prefix).expect("a lookup")?;
+        Some(self.raw_flat(pages, prefix, column))
+    }
+
+    /// The records that the column `column` stores under `prefix` in
+    /// `pages`, whatever the directory says of the prefix: what no reader
+    /// does.
+    pub fn raw_flat<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+        prefix: &Prefix,
+        column: usize,
+    ) -> BTreeMap<Vec<u8>, Vec<u8>> {
         let column = &self.columns[column];
         let mut cursor = column.tree.cursor_within(&column.range(prefix));
         cursor.seek_to_first(pages).expect("a seek");
@@ -556,7 +578,7 @@ impl Grove {
             found.insert(cursor.key().expect("a key").to_vec(), value);
             cursor.next(pages).expect("a step");
         }
-        Some(found)
+        found
     }
 
     /// The flat records of `merk` in the column `column`, as this model

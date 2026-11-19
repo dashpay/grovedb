@@ -332,11 +332,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         let found = fragment(&view, roots)?;
         let mut run = Vec::new();
         if found.slots.len() == view.cell_count() {
-            let after = None;
             return Ok(Prepared {
                 frame,
                 found,
-                after,
+                after: None,
                 run,
             });
         }
@@ -356,11 +355,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         TreePage::from_validated(&blank, FRAME_FORMAT)?
             .check_fragments()
             .map_err(|_| damaged(page, "a cell that stays names a cell of the subtree"))?;
-        let after = Some(blank);
         Ok(Prepared {
             frame,
             found,
-            after,
+            after: Some(blank),
             run,
         })
     }
@@ -680,4 +678,14 @@ pub(super) fn place_of(page: PageId, bytes: &[u8]) -> Result<ValuePlace, DropErr
         .try_into()
         .map_err(|_| damaged(page, "a value out of line that is no place"))?;
     Ok(ValuePlace::decode(bytes)?)
+}
+
+/// The root of the tree that the bucket of long keys in the leaf `page`
+/// holds, read from the bucket's value.
+pub(super) fn bucket_root(page: PageId, value: FlatValue<'_>) -> Result<PageId, DropError> {
+    let root = match value {
+        FlatValue::Inline(bytes) => bytes.try_into().ok().and_then(PageId::decode),
+        FlatValue::OutOfLine(_) => None,
+    };
+    root.ok_or(damaged(page, "a bucket of long keys that names no page"))
 }

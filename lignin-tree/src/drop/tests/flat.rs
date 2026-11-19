@@ -1,17 +1,13 @@
 //! The lazy range delete of a flat keyspace, and the freeing of the pages
 //! it left.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
-use lignin_format::{
-    flat_page::{FlatPage, FlatValue},
-    value_log::{ValuePlace, ValuePointer},
-    PageId,
-};
-use lignin_store::{alloc::PageState, load::FRAME_FORMAT};
+use lignin_format::{value_log::ValuePointer, PageId};
+use lignin_store::alloc::PageState;
 
 use super::*;
-use crate::flat::{FlatPages, FlatTree, Unlinked};
+use crate::flat::{FlatTree, Unlinked};
 
 type Model = BTreeMap<Vec<u8>, Vec<u8>>;
 
@@ -62,82 +58,18 @@ fn build(count: usize) -> Built {
     }
 }
 
-/// Every record of `tree` at the latest version.
-fn records(db: &Db, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
-    let pages = db.reader();
-    let mut cursor = tree.cursor();
-    cursor.seek_to_first(&pages).expect("a seek");
-    let mut found = Vec::new();
-    while cursor.valid() {
-        let mut value = Vec::new();
-        assert!(cursor.value(&pages, &mut value).expect("a value"));
-        found.push((cursor.key().expect("a key").to_vec(), value));
-        cursor.next(&pages).expect("a step");
-    }
-    found
-}
-
-/// The pages of `tree` at the latest version, with the trees of its
-/// buckets, and the value pointers its entries hold.
-fn pages_of(db: &Db, tree: &FlatTree) -> (BTreeSet<PageId>, Vec<ValuePointer>) {
-    let reader = db.reader();
-    let (mut pages, mut pointers) = (BTreeSet::new(), Vec::new());
-    let mut next = vec![tree.root()];
-    while let Some(page) = next.pop() {
-        assert!(pages.insert(page), "{page} is reached twice");
-        let frame = reader.page(page).expect("a page");
-        match FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a flat page") {
-            FlatPage::Branch(branch) => {
-                next.extend((0..=branch.len()).map(|index| branch.child(index).expect("a child")));
-            }
-            FlatPage::Leaf(leaf) => {
-                for (key, value) in leaf.iter() {
-                    match value {
-                        FlatValue::Inline(root) if key.len() > db.config.key_limit() => {
-                            let root: [u8; 4] = root.try_into().expect("a page id");
-                            next.push(PageId::decode(root).expect("a page"));
-                        }
-                        FlatValue::Inline(_) => {}
-                        FlatValue::OutOfLine(place) => {
-                            let place = ValuePlace::decode(place.try_into().expect("a place"));
-                            pointers.extend(place.expect("a place").pointer());
-                        }
-                    }
-                }
-            }
-        }
-    }
-    (pages, pointers)
-}
-
 /// The value pointers that the entries of every keyspace of these tests
 /// hold at the latest version.
 fn held(db: &Db, trees: &[&FlatTree]) -> Vec<ValuePointer> {
-    let pointers = trees.iter().flat_map(|tree| pages_of(db, tree).1);
+    let pointers = trees.iter().flat_map(|tree| scan_flat(db, tree).pointers);
     pointers.collect()
 }
 
 /// Frees what every lazy range delete of the latest version left, `steps`
-/// page steps at a time.
+/// page steps at a time, and checks that no record is left.
 fn free_all(db: &Db, drops: &FlatDrops, steps: usize) -> FlatReclaimed {
+    let done = free_unlinked_by(db, drops, steps);
     let reclaimer = db.reclaimer();
-    let mut done = FlatReclaimed::default();
-    for left in reclaimer.flat_drops(drops, &GUARD).expect("the records") {
-        let mut wait = Wait::new(db.latest());
-        assert!(wait.poll(&db.pins));
-        for _ in 0..1_000_000 {
-            match reclaimer
-                .reclaim_flat(drops, &left, &GUARD, steps, &mut done)
-                .expect("a step")
-            {
-                Progress::Done => break,
-                Progress::More => {}
-                Progress::Blocked(Busy::Newborn) => drop(db.tick()),
-                Progress::Blocked(busy) => panic!("nothing holds a page: {busy:?}"),
-            }
-        }
-    }
-    assert!(done.miscount.is_none());
     assert!(reclaimer
         .flat_drops(drops, &GUARD)
         .expect("the records")
@@ -158,7 +90,7 @@ fn unlinking_a_range_writes_its_two_ends_and_nothing_between() {
             drops,
             mut model,
         } = build(count);
-        let (before, _) = pages_of(&db, &tree);
+        let before = scan_flat(&db, &tree).pages;
         let (start, end) = (key(count / 10), key(count - count / 10));
 
         // A range delete that reads what it frees copies every page of it.
@@ -181,9 +113,9 @@ fn unlinking_a_range_writes_its_two_ends_and_nothing_between() {
 
         model.retain(|key, _| *key < start || *key >= end);
         let expected: Vec<_> = model.clone().into_iter().collect();
-        assert!(records(&db, &tree) == expected);
+        assert!(flat_records(&db, &tree) == expected);
         // The pages between are out of the tree, and still pages.
-        let (after, _) = pages_of(&db, &tree);
+        let after = scan_flat(&db, &tree).pages;
         let left: Vec<PageId> = before.difference(&after).copied().collect();
         assert!(left.len() > count / 200);
         let still: Vec<_> = left
@@ -201,7 +133,7 @@ fn unlinking_a_range_writes_its_two_ends_and_nothing_between() {
             assert!(db.current(page).is_none());
             assert_eq!(db.state(page), PageState::Retired);
         }
-        assert!(records(&db, &tree) == expected);
+        assert!(flat_records(&db, &tree) == expected);
         db.check_counts(&held(&db, &[&tree, drops.tree()]));
     }
     // Ten times the records, and the same pages written, give or take a
@@ -268,9 +200,9 @@ fn freeing_begins_again_from_the_record_and_passes_what_is_gone() {
     assert!(calls > 5);
     let other = other.expect("the other keyspace");
     let expected: Vec<_> = other_model.into_iter().collect();
-    assert!(records(&db, &other) == expected);
+    assert!(flat_records(&db, &other) == expected);
     let expected: Vec<_> = model.into_iter().collect();
-    assert!(records(&db, &tree) == expected);
+    assert!(flat_records(&db, &tree) == expected);
     db.write_back();
     db.check_counts(&held(&db, &[&tree, &other, drops.tree()]));
     // The record is gone, and a call with it finds nothing to do.
@@ -319,7 +251,7 @@ fn the_trees_of_long_keys_are_unlinked_and_freed_with_their_range() {
     }
     db.commit(txn);
     db.write_back();
-    let (before, _) = pages_of(&db, &tree);
+    let before = scan_flat(&db, &tree).pages;
 
     let (start, end) = (key(1_000), key(5_000));
     let mut txn = db.begin();
@@ -330,7 +262,7 @@ fn the_trees_of_long_keys_are_unlinked_and_freed_with_their_range() {
     db.commit(txn);
     model.retain(|key, _| *key < start || *key >= end);
     let expected: Vec<_> = model.into_iter().collect();
-    assert!(records(&db, &tree) == expected);
+    assert!(flat_records(&db, &tree) == expected);
 
     let [left] = &db
         .reclaimer()
@@ -346,12 +278,12 @@ fn the_trees_of_long_keys_are_unlinked_and_freed_with_their_range() {
 
     db.tick();
     let done = free_all(&db, &drops, 3);
-    let (after, _) = pages_of(&db, &tree);
+    let after = scan_flat(&db, &tree).pages;
     for page in before.difference(&after) {
         assert!(db.current(*page).is_none(), "{page} is left");
     }
     assert!(done.pages_freed > 20);
-    assert!(records(&db, &tree) == expected);
+    assert!(flat_records(&db, &tree) == expected);
     db.check_counts(&held(&db, &[&tree, drops.tree()]));
 }
 
@@ -390,7 +322,7 @@ fn a_keyspace_and_a_whole_tree_are_unlinked() {
         db.commit(txn);
         model.retain(|key, _| !key.starts_with(prefix));
         let expected: Vec<_> = model.clone().into_iter().collect();
-        assert!(records(&db, &tree) == expected);
+        assert!(flat_records(&db, &tree) == expected);
     }
     assert_eq!(model.len(), 900);
     db.tick();
@@ -405,10 +337,10 @@ fn a_keyspace_and_a_whole_tree_are_unlinked() {
     assert_eq!(record, Some(3));
     assert_eq!(drops.next_id(&txn.flat).expect("the header"), 4);
     db.commit(txn);
-    assert!(records(&db, &tree).is_empty());
+    assert!(flat_records(&db, &tree).is_empty());
     db.tick();
     assert!(free_all(&db, &drops, usize::MAX).pages_freed > 2);
-    assert_eq!(pages_of(&db, &tree).0.len(), 1);
+    assert_eq!(scan_flat(&db, &tree).pages.len(), 1);
     db.check_counts(&held(&db, &[&tree, drops.tree()]));
 
     // A range that takes no page out whole leaves no record.
@@ -420,7 +352,7 @@ fn a_keyspace_and_a_whole_tree_are_unlinked() {
     let record = drops.unlink_range(&mut txn.flat, &tree, &key(2), Some(&key(5)), at);
     assert_eq!(record.expect("unlinked"), None);
     db.commit(txn);
-    assert_eq!(records(&db, &tree).len(), 7);
+    assert_eq!(flat_records(&db, &tree).len(), 7);
     assert!(db
         .reclaimer()
         .flat_drops(&drops, &GUARD)
@@ -478,7 +410,7 @@ fn a_page_that_is_newborn_or_copied_waits() {
     assert_eq!(ends.expect("the steps"), Progress::Done);
     assert_eq!(done.records, 1);
     let expected: Vec<_> = model.into_iter().collect();
-    assert!(records(&db, &tree) == expected);
+    assert!(flat_records(&db, &tree) == expected);
     db.write_back();
     db.check_counts(&held_all(&db, &tree, &drops));
 }
@@ -561,7 +493,7 @@ fn a_record_or_a_page_that_is_not_one_is_refused() {
         above: None,
     }]);
     assert_eq!(done.pages_freed, 0);
-    assert_eq!(records(&db, &tree).len(), 2_000);
+    assert_eq!(flat_records(&db, &tree).len(), 2_000);
 
     // A keyspace with no header gives out no number.
     let mut txn = db.begin();

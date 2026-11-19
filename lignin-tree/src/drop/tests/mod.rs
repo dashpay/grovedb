@@ -1045,6 +1045,11 @@ pub(super) fn finish(db: &Db, directory: &Directory, reclaim: &mut Reclaim, step
 /// Frees the pages that every lazy range delete of the latest version
 /// left, and returns what that took out.
 pub(super) fn free_unlinked(db: &Db, drops: &FlatDrops) -> FlatReclaimed {
+    free_unlinked_by(db, drops, usize::MAX)
+}
+
+/// The same, `steps` page steps at a time.
+pub(super) fn free_unlinked_by(db: &Db, drops: &FlatDrops, steps: usize) -> FlatReclaimed {
     let reclaimer = db.reclaimer();
     let mut done = FlatReclaimed::default();
     for left in reclaimer.flat_drops(drops, &GUARD).expect("the records") {
@@ -1052,7 +1057,7 @@ pub(super) fn free_unlinked(db: &Db, drops: &FlatDrops) -> FlatReclaimed {
         assert!(wait.poll(&db.pins), "nothing is pinned");
         for _ in 0..1_000_000 {
             match reclaimer
-                .reclaim_flat(drops, &left, &GUARD, usize::MAX, &mut done)
+                .reclaim_flat(drops, &left, &GUARD, steps, &mut done)
                 .expect("a step")
             {
                 Progress::Done => break,

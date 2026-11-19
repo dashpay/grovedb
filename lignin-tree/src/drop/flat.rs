@@ -15,8 +15,8 @@ use super::{
     error::DropError,
     merk::Progress,
     step::{
-        damaged, flat_page, place_of, seen, sort_released, value_bytes, Busy, EntryRemoved,
-        Reclaimer, Step, LOOKS,
+        bucket_root, damaged, flat_page, place_of, seen, sort_released, value_bytes, Busy,
+        EntryRemoved, Reclaimer, Step, LOOKS,
     },
 };
 use crate::{
@@ -394,22 +394,14 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 }
                 FlatPage::Leaf(leaf) => {
                     for (key, value) in leaf.iter() {
-                        let is_bucket = key.len() > config.key_limit();
-                        match (is_bucket, value) {
-                            (true, value) => {
-                                let root = match value {
-                                    FlatValue::Inline(root) => root.try_into().ok(),
-                                    FlatValue::OutOfLine(_) => None,
-                                };
-                                let root = root.and_then(PageId::decode);
-                                let what = "a bucket of long keys that names no page";
-                                let page = root.ok_or(damaged(page, what))?;
-                                below.push(Unlinked { page, above: None });
-                            }
-                            (false, FlatValue::Inline(_)) => {}
-                            (false, FlatValue::OutOfLine(place)) => {
-                                released.extend(place_of(page, place)?.pointer());
-                            }
+                        if key.len() > config.key_limit() {
+                            let root = bucket_root(page, value)?;
+                            below.push(Unlinked {
+                                page: root,
+                                above: None,
+                            });
+                        } else if let FlatValue::OutOfLine(place) = value {
+                            released.extend(place_of(page, place)?.pointer());
                         }
                     }
                 }
