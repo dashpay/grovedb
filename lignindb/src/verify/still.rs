@@ -16,7 +16,10 @@ use lignin_store::{
     table::{Link, LinkKind},
 };
 
-use super::{pages::Kind, Place, Rule, Run, SegmentUse};
+use super::{
+    pages::{Kind, Seen},
+    Place, Rule, Run, SegmentUse,
+};
 
 /// A run that states more than this many times the length of its block is
 /// refused before memory is taken for it: no LZ4 block reaches it.
@@ -81,8 +84,12 @@ impl Run<'_, '_, '_> {
 
     /// Compares the store's counts of live values with the pointers that
     /// the pages hold.
+    ///
+    /// With a page that is not read there is nothing to compare: the page
+    /// may hold pointers, and the store's count is of all of them.
     pub(super) fn compare_value_counts(&mut self) {
-        if !self.store.values_counted {
+        let unread = (self.pages.values()).any(|seen| matches!(seen, Seen::Bad));
+        if !self.store.values_counted || unread {
             return;
         }
         let counted: BTreeMap<_, _> = (self.store.values.counts().into_iter())

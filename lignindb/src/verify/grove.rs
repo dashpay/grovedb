@@ -1,7 +1,10 @@
 //! The walk of the Merks from their roots, the agreement of the directory
 //! with the cells, and the cells that nothing reaches.
 
-use std::{cmp::Ordering, collections::HashMap, rc::Rc};
+use std::{
+    collections::{HashMap, HashSet},
+    rc::Rc,
+};
 
 use lignin_format::{
     tree_page::{Side, TreePage},
@@ -18,10 +21,6 @@ use super::{
     pages::{Kind, Reach, Seen},
     Grove, Place, Rule, Run, Unreached,
 };
-
-/// The most cells a descent by key passes before the pages are taken for
-/// damaged. A Merk of 2^64 nodes is at most 93 levels deep.
-const MAX_DEPTH: usize = 128;
 
 /// A Merk as its entry in the directory has it.
 #[derive(Debug)]
@@ -47,6 +46,27 @@ pub(super) struct Entries {
 /// A pointer to a hosted root, as a cell of a Merk in use holds it: the
 /// Merk, the host's key and the position.
 type HostedAt = (usize, Vec<u8>, u8);
+
+/// What the walks of the Merks in use learn of the cells that host a Merk.
+/// A Merk is the place of its entry in [`Entries::merks`].
+///
+/// The comparison of the entries with their hosts reads only this, and so
+/// says of a cell only what a walk read in it.
+#[derive(Default)]
+struct Hosts<'e> {
+    /// The keys of the hosts that the entries name, by the Merk they are
+    /// said to be in.
+    wanted: HashMap<usize, HashSet<&'e [u8]>>,
+    /// The cells of those hosts that a walk entered.
+    cells: HashMap<(usize, &'e [u8]), CellAddress>,
+    /// Every pointer to a hosted root in a cell that a walk entered: the
+    /// host's cell and the pointer.
+    pointers: HashMap<HostedAt, (CellAddress, CellAddress)>,
+    /// The Merks whose walk did not enter every cell it was pointed at.
+    /// What stopped it was reported, and a node that the walk did not come
+    /// to may still be one of the Merk.
+    partial: HashSet<usize>,
+}
 
 /// Which tree of cells a walk is in.
 #[derive(Clone, Copy)]
@@ -104,15 +124,23 @@ impl Run<'_, '_, '_> {
         entries: Option<&Entries>,
         rules: &mut Option<&mut dyn HashRules>,
     ) {
-        let mut hosted = HashMap::new();
+        let mut hosts = Hosts::default();
         match (self.store.grove, entries) {
             (Grove::Roots(roots), _) => {
                 for root in roots {
                     self.census.merks += 1;
-                    self.walk_merk(*root, None, Walk::Rooted, rules, &mut hosted);
+                    self.walk_merk(*root, None, Walk::Rooted, rules, &mut hosts);
                 }
             }
             (Grove::Directory { .. }, Some(entries)) => {
+                for merk in entries.merks.iter().filter(|merk| merk.live) {
+                    if let Some((parent, key, _)) = &merk.host
+                        && let Some(parent) = entries.by_prefix.get(parent)
+                    {
+                        let wanted = hosts.wanted.entry(*parent).or_default();
+                        wanted.insert(key.as_slice());
+                    }
+                }
                 for (index, merk) in entries.merks.iter().enumerate() {
                     let Some((root, key)) = merk.root.as_ref().filter(|_| merk.live) else {
                         continue;
@@ -121,29 +149,41 @@ impl Run<'_, '_, '_> {
                         merk: index,
                         prefix: &merk.prefix,
                     };
-                    self.walk_merk(*root, Some(key), walk, rules, &mut hosted);
+                    self.walk_merk(*root, Some(key), walk, rules, &mut hosts);
                 }
-                self.compare_hosts(entries, &mut hosted);
+                self.compare_hosts(entries, &mut hosts);
                 for dropped in &entries.drops {
                     if let Some(root) = dropped.root {
-                        self.walk_merk(root, None, Walk::Left, rules, &mut hosted);
+                        self.walk_merk(root, None, Walk::Left, rules, &mut hosts);
                     }
                 }
             }
-            // The directory was not read, which was reported.
-            (Grove::Directory { .. }, None) => {}
+            // The directory was not read, which was reported. No walk
+            // begins, and what the cells are reached by is not known.
+            (Grove::Directory { .. }, None) => self.cut.cells = true,
         }
     }
 
     /// Walks the cells below `root`, the root of one Merk.
-    fn walk_merk(
+    ///
+    /// A cell that the walk is pointed at and does not enter is reported
+    /// where it is not entered, and the walk goes on beside it. What lies
+    /// below such a cell is then reached by nothing that was read: a page
+    /// that is not read sets [`Cut::cells`](super::Cut), and the Merk is
+    /// noted as one whose walk is not whole ([`Hosts::partial`]).
+    fn walk_merk<'e>(
         &mut self,
         root: CellAddress,
         root_key: Option<&Vec<u8>>,
         walk: Walk<'_>,
         rules: &mut Option<&mut dyn HashRules>,
-        hosted: &mut HashMap<HostedAt, (CellAddress, CellAddress)>,
+        hosts: &mut Hosts<'e>,
     ) {
+        let entered = match walk {
+            Walk::Entered { merk, .. } => Some(merk),
+            Walk::Rooted | Walk::Left => None,
+        };
+        let wanted = entered.and_then(|merk| hosts.wanted.get(&merk));
         let reach = match walk {
             Walk::Entered { .. } | Walk::Rooted => Reach::Live,
             Walk::Left => Reach::Left,
@@ -164,24 +204,39 @@ impl Run<'_, '_, '_> {
             };
             match self.see(at.page()) {
                 Kind::Tree => {}
-                Kind::Bad => continue,
+                Kind::Bad => {
+                    self.cut.cells = true;
+                    hosts.partial.extend(entered);
+                    continue;
+                }
                 kind => {
                     self.add(dangling, holder, || match kind {
                         Kind::Flat => format!("the address {at} is in a flat page"),
                         _ => format!("the address {at} is in no page of the version"),
                     });
+                    hosts.partial.extend(entered);
                     continue;
                 }
             }
-            let Ok(frame) = self.frame(at.page()) else {
+            let Some(frame) = self.enter(at.page()) else {
+                self.cut.cells = true;
+                hosts.partial.extend(entered);
                 continue;
             };
-            let Ok(page) = NodePage::open(&frame, self.lease) else {
-                continue;
+            let page = match NodePage::open(&frame, self.lease) {
+                Ok(page) => page,
+                Err(error) => {
+                    let place = Place::Page(at.page());
+                    self.add(Rule::TreePageFormat, place, || error.to_string());
+                    self.cut.cells = true;
+                    hosts.partial.extend(entered);
+                    continue;
+                }
             };
             let Some(node) = page.node(at.slot()) else {
                 let what = || format!("the address {at} names a slot that holds no cell");
                 self.add(dangling, holder, what);
+                hosts.partial.extend(entered);
                 continue;
             };
             let key = node.key();
@@ -222,7 +277,13 @@ impl Run<'_, '_, '_> {
             if !self.reach(at, reach) {
                 let what = || format!("the address {at} names a cell that was reached before");
                 self.add(Rule::CellNamedTwice, holder, what);
+                hosts.partial.extend(entered);
                 continue;
+            }
+            if let (Some(merk), Some(wanted)) = (entered, wanted)
+                && let Some(key) = wanted.get(key)
+            {
+                hosts.cells.insert((merk, *key), at);
             }
             // The value of a cell that a dropped Merk left is read as well:
             // the reclaimer releases the pointer it finds there.
@@ -239,7 +300,7 @@ impl Run<'_, '_, '_> {
                 match walk {
                     Walk::Entered { merk, .. } => {
                         let hosted_at = (merk, key.to_vec(), position as u8);
-                        hosted.insert(hosted_at, (at, pointer));
+                        hosts.pointers.insert(hosted_at, (at, pointer));
                     }
                     Walk::Rooted => {
                         self.census.merks += 1;
@@ -291,22 +352,21 @@ impl Run<'_, '_, '_> {
     }
 
     /// Compares the entry of every hosted Merk in use with the cell of its
-    /// host. `hosted` has the pointers that the walks found, and is left
-    /// with those of no entry, which are reported.
-    fn compare_hosts(
-        &mut self,
-        entries: &Entries,
-        hosted: &mut HashMap<HostedAt, (CellAddress, CellAddress)>,
-    ) {
+    /// host, as the walks read it. The pointers of no entry are reported.
+    ///
+    /// A host that no walk entered is no node of its Merk only where the
+    /// walk of that Merk was whole. Where it was not, what stopped it was
+    /// reported, and nothing is said of the host.
+    fn compare_hosts(&mut self, entries: &Entries, hosts: &mut Hosts<'_>) {
         for merk in entries.merks.iter().filter(|merk| merk.live) {
             let Some((parent, key, position)) = &merk.host else {
                 continue;
             };
             let place = Place::Merk(merk.prefix);
-            let parent_merk = (entries.by_prefix.get(parent))
-                .map(|index| (*index, &entries.merks[*index]))
-                .filter(|(_, parent)| parent.live);
-            let Some((index, parent_merk)) = parent_merk else {
+            let in_use = (entries.by_prefix.get(parent))
+                .copied()
+                .filter(|index| entries.merks[*index].live);
+            let Some(index) = in_use else {
                 let what = || {
                     format!(
                         "the host is in {}, which is not in use",
@@ -317,7 +377,10 @@ impl Run<'_, '_, '_> {
                 continue;
             };
             let root = merk.root.as_ref().map(|(root, _)| *root);
-            match (root, hosted.remove(&(index, key.clone(), *position))) {
+            match (
+                root,
+                hosts.pointers.remove(&(index, key.clone(), *position)),
+            ) {
                 (Some(root), Some((_, pointer))) if root == pointer => {
                     self.census.hosted_roots += 1;
                 }
@@ -332,28 +395,25 @@ impl Run<'_, '_, '_> {
                         ),
                     });
                 }
-                (root, None) => {
-                    let parent_root = parent_merk.root.as_ref().map(|(root, _)| *root);
-                    match (self.find(parent_root, key), root) {
-                        (Some(_), None) => {}
-                        (Some(host), Some(root)) => {
-                            self.add(Rule::HostPointer, Place::Cell(host), || {
-                                format!(
-                                    "the host has no pointer in position {position}, and the \
-                                     entry of {place} names the root {root}"
-                                )
-                            });
-                        }
-                        (None, _) => {
-                            let what =
-                                || format!("the host is no node of {}", Place::Merk(*parent));
-                            self.add(Rule::EntryHost, place, what);
-                        }
+                (root, None) => match (hosts.cells.get(&(index, key.as_slice())), root) {
+                    (Some(_), None) => {}
+                    (Some(host), Some(root)) => {
+                        self.add(Rule::HostPointer, Place::Cell(*host), || {
+                            format!(
+                                "the host has no pointer in position {position}, and the entry \
+                                 of {place} names the root {root}"
+                            )
+                        });
                     }
-                }
+                    (None, _) if hosts.partial.contains(&index) => {}
+                    (None, _) => {
+                        let what = || format!("the host is no node of {}", Place::Merk(*parent));
+                        self.add(Rule::EntryHost, place, what);
+                    }
+                },
             }
         }
-        if hosted.is_empty() {
+        if hosts.pointers.is_empty() {
             return;
         }
         // The Merks in use by their roots: a pointer that is left names
@@ -363,7 +423,7 @@ impl Run<'_, '_, '_> {
             .filter(|merk| merk.live)
             .filter_map(|merk| Some((merk.root.as_ref()?.0, merk)))
             .collect();
-        let mut left: Vec<_> = hosted.drain().collect();
+        let mut left: Vec<_> = hosts.pointers.drain().collect();
         left.sort();
         for ((merk, _, position), (host, pointer)) in left {
             let prefix = entries.merks[merk].prefix;
@@ -390,43 +450,33 @@ impl Run<'_, '_, '_> {
         }
     }
 
-    /// The cell of the node under `key` in the Merk whose root is at
-    /// `root`, found by its key.
-    fn find(&mut self, root: Option<CellAddress>, key: &[u8]) -> Option<CellAddress> {
-        let mut next = root;
-        for _ in 0..MAX_DEPTH {
-            self.begin_step();
-            let at = next?;
-            if self.see(at.page()) != Kind::Tree {
-                return None;
-            }
-            let frame = self.frame(at.page()).ok()?;
-            let page = NodePage::open(&frame, self.lease).ok()?;
-            let node = page.node(at.slot())?;
-            let side = match key.cmp(node.key()) {
-                Ordering::Equal => return Some(at),
-                Ordering::Less => Side::Left,
-                Ordering::Greater => Side::Right,
-            };
-            next = node.link(side).map(|link| link.child);
-        }
-        None
-    }
-
     /// Counts the cells that no walk reached, and reports those among them
     /// that name a cell in use.
+    ///
+    /// Where a walk was pointed at a page that is not read
+    /// ([`Cut::cells`](super::Cut)), the cells below that page are among
+    /// those counted here, and one of them that names a cell in use may be
+    /// the cell's own parent or host. So nothing is reported of what they
+    /// name, and the count is marked ([`Unreached::uncertain`]).
     pub(super) fn count_unreached(&mut self) {
+        self.unreached.uncertain = self.cut.cells;
         let holding: Vec<PageId> = (self.pages.iter())
             .filter(|(_, seen)| matches!(seen, Seen::Tree(page) if page.reached < page.cells))
             .map(|(page, _)| *page)
             .collect();
         for id in holding {
             self.begin_step();
-            let Ok(frame) = self.frame(id) else {
+            let Some(frame) = self.enter(id) else {
+                self.unreached.uncertain = true;
                 continue;
             };
-            let Ok(page) = TreePage::from_validated(&frame, FRAME_FORMAT) else {
-                continue;
+            let page = match TreePage::from_validated(&frame, FRAME_FORMAT) {
+                Ok(page) => page,
+                Err(error) => {
+                    self.add(Rule::TreePageFormat, Place::Page(id), || error.to_string());
+                    self.unreached.uncertain = true;
+                    continue;
+                }
             };
             let mut any = false;
             for (slot, cell) in page.cells() {
@@ -455,7 +505,7 @@ impl Run<'_, '_, '_> {
                         Some(Seen::Tree(seen)) => seen.is_live(named.slot()),
                         _ => false,
                     };
-                    if in_use {
+                    if in_use && !self.cut.cells {
                         self.add(Rule::CellNamedTwice, Place::Cell(at), || {
                             format!("a cell that nothing reaches names {named}, a cell in use")
                         });

@@ -115,16 +115,24 @@ impl Run<'_, '_, '_> {
                 self.walk_flat(&column.tree, records);
             }
         }
-        if let Some(drops) = store.flat_drops
-            && self.walk_flat(drops.tree(), Records::Any)
-        {
-            self.walk_left_pages(&drops, guard);
+        if let Some(drops) = store.flat_drops {
+            if self.walk_flat(drops.tree(), Records::Any) {
+                self.walk_left_pages(&drops, guard);
+            } else {
+                let what = || "its keyspace is no tree, so its records are not read".to_owned();
+                self.add(Rule::FlatDropRecord, Place::Page(drops.tree().root()), what);
+                self.cut.flat = true;
+            }
         }
         for tree in store.flat {
             self.walk_flat(tree, Records::Any);
         }
+        // A page that no walk reached is reported only where every walk
+        // entered every page it was pointed at: a page that is not read
+        // may be the branch above this one, and a record of a range delete
+        // that is not read may name it.
         let unreached: Vec<PageId> = (self.pages.iter())
-            .filter(|(_, seen)| matches!(seen, Seen::Flat(None)))
+            .filter(|(_, seen)| matches!(seen, Seen::Flat(None)) && !self.cut.flat)
             .map(|(page, _)| *page)
             .collect();
         for page in unreached {
@@ -216,6 +224,7 @@ impl Run<'_, '_, '_> {
             Err(error) => {
                 let place = Place::Page(drops.tree().root());
                 self.add(Rule::FlatDropRecord, place, || error.to_string());
+                self.cut.flat = true;
                 return;
             }
         };
@@ -250,7 +259,10 @@ impl Run<'_, '_, '_> {
             let left = matches!(from, From::Left { .. });
             let kind = match self.see(page) {
                 Kind::None if left => continue,
-                Kind::Bad => continue,
+                Kind::Bad => {
+                    self.cut.flat = true;
+                    continue;
+                }
                 kind => kind,
             };
             // A page that a range delete left and that was born after the
@@ -259,8 +271,8 @@ impl Run<'_, '_, '_> {
             // page of either kind. The reclaimer passes it
             // (`lignin_tree::drop`), and so does this walk, before it asks
             // what the page is.
-            let frame = self.frame(page).ok();
-            if let (From::Left { newest_birth }, Some(frame)) = (from, &frame)
+            let frame = self.frame(page);
+            if let (From::Left { newest_birth }, Ok(frame)) = (from, &frame)
                 && frame.born() > newest_birth
             {
                 continue;
@@ -276,8 +288,16 @@ impl Run<'_, '_, '_> {
                 });
                 continue;
             }
-            let Some(frame) = frame else {
-                continue;
+            // The page was read as a flat page before.
+            let frame = match frame {
+                Ok(frame) => frame,
+                Err(error) => {
+                    self.add(Rule::PageUnreadable, Place::Page(page), || {
+                        error.to_string()
+                    });
+                    self.cut.flat = true;
+                    continue;
+                }
             };
             let reach = match from {
                 From::Tree => FlatReach::Tree,
@@ -301,9 +321,18 @@ impl Run<'_, '_, '_> {
             if left {
                 self.census.left_flat_pages += 1;
             }
-            let Ok(flat) = FlatPage::from_validated(&frame, FRAME_FORMAT) else {
-                continue;
+            let flat = match FlatPage::from_validated(&frame, FRAME_FORMAT) {
+                Ok(flat) => flat,
+                Err(error) => {
+                    self.add(Rule::FlatPageFormat, Place::Page(page), || {
+                        error.to_string()
+                    });
+                    self.cut.flat = true;
+                    continue;
+                }
             };
+            // A page at another level than its branch states is read all
+            // the same: what it names is reached through it.
             if let Some(above) = visit.above
                 && above.checked_sub(1) != Some(flat.level())
             {
@@ -311,7 +340,6 @@ impl Run<'_, '_, '_> {
                 self.add(Rule::FlatLevel, Place::Page(page), || {
                     format!("the page is of level {level} below a branch of level {above}")
                 });
-                continue;
             }
             match flat {
                 FlatPage::Branch(branch) => {
@@ -329,6 +357,7 @@ impl Run<'_, '_, '_> {
                             self.add(Rule::FlatPageFormat, Place::Page(page), || {
                                 format!("the branch has no child {index}")
                             });
+                            self.cut.flat = true;
                             break;
                         };
                         stack.push(Visit {

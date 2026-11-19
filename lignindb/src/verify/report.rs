@@ -29,6 +29,11 @@ pub struct Unreached {
     pub values: u64,
     /// The first of them, in the order of their addresses.
     pub first: Vec<CellAddress>,
+    /// Whether a walk was pointed at a page that is not read, or the
+    /// directory was not read. The cells that only such a page or the
+    /// directory leads to are then counted here with the others, and the
+    /// run has a finding that says what was not read.
+    pub uncertain: bool,
 }
 
 impl Unreached {
@@ -199,6 +204,12 @@ impl fmt::Display for Report {
                 unreached.values,
                 unreached.empty_pages
             )?;
+            if unreached.uncertain {
+                writeln!(
+                    f,
+                    "  not all of it is space: what was not read may lead to some of these cells"
+                )?;
+            }
             for address in &unreached.first {
                 writeln!(f, "  cell {address}")?;
             }

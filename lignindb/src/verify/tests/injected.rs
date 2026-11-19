@@ -33,7 +33,7 @@ use crate::{
         tests::{
             model::{self, OwnedBatch, OwnedSubtree},
             put,
-            store::{SIZE, TREE_TYPE},
+            store::{Db, SIZE, TREE_TYPE},
             World,
         },
         Column,
@@ -270,6 +270,15 @@ impl Planted {
         });
     }
 
+    /// Makes the tree page `page` one that is not well formed.
+    fn spoil_tree(&self, page: PageId) {
+        self.spoil(page, |bytes| {
+            let checked = TreePage::from_validated(bytes, FRAME_FORMAT)
+                .and_then(|read| read.check(SIZE).map(|()| read.id()));
+            checked.is_err()
+        });
+    }
+
     /// A segment of this session that takes blocks, with one block that
     /// holds `payload` as `content` of `page`.
     fn block(&self, page: PageId, content: BlockContent, payload: &[u8]) -> BlockLocation {
@@ -474,12 +483,7 @@ const CELLS: &[Injection] = &[
         "a tree page is not well formed",
         Rule::TreePageFormat,
         |store| {
-            let page = store.tree_pages()[0];
-            store.spoil(page, |bytes| {
-                let checked = TreePage::from_validated(bytes, FRAME_FORMAT)
-                    .and_then(|read| read.check(SIZE).map(|()| read.id()));
-                checked.is_err()
-            });
+            store.spoil_tree(store.tree_pages()[0]);
         },
     ),
     injection(
@@ -1166,6 +1170,115 @@ fn a_directory_that_is_not_read_to_its_end_blames_no_record() {
     // as reached by nothing.
     assert_eq!(report.census.live_cells, 0);
     assert_eq!(report.unreached.cells, report.census.cells);
+}
+
+/// A store whose Merk [`OUTER`] lies over many pages, with every value out
+/// of line, and hosts [`INNER`] in the node of its first key.
+fn plant_a_host_below_its_root() -> Planted {
+    let (db, versions) = Db::new(1024);
+    {
+        let mut world = World::new(&db, &versions);
+        let tx = world.begin();
+        let mut outer = world.merk(&tx, OUTER, |items| {
+            for index in 0..200 {
+                items.insert(key(index), vec![index as u8; 300]);
+            }
+        });
+        (outer.hosted).insert(key(0), vec![model::subtree(INNER)]);
+        let inner = world.merk(&tx, INNER, |items| {
+            items.insert(b"one".to_vec(), vec![3; 20]);
+        });
+        let host = (model::subtree(OUTER), key(0), 0);
+        let batch = OwnedBatch {
+            merks: vec![inner, outer],
+            subtrees: vec![
+                OwnedSubtree::Enter(model::subtree(OUTER), None),
+                OwnedSubtree::Enter(model::subtree(INNER), Some(host)),
+            ],
+            ..OwnedBatch::default()
+        };
+        world.apply(&tx, &batch).expect("the subtrees are made");
+        world.commit(tx, &[]);
+    }
+    write_back(&db, &versions);
+    Planted { db, versions }
+}
+
+/// A tree page that is not read cuts the walk of its Merk, and nothing
+/// that is whole below it is blamed: not the host there for being no node
+/// of the Merk, not its cell for naming a root in use, and not the counts
+/// of the values for the pointers of the page.
+#[test]
+fn a_tree_page_that_is_not_read_blames_nothing_below_it() {
+    let store = plant_a_host_below_its_root();
+    store.db.unchecked();
+    let sound = store.check();
+    assert!(sound.is_sound() && !sound.unreached.uncertain, "{sound}");
+
+    let root = store.root(OUTER);
+    let host = store.cell(|_, cell| cell.hosted_root_count() > 0);
+    assert_ne!(host.page(), root.page(), "the host is in the root's page");
+    assert!(store.read(root, |cell| cell.value_pointer().is_some()));
+    store.spoil_tree(root.page());
+
+    let report = store.check();
+    assert_eq!(report.rules(), [Rule::TreePageFormat], "{report}");
+    // The cells below the page are counted, and are not said to be space.
+    assert!(report.unreached.uncertain, "{report}");
+    assert!(report.unreached.cells > 0, "{report}");
+    assert!(report.to_string().contains("not all of it is space"));
+    // The Merk that is hosted there is walked from its entry.
+    assert_eq!(report.census.live_cells, 1, "{report}");
+}
+
+/// A flat branch that is not read cuts the walk of its keyspace, and no
+/// page below it is reported as one that nothing reaches.
+#[test]
+fn a_flat_branch_that_is_not_read_blames_no_page_below_it() {
+    let store = plant();
+    store.db.unchecked();
+    let root = store.db.keyspaces().meta.root();
+    let is_branch = |bytes: &[u8]| {
+        let page = FlatPage::decode(bytes, FRAME_FORMAT);
+        page.is_ok_and(|page| page.branch().is_some())
+    };
+    assert!(is_branch(&store.frame(root)));
+    store.spoil(root, |bytes| FlatPage::decode(bytes, FRAME_FORMAT).is_err());
+    let report = store.check();
+    assert_eq!(report.rules(), [Rule::FlatPageFormat], "{report}");
+}
+
+/// The keyspace of the records of range deletes is no tree: its records
+/// are not read, which is reported, and no flat page is reported as one
+/// that nothing reaches, since a record that is not read may name it.
+#[test]
+fn records_of_range_deletes_that_are_not_read_blame_no_page() {
+    let store = plant();
+    store.db.unchecked();
+    let root = store.db.flat_drops().tree().root();
+    store.spoil(root, |bytes| FlatPage::decode(bytes, FRAME_FORMAT).is_err());
+    let report = store.check();
+    assert_eq!(
+        report.rules(),
+        [Rule::FlatPageFormat, Rule::FlatDropRecord],
+        "{report}"
+    );
+}
+
+/// A page at another level than its branch states is reported and read
+/// all the same: its records are counted, and what it names is reached.
+#[test]
+fn a_page_at_the_wrong_level_is_read_all_the_same() {
+    let store = plant();
+    store.db.unchecked();
+    let sound = store.check().census;
+    let (branch, _) = store.branch();
+    store.rebuild_branch(branch, |_, level| *level += 1);
+    let report = store.check();
+    assert!(report.has(Rule::FlatLevel), "{report}");
+    assert!(!report.has(Rule::FlatPageUnreached), "{report}");
+    assert_eq!(report.census.flat_records, sound.flat_records, "{report}");
+    assert_eq!(report.census.flat_pages, sound.flat_pages, "{report}");
 }
 
 #[test]

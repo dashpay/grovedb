@@ -81,6 +81,38 @@
 //! finds in what it takes out, and a pointer that nothing reaches stays
 //! counted as live.
 //!
+//! # What a page that is not read costs
+//!
+//! A page that is not read, or is not well formed, is a finding, and no
+//! walk enters it. Most rules are of one page, one cell or one pointer,
+//! and are checked wherever the page that holds it is read. A few say
+//! that something is *not* there, and those need every page that could
+//! hold it. Where a walk was pointed at a page and did not read it, they
+//! are not reported, because the page may hold what is missed:
+//!
+//! - **A flat page that no walk reached** ([`Rule::FlatPageUnreached`]):
+//!   the page that is not read may be the branch above it, and a record of
+//!   a range delete that is not read may name it.
+//! - **A host that is no node of its Merk** ([`Rule::EntryHost`]): not
+//!   said of a Merk whose walk did not enter every cell it was pointed at.
+//! - **A cell that nothing reaches and that names a cell in use**
+//!   ([`Rule::CellNamedTwice`]): the cell may be below the page that is
+//!   not read, and be the parent or the host of the cell it names. The
+//!   cells are still counted, and [`Unreached::uncertain`] says that not
+//!   all of them are known to be space.
+//! - **The counts of live values** ([`Rule::ValueCount`]): not compared
+//!   while any page of the version is not read, since it may hold
+//!   pointers.
+//! - **The directory**: with a keyspace that is no tree, or records that
+//!   are not all read, no Merk is walked and no flat record is compared
+//!   with its entries.
+//!
+//! So one page that is not read gives the finding of that page, and the
+//! findings of what was read; the rest waits for a run over a store whose
+//! pages are all read. A pointer that was read and names the wrong place
+//! is another matter: what it should have named is reached by no reader
+//! either, and is reported as it is found.
+//!
 //! # What is not checked
 //!
 //! - **The policy of the layout** (`tree-layout.md`, sections 5 to 8, and
@@ -354,6 +386,21 @@ struct Run<'a, 's, 'c> {
     values: ValueRead<'s>,
     census: Census,
     unreached: Unreached,
+    cut: Cut,
+}
+
+/// What a walk was pointed at and did not read. Each such place has its
+/// finding. What needs every page below it is then not known, and is not
+/// reported (see "What a page that is not read costs" in the
+/// [module documentation](self)).
+#[derive(Debug, Clone, Copy, Default)]
+struct Cut {
+    /// A walk of cells did not enter a page, or the directory was not read
+    /// and no walk of cells began.
+    cells: bool,
+    /// A walk of flat pages did not enter a page, or the pages that range
+    /// deletes left were not walked.
+    flat: bool,
 }
 
 impl<'a, 's, 'c> Run<'a, 's, 'c> {
@@ -374,6 +421,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
             frames,
             census: Census::default(),
             unreached: Unreached::default(),
+            cut: Cut::default(),
         }
     }
 
@@ -388,6 +436,20 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
     /// The page `page` as the version has it, pinned.
     fn frame(&mut self, page: PageId) -> Result<PageRef<'s>, LoadError> {
         self.frames.borrow_mut().get(page)
+    }
+
+    /// The page `page`, which the run read before, for a walk to enter.
+    /// Where it is not read now, that is reported.
+    fn enter(&mut self, page: PageId) -> Option<PageRef<'s>> {
+        match self.frame(page) {
+            Ok(frame) => Some(frame),
+            Err(error) => {
+                self.add(Rule::PageUnreadable, Place::Page(page), || {
+                    error.to_string()
+                });
+                None
+            }
+        }
     }
 
     fn add(&mut self, rule: Rule, place: Place, detail: impl FnOnce() -> String) {
