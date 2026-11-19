@@ -14,7 +14,7 @@ use super::*;
 
 const PAGES: u32 = 6;
 
-type Values = BTreeMap<u32, Vec<u8>>;
+type Values = BTreeMap<ValueId, Vec<u8>>;
 
 #[derive(Debug, Clone)]
 struct Version {
@@ -45,13 +45,19 @@ struct Life<'p> {
     held: u64,
 }
 
-fn values_of<'a>(attachments: impl Iterator<Item = (u32, &'a [u8])>) -> Values {
+fn values_of<'a>(attachments: impl Iterator<Item = (ValueId, &'a [u8])>) -> Values {
     attachments
         .map(|(tag, bytes)| (tag, bytes.to_vec()))
         .collect()
 }
 
 impl<'p> Life<'p> {
+    /// One of three names of an attached value. They differ in their upper
+    /// four bytes only.
+    fn value_name(&mut self) -> ValueId {
+        name((1 + self.rng.below(3)) << 32)
+    }
+
     fn new(pool: &'p BufferPool, seed: u64) -> Self {
         Self {
             pool,
@@ -171,13 +177,13 @@ impl<'p> Life<'p> {
         assert_eq!(values_of(handle.read().attachments()), attached);
         let mut latch = handle.write().expect("private");
         if self.rng.chance(3) {
-            let tag = 1 + self.rng.below(3) as u32;
-            let bytes = vec![tag as u8; 1 + self.rng.below(40) as usize];
+            let tag = self.value_name();
+            let bytes = vec![tag[4]; 1 + self.rng.below(40) as usize];
             latch.attach(tag, value(&bytes));
             attached.insert(tag, bytes);
         }
         if self.rng.chance(3) {
-            let tag = 1 + self.rng.below(3) as u32;
+            let tag = self.value_name();
             assert_eq!(latch.detach(tag).is_some(), attached.remove(&tag).is_some());
         }
         drop(latch);
@@ -283,7 +289,7 @@ impl<'p> Life<'p> {
             .get_version(self::page(page), version(born))
             .expect("an unwritten page version is in the pool");
         let superseded = self.model_version(page, born).superseded.is_some();
-        let tags: Vec<u32> = frame.attachments().map(|(tag, _)| tag).collect();
+        let tags: Vec<ValueId> = frame.attachments().map(|(tag, _)| tag).collect();
         if superseded && !tags.is_empty() {
             pool.hold_for_readers(&frame).expect("superseded and owed");
             self.held += 1;

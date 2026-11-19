@@ -207,7 +207,7 @@ fn a_load_that_cannot_be_is_refused() {
         })
     );
     let mut blank = pool.blank();
-    blank.attach(1, value(b"pending"));
+    blank.attach(name(1), value(b"pending"));
     assert_eq!(
         pool.install_loaded(blank, miss, version(3), None).err(),
         Some(CacheError::AttachedValues {
@@ -441,7 +441,10 @@ fn a_pool_that_is_dropped_frees_what_is_beside_its_fixed_frames() {
     let pool = pool(1);
     let copy = pool.new_private(owner(1), page(1)).expect("a new page");
     let other = pool.new_private(owner(1), page(2)).expect("a new page");
-    other.write().expect("private").attach(1, value(&[0; 100]));
+    other
+        .write()
+        .expect("private")
+        .attach(name(1), value(&[0; 100]));
     assert_eq!(pool.overflow_frames(), 1);
     assert_eq!(pool.attached_bytes(), 100);
     drop((copy, other));

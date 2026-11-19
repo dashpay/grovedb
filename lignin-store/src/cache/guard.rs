@@ -11,7 +11,9 @@ use lignin_format::{CommitVersion, PageId};
 
 use super::{
     error::CacheError,
-    frame::{flag, Attached, Exclusive, Frame, FramePtr, Frozen, OwnedFrame, Pinned, Shared},
+    frame::{
+        flag, Attached, Exclusive, Frame, FramePtr, Frozen, OwnedFrame, Pinned, Shared, ValueId,
+    },
     pool::BufferPool,
     sync::Writing,
     OwnerId,
@@ -21,28 +23,28 @@ fn version(raw: u64) -> Option<CommitVersion> {
     CommitVersion::new(raw)
 }
 
-fn find(values: &[Attached], tag: u32) -> Option<&[u8]> {
+fn find(values: &[Attached], id: ValueId) -> Option<&[u8]> {
     values
         .iter()
-        .find(|value| value.tag == tag)
+        .find(|value| value.id == id)
         .map(|value| &*value.bytes)
 }
 
-fn list(values: &[Attached]) -> impl Iterator<Item = (u32, &[u8])> {
-    values.iter().map(|value| (value.tag, &*value.bytes))
+fn list(values: &[Attached]) -> impl Iterator<Item = (ValueId, &[u8])> {
+    values.iter().map(|value| (value.id, &*value.bytes))
 }
 
 fn put(
     pool: &BufferPool,
     values: &mut Vec<Attached>,
-    tag: u32,
+    id: ValueId,
     bytes: Arc<[u8]>,
 ) -> Option<Arc<[u8]>> {
     pool.count_attached(bytes.len());
-    let before = match values.iter_mut().find(|value| value.tag == tag) {
+    let before = match values.iter_mut().find(|value| value.id == id) {
         Some(value) => Some(std::mem::replace(&mut value.bytes, bytes)),
         None => {
-            values.push(Attached { tag, bytes });
+            values.push(Attached { id, bytes });
             None
         }
     };
@@ -52,8 +54,8 @@ fn put(
     before
 }
 
-fn take(pool: &BufferPool, values: &mut Vec<Attached>, tag: u32) -> Option<Arc<[u8]>> {
-    let at = values.iter().position(|value| value.tag == tag)?;
+fn take(pool: &BufferPool, values: &mut Vec<Attached>, id: ValueId) -> Option<Arc<[u8]>> {
+    let at = values.iter().position(|value| value.id == id)?;
     let value = values.swap_remove(at);
     pool.count_detached(value.bytes.len());
     Some(value.bytes)
@@ -124,13 +126,13 @@ impl<'p> PageRef<'p> {
         version(self.frame().born()).expect("a page version has a born version")
     }
 
-    /// The value attached to the page under `tag`, if there is one.
-    pub fn attached(&self, tag: u32) -> Option<&[u8]> {
-        find(self.attached_values(), tag)
+    /// The value attached to the page under `id`, if there is one.
+    pub fn attached(&self, id: ValueId) -> Option<&[u8]> {
+        find(self.attached_values(), id)
     }
 
-    /// Every value attached to the page, with its tag, in no order.
-    pub fn attachments(&self) -> impl Iterator<Item = (u32, &[u8])> {
+    /// Every value attached to the page, with its id, in no order.
+    pub fn attachments(&self) -> impl Iterator<Item = (ValueId, &[u8])> {
         list(self.attached_values())
     }
 }
@@ -225,25 +227,25 @@ impl<'p> Blank<'p> {
         self.clear_attached();
         self.owned_mut().bytes_mut().copy_from_slice(page);
         for value in page.attached_values() {
-            self.attach(value.tag, Arc::clone(&value.bytes));
+            self.attach(value.id, Arc::clone(&value.bytes));
         }
     }
 
-    /// The value attached under `tag`, if there is one.
-    pub fn attached(&self, tag: u32) -> Option<&[u8]> {
-        find(self.owned().attached(), tag)
+    /// The value attached under `id`, if there is one.
+    pub fn attached(&self, id: ValueId) -> Option<&[u8]> {
+        find(self.owned().attached(), id)
     }
 
-    /// Attaches `bytes` under `tag`, and returns the value that was there.
-    pub fn attach(&mut self, tag: u32, bytes: Arc<[u8]>) -> Option<Arc<[u8]>> {
-        let before = put(self.pool, self.owned_mut().attached_mut(), tag, bytes);
+    /// Attaches `bytes` under `id`, and returns the value that was there.
+    pub fn attach(&mut self, id: ValueId, bytes: Arc<[u8]>) -> Option<Arc<[u8]>> {
+        let before = put(self.pool, self.owned_mut().attached_mut(), id, bytes);
         self.mark_attached();
         before
     }
 
-    /// Takes the value attached under `tag` off the frame.
-    pub fn detach(&mut self, tag: u32) -> Option<Arc<[u8]>> {
-        let value = take(self.pool, self.owned_mut().attached_mut(), tag);
+    /// Takes the value attached under `id` off the frame.
+    pub fn detach(&mut self, id: ValueId) -> Option<Arc<[u8]>> {
+        let value = take(self.pool, self.owned_mut().attached_mut(), id);
         self.mark_attached();
         value
     }
@@ -420,13 +422,13 @@ pub struct SharedLatch<'l> {
 }
 
 impl SharedLatch<'_> {
-    /// The value attached under `tag`, if there is one.
-    pub fn attached(&self, tag: u32) -> Option<&[u8]> {
-        find(self.latch.attached(), tag)
+    /// The value attached under `id`, if there is one.
+    pub fn attached(&self, id: ValueId) -> Option<&[u8]> {
+        find(self.latch.attached(), id)
     }
 
-    /// Every attached value, with its tag, in no order.
-    pub fn attachments(&self) -> impl Iterator<Item = (u32, &[u8])> {
+    /// Every attached value, with its id, in no order.
+    pub fn attachments(&self) -> impl Iterator<Item = (ValueId, &[u8])> {
         list(self.latch.attached())
     }
 }
@@ -448,26 +450,26 @@ pub struct ExclusiveLatch<'l> {
 }
 
 impl ExclusiveLatch<'_> {
-    /// The value attached under `tag`, if there is one.
-    pub fn attached(&self, tag: u32) -> Option<&[u8]> {
-        find(self.latch.attached(), tag)
+    /// The value attached under `id`, if there is one.
+    pub fn attached(&self, id: ValueId) -> Option<&[u8]> {
+        find(self.latch.attached(), id)
     }
 
-    /// Every attached value, with its tag, in no order.
-    pub fn attachments(&self) -> impl Iterator<Item = (u32, &[u8])> {
+    /// Every attached value, with its id, in no order.
+    pub fn attachments(&self) -> impl Iterator<Item = (ValueId, &[u8])> {
         list(self.latch.attached())
     }
 
-    /// Attaches `bytes` under `tag`, and returns the value that was there.
-    pub fn attach(&mut self, tag: u32, bytes: Arc<[u8]>) -> Option<Arc<[u8]>> {
-        let before = put(self.pool, self.latch.attached_mut(), tag, bytes);
+    /// Attaches `bytes` under `id`, and returns the value that was there.
+    pub fn attach(&mut self, id: ValueId, bytes: Arc<[u8]>) -> Option<Arc<[u8]>> {
+        let before = put(self.pool, self.latch.attached_mut(), id, bytes);
         mark(self.latch.frame(), true);
         before
     }
 
-    /// Takes the value attached under `tag` off the copy.
-    pub fn detach(&mut self, tag: u32) -> Option<Arc<[u8]>> {
-        let value = take(self.pool, self.latch.attached_mut(), tag);
+    /// Takes the value attached under `id` off the copy.
+    pub fn detach(&mut self, id: ValueId) -> Option<Arc<[u8]>> {
+        let value = take(self.pool, self.latch.attached_mut(), id);
         mark(self.latch.frame(), !self.latch.attached().is_empty());
         value
     }

@@ -182,8 +182,8 @@ fn a_pending_value_is_placed_in_a_page_step() {
     {
         let mut latch = copy.write().expect("private");
         content(1, 1, 0).write(&mut latch);
-        latch.attach(1, value(&[1; 30]));
-        latch.attach(2, value(&[2; 50]));
+        latch.attach(name(1), value(&[1; 30]));
+        latch.attach(name(2), value(&[2; 50]));
     }
     let committed = pool.install(&copy, version(1)).expect("a commit");
     drop(copy);
@@ -200,14 +200,18 @@ fn a_pending_value_is_placed_in_a_page_step() {
     // bytes, and no longer the value.
     let step = pool.page_step(page(1));
     let mut blank = revised(&pool, &committed);
-    assert_eq!(blank.attached(1), Some(&[1; 30][..]));
-    assert_eq!(blank.detach(1).as_deref(), Some(&[1; 30][..]));
-    assert!(blank.detach(1).is_none());
+    assert_eq!(blank.attached(name(1)), Some(&[1; 30][..]));
+    assert_eq!(blank.detach(name(1)).as_deref(), Some(&[1; 30][..]));
+    assert!(blank.detach(name(1)).is_none());
     let placed = step.replace(&committed, blank).expect("nothing in the way");
     drop(step);
-    assert_eq!(placed.attached(1), None);
-    assert_eq!(placed.attached(2), Some(&[2; 50][..]));
-    assert_eq!(committed.attached(1), Some(&[1; 30][..]), "the old frame");
+    assert_eq!(placed.attached(name(1)), None);
+    assert_eq!(placed.attached(name(2)), Some(&[2; 50][..]));
+    assert_eq!(
+        committed.attached(name(1)),
+        Some(&[1; 30][..]),
+        "the old frame"
+    );
     assert_eq!(
         pool.attached_bytes(),
         130,
@@ -219,7 +223,7 @@ fn a_pending_value_is_placed_in_a_page_step() {
     // With the last value placed, the page can be written back.
     let step = pool.page_step(page(1));
     let mut blank = revised(&pool, &placed);
-    blank.detach(2);
+    blank.detach(name(2));
     let done = step.replace(&placed, blank).expect("nothing in the way");
     drop((step, placed));
     assert_eq!(pool.attached_bytes(), 0);
@@ -234,13 +238,13 @@ fn a_frame_that_is_copied_over_loses_what_was_attached_to_it() {
     let pool = pool(4);
     let plain = seed(&pool, content(1, 1, 0), None);
     let mut blank = pool.blank();
-    blank.attach(9, value(&[9; 20]));
+    blank.attach(name(9), value(&[9; 20]));
     assert_eq!(pool.attached_bytes(), 20);
     blank.copy_from(&plain);
-    assert_eq!(blank.attached(9), None);
+    assert_eq!(blank.attached(name(9)), None);
     assert_eq!(pool.attached_bytes(), 0);
     assert_eq!(Content::read(&blank), content(1, 1, 0));
-    blank.attach(3, value(&[3; 5]));
+    blank.attach(name(3), value(&[3; 5]));
     drop(blank);
     assert_eq!(
         pool.attached_bytes(),

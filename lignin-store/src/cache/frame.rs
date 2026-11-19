@@ -58,6 +58,8 @@ use std::{
     sync::Arc,
 };
 
+use lignin_format::value_log::PendingValue;
+
 use super::{
     error::CacheError,
     sync::{
@@ -97,11 +99,16 @@ pub(super) mod flag {
 const RETIRED: u64 = 1 << 32;
 const PINS: u64 = RETIRED - 1;
 
+/// What names a value attached to a frame: the eight bytes of the pending
+/// value whose bytes they are, which its cell or entry in the page holds
+/// (`log-format.md` LG21). The pool compares them and gives them no meaning.
+pub type ValueId = [u8; PendingValue::ID_LEN];
+
 /// A value attached to a frame: bytes that belong to the page and do not fit
 /// in it.
 #[derive(Clone)]
 pub(super) struct Attached {
-    pub(super) tag: u32,
+    pub(super) id: ValueId,
     pub(super) bytes: Arc<[u8]>,
 }
 

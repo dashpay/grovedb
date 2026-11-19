@@ -218,6 +218,100 @@ fn two_operations_of_one_owner_share_one_private_copy() {
     });
 }
 
+/// A copy that is made for one caller only: two writers of one owner ask
+/// for the same page at the same moment, each the only writer of that page
+/// for all it knows. One is given the copy and the other is refused, so the
+/// one that writes writes a page that nobody else changed.
+#[test]
+fn of_two_makers_of_one_copy_one_is_refused() {
+    model(3, || {
+        let pool = Arc::new(pool(2));
+        drop(seed(&pool, content(1, 1, 0), None));
+        let given = Arc::new(SharedU64::new(0));
+        let threads = (1..=2)
+            .map(|maker| {
+                let (pool, given) = (Arc::clone(&pool), Arc::clone(&given));
+                thread::spawn(
+                    move || match pool.make_private_once(owner(1), page(1), version(1)) {
+                        Ok(copy) => {
+                            let mut latch = copy.write().expect("private");
+                            assert_eq!(Content::read(&latch), content(1, 1, 0));
+                            content(1, 1, maker).write(&mut latch);
+                            given.fetch_add(u64::from(maker), Ordering::SeqCst);
+                        }
+                        Err(refused) => assert_eq!(refused, NotMade::AlreadyPrivate),
+                    },
+                )
+            })
+            .collect();
+        join(threads);
+        let maker = given.load(Ordering::SeqCst) as u32;
+        assert!(
+            maker == 1 || maker == 2,
+            "{maker}: one maker is given the copy"
+        );
+        assert_eq!(pool.page_step(page(1)).private_copies(), 1);
+        let copy = pool.private(owner(1), page(1)).expect("the copy");
+        assert_eq!(Content::read(&copy.read()), content(1, 1, maker));
+        drop(copy);
+        check(&pool, 0);
+    });
+}
+
+/// The two ways to make a copy, side by side for one owner and page: the
+/// caller that takes whatever copy there is gets the one copy, and the
+/// caller that must have made its copy is given it exactly when the other
+/// one did not make it. The sharing caller asks as
+/// [`BufferPool::make_private`] does, and keeps what that call drops:
+/// whether the copy was made for it. Whoever is refused has not changed
+/// the page.
+#[test]
+fn a_maker_that_must_be_first_is_refused_beside_one_that_shares() {
+    model(3, || {
+        let pool = Arc::new(pool(2));
+        drop(seed(&pool, content(1, 1, 0), None));
+        let first = Arc::new(SharedU64::new(0));
+        let made = Arc::new(SharedU64::new(0));
+        let sharing = {
+            let (pool, made) = (Arc::clone(&pool), Arc::clone(&made));
+            thread::spawn(move || {
+                let copy = pool
+                    .copy_for(owner(1), page(1), version(1))
+                    .expect("in the pool");
+                made.store(u64::from(copy.is_ok()), Ordering::SeqCst);
+                let (Ok(copy) | Err(copy)) = copy;
+                let mut latch = copy.write().expect("private");
+                let before = Content::read(&latch);
+                content(1, 1, before.revision + 1).write(&mut latch);
+            })
+        };
+        let alone = {
+            let (pool, first) = (Arc::clone(&pool), Arc::clone(&first));
+            thread::spawn(
+                move || match pool.make_private_once(owner(1), page(1), version(1)) {
+                    Ok(copy) => {
+                        let mut latch = copy.write().expect("private");
+                        let before = Content::read(&latch);
+                        content(1, 1, before.revision + 10).write(&mut latch);
+                        first.store(1, Ordering::SeqCst);
+                    }
+                    Err(refused) => assert_eq!(refused, NotMade::AlreadyPrivate),
+                },
+            )
+        };
+        join(vec![sharing, alone]);
+        let first = first.load(Ordering::SeqCst) == 1;
+        let made = made.load(Ordering::SeqCst) == 1;
+        assert_ne!(first, made, "one of the two made the copy");
+        let revision = if first { 11 } else { 1 };
+        assert_eq!(pool.page_step(page(1)).private_copies(), 1);
+        let copy = pool.private(owner(1), page(1)).expect("the copy");
+        assert_eq!(Content::read(&copy.read()), content(1, 1, revision));
+        drop(copy);
+        check(&pool, 0);
+    });
+}
+
 /// A commit installs a page version and publishes its version while two
 /// readers read: a reader gets the version it asked at, whole, and never
 /// the other one.

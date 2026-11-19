@@ -221,8 +221,9 @@ mod write;
 #[cfg(test)]
 mod tests;
 
+pub use crate::OperationGuard;
 pub use error::NodeError;
 pub use handle::{Lease, NodeHandle};
-pub use read::{NodeReader, OperationGuard, PinnedNode, PinnedPage};
+pub use read::{NodeReader, PinnedNode, PinnedPage};
 pub use view::{NodePage, NodeRef, Nodes};
 pub use write::{ChangeSink, NodeMut, NodePageMut};

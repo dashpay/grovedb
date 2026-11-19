@@ -44,6 +44,16 @@ fn version(raw: u64) -> Option<CommitVersion> {
     CommitVersion::new(raw)
 }
 
+/// Why [`BufferPool::make_private_once`] made no private copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NotMade {
+    /// The page version to copy is not in the pool, and the owner has no
+    /// copy of the page. The caller loads the page and asks again.
+    Miss(Miss),
+    /// The owner already holds a private copy of the page.
+    AlreadyPrivate,
+}
+
 /// Checks that a commit of `version` can follow every version of `page` in
 /// the chain.
 fn follows(chain: &Chain, page: PageId, version: CommitVersion) -> Result<(), CacheError> {
@@ -69,7 +79,8 @@ impl BufferPool {
     ///
     /// The copy is made once for an owner, whatever number of its
     /// operations ask at the same moment (LT5): all of them get the one
-    /// frame. Making the copy is a page step.
+    /// frame. Making the copy is a page step. An owner whose copies have
+    /// one writer each asks with [`Self::make_private_once`] instead.
     ///
     /// A miss says the page version to copy is not in the pool. The caller
     /// loads it ([`Self::install_loaded`]) and asks again while it still
@@ -81,6 +92,46 @@ impl BufferPool {
         page: PageId,
         at: CommitVersion,
     ) -> Result<PrivateRef<'_>, Miss> {
+        let (Ok(copy) | Err(copy)) = self.copy_for(owner, page, at)?;
+        Ok(copy)
+    }
+
+    /// A private copy of `page` for `owner`, which has none: made as
+    /// [`Self::make_private`] makes one, and refused
+    /// ([`NotMade::AlreadyPrivate`]) if the owner has a copy of the page.
+    ///
+    /// That the owner has no copy is found in the page step that makes the
+    /// copy. So of any number of callers that ask this way for one owner
+    /// and page at the same moment, the one whose step makes the copy is
+    /// given it and every other one is refused: an owner whose pages have one writer each, all of
+    /// which ask this way, needs no check of its own. A caller of
+    /// [`Self::make_private`] is given the copy all the same.
+    ///
+    /// A copy that exists is found before the page version to copy is
+    /// looked for, so [`NotMade::Miss`] says as well that the owner had no
+    /// copy then. The caller loads the page and asks again, as for
+    /// [`Self::make_private`].
+    pub fn make_private_once(
+        &self,
+        owner: OwnerId,
+        page: PageId,
+        at: CommitVersion,
+    ) -> Result<PrivateRef<'_>, NotMade> {
+        match self.copy_for(owner, page, at) {
+            Ok(Ok(made)) => Ok(made),
+            Ok(Err(_existing)) => Err(NotMade::AlreadyPrivate),
+            Err(miss) => Err(NotMade::Miss(miss)),
+        }
+    }
+
+    /// The private copy of `page` that this call made for `owner`, or, as
+    /// the inner error, the one the owner had.
+    pub(super) fn copy_for(
+        &self,
+        owner: OwnerId,
+        page: PageId,
+        at: CommitVersion,
+    ) -> Result<Result<PrivateRef<'_>, PrivateRef<'_>>, Miss> {
         let bucket = self.bucket(page.get());
         let find = || {
             let chain = read(&bucket.chain);
@@ -101,19 +152,19 @@ impl BufferPool {
         // that taking the frame cannot evict it.
         let mut source = match find()? {
             Ok(source) => source,
-            Err(existing) => return Ok(existing),
+            Err(existing) => return Ok(Err(existing)),
         };
         let mut blank = self.blank();
         let step = lock(&bucket.step);
         // Before the step began, a page step may have replaced the frame
         // that was pinned, or another operation of this owner may have made
-        // the copy.
+        // the copy. From here on neither can happen: both are page steps.
         let made =
             privates(&read(&bucket.chain), page).any(|entry| entry.frame().owner() == owner.get());
         if made || source.frame().kind() != kind::PUBLISHED {
             source = match find()? {
                 Ok(source) => source,
-                Err(existing) => return Ok(existing),
+                Err(existing) => return Ok(Err(existing)),
             };
         }
 
@@ -128,7 +179,7 @@ impl BufferPool {
             .link(&self.arena, frame)
             .pin(&self.arena);
         drop(step);
-        Ok(PrivateRef::new(self, pin))
+        Ok(Ok(PrivateRef::new(self, pin)))
     }
 
     /// A private copy for a page that `owner`'s transaction created: every

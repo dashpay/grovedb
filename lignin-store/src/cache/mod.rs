@@ -125,8 +125,12 @@
 //!
 //! - [`BufferPool::make_private`] copies the page version the owner reads.
 //!   It makes one copy for an owner, whatever number of its operations ask
-//!   at once (LT5). [`BufferPool::new_private`] is for a page the
-//!   transaction created.
+//!   at once (LT5), and gives each of them that copy.
+//!   [`BufferPool::make_private_once`] gives the copy to the caller that
+//!   makes it and refuses every other caller that asks this way: it is
+//!   for an owner whose pages have one writer each, which then holds a
+//!   copy only if it made it. [`BufferPool::new_private`] is for a page the transaction
+//!   created, and refuses a second copy in the same way.
 //! - The copy's bytes are behind its latch (LT3): [`PrivateRef::write`] for
 //!   one physical step that changes them, [`PrivateRef::read`] to read them
 //!   beside other operations of the owner. Two scopes never share a copy
@@ -208,11 +212,15 @@
 //! # Attached values
 //!
 //! A value that is too long for its cell and that no value-log file holds
-//! yet lives with the frame of its page (WT4, FL7). The pool keeps such
-//! bytes beside the page, under a number the caller chooses, and does not
-//! look at them: [`ExclusiveLatch::attach`] on a private copy,
-//! [`PageRef::attached`] to read one. They are shared, not copied, when a
-//! page is copied.
+//! yet lives with the frame of its page (WT4, FL7). Its cell in a tree
+//! page, or its entry in a flat leaf, holds a pending value, and the pool
+//! keeps the bytes beside the page under the eight bytes that name that
+//! pending value ([`ValueId`]): what the page holds for the value is its
+//! name here, and from its commit on that is its address in the log
+//! (`log-format.md` LG21). The pool does
+//! not look at the bytes, and compares the names only:
+//! [`ExclusiveLatch::attach`] on a private copy, [`PageRef::attached`] to
+//! read one. They are shared, not copied, when a page is copied.
 //!
 //! A page version with an attached value is not written: write-back places
 //! each value in a page step whose new frame no longer has it, or holds the
@@ -313,6 +321,7 @@ mod write;
 mod tests;
 
 pub use error::{CacheError, StepRefusal};
+pub use frame::ValueId;
 pub use guard::{Blank, ExclusiveLatch, PageRef, PrivateRef, SharedLatch};
 pub use pool::{BufferPool, Census, Loaded, Miss, PoolConfig, PoolStats};
-pub use write::{OwnerId, PageStep};
+pub use write::{NotMade, OwnerId, PageStep};

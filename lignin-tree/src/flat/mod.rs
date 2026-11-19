@@ -33,7 +33,14 @@
 //!     table::PageTable,
 //!     values::ValueStore,
 //! };
-//! use lignin_tree::flat::{Committed, FlatConfig, FlatTree, Private};
+//! use lignin_tree::{
+//!     flat::{Committed, FlatConfig, FlatTree, Private},
+//!     OperationGuard,
+//! };
+//!
+//! // What keeps the pages an operation read: the snapshot layer's guard.
+//! struct Guard;
+//! impl OperationGuard for Guard {}
 //!
 //! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! let dir = tempfile::tempdir()?;
@@ -52,7 +59,8 @@
 //!
 //! // The flat pages of a write transaction: private copies, over the
 //! // committed pages of the version it reads.
-//! let base = Committed::new(loader, &values, CommitVersion::EMPTY);
+//! let guard = Guard;
+//! let base = Committed::new(loader, &values, &guard, CommitVersion::EMPTY);
 //! let mut pages = Private::new(base, &pool, OwnerId::new(1), &ids);
 //! let tree = FlatTree::create(&mut pages, FlatConfig::new(size))?;
 //!
@@ -197,7 +205,11 @@
 //!
 //! [`Committed`] is a reader at one version: a page comes from the buffer
 //! pool or is loaded into it (`lignin_store::load`), and a value in the
-//! value log is read through its pointer with the page as its owner.
+//! value log is read through its pointer with the page as its owner. It
+//! borrows the guard of its operation
+//! ([`OperationGuard`](crate::OperationGuard), `transactions.md` PN5), and
+//! a page it hands out borrows the guard through it, as a page of the tree
+//! pages' reader does ([`NodeReader`](crate::node::NodeReader)).
 //!
 //! **A value is read for the page that is held.** A page step can give a
 //! page another frame at any time: write-back puts a pointer where a
@@ -219,12 +231,17 @@
 //!   page that the writer frees keeps its copy until the commit, for the
 //!   same reason. A page step changes one leaf and never a branch, so the
 //!   way down to a leaf is as it was read.
-//! - **A copy is the writer's or nobody's.** A copy that the pool holds
-//!   under the writer's name and the writer did not make is refused when
-//!   the writer finds it, and a copy that cannot be made whole is
-//!   discarded at once. The pool tells no new copy from one that is there,
-//!   so the look is not one step with the copy: that an owner id is one
-//!   writer's at a time is the transaction's to keep.
+//! - **A copy is the writer's or nobody's.** The writer asks the pool for
+//!   a copy that it alone is given
+//!   ([`BufferPool::make_private_once`](lignin_store::cache::BufferPool::make_private_once)):
+//!   a copy that the pool holds under the writer's owner id is refused in
+//!   the step that would make one, so two writers under one owner id never
+//!   change one copy, whichever asks first. A copy that cannot be made
+//!   whole is discarded at once.
+//! - **The writer's copies outlive its operation.** The writer borrows an
+//!   operation's guard for the committed pages it reads, and
+//!   [`Private::under`] takes it to the next operation of its transaction
+//!   with all it holds.
 //! - **A writer ends as a whole.** [`Private::into_parts`] is its commit,
 //!   and [`Private::roll_back`] gives it up. After a call that failed the
 //!   writer's pages are in no state to go on from, and giving the writer
@@ -238,11 +255,12 @@
 //!   as long as its content (`flat-page.md` P11), so every change builds
 //!   the image again and puts it at the start of the copy's frame.
 //! - **The bytes of a pending value are attached to the frame of its
-//!   page, under the position of its entry** ([`Committed`] reads them
-//!   there). The writer keeps them by the 8 bytes that name the value and
-//!   attaches them again whenever it writes the page. A step that changes
-//!   no position, as placing a value and giving it its log address do,
-//!   leaves the tags as they are, and placing takes the one tag off.
+//!   page, under the 8 bytes that name the value** ([`Committed`] reads
+//!   them there), as the bytes of a tree cell's pending value are. The
+//!   writer keeps them by that name and attaches them again whenever it
+//!   writes the page. A value that is given its log address has another
+//!   name from then on, and its bytes go with it
+//!   ([`Private::log_values`]). Placing a value takes its bytes off.
 //!
 //! # What a commit writes
 //!
@@ -325,8 +343,9 @@
 //! # What the callers do
 //!
 //! - **A reader** holds an operation guard for as long as it uses pages it
-//!   read, and reads at a version it has pinned or at the latest version it
-//!   read under the guard (`transactions.md` PN5).
+//!   read, which [`Committed`] sees to, and reads at a version it has
+//!   pinned or at the latest version it read under the guard
+//!   (`transactions.md` PN5).
 //! - **A write transaction** has one writer of a keyspace at a time. Its
 //!   write set is the truth (WT3): after an error it gives the writer up
 //!   ([`Private::roll_back`]) and makes its pages again from its write
@@ -335,7 +354,7 @@
 //!   pointers under the counts lock, and frees a page only after it has
 //!   discarded the writer's copy of it under that lock.
 //! - **Write-back** places each pending value of a leaf in a page step,
-//!   takes its bytes off the frame under the position of its entry, and
+//!   takes its bytes off the frame under the 8 bytes its entry held, and
 //!   writes a leaf to a segment only when no value of it is pending
 //!   (`flat-page.md` P15).
 //! - **The drain of the pending prefix drops** (`flat-store.md`) lists its
@@ -371,16 +390,16 @@
 //!    that count up under several prefixes in turn leave half-full pages.
 //! 7. **The run of a page is made at the commit, from the page before and
 //!    after**, not gathered write by write.
-//! 8. **A pending value's bytes are attached under the position of its
-//!    entry.** The pool's tag is 32 bits and the name of a pending value
-//!    is 64, so the name cannot be the tag. STORE-06 and TXN-05 keep this
-//!    for flat leaves.
+//! 8. **A pending value's bytes are attached under its name**, the 8
+//!    bytes its entry holds, as for a tree cell. The position of
+//!    the entry, which [`FlatPages::read_value`] is still given, names
+//!    nothing in the pool.
 //! 9. **A range delete reads every leaf it frees.** The lazy form is
 //!    TREE-09's.
 //! 10. **The pages are behind two traits.** [`Private`] is one way to hold
 //!     a writer's pages, and TXN-03 may hold them another way. [`Committed`]
-//!     takes no proof of the reader's operation guard, as the node reader
-//!     of the tree pages does (TREE-02): the caller holds it.
+//!     borrows the reader's operation guard, as the node reader of the
+//!     tree pages does (TREE-02).
 //! 11. **A failed call ends its writer.** The tree does not undo half a
 //!     split. TXN-03 makes the pages again from the write set.
 //! 12. **Page steps change leaves only**, and take entries out or change

@@ -4,4 +4,7 @@
 
 pub mod flat;
 pub mod fragment;
+mod guard;
 pub mod node;
+
+pub use guard::OperationGuard;
