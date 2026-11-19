@@ -29,7 +29,7 @@ A test reads this document and the sources and fails when they differ: `lignin-s
 
 What the scan is and is not. It reads source text with a small reader of its own, which knows comments, literals, attributes, modules and the headers of `impl` and `fn`. It was tried on 47 changes that it must notice and on one that it must not (the task's report lists them). It is a tripwire for the forms this code is written in, not a proof about every form Rust allows: it does not expand macros, so code that a macro of another crate expands to (`thread_local!`, for one) is that crate's and is not seen, and the counts of section 4.3 are of the spellings the file uses. Where the reader meets something it does not understand, the inventory or the counts stop matching and the test fails. The engine's crates depend on two crates outside the workspace, `crc32c` and `lz4_flex` (with its safe encoder and decoder), both in `lignin-format`.
 
-What "a test that exercises it" means here: the named test executes the line of the unsafe block. That was measured once for this audit, test by test, with `-C instrument-coverage` (section 6). Every block and every unsafe function has such a test that is deterministic and runs on one thread, and it is named first. Two kinds of rows name tests that use threads: an `unsafe impl` of `Send` or `Sync`, whose tests are the ones that cross threads, and `Frame::attached`, which also names the test of three readers at once that finding 6 of section 4.4 added. The tests run under Miri as well (section 3), where executing the line is what lets Miri check it.
+What "a test that exercises it" means here. For an unsafe block or an unsafe function, a named test executes its line; each such row names, first, a test that is deterministic and runs on one thread. Section 6 says how that is measured. An `unsafe impl` has no line to execute: the tests named for the five of them send and share the pool and its handles between threads, which is what those declarations allow. One block, `Frame::attached`, names a second test, of three readers at once (finding 6 of section 4.4). All of them run under Miri as well (section 3), where executing the line is what lets Miri check it.
 
 ## 3. Miri
 
@@ -186,11 +186,11 @@ Tests that promise "this path allocates nothing" measure it at the allocator. Ea
 
 The safety of each is the same and is stated in the file: the memory is what `System` gives and takes back, under the contract the caller keeps, and counting allocates nothing and does not unwind. The test holds each of them to that shape line for line, so a method that does anything but hand its arguments on fails it.
 
-## 6. How the tests were matched to the blocks
+## 6. How the tests are matched to the blocks
 
-Once, for this audit: the tests of `lignin-store::cache` were built with `-C instrument-coverage`, each test was run alone, and the lines of `frame.rs` it executed were listed. Every unsafe block and unsafe function was executed by at least 2 tests and at most 87, before the tests of section 4.4 were added. The tests named first in the inventory were chosen from those lists: deterministic, on one thread, and about the thing the block does. The tests of section 4.4 were added afterwards, each for what its finding says, and the measurement was made again with them: every named test executes the line it is named for. One of them is not a matter of lines: the test of three readers at once, named for `Frame::attached`, is there for what Miri can see only between threads.
+By measurement: the tests of `lignin-store::cache` are built with `-C instrument-coverage`, each test is run alone, and the lines of `frame.rs` it executes are listed. At the audited commit every test that the inventory names for an unsafe block or an unsafe function executes the line of that block or function. The task's report has the list, site by site, with the number of tests that execute each.
 
-CI's coverage run (`cargo llvm-cov`) reports `frame.rs` with every other file, so a block that loses its last test shows there as an uncovered line.
+The measurement is not a part of CI. CI's coverage run (`cargo llvm-cov`) reports `frame.rs` with every other file, so a block that loses its last test shows there as an uncovered line.
 
 ## 7. Adding unsafe code
 
