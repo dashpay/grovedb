@@ -247,9 +247,11 @@ pub(super) struct Checkpoints {
 /// What a waiting committer looks at.
 #[derive(Debug, Default)]
 pub(super) struct Room {
-    /// The number of passes that have ended.
-    pub(super) passes: u64,
-    /// Whether the last pass wrote or placed anything.
+    /// The number of passes that have begun.
+    pub(super) begun: u64,
+    /// The number of the last pass that has ended, counted as they begin.
+    pub(super) ended: u64,
+    /// Whether that pass wrote or placed anything.
     pub(super) progress: bool,
 }
 
@@ -275,9 +277,6 @@ pub struct FlushState {
     pub(super) owed: AtomicUsize,
     /// The bytes logged since the last table checkpoint.
     pub(super) logged: AtomicU64,
-    /// An append to the log failed, and the log takes nothing until it has
-    /// been rolled.
-    pub(super) roll_wanted: AtomicBool,
     pub(super) segments_failed: AtomicBool,
     pub(super) running: AtomicBool,
     pub(super) stopping: AtomicBool,
@@ -300,7 +299,6 @@ impl FlushState {
             woken: Condvar::new(),
             owed: AtomicUsize::new(0),
             logged: AtomicU64::new(0),
-            roll_wanted: AtomicBool::new(false),
             segments_failed: AtomicBool::new(false),
             running: AtomicBool::new(false),
             stopping: AtomicBool::new(false),

@@ -23,6 +23,10 @@ use crate::{
     wal::LogError,
 };
 
+/// How often [`WriteBack::roll_log`] goes round before it gives up: as
+/// often as [`LogStore::roll`](crate::wal::LogStore::roll) does.
+const ROLL_ROUNDS: usize = 6;
+
 /// What a call of [`WriteBack::checkpoint`] came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checkpointed {
@@ -99,26 +103,65 @@ impl<'s> WriteBack<'s> {
         Ok(durable)
     }
 
-    /// Keeps the log's files going: [`LogStore::roll`], when the file the
-    /// log ends in is full, when an append to it failed, or when the
-    /// session has no file yet. Returns whether the log turned to another
-    /// file.
+    /// Keeps the log's files going, when the file the log ends in is full,
+    /// when an append to it failed, or when the session has no file yet:
+    /// the log is made durable and turned to its next file, and a file to
+    /// turn to after that is created and named by a durable manifest.
+    /// Returns whether the log turned to another file.
+    ///
+    /// It is [`LogStore::roll`] made of its parts, because a turn moves the
+    /// end of the log. The turn is made under the lock on the value counts,
+    /// which a commit holds from the moment it asks for the place of its
+    /// group until the group is in, so no commit finds its place taken by
+    /// a turn. The syncs, the new file and the manifest are dealt with
+    /// outside that lock.
     ///
     /// After a failed append this is what makes the cut of CM9: the log
     /// takes no item until it has returned `Ok`.
     ///
     /// [`LogStore::roll`]: crate::wal::LogStore::roll
     pub fn roll_log(&self) -> Result<bool, FlushError> {
-        let Stores { values, log, .. } = self.stores;
-        let wanted = self.state.roll_wanted.load(Ordering::Acquire);
-        if !wanted && !log.is_due() {
+        let log = self.stores.log;
+        if !log.is_due() {
             return Ok(false);
         }
-        let mark = values.applied();
-        let turned = log.roll(&mut *self.manifest()?)?;
-        values.mark_durable(mark)?;
-        self.state.roll_wanted.store(false, Ordering::Release);
-        Ok(turned)
+        let mut manifest = self.manifest()?;
+        let mut turned = false;
+        for _ in 0..ROLL_ROUNDS {
+            self.sync_log()?;
+            match self.turn_log() {
+                Ok(now) => turned |= now,
+                // The log has no file to turn to that a durable manifest
+                // names, or the file it ends in is not named closed yet:
+                // the rest of this round sees to both.
+                Err(FlushError::Log(
+                    LogError::NoSpare
+                    | LogError::SpareNotNamed { .. }
+                    | LogError::CutNotDurable { .. },
+                )) => {}
+                Err(error) => return Err(error),
+            }
+            match log.create() {
+                Ok(_) | Err(LogError::SpareExists { .. }) => {}
+                Err(error) => return Err(error.into()),
+            }
+            log.commit(&mut manifest)?;
+            if !log.is_due() {
+                return Ok(turned);
+            }
+        }
+        // Something failed in every round. What still stands in the way is
+        // the error.
+        self.turn_log()?;
+        Err(LogError::NoSpare.into())
+    }
+
+    /// Turns the log to its next file if a turn is due, with every commit
+    /// and every page step kept out.
+    fn turn_log(&self) -> Result<bool, FlushError> {
+        let Stores { values, log, .. } = self.stores;
+        let _counts = values.step()?;
+        Ok(log.rotate()?)
     }
 
     /// Whether a table checkpoint is due: as many bytes were logged since
@@ -224,7 +267,9 @@ impl<'s> WriteBack<'s> {
             Some(floor) => CommitVersion::new(floor.get().saturating_sub(1)).unwrap_or(latest),
             None => latest,
         };
-        let covers = written.min(latest).max(in_force.unwrap_or(CommitVersion::EMPTY));
+        let covers = written
+            .min(latest)
+            .max(in_force.unwrap_or(CommitVersion::EMPTY));
         let owed: Vec<(PageId, CommitVersion)> = self
             .owed()
             .into_iter()

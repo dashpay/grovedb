@@ -13,7 +13,6 @@ use lignin_format::{
 };
 
 use super::*;
-use crate::values::FileCount;
 
 /// What a recovery found.
 pub(super) struct Recovered {
@@ -42,7 +41,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
     let named = manifest.manifest().expect("a manifest").clone();
     let (table, info) = PageTable::load(&*vfs, path, &named).expect("the checkpoint loads");
     let segments = SegmentStore::open(&manifest).expect("the segments open");
-    let covers = info.as_ref().map_or(CommitVersion::EMPTY, |info| info.covers());
+    let covers = info
+        .as_ref()
+        .map_or(CommitVersion::EMPTY, |info| info.covers());
     let place = info.as_ref().and_then(|info| info.sample().place);
     let sample: Vec<FileCount> = info
         .iter()
@@ -69,7 +70,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
     let mut marked = false;
     // The page as its chain gives it, for replay to go on from.
     let mut image_of = |id: PageId| -> Option<Vec<u8>> {
-        let newest = table.newest(id).filter(|link| link.kind != LinkKind::Free)?;
+        let newest = table
+            .newest(id)
+            .filter(|link| link.kind != LinkKind::Free)?;
         let frame = loader.get(id, newest.version, &mut buffers);
         Some(frame.expect("the chain of a page reads").to_vec())
     };
@@ -86,7 +89,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                         match entry {
                             Entry::Tree(run) if committed > covers => {
                                 let id = run.page();
-                                let has = table.newest(id).is_some_and(|link| link.version >= committed);
+                                let has = table
+                                    .newest(id)
+                                    .is_some_and(|link| link.version >= committed);
                                 if has {
                                     continue;
                                 }
@@ -117,7 +122,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                         }
                     }
                     if counted {
-                        counts.apply(&change).expect("the counts take a commit's change");
+                        counts
+                            .apply(&change)
+                            .expect("the counts take a commit's change");
                     }
                 }
                 LogItem::Change(Change::Value(step)) if counted => {
@@ -134,7 +141,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                         if due {
                             let delta = step.delta().expect("a tree step");
                             let mut tree = TreePageMut::open(&mut frame, size, FRAME_FORMAT);
-                            delta.apply(tree.as_mut().expect("a tree page")).expect("placed");
+                            delta
+                                .apply(tree.as_mut().expect("a tree page"))
+                                .expect("placed");
                         }
                         frames.insert(id, Some(frame));
                     } else if table.newest(id).is_none() {
@@ -143,9 +152,13 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                         frames.insert(id, None);
                     }
                     let mut change = ValueChange::new();
-                    step.released().into_iter().for_each(|from| change.release(from));
+                    step.released()
+                        .into_iter()
+                        .for_each(|from| change.release(from));
                     change.acquire(step.acquired());
-                    counts.apply(&change).expect("the counts take a step's change");
+                    counts
+                        .apply(&change)
+                        .expect("the counts take a step's change");
                 }
                 LogItem::Change(_) => {}
                 LogItem::Mark(mark) => {
@@ -160,12 +173,22 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
             break;
         }
     }
-    assert!(place.is_none() || marked, "a mark ends at the sample's place");
+    assert!(
+        place.is_none() || marked,
+        "a mark ends at the sample's place"
+    );
     assert!(dropped.is_empty(), "changes with no image: {dropped:?}");
     let end = reader.end().expect("the log has ended").clone();
     let landed = end.latest();
-    assert!(landed >= covers, "the log reaches what the checkpoint covers");
-    assert_eq!(table.discard_after(landed), 0, "a link above version {landed}");
+    assert!(
+        landed >= covers,
+        "the log reaches what the checkpoint covers"
+    );
+    assert_eq!(
+        table.discard_after(landed),
+        0,
+        "a link above version {landed}"
+    );
 
     let values = counts.finish().expect("the counts are whole");
     let log = LogStore::open(&manifest, &end, LogOptions::default()).expect("the log opens");
@@ -193,7 +216,10 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
         .filter(|count| count.values > 0)
         .map(|count| (count.file, count.values))
         .collect();
-    assert_eq!(counted, pointers, "the counts are the pointers the pages hold");
+    assert_eq!(
+        counted, pointers,
+        "the counts are the pointers the pages hold"
+    );
     Recovered {
         landed,
         covers,

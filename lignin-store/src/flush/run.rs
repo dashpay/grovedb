@@ -64,21 +64,13 @@ impl WriteBack<'_> {
             if self.has_room() {
                 return Ok(Room::Free);
             }
-            let progressed = if self.state.running.load(Ordering::Acquire) {
-                let mut room = lock(&self.state.room);
-                let seen = room.passes;
-                self.state.wake();
-                while room.passes == seen && self.state.running.load(Ordering::Acquire) {
-                    let (next, _) = self
-                        .state
-                        .room_changed
-                        .wait_timeout(room, self.state.config.idle)
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    room = next;
-                }
-                room.passes != seen && room.progress
-            } else {
-                self.pass()?.progressed()
+            let progressed = match self.state.running.load(Ordering::Acquire) {
+                true => match self.wait_for_pass() {
+                    Some(progressed) => progressed,
+                    // The loop has ended: the caller makes the pass.
+                    None => continue,
+                },
+                false => self.pass()?.progressed(),
             };
             if !progressed {
                 return Ok(match self.has_room() {
@@ -87,6 +79,27 @@ impl WriteBack<'_> {
                 });
             }
         }
+    }
+
+    /// Waits for a pass of the background loop that begins from now on, so
+    /// that it has seen everything the caller committed, and returns
+    /// whether it wrote or placed anything. `None` if the loop ended first.
+    fn wait_for_pass(&self) -> Option<bool> {
+        let state = self.state;
+        let mut room = lock(&state.room);
+        let begun = room.begun;
+        state.wake();
+        while room.ended <= begun {
+            if !state.running.load(Ordering::Acquire) {
+                return None;
+            }
+            let (next, _) = state
+                .room_changed
+                .wait_timeout(room, state.config.idle)
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            room = next;
+        }
+        Some(room.progress)
     }
 
     /// One turn of the background loop: the log is rolled and synced if
@@ -120,7 +133,6 @@ impl WriteBack<'_> {
     /// [`FlushStats::errors`]: super::FlushStats::errors
     pub fn run(&self, mut failed: impl FnMut(FlushError)) {
         let state = self.state;
-        state.stopping.store(false, Ordering::Release);
         state.running.store(true, Ordering::Release);
         while !state.stopping.load(Ordering::Acquire) {
             if let Err(error) = self.tick() {
@@ -138,6 +150,7 @@ impl WriteBack<'_> {
             *woken = false;
         }
         state.running.store(false, Ordering::Release);
+        state.stopping.store(false, Ordering::Release);
         state.room_changed.notify_all();
     }
 
@@ -148,7 +161,8 @@ impl WriteBack<'_> {
         self.state.wake();
     }
 
-    /// Ends the background loop after its current turn.
+    /// Ends the background loop after its current turn. A loop that has
+    /// not begun yet ends as soon as it begins.
     pub fn stop(&self) {
         self.state.stopping.store(true, Ordering::Release);
         self.state.wake();

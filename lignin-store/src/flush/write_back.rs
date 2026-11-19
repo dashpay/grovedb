@@ -172,20 +172,25 @@ enum Outcome {
 
 impl<'s> WriteBack<'s> {
     /// Write-back for `stores`, with `state` as what it keeps between
-    /// calls. The page size is the manifest's, and must be the size of the
-    /// pool's frames ([`FlushError::FrameSize`]).
-    pub fn new(stores: Stores<'s>, state: &'s FlushState) -> Result<Self, FlushError> {
-        let size = lock(stores.manifest).manifest()?.page_size();
-        if stores.pool.frame_len() != size.get() {
+    /// calls. `page_size` is the store's, from its manifest, and must be
+    /// the size of the pool's frames ([`FlushError::FrameSize`]).
+    ///
+    /// It takes no lock, so a view can be made wherever one is needed.
+    pub fn new(
+        stores: Stores<'s>,
+        state: &'s FlushState,
+        page_size: PageSize,
+    ) -> Result<Self, FlushError> {
+        if stores.pool.frame_len() != page_size.get() {
             return Err(FlushError::FrameSize {
-                page_size: size.get(),
+                page_size: page_size.get(),
                 frame_len: stores.pool.frame_len(),
             });
         }
         Ok(Self {
             stores,
             state,
-            size,
+            size: page_size,
         })
     }
 
@@ -337,14 +342,13 @@ impl<'s> WriteBack<'s> {
 
     /// Notes that an append to the log failed. Until the log has been
     /// rolled it takes no item (`transactions.md` CM9 item 5), and rolling
-    /// it is write-back's ([`Self::roll_log`]).
+    /// it is write-back's ([`Self::roll_log`]): the loop is woken for it.
     pub(super) fn append_failed(&self, error: &LogError) {
         let cut_needed = matches!(
             error,
             LogError::TakenBack { .. } | LogError::NotAppended { .. } | LogError::NoActiveFile
         );
         if cut_needed {
-            self.state.roll_wanted.store(true, Ordering::Release);
             self.state.wake();
         }
     }
@@ -380,6 +384,11 @@ impl<'s> WriteBack<'s> {
     /// called again.
     pub fn pass(&self) -> Result<Pass, FlushError> {
         let mut files = lock(&self.state.files);
+        let number = {
+            let mut room = lock(&self.state.room);
+            room.begun += 1;
+            room.begun
+        };
         let mut pass = Pass::default();
         let result = self.pass_with(&mut files, &mut pass);
         pass.waiting = self.owed().values().map(Vec::len).sum();
@@ -387,7 +396,7 @@ impl<'s> WriteBack<'s> {
         drop(files);
 
         let mut room = lock(&self.state.room);
-        room.passes += 1;
+        room.ended = number;
         room.progress = pass.progressed();
         drop(room);
         self.state.room_changed.notify_all();
@@ -511,15 +520,17 @@ impl<'s> WriteBack<'s> {
                     continue;
                 }
             }
-            let written = self.plan(files, page, frame, &links, &changes, &gap).and_then(|form| {
-                // A page that is about to get a new base image has its
-                // values regrouped first, and is then looked at again.
-                let regroup = form != Form::Run && is_current && !regrouped && is_tree(frame);
-                if regroup && self.regroup(files, page)? > 0 {
-                    return Ok(None);
-                }
-                self.store(files, page, frame, form).map(Some)
-            });
+            let written = self
+                .plan(files, page, frame, &links, &changes, &gap)
+                .and_then(|form| {
+                    // A page that is about to get a new base image has its
+                    // values regrouped first, and is then looked at again.
+                    let regroup = form != Form::Run && is_current && !regrouped && is_tree(frame);
+                    if regroup && self.regroup(files, page)? > 0 {
+                        return Ok(None);
+                    }
+                    self.store(files, page, frame, form).map(Some)
+                });
             match written {
                 Ok(Some(Outcome::Written(link))) => {
                     links.push(link);
@@ -634,8 +645,7 @@ impl<'s> WriteBack<'s> {
     ) -> Result<Form, FlushError> {
         let born = frame.born();
         files.image.clear();
-        let pending =
-            page::write_image(frame, &mut files.image).map_err(FlushError::page(page))?;
+        let pending = page::write_image(frame, &mut files.image).map_err(FlushError::page(page))?;
         if pending {
             return Err(FlushError::PendingValue { page, born });
         }
@@ -701,7 +711,10 @@ impl<'s> WriteBack<'s> {
             BlockContent::Base => {
                 count(&counters.base_blocks, 1);
                 count(&counters.base_bytes, files.image.len() as u64);
-                count(&counters.consolidations, u64::from(form == Form::Consolidation));
+                count(
+                    &counters.consolidations,
+                    u64::from(form == Form::Consolidation),
+                );
                 files.untrimmed.insert(page, born);
             }
         }

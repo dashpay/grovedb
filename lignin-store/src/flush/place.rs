@@ -134,7 +134,9 @@ impl<'s> WriteBack<'s> {
                 let Some(bytes) = logged.bytes() else {
                     return Err(FlushError::PendingValue { page, born });
                 };
-                bytes.parts().for_each(|part| files.value.extend_from_slice(part));
+                bytes
+                    .parts()
+                    .for_each(|part| files.value.extend_from_slice(part));
             }
         }
         if files.value.len() != len {
@@ -267,9 +269,9 @@ impl<'s> WriteBack<'s> {
                 Ok(()) | Err(LogError::Unsettled { .. }) => Ok(()),
                 Err(error) => Err(error.into()),
             },
-            LogError::NotAppended { .. }
-            | LogError::NoActiveFile
-            | LogError::Unsettled { .. } => Ok(()),
+            LogError::NotAppended { .. } | LogError::NoActiveFile | LogError::Unsettled { .. } => {
+                Ok(())
+            }
             error => Err(error.into()),
         }
     }

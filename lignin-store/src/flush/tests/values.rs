@@ -83,7 +83,10 @@ fn a_value_waits_for_a_private_copy_of_its_page_and_is_appended_once() {
 #[test]
 fn a_value_is_placed_right_after_the_commit_that_carried_it_on() {
     let db = Db::new();
-    db.commit(&[insert((1, 1), b"a", long(1, 2000)), insert((1, 2), b"b", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 2000)),
+        insert((1, 2), b"b", inline(b"v")),
+    ]);
     let mut txn = db.begin();
     txn.copy(page(1));
     let pass = db.wb().pass().expect("a pass");
@@ -156,7 +159,10 @@ fn a_snapshot_keeps_reading_a_version_that_was_superseded_with_a_pending_value()
 #[test]
 fn a_value_whose_cell_goes_before_its_step_is_given_up() {
     let db = Db::new();
-    db.commit(&[insert((1, 1), b"a", long(1, 2000)), insert((1, 2), b"b", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 2000)),
+        insert((1, 2), b"b", inline(b"v")),
+    ]);
     let mut txn = db.begin();
     txn.copy(page(1));
     db.wb().pass().expect("a pass");
@@ -257,7 +263,10 @@ fn a_committer_waits_for_room_and_never_for_its_own_copies() {
     assert!(db.wb().has_room());
     assert_eq!(db.wb().wait_for_room().expect("room"), Room::Free);
 
-    db.commit(&[insert((1, 1), b"a", inline(b"v")), insert((2, 1), b"b", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"v")),
+        insert((2, 1), b"b", inline(b"v")),
+    ]);
     assert_eq!(db.state.unwritten(), 2);
     assert!(!db.wb().has_room());
     // No background loop runs, so the caller makes the pass itself.

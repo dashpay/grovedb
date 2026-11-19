@@ -28,7 +28,10 @@ use lignin_format::{
     wal::{GroupWriter, ValueMove},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
 };
-use lignin_io::{StdVfs, Vfs};
+use lignin_io::{
+    sim::{SimConfig, SimVfs},
+    StdVfs, Vfs,
+};
 use tempfile::TempDir;
 
 use super::*;
@@ -38,7 +41,7 @@ use crate::{
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore},
     table::{Link, LinkKind, PageTable, TableCheckpoints},
-    values::{ValueChange, ValueHold, ValueStore, ValueWriter},
+    values::{FileCount, ValueChange, ValueHold, ValueStore, ValueWriter},
     wal::{LogOptions, LogReader, LogStore},
 };
 
@@ -124,7 +127,10 @@ pub(super) struct ByKey<'d>(pub(super) &'d Db);
 impl ByKey<'_> {
     fn slots(frame: &[u8]) -> Vec<SlotId> {
         let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
-        let mut cells: Vec<_> = tree.cells().map(|(slot, cell)| (cell.key().to_vec(), slot)).collect();
+        let mut cells: Vec<_> = tree
+            .cells()
+            .map(|(slot, cell)| (cell.key().to_vec(), slot))
+            .collect();
         cells.sort();
         cells.into_iter().map(|(_, slot)| slot).collect()
     }
@@ -195,7 +201,11 @@ pub(super) enum Op {
         value: Val,
     },
     /// The value hash of a cell becomes 32 times `byte`.
-    Hash { page: PageId, slot: SlotId, byte: u8 },
+    Hash {
+        page: PageId,
+        slot: SlotId,
+        byte: u8,
+    },
     /// A cell leaves.
     Remove { page: PageId, slot: SlotId },
     /// The value of a cell is replaced.
@@ -295,7 +305,10 @@ impl Cell {
 /// Whether two pages say the same: their cells, with the values wherever
 /// they are.
 pub(super) fn same(found: &[Cell], expected: &[Cell]) -> bool {
-    found.iter().map(Cell::said).eq(expected.iter().map(Cell::said))
+    found
+        .iter()
+        .map(Cell::said)
+        .eq(expected.iter().map(Cell::said))
 }
 
 /// What the cells of the tree page in `frame` say, with each value read
@@ -355,7 +368,12 @@ fn committed_cells(
     let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
     tree.cells()
         .map(|(slot, cell)| {
-            let earlier = || before.get(&slot.get()).expect("the cell had its value").clone();
+            let earlier = || {
+                before
+                    .get(&slot.get())
+                    .expect("the cell had its value")
+                    .clone()
+            };
             let value = match cell.value() {
                 CellValue::Inline(bytes) => bytes.to_vec(),
                 CellValue::OutOfLine(_) => earlier(),
@@ -501,6 +519,86 @@ impl Db {
         db
     }
 
+    /// A new store on a simulated file system, which the test can make
+    /// fail.
+    pub(super) fn on_sim(config: FlushConfig, log: LogOptions) -> (SimVfs, Self) {
+        use crate::segment::tests::sim::{db_dir, shared, sim_fs};
+        let fs = sim_fs(SimConfig::new(5));
+        let db = Self::create(shared(&fs), db_dir(), config, log);
+        (fs, db)
+    }
+
+    /// Ends the session as a store does ([`WriteBack::finish`]) and opens
+    /// the directory again, with nothing in memory: what the next session
+    /// starts from. Every commit must have been written back.
+    pub(super) fn reopen(self) -> Self {
+        let finished = self.wb().finish().expect("the session ends");
+        let latest = self.latest();
+        assert!(
+            matches!(finished, Checkpointed::Installed { covers, .. } if covers == latest),
+            "{finished:?}"
+        );
+        let Self {
+            _dir,
+            vfs,
+            path,
+            size,
+            state,
+            model,
+            ..
+        } = self;
+        let mut manifest = ManifestStore::open(vfs.clone(), &path).expect("a manifest");
+        let named = manifest.manifest().expect("a manifest").clone();
+        let (table, info) = PageTable::load(&*vfs, &path, &named).expect("the checkpoint loads");
+        let segments = SegmentStore::open(&manifest).expect("segments");
+        let counts: Vec<FileCount> = info
+            .iter()
+            .flat_map(|info| &info.sample().counts)
+            .map(|count| FileCount {
+                file: count.file,
+                values: count.values,
+                bytes: count.bytes,
+                miscounted: count.miscounted,
+            })
+            .collect();
+        let values = ValueStore::open(&manifest, &counts).expect("a value log");
+        let checkpoints = TableCheckpoints::open(&manifest).expect("checkpoints");
+        let end = LogReader::new(vfs.clone(), &path, &named)
+            .into_end()
+            .expect("the log reads");
+        assert_eq!(end.latest(), latest);
+        let log = LogStore::open(&manifest, &end, LogOptions::default()).expect("a log");
+        log.roll(&mut manifest).expect("a log file");
+        let pool = BufferPool::new(PoolConfig {
+            page_size: size,
+            capacity: 4 << 20,
+        })
+        .expect("a pool");
+        let versions = Versions::new();
+        versions.latest.store(latest.get(), Ordering::SeqCst);
+        let db = Self {
+            _dir,
+            vfs,
+            path,
+            size,
+            manifest: Mutex::new(manifest),
+            segments,
+            values,
+            log,
+            checkpoints,
+            table,
+            pool,
+            versions,
+            state: FlushState::new(state.config()),
+            owners: AtomicU64::new(0),
+            model,
+        };
+        db.wb()
+            .adopt(info.as_ref())
+            .expect("the checkpoint is adopted");
+        db
+    }
+
     pub(super) fn wb(&self) -> WriteBack<'_> {
         self.wb_with(None)
     }
@@ -518,7 +616,7 @@ impl Db {
             versions: &self.versions,
             page_values,
         };
-        WriteBack::new(stores, &self.state).expect("write-back")
+        WriteBack::new(stores, &self.state, self.size).expect("write-back")
     }
 
     pub(super) fn latest(&self) -> CommitVersion {
@@ -535,7 +633,8 @@ impl Db {
 
     /// The page as a reader at `at` gets it from this store's pool.
     pub(super) fn frame(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, LoadError> {
-        self.loader(&self.pool).get(page, at, &mut LoadBuffers::new())
+        self.loader(&self.pool)
+            .get(page, at, &mut LoadBuffers::new())
     }
 
     /// The chain of `page`, oldest link first.
@@ -599,7 +698,11 @@ impl Db {
     pub(super) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
         let from = self.pointer(id, slot);
         let mut buf = Vec::new();
-        let bytes = self.values.read(from, id, &mut buf).expect("the value").to_vec();
+        let bytes = self
+            .values
+            .read(from, id, &mut buf)
+            .expect("the value")
+            .to_vec();
         let mut writer = self.values.create().expect("a value-log file");
         self.values
             .commit(&mut self.manifest.lock().expect("the manifest"))
@@ -709,7 +812,10 @@ impl Db {
                         }
                     }
                     Err(LoadError::NoPage { .. }) => {
-                        assert!(expected.is_none(), "page {id} at version {at} was not found");
+                        assert!(
+                            expected.is_none(),
+                            "page {id} at version {at} was not found"
+                        );
                     }
                     Err(error) => panic!("page {id} at version {at}: {error}"),
                 }
@@ -721,7 +827,14 @@ impl Db {
     /// link, the runs between it and the base image under it.
     pub(super) fn check_chains(&self) {
         let config = self.state.config();
-        let pages: Vec<PageId> = self.model.lock().expect("the model").pages.keys().copied().collect();
+        let pages: Vec<PageId> = self
+            .model
+            .lock()
+            .expect("the model")
+            .pages
+            .keys()
+            .copied()
+            .collect();
         for id in pages {
             let (mut deltas, mut bytes) = (0, 0);
             for link in self.chain(id) {
@@ -732,8 +845,14 @@ impl Db {
                     }
                     LinkKind::Base(_) | LinkKind::Free => (deltas, bytes) = (0, 0),
                 }
-                assert!(deltas <= config.max_chain_deltas, "page {id}: {deltas} runs");
-                assert!(bytes <= config.max_chain_bytes, "page {id}: {bytes} bytes of runs");
+                assert!(
+                    deltas <= config.max_chain_deltas,
+                    "page {id}: {deltas} runs"
+                );
+                assert!(
+                    bytes <= config.max_chain_bytes,
+                    "page {id}: {bytes} bytes of runs"
+                );
             }
         }
     }
@@ -833,7 +952,10 @@ impl<'d> Txn<'d> {
                     let encoded;
                     let delta = match op {
                         Op::Insert {
-                            slot, key, value: of, ..
+                            slot,
+                            key,
+                            value: of,
+                            ..
                         } => {
                             let cell = CellContent {
                                 key,
@@ -861,7 +983,9 @@ impl<'d> Txn<'d> {
                             released.extend(placed(slot));
                             Delta::Remove { slot: *slot }
                         }
-                        Op::Value { slot, value: of, .. } => {
+                        Op::Value {
+                            slot, value: of, ..
+                        } => {
                             released.extend(placed(slot));
                             Delta::Value {
                                 slot: *slot,
@@ -901,17 +1025,24 @@ impl<'d> Txn<'d> {
             if freed.contains(&id) {
                 db.pool.discard(&copy).expect("discarded");
                 if db.table.newest(id).is_some() {
-                    db.table.push(id, Link::free(committed)).expect("a free link");
+                    db.table
+                        .push(id, Link::free(committed))
+                        .expect("a free link");
                 }
                 db.pool.free(id, committed).expect("freed");
-                model.pages.entry(id).or_default().push((committed.get(), None));
+                model
+                    .pages
+                    .entry(id)
+                    .or_default()
+                    .push((committed.get(), None));
             } else {
                 let frame = db.pool.install(&copy, committed).expect("installed");
                 let versions = model.pages.entry(id).or_default();
                 let before = match versions.last() {
-                    Some((_, Some(cells))) => {
-                        cells.iter().map(|cell| (cell.slot, cell.value.clone())).collect()
-                    }
+                    Some((_, Some(cells))) => cells
+                        .iter()
+                        .map(|cell| (cell.slot, cell.value.clone()))
+                        .collect(),
                     _ => BTreeMap::new(),
                 };
                 let cells = committed_cells(&frame, &before, &written);

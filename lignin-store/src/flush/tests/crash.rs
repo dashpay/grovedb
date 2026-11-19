@@ -111,13 +111,23 @@ fn run(script: &[Step], crash: Option<u64>) -> Ran {
                 }
             };
             if let Err(error) = done {
-                assert!(fs.is_powered_off(), "{step:?} failed with the power on: {error}");
+                assert!(
+                    fs.is_powered_off(),
+                    "{step:?} failed with the power on: {error}"
+                );
                 return;
             }
         }
     }));
-    assert!(steps.is_ok() || fs.is_powered_off(), "a step failed with the power on");
-    let model = db.model.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).clone();
+    assert!(
+        steps.is_ok() || fs.is_powered_off(),
+        "a step failed with the power on"
+    );
+    let model = db
+        .model
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .clone();
     let stats = db.stats();
     Ran {
         durable: db.log.durable().version,
@@ -150,9 +160,19 @@ fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
     let states = crash_states(&ran.fs.crash_image(), plans);
     tally.crashes += 1;
     for (plan, state) in states.states {
-        if state.open(&db_dir().join(ManifestStore::FILE_NAME), lignin_io::OpenMode::Read).is_err() {
+        if state
+            .open(
+                &db_dir().join(ManifestStore::FILE_NAME),
+                lignin_io::OpenMode::Read,
+            )
+            .is_err()
+        {
             // The power went before the store had its first manifest.
-            assert_eq!(ran.latest, CommitVersion::EMPTY, "the manifest is gone: {plan:?}");
+            assert_eq!(
+                ran.latest,
+                CommitVersion::EMPTY,
+                "the manifest is gone: {plan:?}"
+            );
             continue;
         }
         let recovered = recover(shared(&state), db_dir(), &ids);
@@ -171,9 +191,9 @@ fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
                     "page {id} at version {landed}: {found:?}, not {cells:?}: {plan:?}"
                 ),
                 (None, None) => {}
-                (found, expected) => panic!(
-                    "page {id} at version {landed}: {found:?}, not {expected:?}: {plan:?}"
-                ),
+                (found, expected) => {
+                    panic!("page {id} at version {landed}: {found:?}, not {expected:?}: {plan:?}")
+                }
             }
         }
         tally.states += 1;
@@ -207,7 +227,10 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// between that take log files away.
 fn life() -> Vec<Step> {
     vec![
-        commit(&[insert((1, 1), b"a", inline(b"one")), insert((2, 1), b"b", long(1, 900))]),
+        commit(&[
+            insert((1, 1), b"a", inline(b"one")),
+            insert((2, 1), b"b", long(1, 900)),
+        ]),
         Step::Pass,
         Step::Checkpoint,
         commit(&[hash((1, 1), 1)]),
@@ -245,7 +268,11 @@ fn the_script_takes_checkpoints_drops_log_files_and_puts_a_checkpoint_off() {
     assert!(!ran.fs.is_powered_off());
     assert_eq!(ran.latest, version(11));
     assert!(ran.checkpoints >= 5, "{} checkpoints", ran.checkpoints);
-    assert!(ran.log_files_dropped >= 3, "{} log files dropped", ran.log_files_dropped);
+    assert!(
+        ran.log_files_dropped >= 3,
+        "{} log files dropped",
+        ran.log_files_dropped
+    );
     assert_eq!(ran.put_off, 2);
     let mut tally = Tally::default();
     check(&ran, &PLANS, &mut tally);
@@ -272,7 +299,10 @@ fn a_crash_at_any_point_recovers_one_committed_version_whole() {
     let mut tally = Tally::default();
     for crash in 1..=changes {
         let ran = run(&script, Some(crash));
-        assert!(ran.fs.is_powered_off(), "the power goes off at change {crash}");
+        assert!(
+            ran.fs.is_powered_off(),
+            "the power goes off at change {crash}"
+        );
         check(&ran, &PLANS, &mut tally);
     }
     assert_eq!(tally.crashes, changes);

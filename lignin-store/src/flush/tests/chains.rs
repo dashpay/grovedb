@@ -45,7 +45,11 @@ fn a_version_that_a_reader_can_ask_for_has_a_link_of_its_own() {
     // have a reader that could come between them and the next.
     assert_eq!((pass.written, pass.held), (3, 1));
     assert_eq!(db.shape(page(1)), "Bddd");
-    let versions: Vec<u64> = db.chain(page(1)).iter().map(|link| link.version.get()).collect();
+    let versions: Vec<u64> = db
+        .chain(page(1))
+        .iter()
+        .map(|link| link.version.get())
+        .collect();
     assert_eq!(versions, [1, 3, 4, 5]);
     db.check_cold();
 }
@@ -57,7 +61,10 @@ fn a_version_that_a_reader_can_ask_for_has_a_link_of_its_own() {
 #[test]
 fn nothing_older_than_a_free_link_is_written_back() {
     let db = Db::new();
-    db.commit(&[insert((5, 1), b"k", inline(b"v")), insert((6, 1), b"k", inline(b"v"))]);
+    db.commit(&[
+        insert((5, 1), b"k", inline(b"v")),
+        insert((6, 1), b"k", inline(b"v")),
+    ]);
     db.wb().pass().expect("a pass");
     let changed = db.commit(&[hash((5, 1), 9)]);
     db.versions.pin(changed);
@@ -87,7 +94,10 @@ fn nothing_older_than_a_free_link_is_written_back() {
 #[test]
 fn a_page_that_is_made_again_under_a_freed_id_starts_with_a_base_image() {
     let db = Db::new();
-    db.commit(&[insert((5, 1), b"old", inline(b"v")), insert((6, 1), b"k", inline(b"v"))]);
+    db.commit(&[
+        insert((5, 1), b"old", inline(b"v")),
+        insert((6, 1), b"k", inline(b"v")),
+    ]);
     db.commit(&[hash((5, 1), 1)]);
     db.wb().pass().expect("a pass");
     let old = db.latest();
@@ -153,7 +163,10 @@ fn a_version_below_a_free_link_that_the_pool_still_lists_is_skipped() {
 #[test]
 fn a_page_step_of_other_background_work_is_written_as_its_record() {
     let db = Db::new();
-    let born = db.commit(&[insert((1, 1), b"a", long(1, 2000)), insert((1, 2), b"b", inline(b"v"))]);
+    let born = db.commit(&[
+        insert((1, 1), b"a", long(1, 2000)),
+        insert((1, 2), b"b", inline(b"v")),
+    ]);
     db.wb().pass().expect("a pass");
     assert_eq!(db.shape(page(1)), "B");
     let before = (db.stats(), db.pointers(page(1)), db.versions.guards());
@@ -190,7 +203,10 @@ fn a_page_step_of_other_background_work_is_written_as_its_record() {
 #[test]
 fn a_page_step_that_write_back_was_not_told_of_makes_a_base_image() {
     let db = Db::new();
-    db.commit(&[insert((1, 1), b"a", long(1, 2000)), insert((1, 2), b"b", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 2000)),
+        insert((1, 2), b"b", inline(b"v")),
+    ]);
     db.wb().pass().expect("a pass");
 
     // On a page that is in a segment: nothing is kept, so no run is tried.
@@ -219,14 +235,20 @@ fn a_page_step_that_write_back_was_not_told_of_makes_a_base_image() {
 fn a_chain_that_is_over_the_thresholds_is_consolidated() {
     let db = Db::new();
     db.versions.pin(version(0));
-    db.commit(&[insert((1, 1), b"k", inline(b"v")), insert((2, 1), b"k", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"k", inline(b"v")),
+        insert((2, 1), b"k", inline(b"v")),
+    ]);
     for round in 0..5u8 {
         db.commit(&[hash((1, 1), round)]);
         db.wb().pass().expect("a pass");
     }
     db.commit(&[hash((2, 1), 1)]);
     db.wb().pass().expect("a pass");
-    assert_eq!((db.shape(page(1)), db.shape(page(2))), ("Bddddd".into(), "Bd".into()));
+    assert_eq!(
+        (db.shape(page(1)), db.shape(page(2))),
+        ("Bddddd".into(), "Bd".into())
+    );
 
     // Another state, with a threshold of two runs, for the same stores.
     let strict = FlushState::new(FlushConfig {
@@ -246,10 +268,14 @@ fn a_chain_that_is_over_the_thresholds_is_consolidated() {
             page_values: None,
         },
         &strict,
+        db.size,
     )
     .expect("write-back");
     assert_eq!(wb.consolidate_long_chains().expect("consolidated"), 1);
-    assert_eq!((db.shape(page(1)), db.shape(page(2))), ("BdddddB".into(), "Bd".into()));
+    assert_eq!(
+        (db.shape(page(1)), db.shape(page(2))),
+        ("BdddddB".into(), "Bd".into())
+    );
     let chain = db.chain(page(1));
     assert_eq!(chain[6].version, chain[5].version);
     assert_eq!(strict.stats().consolidations, 1);

@@ -13,9 +13,9 @@ fn in_key_order(db: &Db, id: PageId) -> Vec<ValuePointer> {
 }
 
 fn is_one_run(pointers: &[ValuePointer]) -> bool {
-    pointers.windows(2).all(|pair| {
-        (pair[1].file(), pair[1].offset()) == (pair[0].file(), pair[0].end(V1))
-    })
+    pointers
+        .windows(2)
+        .all(|pair| (pair[1].file(), pair[1].offset()) == (pair[0].file(), pair[0].end(V1)))
 }
 
 fn four_values(db: &Db) {
@@ -65,9 +65,15 @@ fn the_values_of_a_page_are_regrouped_before_its_base_image_is_written() {
     let db = Db::with(config);
     let by_key = ByKey(&db);
     let wb = db.wb_with(Some(&by_key));
-    db.commit(&[insert((1, 1), b"a", long(1, 1000)), insert((2, 1), b"x", long(9, 900))]);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 1000)),
+        insert((2, 1), b"x", long(9, 900)),
+    ]);
     wb.pass().expect("a pass");
-    db.commit(&[insert((1, 2), b"c", long(2, 1100)), insert((2, 2), b"y", long(8, 800))]);
+    db.commit(&[
+        insert((1, 2), b"c", long(2, 1100)),
+        insert((2, 2), b"y", long(8, 800)),
+    ]);
     wb.pass().expect("a pass");
     db.commit(&[insert((1, 3), b"b", long(3, 1200))]);
     wb.pass().expect("a pass");
@@ -163,7 +169,10 @@ fn a_regrouping_that_fails_leaves_the_page_for_a_later_pass() {
 
     let db = Db::new();
     db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
-    let error = db.wb_with(Some(&Failing)).pass().expect_err("a regrouping failed");
+    let error = db
+        .wb_with(Some(&Failing))
+        .pass()
+        .expect_err("a regrouping failed");
     assert_eq!(
         error.to_string(),
         "the values of page 1 were not regrouped: the tree layer could not"

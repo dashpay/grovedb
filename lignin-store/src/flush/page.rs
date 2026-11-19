@@ -116,9 +116,7 @@ pub(super) fn placing(
 /// Whether the page in `frame` still holds what `step` says it held.
 pub(super) fn is_due(frame: &[u8], step: &ValueMove) -> Result<bool, FormatError> {
     match kind_of(frame) {
-        PageKind::Tree => {
-            Ok(step.is_due_in_tree(&TreePage::from_validated(frame, FRAME_FORMAT)?))
-        }
+        PageKind::Tree => Ok(step.is_due_in_tree(&TreePage::from_validated(frame, FRAME_FORMAT)?)),
         PageKind::Flat => step.is_due_in_flat_leaf(frame, FRAME_FORMAT),
     }
 }

@@ -76,10 +76,7 @@ fn the_run_of_a_page_holds_the_place_of_a_value_and_never_its_bytes() {
     db.wb().pass().expect("a pass");
     let before = db.stats();
 
-    db.commit(&[
-        insert((3, 2), b"long", long(1, 2000)),
-        hash((3, 1), 9),
-    ]);
+    db.commit(&[insert((3, 2), b"long", long(1, 2000)), hash((3, 1), 9)]);
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.written, pass.placed), (1, 1));
     let after = db.stats();
@@ -104,7 +101,10 @@ fn chain_length_never_exceeds_the_threshold() {
         ..FlushConfig::new(Db::SIZE)
     };
     let db = Db::with(config);
-    db.commit(&[insert((1, 1), b"k", inline(b"v")), insert((2, 1), b"k", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"k", inline(b"v")),
+        insert((2, 1), b"k", inline(b"v")),
+    ]);
     db.wb().pass().expect("a pass");
     let mut shapes = Vec::new();
     for round in 0..9u8 {
@@ -115,7 +115,10 @@ fn chain_length_never_exceeds_the_threshold() {
     }
     // No reader pins an old version, so each new base image lets the links
     // before it go.
-    assert_eq!(shapes, ["Bd", "Bdd", "Bddd", "B", "Bd", "Bdd", "Bddd", "B", "Bd"]);
+    assert_eq!(
+        shapes,
+        ["Bd", "Bdd", "Bddd", "B", "Bd", "Bdd", "Bddd", "B", "Bd"]
+    );
     assert_eq!(db.stats().consolidations, 2);
     assert_eq!(db.shape(page(2)), "B");
     db.check_cold();
