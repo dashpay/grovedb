@@ -1,6 +1,10 @@
 //! A cursor over a flat keyspace, in key order.
 
-use std::{borrow::Cow, cmp::Ordering, collections::BTreeSet};
+use std::{
+    borrow::Cow,
+    cmp::Ordering,
+    collections::{btree_map::Entry, BTreeMap},
+};
 
 use lignin_format::{
     flat_page::{FlatLeaf, FlatPage},
@@ -12,7 +16,7 @@ use super::{
     long_key::{bucket_root, Stored},
     node::{branch, child, leaf, read_value},
     pages::{FlatPages, Revision},
-    tree::{FlatTree, Step},
+    tree::{on_its_own_way, FlatTree, Step},
 };
 
 /// The first key that is greater than every key that starts with `prefix`,
@@ -22,13 +26,6 @@ pub(super) fn prefix_end(prefix: &[u8]) -> Option<Vec<u8>> {
     let mut end = prefix[..=last].to_vec();
     end[last] += 1;
     Some(end)
-}
-
-/// What a bucket is whose tree, with the root `page`, is a tree that the
-/// bucket is in.
-fn ring(page: PageId) -> FlatError {
-    let what = "a bucket of long keys whose tree is a tree it is in";
-    FlatError::Damaged { page, what }
 }
 
 /// The position after `index`, or before it with `back`.
@@ -54,6 +51,13 @@ struct Level {
 }
 
 impl Level {
+    /// The pages the position stands on: the branches above its leaf, and
+    /// the leaf.
+    fn pages(&self) -> Vec<PageId> {
+        let steps = self.steps.iter().map(|step| step.page);
+        steps.chain([self.leaf]).collect()
+    }
+
     /// A position in `tree` that is nowhere yet.
     fn new(tree: FlatTree) -> Self {
         Self {
@@ -239,8 +243,11 @@ pub struct Cursor {
     /// The position: one level, and under a long key one more for each
     /// bucket the key is in. Empty when the cursor is not positioned.
     levels: Vec<Level>,
-    /// The roots of the trees of `levels`: no tree is gone into twice.
-    roots: BTreeSet<PageId>,
+    /// The pages on the way to the innermost level, each as often as it is
+    /// on it: the root of each level's tree, and the branches and the leaf
+    /// that each level but the innermost stands on. The tree of a bucket
+    /// begins at none of them.
+    way: BTreeMap<PageId, u32>,
     key: Vec<u8>,
     /// The pages the cursor was last moved with.
     revision: Option<Revision>,
@@ -252,7 +259,7 @@ impl Cursor {
             tree,
             prefix: prefix.to_vec(),
             levels: Vec::new(),
-            roots: BTreeSet::new(),
+            way: BTreeMap::new(),
             key: Vec::new(),
             revision: None,
         }
@@ -414,8 +421,8 @@ impl Cursor {
             let own = level.bucket.filter(|_| level.stored == *stored);
             self.go_into(level)?;
             match (own, rest) {
-                (Some(own), Some(_)) if self.roots.contains(&own.root()) => {
-                    return Err(ring(own.root()));
+                (Some(own), Some(_)) if self.is_on_way(own.root()) => {
+                    return Err(on_its_own_way(own.root()));
                 }
                 (Some(own), Some(rest)) => (tree, key) = (own, rest),
                 _ => return self.settle(pages, back, false),
@@ -470,8 +477,7 @@ impl Cursor {
         while let Some(level) = self.levels.last_mut() {
             if step {
                 if !level.step(pages, back)? {
-                    self.roots.remove(&level.tree.root());
-                    self.levels.pop();
+                    self.go_out();
                     continue;
                 }
                 step = false;
@@ -492,20 +498,49 @@ impl Cursor {
     /// Takes the position into the tree of `level`, below the levels it
     /// has.
     ///
-    /// A tree that the position is in already is damage: the trees on the
-    /// way to a key are different ones, so the way ends.
+    /// A tree that begins at a page on the way to it is damage: the trees
+    /// on the way to a key are different ones, so the way ends, and none
+    /// of them is a part of another.
     fn go_into(&mut self, level: Level) -> Result<(), FlatError> {
         let page = level.tree.root();
-        if !self.roots.insert(page) {
-            return Err(ring(page));
+        if self.is_on_way(page) {
+            return Err(on_its_own_way(page));
+        }
+        // The level that was the innermost stands where it is until the
+        // position leaves the new one.
+        let stands: Vec<PageId> = self.levels.last().map(Level::pages).unwrap_or_default();
+        for page in stands.into_iter().chain([page]) {
+            *self.way.entry(page).or_default() += 1;
         }
         self.levels.push(level);
         Ok(())
     }
 
+    /// Leaves the innermost level.
+    fn go_out(&mut self) {
+        let Some(gone) = self.levels.pop() else {
+            return;
+        };
+        let stands = self.levels.last().map(Level::pages).unwrap_or_default();
+        for page in stands.into_iter().chain([gone.tree.root()]) {
+            if let Entry::Occupied(mut count) = self.way.entry(page) {
+                *count.get_mut() -= 1;
+                if *count.get() == 0 {
+                    count.remove();
+                }
+            }
+        }
+    }
+
+    /// Whether `page` is on the way to the innermost entry.
+    fn is_on_way(&self, page: PageId) -> bool {
+        let stands = |level: &Level| level.pages().contains(&page);
+        self.way.contains_key(&page) || self.levels.last().is_some_and(stands)
+    }
+
     /// Leaves the position: the cursor stands nowhere.
     fn leave(&mut self) {
         self.levels.clear();
-        self.roots.clear();
+        self.way.clear();
     }
 }

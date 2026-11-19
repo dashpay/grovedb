@@ -229,8 +229,9 @@ impl Db {
 
     /// Gives up `writer`: its copies are discarded, and the ids of the
     /// pages it made go back.
-    fn roll_back(&self, writer: Writer<'_>) {
+    fn roll_back(&self, mut writer: Writer<'_>) {
         writer.roll_back().expect("rolled back");
+        assert_eq!(writer.written().chain(writer.freed()).count(), 0);
     }
 
     /// Write-back: every pending value of a current page is appended to
@@ -1155,6 +1156,52 @@ fn a_writer_owns_the_copies_it_made_and_no_others() {
     }
 }
 
+/// Two entries of a leaf that hold one pending value, each with bytes of
+/// its own length with the page: the writer takes neither for the other.
+#[test]
+fn a_writer_refuses_a_leaf_whose_entries_share_a_pending_value() {
+    let db = Db::new();
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    tree.put(&mut writer, b"a", b"small").expect("a put");
+    db.commit(writer);
+    let root = tree.root();
+    {
+        let place = |len| {
+            let pending = PendingValue::new([9; 8], len).expect("a pending value");
+            ValuePlace::Pending(pending).encode()
+        };
+        let mut leaf =
+            lignin_format::flat_page::FlatLeafBuilder::new(root, b"", 4_096).expect("a leaf");
+        leaf.push(b"a", FlatValue::OutOfLine(&place(2_000)))
+            .expect("an entry");
+        leaf.push(b"b", FlatValue::OutOfLine(&place(3_000)))
+            .expect("an entry");
+        let image = leaf.finish();
+        let step = db.pool.page_step(root);
+        let old = step.current().expect("the page");
+        let mut blank = db.pool.blank();
+        blank.copy_from(&old);
+        blank.fill(0);
+        blank[..image.len()].copy_from_slice(&image);
+        blank.attach(0, Arc::from(vec![1; 2_000]));
+        blank.attach(1, Arc::from(vec![2; 3_000]));
+        step.replace(&old, blank).expect("replaced");
+    }
+    // A reader reads each by its entry.
+    assert_eq!(get(&db.reader(), &tree, b"a"), Some(vec![1; 2_000]));
+    assert_eq!(get(&db.reader(), &tree, b"b"), Some(vec![2; 3_000]));
+    let mut writer = db.writer();
+    let shared = tree.put(&mut writer, b"c", b"more");
+    assert!(matches!(
+        shared,
+        Err(FlatError::Damaged { page, what }) if page == root
+            && what == "two entries that hold one pending value"
+    ));
+    assert_eq!(db.pool.page_step(root).private_copies(), 0);
+    writer.roll_back().expect("rolled back");
+}
+
 /// Ids that a test hands out, and the ids that came back.
 struct Given<'a> {
     next: Option<PageId>,
@@ -1218,20 +1265,43 @@ fn a_writer_gives_back_an_id_only_with_its_copy() {
     assert!(!writer.written().any(|page| page == made));
     assert_eq!(db.ids.state(made), PageState::Private);
 
-    // The same at the end of the writer: every other id goes back.
-    let kept = writer.allocate().expect("a page");
-    let other = db.pool.private(owner, kept).expect("the copy");
-    let latch = other.read();
-    let held = writer.roll_back();
-    assert!(matches!(
-        held,
-        Err(FlatError::Cache(CacheError::Latched { .. }))
-    ));
-    assert_eq!(db.ids.state(made), PageState::Free);
-    assert_eq!(db.ids.state(kept), PageState::Private);
-    drop(latch);
-    db.pool.discard(&other).expect("discarded");
-    db.ids.release(kept).expect("released");
+    // The same at the end of the writer, for a page it made and for one it
+    // copied: every other id goes back, and what stayed goes back with the
+    // next try, once.
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    db.commit(writer);
+    let mut writer = db.writer();
+    let owner = OwnerId::new(db.state.borrow().owners);
+    tree.put(&mut writer, b"key", b"value").expect("a put");
+    let (kept, gone) = (
+        writer.allocate().expect("a page"),
+        writer.allocate().expect("a page"),
+    );
+    let others = [kept, tree.root()].map(|page| db.pool.private(owner, page).expect("the copy"));
+    let latches = others.each_ref().map(|other| other.read());
+    for _ in 0..2 {
+        let held = writer.roll_back();
+        assert!(matches!(
+            held,
+            Err(FlatError::Cache(CacheError::Latched { .. }))
+        ));
+        assert_eq!(db.ids.state(gone), PageState::Free);
+        assert_eq!(db.ids.state(kept), PageState::Private);
+        let mut left = [tree.root(), kept];
+        left.sort();
+        assert_eq!(writer.written().collect::<Vec<_>>(), left);
+        assert_eq!(db.pool.census().private, 2);
+    }
+    drop(latches);
+    writer.roll_back().expect("rolled back");
+    assert_eq!(db.ids.state(kept), PageState::Free);
+    assert_eq!(db.pool.census().private, 0);
+    assert_eq!(writer.written().count(), 0);
+    // A writer that was given up whole is as a new one.
+    writer.roll_back().expect("nothing left");
+    tree.put(&mut writer, b"key", b"value").expect("a put");
+    db.commit(writer);
+    assert_eq!(get(&db.reader(), &tree, b"key"), Some(b"value".to_vec()));
 }
 
 /// A group is written for one place (`log-format.md` LG22). A commit that

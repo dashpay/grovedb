@@ -408,31 +408,48 @@ impl<'s, I: PageIds> Private<'s, I> {
     /// after a call that failed.
     ///
     /// Every copy is discarded and every id given back, also if one of
-    /// them fails: the first error is returned. The id of a page whose
-    /// copy could not be discarded stays reserved.
-    pub fn roll_back(self) -> Result<(), FlatError> {
-        let (pool, mut ids) = (self.pool, self.ids);
+    /// them fails: the first error is returned. What could not be given
+    /// back stays with the writer, an id with its copy, and a later call
+    /// gives it back: nothing is given back twice. A writer that was given
+    /// up whole holds nothing, and is as a new one.
+    pub fn roll_back(&mut self) -> Result<(), FlatError> {
         let mut result = Ok(());
-        let mut keep = |step: Result<(), FlatError>| {
+        let mut keep = |error: FlatError| {
             if result.is_ok() {
-                result = step;
+                result = Err(error);
             }
         };
-        for (page, own) in self.copies {
-            // The id of a page whose copy the pool still has is not given
-            // to anybody else.
-            let discarded = pool.discard(&own.frame).map_err(FlatError::from);
-            if discarded.is_ok() && own.created {
-                keep(ids.release(page).map_err(FlatError::from));
+        let pool = self.pool;
+        self.copies
+            .retain(|&page, own| match pool.discard(&own.frame) {
+                Ok(()) => {
+                    if own.created {
+                        self.unused.insert(page);
+                    }
+                    false
+                }
+                Err(error) => {
+                    keep(error.into());
+                    true
+                }
+            });
+        self.freed.retain(|_, copy| match pool.discard(copy) {
+            Ok(()) => false,
+            Err(error) => {
+                keep(error.into());
+                true
             }
-            keep(discarded);
-        }
-        for copy in self.freed.into_values() {
-            keep(pool.discard(&copy).map_err(FlatError::from));
-        }
-        for page in self.unused {
-            keep(ids.release(page).map_err(FlatError::from));
-        }
+        });
+        let ids = &mut self.ids;
+        self.unused.retain(|&page| match ids.release(page) {
+            Ok(()) => false,
+            Err(error) => {
+                keep(error.into());
+                true
+            }
+        });
+        self.released.clear();
+        self.revision = next_revision();
         result
     }
 
@@ -456,7 +473,13 @@ impl<'s, I: PageIds> Private<'s, I> {
                 .filter(|bytes| bytes.len() == pending.value_len() as usize)
                 .ok_or(FlatError::NoValue { page })?;
             let inherited = true;
-            values.insert(pending.id(), Held { bytes, inherited });
+            let held = Held { bytes, inherited };
+            if values.insert(pending.id(), held).is_some() {
+                return Err(FlatError::Damaged {
+                    page,
+                    what: "two entries that hold one pending value",
+                });
+            }
         }
         Ok(values)
     }
@@ -499,8 +522,17 @@ impl<'s, I: PageIds> Private<'s, I> {
                 Ok(values) => values,
                 Err(error) => {
                     // The copy is of no use, and must not stand in the way
-                    // of page steps.
-                    self.pool.discard(&frame)?;
+                    // of page steps. One that the pool will not discard now
+                    // stays the writer's, to be discarded with the writer.
+                    if self.pool.discard(&frame).is_err() {
+                        let (created, values) = (false, HashMap::new());
+                        let own = Own {
+                            frame,
+                            created,
+                            values,
+                        };
+                        self.copies.insert(page, own);
+                    }
                     return Err(error);
                 }
             };

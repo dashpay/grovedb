@@ -178,7 +178,7 @@ impl FlatTree {
                 }
             }
         }
-        Self::close_empty(pages, passed)?;
+        Self::close_empty(pages, passed, BTreeSet::from([tree.root]))?;
         Ok(true)
     }
 
@@ -195,6 +195,7 @@ impl FlatTree {
     ) -> Result<(), FlatError> {
         let mut ranges = vec![(*self, start, end)];
         let (mut passed, mut way) = (Vec::new(), Way::default());
+        let mut changed = BTreeSet::new();
         while let Some((tree, start, end)) = ranges.pop() {
             if end.is_some_and(|end| end <= start) {
                 continue;
@@ -236,9 +237,11 @@ impl FlatTree {
                     bucket
                 }
             };
-            tree.delete_range_stored(pages, &from, to.as_deref())?;
+            if tree.delete_range_stored(pages, &from, to.as_deref())? {
+                changed.insert(tree.root);
+            }
         }
-        Self::close_empty(pages, passed)
+        Self::close_empty(pages, passed, changed)
     }
 
     /// Removes every record whose key starts with `prefix`: the range
@@ -252,25 +255,34 @@ impl FlatTree {
     }
 }
 
-/// The trees that a call has gone into on its way through buckets. Each
-/// is gone into once: a bucket whose tree is one of them is damage, and
-/// would make a key stand for another.
+/// The pages that a call has passed on its way through buckets: the
+/// branches and the leaf above each bucket, and the root of each tree. The
+/// tree of a bucket begins at none of them: a bucket that names one is
+/// damage, and would make a long key stand for a record of another tree.
 #[derive(Debug, Default)]
 struct Way(BTreeSet<PageId>);
 
 impl Way {
-    /// Goes from the tree with the root `from` into the tree with the root
-    /// `into`, which a bucket of the first names.
-    fn go_into(&mut self, from: PageId, into: PageId) -> Result<(), FlatError> {
-        self.0.insert(from);
+    /// Goes into the tree with the root `into`, which a bucket names that
+    /// was reached through the pages `passed`.
+    fn go_into(
+        &mut self,
+        passed: impl IntoIterator<Item = PageId>,
+        into: PageId,
+    ) -> Result<(), FlatError> {
+        self.0.extend(passed);
         if self.0.insert(into) {
             return Ok(());
         }
-        Err(FlatError::Damaged {
-            page: into,
-            what: "a bucket of long keys whose tree is a tree it is in",
-        })
+        Err(on_its_own_way(into))
     }
+}
+
+/// What a bucket is whose tree begins at `page`, a page on the way to the
+/// bucket.
+pub(super) fn on_its_own_way(page: PageId) -> FlatError {
+    let what = "a bucket of long keys whose tree is a tree it is in";
+    FlatError::Damaged { page, what }
 }
 
 /// Reading.
@@ -360,12 +372,14 @@ impl FlatTree {
         key: &[u8],
         way: &mut Way,
     ) -> Result<Option<Self>, FlatError> {
-        let (page, frame) = self.walk(pages, key, None)?;
+        let mut steps = Vec::new();
+        let (page, frame) = self.walk(pages, key, Some(&mut steps))?;
         let Some(value) = leaf(&frame, page)?.get(key) else {
             return Ok(None);
         };
         let root = bucket_root(page, value)?;
-        way.go_into(self.root, root)?;
+        let passed = steps.iter().map(|step| step.page).chain([self.root, page]);
+        way.go_into(passed, root)?;
         Ok(Some(Self::open(root, self.config)))
     }
 
@@ -385,19 +399,23 @@ impl FlatTree {
 
 /// Writing one key.
 impl FlatTree {
-    /// Frees the trees of the buckets in `passed` that have no record left,
-    /// the innermost first, and takes each such bucket out of its tree.
+    /// Frees the trees of the buckets in `passed` that the call left with
+    /// no record, the innermost first, and takes each such bucket out of
+    /// its tree. `changed` are the roots of the trees that lost a record:
+    /// a tree that the call found empty and did not change stays as it is.
     ///
     /// A tree that is seen empty stays empty: only its writer adds to it.
     fn close_empty<P: FlatPagesMut + ?Sized>(
         pages: &mut P,
         passed: Vec<Passed>,
+        mut changed: BTreeSet<PageId>,
     ) -> Result<(), FlatError> {
         for (tree, bucket, inner) in passed.into_iter().rev() {
-            if inner.is_empty(pages)? {
+            if changed.contains(&inner.root) && inner.is_empty(pages)? {
                 pages.take(inner.root)?;
                 pages.free(inner.root)?;
                 tree.delete_stored(pages, &bucket)?;
+                changed.insert(tree.root);
             }
         }
         Ok(())
@@ -808,9 +826,9 @@ impl FlatTree {
         pages: &mut P,
         start: &[u8],
         end: Option<&[u8]>,
-    ) -> Result<(), FlatError> {
+    ) -> Result<bool, FlatError> {
         if end.is_some_and(|end| end <= start) {
-            return Ok(());
+            return Ok(false);
         }
         let mut pruned = Pruned::default();
         self.prune(
@@ -822,7 +840,7 @@ impl FlatTree {
             &mut pruned,
         )?;
         if pruned.leaves.is_empty() && !pruned.freed {
-            return Ok(());
+            return Ok(false);
         }
         self.collapse_root(pages)?;
         // A leaf at an end of the range that lost entries without leaving
@@ -834,7 +852,7 @@ impl FlatTree {
                 self.rebalance(pages, steps, page)?;
             }
         }
-        Ok(())
+        Ok(true)
     }
 
     /// The positions of the entries of `leaf` whose keys are from `start`

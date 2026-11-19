@@ -248,6 +248,57 @@ fn pages_that_are_reached_twice_end_a_write_with_an_error() {
     assert_eq!(get(&pages, &tree, b"a"), Some(b"value".to_vec()));
     assert!(pages.taken.is_empty());
 
+    // A bucket whose tree begins at the leaf it is in, below a branch: the
+    // long key that would stand for a record of that leaf is refused.
+    let marker = [head.as_slice(), &[0]].concat();
+    let mut leaf = FlatLeafBuilder::new(two, b"", 4_096).expect("a leaf");
+    leaf.push(b"a", FlatValue::Inline(b"value"))
+        .expect("an entry");
+    leaf.push(&marker, FlatValue::Inline(&two.encode()))
+        .expect("an entry");
+    let below = || {
+        with(vec![
+            branch_image(one, two, &[(b"m", three)]),
+            leaf.clone().finish(),
+            leaf_image(three, &[b"x"]),
+        ])
+    };
+    let (mut pages, tree) = below();
+    assert_eq!(
+        damaged(tree.delete(&mut pages, &alias).map(drop)),
+        (two, ring)
+    );
+    assert_eq!(damaged(tree.put(&mut pages, &alias, b"other")), (two, ring));
+    let found = tree.get(&pages, &alias, &mut Vec::new()).map(drop);
+    assert_eq!(damaged(found), (two, ring));
+    let part = tree.delete_range(&mut pages, &alias, Some(&[head.as_slice(), b"b"].concat()));
+    assert_eq!(damaged(part), (two, ring));
+    assert!(pages.taken.is_empty());
+    let mut cursor = tree.cursor();
+    cursor.seek_to_first(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"a"[..]));
+    assert_eq!(damaged(cursor.next(&pages)), (two, ring));
+    assert_eq!(damaged(cursor.seek(&pages, &alias)), (two, ring));
+    cursor.seek_to_last(&pages).expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"x"[..]));
+    assert_eq!(damaged(cursor.prev(&pages)), (two, ring));
+    // The same for a tree that begins at the branch above the bucket.
+    let mut leaf = FlatLeafBuilder::new(two, b"", 4_096).expect("a leaf");
+    leaf.push(&marker, FlatValue::Inline(&one.encode()))
+        .expect("an entry");
+    let (mut pages, tree) = with(vec![
+        branch_image(one, two, &[(b"m", three)]),
+        leaf.finish(),
+        leaf_image(three, &[b"x"]),
+    ]);
+    let alias = [head.as_slice(), b"x"].concat();
+    assert_eq!(
+        damaged(tree.delete(&mut pages, &alias).map(drop)),
+        (one, ring)
+    );
+    assert_eq!(damaged(tree.cursor().seek_to_first(&pages)), (one, ring));
+    assert_eq!(get(&pages, &tree, b"x"), Some(b"value".to_vec()));
+
     // Buckets that are passed by one after the other, each with a tree
     // that a step of background work left empty, cost a cursor no depth.
     let (mut pages, tree) = Mem::tree(config);
@@ -298,6 +349,23 @@ fn pages_that_are_reached_twice_end_a_write_with_an_error() {
     cursor.seek_to_last(&pages).expect("a seek");
     assert_eq!(cursor.key(), Some(&b"z"[..]));
     assert_eq!(get(&pages, &tree, &long(7)), None);
+    // A range that ends inside such a tree finds nothing in it, and so
+    // changes nothing: the tree and its bucket stay.
+    let before = pages.pages.clone();
+    let inside = |n: u32, rest: &[u8]| [&long(n)[..config.key_limit()], rest].concat();
+    for (start, end) in [
+        (inside(7, b"b"), Some(inside(7, b"c"))),
+        (inside(7, b""), Some(inside(7, b"zz"))),
+        (inside(7, b"b"), Some(inside(8, b"s"))),
+        (inside(299, b"b"), Some(b"z".to_vec())),
+    ] {
+        tree.delete_range(&mut pages, &start, end.as_deref())
+            .expect("a range delete");
+        assert!(pages.taken.is_empty() && pages.pages == before);
+        assert_eq!(pages.commit(), (Vec::new(), 0));
+    }
+    assert!(!tree.delete(&mut pages, &long(7)).expect("a delete"));
+    assert!(pages.taken.is_empty() && pages.pages == before);
     // A put into an empty tree fills it, and a range delete takes the
     // empty ones along.
     tree.put(&mut pages, &long(7), b"again").expect("a put");

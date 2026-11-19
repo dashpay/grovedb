@@ -162,7 +162,7 @@
 //! entries inside it. Afterwards the leaf at each end of the range is
 //! looked at as above, if it lost an entry or pages beside it left, and no
 //! other page is. A range delete that finds nothing to remove copies no
-//! page and writes none. Unlinking a range without reading it is the
+//! page and writes none, in the tree of a bucket as in any other. Unlinking a range without reading it is the
 //! subtree drop's (TREE-09).
 //!
 //! # Values
@@ -228,7 +228,8 @@
 //! - **A writer ends as a whole.** [`Private::into_parts`] is its commit,
 //!   and [`Private::roll_back`] gives it up. After a call that failed the
 //!   writer's pages are in no state to go on from, and giving the writer
-//!   up is what is left. The id of a page that the writer made and freed
+//!   up is what is left. What the pool would not let go of stays with the
+//!   writer, and giving it up again finishes that. The id of a page that the writer made and freed
 //!   again stays the writer's until one of the two, so that nobody is
 //!   given it while a rollback could bring the page back (ID1). An id
 //!   goes back only with its copy: one whose copy the pool would not
@@ -302,10 +303,24 @@
 //!
 //! Pages that are not a tree end a call with [`FlatError::Damaged`], or
 //! with the error of the page that could not be read, and not without an
-//! end: a page is checked to be the page that was asked for and one level
-//! below the branch that names it, and no call goes into the tree of a
-//! bucket that it is in already. What a failed write has changed by then
-//! is the writer's to give up.
+//! end. What a failed write has changed by then is the writer's to give
+//! up. Three things are checked, each from the pages on the call's own
+//! way, and they are what bounds every call:
+//!
+//! - a page is the page that was asked for, and one level below the
+//!   branch that names it, so no way down is longer than the root's level;
+//! - the tree of a bucket begins at none of the pages on the way to the
+//!   bucket: not at the root of a tree the call is in, and not at a
+//!   branch or the leaf it passed. So a call goes into a tree once, and no
+//!   long key stands for a record of a tree on its way;
+//! - a page that a range delete freed is not read again.
+//!
+//! What is not on a call's way is not checked by it. A branch that names
+//! a page of another tree at the right level, or a bucket whose tree
+//! begins at such a page, reads as what that page holds. Finding it takes
+//! a walk of every page of the keyspace, with each page reached once and
+//! every key inside the bounds its branches give: that walk is the
+//! invariant checker's, and the tests here make it after every step.
 //!
 //! # What the callers do
 //!
