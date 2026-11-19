@@ -54,7 +54,8 @@ minimal = [
 ]
 rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
 full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
-test_utils = ["rand"]
+# `test_utils::TempMerk` opens a RocksDB storage.
+test_utils = ["rand", "rocksdb_storage"]
 colored_debug = ["colored"]
 verify = ["ed", "blake3"]
 grovedbg = ["full"]

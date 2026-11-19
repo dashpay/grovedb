@@ -139,8 +139,9 @@ verify = [
     "grovedb-private-document-store",
 ]
 # The estimates are functions of sizes and of the cost model, so they need no
-# engine.
-estimated_costs = ["engine_generic"]
+# engine. `colored_debug` is what this feature turned on in Merk while it was
+# `full`, kept for a build that has `minimal` and this and not `full`.
+estimated_costs = ["engine_generic", "grovedb-merk/colored_debug"]
 zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]
 grovedbg = [
     "dep:hex-literal",

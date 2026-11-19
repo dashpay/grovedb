@@ -247,6 +247,11 @@ jobs:
             echo "RocksDB is among the crates of grovedb with no storage engine" >&2
             exit 1
           fi
+          if grep -rn 'feature = "minimal"' grovedb/src; then
+            echo "a gate in grovedb/src says minimal: it is engine_generic there (docs/lignindb/engine.md)" >&2
+            exit 1
+          fi
+          cargo check -p grovedb --no-default-features --features engine_generic
           cargo test -p grovedb --no-default-features --features estimated_costs --lib
 
   formatting:
