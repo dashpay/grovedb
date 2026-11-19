@@ -8,6 +8,8 @@ mod checkpoint;
 mod crash;
 mod errors;
 mod faults;
+mod flat;
+mod measure;
 mod recover;
 mod regroup;
 mod values;
@@ -23,10 +25,11 @@ use std::{
 
 use lignin_format::{
     delta::Delta,
+    flat_page::{FlatLeafBuilder, FlatPage, FlatValue},
     manifest::Manifest,
     tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut},
     value_log::{PendingValue, ValuePlace, ValuePointer},
-    wal::{GroupWriter, ValueMove},
+    wal::{FlatChange, GroupWriter, ValueMove},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
 };
 use lignin_io::{
@@ -755,6 +758,119 @@ impl Db {
             .apply(&ValueChange::moved(from, to), self.latest())
             .expect("counted");
         true
+    }
+
+    /// Commits the flat leaf `id`, written whole: `entries` in key order.
+    /// A value that is out of line is carried by the group and pending in
+    /// its entry, or stays where `placed` says it is. The page is not in
+    /// the model: [`Self::flat_entries`] reads it.
+    pub(super) fn commit_flat(
+        &self,
+        id: PageId,
+        entries: &[(&[u8], Val)],
+        placed: &BTreeMap<Vec<u8>, ValuePointer>,
+    ) -> CommitVersion {
+        let latest = self.latest();
+        let owner = OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1);
+        let copy = match self.frame(id, latest) {
+            Ok(frame) => {
+                let copy = self.pool.make_private(owner, id, latest);
+                drop(frame);
+                copy.expect("the page was just loaded")
+            }
+            Err(LoadError::NoPage { .. }) => self.pool.new_private(owner, id).expect("a new page"),
+            Err(error) => panic!("page {id}: {error}"),
+        };
+
+        let counts = self.values.step().expect("the counts");
+        let at = self.log.next_group().expect("a place for the group");
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
+        let places: Vec<Option<(ValuePlace, Option<&[u8]>)>> = entries
+            .iter()
+            .map(|(key, value)| match (value, placed.get(*key)) {
+                (Val::Inline(_), _) => None,
+                (Val::Out(_), Some(pointer)) => Some((ValuePlace::Placed(*pointer), None)),
+                (Val::Out(value), None) => {
+                    let pending = group.value(id, value).expect("a value");
+                    Some((ValuePlace::Pending(pending), Some(value.as_slice())))
+                }
+            })
+            .collect();
+        let encoded: Vec<Option<[u8; 16]>> = places
+            .iter()
+            .map(|place| place.map(|(place, _)| place.encode()))
+            .collect();
+        let mut leaf =
+            FlatLeafBuilder::new(id, b"", self.size.image_capacity()).expect("a flat leaf");
+        for ((key, value), place) in entries.iter().zip(&encoded) {
+            let value = match (value, place) {
+                (Val::Inline(bytes), _) => FlatValue::Inline(bytes),
+                (Val::Out(_), Some(place)) => FlatValue::OutOfLine(place),
+                (Val::Out(_), None) => unreachable!("a value out of line has a place"),
+            };
+            leaf.push(key, value).expect("an entry");
+        }
+        let image = leaf.finish();
+        group
+            .flat_run_with(id, |run| run.push(&FlatChange::Image(&image)))
+            .expect("a run");
+        group.finish();
+        let appended = self.log.append_group(&at, &bytes).expect("appended");
+        let committed = at.version();
+        self.wb()
+            .committed(committed, appended.at, &bytes)
+            .expect("write-back was told");
+        {
+            let mut latch = copy.write().expect("private");
+            let (start, rest) = latch.split_at_mut(image.len());
+            start.copy_from_slice(&image);
+            rest.fill(0);
+            for (place, value) in places.into_iter().flatten() {
+                if let (Some(pending), Some(value)) = (place.pending(), value) {
+                    latch.attach(pending.id(), Arc::from(value));
+                }
+            }
+        }
+        self.pool.install(&copy, committed).expect("installed");
+        drop(counts);
+        self.versions
+            .latest
+            .store(committed.get(), Ordering::SeqCst);
+        committed
+    }
+
+    /// The entries of the flat leaf in `frame`: each key with its value,
+    /// read through its pointer if it is out of line, and that pointer.
+    /// A value that is still pending has no bytes here.
+    pub(super) fn flat_entries(
+        &self,
+        id: PageId,
+        frame: &[u8],
+    ) -> Vec<(Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>)> {
+        let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
+        let leaf = page.leaf().expect("a leaf");
+        leaf.iter()
+            .map(|(key, value)| {
+                let mut whole = Vec::new();
+                key.append_to(&mut whole);
+                match value {
+                    FlatValue::Inline(bytes) => (whole, Some(bytes.to_vec()), None),
+                    FlatValue::OutOfLine(place) => {
+                        let place: [u8; 16] = place.try_into().expect("a place");
+                        match ValuePlace::decode(place).expect("a place") {
+                            ValuePlace::Pending(_) => (whole, None, None),
+                            ValuePlace::Placed(pointer) => {
+                                let mut buf = Vec::new();
+                                let read = self.values.read(pointer, id, &mut buf);
+                                let bytes = read.expect("the value").to_vec();
+                                (whole, Some(bytes), Some(pointer))
+                            }
+                        }
+                    }
+                }
+            })
+            .collect()
     }
 
     pub(super) fn begin(&self) -> Txn<'_> {

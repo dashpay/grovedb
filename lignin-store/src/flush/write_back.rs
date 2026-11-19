@@ -256,7 +256,11 @@ impl<'s> WriteBack<'s> {
 
         let mut pages = 0;
         let mut kept = lock(&self.state.kept);
-        kept.group_at(version.get(), at);
+        let before = self
+            .state
+            .logged_in_all
+            .fetch_add(group.len() as u64, Ordering::Relaxed);
+        kept.group_at(version.get(), at, before);
         for entry in parts.iter().flat_map(|part| part.entries()) {
             match entry {
                 Entry::Tree(run) if run.created().is_none() => {
@@ -334,9 +338,11 @@ impl<'s> WriteBack<'s> {
                 },
             }
         }
+        let logged = record.len() as u64;
+        self.state.logged.fetch_add(logged, Ordering::Relaxed);
         self.state
-            .logged
-            .fetch_add(record.len() as u64, Ordering::Relaxed);
+            .logged_in_all
+            .fetch_add(logged, Ordering::Relaxed);
         Ok(appended)
     }
 

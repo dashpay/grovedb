@@ -37,25 +37,36 @@ pub struct Tick {
 
 impl WriteBack<'_> {
     /// Whether write-back is within its bounds: no more page versions wait
-    /// to be written back, and no more bytes of pending values are held in
-    /// frames, than the configuration allows.
+    /// to be written back, no more bytes of pending values are held in
+    /// frames, and no more log lies behind the oldest change that is not
+    /// written back ([`Self::log_behind`]), than the configuration allows.
     pub fn has_room(&self) -> bool {
         let config = &self.state.config;
         self.state.owed.load(Ordering::Relaxed) <= config.max_unwritten
             && self.stores.pool.attached_bytes() <= config.max_pending_bytes
+            && self.log_behind() <= config.max_log_behind
     }
 
     /// Backpressure: returns at once while write-back is within its
     /// bounds, and otherwise once it is again, or once a pass has shown
     /// that waiting longer would not help.
     ///
-    /// A committer calls this **before it takes the commit lock** (before
-    /// step 2 of CM3), and never while it holds it: so backpressure stops
-    /// commits only between commits, and no reader is slowed by it. What
-    /// the caller's own private copies hold back cannot be written while it
-    /// waits, so the wait ends when a pass has moved nothing on
-    /// ([`Room::Stalled`]): no committer waits for write-back that its own
-    /// copies hold back (FL5).
+    /// A committer calls this **between commits and never while it holds
+    /// the commit lock**, so backpressure stops commits only between
+    /// commits, and no reader is slowed by it (FL5). There are two places
+    /// for the call, and they differ in what the wait can achieve:
+    ///
+    /// - **When the caller holds no private copy**: once its commit is
+    ///   published and [`Self::place_ready`] has returned, before its next
+    ///   write transaction copies a page. Everything the caller committed
+    ///   can be placed and written while it waits. This is the call that
+    ///   keeps the log that write-back holds within its bound when blocks
+    ///   are applied back to back.
+    /// - **Before step 2 of CM3**, with the copies of the transaction that
+    ///   is about to commit. What those copies hold back cannot be written
+    ///   while the caller waits, so the wait ends when a pass has moved
+    ///   nothing on ([`Room::Stalled`]): no committer waits for write-back
+    ///   that its own copies hold back.
     ///
     /// With a background loop running ([`Self::run`]), the caller waits for
     /// its passes. With none, the caller makes the passes itself.

@@ -174,7 +174,7 @@ impl<'s> WriteBack<'s> {
     /// if there is one: what the pool lists as owed, and what was kept in
     /// the pool for readers and waits for the block of the next version of
     /// its page. A page that was freed since is not counted (T18).
-    fn floor(&self) -> Option<CommitVersion> {
+    pub(super) fn floor(&self) -> Option<CommitVersion> {
         let Stores { pool, table, .. } = self.stores;
         let folded = lock(&self.state.kept).oldest_folded();
         let mut freed = Vec::new();
@@ -192,6 +192,20 @@ impl<'s> WriteBack<'s> {
             freed.into_iter().for_each(|page| kept.forget(page));
         }
         floor
+    }
+
+    /// How many bytes of log lie behind the oldest commit of which a
+    /// change is in no block yet: the log that write-back holds, which no
+    /// table checkpoint can let go. 0 when everything is written back, and
+    /// when write-back was not told of that commit
+    /// ([`Self::committed`]).
+    pub fn log_behind(&self) -> u64 {
+        let Some(floor) = self.floor() else {
+            return 0;
+        };
+        let before = lock(&self.state.kept).logged_before(floor.get());
+        let logged = self.state.logged_in_all.load(Ordering::Relaxed);
+        before.map_or(0, |before| logged.saturating_sub(before))
     }
 
     /// Whether every change of `page` up to the version `born`, which was

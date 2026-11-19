@@ -47,9 +47,10 @@ pub(super) struct Kept {
     /// their readers and whose changes no block holds: they are in the
     /// block of the next version of the page that is written.
     folded: HashMap<PageId, Vec<u64>>,
-    /// Where the group of each commit begins in the log, for the commits
-    /// that no table checkpoint covers yet.
-    groups: BTreeMap<u64, LogPlace>,
+    /// Where the group of each commit begins in the log, and how many
+    /// bytes write-back had seen logged before it, for the commits that no
+    /// table checkpoint covers yet.
+    groups: BTreeMap<u64, (LogPlace, u64)>,
     dead: Dead,
 }
 
@@ -153,14 +154,22 @@ impl Kept {
             .collect()
     }
 
-    pub(super) fn group_at(&mut self, version: u64, at: LogPlace) {
-        self.groups.insert(version, at);
+    /// The group of the commit `version` begins at `at`, with `before`
+    /// bytes logged before it.
+    pub(super) fn group_at(&mut self, version: u64, at: LogPlace, before: u64) {
+        self.groups.insert(version, (at, before));
     }
 
     /// Where the group of the commit `version` begins, if write-back was
     /// told.
     pub(super) fn group_place(&self, version: u64) -> Option<LogPlace> {
-        self.groups.get(&version).copied()
+        self.groups.get(&version).map(|&(at, _)| at)
+    }
+
+    /// How many bytes were logged before the group of the commit
+    /// `version`, if write-back was told of it.
+    pub(super) fn logged_before(&self, version: u64) -> Option<u64> {
+        self.groups.get(&version).map(|&(_, before)| before)
     }
 
     /// A table checkpoint that covers `covers` is in force.
@@ -277,6 +286,8 @@ pub struct FlushState {
     pub(super) owed: AtomicUsize,
     /// The bytes logged since the last table checkpoint.
     pub(super) logged: AtomicU64,
+    /// The bytes logged since this state was made.
+    pub(super) logged_in_all: AtomicU64,
     pub(super) segments_failed: AtomicBool,
     pub(super) running: AtomicBool,
     pub(super) stopping: AtomicBool,
@@ -299,6 +310,7 @@ impl FlushState {
             woken: Condvar::new(),
             owed: AtomicUsize::new(0),
             logged: AtomicU64::new(0),
+            logged_in_all: AtomicU64::new(0),
             segments_failed: AtomicBool::new(false),
             running: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
