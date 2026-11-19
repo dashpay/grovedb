@@ -133,6 +133,8 @@ struct Mem {
     touched: Vec<PageId>,
     /// How many more changes the pages take before they fail.
     writes_left: Option<usize>,
+    /// The hosts whose element is marked pending.
+    behind: Vec<CellAddress>,
 }
 
 impl Mem {
@@ -150,6 +152,7 @@ impl Mem {
             freed: Vec::new(),
             touched: Vec::new(),
             writes_left: None,
+            behind: Vec::new(),
         }
     }
 
@@ -215,6 +218,10 @@ impl Pages for Mem {
         NodePageMut::create(&mut frame, self.size, id, self.lease, sink)?;
         self.frames.insert(id, frame);
         Ok(id)
+    }
+
+    fn host_is_behind(&mut self, host: CellAddress) -> bool {
+        self.behind.contains(&host)
     }
 
     fn free(&mut self, page: PageId) -> Result<(), FragmentError> {

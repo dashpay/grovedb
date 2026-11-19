@@ -54,7 +54,7 @@ fn a_pending_value_that_a_write_states_again_is_carried_with_its_cell() {
 fn carried_values(restate: bool) {
     let mut grove = grove();
     grove.restate = restate;
-    let (mut placed, mut pending) = (0, 0);
+    let (mut placed, mut pending, mut restated) = (0, 0, 0);
     for index in 0..1200 {
         let before = grove.log.carried.len();
         let report = grove.put(0, &key(index), &big(index));
@@ -80,7 +80,10 @@ fn carried_values(restate: bool) {
                     assert!(!grove.mem.frames.keys().any(holds));
                     placed += 1;
                 }
-                ValuePlace::Pending(_) => pending += 1,
+                ValuePlace::Pending(_) => {
+                    pending += 1;
+                    restated += usize::from(carried.node.is_some());
+                }
             }
             // The cell in the new page is pending, and the value that will
             // be appended for it is owned by that page.
@@ -105,6 +108,12 @@ fn carried_values(restate: bool) {
     assert!(
         placed > 300 && pending > 10,
         "{placed} placed, {pending} pending"
+    );
+    // Some of the pending values that were carried were in cells of nodes
+    // the write wrote, which states them again when it is told to.
+    assert!(
+        restated > 0,
+        "{restated} written nodes were carried while pending"
     );
     let carries = grove.fragments.counters().carries;
     assert_eq!(carries.total().values, grove.log.appended_again as u64);

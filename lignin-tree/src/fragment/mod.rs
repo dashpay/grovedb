@@ -118,6 +118,14 @@
 //! the pointer in the host's cell does not name it yet. The write that
 //! later holds the host states the root as the host's, as any write does.
 //!
+//! Until then the pointer in the host's cell is behind, and it is not
+//! followed ([`Pages::host_is_behind`], `transactions.md` SC9). A write
+//! that reads the host's page takes nothing for a part of the host's
+//! fragment through that pointer, reads nothing through it and carries
+//! nothing with it, and a host that is carried keeps the pointer's bytes.
+//! A root that is dropped while its host is behind is marked in the write
+//! that drops it, in a page that write may change for nothing else.
+//!
 //! On existing GroveVersions every write holds the whole path up to the
 //! root of the grove, and the root is named by a root pointer, so no node
 //! is in that position. From iteration two a write can stop below the host

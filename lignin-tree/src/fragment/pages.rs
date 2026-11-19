@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use lignin_format::{
     tree_page::TreePage,
     value_log::{PendingValue, ValuePlace},
-    PageId,
+    CellAddress, PageId,
 };
 
 use super::error::FragmentError;
@@ -50,6 +50,23 @@ pub trait Pages {
     /// The page `page` holds no cell any more (`tree-layout.md` M3). Its id
     /// names no other page before the write has committed (S4).
     fn free(&mut self, page: PageId) -> Result<(), FragmentError>;
+
+    /// Whether the hosted-root pointers of the cell at `host` may be behind
+    /// the roots of the Merks it hosts: its element is marked pending
+    /// (`transactions.md` SC9), because a write stopped below it and none
+    /// has written it since (`tree-layout.md` T3).
+    ///
+    /// Such a pointer is not followed. What it names is not taken for a
+    /// part of the host's fragment and is not carried with it, and the
+    /// pointer keeps its bytes until a write states the host's roots
+    /// ([`HostedWrite::Set`](super::HostedWrite::Set)).
+    ///
+    /// No element is marked on existing GroveVersions, so there the answer
+    /// is `false`, which is what this gives unless it is replaced.
+    fn host_is_behind(&mut self, host: CellAddress) -> bool {
+        let _ = host;
+        false
+    }
 }
 
 /// The values of the cells a write touches that are not in their cells.

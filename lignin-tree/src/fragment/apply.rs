@@ -503,6 +503,10 @@ pub(super) fn apply<P: Pages, V: Values>(
             page_work.unpointed.push(address.slot());
         }
     }
+    for address in &plan.unmarked {
+        let page_work = work.entry(address.page()).or_default();
+        page_work.unpointed.push(address.slot());
+    }
 
     for (&id, page_work) in &work {
         let idle = page_work.kept.is_empty()

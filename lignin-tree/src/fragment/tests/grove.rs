@@ -526,6 +526,14 @@ impl Grove {
         self.stopped(merk)
     }
 
+    /// Clears the hosted `merk` in a write that holds no node: its root is
+    /// let go of, and its directory entry names none.
+    pub fn clear_stopped(&mut self, merk: usize) -> Report {
+        self.stop(merk);
+        self.empty(merk);
+        self.stopped(merk)
+    }
+
     /// Writes the host of `merk`, and all above it, with the root the Merk
     /// has now.
     pub fn finalize(&mut self, merk: usize) -> Report {
@@ -687,6 +695,11 @@ impl Grove {
                 false => &roots,
             },
         };
+        let hosts = self
+            .entries
+            .keys()
+            .filter_map(|merk| self.merks[*merk].host);
+        self.mem.behind = hosts.filter_map(|host| nodes[host].at).collect();
         let from = self.mem.shadow.records.len();
         let pages_before = self.mem.frames.len();
         let report = self.fragments.apply(&mut self.mem, &mut self.log, &write)?;

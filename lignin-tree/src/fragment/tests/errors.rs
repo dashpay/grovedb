@@ -261,12 +261,18 @@ fn a_root_that_the_write_lets_go_of_stays_and_is_marked() {
         ..Write::default()
     });
     assert_eq!(error, WriteError::Dropped { address: h });
+    let error = bare.refused(&Write {
+        dropped: &[address(1, 60)],
+        ..Write::default()
+    });
+    let address = address(1, 60);
+    assert_eq!(error, WriteError::NoNode { address });
 
     // The Merk is cleared: its host keeps its cell and loses the pointer,
     // and the root stays where it is, with nothing pointing at it.
     let report = bare.apply(&Write {
         nodes: &[host(&[None])],
-        dropped: &[h, address(1, 60), address(7, 1)],
+        dropped: &[h],
         roots: &[root(Some(m), Target::Kept)],
         ..Write::default()
     });

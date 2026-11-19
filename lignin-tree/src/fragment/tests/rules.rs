@@ -477,6 +477,45 @@ fn a_node_that_nothing_in_the_write_points_at_stays_in_its_page() {
 }
 
 #[test]
+fn a_hosted_merk_that_leaves_a_host_the_write_does_not_write_is_still_pointed_at() {
+    let mut grove = grove(HALVING);
+    grove.inline_max = 5000;
+    grove.put(0, b"m", &value(3200, 1));
+    grove.put(0, b"c", &value(2500, 2));
+    grove.put(0, b"x", b"small");
+    let hosted = grove.host(0, b"c", false);
+    for index in 0..7 {
+        grove.put(hosted, &key(index), &value(150, 3));
+    }
+    assert_eq!(grove.mem.frames.len(), 1);
+    let host = grove.node(0, b"c").at.expect("placed");
+    let root = grove.merks[hosted].root.expect("the hosted Merk has nodes");
+    let root_at = grove.nodes[root].at.expect("placed");
+
+    // A node below `x` fills the page. The write holds `x` and the root
+    // above it, and not `c`, whose Merk is what has to leave.
+    let report = grove.put(0, b"y", &value(400, 4));
+    assert_eq!(report.created, [page(2)]);
+    assert_eq!(grove.node(0, b"c").at, Some(host));
+    let moved = report
+        .carried
+        .iter()
+        .find(|carried| carried.from == root_at);
+    let moved = moved.expect("the root of the hosted Merk was carried");
+    assert_eq!(moved.hosted_by, Some((host, 0)));
+    assert_eq!((moved.node, moved.to.page()), (None, page(2)));
+    assert!(report.nodes.iter().all(|node| node.address() != host));
+    let view = grove.mem.view(host.page());
+    let roots: Vec<_> = view
+        .node(host.slot())
+        .expect("the host")
+        .hosted_roots()
+        .collect();
+    assert_eq!(roots, [Some(moved.to.address())]);
+    grove.check();
+}
+
+#[test]
 fn a_root_whose_host_is_not_in_the_write_stays_and_is_not_let_go_of() {
     let mut grove = grove(LayoutParams::PROPOSED);
     for key in [b"m", b"c", b"x"] {
@@ -526,6 +565,38 @@ fn a_root_whose_host_is_not_in_the_write_stays_and_is_not_let_go_of() {
     assert_eq!(grove.mem.cells(), cells);
     grove.check();
 
+    // A Merk whose root is in the page of its host is cleared in a write
+    // that holds neither. The root stays where it is, with nothing
+    // pointing at it once the host is written.
+    let second = grove.host(0, b"x", false);
+    grove.put(second, &[9], b"nine");
+    let root = grove.node(second, &[9]).at.expect("placed");
+    let host = grove.node(0, b"x").at.expect("placed");
+    assert_eq!(root.page(), host.page());
+    assert!(!grove
+        .mem
+        .view(root.page())
+        .node(root.slot())
+        .expect("placed")
+        .is_fragment_root());
+    let cells = grove.mem.cells();
+    let from = grove.mem.shadow.records.len();
+    let report = grove.clear_stopped(second);
+    assert_eq!(report.roots, [None]);
+    assert!(report.left.is_empty() && grove.mem.cells() == cells);
+    assert_eq!(grove.mem.count(from, Rec::Mark), 1);
+    assert_eq!(grove.mem.shadow.records.len(), from + 1);
+    grove.finalize(second);
+    let view = grove.mem.view(root.page());
+    assert!(view.node(root.slot()).expect("it stays").is_fragment_root());
+    let roots: Vec<_> = view
+        .node(host.slot())
+        .expect("the host")
+        .hosted_roots()
+        .collect();
+    assert_eq!(roots, [None]);
+    grove.check();
+
     // The same with the old root left where it is, in the page of the
     // node that is the root now.
     grove.put_stopped(hosted, &[5], b"five");
@@ -533,6 +604,145 @@ fn a_root_whose_host_is_not_in_the_write_stays_and_is_not_let_go_of() {
     assert_eq!(grove.merks[hosted].root, grove.find(hosted, &[4]));
     assert_eq!(grove.check_merk(hosted), 4);
     grove.finalize(hosted);
+    grove.check();
+}
+
+#[test]
+fn a_pointer_that_is_behind_is_not_followed() {
+    // The root nodes and the cells of a cleared Merk in one page, and a
+    // second Merk under `c` with one node, in the same page.
+    for cleared in [false, true] {
+        let mut grove = crowded();
+        let hosted = grove.host(0, b"c", false);
+        grove.put(hosted, &[1], b"one");
+        let host = grove.node(0, b"c").at.expect("placed");
+        let root = grove.node(hosted, &[1]).at.expect("placed");
+        assert_eq!(root.page(), host.page());
+        let ghosts = grove.ghosts;
+
+        // A write that stops at the Merk's root empties the Merk: by
+        // deleting its node, which leaves the host pointing at a free slot,
+        // or by clearing it, which leaves the host pointing at a cell for
+        // the reclaimer.
+        let report = match cleared {
+            true => grove.clear_stopped(hosted),
+            false => grove.delete_stopped(hosted, &[1]),
+        };
+        assert_eq!(report.roots, [None]);
+        let stored = |grove: &Grove| {
+            let at = grove.node(0, b"c").at.expect("placed");
+            let view = grove.mem.view(at.page());
+            let cell = view.node(at.slot()).expect("the host");
+            cell.hosted_roots().last().flatten()
+        };
+        assert_eq!(stored(&grove), Some(root), "the host is behind");
+
+        // Before the host is written, another write fills the page and
+        // carries the host with the root of the grove. The pointer that is
+        // behind is not followed: nothing is read through it, and what it
+        // names stays where it is.
+        let mut len = 400;
+        while grove.mem.frames.len() == 1 {
+            grove.put(0, b"x", &value(len, 6));
+            len += 400;
+        }
+        assert_eq!(grove.page_of(0, b"c"), page(2));
+        assert_eq!(stored(&grove), Some(root), "the pointer keeps its bytes");
+        assert_eq!(grove.mem.view(page(1)).len(), grove.ghosts);
+        assert_eq!(grove.ghosts, ghosts + usize::from(cleared));
+        let left = grove.mem.view(root.page()).node(root.slot()).is_some();
+        assert_eq!(
+            left, cleared,
+            "a cleared root is where the reclaimer looks for it"
+        );
+
+        grove.finalize(hosted);
+        assert_eq!(stored(&grove), None);
+        grove.check();
+    }
+}
+
+/// Two pages: the root `b` in the first and its left child `a` in the
+/// second. `b` has its value out of line, in the value log.
+fn across_two_pages(params: LayoutParams) -> (Grove, [CellAddress; 2]) {
+    let mut grove = grove(params);
+    grove.inline_max = 5000;
+    grove.put(0, b"b", &value(3900, 1));
+    grove.put(0, b"a", &value(3900, 2));
+    grove.put(0, b"c", &value(400, 3));
+    grove.put(0, b"b", &value(6000, 4));
+    let Grove { log, mem, .. } = &mut grove;
+    log.write_back(mem);
+    let at = [b"a", b"b"].map(|key| grove.node(0, key).at.expect("placed"));
+    assert_eq!((at[0].page(), at[1].page()), (page(2), page(1)));
+    assert_eq!(grove.merks[0].root, grove.find(0, b"b"));
+    (grove, at)
+}
+
+/// The value pointer the cell at `at` holds.
+fn pointer_of(grove: &Grove, at: CellAddress) -> Option<ValuePointer> {
+    let view = grove.mem.view(at.page());
+    view.node(at.slot()).expect("placed").value().pointer()
+}
+
+#[test]
+fn a_rotation_across_two_pages_carries_no_cell_and_no_value() {
+    // No fragment is cut for its size here, and none is small.
+    let (mut grove, [a, b]) = across_two_pages(params(100, 64, 75, 35));
+    let held = pointer_of(&grove, b);
+    assert!(held.is_some());
+
+    // Three nodes to the left of `a` make the left side of `b` too high:
+    // the node `0`, in the second page, rises above `b`, which is in the
+    // first, and `a` goes from `0` to `b`. The links between the two pages
+    // change, and no rule has a cell to carry.
+    let from = grove.mem.shadow.records.len();
+    for key in [b"0", b"/", b"."] {
+        let report = grove.put(0, key, &value(200, 5));
+        assert!(report.carried.is_empty() && report.left.is_empty());
+        assert!(report.created.is_empty());
+    }
+    assert_eq!(grove.merks[0].root, grove.find(0, b"0"), "the tree rotated");
+    assert_eq!(grove.node(0, b"0").right, grove.find(0, b"b"));
+    assert_eq!(grove.node(0, b"b").left, grove.find(0, b"a"));
+    assert_eq!(grove.page_of(0, b"0"), a.page());
+    assert_eq!(grove.mem.count(from, Rec::Remove), 0);
+    assert_eq!(grove.mem.count(from, Rec::Insert), 3);
+    assert_eq!(
+        (grove.node(0, b"a").at, grove.node(0, b"b").at),
+        (Some(a), Some(b))
+    );
+    assert_eq!(pointer_of(&grove, b), held, "the value is where it was");
+    assert!(grove.log.carried.is_empty() && grove.log.released.is_empty());
+    grove.check();
+}
+
+#[test]
+fn a_fragment_that_a_rotation_leaves_small_joins_its_parent_by_the_merge_rule() {
+    // The same two pages under a layout in which a fragment below 512
+    // bytes is small. With `c` gone, `b` is alone in its page.
+    let (mut grove, [a, b]) = across_two_pages(params(100, 16, 75, 35));
+    grove.delete(0, b"c");
+    assert_eq!(grove.node(0, b"b").at, Some(b), "a root stays where it is");
+    let held = pointer_of(&grove, b).expect("the value is in the value log");
+
+    // A node to the left of `a` rotates `a` above `b`. That leaves `b` a
+    // small fragment whose parent is in a page with room: the case of M1,
+    // which carries it there in the same write, with its value.
+    let report = grove.put(0, b"0", &value(200, 5));
+    assert_eq!(grove.merks[0].root, grove.find(0, b"a"), "the tree rotated");
+    assert_eq!(report.carried.len(), 1);
+    let carried = report.carried[0];
+    assert_eq!((carried.from, carried.cause), (b, Cause::Merge));
+    assert_eq!(carried.to.page(), a.page());
+    assert_eq!(report.freed, [b.page()]);
+    let told = (ValuePlace::Placed(held), b.page(), a.page());
+    assert_eq!(grove.log.carried, [told]);
+    let carries = grove.fragments.counters().carries;
+    assert_eq!(
+        (carries[Cause::Merge].cells, carries[Cause::Merge].values),
+        (1, 1)
+    );
     grove.check();
 }
 
@@ -565,7 +775,7 @@ fn a_write_carries_cells_only_out_of_a_page_that_is_full() {
             before.is_some_and(|(_, used)| used + 700 > capacity)
         };
         assert!(
-            report.left.iter().any(full),
+            report.left.iter().all(full),
             "a cell left a page that was not full"
         );
     }
@@ -590,10 +800,11 @@ fn a_page_with_a_stale_hint_is_taken_if_it_has_the_room() {
     let seed_limit = grove.fragments.layout().seed_limit();
     let (mut idle, mut unexplained) = (0, 0);
     for index in 3000..5500u32 {
-        // Every hint is somewhere between nothing and what the page holds.
+        // Every hint is somewhere between nothing and twice what the page
+        // holds: too low for some pages and too high for others.
         let pages: Vec<PageId> = grove.mem.frames.keys().copied().collect();
         for id in pages {
-            let stale = grove.rng.below(grove.mem.used(id) + 1);
+            let stale = grove.rng.below(2 * grove.mem.used(id) + 1);
             grove.fragments.hints_mut().note(id, stale);
         }
         grove.mem.touched.clear();

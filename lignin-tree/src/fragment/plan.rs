@@ -155,13 +155,24 @@ struct Stored {
     hosted: Vec<Option<CellAddress>>,
     value_len: usize,
     same_key: bool,
+    /// Whether the hosted-root pointers may be behind (T3).
+    behind: bool,
 }
 
 impl Stored {
+    /// The hosted-root pointers to follow: none of a host that is behind.
+    fn roots(&self) -> &[Option<CellAddress>] {
+        match self.behind {
+            true => &[],
+            false => &self.hosted,
+        }
+    }
+
+    /// The cells the stored cell points at.
     fn children(&self) -> impl Iterator<Item = CellAddress> + '_ {
         self.links
             .iter()
-            .chain(&self.hosted)
+            .chain(self.roots())
             .filter_map(|child| *child)
     }
 
@@ -186,6 +197,10 @@ pub(super) struct Plan<'w> {
     /// The cells that stay where they are and that no cell of their page
     /// points at any more.
     pub unpointed: Vec<CellAddress>,
+    /// The dropped roots whose mark has to be set in a page the write does
+    /// not change otherwise: the cell that pointed at them is not one the
+    /// write holds.
+    pub unmarked: Vec<CellAddress>,
     known: HashMap<CellAddress, usize>,
     page_of: HashMap<PageId, usize>,
     removed: HashSet<CellAddress>,
@@ -224,6 +239,7 @@ pub(super) fn plan<'w, P: Pages>(
             of_node: Vec::new(),
             roots: Vec::new(),
             unpointed: Vec::new(),
+            unmarked: Vec::new(),
             known: HashMap::new(),
             page_of: HashMap::new(),
             removed: HashSet::new(),
@@ -362,7 +378,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             }
             match node.hosted {
                 HostedWrite::Keep => {
-                    let roots = old.map_or(&[][..], |old| &old.hosted);
+                    let roots = old.map_or(&[][..], |old| old.roots());
                     for (position, root) in roots.iter().enumerate() {
                         if let Some(root) = *root {
                             let kid = self.existing(root)?;
@@ -484,6 +500,24 @@ impl<P: Pages> Planner<'_, '_, P> {
                 let_go.push(cell);
             }
         }
+        // A dropped root that a cell of the write pointed at is in that
+        // cell's page, which the write changes, or it has its mark. The mark
+        // of any other is read here: the cell that points at it is one the
+        // write does not hold, and is behind (T3).
+        for &address in write.dropped {
+            if former.contains(&address) {
+                continue;
+            }
+            let marked = self.pages.read(address.page(), |view| {
+                let node = view.node(address.slot());
+                node.map(|node| node.is_fragment_root())
+            })?;
+            match marked {
+                Some(true) => {}
+                Some(false) => self.plan.unmarked.push(address),
+                None => return Err(WriteError::NoNode { address }.into()),
+            }
+        }
         Ok((order, lens, takes, let_go))
     }
 
@@ -601,9 +635,13 @@ impl<P: Pages> Planner<'_, '_, P> {
                 hosted: node.hosted_roots().collect(),
                 value_len: node.value().stored_len(),
                 same_key: key.is_none_or(|key| key == node.key()),
+                behind: false,
             })
         })?;
-        stored.ok_or_else(|| WriteError::NoNode { address }.into())
+        let mut stored = stored.ok_or(WriteError::NoNode { address })?;
+        let hosts = stored.hosted.iter().any(Option::is_some);
+        stored.behind = hosts && self.pages.host_is_behind(address);
+        Ok(stored)
     }
 
     fn cell(&mut self, origin: Option<CellAddress>) -> usize {
@@ -687,7 +725,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                 self.adopt(cell, kid, Via::Link(side))?;
             }
         }
-        for (position, root) in stored.hosted.iter().enumerate() {
+        for (position, root) in stored.roots().iter().enumerate() {
             if let Some(root) = *root {
                 let kid = self.existing(root)?;
                 self.adopt(cell, kid, Via::Hosted(position as u8))?;

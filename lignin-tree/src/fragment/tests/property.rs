@@ -139,7 +139,7 @@ impl Run {
     }
 }
 
-fn layouts(size: PageSize) -> [Layout; 4] {
+fn layouts(size: PageSize) -> [Layout; 5] {
     let layout = |largest, small, seed, merge| {
         let params = LayoutParams {
             largest_fragment_percent: largest,
@@ -154,6 +154,7 @@ fn layouts(size: PageSize) -> [Layout; 4] {
         layout(100, 8, 0, 0),
         layout(25, 32, 90, 60),
         layout(50, 16, 60, 20),
+        layout(100, 4, 75, 35),
     ]
 }
 
