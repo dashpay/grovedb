@@ -469,19 +469,21 @@ impl<'s, I: PageIds> Private<'s, I> {
                 return Err(CacheError::AlreadyPrivate { page, owner }.into());
             }
             let at = self.base.at;
-            let frame = match self.pool.make_private(owner, page, at) {
-                Ok(frame) => frame,
-                Err(miss) => {
-                    // What was loaded is held until the copy is made.
-                    let buffers = &mut self.base.buffers.borrow_mut().0;
-                    let _loaded = self.base.loader.load(miss, buffers)?;
-                    let copy = self.pool.make_private(owner, page, at);
-                    copy.map_err(|_| FlatError::Damaged {
-                        page,
-                        what: "a page that left the pool while it was held",
-                    })?
+            // What was loaded is held while the copy is made. A page step
+            // can give the page another frame meanwhile, which the pool
+            // need not hold: then that one is loaded, until the copy is
+            // made or the page is not there to load.
+            let mut loaded = None;
+            let frame = loop {
+                match self.pool.make_private(owner, page, at) {
+                    Ok(frame) => break frame,
+                    Err(miss) => {
+                        let buffers = &mut self.base.buffers.borrow_mut().0;
+                        loaded = Some(self.base.loader.load(miss, buffers)?);
+                    }
                 }
             };
+            drop(loaded);
             let values = match Self::adopt(&frame, page) {
                 Ok(values) => values,
                 Err(error) => {
