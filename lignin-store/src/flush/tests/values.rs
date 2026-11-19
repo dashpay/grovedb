@@ -120,7 +120,7 @@ fn a_snapshot_keeps_reading_a_version_that_was_superseded_with_a_pending_value()
     let mut txn = db.begin();
     txn.copy(page(1));
     let first = db.commit(&[insert((2, 1), b"b", long(4, 3000))]);
-    drop(txn.commit(&[hash((1, 1), 1)]));
+    txn.commit(&[hash((1, 1), 1)]);
 
     // A second transaction keeps page 2 from being placed, and supersedes
     // it with its value pending, while a snapshot reads the first version.

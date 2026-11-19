@@ -6,6 +6,7 @@ mod acceptance;
 mod chains;
 mod checkpoint;
 mod errors;
+mod regroup;
 mod values;
 
 use std::{
@@ -21,8 +22,8 @@ use lignin_format::{
     delta::Delta,
     manifest::Manifest,
     tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut},
-    value_log::{PendingValue, ValuePointer},
-    wal::GroupWriter,
+    value_log::{PendingValue, ValuePlace, ValuePointer},
+    wal::{GroupWriter, ValueMove},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
 };
 use lignin_io::{StdVfs, Vfs};
@@ -35,7 +36,7 @@ use crate::{
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore},
     table::{Link, LinkKind, PageTable, TableCheckpoints},
-    values::{ValueChange, ValueStore},
+    values::{ValueChange, ValueHold, ValueStore, ValueWriter},
     wal::{LogOptions, LogReader, LogStore},
 };
 
@@ -111,6 +112,62 @@ impl Published for Versions {
     fn guarded(&self, work: &mut dyn FnMut()) {
         self.guards.fetch_add(1, Ordering::SeqCst);
         work();
+    }
+}
+
+/// What the layer above tree pages is to write-back, for pages whose cells
+/// a scan reads in the order of their keys.
+pub(super) struct ByKey<'d>(pub(super) &'d Db);
+
+impl ByKey<'_> {
+    fn slots(frame: &[u8]) -> Vec<SlotId> {
+        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+        let mut cells: Vec<_> = tree.cells().map(|(slot, cell)| (cell.key().to_vec(), slot)).collect();
+        cells.sort();
+        cells.into_iter().map(|(_, slot)| slot).collect()
+    }
+}
+
+impl PageValues for ByKey<'_> {
+    fn scan_order(&self, frame: &[u8], out: &mut Vec<SlotId>) {
+        out.extend(Self::slots(frame));
+    }
+
+    fn regroup(
+        &self,
+        id: PageId,
+        to: &mut ValueWriter,
+        cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
+    ) -> Result<u64, RegroupError> {
+        let db = self.0;
+        let placed: Vec<(SlotId, ValuePointer)> = {
+            let frame = db.frame(id, db.latest())?;
+            let tree = TreePage::from_validated(&frame, FRAME_FORMAT)?;
+            let slots = Self::slots(&frame).into_iter();
+            slots
+                .filter_map(|slot| Some((slot, tree.cell(slot)?.value_pointer()?)))
+                .collect()
+        };
+        let back_to_back = placed.windows(2).all(|pair| {
+            let (before, after) = (pair[0].1, pair[1].1);
+            (after.file(), after.offset()) == (before.file(), before.end(V1))
+        });
+        if back_to_back {
+            return Ok(0);
+        }
+        let mut hold = ValueHold::new();
+        let mut buf = Vec::new();
+        let mut moves = Vec::new();
+        for (slot, from) in placed {
+            let bytes = db.values.read(from, id, &mut buf)?.to_vec();
+            moves.push((slot, from, to.append(&mut hold, id, &bytes)?));
+        }
+        cover(to)?;
+        let mut moved = 0;
+        for (slot, from, to) in moves {
+            moved += u64::from(db.repoint(id, slot, from, to, false));
+        }
+        Ok(moved)
     }
 }
 
@@ -350,6 +407,11 @@ impl Db {
     }
 
     pub(super) fn wb(&self) -> WriteBack<'_> {
+        self.wb_with(None)
+    }
+
+    /// Write-back that is handed `page_values` by the layer above.
+    pub(super) fn wb_with<'s>(&'s self, page_values: Option<&'s dyn PageValues>) -> WriteBack<'s> {
         let stores = Stores {
             pool: &self.pool,
             table: &self.table,
@@ -359,7 +421,7 @@ impl Db {
             checkpoints: &self.checkpoints,
             manifest: &self.manifest,
             versions: &self.versions,
-            page_values: None,
+            page_values,
         };
         WriteBack::new(stores, &self.state).expect("write-back")
     }
@@ -453,6 +515,15 @@ impl Db {
             .collect()
     }
 
+    /// The value pointer that the cell in `slot` of the current version
+    /// of `id` holds.
+    pub(super) fn pointer(&self, id: PageId, slot: SlotId) -> ValuePointer {
+        let frame = self.frame(id, self.latest()).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        let cell = tree.cell(slot).expect("the cell");
+        cell.value_pointer().expect("a placed value")
+    }
+
     /// Moves the value of the cell in `slot` of the current version of
     /// `id` to another place in the value log, as the value log's cleaner
     /// does: the value is appended again and covered, and a page step
@@ -461,36 +532,41 @@ impl Db {
     /// log, which leaves write-back with records that no longer lead to
     /// the frame.
     pub(super) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
-        let from = {
-            let frame = self.frame(id, self.latest()).expect("the page");
-            let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
-            let cell = tree.cell(slot).expect("the cell");
-            cell.value_pointer().expect("a placed value")
-        };
+        let from = self.pointer(id, slot);
         let mut buf = Vec::new();
         let bytes = self.values.read(from, id, &mut buf).expect("the value").to_vec();
         let mut writer = self.values.create().expect("a value-log file");
         self.values
             .commit(&mut self.manifest.lock().expect("the manifest"))
             .expect("named");
-        let mut hold = crate::values::ValueHold::new();
+        let mut hold = ValueHold::new();
         let to = writer.append(&mut hold, id, &bytes).expect("appended");
         writer.finish().expect("synced");
         self.values
             .commit(&mut self.manifest.lock().expect("the manifest"))
             .expect("covered");
+        assert!(self.repoint(id, slot, from, to, past_write_back));
+    }
 
+    /// The page step that gives the cell in `slot` of the current version
+    /// of `id`, which holds `from`, the pointer `to`. Returns whether the
+    /// step was made: it is not while a write transaction holds a private
+    /// copy of the page.
+    pub(super) fn repoint(
+        &self,
+        id: PageId,
+        slot: SlotId,
+        from: ValuePointer,
+        to: ValuePointer,
+        past_write_back: bool,
+    ) -> bool {
         let counts = self.values.step().expect("the counts");
         let step = self.pool.page_step(id);
         let old = step.current().expect("the page");
-        assert_eq!(step.private_copies(), 0);
-        let change = lignin_format::wal::ValueMove::in_tree(
-            id,
-            slot,
-            lignin_format::value_log::ValuePlace::Placed(from),
-            to,
-        )
-        .expect("a move");
+        if step.private_copies() > 0 {
+            return false;
+        }
+        let change = ValueMove::in_tree(id, slot, ValuePlace::Placed(from), to).expect("a move");
         let mut record = Vec::new();
         change.write(&mut record).expect("a record");
         if past_write_back {
@@ -509,6 +585,7 @@ impl Db {
         counts
             .apply(&ValueChange::moved(from, to), self.latest())
             .expect("counted");
+        true
     }
 
     pub(super) fn begin(&self) -> Txn<'_> {

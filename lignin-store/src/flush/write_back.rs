@@ -150,6 +150,18 @@ fn is_tree(frame: &[u8]) -> bool {
     page::kind_of(frame) == PageKind::Tree
 }
 
+/// How a page version is written to a segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Form {
+    /// As a run of deltas behind the chain.
+    Run,
+    /// As a base image.
+    Image,
+    /// As a base image, because a run would take the chain past a
+    /// threshold.
+    Consolidation,
+}
+
 /// What became of one page version that a pass looked at.
 enum Outcome {
     /// Its block is linked.
@@ -499,14 +511,14 @@ impl<'s> WriteBack<'s> {
                     continue;
                 }
             }
-            let written = self.plan(files, page, frame, &links, &changes, &gap).and_then(|as_run| {
+            let written = self.plan(files, page, frame, &links, &changes, &gap).and_then(|form| {
                 // A page that is about to get a new base image has its
                 // values regrouped first, and is then looked at again.
-                let regroup = !as_run && is_current && !regrouped && is_tree(frame);
+                let regroup = form != Form::Run && is_current && !regrouped && is_tree(frame);
                 if regroup && self.regroup(files, page)? > 0 {
                     return Ok(None);
                 }
-                self.store(files, page, frame, as_run).map(Some)
+                self.store(files, page, frame, form).map(Some)
             });
             match written {
                 Ok(Some(Outcome::Written(link))) => {
@@ -609,7 +621,7 @@ impl<'s> WriteBack<'s> {
     }
 
     /// Puts the image of the page in `frame` into `files.image`, and says
-    /// whether the page is to be written as the run that is then in
+    /// how the page is to be written: as the run that is then in
     /// `files.run`, behind the chain `links`, or as that image.
     fn plan(
         &self,
@@ -619,7 +631,7 @@ impl<'s> WriteBack<'s> {
         links: &[Link],
         changes: &[Changes],
         gap: &[u64],
-    ) -> Result<bool, FlushError> {
+    ) -> Result<Form, FlushError> {
         let born = frame.born();
         files.image.clear();
         let pending =
@@ -627,7 +639,10 @@ impl<'s> WriteBack<'s> {
         if pending {
             return Err(FlushError::PendingValue { page, born });
         }
-        Ok(is_tree(frame) && self.run_for(files, page, born, links, changes, gap)?)
+        if !is_tree(frame) {
+            return Ok(Form::Image);
+        }
+        self.run_for(files, page, born, links, changes, gap)
     }
 
     /// Writes the page version in `frame` to a segment, as the run in
@@ -638,11 +653,11 @@ impl<'s> WriteBack<'s> {
         files: &mut Files,
         page: PageId,
         frame: &PageRef<'s>,
-        as_run: bool,
+        form: Form,
     ) -> Result<Outcome, FlushError> {
         let Stores { pool, table, .. } = self.stores;
         let born = frame.born();
-        let (content, location) = if as_run {
+        let (content, location) = if form == Form::Run {
             let compression = match files.run.len() {
                 len if len < COMPRESS_FROM => Compression::Raw,
                 _ => Compression::Lz4,
@@ -686,6 +701,7 @@ impl<'s> WriteBack<'s> {
             BlockContent::Base => {
                 count(&counters.base_blocks, 1);
                 count(&counters.base_bytes, files.image.len() as u64);
+                count(&counters.consolidations, u64::from(form == Form::Consolidation));
                 files.untrimmed.insert(page, born);
             }
         }
@@ -702,7 +718,7 @@ impl<'s> WriteBack<'s> {
 
     /// Puts into `files.run` the run that brings the page from the newest
     /// link of `links` to the page in the frame whose image is
-    /// `files.image`, and says whether the page may be written as that run.
+    /// `files.image`, and says whether the page is written as that run.
     ///
     /// It may when the chain has a base image for it to follow, when
     /// write-back has kept the records of every version between that link
@@ -717,25 +733,25 @@ impl<'s> WriteBack<'s> {
         links: &[Link],
         changes: &[Changes],
         gap: &[u64],
-    ) -> Result<bool, FlushError> {
+    ) -> Result<Form, FlushError> {
         let config = &self.state.config;
         let Some(newest) = links.last() else {
-            return Ok(false);
+            return Ok(Form::Image);
         };
         let through = newest.version.get();
         if newest.kind == LinkKind::Free || through > born.get() || config.max_chain_deltas == 0 {
-            return Ok(false);
+            return Ok(Form::Image);
         }
         // Every version of the page behind the newest link whose changes no
         // block holds has its records here, and nothing else has.
         if gap.iter().any(|&folded| folded <= through) {
-            return Ok(false);
+            return Ok(Form::Image);
         }
         files.run.clear();
         files.run.extend_from_slice(&page.encode());
         for &version in gap.iter().chain([&born.get()]) {
             let Some(kept) = changes.iter().find(|kept| kept.born == version) else {
-                return Ok(false);
+                return Ok(Form::Image);
             };
             files.run.extend_from_slice(&kept.records);
         }
@@ -743,7 +759,7 @@ impl<'s> WriteBack<'s> {
             || files.run.len() > max_run_len(self.size)
             || files.run.len() >= files.image.len()
         {
-            return Ok(false);
+            return Ok(Form::Image);
         }
 
         let base = links
@@ -759,8 +775,7 @@ impl<'s> WriteBack<'s> {
         if deltas + 1 > config.max_chain_deltas
             || bytes + FRAME_LEN + files.run.len() > config.max_chain_bytes
         {
-            count(&self.state.counters.consolidations, 1);
-            return Ok(false);
+            return Ok(Form::Consolidation);
         }
 
         // The page as the chain gives it. A frame of the version of the
@@ -775,7 +790,7 @@ impl<'s> WriteBack<'s> {
             Some(before) => files.scratch.copy_from_slice(&before),
             None => {
                 if self.read_chain(files, page, newest)?.is_none() {
-                    return Ok(false);
+                    return Ok(Form::Image);
                 }
             }
         }
@@ -787,9 +802,9 @@ impl<'s> WriteBack<'s> {
             });
         if !matches!(applies, Ok(false)) || files.other != files.image {
             count(&self.state.counters.runs_refused, 1);
-            return Ok(false);
+            return Ok(Form::Image);
         }
-        Ok(true)
+        Ok(Form::Run)
     }
 
     /// Builds in `files.scratch` the page as its chain gives it up to the

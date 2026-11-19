@@ -546,3 +546,86 @@ fn a_count_that_is_wrong_is_reported_before_any_other_error() {
     assert_eq!(moved.count(), 2);
     assert_eq!(values_of(&tree, &db).len(), 150);
 }
+
+/// A log of page steps that can be shared between threads, which is what
+/// write-back asks of what it is handed.
+struct SharedLog {
+    latest: CommitVersion,
+    records: std::sync::Mutex<Vec<Vec<u8>>>,
+}
+
+impl StepLog for SharedLog {
+    fn latest(&self) -> CommitVersion {
+        self.latest
+    }
+
+    fn append(&self, record: &[u8]) -> Result<(), OwnersError> {
+        self.records.lock().expect("the log").push(record.to_vec());
+        Ok(())
+    }
+}
+
+/// Write-back is in `lignin-store`, which knows no tree. It reaches the
+/// scan order of a page and the regrouping of its values through the trait
+/// it defines, and [`Regrouping`] is what stands behind it.
+#[test]
+fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
+    use lignin_store::flush::{FlushError, PageValues};
+
+    let db = Db::traced();
+    let tree = tree_of(&db, 150, 30);
+    let before = tree.scan(&db);
+    let mut to = db.close_value_file();
+    let page = before[70].at.page();
+    let was = locality(&db, page);
+    assert!(was.values > 10 && !was.is_sequential(), "{was:?}");
+    let log = SharedLog {
+        latest: db.latest(),
+        records: Default::default(),
+    };
+    let always = RegroupPolicy::ALWAYS;
+    let regrouping = Regrouping::new(db.loader(), &db.pool, &db.values, SIZE, &log, always);
+    let through: &dyn PageValues = &regrouping;
+
+    // The order in which write-back appends the pending values of a page.
+    let frame = db.current(page);
+    let mut order = Vec::new();
+    through.scan_order(&frame, &mut order);
+    let view = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+    assert_eq!(order, scan_order(&view));
+    order.clear();
+    through.scan_order(&[0xFF; 64], &mut order);
+    assert!(order.is_empty(), "bytes that are no tree page have no order");
+    drop(frame);
+
+    // A regrouping whose copies cannot be covered installs nothing.
+    let mut refuse = |_: &mut ValueWriter| Err(FlushError::SegmentsNotDurable);
+    let refused = through.regroup(page, &mut to, &mut refuse);
+    assert_eq!(
+        refused.expect_err("not covered").to_string(),
+        FlushError::SegmentsNotDurable.to_string()
+    );
+    assert_eq!(locality(&db, page), was);
+    assert!(log.records.lock().expect("the log").is_empty());
+
+    // The regrouping, with the copies covered between its two halves as
+    // write-back covers them.
+    let covered = std::cell::Cell::new(0);
+    let mut cover = |to: &mut ValueWriter| {
+        covered.set(covered.get() + 1);
+        db.cover(to);
+        Ok(())
+    };
+    let moved = through.regroup(page, &mut to, &mut cover).expect("regrouped");
+    assert_eq!((moved, covered.get()), (was.values, 1));
+    let now = locality(&db, page);
+    assert_eq!((now.values, now.runs), (was.values, 1));
+    assert_eq!(log.records.lock().expect("the log").len() as u64, moved);
+    assert_eq!(values_of(&tree, &db).len(), before.len());
+    db.check_counts();
+
+    // A page whose values lie in one run is left alone, and nothing is
+    // covered for it.
+    let again = through.regroup(page, &mut to, &mut cover).expect("nothing to do");
+    assert_eq!((again, covered.get()), (0, 1));
+}

@@ -233,7 +233,6 @@ fn a_chain_that_is_over_the_thresholds_is_consolidated() {
         max_chain_deltas: 2,
         ..FlushConfig::new(Db::SIZE)
     });
-    let stores = db.wb();
     let wb = WriteBack::new(
         Stores {
             pool: &db.pool,
@@ -249,7 +248,6 @@ fn a_chain_that_is_over_the_thresholds_is_consolidated() {
         &strict,
     )
     .expect("write-back");
-    drop(stores);
     assert_eq!(wb.consolidate_long_chains().expect("consolidated"), 1);
     assert_eq!((db.shape(page(1)), db.shape(page(2))), ("BdddddB".into(), "Bd".into()));
     let chain = db.chain(page(1));
