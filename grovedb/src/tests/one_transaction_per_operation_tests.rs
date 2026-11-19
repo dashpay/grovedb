@@ -600,8 +600,9 @@ fn the_big_sum_axis_is_written_and_read_in_one_transaction_each() {
 
 /// A conversion to a 128-bit sum reads every node of the tree and writes it
 /// again, and for an indexed tree rebuilds the rows of its axes. A repair
-/// rebuilds them too. On an engine that is not the default one each starts
-/// one write transaction, and none when the caller gives one.
+/// rebuilds them too, here of a ranking that has a row to lose. On an engine
+/// that is not the default one each starts one write transaction, and none
+/// when the caller gives one.
 #[test]
 fn a_conversion_and_a_repair_are_one_write_transaction_each() {
     let grove_version = GroveVersion::latest();
@@ -631,11 +632,42 @@ fn a_conversion_and_a_repair_are_one_write_transaction_each() {
         .expect("insert_into_provable_sum_indexed_tree");
     }
 
+    // A ranking that holds the row of an entry that is gone, as the removal
+    // of the entry at the root of this tree leaves it on grove version 4:
+    // the repair has a row to remove.
+    let drifted: &[&[u8]] = &[INDEX];
+    db.insert(
+        root,
+        INDEX,
+        Element::empty_provable_count_indexed_tree(),
+        None,
+        None,
+        &GROVE_V4,
+    )
+    .unwrap()
+    .expect("insert");
+    for key in [b"k0", b"k2", b"k3", b"k4", b"k1"] {
+        db.insert_into_count_indexed_tree(drifted, key, item(b"v"), None, &GROVE_V4)
+            .unwrap()
+            .expect("insert_into_count_indexed_tree");
+    }
+    db.delete_from_count_indexed_tree(drifted, b"k2", None, &GROVE_V4)
+        .unwrap()
+        .expect("delete_from_count_indexed_tree");
+    let ranking = || db.indexed_count_top_k_paginated(drifted, 10, 0, true, None, grove_version);
+    assert!(
+        matches!(ranking().unwrap(), Err(Error::CorruptedData(_))),
+        "the ranking names an entry that is gone"
+    );
+
     let (repaired, reads, writes) = started(&db, || {
-        db.reconcile_indexed_tree_secondaries(ranked, None, grove_version)
+        db.reconcile_indexed_tree_secondaries(drifted, None, grove_version)
     });
     repaired.unwrap().expect("reconcile");
-    assert_eq!((reads, writes), (0, 1), "a repair");
+    assert_eq!((reads, writes), (0, 1), "a repair that removes a row");
+    let (page, reads, writes) = started(&db, ranking);
+    assert_eq!((reads, writes), (1, 0), "the ranking of the repaired tree");
+    assert_eq!(page.unwrap().expect("the ranking reads").entries.len(), 4);
 
     let (converted, reads, writes) = started(&db, || {
         db.convert_to_big_sum_tree(root, SUMS, None, grove_version)
