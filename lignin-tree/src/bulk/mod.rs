@@ -80,25 +80,31 @@
 //! and what hangs below it, as far as it was not cut off. A node that
 //! arrives joins the pieces of its children to one.
 //!
-//! 1. **A piece above the largest fragment is cut**
-//!    ([`Layout::largest_fragment`](crate::fragment::Layout)): the heaviest
-//!    piece below the node that arrived goes into a page, as one fragment,
-//!    until what is left fits. So a fragment is a piece of at most the
-//!    largest size, and what Merk keeps balanced is cut near its middle.
+//! 1. **A piece above the largest fragment is cut below the node that
+//!    arrived** ([`Layout::largest_fragment`](crate::fragment::Layout)).
+//!    Every piece there of at least the small size goes into a page, as
+//!    one fragment, and the node starts the piece above them, with what is
+//!    small. So a fragment is what a subtree holds up to the largest size:
+//!    of a tree that Merk keeps balanced, between a half and the whole of
+//!    it. The nodes above the fragments of one level form the fragments of
+//!    the next.
 //! 2. **Pages are filled by level.** A piece that points at no cell of a
 //!    page that is still filled goes to the page of level 0, and one that
 //!    does to the level above that page. Each level fills one page at a
 //!    time, with the pieces of every Merk of the load, in the order they
 //!    are cut. So a cell never shares a page with the fragment below it,
 //!    and the roots above the fragments of one level are together in the
-//!    pages of the next.
+//!    pages of the next. A node that joins pieces of different levels
+//!    keeps the lower ones only if they are small: the others are cut, so
+//!    that a piece of an upper level holds the nodes above and little
+//!    else, and a path from a root passes about one page for each level.
 //! 3. **A page that is not full enough is topped off.** When a piece does
 //!    not fit the page of its level and the page is below the least fill,
 //!    subtrees of that piece go into the page as fragments of their own,
 //!    each time the largest that fits, until the page is full enough or
 //!    nothing fits. Then the rest of the piece starts the next page. A
-//!    largest subtree that fits is more than half the room less one cell,
-//!    so a page that is 60% full is topped off with at most two.
+//!    largest subtree that fits takes more than half the room, less one
+//!    cell, so a few of them fill a page.
 //!
 //! What this leaves is what fragment maintenance accepts: every page
 //! passes `TreePage::check_fragments`, no fragment is above the largest
@@ -107,9 +113,10 @@
 //! write that holds it takes it to its parent's page when there is room
 //! (M1).
 //!
-//! The levels are as many as cuts lie above each other: a few for trees
-//! that Merk balanced. A tree that is a chain has one for every largest
-//! fragment of its length, and its pages are valid and not full.
+//! The levels are as many as cuts lie above each other: four for a million
+//! nodes that Merk balanced, in pages of 32 KiB. A tree that is a chain
+//! has one for every largest fragment of its length, and its pages are
+//! valid and not full.
 //!
 //! # What the callers do
 //!
