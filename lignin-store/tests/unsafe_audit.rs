@@ -339,9 +339,11 @@ fn inner_attributes(tokens: &[Placed]) -> Vec<(usize, String)> {
 }
 
 /// Whether an attribute leaves its item out of every build but that of
-/// the tests: `cfg(test)`, or `cfg(all(…))` with `test` among what it asks
-/// for. A condition that only names the tests (`cfg(not(test))`,
-/// `cfg(any(test, …))`) does not.
+/// the tests: `cfg(test)`, or `cfg(all(…))` with `test` itself as one of
+/// its conditions. A condition that only names the tests (`cfg(not(test))`,
+/// `cfg(any(test, …))`) does not. Nor does one that asks for them deeper
+/// down (`cfg(all(all(test, unix), …))`), which is taken for library code:
+/// that errs to the side of counting more.
 fn is_for_tests(attribute: &str) -> bool {
     let all = attribute
         .strip_prefix("cfg(all(")

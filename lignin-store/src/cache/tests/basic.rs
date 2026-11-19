@@ -641,8 +641,14 @@ fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
         (300, 128),
         (5_000, 128),
     ] {
+        assert_eq!(
+            crate::cache::lanes::Lanes::count_for(frames),
+            lanes,
+            "{frames} frames"
+        );
         // Miri has nothing more to find in a large pool than in a small
-        // one, and takes gigabytes over it.
+        // one, and takes gigabytes over it. The number of its lanes, which
+        // is where the most a pool may have shows, was checked above.
         if cfg!(miri) && frames > 300 {
             continue;
         }
