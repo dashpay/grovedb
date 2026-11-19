@@ -55,6 +55,9 @@ pub struct TxnStats {
     /// transaction's commit writes: its own new values, and those of cells
     /// it carried to another page.
     pub value_pages: usize,
+    /// The nodes of its frames that have a stale hash, for its commit to
+    /// evaluate. None on existing GroveVersions.
+    pub stale_nodes: usize,
     /// How many times the frames were made again from the write set: after
     /// a commit outside the transaction (WT7), a rollback to a mark, or an
     /// operation that failed half way.
@@ -272,6 +275,7 @@ impl<'s> WriteTxn<'s> {
             tree_pages: frames.map_or(0, |frames| frames.tree.copies()),
             flat_pages: frames.map_or(0, |frames| frames.flat.copies()),
             value_pages: frames.map_or(0, |frames| frames.values.pages().count()),
+            stale_nodes: frames.map_or(0, |frames| frames.hashes.len()),
             rebuilds: state.rebuilds,
             handles_followed: state.followed,
             keyed_reads: state.keyed,
@@ -884,13 +888,18 @@ impl<'s> WriteTxn<'s> {
         let pin = state.base.take();
         state.end();
         let Frames {
-            tree, values, flat, ..
+            tree,
+            values,
+            hashes,
+            flat,
+            ..
         } = frames;
         Ok(Sealed::Ready(Box::new(Parts {
             base: op.at,
             pin,
             tree,
             values,
+            hashes,
             flat,
             keys,
         })))
@@ -939,6 +948,11 @@ pub(crate) struct Parts<'s> {
     /// The values of tree cells that are out of line: those the commit
     /// logs, and the pointers it releases.
     pub(crate) values: lignin_tree::value::TreeValues,
+    /// The hashes that are stale in the tree pages. The commit evaluates
+    /// them all before it logs a page (CM3 step 5), with the rules of its
+    /// caller and [`TreeValues::reader`](lignin_tree::value::TreeValues::reader)
+    /// for the values.
+    pub(crate) hashes: lignin_tree::hash::Hashes,
     /// The flat pages (`lignin_tree::flat`, "What a commit writes"). The
     /// commit takes the writer out, under its own guard, when it installs
     /// them.
@@ -960,11 +974,13 @@ fn show_framed<R>(
         tree,
         values,
         source,
+        hashes,
         ..
     } = frames;
+    let stale = hashes.stale(address);
     let shown = tree.page(address.page(), |page| {
         let node = page.node(address.slot())?;
-        Some(read(Some(NodeView::framed(node, values, source))))
+        Some(read(Some(NodeView::framed(node, values, source, stale))))
     })?;
     Ok(shown.ok_or(NodeError::NoNode { address })?)
 }

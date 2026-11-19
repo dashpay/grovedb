@@ -16,7 +16,7 @@ use std::{
 
 use lignin_format::{
     manifest::Manifest,
-    tree_page::Side,
+    tree_page::{Hash, Side},
     wal::{write_file_start, GroupWriter, LogStart},
     CellAddress, CommitVersion, FileId, PageId, PageSize,
 };
@@ -32,7 +32,8 @@ use lignin_store::{
 use lignin_tree::{
     flat::{Committed, FlatConfig, FlatPages, FlatTree, Private},
     fragment::Layout,
-    node::{Lease, NodePage},
+    hash::{HashRules, Refusal},
+    node::{Lease, NodePage, NodeRef},
     value::{InlinePolicy, ValueSource},
 };
 
@@ -125,6 +126,38 @@ impl Roots {
     }
 }
 
+/// The hash rules of these tests, which are those the model makes its
+/// hashes by, with a count of the calls.
+pub struct Rules<'a>(pub &'a AtomicU64);
+
+impl HashRules for Rules<'_> {
+    fn value_hash(
+        &mut self,
+        _: NodeRef<'_>,
+        value: &[u8],
+        _: &[Option<Hash>],
+    ) -> Result<Hash, Refusal> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(super::model::hash_of(&[value]))
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &Hash) -> Result<Hash, Refusal> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        Ok(super::model::hash_of(&[key, value_hash]))
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<Hash, Refusal> {
+        self.0.fetch_add(1, Ordering::Relaxed);
+        let none = [0; 32];
+        let child = |side| node.link(side).map_or(&none, |link| link.hash);
+        Ok(super::model::hash_of(&[
+            node.kv_hash(),
+            child(Side::Left),
+            child(Side::Right),
+        ]))
+    }
+}
+
 impl Directory for Roots {
     fn committed_root(
         &self,
@@ -210,6 +243,10 @@ pub struct Counts {
     pub hosted: AtomicU64,
     /// The tree pages that commits attached values to.
     pub value_pages: AtomicU64,
+    /// The nodes with a stale hash that commits evaluated, and the calls
+    /// of a hash rule that took.
+    pub stale_nodes: AtomicU64,
+    pub rule_calls: AtomicU64,
 }
 
 /// How a commit of the test store ended.
@@ -394,8 +431,19 @@ impl Db {
         // from then on, and its bytes go with the frame of that page.
         // Nothing of these stores is in the value log, so no pointer is
         // released and the counts do not change.
-        let (mut tree, mut values) = (parts.tree, parts.values);
+        let (mut tree, mut values, mut hashes) = (parts.tree, parts.values, parts.hashes);
         let source = ValueSource::new(&self.values, self.loader(), parts.base);
+        // Every stale hash is made before a page is logged (CM3 step 5).
+        // Where the writer made every hash itself, no rule is called.
+        let stale = hashes.len() as u64;
+        self.counts.stale_nodes.fetch_add(stale, Ordering::Relaxed);
+        hashes
+            .evaluate_all(
+                &mut tree,
+                &mut values.reader(&source),
+                &mut Rules(&self.counts.rule_calls),
+            )
+            .expect("the stale hashes are made");
         let mut log = locked(&self.log);
         let address = LogStart::FIRST
             .address(log.len() as u64)

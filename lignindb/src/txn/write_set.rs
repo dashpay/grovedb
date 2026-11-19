@@ -7,6 +7,7 @@ use std::{
 };
 
 use lignin_format::{tree_page::Hash, CommitVersion};
+use lignin_tree::hash::Stale;
 
 use super::{
     arena::{Arena, ArenaMark, Span},
@@ -59,6 +60,8 @@ pub(crate) struct NodeEntry {
     pub(crate) right: Option<LinkEntry>,
     pub(crate) hosted: HostedEntry,
     pub(crate) value: ValueEntry,
+    /// The hashes the write left stale.
+    pub(crate) stale: Stale,
 }
 
 /// What an entry does to its key.
@@ -426,6 +429,7 @@ impl WriteSet {
                     right: self.link(node.right),
                     hosted,
                     value,
+                    stale: node.stale,
                 };
                 self.push(unit, node.key, Kind::Node(entry), first_write);
             }
@@ -549,6 +553,7 @@ impl WriteSet {
                         ValueEntry::Value(span) => ValuePut::Value(self.arena.get(span)),
                         ValueEntry::Kept(span) => ValuePut::Value(self.kept.get(span)),
                     },
+                    stale: node.stale,
                     at: None,
                 }
             });

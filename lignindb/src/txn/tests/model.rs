@@ -11,7 +11,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use lignin_format::tree_page::{Hash, Side};
+use lignin_format::tree_page::{Hash, HashField, Side};
+use lignin_tree::hash::Stale;
 
 use super::store::Rng;
 use crate::txn::{
@@ -31,7 +32,10 @@ fn mix(seed: u64, bytes: &[u8]) -> u64 {
     state ^ (state >> 29)
 }
 
-fn hash_of(parts: &[&[u8]]) -> Hash {
+/// What a write states for a hash it leaves stale.
+pub const UNMADE: Hash = [0xee; 32];
+
+pub fn hash_of(parts: &[&[u8]]) -> Hash {
     let mut hash = [0; 32];
     let mut state = 0x1234_5678;
     for part in parts {
@@ -331,6 +335,8 @@ pub struct OwnedMerk {
     pub root: Option<Option<Vec<u8>>>,
     /// The Merks the nodes host, by key.
     pub hosted: BTreeMap<Vec<u8>, Vec<Subtree>>,
+    /// The hashes the writer leaves stale, by the key of their node.
+    pub stale: BTreeMap<Vec<u8>, Stale>,
     /// Whether the Merk has a host that the batch does not write.
     pub anchored: bool,
 }
@@ -366,6 +372,7 @@ impl OwnedMerk {
             removed,
             root: (root != old_root).then_some(root),
             hosted: BTreeMap::new(),
+            stale: BTreeMap::new(),
             anchored: false,
         }
     }
@@ -399,11 +406,17 @@ impl OwnedBatch {
         }
         fn put<'a>(merk: &'a OwnedMerk, node: &'a (Vec<u8>, NodeRec, bool)) -> NodePut<'a> {
             let (key, node, stated) = node;
+            // A hash that the writer leaves stale is stated as any bytes.
+            let stale = merk.stale.get(key).copied().unwrap_or(Stale::NONE);
+            let stated_hash = |field, hash| match stale.has(field) {
+                true => &UNMADE,
+                false => hash,
+            };
             NodePut {
                 key,
                 feature: &node.feature,
-                value_hash: &node.value_hash,
-                kv_hash: &node.kv_hash,
+                value_hash: stated_hash(HashField::Value, &node.value_hash),
+                kv_hash: stated_hash(HashField::KeyValue, &node.kv_hash),
                 left: link(&node.left),
                 right: link(&node.right),
                 hosted: match merk.hosted.get(key) {
@@ -414,6 +427,7 @@ impl OwnedBatch {
                     false => ValuePut::Keep,
                     true => ValuePut::Value(&node.value),
                 },
+                stale,
                 at: None,
             }
         }

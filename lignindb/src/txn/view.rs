@@ -6,6 +6,7 @@ use std::fmt;
 use lignin_format::tree_page::{Hash, Side};
 use lignin_store::values::ValueStore;
 use lignin_tree::{
+    hash::Stale,
     node::{NodeHandle, NodeRef, PinnedNode},
     value::{read_value, TreeValues, ValueBuf, ValueSource},
 };
@@ -54,6 +55,7 @@ enum Source<'a> {
     Cell {
         node: NodeRef<'a>,
         values: Values<'a>,
+        stale: Stale,
     },
     Record {
         set: &'a WriteSet,
@@ -89,10 +91,15 @@ impl<'a> NodeView<'a> {
         node: NodeRef<'a>,
         values: &'a TreeValues,
         source: &'a ValueSource<'a>,
+        stale: Stale,
     ) -> Self {
         let values = Values::Scope { values, source };
         Self {
-            source: Source::Cell { node, values },
+            source: Source::Cell {
+                node,
+                values,
+                stale,
+            },
         }
     }
 
@@ -102,6 +109,7 @@ impl<'a> NodeView<'a> {
             source: Source::Cell {
                 node: node.node(),
                 values: Values::Committed { store, node },
+                stale: Stale::NONE,
             },
         }
     }
@@ -165,7 +173,7 @@ impl<'a> NodeView<'a> {
         'a: 'b,
     {
         match self.source {
-            Source::Cell { node, values } => match values {
+            Source::Cell { node, values, .. } => match values {
                 Values::Scope { values, source } => Ok(values.read(source, node, buf)?),
                 Values::Committed { store, node } => Ok(read_value(store, node, buf)?),
             },
@@ -180,6 +188,16 @@ impl<'a> NodeView<'a> {
         match self.source {
             Source::Cell { node, .. } => node.value_len(),
             Source::Record { set, id } => set.node_value(id).map_or(0, |value| value.len() as u32),
+        }
+    }
+
+    /// Which of the node's stored hashes are stale: its writer did not make
+    /// them, and no evaluation has since (`lignin_tree::hash`). A stale
+    /// hash is not read as a hash. None is stale in a committed page.
+    pub fn stale(&self) -> Stale {
+        match self.source {
+            Source::Cell { stale, .. } => stale,
+            Source::Record { set, id } => Self::entry(set, id).stale,
         }
     }
 

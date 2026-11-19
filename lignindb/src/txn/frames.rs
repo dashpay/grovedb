@@ -3,7 +3,10 @@
 
 use std::collections::{HashMap, HashSet};
 
-use lignin_format::{CellAddress, CommitVersion};
+use lignin_format::{
+    tree_page::{HashField, Side},
+    CellAddress, CommitVersion,
+};
 use lignin_store::alloc::PageAllocator;
 use lignin_tree::{
     flat::Private,
@@ -11,6 +14,7 @@ use lignin_tree::{
         FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite,
         Write,
     },
+    hash::{Hashes, Stale},
     node::{Lease, NodeError, NodeHandle},
     value::{TreeValues, ValueSource},
 };
@@ -99,6 +103,10 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     pub(crate) values: TreeValues,
     pub(crate) source: ValueSource<'s>,
     pub(crate) flat: FlatFrames<'s, 'g, G>,
+    /// Which hashes of the frames' cells are stale: marked by the writes
+    /// that left them so, and evaluated by the commit (`lignin_tree::hash`).
+    /// They are marks of these pages, so they are made again with them.
+    pub(crate) hashes: Hashes,
     fragments: Fragments,
     key: Vec<u8>,
     /// For each Merk of the batch that was applied last, whether it had no
@@ -321,6 +329,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             values: self.values,
             source: self.source,
             flat: self.flat.under(guard),
+            hashes: self.hashes,
             fragments: self.fragments,
             key: self.key,
             empty: self.empty,
@@ -349,6 +358,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 owner,
                 path.ids,
             ))),
+            hashes: Hashes::new(),
             fragments: Fragments::new(path.layout),
             key: Vec::new(),
             empty: Vec::new(),
@@ -575,6 +585,26 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             Err(error) => return Err(Refused::dirty(error)),
         };
         self.values.check().map_err(Refused::dirty)?;
+        // The marks follow the cells the write moved. Then each node of
+        // the write has the marks its writer states, under the address the
+        // report gives: a hash the writer made is stale no more. Where
+        // nothing is or was stale, nothing is done.
+        self.hashes.follow(&write, &report);
+        let puts = merks.iter().flat_map(|merk| merk.nodes);
+        let marks = !self.hashes.is_empty() || puts.clone().any(|put| !put.stale.is_empty());
+        for (put, node) in puts.zip(&report.nodes).filter(|_| marks) {
+            let links = [(Side::Left, &put.left), (Side::Right, &put.right)];
+            let missing = links.iter().filter(|(_, link)| link.is_none());
+            let stale = missing.fold(put.stale, |stale, (side, _)| {
+                stale.without(HashField::Child(*side))
+            });
+            for field in Stale::ALL.fields() {
+                match stale.has(field) {
+                    true => self.hashes.mark(node.address(), field),
+                    false => self.hashes.unmark(node.address(), field),
+                }
+            }
+        }
 
         // The directory entry of each Merk whose root is another cell now,
         // and of each Merk whose root went along with its host.

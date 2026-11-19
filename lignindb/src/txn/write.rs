@@ -2,7 +2,7 @@
 //! told when they are applied.
 
 use lignin_format::{tree_page::Hash, CellAddress};
-use lignin_tree::node::NodeHandle;
+use lignin_tree::{hash::Stale, node::NodeHandle};
 
 use super::key::{Column, Subtree, Unit};
 
@@ -138,6 +138,17 @@ pub struct NodePut<'a> {
     pub hosted: Hosted<'a>,
     /// The node's value.
     pub value: ValuePut<'a>,
+    /// The hashes of the node that its writer did not make: they are stale
+    /// until they are evaluated, at the latest by the commit
+    /// (`lignin_tree::hash`, `transactions.md` CM3 step 5). For a stale
+    /// hash the write states the bytes the cell has, or any bytes in a
+    /// node or a link that is new. A hash of a child is stale only where
+    /// the node has a link on that side.
+    ///
+    /// [`Stale::NONE`] where the writer makes every hash itself, as Merk
+    /// does on existing GroveVersions: nothing is marked there, and no
+    /// rule runs at the commit.
+    pub stale: Stale,
     /// Where the caller last saw the node, if it kept that. It is a hint:
     /// it is followed while it is good, and the node is found by its key
     /// otherwise (PN8).

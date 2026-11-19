@@ -135,6 +135,17 @@
 //! rebuild of the frames states the write set to values that have not
 //! seen it.
 //!
+//! **Stale hashes** (`lignin_tree::hash`). A node is written with the
+//! hashes its writer made, and says which it did not make
+//! ([`NodePut::stale`]). The frames keep those marks: they follow every
+//! write of the tree pages, a later write of the node with the hash made
+//! takes its mark off, and [`NodeView::stale`] shows them to a reader. The
+//! marks are of the frames' pages, so they are made again from the write
+//! set whenever the frames are, which is also what a rollback to a mark
+//! does. The commit is handed them and evaluates them all (CM3 step 5).
+//! Where every hash is made by its writer, as on existing GroveVersions,
+//! nothing is marked, a write does nothing for them, and no rule runs.
+//!
 //! # Locations that are kept
 //!
 //! A [`NodeHandle`](lignin_tree::node::NodeHandle) is good under the lease

@@ -4,6 +4,7 @@ mod store;
 mod acceptance;
 mod errors;
 mod handles;
+mod hashes;
 mod random;
 mod reads;
 mod rebase;

@@ -30,6 +30,7 @@ fn node<'a>(key: &'a [u8], value: ValuePut<'a>) -> NodePut<'a> {
         right: None,
         hosted: Hosted::Keep,
         value,
+        stale: lignin_tree::hash::Stale::NONE,
         at: None,
     }
 }
