@@ -612,11 +612,14 @@ impl Appends {
 
 impl LogStore {
     /// Opens the log that `manifest` names, in its directory, for writing.
-    /// `end` is where a [`LogReader`](super::LogReader) of that manifest
-    /// found the log to end, with nothing written to the directory since:
-    /// an end of another directory, or of files that have another length
-    /// now, is refused ([`LogError::WrongDirectory`],
-    /// [`LogError::WrongLogEnd`]).
+    /// `end` is where a [`LogReader`](super::LogReader) found the log to
+    /// end, with nothing written to `wal/` since and the log files named
+    /// as the reader's manifest named them: an end of another directory,
+    /// or of files that have another length now, is refused
+    /// ([`LogError::WrongDirectory`], [`LogError::WrongLogEnd`]). What the
+    /// manifest says of the other kinds of files may have changed
+    /// meanwhile, as it does when a recovery writes a segment while it
+    /// reads the log.
     ///
     /// Every file of the log belongs to an earlier session. It is read and
     /// synced, and never appended to: it ends where the reader found its
@@ -970,7 +973,8 @@ impl LogStore {
     /// no commit is between asking for its place and appending its group:
     /// by the committer whose file is full, or under the lock that keeps
     /// commits out of the log ([the locks](super#locks)). So when this
-    /// returns `Ok`, a named file is ready, the log takes items, and
+    /// returns `Ok`, the log takes items, a named file was ready, as far as
+    /// that can be said while committers turn the log, and
     /// [`Self::is_due`] may still say that the file it ends in is full.
     ///
     /// Because it leaves a file ready, the log can be turned with
@@ -984,9 +988,10 @@ impl LogStore {
     ///
     /// If an append or a turn fails while it runs, it goes round again,
     /// and after a few rounds it ends with what stands in the way, such as
-    /// [`LogError::CutNotDurable`] or [`LogError::NoSpare`]. Commits that
-    /// fill the files as fast as they are made do not make it go round:
-    /// it does not turn their files.
+    /// [`LogError::CutNotDurable`] or [`LogError::NoSpare`]. Committers
+    /// that turn the log to each file as fast as it is made are no such
+    /// failure: it then returns `Ok` with no file ready, and the next call
+    /// goes on.
     ///
     /// If it fails, it can be called again.
     pub fn roll(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
@@ -1018,9 +1023,19 @@ impl LogStore {
             }
             self.commit(manifest)?;
         }
-        // Something failed in every round. What still stands in the way
-        // is the error, and the log has no file ready to turn to.
+        if self.tail().active().is_ok() {
+            // The log takes items, and every file that was made ready was
+            // turned to before this could see it: committers fill the
+            // files as fast as they are made. Nothing is wrong, and the
+            // next call goes on.
+            return Ok(turned);
+        }
+        // Something failed in every round. A last turn says what still
+        // stands in the way, if it is not made.
         self.turn(false)?;
+        if self.tail().active().is_ok() {
+            return Ok(true);
+        }
         Err(LogError::NoSpare)
     }
 

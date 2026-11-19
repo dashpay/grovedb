@@ -434,10 +434,11 @@
 //!   nothing else ([`LogError::WrongDirectory`]).
 //! - It reads the log with a [`LogReader`] before it opens it, and passes
 //!   what the reader found to [`LogStore::open`], with nothing written to
-//!   the directory in between. The log takes an end only of its own
-//!   directory, by the path, and only while every file that holds
-//!   something of the log has the length it was read with
-//!   ([`LogError::WrongLogEnd`]).
+//!   `wal/` in between and no change to how the manifest names the log's
+//!   files. Other kinds of files may be created and named meanwhile. The
+//!   log takes an end only of its own directory, by the path, and only
+//!   while every file that holds something of the log has the length it
+//!   was read with ([`LogError::WrongLogEnd`]).
 //! - It calls [`LogStore::roll`] before the session's first append, which
 //!   [recovery](crate::recovery) does, and from then on whenever
 //!   [`LogStore::is_due`], and from time to time: outside a commit and
