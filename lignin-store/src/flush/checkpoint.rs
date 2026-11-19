@@ -5,7 +5,7 @@
 
 use std::sync::atomic::Ordering;
 
-use lignin_format::{segment::Compression, CommitVersion, PageId};
+use lignin_format::{CommitVersion, PageId};
 
 use super::{
     config::count,
@@ -127,33 +127,41 @@ impl<'s> WriteBack<'s> {
         }
         let mut manifest = self.manifest()?;
         let mut turned = false;
+        let mut in_the_way = None;
         for _ in 0..ROLL_ROUNDS {
             self.sync_log()?;
-            match self.turn_log() {
-                Ok(now) => turned |= now,
+            in_the_way = match self.turn_log() {
+                Ok(now) => {
+                    turned |= now;
+                    None
+                }
                 // The log has no file to turn to that a durable manifest
                 // names, or the file it ends in is not named closed yet:
                 // the rest of this round sees to both.
                 Err(FlushError::Log(
-                    LogError::NoSpare
+                    error @ (LogError::NoSpare
                     | LogError::SpareNotNamed { .. }
-                    | LogError::CutNotDurable { .. },
-                )) => {}
+                    | LogError::CutNotDurable { .. }),
+                )) => Some(error),
                 Err(error) => return Err(error),
-            }
+            };
             match log.create() {
                 Ok(_) | Err(LogError::SpareExists { .. }) => {}
                 Err(error) => return Err(error.into()),
             }
             log.commit(&mut manifest)?;
-            if !log.is_due() {
+            if in_the_way.is_none() && !log.is_due() {
                 return Ok(turned);
             }
         }
-        // Something failed in every round. What still stands in the way is
-        // the error.
-        self.turn_log()?;
-        Err(LogError::NoSpare.into())
+        // A turn is due again after every round. If the last round made
+        // its turn, commits fill the files as fast as they are made:
+        // nothing is wrong, and the next call goes on. Otherwise what
+        // stood in the way of the last turn is the error.
+        match in_the_way {
+            None => Ok(turned),
+            Some(error) => Err(error.into()),
+        }
     }
 
     /// Turns the log to its next file if a turn is due, with every commit
@@ -165,9 +173,12 @@ impl<'s> WriteBack<'s> {
     }
 
     /// Whether a table checkpoint is due: as many bytes were logged since
-    /// the last one as the configuration says.
+    /// the last one as the configuration says, or more log is held than
+    /// it allows ([`Self::log_held`]).
     pub fn checkpoint_due(&self) -> bool {
-        self.state.logged.load(Ordering::Relaxed) >= self.state.config.checkpoint_log_bytes
+        let config = &self.state.config;
+        self.state.logged.load(Ordering::Relaxed) >= config.checkpoint_log_bytes
+            || self.log_held() > config.max_log_held
     }
 
     /// The oldest version of which some change to a page is in no block,
@@ -176,34 +187,38 @@ impl<'s> WriteBack<'s> {
     /// its page. A page that was freed since is not counted (T18).
     pub(super) fn floor(&self) -> Option<CommitVersion> {
         let Stores { pool, table, .. } = self.stores;
-        let folded = lock(&self.state.kept).oldest_folded();
-        let mut freed = Vec::new();
-        let waiting = folded.into_iter().filter_map(|(page, born)| {
-            let newest = table.newest(page);
-            if newest.is_some_and(|link| link.kind == LinkKind::Free && link.version.get() > born) {
-                freed.push(page);
-                return None;
+        // The pool is asked first: a version leaves its list only after
+        // it was noted as kept for readers.
+        let mut floor = pool.oldest_unwritten();
+        let folded = lock(&self.state.kept).folded_pages();
+        for (page, oldest, newest) in folded {
+            // A page with a version that waits for the block of the next
+            // has that next version in the pool, as its current one, until
+            // the block is written. A page that has none was freed, and so
+            // was one whose free link is newer than what waits.
+            let freed = match table.newest(page) {
+                Some(link) if link.kind == LinkKind::Free && link.version.get() > newest => true,
+                _ => pool.get(page, CommitVersion::MAX).is_err(),
+            };
+            if freed {
+                lock(&self.state.kept).unfold(page, newest);
+                continue;
             }
-            CommitVersion::new(born)
-        });
-        let floor = waiting.chain(pool.oldest_unwritten()).min();
-        if !freed.is_empty() {
-            let mut kept = lock(&self.state.kept);
-            freed.into_iter().for_each(|page| kept.forget(page));
+            floor = match (floor, CommitVersion::new(oldest)) {
+                (Some(owed), Some(waits)) => Some(owed.min(waits)),
+                (owed, waits) => owed.or(waits),
+            };
         }
         floor
     }
 
-    /// How many bytes of log lie behind the oldest commit of which a
-    /// change is in no block yet: the log that write-back holds, which no
-    /// table checkpoint can let go. 0 when everything is written back, and
-    /// when write-back was not told of that commit
+    /// How many bytes of log write-back holds: the log from the group of
+    /// the oldest commit that no table checkpoint covers. It is what a
+    /// recovery would read, and what no log file can be dropped from. 0
+    /// when a checkpoint covers every commit that write-back was told of
     /// ([`Self::committed`]).
-    pub fn log_behind(&self) -> u64 {
-        let Some(floor) = self.floor() else {
-            return 0;
-        };
-        let before = lock(&self.state.kept).logged_before(floor.get());
+    pub fn log_held(&self) -> u64 {
+        let before = lock(&self.state.kept).logged_before_uncovered();
         let logged = self.state.logged_in_all.load(Ordering::Relaxed);
         before.map_or(0, |before| logged.saturating_sub(before))
     }
@@ -211,22 +226,20 @@ impl<'s> WriteBack<'s> {
     /// Whether every change of `page` up to the version `born`, which was
     /// owed when a sample was taken, is in a block now, or never will be
     /// because the page was freed.
-    fn is_in_block(&self, page: PageId, born: CommitVersion) -> bool {
+    pub(super) fn is_in_block(&self, page: PageId, born: CommitVersion) -> bool {
         let Stores { pool, table, .. } = self.stores;
-        let Some(newest) = table.newest(page) else {
-            // No link at all: the page version is gone from the pool as
-            // well, or it still waits.
-            return pool.get_version(page, born).is_none();
-        };
-        if newest.kind == LinkKind::Free && newest.version > born {
-            return true;
-        }
+        // The pool is asked first, as for the floor.
         let mut owed = Vec::new();
         pool.unwritten_pages(born, &mut owed);
         let folded = lock(&self.state.kept).folded(page);
-        newest.version >= born
-            && !owed.contains(&page)
-            && folded.first().is_none_or(|&oldest| oldest > born.get())
+        let waits = owed.contains(&page) || folded.first().is_some_and(|&kept| kept <= born.get());
+        match table.newest(page) {
+            Some(newest) if newest.kind == LinkKind::Free && newest.version > born => true,
+            Some(newest) => newest.version >= born && !waits,
+            // No block of the page was ever linked. Its version leaves
+            // what waits only when a commit frees the page (T18).
+            None => !waits,
+        }
     }
 
     /// Takes a table checkpoint and has the manifest name it, and then
@@ -478,37 +491,22 @@ impl<'s> WriteBack<'s> {
             return Ok(false);
         }
         files.image.clear();
-        let scratch = std::mem::take(&mut files.scratch);
-        let written = super::page::write_image(&scratch, &mut files.image);
-        files.scratch = scratch;
-        if written.map_err(FlushError::page(page))? {
+        let pending = super::page::write_image(&files.scratch, &mut files.image)
+            .map_err(FlushError::page(page))?;
+        if pending {
             return Err(FlushError::PendingValue {
                 page,
                 born: newest.version,
             });
         }
-        let image = std::mem::take(&mut files.image);
-        let location = self.append(
-            files,
-            page,
-            lignin_format::segment::BlockContent::Base,
-            Compression::Lz4,
-            &image,
-        );
-        files.image = image;
-        let location = location?;
-        let counters = &self.state.counters;
+        let location = self.append_image(files, page)?;
         match table.consolidate(page, through, location) {
             Ok(version) => {
-                count(&counters.base_blocks, 1);
-                count(&counters.base_bytes, files.image.len() as u64);
-                count(&counters.stored_bytes, u64::from(location.len));
-                count(&counters.consolidations, 1);
-                files.untrimmed.insert(page, version);
+                self.linked_image(files, page, version, location, true);
                 Ok(true)
             }
             Err(LinkError::NotInChain { .. }) => {
-                count(&counters.links_refused, 1);
+                count(&self.state.counters.links_refused, 1);
                 Ok(false)
             }
             Err(source) => Err(FlushError::Link {
@@ -536,27 +534,16 @@ impl<'s> WriteBack<'s> {
             links.clear();
             next = table.scan(from, &mut links);
             // The links of one page come one after another, oldest first.
-            let mut chain: Option<(PageId, usize, usize)> = None;
-            for &(page, link) in &links {
-                let (deltas, bytes) = match chain {
-                    Some((same, deltas, bytes)) if same == page => (deltas, bytes),
-                    Some((other, deltas, bytes)) => {
-                        if over(deltas, bytes) {
-                            long.push(other);
-                        }
-                        (0, 0)
-                    }
-                    None => (0, 0),
-                };
-                chain = Some(match link.kind {
-                    LinkKind::Delta(location) => (page, deltas + 1, bytes + location.len as usize),
-                    LinkKind::Base(_) | LinkKind::Free => (page, 0, 0),
+            for chain in links.chunk_by(|one, other| one.0 == other.0) {
+                let runs = chain.iter().rev().map_while(|(_, link)| match link.kind {
+                    LinkKind::Delta(location) => Some(location.len as usize),
+                    LinkKind::Base(_) | LinkKind::Free => None,
                 });
-            }
-            if let Some((page, deltas, bytes)) = chain
-                && over(deltas, bytes)
-            {
-                long.push(page);
+                let (deltas, bytes) =
+                    runs.fold((0, 0), |(deltas, bytes), len| (deltas + 1, bytes + len));
+                if over(deltas, bytes) {
+                    long.push(chain[0].0);
+                }
             }
         }
         let mut consolidated = 0;

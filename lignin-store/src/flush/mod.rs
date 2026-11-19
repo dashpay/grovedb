@@ -165,7 +165,7 @@
 //!
 //!     // Write-back, which a loop on another thread does in a store that
 //!     // is in use: the new page goes to a segment as a base image, and
-//!     // the changed hash as a run of 47 bytes behind it.
+//!     // the changed hash as a run of 39 bytes behind it, in a block of 47.
 //!     let pass = write_back.pass()?;
 //!     assert_eq!((pass.written, pass.waiting), (1, 0));
 //! }
@@ -309,11 +309,23 @@
 //!    place of the sample are taken out of the log.
 //!
 //! ***C* is the newest version such that no change of a commit up to it
-//! is still to be written back**, and never less than what the checkpoint
-//! in force covers. A change that is in the pool only, in a version kept
-//! for readers, is still to be written back until the block of the next
-//! version of its page holds it. A change to a page that was freed since
-//! is not (T18).
+//! is still to be written back** when the sample is taken, and never less
+//! than what the checkpoint in force covers. A change that is in the pool
+//! only, in a version kept for readers, is still to be written back until
+//! the block of the next version of its page holds it. A change to a page
+//! that was freed since is not (T18). A commit that comes in while the
+//! checkpoint is taken is not covered, though its pages may be in it: the
+//! next checkpoint covers it.
+//!
+//! **What step 3 waits for is more than the rule asks.** The rule is about
+//! the pages that a page step changed before the sample. The pool does not
+//! say which unwritten pages those are, and write-back does not rely on
+//! having been told of every step, so a checkpoint waits for every page
+//! version that was unwritten at its sample. It is therefore put off
+//! while a write transaction holds a private copy of a page whose value
+//! waits to be placed. **A table checkpoint needs a moment at which no
+//! transaction holds such a page back**, and when blocks are applied back
+//! to back there may be none. [Backpressure](#backpressure) makes one.
 //!
 //! **The log goes first** (FL4). Write-back syncs segments and names them
 //! in the manifest whenever it has to, and blocks of commits that are not
@@ -341,25 +353,39 @@
 //! | --- | --- | --- |
 //! | [`max_unwritten`](FlushConfig::max_unwritten) | 4096 | the page versions that wait to be written back, which the pool cannot evict |
 //! | [`max_pending_bytes`](FlushConfig::max_pending_bytes) | 32 MiB | the bytes of pending values that frames hold |
-//! | [`max_log_behind`](FlushConfig::max_log_behind) | 256 MiB | the log behind the oldest commit of which a change is in no block: log that no checkpoint can let go ([`WriteBack::log_behind`]) |
+//! | [`max_log_held`](FlushConfig::max_log_held) | 256 MiB | the log from the oldest commit that no table checkpoint covers, which is what no log file can be dropped from and what a recovery reads ([`WriteBack::log_held`]) |
 //!
-//! The wait ends when write-back is within its bounds again, or when a
-//! pass has moved nothing on ([`Room::Stalled`]): what is left then waits
-//! for something that cannot happen during the wait, such as the end of a
-//! transaction that holds a private copy.
+//! The committer waits for the turns of the background loop
+//! ([`WriteBack::tick`]): a pass, and a table checkpoint if one is due,
+//! which it is whenever more log is held than the bound. The wait ends
+//! when write-back is within its bounds again, or when a turn has moved
+//! nothing on ([`Room::Stalled`]): what is left then waits for something
+//! that cannot happen during the wait, such as the end of a transaction
+//! that holds a private copy.
 //!
-//! **A page that every block copies and that gets a new value out of line
-//! in every block** always has a pending value when a pass looks at it,
-//! when blocks are applied back to back: the value of the last block
-//! cannot be placed under the copy of the next. Each value is placed one
-//! block late, by [`WriteBack::place_ready`], and the page is never
-//! written, so the log behind it grows. The third bound is for that page.
-//! It takes effect where the committer holds no private copy: **a
-//! committer that applies blocks back to back calls
-//! [`WriteBack::wait_for_room`] after [`WriteBack::place_ready`], before
-//! its next transaction copies a page.** In that wait a pass places the
-//! value and writes the page. The tests in `tests/measure.rs` measure
-//! both, on blocks of the reference workload's shape.
+//! **Where the committer waits decides what the wait can do.** Before step
+//! 2 of CM3 it holds the copies of its transaction, and what they hold
+//! back stays. So **a committer that applies blocks back to back calls
+//! [`WriteBack::wait_for_room`] after [`WriteBack::place_ready`], when its
+//! commit is published and before its next transaction copies a page.**
+//! It returns at once while write-back is within its bounds. Once it is
+//! not, the turn the committer waits for finds no page held back: it
+//! places every value, writes every page and takes the checkpoint. That
+//! wait is what keeps two things bounded when blocks come back to back:
+//!
+//! - **The log that is held.** With no such moment no checkpoint is
+//!   installed, however far write-back has written.
+//! - **A page that every block copies and that gets a new value out of
+//!   line in every block.** It has a pending value whenever a pass looks
+//!   at it, since the value of the last block cannot be placed under the
+//!   copy of the next. Each value is placed one block late, by
+//!   [`WriteBack::place_ready`], and the page itself is never written, so
+//!   no checkpoint can cover its commits.
+//!
+//! The tests in `tests/measure.rs` measure both on blocks of the reference
+//! workload's shape: with the call to [`WriteBack::place_ready`] every
+//! value is placed one block after its own, and with the wait the log
+//! that is held stays within its bound.
 //!
 //! # When something fails
 //!
@@ -367,6 +393,11 @@
 //! not written back is still in the pool and in the log, and a checkpoint
 //! that was not installed leaves the one before it in force. A call that
 //! failed can be made again.
+//!
+//! **An error that is about one page does not end a pass.** The other
+//! pages are written, and the pass returns the first such error when it
+//! is done. The page stays unwritten, so no checkpoint covers its commit,
+//! and the log keeps it.
 //!
 //! | What fails | What write-back does |
 //! | --- | --- |
@@ -376,13 +407,17 @@
 //! | An append to a value-log file, or its sync | The values that went to that file are given up with their holds, and the next pass appends them to another file. |
 //! | A sync of the log | Nothing more becomes durable in this session, which is the log's rule (`wal`), so no checkpoint is installed. |
 //! | The replacement of a manifest, left in doubt | The manifest is opened again by the next call that needs it, and every store is told which one is in force. A checkpoint whose installation was left in doubt keeps its hold on the log beside the one that was in force, until that is known. |
-//! | A block of a chain cannot be read when a run is verified | The pass fails with the error. The page stays unwritten. |
-//! | What regroups a page's values | The pass fails with [`FlushError::Regroup`]. The steps that were made stand, and the page stays unwritten. |
+//! | A block of a chain cannot be read when a run is verified | The pass ends with the error. The page stays unwritten. |
+//! | A pending value has no bytes of its length, or a page is not what its format allows | The page stays as it is, and the pass goes on with the others. |
+//! | What regroups a page's values | The steps that were made stand. The page is written as it is, nothing more is regrouped in that pass, and the pass returns [`FlushError::Regroup`]. |
 //!
 //! [`WriteBack::run`] counts a turn that fails, passes the error to its
-//! caller and goes on. `tests/faults.rs` fails every file operation of
-//! write-back in turn, and `tests/crash.rs` cuts the power after every
-//! change to what a crash can leave.
+//! caller and goes on. A turn makes its pass whatever became of the log
+//! before it, so a committer that waits for room is never left waiting.
+//! `tests/faults.rs` fails every file operation of write-back in turn,
+//! `tests/crash.rs` cuts the power after every change to what a crash can
+//! leave, and `tests/threads.rs` freezes the files, as a crash would leave
+//! them, while several threads commit, write back and take checkpoints.
 //!
 //! # Locks
 //!
@@ -414,7 +449,13 @@
 //! [`WriteBack::consolidate_long_chains`] once. Recovery (STORE-07) can
 //! tell write-back of each group it replays as a commit does. If it does
 //! not, the pages of those commits are written as base images, and no log
-//! file is dropped behind them until a checkpoint covers them all.
+//! file is dropped behind them until a checkpoint covers them all. A page
+//! version that it rebuilds with a pending value has the value's bytes
+//! attached to its frame or readable in the log
+//! ([`LogStore::read_pending`](crate::wal::LogStore::read_pending)):
+//! write-back keeps the log for the newest version of a page that waits,
+//! and for no version that was superseded, whose bytes are with its frame
+//! (FL7).
 //!
 //! **A commit** (TXN-05):
 //!
@@ -422,7 +463,8 @@
 //!   place of its group and holds it until the group is in (`wal`,
 //!   "Locks");
 //! - calls [`WriteBack::committed`] once the group is in the log and
-//!   **before it installs its first page**;
+//!   **before it installs its first page**, and goes on whatever it
+//!   returns;
 //! - calls [`WriteBack::place_ready`] once it is published, and after a
 //!   rollback, and then [`WriteBack::wait_for_room`], before its thread's
 //!   next write transaction copies a page; it may call
@@ -451,9 +493,9 @@
 //! - It does not rescue the blocks of a segment whose sync failed by
 //!   writing their pages again. The session goes on without checkpoints,
 //!   and the next open recovers from the log.
-//! - It takes no checkpoint that covers less than everything that was
-//!   unwritten when its sample was taken, and so puts one off while a
-//!   write transaction holds back a page that was unwritten then.
+//! - It takes no checkpoint while a write transaction holds back a page
+//!   that was unwritten when the sample was taken, and it cannot make a
+//!   long transaction end. While one is open, the log is held.
 
 mod checkpoint;
 mod config;

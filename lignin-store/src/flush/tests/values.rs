@@ -3,10 +3,6 @@
 
 use super::*;
 
-fn live_values(db: &Db) -> u64 {
-    db.values.counts().iter().map(|count| count.values).sum()
-}
-
 /// A commit that writes values too long for their cells appends to the log
 /// only. Write-back then appends each value to the value log, has a
 /// manifest cover it, gives its cell the pointer and counts it, once.
@@ -23,14 +19,14 @@ fn a_pending_value_is_placed_and_counted_once() {
     // The commit wrote no value-log file and replaced no manifest (CM7).
     assert_eq!(db.values.files_named().expect("the files"), named_before);
     assert_eq!(db.pending(page(1)).len(), 2);
-    assert_eq!(live_values(&db), 0);
+    assert_eq!(db.live_values(), 0);
     assert_eq!(db.pool.attached_bytes(), 8000);
     db.check_warm();
 
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.written, pass.placed, pass.waiting), (2, 3, 0));
     assert!(db.pending(page(1)).is_empty() && db.pending(page(2)).is_empty());
-    assert_eq!(live_values(&db), 3);
+    assert_eq!(db.live_values(), 3);
     assert_eq!(db.pool.attached_bytes(), 0);
     for pointer in db.pointers(page(1)).into_iter().chain(db.pointers(page(2))) {
         assert!(db.values.covers(pointer), "{pointer:?} is covered");
@@ -64,13 +60,13 @@ fn a_value_waits_for_a_private_copy_of_its_page_and_is_appended_once() {
     let stats = db.stats();
     assert_eq!((stats.values_appended, stats.values_placed), (1, 0));
     assert_eq!(stats.steps_put_off, 3);
-    assert_eq!(live_values(&db), 0);
+    assert_eq!(db.live_values(), 0);
     assert_eq!(db.pending(page(1)).len(), 1);
     db.check_warm();
 
     txn.roll_back();
     assert_eq!(db.wb().place_ready().expect("placed"), 1);
-    assert_eq!(live_values(&db), 1);
+    assert_eq!(db.live_values(), 1);
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.written, pass.placed, pass.waiting), (1, 0, 0));
     assert_eq!(db.stats().values_appended, 1);
@@ -96,7 +92,7 @@ fn a_value_is_placed_right_after_the_commit_that_carried_it_on() {
     assert_eq!(db.pending(page(1)).len(), 1);
     assert_eq!(db.wb().place_ready().expect("placed"), 1);
     assert!(db.pending(page(1)).is_empty());
-    assert_eq!(live_values(&db), 1);
+    assert_eq!(db.live_values(), 1);
     assert_eq!(db.frame(page(1), second).expect("the page").born(), second);
 
     // The version that was superseded with the value pending is never
@@ -175,7 +171,7 @@ fn a_value_whose_cell_goes_before_its_step_is_given_up() {
     assert_eq!(db.wb().place_ready().expect("no step"), 0);
     let stats = db.stats();
     assert_eq!((stats.values_placed, stats.values_given_up), (0, 1));
-    assert_eq!(live_values(&db), 0);
+    assert_eq!(db.live_values(), 0);
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.placed, pass.waiting), (0, 0));
     db.check_cold();
@@ -189,17 +185,17 @@ fn a_placed_value_that_is_replaced_is_released_and_the_new_one_placed() {
     db.commit(&[insert((1, 1), b"a", long(1, 2000))]);
     db.wb().pass().expect("a pass");
     let old = db.pointers(page(1));
-    assert_eq!(live_values(&db), 1);
+    assert_eq!(db.live_values(), 1);
 
     db.commit(&[Op::Value {
         page: page(1),
         slot: slot(1),
         value: long(9, 2500),
     }]);
-    assert_eq!(live_values(&db), 0);
+    assert_eq!(db.live_values(), 0);
     let pass = db.wb().pass().expect("a pass");
     assert_eq!((pass.written, pass.placed), (1, 1));
-    assert_eq!(live_values(&db), 1);
+    assert_eq!(db.live_values(), 1);
     assert_ne!(db.pointers(page(1)), old);
     assert_eq!(db.shape(page(1)), "Bd");
     db.check_cold();

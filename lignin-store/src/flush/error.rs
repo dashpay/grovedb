@@ -207,7 +207,20 @@ impl From<CacheError> for FlushError {
 }
 
 impl FlushError {
-    pub(super) fn page(page: PageId) -> impl FnOnce(FormatError) -> Self {
+    pub(super) fn page(page: PageId) -> impl Fn(FormatError) -> Self + Copy {
         move |source| Self::Page { page, source }
+    }
+
+    /// Whether the error is about one page and says nothing of the next:
+    /// a pass goes on with the other pages after it.
+    pub(super) fn is_of_one_page(&self) -> bool {
+        matches!(
+            self,
+            Self::Page { .. }
+                | Self::Link { .. }
+                | Self::StepRefused { .. }
+                | Self::PendingValue { .. }
+                | Self::Regroup { .. }
+        )
     }
 }

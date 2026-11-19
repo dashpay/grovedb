@@ -12,20 +12,13 @@ use super::*;
 use crate::{
     cache::{CacheError, StepRefusal},
     segment::{tests::sim::db_dir, BlockLocation, FileNames, SegmentStoreError},
-    table::{LinkError, LogPlace, PageTableError},
+    table::{LinkError, PageTableError},
     values::ValueStoreError,
     wal::LogError,
 };
 
 fn file_id(raw: u32) -> FileId {
     FileId::new(raw).expect("a file id")
-}
-
-fn installed(checkpointed: Checkpointed) -> CommitVersion {
-    match checkpointed {
-        Checkpointed::Installed { covers, .. } => covers,
-        other => panic!("no checkpoint was installed: {other:?}"),
-    }
 }
 
 /// Every error says which page, block or place it is about, and names the
@@ -203,8 +196,7 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
             ),
             (1, 1, 0)
         );
-        let live: u64 = db.values.counts().iter().map(|count| count.values).sum();
-        assert_eq!(live, 1);
+        assert_eq!(db.live_values(), 1);
         db.check_cold();
         db.reopen().check_cold();
     }
@@ -248,7 +240,7 @@ fn a_segment_that_fails_an_append_is_left_for_another() {
     db.check_cold();
     // The segment that failed was synced, so a checkpoint can name it.
     assert_eq!(
-        installed(db.wb().checkpoint().expect("a checkpoint")),
+        installed(db.wb().checkpoint().expect("a checkpoint")).0,
         db.latest()
     );
     db.reopen().check_cold();
@@ -263,7 +255,7 @@ fn after_a_failed_sync_of_a_segment_no_checkpoint_is_installed() {
     let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
     db.commit(&[insert((1, 1), b"a", long(1, 900))]);
     assert_eq!(
-        installed(db.wb().checkpoint().expect("a checkpoint")),
+        installed(db.wb().checkpoint().expect("a checkpoint")).0,
         version(1)
     );
     let first = db.chain(page(1))[0].location().expect("a block").file;
@@ -319,19 +311,22 @@ fn a_value_log_file_that_cannot_be_synced_is_left_for_another() {
     assert_eq!((pass.placed, pass.written, pass.waiting), (1, 1, 0));
     assert!(db.pointer(page(1), slot(2)).file() > first);
     assert_eq!(db.stats().values_appended, 3);
-    let live: u64 = db.values.counts().iter().map(|count| count.values).sum();
-    assert_eq!(live, 2);
+    assert_eq!(db.live_values(), 2);
     db.check_cold();
     db.reopen().check_cold();
 }
 
 /// A pending value whose bytes are with its frame in another length than
-/// its cell states is not written anywhere: the pass fails, and the page
-/// stays as it is.
+/// its cell states is not written anywhere. The pass reports it and goes
+/// on: the page stays as it is, and the other pages are written.
 #[test]
 fn a_pending_value_without_bytes_of_its_length_is_refused() {
     let db = Db::new();
-    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", long(2, 800)),
+        insert((3, 1), b"c", inline(b"v")),
+    ]);
     let (_, pending) = db.pending(page(1))[0];
     {
         let step = db.pool.page_step(page(1));
@@ -341,14 +336,31 @@ fn a_pending_value_without_bytes_of_its_length_is_refused() {
         blank.attach(pending.id(), Arc::from(&b"too short"[..]));
         step.replace(&old, blank).expect("replaced");
     }
-    let error = db.wb().pass().expect_err("the bytes are not the value");
-    assert!(
-        matches!(error, FlushError::PendingValue { page: id, born } if id == page(1) && born == version(1)),
-        "{error}"
-    );
-    let stats = db.stats();
-    assert_eq!((stats.values_appended, stats.base_blocks), (0, 0));
-    assert_eq!(db.state.unwritten(), 1);
+    for _ in 0..2 {
+        let error = db.wb().pass().expect_err("the bytes are not the value");
+        assert!(
+            matches!(error, FlushError::PendingValue { page: id, born } if id == page(1) && born == version(1)),
+            "{error}"
+        );
+        let stats = db.stats();
+        assert_eq!(
+            (
+                stats.values_appended,
+                stats.values_placed,
+                stats.base_blocks
+            ),
+            (1, 1, 2)
+        );
+        assert_eq!(db.state.unwritten(), 1);
+        assert_eq!(db.pending(page(1)).len(), 1);
+    }
+    // No checkpoint can cover the commit of that page.
+    let error = db
+        .wb()
+        .checkpoint()
+        .expect_err("the page cannot be written");
+    assert!(matches!(error, FlushError::PendingValue { .. }), "{error}");
+    assert_eq!(db.stats().checkpoints, 0);
 }
 
 /// A commit frees a page while write-back writes its block. The page table
@@ -475,4 +487,55 @@ fn a_loop_that_is_stopped_before_it_begins_ends_at_once() {
         wb.stop();
     });
     db.check_cold();
+}
+
+/// The log cannot be synced any more, so every turn of the loop fails
+/// when it rolls the log. The turn makes its pass all the same: pages are
+/// written, and a committer that waits for room is not left waiting.
+#[test]
+fn a_turn_that_cannot_roll_the_log_still_makes_its_pass() {
+    let config = FlushConfig {
+        max_unwritten: 0,
+        idle: std::time::Duration::from_millis(2),
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let log = LogOptions {
+        target_file_len: 300,
+        ..LogOptions::default()
+    };
+    let (fs, db) = Db::on_sim(config, log);
+    db.commit(&[insert((1, 1), b"a", inline(&noise(1, 400)))]);
+    assert!(db.log.is_due());
+    let file = db.log.end().expect("the log has a file").file();
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpSet::SYNCS)
+            .at(FileNames::WAL.path(db_dir(), file))
+            .forever(),
+    );
+
+    let wb = db.wb();
+    let errors = Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        scope.spawn(|| wb.run(|error| errors.lock().expect("the errors").push(error.to_string())));
+        let _stop = StopOnDrop(wb);
+        while !db.state.running.load(Ordering::Acquire) {
+            std::thread::yield_now();
+        }
+        for round in 0..5u8 {
+            assert_eq!(wb.wait_for_room().expect("room"), Room::Free);
+            db.commit(&[hash((1, 1), round)]);
+        }
+        assert_eq!(wb.wait_for_room().expect("room"), Room::Free);
+    });
+    assert_eq!(db.state.unwritten(), 0);
+    assert!(!errors.lock().expect("the errors").is_empty());
+    assert!(db.stats().errors > 0);
+    db.check_cold();
+    // No checkpoint is installed while the log cannot be made durable.
+    let error = db.wb().checkpoint().expect_err("the log is not durable");
+    assert!(
+        matches!(error, FlushError::Log(LogError::SyncFailed { .. })),
+        "{error}"
+    );
 }

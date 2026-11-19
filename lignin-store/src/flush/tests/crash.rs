@@ -10,7 +10,7 @@
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
+use lignin_io::sim::{CrashImage, CrashPoint, SimConfig, SimVfs};
 
 use super::{recover::recover, *};
 use crate::segment::tests::sim::{crash_states, db_dir, shared, sim_fs, Plans};
@@ -192,8 +192,15 @@ pub(super) struct Tally {
 /// Recovers every state that a crash of `ran` can leave, as `plans` picks
 /// them, and checks each against the model.
 pub(super) fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
+    check_image(&ran.fs.crash_image(), ran, plans, tally);
+}
+
+/// Recovers every state that `image` can leave, as `plans` picks them. A
+/// recovery lands at or after the version `ran` knew durable when the
+/// image was taken, and what it lands on is what the model of `ran` says.
+pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &mut Tally) {
     let ids: Vec<PageId> = ran.model.pages.keys().copied().collect();
-    let states = crash_states(&ran.fs.crash_image(), plans);
+    let states = crash_states(image, plans);
     tally.crashes += 1;
     for (plan, state) in states.states {
         if state

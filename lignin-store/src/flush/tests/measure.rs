@@ -13,7 +13,8 @@
 //!
 //! The blocks are back to back in the worst way there is for write-back:
 //! the transaction of the next block has made every one of its private
-//! copies before write-back gets its turn, which is one pass for a block.
+//! copies before write-back gets its turn, which is one turn of its loop
+//! for a block ([`WriteBack::tick`]).
 
 use std::collections::HashMap;
 
@@ -61,8 +62,13 @@ struct Measured {
     /// the oldest in blocks.
     pending_at_end: (usize, u64),
     /// After each block, the bytes of log behind the oldest change that is
-    /// in no block.
+    /// in no block: the log that pending values and unwritten pages hold.
     log_behind: Vec<u64>,
+    /// After each block, the bytes of log that no table checkpoint covers:
+    /// the log that write-back holds in all.
+    log_held: Vec<u64>,
+    /// The table checkpoints that were installed while the blocks came.
+    checkpoints: u64,
     /// The bytes of log one block wrote, on average.
     block_bytes: u64,
     /// The most bytes of pending values that frames held after a block.
@@ -81,14 +87,34 @@ impl Measured {
     fn most_log_behind(&self) -> u64 {
         self.log_behind.iter().copied().max().unwrap_or(0)
     }
+
+    fn most_log_held(&self) -> u64 {
+        self.log_held.iter().copied().max().unwrap_or(0)
+    }
 }
+
+/// The bytes of log behind the oldest commit of which a change is in no
+/// block yet.
+fn log_behind(db: &Db) -> u64 {
+    let Some(floor) = db.wb().floor() else {
+        return 0;
+    };
+    let kept = db.state.kept.lock().expect("what is kept");
+    let before = kept.logged_before(floor.get());
+    let logged = db.state.logged_in_all.load(Ordering::Relaxed);
+    before.map_or(0, |before| logged - before)
+}
+
+/// A cell of a leaf: its slot, the seed of its value, and the block that
+/// put it there.
+type LeafCell = (u16, u8, u64);
 
 /// The pages of the store and what the cells of its leaves hold.
 struct Shape {
     rng: Rng,
     /// For each leaf, its next free slot and its cells: slot and the seed
     /// of the value, with the block that put it there.
-    leaves: Vec<(u16, Vec<(u16, u8, u64)>)>,
+    leaves: Vec<(u16, Vec<LeafCell>)>,
     keys: u64,
 }
 
@@ -205,7 +231,7 @@ fn apply(blocks: u64, turns: Turns, config: FlushConfig) -> Measured {
         for id in ops.iter().map(Op::page).collect::<BTreeSet<_>>() {
             txn.copy(id);
         }
-        wb.pass().expect("a pass");
+        wb.tick().expect("a turn");
         txn.commit(&ops);
         if turns.places_after_commit {
             wb.place_ready().expect("placed");
@@ -230,13 +256,15 @@ fn apply(blocks: u64, turns: Turns, config: FlushConfig) -> Measured {
         for id in &pending {
             written_in.entry(*id).or_insert(block);
         }
-        measured.log_behind.push(wb.log_behind());
+        measured.log_behind.push(log_behind(&db));
+        measured.log_held.push(wb.log_held());
         measured.peak_pending_bytes = measured.peak_pending_bytes.max(db.pool.attached_bytes());
     }
     let oldest = written_in.values().map(|written| blocks - written).max();
     measured.pending_at_end = (written_in.len(), oldest.unwrap_or(0));
     let logged = db.state.logged_in_all.load(Ordering::Relaxed) - logged_before;
     measured.block_bytes = logged / blocks;
+    measured.checkpoints = db.stats().checkpoints;
 
     // Whatever the turns were, nothing is lost: once the blocks stop,
     // everything is written back and a checkpoint covers it.
@@ -248,38 +276,59 @@ fn apply(blocks: u64, turns: Turns, config: FlushConfig) -> Measured {
     db.check_cold();
     println!(
         "{turns:?}: {} values placed, wait mean {:.2} and longest {} blocks; {} pending at the \
-         end, the oldest for {} blocks; log behind at most {} bytes, {:.1} blocks of {} bytes; \
-         pending bytes at most {}",
+         end, the oldest for {} blocks; a block logs {} bytes; log behind what is unwritten at \
+         most {:.1} blocks; log held at most {:.1} blocks; {} checkpoints; pending bytes at most {}",
         measured.waits.len(),
         measured.mean_wait(),
         measured.longest_wait(),
         measured.pending_at_end.0,
         measured.pending_at_end.1,
-        measured.most_log_behind(),
-        measured.most_log_behind() as f64 / measured.block_bytes as f64,
         measured.block_bytes,
+        measured.most_log_behind() as f64 / measured.block_bytes as f64,
+        measured.most_log_held() as f64 / measured.block_bytes as f64,
+        measured.checkpoints,
         measured.peak_pending_bytes,
     );
     measured
 }
 
 const BLOCKS: u64 = 60;
+/// What one block logs, roughly: the bounds of the runs are counted in it.
+const BLOCK_BYTES: u64 = 23_000;
 
-/// **Blocks of the reference workload's shape, back to back.** The pass
+/// A table checkpoint is due after four blocks, and the committer is made
+/// to wait once eight blocks of log are held.
+fn bounded() -> FlushConfig {
+    FlushConfig {
+        checkpoint_log_bytes: 4 * BLOCK_BYTES,
+        max_log_held: 8 * BLOCK_BYTES,
+        ..FlushConfig::new(Db::SIZE)
+    }
+}
+
+/// The same, with no bound on the log that is held.
+fn unbounded() -> FlushConfig {
+    FlushConfig {
+        max_log_held: u64::MAX,
+        ..bounded()
+    }
+}
+
+/// **Blocks of the reference workload's shape, back to back.** The turn
 /// after a commit puts its values into the value log, and places those
 /// whose page the next block has not copied. The others are placed when
 /// that block has committed. So every value is placed one block after its
-/// own, and write-back holds the log of the last few blocks and no more:
-/// of the block that was just committed, of the one before it, whose last
-/// values were placed after the pass, and of a page version that was
-/// superseded while it waited.
+/// own, and the log behind what is unwritten is that of the last few
+/// blocks and no more: of the block that was just committed, of the one
+/// before it, whose last values were placed after the pass, and of a page
+/// version that was superseded while it waited.
 #[test]
 fn a_pending_value_waits_one_block_when_the_committer_places_after_its_commit() {
     let turns = Turns {
         places_after_commit: true,
         ..Turns::default()
     };
-    let measured = apply(BLOCKS, turns, FlushConfig::new(Db::SIZE));
+    let measured = apply(BLOCKS, turns, unbounded());
     assert!(measured.waits.len() as u64 > BLOCKS * TRANSITIONS);
     assert_eq!(measured.longest_wait(), 1);
     assert_eq!(
@@ -300,21 +349,66 @@ fn a_pending_value_waits_one_block_when_the_committer_places_after_its_commit() 
 /// this shape that is a few blocks, by chance and with no bound.
 #[test]
 fn without_the_call_after_the_commit_a_value_waits_for_a_block_that_leaves_its_page() {
-    let measured = apply(BLOCKS, Turns::default(), FlushConfig::new(Db::SIZE));
+    let measured = apply(BLOCKS, Turns::default(), unbounded());
     let with = Turns {
         places_after_commit: true,
         ..Turns::default()
     };
-    let better = apply(BLOCKS, with, FlushConfig::new(Db::SIZE));
+    let better = apply(BLOCKS, with, unbounded());
     assert!(measured.longest_wait() >= better.longest_wait());
     assert!(measured.mean_wait() >= better.mean_wait());
+}
+
+/// **A table checkpoint needs a moment at which no write transaction holds
+/// back a page that is unwritten**, and blocks that come back to back
+/// leave none: when write-back has its turn, the next block has copied
+/// pages whose values wait for it. So no checkpoint is taken, and the log
+/// that is held grows with every block, though every page is written one
+/// block late.
+///
+/// The committer makes the moment: once more log is held than the bound,
+/// it waits where it holds no copy, and the turn it waits for writes
+/// everything and takes the checkpoint.
+#[test]
+fn back_to_back_a_checkpoint_is_taken_when_the_committer_waits_for_it() {
+    let turns = Turns {
+        places_after_commit: true,
+        ..Turns::default()
+    };
+    let unbounded = apply(BLOCKS, turns, unbounded());
+    assert_eq!(unbounded.checkpoints, 0);
+    assert!(
+        unbounded.most_log_held() >= (BLOCKS - 1) * unbounded.block_bytes,
+        "{} of {}",
+        unbounded.most_log_held(),
+        unbounded.block_bytes
+    );
+
+    let waits = Turns {
+        waits_between: true,
+        ..turns
+    };
+    let config = bounded();
+    let measured = apply(BLOCKS, waits, config);
+    assert!(
+        measured.checkpoints >= BLOCKS / 10,
+        "{}",
+        measured.checkpoints
+    );
+    assert!(
+        measured.most_log_held() <= config.max_log_held + 2 * measured.block_bytes,
+        "{} of {}",
+        measured.most_log_held(),
+        measured.block_bytes
+    );
+    assert_eq!(measured.longest_wait(), 1);
 }
 
 /// **A page that every block copies and that gets a new value out of line
 /// in every block** is never without a pending value when a pass looks at
 /// it, so it is never written, and the log behind it grows with every
 /// block. The call after the commit places each value, and does not help
-/// the page.
+/// the page. The committer's wait does: in it the page is written.
 #[test]
 fn a_page_with_a_new_value_in_every_block_holds_the_log_until_the_committer_waits() {
     let hot = Turns {
@@ -322,7 +416,7 @@ fn a_page_with_a_new_value_in_every_block_holds_the_log_until_the_committer_wait
         hot_value: true,
         ..Turns::default()
     };
-    let measured = apply(BLOCKS, hot, FlushConfig::new(Db::SIZE));
+    let measured = apply(BLOCKS, hot, unbounded());
     assert_eq!(measured.longest_wait(), 1);
     assert!(
         measured.most_log_behind() > (BLOCKS - 2) * measured.block_bytes * 9 / 10,
@@ -331,23 +425,23 @@ fn a_page_with_a_new_value_in_every_block_holds_the_log_until_the_committer_wait
         measured.block_bytes
     );
 
-    // With a bound on the log behind, and a committer that asks for room
-    // when it holds no copy, the page is written in that wait.
-    let bound = 8 * measured.block_bytes;
-    let config = FlushConfig {
-        max_log_behind: bound,
-        ..FlushConfig::new(Db::SIZE)
-    };
     let waits = Turns {
         waits_between: true,
         ..hot
     };
+    let config = bounded();
     let bounded = apply(BLOCKS, waits, config);
     assert!(
-        bounded.most_log_behind() <= bound + 2 * bounded.block_bytes,
+        bounded.most_log_held() <= config.max_log_held + 2 * bounded.block_bytes,
         "{} of {}",
-        bounded.most_log_behind(),
+        bounded.most_log_held(),
         bounded.block_bytes
+    );
+    assert!(bounded.most_log_behind() <= bounded.most_log_held());
+    assert!(
+        bounded.checkpoints >= BLOCKS / 10,
+        "{}",
+        bounded.checkpoints
     );
     assert_eq!(bounded.longest_wait(), 1);
 }

@@ -12,6 +12,7 @@ mod flat;
 mod measure;
 mod recover;
 mod regroup;
+mod threads;
 mod values;
 
 use std::{
@@ -44,7 +45,7 @@ use crate::{
     cache::{BufferPool, OwnerId, PageRef, PoolConfig, PrivateRef},
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore},
-    table::{Link, LinkKind, PageTable, TableCheckpoints},
+    table::{CheckpointInfo, Link, LinkKind, LogPlace, PageTable, TableCheckpoints},
     values::{FileCount, ValueChange, ValueHold, ValueStore, ValueWriter},
     wal::{LogOptions, LogReader, LogStore},
 };
@@ -61,6 +62,52 @@ pub(super) fn page(raw: u32) -> PageId {
 
 pub(super) fn slot(raw: u16) -> SlotId {
     SlotId::new(raw).expect("a slot")
+}
+
+/// What a checkpoint that was installed covers, the place of its sample,
+/// and how many log files went after it.
+pub(super) fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace, usize) {
+    match checkpointed {
+        Checkpointed::Installed {
+            covers,
+            place,
+            log_files_dropped,
+        } => (covers, place, log_files_dropped),
+        other => panic!("no checkpoint was installed: {other:?}"),
+    }
+}
+
+/// Ends the background loop when it goes, whatever becomes of the thread
+/// that holds it.
+pub(super) struct StopOnDrop<'s>(pub(super) WriteBack<'s>);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// An empty buffer pool for pages of `size`.
+pub(super) fn new_pool(size: PageSize) -> BufferPool {
+    BufferPool::new(PoolConfig {
+        page_size: size,
+        capacity: 4 << 20,
+    })
+    .expect("a pool")
+}
+
+/// The counts of live values that the sample of a checkpoint holds, as
+/// the value log takes them back.
+pub(super) fn sample_counts(info: Option<&CheckpointInfo>) -> Vec<FileCount> {
+    info.iter()
+        .flat_map(|info| &info.sample().counts)
+        .map(|count| FileCount {
+            file: count.file,
+            values: count.values,
+            bytes: count.bytes,
+            miscounted: count.miscounted,
+        })
+        .collect()
 }
 
 /// Who publishes and who pins, for a store with one snapshot at most and
@@ -397,10 +444,18 @@ fn committed_cells(
         .collect()
 }
 
+/// What a page said from one version on: the version, and its cells, or
+/// `None` from the commit that freed it.
+pub(super) type Versioned = (u64, Option<Vec<Cell>>);
+
+/// An entry of a flat leaf: its key, its value unless that is pending,
+/// and the pointer to it if it is out of line.
+pub(super) type FlatEntry = (Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>);
+
 /// What every version of every page says, as the commits left it.
 #[derive(Debug, Default, Clone)]
 pub(super) struct Model {
-    pub(super) pages: BTreeMap<PageId, Vec<(u64, Option<Vec<Cell>>)>>,
+    pub(super) pages: BTreeMap<PageId, Vec<Versioned>>,
 }
 
 impl Model {
@@ -497,11 +552,7 @@ impl Db {
             .expect("an empty log");
         let log = LogStore::open(&manifest, &end, log).expect("a log");
         log.roll(&mut manifest).expect("a log file");
-        let pool = BufferPool::new(PoolConfig {
-            page_size: size,
-            capacity: 4 << 20,
-        })
-        .expect("a pool");
+        let pool = new_pool(size);
         let db = Self {
             _dir: None,
             vfs,
@@ -555,16 +606,7 @@ impl Db {
         let named = manifest.manifest().expect("a manifest").clone();
         let (table, info) = PageTable::load(&*vfs, &path, &named).expect("the checkpoint loads");
         let segments = SegmentStore::open(&manifest).expect("segments");
-        let counts: Vec<FileCount> = info
-            .iter()
-            .flat_map(|info| &info.sample().counts)
-            .map(|count| FileCount {
-                file: count.file,
-                values: count.values,
-                bytes: count.bytes,
-                miscounted: count.miscounted,
-            })
-            .collect();
+        let counts = sample_counts(info.as_ref());
         let values = ValueStore::open(&manifest, &counts).expect("a value log");
         let checkpoints = TableCheckpoints::open(&manifest).expect("checkpoints");
         let end = LogReader::new(vfs.clone(), &path, &named)
@@ -573,11 +615,7 @@ impl Db {
         assert_eq!(end.latest(), latest);
         let log = LogStore::open(&manifest, &end, LogOptions::default()).expect("a log");
         log.roll(&mut manifest).expect("a log file");
-        let pool = BufferPool::new(PoolConfig {
-            page_size: size,
-            capacity: 4 << 20,
-        })
-        .expect("a pool");
+        let pool = new_pool(size);
         let versions = Versions::new();
         versions.latest.store(latest.get(), Ordering::SeqCst);
         let db = Self {
@@ -625,6 +663,11 @@ impl Db {
 
     pub(super) fn latest(&self) -> CommitVersion {
         Published::latest(&self.versions)
+    }
+
+    /// How many values the value log counts as live.
+    pub(super) fn live_values(&self) -> u64 {
+        self.values.counts().iter().map(|count| count.values).sum()
     }
 
     pub(super) fn stats(&self) -> FlushStats {
@@ -786,7 +829,10 @@ impl Db {
         let at = self.log.next_group().expect("a place for the group");
         let mut bytes = Vec::new();
         let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
-        let places: Vec<Option<(ValuePlace, Option<&[u8]>)>> = entries
+        // The place of each value that is out of line, with its bytes if
+        // the commit writes it.
+        type Placed<'a> = Option<(ValuePlace, Option<&'a [u8]>)>;
+        let places: Vec<Placed<'_>> = entries
             .iter()
             .map(|(key, value)| match (value, placed.get(*key)) {
                 (Val::Inline(_), _) => None,
@@ -843,11 +889,7 @@ impl Db {
     /// The entries of the flat leaf in `frame`: each key with its value,
     /// read through its pointer if it is out of line, and that pointer.
     /// A value that is still pending has no bytes here.
-    pub(super) fn flat_entries(
-        &self,
-        id: PageId,
-        frame: &[u8],
-    ) -> Vec<(Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>)> {
+    pub(super) fn flat_entries(&self, id: PageId, frame: &[u8]) -> Vec<FlatEntry> {
         let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
         let leaf = page.leaf().expect("a leaf");
         leaf.iter()
@@ -897,11 +939,7 @@ impl Db {
     /// segments, so every version must have been written back, and no
     /// value may be pending.
     pub(super) fn check_cold(&self) {
-        let pool = BufferPool::new(PoolConfig {
-            page_size: self.size,
-            capacity: 4 << 20,
-        });
-        self.check(&pool.expect("a pool"), true);
+        self.check(&new_pool(self.size), true);
     }
 
     fn check(&self, pool: &BufferPool, cold: bool) {
@@ -1027,7 +1065,8 @@ impl<'d> Txn<'d> {
         let ids: BTreeSet<PageId> = ops.iter().map(Op::page).collect();
         let freed: BTreeSet<PageId> = ops
             .iter()
-            .filter_map(|op| matches!(op, Op::Free { .. }).then(|| op.page()))
+            .filter(|op| matches!(op, Op::Free { .. }))
+            .map(Op::page)
             .collect();
         for &id in &ids {
             self.copy(id);

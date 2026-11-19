@@ -45,13 +45,15 @@ pub struct FlushConfig {
     /// Backpressure: the most bytes of pending values that frames may hold
     /// before a committer is made to wait.
     pub max_pending_bytes: usize,
-    /// Backpressure: the most bytes of log that may lie behind the oldest
-    /// commit of which a change is in no block yet, before a committer is
-    /// made to wait. That log cannot be dropped, whatever checkpoints are
-    /// taken ([`WriteBack::log_behind`](super::WriteBack::log_behind)).
-    pub max_log_behind: u64,
+    /// Backpressure: the most bytes of log that write-back may hold before
+    /// a committer is made to wait: the log from the oldest commit that no
+    /// table checkpoint covers
+    /// ([`WriteBack::log_held`](super::WriteBack::log_held)). It is what a
+    /// recovery reads.
+    pub max_log_held: u64,
     /// A table checkpoint is due when this many bytes were logged since
-    /// the last one.
+    /// the last one, and whenever more log is held than
+    /// [`Self::max_log_held`].
     pub checkpoint_log_bytes: u64,
     /// How long the background loop sleeps when nobody wakes it.
     pub idle: Duration,
@@ -61,8 +63,8 @@ impl FlushConfig {
     /// The defaults for a store of `page_size`: at most 8 delta runs and
     /// half a page of delta blocks after a base image, segments of 64 MiB,
     /// at most 4096 page versions and 32 MiB of pending values waiting, at
-    /// most 256 MiB of log behind the oldest change that is not written
-    /// back, and a table checkpoint for every 64 MiB of log.
+    /// most 256 MiB of log that no table checkpoint covers, and a table
+    /// checkpoint for every 64 MiB of log.
     pub const fn new(page_size: PageSize) -> Self {
         Self {
             max_chain_deltas: DEFAULT_CHAIN_DELTAS,
@@ -70,7 +72,7 @@ impl FlushConfig {
             segment_len: DEFAULT_SEGMENT_LEN,
             max_unwritten: 4096,
             max_pending_bytes: 32 << 20,
-            max_log_behind: 256 << 20,
+            max_log_held: 256 << 20,
             checkpoint_log_bytes: 64 << 20,
             idle: Duration::from_millis(50),
         }

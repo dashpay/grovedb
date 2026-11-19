@@ -595,7 +595,10 @@ fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
     assert_eq!(order, scan_order(&view));
     order.clear();
     through.scan_order(&[0xFF; 64], &mut order);
-    assert!(order.is_empty(), "bytes that are no tree page have no order");
+    assert!(
+        order.is_empty(),
+        "bytes that are no tree page have no order"
+    );
     drop(frame);
 
     // A regrouping whose copies cannot be covered installs nothing.
@@ -616,7 +619,9 @@ fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
         db.cover(to);
         Ok(())
     };
-    let moved = through.regroup(page, &mut to, &mut cover).expect("regrouped");
+    let moved = through
+        .regroup(page, &mut to, &mut cover)
+        .expect("regrouped");
     assert_eq!((moved, covered.get()), (was.values, 1));
     let now = locality(&db, page);
     assert_eq!((now.values, now.runs), (was.values, 1));
@@ -626,6 +631,8 @@ fn write_back_reaches_the_scan_order_and_the_regrouping_through_its_trait() {
 
     // A page whose values lie in one run is left alone, and nothing is
     // covered for it.
-    let again = through.regroup(page, &mut to, &mut cover).expect("nothing to do");
+    let again = through
+        .regroup(page, &mut to, &mut cover)
+        .expect("nothing to do");
     assert_eq!((again, covered.get()), (0, 1));
 }

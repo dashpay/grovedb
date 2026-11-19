@@ -45,22 +45,9 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
         .as_ref()
         .map_or(CommitVersion::EMPTY, |info| info.covers());
     let place = info.as_ref().and_then(|info| info.sample().place);
-    let sample: Vec<FileCount> = info
-        .iter()
-        .flat_map(|info| &info.sample().counts)
-        .map(|count| FileCount {
-            file: count.file,
-            values: count.values,
-            bytes: count.bytes,
-            miscounted: count.miscounted,
-        })
-        .collect();
+    let sample = sample_counts(info.as_ref());
     let mut counts = ValueStore::recover(&manifest, &sample).expect("the value log opens");
-    let pool = BufferPool::new(PoolConfig {
-        page_size: size,
-        capacity: 4 << 20,
-    })
-    .expect("a pool");
+    let pool = new_pool(size);
     let loader = PageLoader::new(&pool, &table, &segments, size).expect("a loader");
     let mut buffers = LoadBuffers::new();
 

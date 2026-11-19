@@ -120,13 +120,30 @@ impl Kept {
         }
     }
 
-    /// The version `born` of `page` is kept in the pool for its readers,
-    /// and its changes go into the block of the next version.
-    pub(super) fn fold(&mut self, page: PageId, born: u64) {
+    /// The version `born` of `page` is to be kept in the pool for its
+    /// readers, and its changes go into the block of the next version.
+    /// Returns whether that is new.
+    pub(super) fn fold(&mut self, page: PageId, born: u64) -> bool {
         let folded = self.folded.entry(page).or_default();
-        if !folded.contains(&born) {
+        let new = !folded.contains(&born);
+        if new {
             folded.push(born);
             folded.sort_unstable();
+        }
+        new
+    }
+
+    /// The version `born` of `page` is not kept for its readers after all.
+    pub(super) fn unfold_one(&mut self, page: PageId, born: u64) {
+        self.unfold_where(page, |folded| folded == born);
+    }
+
+    fn unfold_where(&mut self, page: PageId, gone: impl Fn(u64) -> bool) {
+        if let Some(folded) = self.folded.get_mut(&page) {
+            folded.retain(|&born| !gone(born));
+            if folded.is_empty() {
+                self.folded.remove(&page);
+            }
         }
     }
 
@@ -136,21 +153,18 @@ impl Kept {
         self.folded.get(&page).cloned().unwrap_or_default()
     }
 
-    /// A block holds every change of `page` up to `through`.
+    /// Nothing waits for a block of what `page` was up to `through`: a
+    /// block holds every change up to it, or the page was freed after it.
     pub(super) fn unfold(&mut self, page: PageId, through: u64) {
-        if let Some(folded) = self.folded.get_mut(&page) {
-            folded.retain(|&born| born > through);
-            if folded.is_empty() {
-                self.folded.remove(&page);
-            }
-        }
+        self.unfold_where(page, |born| born <= through);
     }
 
-    /// The pages that have a folded version, each with its oldest one.
-    pub(super) fn oldest_folded(&self) -> Vec<(PageId, u64)> {
+    /// The pages that have a folded version, each with its oldest and its
+    /// newest one.
+    pub(super) fn folded_pages(&self) -> Vec<(PageId, u64, u64)> {
         self.folded
             .iter()
-            .filter_map(|(&page, folded)| Some((page, *folded.first()?)))
+            .filter_map(|(&page, folded)| Some((page, *folded.first()?, *folded.last()?)))
             .collect()
     }
 
@@ -168,8 +182,15 @@ impl Kept {
 
     /// How many bytes were logged before the group of the commit
     /// `version`, if write-back was told of it.
+    #[cfg(test)]
     pub(super) fn logged_before(&self, version: u64) -> Option<u64> {
         self.groups.get(&version).map(|&(_, before)| before)
+    }
+
+    /// How many bytes were logged before the oldest group that no table
+    /// checkpoint covers, if write-back was told of one.
+    pub(super) fn logged_before_uncovered(&self) -> Option<u64> {
+        self.groups.values().next().map(|&(_, before)| before)
     }
 
     /// A table checkpoint that covers `covers` is in force.
@@ -200,13 +221,6 @@ pub(super) struct Ready {
     /// Keeps the value's file until the step has counted the value, or
     /// the value is given up (`transactions.md` FL1).
     pub(super) _hold: ValueHold,
-}
-
-/// The values that wait for their page step. Its lock makes the placing
-/// steps of write-back one at a time.
-#[derive(Debug, Default)]
-pub(super) struct Placing {
-    pub(super) ready: Vec<Ready>,
 }
 
 /// What one pass uses and the next pass uses again. Its lock makes passes
@@ -253,14 +267,14 @@ pub(super) struct Checkpoints {
     pub(super) last_sample: Option<LogPlace>,
 }
 
-/// What a waiting committer looks at.
+/// What a waiting committer looks at: the turns of the background loop.
 #[derive(Debug, Default)]
-pub(super) struct Room {
-    /// The number of passes that have begun.
+pub(super) struct Turns {
+    /// The number of turns that have begun.
     pub(super) begun: u64,
-    /// The number of the last pass that has ended, counted as they begin.
+    /// The number of the last turn that has ended, counted as they begin.
     pub(super) ended: u64,
-    /// Whether that pass wrote or placed anything.
+    /// Whether that turn moved anything on.
     pub(super) progress: bool,
 }
 
@@ -275,10 +289,12 @@ pub struct FlushState {
     pub(super) counters: Counters,
     pub(super) checkpoints: Mutex<Checkpoints>,
     pub(super) files: Mutex<Files>,
-    pub(super) placing: Mutex<Placing>,
+    /// The values that wait for their page step. Its lock makes the
+    /// placing steps of write-back one at a time.
+    pub(super) placing: Mutex<Vec<Ready>>,
     pub(super) kept: Mutex<Kept>,
-    pub(super) room: Mutex<Room>,
-    pub(super) room_changed: Condvar,
+    pub(super) turns: Mutex<Turns>,
+    pub(super) turned: Condvar,
     pub(super) wake: Mutex<bool>,
     pub(super) woken: Condvar,
     /// The page versions that wait to be written back, as far as
@@ -304,8 +320,8 @@ impl FlushState {
             files: Mutex::default(),
             placing: Mutex::default(),
             kept: Mutex::default(),
-            room: Mutex::default(),
-            room_changed: Condvar::new(),
+            turns: Mutex::default(),
+            turned: Condvar::new(),
             wake: Mutex::new(false),
             woken: Condvar::new(),
             owed: AtomicUsize::new(0),

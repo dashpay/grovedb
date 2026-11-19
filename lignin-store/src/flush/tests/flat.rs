@@ -4,12 +4,8 @@
 
 use super::*;
 
-fn cold(db: &Db, id: PageId) -> Vec<(Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>)> {
-    let pool = BufferPool::new(PoolConfig {
-        page_size: db.size,
-        capacity: 4 << 20,
-    })
-    .expect("a pool");
+fn cold(db: &Db, id: PageId) -> Vec<FlatEntry> {
+    let pool = new_pool(db.size);
     let loader = PageLoader::new(&pool, &db.table, &db.segments, db.size).expect("a loader");
     let frame = loader
         .get(id, db.latest(), &mut LoadBuffers::new())
@@ -69,8 +65,7 @@ fn a_flat_leaf_is_written_as_images_with_its_values_placed() {
             Some(out(&second))
         ]
     );
-    let live: u64 = db.values.counts().iter().map(|count| count.values).sum();
-    assert_eq!(live, 2);
+    assert_eq!(db.live_values(), 2);
 
     // The leaf is written again, with one value more and the two that are
     // placed left where they are.
@@ -108,16 +103,8 @@ fn a_flat_leaf_is_written_as_images_with_its_values_placed() {
         ]
     );
     assert_eq!(entries[1].2, placed.get(&b"b"[..]).copied());
-    let live: u64 = db.values.counts().iter().map(|count| count.values).sum();
-    assert_eq!(live, 3);
+    assert_eq!(db.live_values(), 3);
     installed(db.wb().checkpoint().expect("a checkpoint"));
-}
-
-fn installed(checkpointed: Checkpointed) {
-    assert!(
-        matches!(checkpointed, Checkpointed::Installed { .. }),
-        "{checkpointed:?}"
-    );
 }
 
 /// A value of a flat leaf waits for a write transaction that holds a

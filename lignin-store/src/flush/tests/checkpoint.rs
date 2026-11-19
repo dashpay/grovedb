@@ -1,10 +1,9 @@
 //! Table checkpoints: what one covers, the order of its steps, and the
 //! log files that go afterwards (`page-table.md` K1 to K15).
 
-use lignin_format::wal::LogPlace;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
-use super::*;
-use crate::table::CheckpointInfo;
+use super::{recover::recover, *};
 
 fn small_log() -> LogOptions {
     LogOptions {
@@ -18,17 +17,6 @@ fn loaded(db: &Db) -> (PageTable, CheckpointInfo) {
     let named = manifest.manifest().expect("a manifest");
     let (table, info) = PageTable::load(&*db.vfs, &db.path, named).expect("the checkpoint loads");
     (table, info.expect("the manifest names a checkpoint"))
-}
-
-fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace, usize) {
-    match checkpointed {
-        Checkpointed::Installed {
-            covers,
-            place,
-            log_files_dropped,
-        } => (covers, place, log_files_dropped),
-        other => panic!("no checkpoint was installed: {other:?}"),
-    }
 }
 
 /// A checkpoint covers every commit that is written back, holds the table
@@ -65,9 +53,7 @@ fn a_table_checkpoint_covers_what_is_written_back_and_lets_the_log_go() {
         table.chain(id, &mut chain);
         assert_eq!(chain, db.chain(id));
     }
-    let sampled: Vec<(u64, u64)> = info
-        .sample()
-        .counts
+    let sampled: Vec<(u64, u64)> = sample_counts(Some(&info))
         .iter()
         .map(|count| (count.values, count.bytes))
         .collect();
@@ -78,7 +64,7 @@ fn a_table_checkpoint_covers_what_is_written_back_and_lets_the_log_go() {
         .map(|count| (count.values, count.bytes))
         .collect();
     assert_eq!(sampled, counted);
-    assert_eq!(counted.iter().map(|count| count.0).sum::<u64>(), 1);
+    assert_eq!(db.live_values(), 1);
     // The log was synced after the copy, through the mark.
     let durable = db.log.durable();
     assert!(durable.place >= Some(place) && durable.version == covers);
@@ -215,14 +201,6 @@ fn the_next_session_goes_on_from_the_checkpoint_of_the_last() {
     );
 }
 
-struct StopOnDrop<'s>(WriteBack<'s>);
-
-impl Drop for StopOnDrop<'_> {
-    fn drop(&mut self) {
-        self.0.stop();
-    }
-}
-
 /// The background loop: commits are written back, values placed and
 /// checkpoints taken with nobody calling for them, and a committer that
 /// asks for room waits for the loop.
@@ -275,4 +253,228 @@ fn the_background_loop_writes_back_and_takes_checkpoints() {
     db.check_cold();
     // And the store ends and opens again on what the loop left.
     db.reopen().check_cold();
+}
+
+/// Stands where the tree layer does when a pass offers it a page, and
+/// does something of its own there, once: what another thread would do at
+/// that moment.
+struct Meanwhile<F: Fn() + Sync>(F, AtomicBool);
+
+impl<F: Fn() + Sync> Meanwhile<F> {
+    fn new(does: F) -> Self {
+        Self(does, AtomicBool::new(false))
+    }
+}
+
+impl<F: Fn() + Sync> PageValues for Meanwhile<F> {
+    fn scan_order(&self, _: &[u8], _: &mut Vec<SlotId>) {}
+
+    fn regroup(
+        &self,
+        _: PageId,
+        _: &mut ValueWriter,
+        _: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
+    ) -> Result<u64, RegroupError> {
+        if !self.1.swap(true, Ordering::SeqCst) {
+            (self.0)();
+        }
+        Ok(0)
+    }
+}
+
+/// Every block is a base image, so that a pass offers every page it
+/// writes for a regrouping.
+fn images_only() -> FlushConfig {
+    FlushConfig {
+        max_chain_deltas: 0,
+        ..FlushConfig::new(Db::SIZE)
+    }
+}
+
+/// A commit comes in while a checkpoint is being taken, after the pass
+/// that the checkpoint begins with, and the log turns to another file
+/// behind it. The checkpoint covers the version before that commit, whose
+/// page it wrote all the same, and the log file that holds the commit's
+/// group stays, though the place of the sample is in a later file: a
+/// recovery replays the commit from it.
+#[test]
+fn a_commit_that_overtakes_a_checkpoint_is_not_covered_and_keeps_its_log() {
+    let db = Db::with_log(images_only(), small_log());
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"v")),
+        insert((2, 1), b"b", inline(b"w")),
+    ]);
+    assert_eq!(
+        installed(db.wb().checkpoint().expect("a checkpoint")).0,
+        version(1)
+    );
+    db.commit(&[hash((2, 1), 1)]);
+
+    let file_of_the_commit = AtomicU32::new(0);
+    let overtakes = Meanwhile::new(|| {
+        db.commit(&[insert((1, 2), b"c", inline(&noise(3, 500)))]);
+        let file = db.log.end().expect("the log has a file").file();
+        file_of_the_commit.store(file.get(), Ordering::SeqCst);
+        assert!(db.wb().roll_log().expect("the log is rolled"));
+    });
+    let checkpointed = db.wb_with(Some(&overtakes)).checkpoint();
+    let (covers, place, _) = installed(checkpointed.expect("a checkpoint"));
+    assert_eq!((covers, db.latest()), (version(2), version(3)));
+    assert_eq!(db.state.unwritten(), 0);
+
+    let file = file_of_the_commit.load(Ordering::SeqCst);
+    assert!(place.file().get() > file);
+    let named: Vec<u32> = db
+        .log
+        .files_named()
+        .expect("the files")
+        .iter()
+        .map(|file| file.id().get())
+        .collect();
+    assert!(named.contains(&file), "{named:?} without {file}");
+    assert!(db.wb().log_held() > 500);
+
+    let recovered = recover(db.vfs.clone(), &db.path, &[page(1), page(2)]);
+    assert_eq!(
+        (recovered.covers, recovered.landed),
+        (version(2), version(3))
+    );
+    let model = db.model.lock().expect("the model");
+    for id in [1, 2].map(page) {
+        let expected = model.at(id, version(3)).expect("the page").1;
+        let found = recovered.pages[&id].as_ref().expect("the page");
+        assert!(same(found, expected), "page {id}: {found:?}");
+    }
+    drop(model);
+
+    // The next checkpoint covers the commit, and the file goes.
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, version(3));
+    assert_eq!(db.wb().log_held(), 0);
+    let oldest = db.log.files_named().expect("the files")[0].id().get();
+    assert!(oldest > file);
+}
+
+/// A commit frees a page while a pass is on its way to it. Nothing older
+/// than the free link is written back (`page-table.md` T18): no block is
+/// written for the version that was owed, and none is refused.
+#[test]
+fn nothing_older_than_a_free_link_is_written_back() {
+    let db = Db::with(images_only());
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"v")),
+        insert((2, 1), b"b", inline(b"w")),
+    ]);
+    db.wb().pass().expect("a pass");
+    db.commit(&[hash((1, 1), 1), hash((2, 1), 1)]);
+
+    let frees = Meanwhile::new(|| {
+        db.commit(&[Op::Free { page: page(2) }]);
+    });
+    let pass = db.wb_with(Some(&frees)).pass().expect("a pass");
+    assert_eq!((pass.written, pass.waiting), (1, 0));
+    let stats = db.stats();
+    assert_eq!((stats.base_blocks, stats.links_refused), (3, 0));
+    assert_eq!(db.shape(page(2)), "BF");
+    // The change that is in no block stands in no checkpoint's way.
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, version(3));
+    db.check_cold();
+}
+
+/// A page step changes a page version that was written, and a commit then
+/// supersedes that version with a value that cannot be placed. The
+/// version is kept for its readers, and what the step did to it is in no
+/// block until the next version is written: it is not in a block, and a
+/// checkpoint that has to hold it is put off.
+#[test]
+fn a_version_kept_for_readers_is_in_no_block_until_the_next_one_is_written() {
+    let db = Db::new();
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    db.wb().pass().expect("a pass");
+    assert!(db.wb().is_in_block(page(1), version(1)));
+    db.move_value(page(1), slot(1), false);
+    assert!(!db.wb().is_in_block(page(1), version(1)));
+    db.commit(&[insert((1, 2), b"b", long(2, 800))]);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+
+    let pass = db.wb().pass().expect("a pass");
+    assert_eq!((pass.held, pass.blocked, pass.written), (1, 1, 0));
+    assert_eq!(db.wb().floor(), Some(version(1)));
+    assert!(!db.wb().is_in_block(page(1), version(1)));
+    assert!(!db.wb().is_in_block(page(1), version(2)));
+    let put_off = db.wb().checkpoint().expect("no checkpoint");
+    assert_eq!(put_off, Checkpointed::PutOff { blocked: 1 });
+
+    txn.roll_back();
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, version(2));
+    assert!(db.wb().is_in_block(page(1), version(1)));
+    assert_eq!(db.wb().floor(), None);
+    db.check_cold();
+}
+
+/// A version that is kept for its readers stops counting once its page is
+/// freed, whoever trims the free link away and whether write-back was
+/// told of the commit or not. Otherwise it would hold the log for good.
+#[test]
+fn a_version_kept_for_readers_of_a_freed_page_holds_nothing() {
+    for trimmed in [false, true] {
+        let db = Db::new();
+        db.commit(&[
+            insert((1, 1), b"a", long(1, 900)),
+            insert((2, 1), b"b", inline(b"v")),
+        ]);
+        db.wb().pass().expect("a pass");
+        db.move_value(page(1), slot(1), false);
+        db.commit(&[insert((1, 2), b"c", long(2, 800))]);
+        let mut txn = db.begin();
+        txn.copy(page(1));
+        db.wb().pass().expect("a pass");
+        assert_eq!(db.wb().floor(), Some(version(1)));
+
+        // The transaction that held the page frees it. The note of the
+        // version that waited is made again, as by a pass that was on its
+        // way when the commit came.
+        txn.commit(&[Op::Free { page: page(1) }]);
+        db.state.kept.lock().expect("what is kept").fold(page(1), 1);
+        if trimmed {
+            let mut removed = Vec::new();
+            db.table.trim(page(1), db.latest(), &mut removed);
+            assert_eq!(db.shape(page(1)), "");
+        }
+        assert_eq!(db.wb().floor(), None, "{trimmed}");
+        let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+        assert_eq!(covers, db.latest());
+        assert_eq!(db.wb().log_held(), 0);
+    }
+}
+
+/// The loop takes no checkpoint in a turn whose pass found a page that a
+/// write transaction holds back: it would be put off, and its mark would
+/// be in the log for nothing.
+#[test]
+fn the_loop_tries_no_checkpoint_while_a_page_is_held_back() {
+    let config = FlushConfig {
+        checkpoint_log_bytes: 0,
+        ..FlushConfig::new(Db::SIZE)
+    };
+    let db = Db::with(config);
+    db.commit(&[insert((1, 1), b"a", long(1, 900))]);
+    let mut txn = db.begin();
+    txn.copy(page(1));
+    assert!(db.wb().checkpoint_due());
+    let end = db.log.end();
+    let tick = db.wb().tick().expect("a turn");
+    assert_eq!((tick.pass.blocked, tick.checkpoint.clone()), (1, None));
+    assert!(!tick.progressed());
+    assert_eq!(db.log.end(), end);
+    assert_eq!(db.stats().checkpoints_put_off, 0);
+
+    txn.roll_back();
+    let tick = db.wb().tick().expect("a turn");
+    assert_eq!((tick.pass.blocked, tick.pass.placed), (0, 1));
+    let (covers, ..) = installed(tick.checkpoint.expect("a checkpoint"));
+    assert_eq!(covers, db.latest());
 }

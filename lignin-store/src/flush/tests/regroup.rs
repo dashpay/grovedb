@@ -148,11 +148,12 @@ fn a_page_under_a_private_copy_is_written_without_a_regrouping() {
     db.check_cold();
 }
 
-/// What regroups fails: the pass fails with its error, the page stays
-/// owed, and the next value goes to another value-log file.
+/// What regroups fails. Regrouping is for the scans to come and nothing a
+/// page waits for: the pass reports the error, writes the page as it is,
+/// and regroups nothing more.
 #[test]
-fn a_regrouping_that_fails_leaves_the_page_for_a_later_pass() {
-    struct Failing;
+fn a_regrouping_that_fails_is_reported_and_the_page_is_written_as_it_is() {
+    struct Failing(AtomicU64);
     impl PageValues for Failing {
         fn scan_order(&self, _: &[u8], _: &mut Vec<SlotId>) {}
 
@@ -162,15 +163,20 @@ fn a_regrouping_that_fails_leaves_the_page_for_a_later_pass() {
             to: &mut ValueWriter,
             cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
         ) -> Result<u64, RegroupError> {
+            self.0.fetch_add(1, Ordering::SeqCst);
             cover(to)?;
             Err("the tree layer could not".into())
         }
     }
 
     let db = Db::new();
-    db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"v")),
+        insert((2, 1), b"b", inline(b"w")),
+    ]);
+    let failing = Failing(AtomicU64::new(0));
     let error = db
-        .wb_with(Some(&Failing))
+        .wb_with(Some(&failing))
         .pass()
         .expect_err("a regrouping failed");
     assert_eq!(
@@ -178,8 +184,15 @@ fn a_regrouping_that_fails_leaves_the_page_for_a_later_pass() {
         "the values of page 1 were not regrouped: the tree layer could not"
     );
     assert!(std::error::Error::source(&error).is_some());
-    assert_eq!(db.state.unwritten(), 1);
-    let pass = db.wb().pass().expect("a pass");
+    // Both pages are written, and the second was not offered.
+    assert_eq!(failing.0.load(Ordering::SeqCst), 1);
+    assert_eq!(db.state.unwritten(), 0);
+    assert_eq!(db.stats().base_blocks, 2);
+    db.check_cold();
+    // The next pass tries a regrouping again, for the page that needs one.
+    db.commit(&[hash((2, 1), 1)]);
+    let pass = db.wb_with(Some(&failing)).pass().expect("a pass");
     assert_eq!((pass.written, pass.waiting), (1, 0));
+    assert_eq!(failing.0.load(Ordering::SeqCst), 1);
     db.check_cold();
 }

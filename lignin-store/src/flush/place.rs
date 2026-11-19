@@ -2,7 +2,7 @@
 //! covers it, and a page step gives its cell the pointer
 //! (`transactions.md` FL7, PV7).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use lignin_format::{value_log::PendingValue, CommitVersion, PageId};
 
@@ -11,7 +11,7 @@ use super::{
     error::FlushError,
     page::{self, PageKind, PendingCell},
     state::{lock, Files, Ready},
-    write_back::{Stores, WriteBack},
+    write_back::{Round, Stores, WriteBack},
 };
 use crate::{
     cache::PageRef,
@@ -34,22 +34,31 @@ enum Step {
 
 impl<'s> WriteBack<'s> {
     /// Appends the pending values of the current page versions in `owed`
-    /// to the value log, has a manifest cover them, and then makes the
-    /// page steps that are due. Returns how many values were placed.
-    pub(super) fn place_pending(
+    /// to the value log and has a manifest cover them. They are then ready
+    /// for their page steps ([`Self::place_ready`]).
+    ///
+    /// A page whose values cannot be read is left out, with its error
+    /// noted in `round`.
+    pub(super) fn append_pending(
         &self,
         files: &mut Files,
         owed: &BTreeMap<PageId, Vec<CommitVersion>>,
-    ) -> Result<usize, FlushError> {
+        round: &mut Round,
+    ) -> Result<(), FlushError> {
         let Stores {
             pool,
             values,
             page_values,
             ..
         } = self.stores;
+        let ready: HashSet<(PageId, PendingValue)> = lock(&self.state.placing)
+            .iter()
+            .map(|ready| (ready.page, ready.cell.pending))
+            .collect();
         let mut order = Vec::new();
         let mut fresh = Vec::new();
-        for (&page, versions) in owed {
+        let mut ended = Ok(());
+        'pages: for (&page, versions) in owed {
             let Some(frame) = versions
                 .last()
                 .and_then(|&born| pool.get_version(page, born))
@@ -59,7 +68,13 @@ impl<'s> WriteBack<'s> {
             if !pool.page_step(page).is_current(&frame) {
                 continue;
             }
-            let mut cells = page::pending_cells(&frame).map_err(FlushError::page(page))?;
+            let mut cells = match page::pending_cells(&frame) {
+                Ok(cells) => cells,
+                Err(source) => {
+                    round.fail(FlushError::Page { page, source });
+                    continue;
+                }
+            };
             if let Some(page_values) = page_values
                 && cells.len() > 1
                 && page::kind_of(&frame) == PageKind::Tree
@@ -75,13 +90,24 @@ impl<'s> WriteBack<'s> {
                 cells.sort_by_key(place);
             }
             for cell in cells {
-                if self.is_ready(page, &cell.pending) {
+                if ready.contains(&(page, cell.pending)) {
                     continue;
                 }
-                fresh.push(self.append_value(files, page, &frame, cell)?);
+                match self.append_value(files, page, &frame, cell) {
+                    Ok(appended) => fresh.push(appended),
+                    Err(error) if error.is_of_one_page() => {
+                        round.fail(error);
+                        continue 'pages;
+                    }
+                    Err(error) => {
+                        ended = Err(error);
+                        break 'pages;
+                    }
+                }
             }
         }
 
+        // What was appended is covered whatever ended the walk.
         if !fresh.is_empty() {
             let synced = files.values.as_mut().map(|writer| writer.sync());
             if let Some(Err(error)) = synced {
@@ -93,22 +119,15 @@ impl<'s> WriteBack<'s> {
             }
             values.commit(&mut *self.manifest()?)?;
             let mut placing = lock(&self.state.placing);
-            for ready in fresh {
-                if values.covers(ready.pointer) {
-                    placing.ready.push(ready);
+            for appended in fresh {
+                if values.covers(appended.pointer) {
+                    placing.push(appended);
                 } else {
                     count(&self.state.counters.values_given_up, 1);
                 }
             }
         }
-        self.place_ready()
-    }
-
-    fn is_ready(&self, page: PageId, pending: &PendingValue) -> bool {
-        lock(&self.state.placing)
-            .ready
-            .iter()
-            .any(|ready| ready.page == page && ready.cell.pending == *pending)
+        ended
     }
 
     /// Appends the bytes of one pending value to the value log, for the
@@ -143,8 +162,7 @@ impl<'s> WriteBack<'s> {
             return Err(FlushError::PendingValue { page, born });
         }
 
-        self.value_writer(files)?;
-        let writer = files.values.as_mut().expect("a writer was just made");
+        let writer = self.value_writer(&mut files.values)?;
         let mut hold = ValueHold::new();
         let pointer = match writer.append(&mut hold, page, &files.value) {
             Ok(pointer) => pointer,
@@ -185,16 +203,16 @@ impl<'s> WriteBack<'s> {
         let counters = &self.state.counters;
         let mut placed = 0;
         let mut at = 0;
-        while at < placing.ready.len() {
-            match self.place(&placing.ready[at])? {
+        while at < placing.len() {
+            match self.place(&placing[at])? {
                 Step::Placed => {
                     // The hold goes now that the value is counted.
-                    drop(placing.ready.swap_remove(at));
+                    drop(placing.swap_remove(at));
                     count(&counters.values_placed, 1);
                     placed += 1;
                 }
                 Step::GivenUp => {
-                    drop(placing.ready.swap_remove(at));
+                    drop(placing.swap_remove(at));
                     count(&counters.values_given_up, 1);
                 }
                 Step::PutOff => at += 1,
