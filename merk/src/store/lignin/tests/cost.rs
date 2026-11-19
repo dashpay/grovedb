@@ -282,6 +282,11 @@ struct Seen {
     moved_to_a_longer_key: usize,
     moved_to_a_shorter_key: usize,
     traded_places: usize,
+    /// The elements with flags that moved to a key of another length, one
+    /// of two that traded places among them. GroveDB refuses such a move,
+    /// and Merk bills it.
+    flagged_to_a_longer_key: usize,
+    flagged_to_a_shorter_key: usize,
     /// The reads of an element that moves that were the first read of a
     /// Merk just opened and were charged a seek.
     observed_cold: usize,
@@ -342,24 +347,30 @@ fn mixed_batch(
         let to = random.below(PLACES);
         if to != from && !batch.contains_key(&to) {
             let (kind, n) = model.remove(&from).expect("the place is held");
-            let swapped_with = model.insert(to, (kind, n)).map(|other| {
+            let other = model.insert(to, (kind, n));
+            if let Some(other) = other {
                 model.insert(from, other);
-                feature(tree_type, other.1)
-            });
-            match (
-                swapped_with.is_some(),
-                place(to).len().cmp(&place(from).len()),
-            ) {
+            }
+            let grows = place(to).len().cmp(&place(from).len());
+            match (other.is_some(), grows) {
                 (true, _) => seen.traded_places += 1,
                 (false, Ordering::Greater) => seen.moved_to_a_longer_key += 1,
                 (false, Ordering::Less) => seen.moved_to_a_shorter_key += 1,
                 (false, Ordering::Equal) => {}
             }
+            let back = other.map(|(kind, _)| (kind, grows.reverse()));
+            for moved in [Some((kind, grows)), back].into_iter().flatten() {
+                match moved {
+                    (Kind::Flagged, Ordering::Greater) => seen.flagged_to_a_longer_key += 1,
+                    (Kind::Flagged, Ordering::Less) => seen.flagged_to_a_shorter_key += 1,
+                    _ => {}
+                }
+            }
             moved = Some(Move {
                 from: place(from),
                 to: place(to),
                 feature: feature(tree_type, n),
-                swapped_with,
+                swapped_with: other.map(|(_, n)| feature(tree_type, n)),
             });
         }
     }
@@ -894,14 +905,17 @@ fn a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version() {
     expected[TREE_READS - 1] = false;
     assert_eq!(seen.charged, expected);
     // Every operation of a batch was issued, an element moved to a longer
-    // key, to a shorter one and into the place of another, and the reads
-    // that keep their nodes and the walk of every link met a Merk that had
-    // loaded nothing but its root.
+    // key, to a shorter one and into the place of another, an element with
+    // flags among those of each direction, and the reads that keep their
+    // nodes and the walk of every link met a Merk that had loaded nothing
+    // but its root.
     assert_eq!(seen.ops, BTreeSet::from(OPS));
     let met = [
         seen.moved_to_a_longer_key,
         seen.moved_to_a_shorter_key,
         seen.traded_places,
+        seen.flagged_to_a_longer_key,
+        seen.flagged_to_a_shorter_key,
         seen.observed_cold,
         seen.walked_cold,
     ];
@@ -1602,6 +1616,27 @@ fn history() -> Vec<Part> {
                 ),
             ]),
         ),
+        // Of two writes of a record in one change set of an immediate
+        // handle the later stands, and each is charged as it is given: a
+        // removal and then a put, and two removals with different costs.
+        step(
+            30,
+            Step::Commit(vec![
+                Change::PutAux(b"put last".to_vec(), vec![1; 12], None),
+                Change::PutAux(b"gone twice".to_vec(), vec![2; 12], None),
+            ]),
+        ),
+        step(
+            30,
+            Step::Commit(vec![
+                Change::DeleteAux(b"put last".to_vec(), freeing(key_freed, Freed::Plain(12))),
+                Change::PutAux(b"put last".to_vec(), vec![3; 30], None),
+                Change::DeleteAux(b"gone twice".to_vec(), freeing(key_freed, Freed::Plain(12))),
+                Change::DeleteAux(b"gone twice".to_vec(), None),
+            ]),
+        ),
+        step(30, Step::Aux(b"put last".to_vec())),
+        step(30, Step::Aux(b"gone twice".to_vec())),
         // Two commits whose removals add up otherwise by `+` than by `+=`
         // under the first arithmetic: a section of the owner that plain
         // bytes are counted to, then plain bytes.
