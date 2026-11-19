@@ -18,6 +18,8 @@ use lignin_tree::{
     node::{Lease, NodeError, NodePage},
 };
 
+use super::Rule;
+
 /// What a checker answers to a call that would change a page.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct ReadOnly;
@@ -139,6 +141,19 @@ pub(super) enum ValueFault {
         /// The bytes with the page, if there are any.
         found: Option<usize>,
     },
+}
+
+impl ValueFault {
+    /// The rule that the fault breaks where a walk reads the value, if the
+    /// walk reports it.
+    pub(super) fn rule(&self) -> Option<Rule> {
+        match self {
+            Self::Owner(_) => Some(Rule::ValueOwner),
+            // The census of the pages reported it.
+            Self::NoBytes { .. } => None,
+            Self::Unreadable(_) | Self::Page(_) => Some(Rule::ValueUnreadable),
+        }
+    }
 }
 
 impl fmt::Display for ValueFault {

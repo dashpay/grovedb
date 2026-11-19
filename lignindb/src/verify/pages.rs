@@ -97,6 +97,16 @@ pub(super) enum Seen {
     Bad,
 }
 
+impl Seen {
+    fn kind(&self) -> Kind {
+        match self {
+            Seen::Tree(_) => Kind::Tree,
+            Seen::Flat(_) => Kind::Flat,
+            Seen::Bad => Kind::Bad,
+        }
+    }
+}
+
 /// What a page is to a walk that an address led to it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Kind {
@@ -141,11 +151,7 @@ impl Run<'_, '_, '_> {
     /// What the page `page` is, reading it if no part of the run has.
     pub(super) fn see(&mut self, page: PageId) -> Kind {
         if let Some(seen) = self.pages.get(&page) {
-            return match seen {
-                Seen::Tree(_) => Kind::Tree,
-                Seen::Flat(_) => Kind::Flat,
-                Seen::Bad => Kind::Bad,
-            };
+            return seen.kind();
         }
         self.begin_step();
         let frame = match self.frame(page) {
@@ -170,11 +176,7 @@ impl Run<'_, '_, '_> {
                 Seen::Bad
             }
         };
-        let kind = match seen {
-            Seen::Tree(_) => Kind::Tree,
-            Seen::Flat(_) => Kind::Flat,
-            Seen::Bad => Kind::Bad,
-        };
+        let kind = seen.kind();
         self.pages.insert(page, seen);
         kind
     }
@@ -240,16 +242,9 @@ impl Run<'_, '_, '_> {
         }
         if let Some(leaf) = page.leaf() {
             for (slot, (_, value)) in leaf.iter().enumerate() {
-                let FlatValue::OutOfLine(bytes) = value else {
-                    continue;
-                };
-                // The page was decoded, so the 16 bytes are a place.
-                let Some(value) =
-                    (bytes.try_into().ok()).and_then(|bytes| ValuePlace::decode(bytes).ok())
-                else {
-                    continue;
-                };
-                self.count_value(value, Place::FlatEntry { page: id, slot }, frame);
+                if let Some(value) = out_of_line(value) {
+                    self.count_value(value, Place::FlatEntry { page: id, slot }, frame);
+                }
             }
         }
         self.census.flat_pages += 1;
@@ -277,6 +272,17 @@ impl Run<'_, '_, '_> {
                     });
                 }
             }
+        }
+    }
+
+    /// Reads the value at `value`, which `holder`, a cell or a record of
+    /// the page `page`, holds out of line, and reports what keeps it from
+    /// being read.
+    pub(super) fn check_value(&mut self, value: ValuePlace, page: PageId, holder: Place) {
+        if let Err(fault) = self.values.fetch(value, page)
+            && let Some(rule) = fault.rule()
+        {
+            self.add(rule, holder, || fault.to_string());
         }
     }
 
@@ -320,4 +326,14 @@ impl Run<'_, '_, '_> {
         }
         true
     }
+}
+
+/// The place of the value that a record of a flat leaf holds out of line,
+/// if it holds one.
+pub(super) fn out_of_line(value: FlatValue<'_>) -> Option<ValuePlace> {
+    let FlatValue::OutOfLine(bytes) = value else {
+        return None;
+    };
+    // The page was decoded, so the 16 bytes are a place.
+    (bytes.try_into().ok()).and_then(|bytes| ValuePlace::decode(bytes).ok())
 }

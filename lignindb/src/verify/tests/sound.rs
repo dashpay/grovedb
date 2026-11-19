@@ -13,7 +13,6 @@ use lignin_tree::{
 
 use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, OUTER};
 use crate::{
-    snapshot::Versions,
     txn::{
         tests::{
             model::{self, OwnedBatch, OwnedSubtree},
@@ -28,10 +27,6 @@ use crate::{
         Unreached,
     },
 };
-
-fn rules(calls: &AtomicU64) -> Rules<'_> {
-    Rules(calls)
-}
 
 #[test]
 fn a_store_with_one_of_everything_is_sound() {
@@ -104,14 +99,14 @@ fn a_pinned_version_is_checked_beside_later_commits() {
     let store = plant();
     let pin = store.versions.pin();
     let calls = AtomicU64::new(0);
-    let before = (store.db).verify(pin.version(), Scope::Reader, Some(&mut rules(&calls)));
+    let before = (store.db).verify(pin.version(), Scope::Reader, Some(&mut Rules(&calls)));
     assert!(before.is_sound(), "{before}");
     assert_eq!(before.census.ids, None);
     assert_eq!(before.census.links, 0);
 
     drop_subtree(&store, OUTER);
     assert!(store.latest() > pin.version());
-    let pinned = (store.db).verify(pin.version(), Scope::Reader, Some(&mut rules(&calls)));
+    let pinned = (store.db).verify(pin.version(), Scope::Reader, Some(&mut Rules(&calls)));
     assert!(pinned.is_sound(), "{pinned}");
     assert_eq!(pinned.census.merks, before.census.merks);
     assert_eq!(pinned.census.live_cells, before.census.live_cells);
@@ -144,15 +139,7 @@ fn a_store_is_sound_before_during_and_after_a_reclaiming() {
     let store = plant();
     // A commit after the drop: a page that the latest commit wrote is not
     // freed before the next one.
-    {
-        let mut world = World::new(&store.db, &store.versions);
-        let tx = world.begin();
-        world.write(
-            &tx,
-            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
-        );
-        world.commit(tx, &[]);
-    }
+    commit_later(&store);
     let before = store.check();
     assert!(before.is_sound(), "{before}");
     assert!(before.unreached.is_empty(), "{before}");
@@ -229,15 +216,7 @@ fn a_store_is_sound_before_during_and_after_a_reclaiming() {
 #[test]
 fn cells_that_nothing_reaches_are_reported_apart() {
     let store = plant();
-    {
-        let mut world = World::new(&store.db, &store.versions);
-        let tx = world.begin();
-        world.write(
-            &tx,
-            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
-        );
-        world.commit(tx, &[]);
-    }
+    commit_later(&store);
     let (mut merks, _, mut wait) = store.db.left(&store.versions);
     assert!(wait.poll(&store.versions));
     // The reclaiming is taken on until the record of the dropped Merk is
@@ -278,24 +257,19 @@ fn a_store_with_no_directory_is_checked_from_its_roots() {
     let planted = plant();
     let db = &planted.db;
     let roots = [planted.root(BIG), planted.root(OUTER)];
-    let check = |roots: &[_], values_counted| {
+    let check = |roots: &[_]| {
         let store = Store {
-            loader: db.loader(),
-            table: &db.table,
-            segments: &db.segments,
-            values: &db.values,
-            page_size: SIZE,
             ids: None,
             grove: Grove::Roots(roots),
             flat_drops: None,
-            flat: &[],
-            values_counted,
+            values_counted: false,
+            ..parts(db, &[])
         };
         let calls = AtomicU64::new(0);
         let options = Options::new(planted.latest(), Scope::Still);
-        verify::check(&store, &Guard, options, Some(&mut rules(&calls)))
+        verify::check(&store, &Guard, options, Some(&mut Rules(&calls)))
     };
-    let report = check(&roots, false);
+    let report = check(&roots);
     // With no directory, the keyspaces are not known: their pages are
     // flat pages that nothing reaches, and nothing else is found.
     assert_eq!(report.rules(), [Rule::FlatPageUnreached], "{report}");
@@ -305,7 +279,7 @@ fn a_store_with_no_directory_is_checked_from_its_roots() {
     // What the dropped Merk left has nothing that leads to it here.
     assert_eq!(report.unreached.cells, 43);
     // A root that is left out leaves its Merk unreached, and no finding.
-    let fewer = check(&roots[..1], false);
+    let fewer = check(&roots[..1]);
     assert_eq!(fewer.rules(), [Rule::FlatPageUnreached]);
     assert_eq!(fewer.unreached.cells, 43 + 5);
 }
@@ -313,6 +287,26 @@ fn a_store_with_no_directory_is_checked_from_its_roots() {
 struct Guard;
 
 impl lignin_tree::OperationGuard for Guard {}
+
+/// The parts of the store `db` as its own check names them, with the
+/// columns `columns`.
+fn parts<'a>(db: &'a Db, columns: &'a [FlatColumn<'a>]) -> Store<'a, 'a> {
+    Store {
+        loader: db.loader(),
+        table: &db.table,
+        segments: &db.segments,
+        values: &db.values,
+        page_size: SIZE,
+        ids: Some(&db.ids),
+        grove: Grove::Directory {
+            tree: db.directory(),
+            columns,
+        },
+        flat_drops: Some(db.flat_drops()),
+        flat: &[],
+        values_counted: true,
+    }
+}
 
 /// The pages that a lazy range delete left are flat pages that no
 /// keyspace reaches: the store names the keyspace of their records, and
@@ -326,7 +320,7 @@ fn the_pages_a_range_delete_left_are_walked_from_its_record() {
         (store.db).verify_with(
             store.latest(),
             Scope::Still,
-            Some(&mut rules(&calls)),
+            Some(&mut Rules(&calls)),
             drops,
         )
     };
@@ -350,15 +344,7 @@ fn the_pages_a_range_delete_left_are_walked_from_its_record() {
     assert_eq!(unnamed.rules(), [Rule::FlatPageUnreached], "{unnamed}");
 
     // A commit later the reclaimer frees them, and takes their record.
-    {
-        let mut world = World::new(&store.db, &store.versions);
-        let tx = world.begin();
-        world.write(
-            &tx,
-            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
-        );
-        world.commit(tx, &[]);
-    }
+    commit_later(&store);
     let swept = store.db.sweep(&store.versions);
     assert!(!swept.waiting && swept.blocked.is_none(), "{swept:?}");
     assert!(!swept.flat_drops.is_empty(), "{swept:?}");
@@ -518,24 +504,14 @@ fn columns_that_share_a_keyspace_are_walked_once() {
     let check = |leads: &[&'static [u8]]| {
         let mut columns = store.db.keyspaces().columns().to_vec();
         columns.extend(leads.iter().map(|lead| FlatColumn { tree: shared, lead }));
-        let parts = Store {
-            loader: store.db.loader(),
-            table: &store.db.table,
-            segments: &store.db.segments,
-            values: &store.db.values,
-            page_size: SIZE,
-            ids: Some(&store.db.ids),
-            grove: Grove::Directory {
-                tree: store.db.directory(),
-                columns: &columns,
-            },
-            flat_drops: Some(store.db.flat_drops()),
-            flat: &[],
-            values_counted: true,
-        };
         let calls = AtomicU64::new(0);
         let options = Options::new(store.latest(), Scope::Still);
-        verify::check(&parts, &Guard, options, Some(&mut rules(&calls)))
+        verify::check(
+            &parts(&store.db, &columns),
+            &Guard,
+            options,
+            Some(&mut Rules(&calls)),
+        )
     };
     // One lead is the beginning of another: the record is of the column
     // under which the directory has its prefix.
@@ -624,26 +600,16 @@ fn a_run_keeps_its_findings_up_to_a_limit() {
     assert!(!all.is_sound());
 
     let columns = store.db.keyspaces().columns();
-    let parts = Store {
-        loader: store.db.loader(),
-        table: &store.db.table,
-        segments: &store.db.segments,
-        values: &store.db.values,
-        page_size: SIZE,
-        ids: Some(&store.db.ids),
-        grove: Grove::Directory {
-            tree: store.db.directory(),
-            columns: &columns,
-        },
-        flat_drops: Some(store.db.flat_drops()),
-        flat: &[],
-        values_counted: true,
-    };
     let options = Options {
         max_findings: 5,
         ..Options::new(store.latest(), Scope::Still)
     };
-    let few = verify::check(&parts, &Guard, options, Some(&mut Wrong));
+    let few = verify::check(
+        &parts(&store.db, &columns),
+        &Guard,
+        options,
+        Some(&mut Wrong),
+    );
     assert_eq!(few.findings.len(), 5);
     assert_eq!(few.more_findings, total - 5);
     assert!(!few.is_sound());
@@ -856,7 +822,7 @@ fn a_host_of_a_merk_that_stands_alone_is_the_fixtures_own() {
         let calls = AtomicU64::new(0);
         let report = store
             .db
-            .verify(store.latest(), Scope::Still, Some(&mut rules(&calls)));
+            .verify(store.latest(), Scope::Still, Some(&mut Rules(&calls)));
         assert!(report.has(Rule::HostUnnamed), "{report}");
         let unsound = store.db.unsound(&report);
         assert_eq!(
@@ -869,5 +835,3 @@ fn a_host_of_a_merk_that_stands_alone_is_the_fixtures_own() {
     }
     store.db.unchecked();
 }
-
-fn _versions(_: &Versions) {}

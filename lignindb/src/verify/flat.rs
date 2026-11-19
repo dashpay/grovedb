@@ -4,7 +4,6 @@ use std::{collections::HashMap, rc::Rc};
 
 use lignin_format::{
     flat_page::{FlatPage, FlatValue},
-    value_log::ValuePlace,
     CommitVersion, PageId,
 };
 use lignin_store::load::FRAME_FORMAT;
@@ -16,8 +15,7 @@ use lignin_tree::{
 
 use super::{
     grove::{Entries, Merk},
-    pages::{FlatReach, Kind, Seen},
-    read::ValueFault,
+    pages::{out_of_line, FlatReach, Kind, Seen},
     Grove, Place, Rule, Run,
 };
 
@@ -58,6 +56,21 @@ struct Visit {
     /// What stands before the keys of this tree in the keys of its
     /// keyspace: the heads of the buckets of long keys it is in.
     outer: Rc<[u8]>,
+}
+
+impl Visit {
+    /// The root of a tree, or a page that a range delete left below a
+    /// branch of level `above`.
+    fn root(page: PageId, above: Option<u8>) -> Self {
+        Self {
+            page,
+            parent: None,
+            above,
+            low: None,
+            high: None,
+            outer: Rc::from(&[][..]),
+        }
+    }
 }
 
 impl Run<'_, '_, '_> {
@@ -203,14 +216,7 @@ impl Run<'_, '_, '_> {
                 newest_birth: record.at.next().unwrap_or(record.at),
             };
             for left in &record.pages {
-                let visit = Visit {
-                    page: left.page,
-                    parent: None,
-                    above: left.above,
-                    low: None,
-                    high: None,
-                    outer: Rc::from(&[][..]),
-                };
+                let visit = Visit::root(left.page, left.above);
                 self.walk_flat_from(visit, drops.tree(), Records::Any, from);
             }
         }
@@ -219,17 +225,9 @@ impl Run<'_, '_, '_> {
     /// Walks the keyspace `tree` from its root, and returns whether
     /// nothing was found wrong with its pages.
     fn walk_flat(&mut self, tree: &FlatTree, records: Records<'_>) -> bool {
-        let before = self.found.list.len() as u64 + self.found.dropped;
-        let visit = Visit {
-            page: tree.root(),
-            parent: None,
-            above: None,
-            low: None,
-            high: None,
-            outer: Rc::from(&[][..]),
-        };
-        self.walk_flat_from(visit, tree, records, From::Tree);
-        before == self.found.list.len() as u64 + self.found.dropped
+        let before = self.found.count();
+        self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
+        before == self.found.count()
     }
 
     fn walk_flat_from(&mut self, first: Visit, tree: &FlatTree, records: Records<'_>, from: From) {
@@ -298,11 +296,10 @@ impl Run<'_, '_, '_> {
             let Ok(flat) = FlatPage::from_validated(&frame, FRAME_FORMAT) else {
                 continue;
             };
-            if visit
-                .above
-                .is_some_and(|above| above.checked_sub(1) != Some(flat.level()))
+            if let Some(above) = visit.above
+                && above.checked_sub(1) != Some(flat.level())
             {
-                let (above, level) = (visit.above.unwrap_or_default(), flat.level());
+                let level = flat.level();
                 self.add(Rule::FlatLevel, Place::Page(page), || {
                     format!("the page is of level {level} below a branch of level {above}")
                 });
@@ -351,31 +348,27 @@ impl Run<'_, '_, '_> {
                             });
                         }
                         if key.len() > key_limit {
-                            let root = bucket_root(&key, key_limit, value);
-                            let Some(root) = root else {
-                                self.add(Rule::FlatBucket, place, || {
+                            match bucket_root(&key, key_limit, value) {
+                                Some(root) => {
+                                    let outer = [&visit.outer[..], &key[..key_limit]].concat();
+                                    stack.push(Visit {
+                                        page: root,
+                                        parent: Some(page),
+                                        above: None,
+                                        low: None,
+                                        high: None,
+                                        outer: Rc::from(outer),
+                                    });
+                                }
+                                None => self.add(Rule::FlatBucket, place, || {
                                     format!(
                                         "a key of {} bytes, above the limit of {key_limit}, is \
                                          no bucket",
                                         key.len()
                                     )
-                                });
-                                before = Some(key);
-                                continue;
-                            };
-                            let outer = [&visit.outer[..], &key[..key_limit]].concat();
-                            stack.push(Visit {
-                                page: root,
-                                parent: Some(page),
-                                above: None,
-                                low: None,
-                                high: None,
-                                outer: Rc::from(outer),
-                            });
-                            before = Some(key);
-                            continue;
-                        }
-                        if !left {
+                                }),
+                            }
+                        } else if !left {
                             self.census.flat_records += 1;
                             if let Records::Columns { leads, prefixes } = records {
                                 let full = [&visit.outer[..], &key[..]].concat();
@@ -402,33 +395,14 @@ impl Run<'_, '_, '_> {
                                     );
                                 }
                             }
-                            self.check_flat_value(value, page, place);
+                            if let Some(value) = out_of_line(value) {
+                                self.check_value(value, page, place);
+                            }
                         }
                         before = Some(key);
                     }
                 }
             }
-        }
-    }
-
-    /// Reads the value of a flat record that is out of line, for the page
-    /// that holds its place.
-    fn check_flat_value(&mut self, value: FlatValue<'_>, page: PageId, place: Place) {
-        let FlatValue::OutOfLine(bytes) = value else {
-            return;
-        };
-        let Some(value) = (bytes.try_into().ok()).and_then(|bytes| ValuePlace::decode(bytes).ok())
-        else {
-            return;
-        };
-        if let Err(fault) = self.values.fetch(value, page) {
-            let rule = match fault {
-                ValueFault::Owner(_) => Rule::ValueOwner,
-                // The census of the pages reported it.
-                ValueFault::NoBytes { .. } => return,
-                ValueFault::Unreadable(_) | ValueFault::Page(_) => Rule::ValueUnreadable,
-            };
-            self.add(rule, place, || fault.to_string());
         }
     }
 }

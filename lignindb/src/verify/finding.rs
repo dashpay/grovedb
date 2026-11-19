@@ -271,6 +271,11 @@ impl Findings {
         }
     }
 
+    /// The findings so far, those above the limit included.
+    pub(super) fn count(&self) -> u64 {
+        self.list.len() as u64 + self.dropped
+    }
+
     /// Adds a finding. `detail` is made only if the finding is kept.
     pub(super) fn add(&mut self, rule: Rule, place: Place, detail: impl FnOnce() -> String) {
         if self.list.len() < self.limit {

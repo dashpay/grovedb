@@ -1,11 +1,7 @@
 //! The walk of the Merks from their roots, the agreement of the directory
 //! with the cells, and the cells that nothing reaches.
 
-use std::{
-    cmp::Ordering,
-    collections::{hash_map::Entry, HashMap},
-    rc::Rc,
-};
+use std::{cmp::Ordering, collections::HashMap, rc::Rc};
 
 use lignin_format::{
     tree_page::{Side, TreePage},
@@ -20,7 +16,6 @@ use lignin_tree::{
 
 use super::{
     pages::{Kind, Reach, Seen},
-    read::ValueFault,
     Grove, Place, Rule, Run, Unreached,
 };
 
@@ -200,11 +195,10 @@ impl Run<'_, '_, '_> {
                 let what = || format!("the cell at {at} has another key than the entry states");
                 self.add(Rule::EntryRoot, top, what);
             }
-            if step
-                .key_len
-                .is_some_and(|len| usize::from(len) != key.len())
+            if let Some(stated) = step.key_len
+                && usize::from(stated) != key.len()
             {
-                let (stated, found) = (step.key_len.unwrap_or_default(), key.len());
+                let found = key.len();
                 self.add(Rule::LinkKeyLength, holder, || {
                     format!(
                         "the link to {at} states a key of {stated} bytes, the child has {found}"
@@ -212,8 +206,9 @@ impl Run<'_, '_, '_> {
                 });
             }
             let own = heights_of(&node);
-            if step.heights.is_some_and(|stated| Some(stated) != own) {
-                let stated = step.heights.unwrap_or_default();
+            if let Some(stated) = step.heights
+                && Some(stated) != own
+            {
                 self.add(Rule::LinkHeights, holder, || match own {
                     Some(own) => format!(
                         "the link to {at} states the heights {stated:?}, the child's links give \
@@ -275,18 +270,8 @@ impl Run<'_, '_, '_> {
     fn check_cell(&mut self, node: &NodeRef<'_>, rules: &mut Option<&mut dyn HashRules>) {
         let at = node.address();
         let place = Place::Cell(at);
-        if let Some(value) = node.cell().value_place()
-            && let Err(fault) = self.values.fetch(value, at.page())
-        {
-            let rule = match fault {
-                ValueFault::Owner(_) => Some(Rule::ValueOwner),
-                // The census of the pages reported it.
-                ValueFault::NoBytes { .. } => None,
-                ValueFault::Unreadable(_) | ValueFault::Page(_) => Some(Rule::ValueUnreadable),
-            };
-            if let Some(rule) = rule {
-                self.add(rule, place, || fault.to_string());
-            }
+        if let Some(value) = node.cell().value_place() {
+            self.check_value(value, at.page(), place);
         }
         let Some(rules) = rules.as_deref_mut() else {
             return;
@@ -331,12 +316,7 @@ impl Run<'_, '_, '_> {
                 continue;
             };
             let root = merk.root.as_ref().map(|(root, _)| *root);
-            let pointer = hosted.entry((index, key.clone(), *position));
-            let pointer = match pointer {
-                Entry::Occupied(pointer) => Some(pointer.remove()),
-                Entry::Vacant(_) => None,
-            };
-            match (root, pointer) {
+            match (root, hosted.remove(&(index, key.clone(), *position))) {
                 (Some(root), Some((_, pointer))) if root == pointer => {
                     self.census.hosted_roots += 1;
                 }
