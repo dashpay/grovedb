@@ -4,6 +4,7 @@ mod store;
 mod acceptance;
 mod random;
 mod reads;
+mod rebase;
 
 use std::{
     cell::RefCell,
