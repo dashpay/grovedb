@@ -127,8 +127,8 @@ pub struct Write<'a> {
     /// ([`Pages::host_is_behind`](super::Pages::host_is_behind)): its
     /// pointer would stay behind for good, in a cell that the reclaimer
     /// reads. The write that names the roots of such a host comes first,
-    /// which costs one written page for each such host beyond what D1
-    /// counts for a drop.
+    /// which costs at least one written page for each such host beyond
+    /// what D1 counts for a drop.
     pub dropped: &'a [CellAddress],
     /// The root pointers the write's caller holds.
     pub roots: &'a [RootWrite],

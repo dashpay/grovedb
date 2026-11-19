@@ -153,7 +153,8 @@
 //! before the write that drops the Merk. This is an exception to "a drop
 //! writes the page of the host and one directory entry" (D1, D4,
 //! `transactions.md` CV9): the transaction that drops the Merk also writes
-//! one page for each host inside it that is behind. Nothing here can see
+//! each host inside it that is behind, which is at least one page for each
+//! and more where the write of a host carries cells. Nothing here can see
 //! that it was left out.
 //!
 //! On existing GroveVersions every write holds the whole path up to the
