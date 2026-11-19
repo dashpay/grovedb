@@ -668,10 +668,7 @@ fn a_drop_takes_the_side_records_below_it_and_a_clear_keeps_those_of_its_merk() 
     };
     assert_eq!(side(&outer), (true, true, 1));
     assert_eq!(side(&middle), (false, false, 1));
-    // The side records of a subtree that is entered again below a dropped
-    // one are the engine's to unlink once it is committed (D-084 item 4,
-    // `a_subtree_entered_again_below_a_dropped_one_starts_empty`).
-    assert_eq!(side(&inner).2, 0);
+    assert_eq!(side(&inner), (false, false, 0));
 }
 
 /// RD6: a cursor reads the committed nodes of the moment it was opened,
