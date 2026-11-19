@@ -137,6 +137,7 @@
 //! | The image is of the page asked for (`tree-page.md` TP2, `flat-page.md` P14). | the page id in its header | [`LoadError::Payload`] with `DeltaError::WrongPage` |
 //! | A run is well formed and of the page asked for (`page-delta.md` PD3, A2). | `DeltaRun::decode`, `apply_chain` | [`LoadError::Payload`] |
 //! | Every record of a run applies to the page beneath it (A3). | `apply_chain` | [`LoadError::Payload`] |
+//! | A run is no longer than the store allows: its payload is at most one page size ([`max_run_len`]), which is the longest run write-back writes. A block that is longer than such a run can be stored as is refused before it is read, and a run that states a longer payload before memory is taken for it. | the block's location, the payload's stated length | [`LoadError::RunTooLong`] |
 //! | A run in a segment does not create its page (PD11), and a flat page has no run (PD13). | the run, the image's kind | [`LoadError::CreatedInSegment`], [`LoadError::FlatPageDelta`] |
 //! | No value is pending in a base image, or in the page as the last record of a run leaves it (PD16, P15). A value may be pending between two records of one run. | `has_pending_value` | [`LoadError::PendingValue`] |
 //!
@@ -207,7 +208,7 @@ mod tests;
 use lignin_format::{
     delta::{apply_chain, DeltaError, DeltaRun},
     flat_page::{FlatPage, FlatPageKind},
-    segment::{Block, BlockContent, SegmentError, MAX_BODY_LEN},
+    segment::{Block, BlockContent, SegmentError, FRAME_LEN, MAX_BODY_LEN},
     tree_page::TreePage,
     CommitVersion, FormatVersion, PageId, PageSize,
 };
@@ -215,6 +216,7 @@ use lignin_format::{
 pub use self::error::LoadError;
 use crate::{
     cache::{BufferPool, Loaded, Miss, PageRef},
+    flush::max_run_len,
     segment::{BlockLocation, SegmentStore},
     table::PageTable,
 };
@@ -489,11 +491,27 @@ impl<'s> PageLoader<'s> {
             location,
             source,
         };
+        // A run is stored raw or compressed to fewer bytes, so a block
+        // whose body is longer than the longest run holds none, and is not
+        // read.
+        let max = max_run_len(self.size);
+        let too_long = |len| LoadError::RunTooLong {
+            page,
+            location,
+            len,
+            max,
+        };
+        let stored_len = location.len as usize;
+        if stored_len > FRAME_LEN + max {
+            return Err(too_long(stored_len - FRAME_LEN));
+        }
         let (stored, run_version) =
             self.block(page, location, BlockContent::Delta, MAX_BODY_LEN, block)?;
-        let stored_len = location.len as usize;
         if stored.payload_len() > stored_len.saturating_mul(LZ4_MAX_EXPANSION) {
             return Err(refused(SegmentError::Decompression.into()));
+        }
+        if stored.payload_len() > max {
+            return Err(too_long(stored.payload_len()));
         }
         run.clear();
         run.resize(stored.payload_len(), 0);

@@ -497,16 +497,18 @@ fn a_roll_goes_on_until_the_log_has_a_file_that_takes_items_and_one_to_turn_to()
             continue;
         }
         whole += 1;
-        // The log has turned to a file that takes nothing, so the roll
-        // went round again: the log ends in the file after it, and the
-        // one after that is named and ready.
+        // The log has turned to a file that takes nothing, so it has no
+        // file that takes items, and the roll turned it again: the log
+        // ends in the file after it, and the one after that is named and
+        // ready. The roll synced the file that takes nothing first, so
+        // the manifest names it closed behind its start record.
         assert_eq!(run.stats.other_errors, 0);
         let db = run.db.as_ref().unwrap();
         assert_eq!(db.log.end(), Some(place(3, FIRST)));
         assert!(!db.log.is_due());
         assert!(!db.log.rotate().unwrap());
         let named = db.named();
-        assert_eq!(named[1], log_file(2, FileState::Open, HEADER));
+        assert_eq!(named[1], log_file(2, FileState::Closed, FIRST));
         assert_eq!(named.last(), Some(&log_file(4, FileState::Open, HEADER)));
         run.append();
         run.check_crash_states();

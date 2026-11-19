@@ -37,16 +37,25 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
 
     std::thread::scope(|scope| {
         // One committer: it asks for its place, writes its group and
-        // appends it, and writes the group again when another append or a
-        // turn took the place.
+        // appends it, and writes the group again when another append took
+        // the place. The page steps of this test are not kept out of the
+        // log, as the lock on the value counts keeps them out of a
+        // store's.
         scope.spawn(|| {
             let _done = Done(&done);
             let mut rng = Rng(1);
             let mut commits = 0;
             while commits < COMMITS {
-                // A committer whose file is full waits for the turn, so
-                // the log turns however the threads are scheduled.
+                // A committer whose file is full turns the log itself, to
+                // the file that whoever keeps the files has made ready:
+                // its own turn takes no place it has asked for. So the
+                // log turns however the threads are scheduled.
                 if log.is_due() {
+                    match log.rotate() {
+                        Ok(turned) => drop(turns.fetch_add(u64::from(turned), Ordering::Relaxed)),
+                        Err(LogError::NoSpare | LogError::SpareNotNamed { .. }) => {}
+                        Err(error) => panic!("{error}"),
+                    }
                     std::thread::yield_now();
                     continue;
                 }
@@ -111,11 +120,12 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
                 std::thread::yield_now();
             }
         });
-        // Whoever keeps the files: a next file, a new manifest and a turn.
+        // Whoever keeps the files: a next file and a new manifest. A roll
+        // turns no file that takes items, so it takes no commit's place.
         scope.spawn(|| {
             while !done.load(Ordering::Acquire) {
                 let turned = log.roll(&mut manifest.lock().unwrap()).unwrap();
-                turns.fetch_add(u64::from(turned), Ordering::Relaxed);
+                assert!(!turned, "a roll turned a file that takes items");
                 std::thread::yield_now();
             }
         });

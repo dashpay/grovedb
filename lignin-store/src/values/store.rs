@@ -98,7 +98,7 @@ fn remove(vfs: &dyn Vfs, path: &Path) -> std::io::Result<()> {
 /// the change: a release that the count before the change does not include
 /// shows the count was too low, whatever the change acquires in the same
 /// file.
-fn net(change: &ValueChange) -> (Vec<ValuePointer>, Vec<ValuePointer>) {
+pub(crate) fn net(change: &ValueChange) -> (Vec<ValuePointer>, Vec<ValuePointer>) {
     if change.acquired().is_empty() || change.released().is_empty() {
         return (change.released().to_vec(), change.acquired().to_vec());
     }

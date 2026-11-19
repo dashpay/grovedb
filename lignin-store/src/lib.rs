@@ -6,6 +6,7 @@ pub mod alloc;
 pub mod cache;
 pub mod flush;
 pub mod load;
+pub mod recovery;
 pub mod segment;
 pub mod stats;
 pub mod table;

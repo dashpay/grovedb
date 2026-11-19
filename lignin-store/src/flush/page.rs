@@ -21,7 +21,7 @@ use crate::{
 
 /// Which of the two page formats a frame holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PageKind {
+pub(crate) enum PageKind {
     /// A tree page: it is written as a base image or as a run of deltas.
     Tree,
     /// A flat page: every block of it is its image (`page-delta.md` PD13).
@@ -30,7 +30,7 @@ pub(super) enum PageKind {
 
 /// The kind of the page in `frame`, by its first byte, as a loader tells
 /// them apart.
-pub(super) fn kind_of(frame: &[u8]) -> PageKind {
+pub(crate) fn kind_of(frame: &[u8]) -> PageKind {
     match frame.first() {
         Some(&code) if FlatPageKind::from_code(code, FRAME_FORMAT).is_ok() => PageKind::Flat,
         _ => PageKind::Tree,
@@ -40,15 +40,15 @@ pub(super) fn kind_of(frame: &[u8]) -> PageKind {
 /// A cell of a tree page, or an entry of a flat leaf, whose value is not in
 /// the value log yet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PendingCell {
+pub(crate) struct PendingCell {
     /// The slot of the cell in a tree page. An entry of a flat leaf is
     /// found by the place it holds.
-    pub(super) slot: Option<SlotId>,
-    pub(super) pending: PendingValue,
+    pub(crate) slot: Option<SlotId>,
+    pub(crate) pending: PendingValue,
 }
 
 /// The pending values of the page in `frame`.
-pub(super) fn pending_cells(frame: &[u8]) -> Result<Vec<PendingCell>, FormatError> {
+pub(crate) fn pending_cells(frame: &[u8]) -> Result<Vec<PendingCell>, FormatError> {
     match kind_of(frame) {
         PageKind::Tree => Ok(TreePage::from_validated(frame, FRAME_FORMAT)?
             .pending_values()
@@ -84,7 +84,7 @@ pub(super) fn pending_cells(frame: &[u8]) -> Result<Vec<PendingCell>, FormatErro
 /// Appends the image of the page in `frame` to `out`, and returns whether
 /// the page has a pending value: an image with one is not written to a
 /// segment (`page-delta.md` PD16).
-pub(super) fn write_image(frame: &[u8], out: &mut Vec<u8>) -> Result<bool, FormatError> {
+pub(crate) fn write_image(frame: &[u8], out: &mut Vec<u8>) -> Result<bool, FormatError> {
     match kind_of(frame) {
         PageKind::Tree => {
             let page = TreePage::from_validated(frame, FRAME_FORMAT)?;
@@ -114,7 +114,7 @@ pub(super) fn placing(
 }
 
 /// Whether the page in `frame` still holds what `step` says it held.
-pub(super) fn is_due(frame: &[u8], step: &ValueMove) -> Result<bool, FormatError> {
+pub(crate) fn is_due(frame: &[u8], step: &ValueMove) -> Result<bool, FormatError> {
     match kind_of(frame) {
         PageKind::Tree => Ok(step.is_due_in_tree(&TreePage::from_validated(frame, FRAME_FORMAT)?)),
         PageKind::Flat => step.is_due_in_flat_leaf(frame, FRAME_FORMAT),
@@ -123,7 +123,7 @@ pub(super) fn is_due(frame: &[u8], step: &ValueMove) -> Result<bool, FormatError
 
 /// Makes the change of `step` to the page in `frame`, a copy of the page
 /// the step is due in.
-pub(super) fn apply_step(
+pub(crate) fn apply_step(
     frame: &mut [u8],
     size: PageSize,
     step: &ValueMove,

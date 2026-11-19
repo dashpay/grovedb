@@ -102,8 +102,10 @@
 //! result. It leaves every other kind of file in the manifest as it is, so
 //! it composes with the `describe` of the other stores inside one
 //! [`ManifestStore::update`]. [`LogStore::roll`] is the call that keeps the
-//! files going: sync, turn if a turn is due, create the next file, replace
-//! the manifest.
+//! files going: sync, turn if the log has no file that takes items, create
+//! the next file, replace the manifest. The turn away from a file that is
+//! full is [`LogStore::rotate`]'s, because it moves an end of the log at
+//! which a commit may have asked for its place ([the locks](#locks)).
 //!
 //! **A file takes items only once a durable manifest names it.** A recovery
 //! reads the log files its manifest names and no others. An item in a file
@@ -420,6 +422,9 @@
 //! in, as a commit whose cells stop holding value pointers does already
 //! (CM3). [`LogStore::rotate`] moves the end of the log as well: call it
 //! under one of the two locks, or from the committer itself.
+//! [`LogStore::roll`] needs neither: it turns the log only while the log
+//! has no file that takes items, and then no commit holds a place that it
+//! can still append at.
 //!
 //! # What the caller does
 //!
@@ -429,15 +434,23 @@
 //!   nothing else ([`LogError::WrongDirectory`]).
 //! - It reads the log with a [`LogReader`] before it opens it, and passes
 //!   what the reader found to [`LogStore::open`], with nothing written to
-//!   the directory in between. The log takes an end only of its own
-//!   directory, by the path, and only while every file that holds
-//!   something of the log has the length it was read with
-//!   ([`LogError::WrongLogEnd`]).
-//! - It calls [`LogStore::roll`] before the session's first append, and
-//!   from then on whenever [`LogStore::is_due`], and from time to time:
-//!   outside a commit and outside a page step. Before the session ends it
-//!   calls [`LogStore::sync`] and [`LogStore::commit`], so that the next
-//!   session has no file to write again.
+//!   `wal/` in between and no change to how the manifest names the log's
+//!   files. Other kinds of files may be created and named meanwhile. The
+//!   log takes an end only of its own directory, by the path, and only
+//!   while every file that holds something of the log has the length it
+//!   was read with ([`LogError::WrongLogEnd`]).
+//! - It calls [`LogStore::roll`] before the session's first append, which
+//!   [recovery](crate::recovery) does, and from then on whenever
+//!   [`LogStore::is_due`], and from time to time: outside a commit and
+//!   outside a page step. A file that is full it turns with
+//!   [`LogStore::rotate`], where no commit is between asking for its place
+//!   and appending its group, and calls [`LogStore::roll`] again for the
+//!   file after that. A session with write-back leaves all of this to
+//!   [`WriteBack::roll_log`](crate::flush::WriteBack::roll_log), which
+//!   makes the turn under the lock on the counts of live values. Before
+//!   the session ends it calls [`LogStore::sync`] and
+//!   [`LogStore::commit`], so that the next session has no file to write
+//!   again.
 //! - After every [`ManifestStore::update`] that returns `Ok`, it calls
 //!   [`LogStore::manifest_replaced`]. [`LogStore::commit`] does both.
 //! - It gives every append the bytes of one item, written by

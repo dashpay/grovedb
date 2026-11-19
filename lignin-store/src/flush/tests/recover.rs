@@ -1,8 +1,11 @@
 //! A recovery, as far as the tests of write-back need one: the table
 //! checkpoint the manifest names, and the log replayed on it by the rules
 //! of `page-table.md` (K3, K11, K13) and `log-format.md` (LG28, LG29).
-//! STORE-07 builds the real one. This one exists to show that what
-//! write-back leaves on disk is enough for it at every point.
+//! It exists to show that what write-back leaves on disk is enough for a
+//! recovery at every point, and it is written apart from the store's own
+//! ([`crate::recovery`], STORE-07), which [`the_store_recovers_the_same`]
+//! holds to it: on every state that a sweep recovers, the two land on the
+//! same version and say the same of every page.
 
 use std::collections::BTreeSet;
 
@@ -13,6 +16,11 @@ use lignin_format::{
 };
 
 use super::*;
+use crate::{
+    alloc::PageState,
+    flush::page::pending_cells,
+    recovery::{self, RecoveryOptions},
+};
 
 /// What a recovery found.
 pub(super) struct Recovered {
@@ -265,4 +273,127 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
         checkpoint: info.is_some(),
         pages,
     }
+}
+
+/// How the store's recovery is run on a state: with the pool of these
+/// tests, and with as many rebuilt pages kept in memory as `kept` says.
+pub(super) fn options(kept: Option<usize>) -> RecoveryOptions {
+    RecoveryOptions {
+        pool_capacity: 4 << 20,
+        max_replay_pages: kept,
+        ..RecoveryOptions::default()
+    }
+}
+
+/// What the store's own recovery (`crate::recovery`) makes of the
+/// directory `path` of `vfs`, held to what the recovery of these tests
+/// found there (`expected`, for the pages `ids`).
+///
+/// - It lands on the same version, from the same checkpoint, and every
+///   page says the same there, with every value. A pending value has its
+///   bytes with its frame (`transactions.md` FL7).
+/// - The counts of live values are the pointers the pages hold (DU5), and
+///   no count was found wrong.
+/// - A page id is in use exactly when its page is (ID4).
+/// - **Replaying twice gives the same state.** The recovered store is
+///   dropped as a killed process leaves it, and the directory is recovered
+///   again, this time with one rebuilt page kept in memory, so that every
+///   other one is written to a segment while the log is read. The second
+///   recovery finds what the first found.
+///
+/// Returns how many pages the second recovery wrote to a segment while it
+/// read the log.
+pub(super) fn the_store_recovers_the_same(
+    vfs: Arc<dyn Vfs>,
+    path: &Path,
+    ids: &[PageId],
+    expected: &Recovered,
+) -> u64 {
+    let mut first = None;
+    let mut spilled = 0;
+    for kept in [None, Some(1)] {
+        let manifest = ManifestStore::open(vfs.clone(), path).expect("a manifest");
+        let store = recovery::recover(manifest, &options(kept))
+            .unwrap_or_else(|error| panic!("the store does not recover: {error}"));
+        let found = found_by(&store, ids);
+        assert_eq!(store.landed(), expected.landed, "{kept:?}");
+        assert_eq!(store.report.covers, expected.covers, "{kept:?}");
+        assert_eq!(store.checkpoint.is_some(), expected.checkpoint, "{kept:?}");
+        assert_eq!(store.report.miscounts, 0, "{:?}", store.report);
+        for (id, cells) in &found {
+            match (cells, &expected.pages[id]) {
+                (Some(cells), Some(expected)) => assert!(
+                    same(cells, expected),
+                    "page {id}, {kept:?}: {cells:?}, not {expected:?}"
+                ),
+                (None, None) => {}
+                (cells, expected) => panic!("page {id}, {kept:?}: {cells:?}, not {expected:?}"),
+            }
+        }
+        match &first {
+            None => {
+                assert_eq!(store.report.pages_spilled, 0, "{:?}", store.report);
+                first = Some((store.landed(), found.len()));
+            }
+            Some(first) => assert_eq!(*first, (store.landed(), found.len())),
+        }
+        spilled = store.report.pages_spilled;
+    }
+    spilled
+}
+
+/// What the pages `ids` say in a recovered store at the version it landed
+/// on, with what the store says of their ids and of its values checked on
+/// the way.
+fn found_by(store: &recovery::Recovered, ids: &[PageId]) -> BTreeMap<PageId, Option<Vec<Cell>>> {
+    let landed = store.landed();
+    let loader =
+        PageLoader::new(&store.pool, &store.table, &store.segments, Db::SIZE).expect("a loader");
+    let mut buffers = LoadBuffers::new();
+    let mut pages = BTreeMap::new();
+    let mut pointers: BTreeMap<FileId, u64> = BTreeMap::new();
+    for &id in ids {
+        let cells = match loader.get(id, landed, &mut buffers) {
+            Ok(frame) => {
+                assert_eq!(store.allocator.state(id), PageState::Live, "page {id}");
+                for cell in pending_cells(&frame).expect("a page") {
+                    let bytes = frame.attached(cell.pending.id());
+                    assert_eq!(
+                        bytes.map(<[u8]>::len),
+                        Some(cell.pending.value_len() as usize),
+                        "a pending value of page {id} is with its frame"
+                    );
+                }
+                Some(cells_of(
+                    id,
+                    &frame,
+                    Some(&frame),
+                    &store.values,
+                    &store.log,
+                ))
+            }
+            Err(LoadError::NoPage { .. }) => {
+                assert_ne!(store.allocator.state(id), PageState::Live, "page {id}");
+                None
+            }
+            Err(error) => panic!("page {id} at version {landed}: {error}"),
+        };
+        for pointer in cells.iter().flatten().filter_map(|cell| cell.pointer) {
+            *pointers.entry(pointer.file()).or_default() += 1;
+        }
+        pages.insert(id, cells);
+    }
+    let counted: BTreeMap<FileId, u64> = store
+        .values
+        .counts()
+        .iter()
+        .inspect(|count| assert!(!count.miscounted, "{count:?}"))
+        .filter(|count| count.values > 0)
+        .map(|count| (count.file, count.values))
+        .collect();
+    assert_eq!(
+        counted, pointers,
+        "the counts are the pointers the pages hold"
+    );
+    pages
 }

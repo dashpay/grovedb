@@ -11,6 +11,7 @@ mod faults;
 mod flat;
 mod measure;
 mod recover;
+mod recovered;
 mod regroup;
 mod stats;
 mod threads;
@@ -45,6 +46,7 @@ use crate::{
     alloc::{Epoch, Pins},
     cache::{BufferPool, OwnerId, PageRef, PoolConfig, PrivateRef},
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
+    recovery::{self, RecoveryOptions},
     segment::{ManifestStore, SegmentStore},
     table::{CheckpointInfo, Link, LinkKind, LogPlace, PageTable, TableCheckpoints},
     values::{FileCount, ValueChange, ValueHold, ValueStore, ValueWriter},
@@ -706,6 +708,58 @@ impl Db {
             .adopt(info.as_ref())
             .expect("the checkpoint is adopted");
         db
+    }
+
+    /// Opens the directory `path` of `vfs` as a session opens it: with the
+    /// store's recovery ([`crate::recovery`]), whatever the session before
+    /// left there. `model` is what the commits of the earlier sessions
+    /// left. What they committed after the version the recovery lands on
+    /// is not part of the store any more, and is taken out of it: those
+    /// versions are given to the commits of this session.
+    pub(super) fn recover(
+        vfs: Arc<dyn Vfs>,
+        path: &Path,
+        options: &RecoveryOptions,
+        mut model: Model,
+    ) -> Self {
+        let manifest = ManifestStore::open(vfs.clone(), path).expect("a manifest");
+        let recovered = recovery::recover(manifest, options)
+            .unwrap_or_else(|error| panic!("the store does not recover: {error}"));
+        let landed = recovered.landed();
+        model.pages.retain(|_, versions| {
+            versions.retain(|(born, _)| *born <= landed.get());
+            !versions.is_empty()
+        });
+        let recovery::Recovered {
+            manifest,
+            pool,
+            table,
+            segments,
+            values,
+            log,
+            checkpoints,
+            flush,
+            ..
+        } = recovered;
+        let versions = Versions::new();
+        versions.latest.store(landed.get(), Ordering::SeqCst);
+        Self {
+            _dir: None,
+            vfs,
+            path: path.to_path_buf(),
+            size: Self::SIZE,
+            manifest: Mutex::new(manifest),
+            segments,
+            values,
+            log,
+            checkpoints,
+            table,
+            pool,
+            versions,
+            state: flush,
+            owners: AtomicU64::new(0),
+            model: Mutex::new(model),
+        }
     }
 
     pub(super) fn wb(&self) -> WriteBack<'_> {

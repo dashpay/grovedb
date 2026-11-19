@@ -422,6 +422,7 @@ mod tests;
 pub use clean::{Cleaned, CopiedValues, Installed, PointerRewrite, Refusal, Rewrite, ValueOwners};
 pub use counts::{ChangeMark, FileCount, ValueChange};
 pub use error::{Miscount, OwnersError, ValueStoreError};
+pub(crate) use store::net;
 pub use store::{
     Cleanable, CountStep, Retired, ValueRecovery, ValueStore, DEFAULT_TARGET_FILE_LEN,
 };

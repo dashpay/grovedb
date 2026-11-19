@@ -451,6 +451,121 @@ fn a_run_that_cannot_be_as_long_as_it_says_takes_no_memory() {
     assert!(buffers.run.capacity() < 1 << 20);
 }
 
+/// A run of exactly `len` bytes for the page in `written`: changes to the
+/// value hash of its first cell, and the removal of some of its last
+/// cells to make up the length.
+fn run_of_len(written: &mut Written, len: usize) -> Vec<u8> {
+    let hash = [0x5A; 32];
+    let change = Delta::Hash {
+        slot: slot(1),
+        field: HashField::Value,
+        hash: &hash,
+    };
+    let cells = written.page().cells().count() as u16;
+    let removal = |n: u16| Delta::Remove {
+        slot: slot(cells - n),
+    };
+    let (per_change, per_removal) = (change.encoded_len(), removal(0).encoded_len());
+    let records = len - PageId::ENCODED_LEN;
+    let removals = (0..cells - 1)
+        .find(|&n| (records - usize::from(n) * per_removal).is_multiple_of(per_change))
+        .expect("some number of removals makes up the length");
+    let changes = (records - usize::from(removals) * per_removal) / per_change;
+    let mut deltas = vec![change; changes];
+    deltas.extend((0..removals).map(removal));
+    let run = written.change(&deltas);
+    assert_eq!(run.len(), len);
+    run
+}
+
+/// **A delta block whose payload is above one page size is refused**
+/// (`flush::max_run_len`): write-back writes the page as a base image
+/// instead, so no chain has one. A run of exactly that length is read.
+#[test]
+fn a_run_longer_than_a_page_is_refused() {
+    let size = PageSize::MIN;
+    let max = crate::flush::max_run_len(size);
+    assert_eq!(max, size.get());
+    let filled = |id| Written::filled(size, page(id), 40, 10);
+
+    // At the limit: stored as it is, and compressed.
+    for compression in [RAW, LZ4] {
+        let mut db = Db::new(size);
+        let mut written = filled(7);
+        db.base(page(7), 1, RAW, &written.image());
+        let run = run_of_len(&mut written, max);
+        db.delta(page(7), 2, compression, &run);
+        let loaded = load(&db, page(7), 2).expect("a run of one page size is read");
+        let loaded = TreePage::from_validated(&loaded, V1).expect("a tree page");
+        assert_eq!(loaded.to_image(), written.image());
+    }
+
+    // One byte more. Stored as it is, the block is longer than any run can
+    // be stored as, and is not read: the bytes of its body say nothing.
+    let mut db = Db::new(size);
+    let mut written = filled(7);
+    db.base(page(7), 1, RAW, &written.image());
+    let run = run_of_len(&mut written, max + 1);
+    let delta = db.delta(page(7), 2, RAW, &run);
+    db.rewrite(delta, |body| body.fill(0xEE));
+    let pool = db.pool(1);
+    let mut buffers = LoadBuffers::new();
+    let error = db
+        .loader(&pool)
+        .get(page(7), version(2), &mut buffers)
+        .unwrap_err();
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the block at offset {} of segment {} is a run of {} bytes for page 7, and a run of \
+             this store has at most {max}",
+            delta.offset,
+            delta.file,
+            max + 1
+        )
+    );
+    assert!(std::error::Error::source(&error).is_none());
+    match error {
+        LoadError::RunTooLong {
+            page: of,
+            location,
+            len,
+            max: most,
+        } => assert_eq!((of, location, len, most), (page(7), delta, max + 1, max)),
+        other => panic!("{other}"),
+    }
+    assert!(buffers.block.capacity() <= max, "the block was not read");
+    assert_eq!(pool.census().published, 0, "nothing was put into the pool");
+
+    // Compressed, the block is short, and the run it states is too long:
+    // no memory is taken for it.
+    let mut db = Db::new(size);
+    let mut written = filled(8);
+    db.base(page(8), 1, RAW, &written.image());
+    let run = run_of_len(&mut written, max + 1);
+    let delta = db.delta(page(8), 2, LZ4, &run);
+    assert!((delta.len as usize) < max / 4, "{} bytes stored", delta.len);
+    let pool = db.pool(1);
+    let mut buffers = LoadBuffers::new();
+    let error = db
+        .loader(&pool)
+        .get(page(8), version(2), &mut buffers)
+        .unwrap_err();
+    match error {
+        LoadError::RunTooLong {
+            page: of,
+            location,
+            len,
+            max: most,
+        } => assert_eq!((of, location, len, most), (page(8), delta, max + 1, max)),
+        other => panic!("{other}"),
+    }
+    assert_eq!(buffers.run.capacity(), 0, "no memory for the run");
+
+    // The page under the run is still read at its own version.
+    assert!(load(&db, page(8), 1).is_ok());
+}
+
 #[test]
 fn a_page_that_is_not_there_takes_no_frame() {
     let mut db = Db::new(PageSize::MIN);

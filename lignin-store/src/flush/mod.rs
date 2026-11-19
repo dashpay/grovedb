@@ -440,22 +440,32 @@
 //!
 //! # What the caller does
 //!
-//! **Whoever opens the store** makes a [`FlushState`], builds the
-//! [`Stores`] and calls [`WriteBack::adopt`] with the checkpoint the
-//! manifest names, before anything is appended to the log. It implements
-//! [`Published`] for what publishes commits and keeps the pins, and hands
-//! over the tree layer's [`PageValues`] if it has one. It runs
+//! **Whoever opens the store** takes the [`FlushState`] that
+//! [recovery](crate::recovery) made for it and builds the [`Stores`]. It
+//! implements [`Published`] for what publishes commits and keeps the pins,
+//! and hands over the tree layer's [`PageValues`] if it has one. It runs
 //! [`WriteBack::run`] on a thread, and may call
-//! [`WriteBack::consolidate_long_chains`] once. Recovery (STORE-07) can
-//! tell write-back of each group it replays as a commit does. If it does
-//! not, the pages of those commits are written as base images, and no log
-//! file is dropped behind them until a checkpoint covers them all. A page
-//! version that it rebuilds with a pending value has the value's bytes
-//! attached to its frame or readable in the log
-//! ([`LogStore::read_pending`](crate::wal::LogStore::read_pending)):
-//! write-back keeps the log for the newest version of a page that waits,
-//! and for no version that was superseded, whose bytes are with its frame
-//! (FL7).
+//! [`WriteBack::consolidate_long_chains`] once.
+//!
+//! **Recovery** makes the state before anything is appended to the log:
+//!
+//! - It keeps the log for the checkpoint the manifest names, as
+//!   [`WriteBack::adopt`] does. A store that is put together without a
+//!   recovery, as the example above is, calls that itself.
+//! - It says where the group of each commit it replayed begins, and how
+//!   much log those commits take, so that the log that is held is known
+//!   from the start and the log files of the session before are dropped
+//!   once a checkpoint covers what they hold.
+//! - It says, for each page version it put into the pool, which is the
+//!   oldest replayed commit whose change the page version holds. The pool
+//!   lists such a page under the newest of those commits, and no block
+//!   holds any of them: **the version a table checkpoint covers stays
+//!   below the oldest until a block holds the page**, as it does for a
+//!   page version that is kept for its readers.
+//! - It tells write-back nothing of the records, so a page that it rebuilt
+//!   is written as a base image.
+//! - A page version that it rebuilt with a pending value has the value's
+//!   bytes attached to its frame, read from the log (FL7).
 //!
 //! **A commit** (TXN-05):
 //!
@@ -489,7 +499,7 @@
 //!   by whoever knows the pins and the guards. Until then such a version
 //!   counts among the pending bytes.
 //! - It moves no block from one segment to another and deletes no segment
-//!   (STORE-08), and it does not recover (STORE-07).
+//!   (STORE-08), and it does not recover ([`crate::recovery`]).
 //! - It does not rescue the blocks of a segment whose sync failed by
 //!   writing their pages again. The session goes on without checkpoints,
 //!   and the next open recovers from the log.
@@ -500,7 +510,7 @@
 mod checkpoint;
 mod config;
 mod error;
-mod page;
+pub(crate) mod page;
 mod place;
 mod run;
 mod state;
