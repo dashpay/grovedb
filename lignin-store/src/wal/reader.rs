@@ -311,6 +311,13 @@ impl Current {
     }
 }
 
+pub(super) fn log_files(manifest: &Manifest) -> impl Iterator<Item = &LiveFile> {
+    manifest
+        .files()
+        .iter()
+        .filter(|file| file.kind() == FileKind::Wal)
+}
+
 /// Reads the log of a database directory: the log files a manifest names,
 /// in the order of their ids, item by item, each file as far as it is
 /// valid. This is the recovery iterator. It changes nothing in the
@@ -342,12 +349,7 @@ impl LogReader {
     /// A reader at the first item of the log that `manifest` names, in the
     /// database directory `dir`.
     pub fn new(vfs: Arc<dyn Vfs>, dir: &Path, manifest: &Manifest) -> Self {
-        let named = manifest
-            .files()
-            .iter()
-            .filter(|file| file.kind() == FileKind::Wal)
-            .copied()
-            .collect();
+        let named = log_files(manifest).copied().collect();
         Self {
             vfs,
             dir: dir.to_path_buf(),

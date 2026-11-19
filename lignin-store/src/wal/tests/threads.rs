@@ -10,6 +10,14 @@ use lignin_format::wal::LoggedValue;
 
 use super::*;
 
+struct Done<'a>(&'a AtomicBool);
+
+impl Drop for Done<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
 #[test]
 fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_places() {
     let std = StdDb::new(small_files(20_000));
@@ -32,6 +40,7 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
         // appends it, and writes the group again when another append or a
         // turn took the place.
         scope.spawn(|| {
+            let _done = Done(&done);
             let mut rng = Rng(1);
             let mut commits = 0;
             while commits < COMMITS {
@@ -56,7 +65,6 @@ fn appends_syncs_turns_and_reads_at_once_leave_one_log_in_the_order_of_its_place
                     Err(error) => panic!("{error}"),
                 }
             }
-            done.store(true, Ordering::Release);
         });
         // Page steps and marks, which ask for no place.
         for thread in 0..3 {

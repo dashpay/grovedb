@@ -94,12 +94,7 @@ fn log_file(raw_id: u32, state: FileState, valid_len: u64) -> LiveFile {
 
 /// The log files a manifest names.
 fn named(manifest: &Manifest) -> Vec<LiveFile> {
-    manifest
-        .files()
-        .iter()
-        .filter(|file| file.kind() == FileKind::Wal)
-        .copied()
-        .collect()
+    super::reader::log_files(manifest).copied().collect()
 }
 
 /// The bytes of a commit group for the place `at`, with what the values in

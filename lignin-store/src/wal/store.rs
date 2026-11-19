@@ -23,7 +23,11 @@ use lignin_format::{
 };
 use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs};
 
-use super::{error::LogError, file::LogFile, reader::LogEnd};
+use super::{
+    error::LogError,
+    file::LogFile,
+    reader::{log_files, LogEnd},
+};
 use crate::{
     segment::{create_file, list_or_create_dir, FileNames, ManifestStore},
     table::LogDurable,
@@ -245,33 +249,33 @@ pub(super) fn check_item(
 ) -> Result<LogCursor, LogError> {
     let mut cursor = before.clone();
     let mut at = 0;
-    loop {
+    let last = loop {
         let step = cursor
             .step(bytes.get(at..).unwrap_or_default())
             .map_err(|source| LogError::Refused { offset: at, source })?;
         at += step.len;
-        if !step.ends_item {
-            continue;
+        if step.ends_item {
+            break step.record;
         }
-        let found = match step.record {
-            Record::Part(_) => Some(ItemKind::Group),
-            Record::Change(_) => Some(ItemKind::Change),
-            Record::Mark(_) => Some(ItemKind::Mark),
-            Record::Start(_) | Record::Value(_) | Record::Carried(_) => None,
-        };
-        if found != Some(kind) {
-            return Err(LogError::WrongItem {
-                expected: kind.name(),
-            });
-        }
-        if at != bytes.len() {
-            return Err(LogError::NotOneItem {
-                len: bytes.len(),
-                item_len: at,
-            });
-        }
-        return Ok(cursor);
+    };
+    let found = match last {
+        Record::Part(_) => Some(ItemKind::Group),
+        Record::Change(_) => Some(ItemKind::Change),
+        Record::Mark(_) => Some(ItemKind::Mark),
+        Record::Start(_) | Record::Value(_) | Record::Carried(_) => None,
+    };
+    if found != Some(kind) {
+        return Err(LogError::WrongItem {
+            expected: kind.name(),
+        });
     }
+    if at != bytes.len() {
+        return Err(LogError::NotOneItem {
+            len: bytes.len(),
+            item_len: at,
+        });
+    }
+    Ok(cursor)
 }
 
 /// What became of an append that the file layer failed.
@@ -386,23 +390,13 @@ impl Files {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
-    /// The session has not turned to its first file.
-    NoFile,
-    /// The active file takes items.
-    Active,
-    /// The active file takes no more items: an append to it failed.
-    Finished,
-}
-
 /// The end of the log. This is the append lock: it is held for one append,
 /// and nothing is acquired under it.
 #[derive(Debug)]
 struct Tail {
-    phase: Phase,
     unsettled: Option<Sticky>,
-    /// The file the log ends in, with the cursor behind its last item.
+    /// The file the log ends in, with the cursor behind its last item. It
+    /// takes items until it is finished.
     active: Option<(Arc<LogFile>, LogCursor)>,
     /// The start record of the session's first file.
     first_start: LogStart,
@@ -431,8 +425,8 @@ impl Tail {
     /// The file that takes items, and the cursor behind its last item.
     fn active(&self) -> Result<(&Arc<LogFile>, &LogCursor), LogError> {
         self.check_settled()?;
-        match (&self.active, self.phase) {
-            (Some((file, cursor)), Phase::Active) => Ok((file, cursor)),
+        match &self.active {
+            Some((file, cursor)) if !file.is_finished() => Ok((file, cursor)),
             _ => Err(LogError::NoActiveFile),
         }
     }
@@ -448,10 +442,10 @@ impl Tail {
     /// The start record of the file the log turns to.
     fn next_start(&self) -> Result<LogStart, FormatError> {
         match &self.active {
-            Some((file, cursor)) => match file.start() {
-                Some(start) => start.next(cursor.offset(), self.latest),
-                None => Err(WalError::MissingStart.into()),
-            },
+            Some((file, cursor)) => file
+                .start()
+                .ok_or(WalError::MissingStart)?
+                .next(cursor.offset(), self.latest),
             None => Ok(self.first_start),
         }
     }
@@ -461,13 +455,6 @@ static SESSIONS: AtomicU64 = AtomicU64::new(1);
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(PoisonError::into_inner)
-}
-
-fn log_files(manifest: &Manifest) -> impl Iterator<Item = &LiveFile> {
-    manifest
-        .files()
-        .iter()
-        .filter(|file| file.kind() == FileKind::Wal)
 }
 
 fn remove(vfs: &dyn Vfs, path: &Path) -> io::Result<()> {
@@ -640,7 +627,6 @@ impl LogStore {
                 last_sync: Instant::now(),
             }),
             tail: Mutex::new(Tail {
-                phase: Phase::NoFile,
                 unsettled: None,
                 active: None,
                 first_start,
@@ -779,8 +765,10 @@ impl LogStore {
     pub fn rotate(&self) -> Result<bool, LogError> {
         let mut tail = self.tail();
         tail.check_settled()?;
-        let due = match (&tail.active, tail.phase) {
-            (Some((_, cursor)), Phase::Active) => cursor.offset() >= self.options.target_file_len,
+        let due = match &tail.active {
+            Some((file, cursor)) if !file.is_finished() => {
+                cursor.offset() >= self.options.target_file_len
+            }
             _ => true,
         };
         if !due {
@@ -844,11 +832,6 @@ impl LogStore {
         if !takes_items {
             spare.finish();
         }
-        tail.phase = if takes_items {
-            Phase::Active
-        } else {
-            Phase::Finished
-        };
         tail.active = Some((spare, cursor));
         tail.spare = None;
         tail.turn += 1;
@@ -916,8 +899,8 @@ impl LogStore {
         let tail = self.tail();
         let (file, cursor) = tail.active()?;
         let offset = cursor.offset();
-        let refused = LogError::format(file.path(), offset);
-        let place = LogPlace::new(file.id(), offset).map_err(refused)?;
+        let place =
+            LogPlace::new(file.id(), offset).map_err(LogError::format(file.path(), offset))?;
         let address = file
             .start()
             .ok_or(FormatError::Wal(WalError::MissingStart))
@@ -1064,11 +1047,11 @@ impl LogStore {
         match settle(&file, offset, bytes, verifies) {
             Settled::InLog => {
                 self.took(tail, &file, after);
-                self.finish(tail, &file);
+                self.finish(&file);
                 Ok(appended)
             }
             Settled::Absent | Settled::Torn => {
-                self.finish(tail, &file);
+                self.finish(&file);
                 Err(LogError::NotAppended {
                     path: file.path().to_path_buf(),
                     source: error,
@@ -1089,9 +1072,8 @@ impl LogStore {
     }
 
     /// The file takes no more items: the log goes on in the next one.
-    fn finish(&self, tail: &mut Tail, file: &LogFile) {
+    fn finish(&self, file: &LogFile) {
         file.finish();
-        tail.phase = Phase::Finished;
         self.due.store(true, Ordering::Release);
     }
 
@@ -1157,15 +1139,14 @@ impl LogStore {
         };
         let targets: Vec<(Arc<LogFile>, u64)> = {
             let files = self.files();
-            let through = end.map(|end| (end.file(), end.offset()));
             files
                 .live
                 .values()
                 .filter(|entry| entry.file.start().is_some())
                 .filter_map(|entry| {
-                    let file_end = match through {
-                        Some((last, _)) if entry.file.id() > last => return None,
-                        Some((last, offset)) if entry.file.id() == last => offset,
+                    let file_end = match end {
+                        Some(end) if entry.file.id() > end.file() => return None,
+                        Some(end) if entry.file.id() == end.file() => end.offset(),
                         _ => entry.file.end(),
                     };
                     (entry.durable_len < file_end).then(|| (entry.file.clone(), file_end))
@@ -1214,11 +1195,9 @@ impl LogStore {
     fn write_again(&self, file: &LogFile, end: u64) -> Result<(), LogError> {
         let temporary = temporary_path(file.path());
         remove(&*self.vfs, &temporary).map_err(LogError::io("remove", &temporary))?;
-        let copied = self.copy(file, end, &temporary);
-        if copied.is_err() {
+        self.copy(file, end, &temporary).inspect_err(|_| {
             let _ = self.vfs.remove_file(&temporary);
-        }
-        copied?;
+        })?;
         self.vfs
             .rename(&temporary, file.path())
             .map_err(LogError::io("rename", &temporary))?;
@@ -1405,19 +1384,18 @@ impl LogStore {
             Some(Some(held)) => keep.min(held.file()),
             None => keep,
         };
+        let Files { live, dropped, .. } = &mut *files;
         let mut taken = Vec::new();
-        let before: Vec<FileId> = files.live.range(..keep).map(|(&id, _)| id).collect();
-        for id in before {
-            let droppable = |entry: &Entry| entry.is_closed() || entry.file.is_dead();
-            if !files.live.get(&id).is_some_and(droppable) {
+        while let Some(first) = live.first_entry() {
+            let entry = first.get();
+            if *first.key() >= keep || !(entry.is_closed() || entry.file.is_dead()) {
                 break;
             }
-            if let Some(entry) = files.live.remove(&id) {
-                if !entry.file.is_dead() {
-                    taken.push(id);
-                }
-                files.dropped.insert(id, entry.file.path().to_path_buf());
+            let (id, entry) = first.remove_entry();
+            if !entry.file.is_dead() {
+                taken.push(id);
             }
+            dropped.insert(id, entry.file.path().to_path_buf());
         }
         Ok(taken)
     }
@@ -1480,28 +1458,21 @@ impl LogStore {
             *is_named |= named.contains(&spare.id());
         }
 
-        let unnamed: Vec<(FileId, PathBuf)> = {
+        let unnamed: BTreeMap<FileId, PathBuf> = {
             let mut files = self.files_mut();
-            let dead: Vec<FileId> = files
-                .live
-                .values()
-                .filter(|entry| entry.file.is_dead())
-                .map(|entry| entry.file.id())
-                .collect();
-            for id in dead {
-                if let Some(entry) = files.live.remove(&id) {
-                    files.dropped.insert(id, entry.file.path().to_path_buf());
+            let Files { live, dropped, .. } = &mut *files;
+            live.retain(|&id, entry| {
+                let dead = entry.file.is_dead();
+                if dead {
+                    dropped.insert(id, entry.file.path().to_path_buf());
                 }
-            }
-            let gone: Vec<FileId> = files
-                .dropped
-                .keys()
-                .filter(|id| !named.contains(id))
-                .copied()
-                .collect();
-            gone.into_iter()
-                .filter_map(|id| Some((id, files.dropped.remove(&id)?)))
-                .collect()
+                !dead
+            });
+            let (kept, gone) = std::mem::take(dropped)
+                .into_iter()
+                .partition(|(id, _)| named.contains(id));
+            *dropped = kept;
+            gone
         };
         let mut result = Ok(());
         for (id, path) in unnamed {
