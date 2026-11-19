@@ -178,14 +178,18 @@ pub enum LogError {
         /// What the call appends.
         expected: &'static str,
     },
-    /// The file layer failed the append, and what was appended is not in
-    /// the log: no crash brings it back.
+    /// The file layer failed the append.
     ///
-    /// If it was an item, the log file takes no more items, and the log
-    /// goes on in its next file once a manifest names this one closed. If
-    /// it was the start record of the file the log was turning to, the log
-    /// has not turned: that file is given up, and the file the log ends in
-    /// goes on taking items.
+    /// If it was an item, the item is not in the log, and no crash brings
+    /// it back. The log file takes no more items, and the log goes on in
+    /// its next file once a manifest names this one closed.
+    ///
+    /// If it was the start record of the file the log was turning to, the
+    /// log has not turned, and that file is given up. The log ends where it
+    /// did, and takes items or does not as before the call. A crash can
+    /// still leave the start record in that file while a manifest names
+    /// it: the file then reads as one that continues the log and holds no
+    /// item, or as one that holds nothing of it.
     NotAppended {
         /// The file.
         path: PathBuf,

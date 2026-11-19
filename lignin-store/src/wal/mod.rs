@@ -223,7 +223,8 @@
 //! start record says where this one ends (LG9), and the next commit takes
 //! the version of the one that failed. A turn whose start record fails is
 //! another matter: the log has not turned, the file it would have turned
-//! to is given up, and the file the log ends in goes on taking items.
+//! to is given up, and the log ends where it did and takes items or does
+//! not, as before the turn was tried.
 //!
 //! **An append that was taken back can come back until the file is
 //! durable as it is.** [`LogError::TakenBack`] says that the file has the
