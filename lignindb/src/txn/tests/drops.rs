@@ -528,10 +528,17 @@ fn a_reclaimer_beside_a_writer_leaves_every_node_and_record_whole() {
         refused.contains(&Busy::Copied),
         "a step met a copy of the writer: {refused:?}"
     );
+    // The record of every page step went to the log through write-back,
+    // as the engine's reclaimer will send them (TXN-07).
+    let steps = || db.counts.steps.load(Ordering::Relaxed);
+    let (logged, made) = (db.log.end(), steps());
+    assert!(made > 0, "the page steps of the reclaiming");
     // The unlinked pages of the dropped subtree's own flat records.
     let swept = db.sweep(&versions);
     assert_eq!(swept.blocked, None);
     assert_eq!(swept.flat_drops.len(), flat.len());
+    assert!(steps() > made && db.log.end() > logged, "the log took them");
+    assert!(db.flush_errors.lock().expect("the errors").is_empty());
     world.check_committed();
     assert_eq!(
         *db.counts.census.lock().expect("a census"),
