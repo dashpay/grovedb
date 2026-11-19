@@ -401,7 +401,7 @@
 //!
 //! | What fails | What write-back does |
 //! | --- | --- |
-//! | The append of a page step's record to the log | Nothing is installed. If the append was taken back, the log is settled before the value is offered again ([`LogStore::settle`](crate::wal::LogStore::settle)). The value keeps its hold and stays ready, and the step is made once the log has been rolled. |
+//! | The append of a page step's record to the log | Nothing is installed. If the append was taken back, the log is settled before the value is offered again ([`LogStore::settle`](crate::wal::LogStore::settle)). The value keeps its hold and stays ready, and the step is made once the log has been rolled. If the log cannot find out what became of the append, it takes nothing more in this session: the call fails with that error, and the value keeps its hold, because the record may be in the log. |
 //! | An append to a segment, or the sealing of one | What the segment holds is synced, and the next block goes to a new segment. The page stays unwritten. |
 //! | A sync of a segment | The blocks that were not durable cannot be made durable any more, and chains point to them. The segment's writer is kept, so that they stay readable, and **no table checkpoint is installed until the store is opened again** ([`FlushError::SegmentsNotDurable`]). Readers, commits and write-back go on, and the log keeps every commit since the checkpoint in force. |
 //! | An append to a value-log file, or its sync | The values that went to that file are given up with their holds, and the next pass appends them to another file. |

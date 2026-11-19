@@ -280,19 +280,21 @@ impl<'s> WriteBack<'s> {
     }
 
     /// What a page step does when the append of its record failed, with
-    /// its locks given back. Nothing was installed. If the append was
-    /// taken back, a crash could still bring the record back, so the log
-    /// is settled before the value can be offered again or given up
-    /// (`wal`, "When the file layer fails").
+    /// its locks given back. Nothing was installed.
+    ///
+    /// - The record is not in the log, and the log takes none until it has
+    ///   been rolled: the value stays ready, and the step is made later.
+    ///   If the append was taken back, a crash could still bring the
+    ///   record back, so the log is settled first (`wal`, "When the file
+    ///   layer fails").
+    /// - The log cannot find out what became of the append: the record may
+    ///   be in the log, so the value keeps its hold for as long as the
+    ///   session lasts, and the log takes nothing more in it. That is the
+    ///   caller's to know, and is returned.
     fn record_not_written(&self, error: LogError) -> Result<(), FlushError> {
         match error {
-            LogError::TakenBack { .. } => match self.stores.log.settle() {
-                Ok(()) | Err(LogError::Unsettled { .. }) => Ok(()),
-                Err(error) => Err(error.into()),
-            },
-            LogError::NotAppended { .. } | LogError::NoActiveFile | LogError::Unsettled { .. } => {
-                Ok(())
-            }
+            LogError::TakenBack { .. } => Ok(self.stores.log.settle()?),
+            LogError::NotAppended { .. } | LogError::NoActiveFile => Ok(()),
             error => Err(error.into()),
         }
     }

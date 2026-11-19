@@ -203,6 +203,45 @@ fn a_page_step_whose_record_the_log_fails_is_made_once_the_log_is_rolled() {
     assert!(put_off > 0);
 }
 
+/// The log fails the record of a page step and cannot find out what
+/// became of it. The record may be in the log, so nothing is installed,
+/// the value keeps its hold, and the call says that the log takes nothing
+/// more in this session: every call after it says so too.
+#[test]
+fn a_page_step_whose_record_is_unsettled_is_reported_and_keeps_its_hold() {
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", inline(b"v")),
+    ]);
+    let log_file = db.log.end().expect("the log has a file").file();
+    let path = FileNames::WAL.path(db_dir(), log_file);
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpKind::Append).at(&path));
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpKind::Len).at(&path));
+
+    let unsettled = |result: Result<usize, FlushError>| {
+        let error = result.expect_err("the log is unsettled");
+        assert!(
+            matches!(error, FlushError::Log(LogError::Unsettled { .. })),
+            "{error}"
+        );
+    };
+    unsettled(db.wb().pass().map(|pass| pass.placed));
+    assert_eq!(fs.stats().faults, 2);
+    let stats = db.stats();
+    assert_eq!((stats.values_appended, stats.values_placed), (1, 0));
+    assert_eq!(db.pending(page(1)).len(), 1);
+    assert_eq!(db.state.placing.lock().expect("what is ready").len(), 1);
+    // The page that had no value to place was written all the same.
+    assert_eq!(db.shape(page(2)), "B");
+    db.check_warm();
+
+    unsettled(db.wb().place_ready());
+    unsettled(db.wb().tick().map(|tick| tick.pass.placed));
+    assert_eq!(db.state.placing.lock().expect("what is ready").len(), 1);
+    assert_eq!(db.stats().values_given_up, 0);
+}
+
 /// A segment fails an append. What it holds stays, the page stays owed,
 /// and the next pass writes it to another segment.
 #[test]
