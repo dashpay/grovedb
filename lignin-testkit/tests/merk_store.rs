@@ -14,7 +14,11 @@
 //! 3. The same write goes to LigninDB: one change set for each Merk, built
 //!    with `prepare_node`, `put_node`, `delete_node` and `state_root` from
 //!    the nodes as RocksDB holds them, all change sets of the operation in
-//!    one batch, with each Merk named in the element that hosts it. The
+//!    one batch, with each Merk named in the element that hosts it. A
+//!    node that was there before the operation is loaded through the
+//!    handle before it is put, as Merk loads a node before it changes it:
+//!    a write that keeps the node's value names that read, and the store
+//!    keeps a stated value where the transaction holds the same bytes. The
 //!    batch enters each Merk the operation made, and drops each tree it
 //!    removed: a tree that is moved, or deleted and inserted again, is
 //!    dropped and entered in one batch.
@@ -699,6 +703,17 @@ impl Replay<'_> {
                     (_, false, false, true) => NodeChange::StructureChanged,
                     (_, false, false, false) => NodeChange::HashOnly,
                 };
+                if !fresh && !created {
+                    // A write that keeps a node's value has to name the
+                    // read the value is kept from (LigninDB's
+                    // `BatchError::NoRead`), and the store keeps a stated
+                    // value too where the transaction holds the same
+                    // bytes. So the handle loads every node that was there
+                    // before the operation, as a Merk has loaded every
+                    // node it changes.
+                    read(store.get_node(key, NO_VALUE_DEFINED_COST, version))
+                        .expect("a node that was there before is read");
+                }
                 let prepared = change_set.prepare_node(&node, kind);
                 (change_set.put_node(key, prepared, None)).expect("the node is put");
                 self.tally.nodes += 1;

@@ -5,7 +5,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use lignin_format::tree_page::Side;
-use lignin_tree::value::ValueBuf;
+use lignin_tree::{node::NodeHandle, value::ValueBuf};
 
 use super::{items, leaf, subtree, tree, unit, Rng};
 use crate::{
@@ -99,11 +99,37 @@ fn node_value(txn: &WriteTxn<'_>, name: u8, key: &[u8]) -> Option<Vec<u8>> {
         .expect("the node is read")
 }
 
+/// The handle of the node under `key` of the Merk `name` as `txn` shows
+/// it: what a writer has from its read of a node.
+fn handle_of(txn: &WriteTxn<'_>, name: u8, key: &[u8]) -> Option<NodeHandle> {
+    txn.node(subtree(name), key, |view| {
+        view.and_then(|view| view.handle())
+    })
+    .expect("the node is read")
+}
+
 /// Stages what makes the Merk `name` with the items `before` the Merk with
 /// the items `after`, as a Merk that was open on `before` would: every
 /// node whose record differs, with its value stated where the value is
 /// new, a delete of every node that left, and the root.
+///
+/// No node names a read: for a Merk whose values the batch states, or
+/// holds from an earlier operation.
 fn stage_merk<C: Default>(batch: &StagedBatch<C>, name: u8, before: &Items, after: &Items) {
+    stage_merk_read(batch, None, name, before, after);
+}
+
+/// [`stage_merk`], as a Merk that was open through `txn` would: a node
+/// that keeps its value names the read the value is kept from, by the
+/// handle `txn` shows the node with. A batch that keeps a committed value
+/// and names no read is refused (`BatchError::NoRead`).
+fn stage_merk_read<C: Default>(
+    batch: &StagedBatch<C>,
+    txn: Option<&WriteTxn<'_>>,
+    name: u8,
+    before: &Items,
+    after: &Items,
+) {
     let (_, was) = tree(before);
     let (root, now) = tree(after);
     if was == now {
@@ -113,7 +139,11 @@ fn stage_merk<C: Default>(batch: &StagedBatch<C>, name: u8, before: &Items, afte
         let old = was.get(key);
         if old != Some(node) {
             let stated = old.is_none_or(|old| old.value != node.value);
-            batch.put_node(subtree(name), &node.put(stated, Hosted::Keep), C::default());
+            let mut put = node.put(stated, Hosted::Keep);
+            if !stated {
+                put.at = txn.and_then(|txn| handle_of(txn, name, key));
+            }
+            batch.put_node(subtree(name), &put, C::default());
         }
     }
     for key in was.keys().filter(|key| !now.contains_key(*key)) {
@@ -344,10 +374,11 @@ fn a_node_keeps_across_operations_the_value_one_of_them_wrote() {
 
     // The second operation writes `c`, with a value that is stored out of
     // line, and the third changes its links and leaves its value.
+    let txn = store.begin();
     let batch = StagedBatch::<()>::new();
-    stage_merk(&batch, HOST, &first, &second);
+    stage_merk_read(&batch, Some(&txn), HOST, &first, &second);
     batch.next_operation();
-    stage_merk(&batch, HOST, &second, &third);
+    stage_merk_read(&batch, Some(&txn), HOST, &second, &third);
     let resolved = batch.resolve().expect("no call is refused");
     let kept = resolved.with_batch(|batch| {
         let stated = |node: &&NodePut<'_>| node.value != ValuePut::Keep;
@@ -357,7 +388,6 @@ fn a_node_keeps_across_operations_the_value_one_of_them_wrote() {
     // `b` was written by both operations and its value by neither.
     assert_eq!(kept, [b"a".to_vec(), b"c".to_vec(), b"d".to_vec()]);
 
-    let txn = store.begin();
     apply_resolved(&txn, &resolved);
     assert_eq!(txn.stats().writes, 4);
     for (key, value) in &third {
@@ -404,10 +434,16 @@ fn edit(rng: &mut Rng, merks: &mut [Items; 2], flat: &mut Items) {
     }
 }
 
-/// Stages one operation: what takes the model from `before` to `after`.
-fn stage_operation(batch: &StagedBatch, before: &([Items; 2], Items), after: &([Items; 2], Items)) {
+/// Stages one operation: what takes the model from `before` to `after`,
+/// with the nodes that keep their values read through `txn`.
+fn stage_operation(
+    batch: &StagedBatch,
+    txn: Option<&WriteTxn<'_>>,
+    before: &([Items; 2], Items),
+    after: &([Items; 2], Items),
+) {
     for (at, name) in [HOST, OTHER].into_iter().enumerate() {
-        stage_merk(batch, name, &before.0[at], &after.0[at]);
+        stage_merk_read(batch, txn, name, &before.0[at], &after.0[at]);
     }
     let aux = unit(Column::Aux, HOST);
     for (key, value) in &after.1 {
@@ -447,7 +483,7 @@ fn one_batch_is_what_its_operations_are_one_after_the_other() {
         }
         for store in [&apart, &together] {
             let batch = StagedBatch::new();
-            stage_operation(&batch, &empty, &state);
+            stage_operation(&batch, None, &empty, &state);
             if !batch.is_empty() {
                 store.write(batch);
             }
@@ -459,10 +495,10 @@ fn one_batch_is_what_its_operations_are_one_after_the_other() {
             let before = state.clone();
             edit(&mut rng, &mut state.0, &mut state.1);
             let operation = StagedBatch::new();
-            stage_operation(&operation, &before, &state);
+            stage_operation(&operation, Some(&one), &before, &state);
             apply(&one, operation).expect("the operation is applied");
             batch.next_operation();
-            stage_operation(&batch, &before, &state);
+            stage_operation(&batch, Some(&other), &before, &state);
         }
         let resolved = batch.resolve().expect("no call is refused");
         apply_resolved(&other, &resolved);
@@ -577,10 +613,10 @@ fn a_merk_and_its_host_across_the_operations_of_one_batch() {
     let more = items(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3"), (b"d", b"4")]);
     let batch = StagedBatch::<()>::new();
     batch.host(subtree(HOST), b"h", &[subtree(CHILD)]);
-    stage_merk(&batch, CHILD, &inner, &more);
+    let txn = store.begin();
+    stage_merk_read(&batch, Some(&txn), CHILD, &inner, &more);
     let resolved = batch.resolve().expect("no call is refused");
     resolved.with_batch(|batch| assert!(batch.merks.len() == 1 && batch.merks[0].anchored));
-    let txn = store.begin();
     apply_resolved(&txn, &resolved);
     for (key, value) in &more {
         assert_eq!(node_value(&txn, CHILD, key).as_ref(), Some(value));
@@ -591,7 +627,9 @@ fn a_merk_and_its_host_across_the_operations_of_one_batch() {
     let batch = StagedBatch::<()>::new();
     batch.host(subtree(HOST), b"h", &[subtree(CHILD)]);
     again.kv_hash = [6; 32];
-    batch.put_node(subtree(HOST), &again.put(false, Hosted::Keep), ());
+    let mut put = again.put(false, Hosted::Keep);
+    put.at = handle_of(&txn, HOST, b"h");
+    batch.put_node(subtree(HOST), &put, ());
     apply(&txn, batch).expect("the host is written");
     assert!(matches!(store.commit(&txn), Outcome::Committed(_)));
     assert_eq!(store.keys()[&CHILD], ["a", "b", "c", "d"]);
@@ -600,12 +638,12 @@ fn a_merk_and_its_host_across_the_operations_of_one_batch() {
     // deletes the element: what was staged below is not applied.
     let batch = StagedBatch::<()>::new();
     batch.host(subtree(HOST), b"h", &[subtree(CHILD)]);
-    stage_merk(&batch, CHILD, &more, &inner);
+    let txn = store.begin();
+    stage_merk_read(&batch, Some(&txn), CHILD, &more, &inner);
     batch.put(unit(Column::Aux, CHILD), b"x", b"y", ());
     batch.next_operation();
     batch.drop_subtree(subtree(CHILD));
     stage_merk(&batch, HOST, &host, &Items::new());
-    let txn = store.begin();
     apply(&txn, batch).expect("the batch is applied");
     assert_eq!(
         txn.stats().writes,
@@ -641,30 +679,31 @@ fn a_tree_and_then_the_tree_above_it_are_deleted_by_the_operations_of_one_batch(
     }
     // The operations: the inner tree goes with its element, then the outer
     // one with its own.
-    let first = |batch: &StagedBatch| {
+    let first = |batch: &StagedBatch, _: &WriteTxn<'_>| {
         // The handles the operation opens say where their subtrees hang.
         batch.host(subtree(HOST), b"a", &[subtree(CHILD)]);
         batch.host(subtree(CHILD), b"h", &[subtree(BELOW)]);
         batch.drop_subtree(subtree(BELOW));
         stage_merk(batch, CHILD, &outer, &Items::new());
     };
-    let second = |batch: &StagedBatch| {
+    let second = |batch: &StagedBatch, txn: &WriteTxn<'_>| {
         batch.drop_subtree(subtree(CHILD));
-        stage_merk(batch, HOST, &grove, &items(&[(b"z", b"item")]));
+        let left = items(&[(b"z", b"item")]);
+        stage_merk_read(batch, Some(txn), HOST, &grove, &left);
     };
 
     let [apart, together] = &stores;
     let one = apart.begin();
-    for operation in [&first as &dyn Fn(&StagedBatch), &second] {
+    for operation in [&first as &dyn Fn(&StagedBatch, &WriteTxn<'_>), &second] {
         let batch = StagedBatch::new();
-        operation(&batch);
+        operation(&batch, &one);
         apply(&one, batch).expect("the operation is applied");
     }
     let other = together.begin();
     let batch = StagedBatch::new();
-    first(&batch);
+    first(&batch, &other);
     batch.next_operation();
-    second(&batch);
+    second(&batch, &other);
     let resolved = batch.resolve().expect("no call is refused");
     resolved.with_batch(|batch| assert_eq!(batch.subtrees.len(), 1, "one drop is named"));
     apply_resolved(&other, &resolved);

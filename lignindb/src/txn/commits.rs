@@ -22,15 +22,20 @@ use super::key::KeySet;
 /// - **A write transaction** that has a write set watches from the moment
 ///   before its first write (`watch`) and takes the key sets of the
 ///   commits it has not seen at the start of each of its operations
-///   (`Watch::take`). A transaction with no write has nothing a commit
-///   could meet, and watches nothing.
+///   (`Watch::take`). One that has been shown a node watches from before
+///   that read, and one that has opened a cursor over a Merk from when it
+///   opened it, for a write that keeps a node's value (`super::reads`). A
+///   transaction with no write that remembers no such read has nothing a
+///   commit could meet. It does not start to watch, and one that watches
+///   still, because it has forgotten its reads since, gives the watch up
+///   with its next read that shows no node, or when it ends.
 ///
 /// A key set is kept until every watching transaction has taken it. The
 /// newest one is kept in any case: a transaction that starts to watch may
 /// read a latest version that is one before it.
 ///
 /// What this costs is the keys of the commits that are published while a
-/// transaction with writes runs no operation. Remembering only the entries
+/// transaction that watches runs no operation. Remembering only the entries
 /// a commit meets, at the commit, would bound that, and would make the
 /// committer take each transaction's lock. The commit keeps CF3 this way
 /// (`crate::commit`, "The conflict rule").

@@ -139,10 +139,15 @@
 //! - **One handle for a directory, at a time** (P-04), and it is `Send`
 //!   and `Sync`: threads share it by reference or in an `Arc`.
 //! - **Any number of write transactions are open, and one commits at a
-//!   time.** A commit fails with a conflict exactly when a commit outside
-//!   it wrote a key after the transaction first wrote it (CF2), and
+//!   time.** A commit fails with a conflict when a commit outside it
+//!   wrote a key after the transaction first wrote it (CF2). Where the
+//!   transaction wrote a Merk node and kept the committed value of the
+//!   node, and not a value it had stated itself, the commit also fails
+//!   when a commit outside wrote the node after the transaction read it,
+//!   or when the engine cannot tell ([`txn`], "A kept value and the read
+//!   it is of").
 //!   [`WriteError::is_conflict`](db::WriteError::is_conflict) is true for
-//!   that and for nothing else.
+//!   these and for nothing else.
 //! - **A commit ends its transaction** unless the error says otherwise
 //!   ([`WriteError::leaves_transaction_open`](db::WriteError::leaves_transaction_open)).
 //! - **Published is not durable** (DU1). With the default sync policy a

@@ -758,9 +758,10 @@ impl WriteSet {
     /// rollback to the place before them. Where operations of others came
     /// after one of them, those are added again behind what stays, each
     /// with the first-write version, the serial and the place in the
-    /// overlap set it had. That is done in a copy of the set, which takes
-    /// the set's place when all of them are in: the cost is that of the
-    /// whole write set, once.
+    /// overlap set it had, and a copy it took of a committed value is that
+    /// copy again. That is done in a copy of the set, which takes the
+    /// set's place when all of them are in: the cost is that of the whole
+    /// write set, once.
     pub(crate) fn remove_scope(&mut self, scope: ScopeId) -> bool {
         let Some(first) = self.ops.iter().position(|op| op.scope == scope) else {
             return false;
@@ -783,12 +784,19 @@ impl WriteSet {
             let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
             let (from, to, ..) = self.op_bounds(op);
-            for (entry, was) in kept.entries[start..]
-                .iter_mut()
-                .zip(&self.entries[from..to])
-            {
-                entry.met = was.met;
+            for (id, was) in (start..).zip(&self.entries[from..to]) {
+                kept.entries[id].met = was.met;
                 kept.met += usize::from(was.met);
+                // A copy of a committed value went in as a value that was
+                // stated. It is the copy again: the transaction did not
+                // state it ([`Self::states_value`]).
+                if let Kind::Node(NodeEntry {
+                    value: ValueEntry::Kept(span),
+                    ..
+                }) = was.kind
+                {
+                    kept.keep(id as EntryId, self.kept.get(span));
+                }
             }
         }
         kept.serial = self.serial;
@@ -1222,6 +1230,26 @@ impl WriteSet {
         }
     }
 
+    /// Whether the value of the written node `id` is one the transaction
+    /// stated: in that write, or in an earlier write of the same node whose
+    /// value the later ones kept. Where no write of the node stated a
+    /// value, every one of them kept the committed value, and that is what
+    /// the node has, whether or not the transaction took a copy of it.
+    pub(crate) fn states_value(&self, id: EntryId) -> bool {
+        let mut id = id;
+        loop {
+            let entry = self.entry(id);
+            let Kind::Node(node) = entry.kind else {
+                return false;
+            };
+            match (node.value, entry.prev) {
+                (ValueEntry::Value(_), _) => return true,
+                (_, Some(prev)) => id = prev,
+                (_, None) => return false,
+            }
+        }
+    }
+
     /// The written nodes that keep a committed value the transaction has no
     /// copy of: those with no earlier write of the same node to take it
     /// from. They are what [`Self::keep`] is called for before the
@@ -1251,6 +1279,29 @@ impl WriteSet {
             unreachable!("a node keeps a value");
         };
         node.value = ValueEntry::Kept(span);
+    }
+
+    /// Puts the written node `id`, the node under `key` of `unit`, into the
+    /// overlap set: it keeps a value of the committed state, and a commit outside
+    /// the transaction wrote its key after the writer read the value and
+    /// before this write, or may have (CF2a). The commit is not after the
+    /// entry's first-write version, so [`Self::meet`] does not see it.
+    ///
+    /// The entry is met like any other from here on: a rollback to a place
+    /// before it takes it out of the overlap set with the entry (CF4), and
+    /// a scope that is taken out from between leaves it met.
+    pub(crate) fn meet_kept(&mut self, id: EntryId, unit: Unit, key: &[u8]) {
+        debug_assert_eq!(
+            (self.entry(id).unit, self.key(id)),
+            (unit, key),
+            "the entry of the node that is met"
+        );
+        let entry = &mut self.entries[id as usize];
+        debug_assert!(matches!(entry.kind, Kind::Node(_)), "a node keeps a value");
+        if !entry.met {
+            entry.met = true;
+            self.met += 1;
+        }
     }
 
     fn mark_met(&mut self, id: EntryId, version: CommitVersion) {

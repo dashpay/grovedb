@@ -163,7 +163,8 @@
 //!
 //! The commit of a write transaction fails with [`CommitError::Conflict`]
 //! when a commit outside it wrote a key after the transaction first wrote
-//! that key (CF2), and for no other reason (CF6). Two transactions whose
+//! that key (CF2), and for no other reason (CF6) but the one of a kept
+//! value below. By CF2, two transactions whose
 //! keys do not meet both commit. The rule is decided from the key sets of
 //! the commits, which the write path keeps until every open write
 //! transaction has taken them in ([`Commits`](crate::txn::Commits), CF3),
@@ -172,6 +173,29 @@
 //! The key set of a commit is the keys of its writes. A commit that stands
 //! for more than it writes says so ([`Committer::commit_covering`], CF5): a
 //! load covers the range it put records into, and a wipe covers every key.
+//!
+//! **A kept value is dated at its read** (CF2a). A node that is written
+//! with its value kept ([`ValuePut::Keep`](crate::txn::ValuePut::Keep))
+//! states hashes that were made for the value as its writer read it. For
+//! such a write, where the value is the committed state's, the rule looks
+//! from the read on and not from the write: a commit that wrote the node's
+//! key after the read meets the write, whether it landed before the write
+//! or after it. So a commit never publishes a node under hashes that were
+//! made for a value another commit has replaced. The commit does nothing
+//! for this itself. A commit that landed between the read and the write
+//! is found when the write is made, from the key sets the transaction has
+//! taken in since the read, and the write is marked as met then. One that
+//! lands after the write meets it as it meets any write (CF2). The commit
+//! finds either mark alike ([`crate::txn`], "A kept value and the read it
+//! is of").
+//!
+//! This is the one place where a conflict may be reported that CF2 and
+//! CF2a do not ask for: a write that keeps a value by a read the
+//! transaction cannot date is taken to be met. That is a read more than 64
+//! commits before the write, a handle the transaction did not show a node
+//! with since it last ended, or any handle of the frames on which a write
+//! was made that was itself met in this way. None of them happens where
+//! one thread reads and writes a Merk with no commit in between.
 //!
 //! # Rollback
 //!
@@ -191,6 +215,14 @@
 //! write's own, so whatever the error nothing of the batch is left: a
 //! batch that is refused is [`CommitError::Refused`], and nothing was
 //! written.
+//!
+//! The transaction of such a write has read nothing, so its batch has no
+//! read of its own to name: a node in it that keeps a committed value and
+//! names no handle is refused
+//! ([`BatchError::NoRead`](crate::txn::BatchError::NoRead)), and one that
+//! names a handle of another transaction is taken to be met, which is a
+//! conflict. A writer that keeps values reads them through a transaction
+//! of its own, writes through it and commits it.
 //!
 //! # A page that is freed again before it was written back
 //!

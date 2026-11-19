@@ -780,7 +780,9 @@ impl Db {
     }
 
     /// Begins a write transaction (WT1). Any number may be open, and one
-    /// commits at a time. It holds nothing until it writes.
+    /// commits at a time. It holds nothing until it writes, or reads a
+    /// node of a Merk or opens a cursor over one, which has it watch the
+    /// commits beside it ([`crate::txn`], "What a transaction holds").
     ///
     /// It is committed with [`Self::commit`] and rolled back with
     /// [`Self::rollback`], through this handle. A transaction that is
@@ -828,6 +830,11 @@ impl Db {
     /// transaction of its own, which is committed at once. It waits for no
     /// open write transaction, and its commit is one like any other to
     /// them (CF8).
+    ///
+    /// That transaction has read nothing, so a node of the batch cannot
+    /// keep a committed value: with no handle named the batch is refused
+    /// ([`BatchError::NoRead`](crate::txn::BatchError::NoRead)), and with
+    /// a handle of another transaction the write fails with a conflict.
     pub fn write<R: HashRules>(
         &self,
         batch: &Batch<'_>,

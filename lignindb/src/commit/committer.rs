@@ -380,6 +380,11 @@ impl<'s> Committer<'s> {
     /// Whatever the error, nothing of the batch is left to commit later:
     /// the transaction is the write's own and goes with it. A batch that
     /// the transaction refuses is [`CommitError::Refused`].
+    ///
+    /// The transaction has read nothing, so a node of the batch that keeps
+    /// a committed value has no read of it to name: with no handle it is
+    /// refused ([`BatchError::NoRead`](crate::txn::BatchError::NoRead)),
+    /// and with a handle of another transaction it is a conflict (CF2a).
     pub fn write<R: HashRules>(
         &self,
         batch: &Batch<'_>,

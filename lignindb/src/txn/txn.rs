@@ -27,6 +27,7 @@ use super::{
     opened::Opened,
     pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
+    reads::{Reads, Since},
     view::{ChildKeys, NodeView, SubtreeView},
     write::{Applied, Batch, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, Own, OwnSubtree, WriteSet},
@@ -87,7 +88,20 @@ struct State<'s> {
     base: Option<VersionPin<'s>>,
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
+    /// The watch on the key sets of the commits: from the transaction's
+    /// first write or the first node it is shown, whichever comes first,
+    /// until it has no write and remembers no lease.
     watch: Option<Watch<'s>>,
+    /// The versions of the leases the transaction has shown nodes under,
+    /// and the key sets of the commits it took in since: what a write that
+    /// keeps a value is checked against (`super::reads`).
+    reads: Reads,
+    /// The lease that committed nodes are shown under where they are asked
+    /// for as committed ([`Self::committed_node_in`]), and the version it
+    /// is for.
+    ///
+    /// [`Self::committed_node_in`]: WriteTxn::committed_node_in
+    committed: Option<(Lease, CommitVersion)>,
     /// The transaction among the open write transactions of the store's
     /// counts, from its first write until its write set is empty again:
     /// while it can hold private copies, and with them the log
@@ -138,10 +152,21 @@ impl State<'_> {
         self.base = None;
         self.stuck = None;
         if self.set.is_empty() {
-            self.watch = None;
+            self.unwatch();
             self.open = None;
             self.under.clear();
             self.owed.clear();
+        }
+    }
+
+    /// Gives the watch on the commits up where nothing needs it: the
+    /// transaction has no write, and remembers no lease it has shown a node
+    /// under. The handle of a node that was shown can still come back in a
+    /// write that keeps the node's value, and the commits are watched for
+    /// that.
+    fn unwatch(&mut self) {
+        if self.set.is_empty() && !self.reads.any() {
+            self.watch = None;
         }
     }
 
@@ -153,10 +178,17 @@ impl State<'_> {
 
     /// Ends the transaction's writes: the write set, the savepoints, and
     /// everything that is held for them (WT9).
+    ///
+    /// The handles of the nodes it showed end with it, and it forgets when
+    /// it showed them: a write that keeps a value by a handle of a lease
+    /// it has shown no node under since is taken to be met
+    /// (`super::reads`).
     fn end(&mut self) {
         self.set.clear();
         self.savepoints.clear();
         self.scopes.clear_marks();
+        self.reads.clear();
+        self.committed = None;
         self.release();
         self.renew_lease();
     }
@@ -203,6 +235,86 @@ enum Beside<'c> {
     Children(Option<&'c mut ChildKeys>),
 }
 
+/// What a batch keeps of the committed state, and what is known of the
+/// reads it kept it from (`transactions.md` CF2a; `crate::txn`, "A kept
+/// value and the read it is of").
+///
+/// The places are those of the batch's nodes among the entries the write
+/// set makes of it: the nodes and then the deletes of each Merk, in order.
+struct Kept<'b> {
+    /// The nodes whose kept value a commit outside the transaction wrote
+    /// since its writer read it, or may have: their entries are met.
+    met: Vec<(EntryId, Unit, &'b [u8])>,
+    /// The first node that keeps a value and names no read, where the
+    /// transaction has no write of the key: with a node there, the batch
+    /// is refused for it, and with none for a value that is not there.
+    unread: Option<(EntryId, Subtree, &'b [u8])>,
+}
+
+impl<'b> Kept<'b> {
+    /// Looks at every node of `batch` that keeps its value, for a write at
+    /// the version `at` that has taken in every commit up to it. `current`
+    /// is the lease a handle of the operation's own view is of.
+    ///
+    /// A keep whose handle is of `current` costs one comparison: no commit
+    /// was taken in since its node was read. Only the others are looked up.
+    fn of(
+        set: &WriteSet,
+        reads: &Reads,
+        at: CommitVersion,
+        current: Lease,
+        batch: &Batch<'b>,
+    ) -> Self {
+        let mut kept = Self {
+            met: Vec::new(),
+            unread: None,
+        };
+        let mut entry: EntryId = 0;
+        for merk in batch.merks {
+            let unit = Unit::data(merk.subtree);
+            for node in merk.nodes {
+                entry += 1;
+                let lease = node.at.map(|handle| handle.lease());
+                if node.value != ValuePut::Keep || lease == Some(current) {
+                    continue;
+                }
+                let since = lease.map(|lease| reads.since(lease, at, unit, node.key));
+                if since == Some(Since::Unwritten) || batch.leaves(merk.subtree) {
+                    // What the batch itself drops or clears has no value:
+                    // it is refused for that where it is applied.
+                    continue;
+                }
+                match (set.own(unit, node.key), since) {
+                    // The committed value, and no read of it is named.
+                    (Own::Unwritten, None) => {
+                        _ = kept
+                            .unread
+                            .get_or_insert((entry - 1, merk.subtree, node.key))
+                    }
+                    // The committed value, which a commit wrote since the
+                    // read that is named, or may have.
+                    (Own::Unwritten, Some(_)) => kept.met.push((entry - 1, unit, node.key)),
+                    // The transaction wrote the node and stated no value
+                    // for it: it has the committed value still, and the
+                    // read that is named is as far back as any.
+                    (Own::Node(id), Some(_)) if !set.states_value(id) => {
+                        kept.met.push((entry - 1, unit, node.key))
+                    }
+                    // A value the transaction stated is its own to keep.
+                    // A node it wrote before is shown to it as its record,
+                    // which has no handle: a keep that names none is of
+                    // that record, which is there only since the write
+                    // that the conflict rule looks from. What it deleted
+                    // has no value, and is refused where it is applied.
+                    _ => {}
+                }
+            }
+            entry += merk.removed.len() as EntryId;
+        }
+        kept
+    }
+}
+
 /// How many subtrees one inside the other the hosts of a transaction's own
 /// subtrees are followed through: the depth the directory takes.
 const MAX_DEPTH: usize = 1 << 16;
@@ -239,8 +351,10 @@ fn is_refusal(error: &TxnError) -> bool {
 ///   lands outside it (WT7), and after a rollback to a mark.
 /// - **Nobody else sees its writes** (RD8): they are in private copies and
 ///   in its own memory until a commit installs them.
-/// - **It holds nothing while it has written nothing** (PN1), and dropping
-///   it is a rollback (WT9).
+/// - **It holds no page while it has written nothing** (PN1), and dropping
+///   it is a rollback (WT9). Once it has been shown a node it watches the
+///   commits, for a write that keeps the node's value (`crate::txn`, "A
+///   kept value and the read it is of").
 ///
 /// It is shared between threads (WT11). Its writes go through a [`Scope`];
 /// reads may also be made outside one. Each call is one operation (RD4)
@@ -266,6 +380,8 @@ impl<'s> WriteTxn<'s> {
                 base: None,
                 frames: None,
                 watch: None,
+                reads: Reads::default(),
+                committed: None,
                 open: None,
                 lease: Lease::take(),
                 lease_at: None,
@@ -413,6 +529,7 @@ impl<'s> WriteTxn<'s> {
             watch.take(at, &mut state.owed);
             for (version, keys) in &state.owed[taken..] {
                 state.set.meet(*version, keys);
+                state.reads.took(*version, keys);
             }
         }
         // The key sets are taken once. A look that fails on a read leaves
@@ -423,6 +540,12 @@ impl<'s> WriteTxn<'s> {
             state.owed = owed;
         }
         looked
+    }
+
+    /// Whether the transaction watches the key sets of the commits.
+    #[cfg(all(test, not(loom)))]
+    pub(crate) fn watches(&self) -> bool {
+        self.lock().watch.is_some()
     }
 
     /// Has the transaction's next look at what the drops of commits cover
@@ -502,8 +625,8 @@ impl<'s> WriteTxn<'s> {
         // The guard is taken before the latest version is read (PN5), and
         // the watch before the version a first write is dated with (WT5).
         let guard = path.versions.guard();
-        if writing && state.watch.is_none() {
-            state.watch = Some(path.commits.watch());
+        if writing {
+            self.watch(state);
         }
         if writing && state.open.is_none() {
             state.open = Some(path.stats.write_opened());
@@ -553,6 +676,54 @@ impl<'s> WriteTxn<'s> {
         Ok(Op { guard, at })
     }
 
+    /// Begins an operation that shows a node. The node's handle may come
+    /// back in a write that keeps the node's value, and the transaction
+    /// then has to say what the commits did to the node's key since
+    /// (CF2a). So it watches them from here on, as it does from its first
+    /// write: the watch stands before the operation reads the version the
+    /// node is shown at, and no commit after that version goes unseen.
+    ///
+    /// Whoever shows the node then says under which lease
+    /// (`Reads::note`). The read is claimed for `who` here (SC2), and an
+    /// operation that does not begin, or whose read is refused, gives the
+    /// watch up again.
+    fn begin_shown(&self, state: &mut State<'s>, who: Who, unit: Unit) -> Result<Op<'s>, TxnError> {
+        self.watch(state);
+        let begun = self.begin(state, false).and_then(|op| {
+            self.claim_read(state, &op.guard, op.at, who, unit)?;
+            Ok(op)
+        });
+        if begun.is_err() {
+            state.unwatch();
+        }
+        begun
+    }
+
+    /// Starts to watch the key sets of the commits, if the transaction
+    /// does not watch them yet.
+    fn watch(&self, state: &mut State<'s>) {
+        if state.watch.is_none() {
+            state.watch = Some(self.path.commits.watch());
+        }
+    }
+
+    /// Takes a guard and pins the latest version for a cursor over the
+    /// nodes of a Merk, which shows them under its own `lease`. The
+    /// transaction watches from before the version is pinned, as for any
+    /// node it shows ([`Self::begin_shown`]), and dates the lease with it.
+    ///
+    /// All of it is done under the transaction's lock, so that no
+    /// operation of another thread takes a key set in between the two.
+    pub(crate) fn pin_shown(&self, lease: Lease) -> (OperationGuard<'s>, VersionPin<'s>) {
+        let mut state = self.lock();
+        self.watch(&mut state);
+        // The guard is taken before the latest version is read (PN5).
+        let guard = self.path.versions.guard();
+        let pin = self.path.versions.pin();
+        state.reads.note(lease, pin.version());
+        (guard, pin)
+    }
+
     fn write(
         &self,
         state: &mut State<'s>,
@@ -564,6 +735,17 @@ impl<'s> WriteTxn<'s> {
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
             return self.write_by_key(state, op, batch);
         };
+        // A value that is kept is one its writer read: when, and what the
+        // commits did to its key since (CF2a).
+        let kept = Kept::of(&state.set, &state.reads, op.at, frames.lease(), batch);
+        if let Some((_, subtree, key)) = kept.unread {
+            // A keep that names no read of a node the frames have. One of
+            // a node they do not have is refused below, as that.
+            let root = frames.root(&subtree)?;
+            if find(&mut frames.tree, root, key)?.is_some() {
+                return Err(BatchError::NoRead { subtree }.into());
+            }
+        }
         // What the transaction wrote below a Merk that the batch drops or
         // clears goes with it: the directory says which, before the batch.
         let cut = match batch.subtrees.iter().any(|write| !write.enters()) {
@@ -572,7 +754,23 @@ impl<'s> WriteTxn<'s> {
         };
         match frames.apply(path, batch, None) {
             Ok(applied) => {
-                state.set.add(batch, op.at, frames.empty_before(), &cut);
+                let first = state.set.add(batch, op.at, frames.empty_before(), &cut);
+                if !kept.met.is_empty() {
+                    for (offset, unit, key) in &kept.met {
+                        state.set.meet_kept(first + offset, *unit, key);
+                    }
+                    // The write hands its nodes back by their handles. That
+                    // of a met node names bytes its writer never read, under
+                    // the hashes it stated, at this write's version: no
+                    // read of the committed state. It would pass for one
+                    // once a rollback has taken the write out. So the lease
+                    // of these handles is not dated: a keep by one of them
+                    // is taken to be met. The frames go at the next
+                    // operation, and show no node before that.
+                    state.reads.forget_frames(frames.lease());
+                } else if !applied.nodes.is_empty() || !applied.carried.is_empty() {
+                    state.reads.note_frames(frames.lease(), op.at);
+                }
                 Ok(applied)
             }
             Err(refused) => {
@@ -611,6 +809,10 @@ impl<'s> WriteTxn<'s> {
                 return Err(BatchError::NotFlat { unit }.into());
             }
         }
+        // The lease a handle of this operation's view is of: the frames',
+        // for a scope that keeps its writes in the write set beside them.
+        let current = (state.frames.as_ref()).map_or(state.lease, |frames| frames.tree.lease());
+        let read = Kept::of(&state.set, &state.reads, op.at, current, batch);
         let mut kept = Vec::new();
         let mut empty = Vec::with_capacity(batch.merks.len());
         let mut entry: EntryId = 0;
@@ -623,7 +825,12 @@ impl<'s> WriteTxn<'s> {
                 if node.value != ValuePut::Keep {
                     continue;
                 }
+                let unread = read.unread.is_some_and(|(at, ..)| at == entry - 1);
                 let value = match state.set.own(Unit::data(subtree), node.key) {
+                    // What the batch itself drops or clears is gone before
+                    // its nodes are written, the transaction's own node
+                    // with it.
+                    _ if left => None,
                     Own::Node(id) => match state.set.node_value(id).map(<[u8]>::to_vec) {
                         Some(value) => Some(value),
                         // The node is one of the frames, which hold its
@@ -631,7 +838,6 @@ impl<'s> WriteTxn<'s> {
                         None => self.framed_value(state, op, &subtree, node.key)?,
                     },
                     Own::Deleted | Own::Put(_) => None,
-                    Own::Unwritten if left => None,
                     Own::Unwritten => {
                         let seen = self.seen(state, &op.guard, op.at, &subtree)?;
                         let root = seen.flatten();
@@ -639,6 +845,11 @@ impl<'s> WriteTxn<'s> {
                             path.committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
                         match find(&mut pages, root, node.key)? {
                             None => None,
+                            // A committed value, and no read of it is
+                            // named: refused before the value is read.
+                            Some(_) if unread => {
+                                return Err(BatchError::NoRead { subtree }.into());
+                            }
                             Some(address) => Some(Self::read_value(&mut pages, address)?),
                         }
                     }
@@ -657,6 +868,10 @@ impl<'s> WriteTxn<'s> {
         let first = state.set.add(batch, op.at, &empty, &cut);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
+        }
+        // No handle is handed back: the records have no cells.
+        for (offset, unit, key) in &read.met {
+            state.set.meet_kept(first + offset, *unit, key);
         }
         Ok(Applied::default())
     }
@@ -939,6 +1154,9 @@ impl<'s> WriteTxn<'s> {
                     find(&mut frames.tree, root, key)?
                 }
             };
+            if at.is_some() {
+                state.reads.note_frames(frames.lease(), op.at);
+            }
             if let (Some(at), Some(children)) = (at, children) {
                 child_keys(&mut frames.tree, at, children)?;
             }
@@ -966,8 +1184,7 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<R, TxnError> {
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin(state, false)?;
-        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let op = self.begin_shown(state, who, Unit::data(subtree))?;
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
@@ -993,13 +1210,22 @@ impl<'s> WriteTxn<'s> {
                 find(&mut pages, root, key)?
             }
         };
+        if at.is_none() {
+            // No node is shown: there is no handle to watch the commits
+            // for.
+            state.unwatch();
+            return Ok(read(None));
+        }
+        state.reads.note(lease, op.at);
         show_committed(&mut pages, at, read)
     }
 
     /// Shows `read` the transaction's own node under `key`, or that it
     /// deleted the node, if it has a write that covers the key. With none,
     /// `read` is handed back, and nothing committed is read: a cursor then
-    /// shows the node of its own version (RD6).
+    /// reads the node of its own version (RD6), under its own lease, and
+    /// then says what it read ([`Self::cursor_read`]). The operation
+    /// watches from here on, as one that may show a node.
     ///
     /// `children`, where it is given, takes the key of each child of a
     /// node that is shown from a cell of the frames, in the same operation.
@@ -1017,8 +1243,7 @@ impl<'s> WriteTxn<'s> {
     {
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin(state, false)?;
-        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let op = self.begin_shown(state, who, Unit::data(subtree))?;
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(Ok(shown)),
             Err(read) => read,
@@ -1027,6 +1252,31 @@ impl<'s> WriteTxn<'s> {
             return Ok(Err(read));
         }
         self.own_node(state, &op, subtree, key, Beside::Children(children), read)
+    }
+
+    /// A cursor read the node of its own version, `pinned`, under its
+    /// `lease`: `shown` says whether there was one. The transaction's lock
+    /// was not held over that read, so what the transaction holds is
+    /// looked at here, as it is now. The cursor dated its lease when it
+    /// was opened ([`Self::pin_shown`]), and the transaction may have
+    /// forgotten it since: it ended, or its key sets no longer reach back
+    /// to that version.
+    ///
+    /// A node that is shown dates the lease at `pinned`, if the
+    /// transaction does not remember it, and the transaction watches from
+    /// here on: a keep by the node's handle is answered for where the key
+    /// sets it holds reach back to `pinned`, and is taken to be met
+    /// otherwise. With no node shown, the watch is given up where nothing
+    /// else needs it.
+    pub(crate) fn cursor_read(&self, lease: Lease, pinned: CommitVersion, shown: bool) {
+        let mut state = self.lock();
+        match shown {
+            true => {
+                self.watch(&mut state);
+                state.reads.note(lease, pinned);
+            }
+            false => state.unwatch(),
+        }
     }
 
     fn committed_node_in<R>(
@@ -1038,17 +1288,28 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<R, TxnError> {
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin(state, false)?;
-        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let op = self.begin_shown(state, who, Unit::data(subtree))?;
         let root = self.committed_root(state, &op.guard, op.at, &subtree)?;
         // The committed node is found by its key, in the committed tree:
         // the transaction may have rebuilt the tree around it (RD10). It is
-        // read under a lease of its own, so no handle to it is followed
-        // into the transaction's frames.
-        let mut pages =
-            self.path
-                .committed_pages(&op.guard, op.at, Lease::take(), &mut state.buffers);
+        // read under a lease that no other read uses, so no handle to it
+        // is followed into the transaction's frames. The lease is one for
+        // each version.
+        let lease = match state.committed {
+            Some((lease, at)) if at == op.at => lease,
+            _ => {
+                let lease = Lease::take();
+                state.committed = Some((lease, op.at));
+                lease
+            }
+        };
+        let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let at = find(&mut pages, root, key)?;
+        if at.is_none() {
+            state.unwatch();
+            return Ok(read(None));
+        }
+        state.reads.note(lease, op.at);
         show_committed(&mut pages, at, read)
     }
 
@@ -1062,9 +1323,9 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<Option<R>, TxnError> {
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin(state, false)?;
-        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let op = self.begin_shown(state, who, Unit::data(subtree))?;
         if Self::reads_by_key(state, who, Unit::data(subtree)) {
+            state.unwatch();
             return Ok(None);
         }
         if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
@@ -1079,15 +1340,20 @@ impl<'s> WriteTxn<'s> {
                 return Ok(None);
             };
             state.followed += 1;
-            return show_framed(&mut frames, child, read).map(Some);
+            if child.is_some() {
+                state.reads.note_frames(frames.lease(), op.at);
+            }
+            return Ok(Some(show_framed(&mut frames, child, read)?));
         }
         if parent.lease() != state.lease {
+            state.unwatch();
             return Ok(None);
         }
+        // The parent's handle is of this lease, so the lease is dated
+        // already: by the read that showed the parent.
         let unit = Unit::data(subtree);
-        let mut pages =
-            self.path
-                .committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
+        let lease = state.lease;
+        let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let mut key = std::mem::take(&mut state.key);
         key.clear();
         let child = pages.page(parent.page(), |page| {
@@ -1143,7 +1409,9 @@ impl<'s> WriteTxn<'s> {
     /// Commits a transaction that has written nothing, and says whether it
     /// was one: such a commit succeeds and takes no version (CV2), so it
     /// needs no commit lock (CM3 step 1). What [`Self::seal`] does for an
-    /// empty write set is done here: the savepoints go (WT8).
+    /// empty write set is done here: the transaction is ended as by any
+    /// commit. Its savepoints go (WT8), its handles end, and it gives up
+    /// its watch on the commits and what it remembers of its reads.
     ///
     /// It is refused while a scope is open or a pending mark stands (CM1),
     /// as the commit is.
@@ -1155,7 +1423,7 @@ impl<'s> WriteTxn<'s> {
         if !state.set.is_empty() {
             return Ok(false);
         }
-        state.savepoints.clear();
+        state.end();
         Ok(true)
     }
 
@@ -1181,8 +1449,9 @@ impl<'s> WriteTxn<'s> {
         }
         if state.set.is_empty() {
             // The savepoints of a transaction that commits are ignored
-            // (WT8), also where it commits nothing.
-            state.savepoints.clear();
+            // (WT8), also where it commits nothing, and it is ended as by
+            // any commit.
+            state.end();
             return Ok(Sealed::Empty);
         }
         // The conflict is decided before anything else is read, so that no

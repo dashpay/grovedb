@@ -379,14 +379,15 @@ impl<'t, 's> MerkCursor<'t, 's> {
     ) -> Result<Self, TxnError> {
         let path = *txn.path();
         // The root is the one the pinned version has, read under a guard
-        // (PN5). The lease is the cursor's own (PN1).
-        let guard = path.versions().guard();
-        let pin = path.versions().pin();
+        // (PN5). The lease is the cursor's own (PN1). The transaction pins
+        // the version, and dates the lease with it: a write may keep the
+        // value of a node the cursor shows, by the node's handle (CF2a).
+        let lease = Lease::take();
+        let (guard, pin) = txn.pin_shown(lease);
         let at = pin.version();
         let mut opened = None;
         let directory = Opened::at(&mut opened, &path, &guard, at)?;
         let root = directory.root(&path, &guard, &subtree)?.flatten();
-        let lease = Lease::take();
         let reader = NodeReader::new(path.loader, &guard, lease, at);
         let side = MerkSide {
             path,
@@ -449,10 +450,24 @@ impl<'t, 's> MerkCursor<'t, 's> {
             Err(read) => read,
         };
         let guard = self.txn.path().versions().guard();
-        match self.reads(&guard)? {
-            true => self.side.node(&guard, &key, children, read),
-            false => Ok(read(None)),
+        let mut found = false;
+        let shown = match self.reads(&guard) {
+            Ok(true) => self.side.node(&guard, &key, children, |view| {
+                found = view.is_some();
+                read(view)
+            }),
+            Ok(false) => Ok(read(None)),
+            Err(error) => Err(error),
+        };
+        // The transaction's lock is not held over the cursor's own read,
+        // and another thread may have ended the transaction, or had it
+        // forget the lease, meanwhile. So the cursor says what it read
+        // whenever the read was made, and the transaction decides by what
+        // it holds then.
+        if shown.is_ok() {
+            (self.txn).cursor_read(self.side.lease, self.side.at, found);
         }
+        shown
     }
 }
 

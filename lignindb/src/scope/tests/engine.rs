@@ -60,7 +60,9 @@ impl Owners {
         batch: &OwnedBatch,
     ) -> Result<Applied, TxnError> {
         let first_write = world.latest().get();
-        let applied = batch.with(|batch| scope.apply(batch))?;
+        // The scope reads each node whose value it keeps, and names the
+        // read (`OwnedBatch::through`).
+        let applied = (batch.through(scope)).with(|batch| scope.apply(batch))?;
         let before = tx.model.borrow().writes.len();
         world.note(tx, batch, first_write);
         let mut owners = self.0.borrow_mut();
@@ -1432,7 +1434,8 @@ fn a_write_that_the_pages_refuse_is_refused_when_it_is_laid_out() {
     let tx = world.begin();
     let owners = Owners::default();
     let alone = tx.txn.scope().expect("a scope");
-    let error = (broken(&world, &tx, 1).with(|batch| alone.apply(batch))).expect_err("refused");
+    let bad = broken(&world, &tx, 1).through(&alone);
+    let error = bad.with(|batch| alone.apply(batch)).expect_err("refused");
     assert!(no_child(&error, 1), "{error}");
     let beside = tx.txn.scope().expect("a scope");
     (owners.edit(&world, &tx, (2, &beside), 3, |items| {
@@ -1440,7 +1443,7 @@ fn a_write_that_the_pages_refuse_is_refused_when_it_is_laid_out() {
     }))
     .expect("a write that the pages take");
     let bad = broken(&world, &tx, 2);
-    let applied = bad
+    let applied = (bad.through(&beside))
         .with(|batch| beside.apply(batch))
         .expect("kept in the write set");
     assert!(
@@ -1469,7 +1472,8 @@ fn a_write_that_the_pages_refuse_is_refused_when_it_is_laid_out() {
     // be laid out: it reads its records by key and is not committed.
     let alone = tx.txn.scope().expect("a scope");
     let beside = tx.txn.scope().expect("a scope");
-    bad.with(|batch| beside.apply(batch))
+    (bad.through(&beside))
+        .with(|batch| beside.apply(batch))
         .expect("kept in the write set");
     beside.merge();
     alone.merge();
@@ -1669,7 +1673,7 @@ impl Part {
             pause();
             seen.push((scope.node(model::subtree(SHARED), &key(round), value)).expect("a read"));
             pause();
-            batch
+            (batch.through(&scope))
                 .with(|batch| scope.apply(batch))
                 .expect("its own Merk");
             pause();

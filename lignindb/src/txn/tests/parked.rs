@@ -45,6 +45,9 @@ fn anew(subtree: Subtree, items: &BTreeMap<Vec<u8>, Vec<u8>>) -> OwnedBatch {
 /// its transaction.
 fn apply_through<'s>(world: &World<'s>, tx: &Tx<'s>, scope: &Scope<'_, 's>, batch: &OwnedBatch) {
     let first_write = world.latest().get();
+    // Each node that keeps its value is read through the scope, as its
+    // writer reads it, and the write names that read.
+    let batch = &batch.through(scope);
     (batch.with(|batch| scope.apply(batch))).expect("the batch is applied");
     let writes = batch.writes().into_iter();
     (tx.model.borrow_mut().writes).extend(writes.map(|write| (write, first_write, false)));
