@@ -266,10 +266,13 @@ fn checkpoints_beside_commits_and_page_steps_hold_one_version_each() {
     live.check_committed();
 }
 
-/// A checkpoint is made of a store whose log has just turned to a file
-/// with no item, and of one with a commit in it: the file the sample ends
-/// in is named closed where the sample ended, whatever is appended to it
-/// afterwards.
+/// A checkpoint is made of a store whose log has just turned to a new
+/// file, and of one whose log ends behind a commit. The turn made the log
+/// durable, so the first kind's log ends where the log was durable to, at
+/// the end of the file it turned away from, and the new file is not the
+/// checkpoint's. The second kind's log ends where the live log did. In
+/// both, the file the sample ends in is named closed where the sample
+/// ended, whatever is appended to it afterwards.
 #[test]
 fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
     let (db, versions) = store_with_log(1 << 10, 128);
@@ -280,20 +283,28 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
     for round in 0..4u64 {
         block(&mut world, &mut rng, round * 10, 10);
         // Every block is longer than a log file is to be, so the log is
-        // due to turn after each, and a turn leaves it in a file that
-        // holds its start record alone. No pass follows the turn here: its
-        // page steps would put their records into that file.
+        // due to turn after each.
         if round % 2 == 0 {
             let turned = db.write_back(&versions).roll_log();
             assert!(turned.expect("the log is rolled"), "the log did not turn");
         }
+        let (durable, live_end) = (db.log.durable(), db.log.end().expect("an end"));
+        let synced = durable.version == versions.latest();
+        assert_eq!(synced, round % 2 == 0, "round {round}: {durable:?}");
         let target = checkpoints.join(round.to_string());
         let created = checkpointer(&db, &versions)
             .with_options(NO_CATCH_UP)
             .create(&target)
             .expect("a checkpoint");
         let end = created.log_end.expect("the log has an end");
-        assert_eq!(created.log_end, db.log.end());
+        match synced {
+            // The file the log turned to is not in the checkpoint.
+            true => {
+                assert_eq!(Some(end), durable.place);
+                assert!(end.file() < live_end.file(), "{end:?}, {live_end:?}");
+            }
+            false => assert_eq!(end, live_end),
+        }
         made.push((target, created.version, world.model.clone(), end));
     }
     for (target, version, model, end) in &made {
@@ -311,12 +322,129 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
         assert_eq!(opened.versions.latest(), *version);
         opened.check(model);
     }
-    // Both were made: a checkpoint whose log ends in a file that holds its
-    // start record alone, and one whose log ends behind a commit.
-    let alone = lignin_format::wal::FIRST_ITEM_OFFSET;
-    let ends_alone = |made: &&(_, _, _, lignin_format::wal::LogPlace)| made.3.offset() == alone;
-    let alone = made.iter().filter(ends_alone).count();
-    assert!(alone > 0 && alone < made.len(), "{alone} of {}", made.len());
+}
+
+/// "A commit never waits for the fsync" (CK5): where the log is durable
+/// through the version already, a creation syncs no file of it, so no
+/// commit that syncs the log itself finds a sync of the creation's under
+/// way. That is so after every commit where each commit syncs the log, and
+/// after a flush where none does.
+///
+/// The log has records of page steps behind the place it is durable to.
+/// No file of the log can be synced while the checkpoint is made: a
+/// creation that tried would fail. Its log ends where the log was durable
+/// to, and it opens with the state of its version, the values that the
+/// page steps had placed among it.
+#[test]
+fn a_creation_syncs_no_log_that_is_durable_through_its_version() {
+    use std::{path::Path, sync::Arc};
+
+    use lignin_io::{
+        sim::{Fault, FaultRule, OpKind, OpSet},
+        Vfs,
+    };
+    use lignin_store::{
+        flush::FlushConfig,
+        wal::{LogOptions, SyncPolicy},
+    };
+
+    use super::{open_on, sim, DIR};
+    use crate::txn::tests::store::{Db, SIZE};
+
+    for sync in [SyncPolicy::EveryCommit, SyncPolicy::Never] {
+        let fs = sim(24);
+        let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+        let options = LogOptions {
+            sync,
+            ..LogOptions::default()
+        };
+        let (db, versions) = Db::on(
+            vfs.clone(),
+            Path::new(DIR),
+            256,
+            options,
+            FlushConfig::new(SIZE),
+            None,
+        );
+        let mut world = World::new(&db, &versions);
+        let mut rng = Rng::new(24);
+        for round in 0..3 {
+            block(&mut world, &mut rng, round * 10, 10);
+        }
+        let write_back = db.write_back(&versions);
+        if sync == SyncPolicy::Never {
+            // What a flush does.
+            write_back.sync_log().expect("the log is synced");
+        }
+        let durable = db.log.durable();
+        assert_eq!(durable.version, versions.latest(), "{sync:?}");
+        write_back.pass().expect("a pass of write-back");
+        assert!(db.flush.stats().values_placed > 0, "{sync:?}");
+        assert!(
+            durable.place < db.log.end(),
+            "{sync:?}: no record of a page step"
+        );
+        assert_eq!(
+            db.log.durable(),
+            durable,
+            "{sync:?}: the pass synced the log"
+        );
+
+        let target = checkpoints_in(&db).join("1");
+        let syncs = OpSet::of(&[OpKind::SyncData, OpKind::SyncAll]);
+        for file in store_files(&fs, Path::new(DIR)) {
+            if file.starts_with("wal") {
+                let rule = FaultRule::new(Fault::Eio).on(syncs).forever();
+                fs.add_rule(rule.at(Path::new(DIR).join(file)));
+            }
+        }
+        let created = checkpointer(&db, &versions)
+            .with_options(NO_CATCH_UP)
+            .create(&target);
+        fs.clear_rules();
+        let created = created.unwrap_or_else(|error| panic!("{sync:?}: {error}"));
+        assert_eq!(created.version, versions.latest());
+        assert_eq!(created.log_end, durable.place, "{sync:?}");
+        let opened = open_on(vfs, &target, &db).expect("the checkpoint opens");
+        assert_eq!(opened.versions.latest(), created.version);
+        opened.check(&world.model);
+    }
+}
+
+/// "Sampling is one step ... while holding the commit lock" (CK2): a
+/// creation takes no sample for as long as a commit has the commit lock,
+/// which a commit holds from before its group is in the log until its
+/// version is published.
+#[test]
+fn a_creation_samples_under_the_commit_lock() {
+    let (db, versions) = store_with_log(48 << 10, 128);
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(25), 0, 20);
+    let target = checkpoints_in(&db).join("1");
+    let (made, sampled) = (AtomicBool::new(false), AtomicBool::new(false));
+    let pause = |step: Step| match step {
+        Step::Made => made.store(true, Ordering::SeqCst),
+        Step::Linking => sampled.store(true, Ordering::SeqCst),
+        _ => {}
+    };
+    std::thread::scope(|scope| {
+        let commits = db.committing.lock();
+        let maker = scope.spawn(|| checkpointer(&db, &versions).pausing(&pause).create(&target));
+        wait_until("the target is made", || made.load(Ordering::SeqCst));
+        // The creation is at its sample now, and stays there. A creation
+        // that took none of the commit lock would be past it in far less
+        // than this.
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !sampled.load(Ordering::SeqCst),
+            "a sample was taken while a commit had the commit lock"
+        );
+        drop(commits);
+        let created = maker.join().expect("the maker of the checkpoint");
+        created.expect("a checkpoint");
+    });
+    assert!(sampled.load(Ordering::SeqCst));
+    open(&db, &target).check(&world.model);
 }
 
 /// Waits until `met`, and gives up after a minute: a test that would hang

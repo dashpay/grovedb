@@ -64,10 +64,10 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
-//! | 3 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. | the lock of the target, to the end |
-//! | 4 | **The sample** (CK2): the latest version *vc*, where the log ends, and the durable manifest. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
+//! | 3 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. A target that holds anything but its lock file by then is somebody else's, and is refused as one that was there. | the lock of the target, to the end |
+//! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the target, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
-//! | 6 | The log is made durable, by the log itself, through the sampled end. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
+//! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
 //! | 7 | The log's files up to the one the sample ended in are linked. | the same |
 //! | 8 | What could not be linked is copied, and each copy is synced. | nothing: each such file is open |
 //! | 9 | Every name in the target is made durable, and then the target's own name. | nothing |
@@ -81,17 +81,27 @@
 //! only tries that lock while it has the commit lock. Where the manifest
 //! is taken, it gives the commit lock back, waits, and takes both anew.
 //!
-//! **One wait is the log's, and is not taken away here.** The log makes
-//! itself durable one sync at a time (`lignin_store::wal`). Where the
-//! commits of a database sync the log themselves
-//! ([`SyncPolicy::EveryCommit`](lignin_store::wal::SyncPolicy::EveryCommit),
-//! or an interval that is due), a commit does so under the commit lock
-//! (CM7), and waits there for a sync of the log that is under way: the one
-//! of step 6, as it waits for write-back's or for a flush's. What it waits
-//! for is the writing of bytes that its own sync would have had to write.
-//! CK5 and CM8 say "never waits for the fsync" of commits that sync
-//! nothing, which is the default; with such a policy they hold but for
-//! that one sync.
+//! **The sync of step 6 keeps no commit waiting either, with one case
+//! left over.** The log makes itself durable one sync at a time
+//! (`lignin_store::wal`), and a commit that syncs the log itself does so
+//! under the commit lock (CM7), where it would wait for a sync that is
+//! under way. So a creation syncs nothing where it need not:
+//!
+//! - Where every commit syncs the log
+//!   ([`SyncPolicy::EveryCommit`](lignin_store::wal::SyncPolicy::EveryCommit)),
+//!   the log is durable through every published version. The checkpoint's
+//!   log then ends where the log is durable to, and step 6 does nothing.
+//!   The same holds whenever the log is durable through *vc* at the
+//!   sample: after a flush, or after the catch-up of step 2.
+//! - Where no commit syncs the log, which is the default, no commit can
+//!   wait for a sync.
+//! - Where commits sync the log at an interval
+//!   ([`SyncPolicy::Interval`](lignin_store::wal::SyncPolicy::Interval)),
+//!   a commit whose sync falls due while the one of step 6 is under way
+//!   waits for it, as it would for write-back's or for a flush's, and then
+//!   makes its own. That is the case left over. CK5 and CM8 word "never
+//!   waits for the fsync" without it, and taking it away is the log's to
+//!   do: the owner decides between the wording and the log.
 //!
 //! **The lock on the manifest is held through step 5**, which is one
 //! `link` for each file the manifest names: write-back replaces no
@@ -101,13 +111,16 @@
 //!
 //! **The manifest is written last, and it is what makes the directory a
 //! checkpoint.** A directory without one is not a database. So a creation
-//! that was cut short, by an error or by the power, leaves nothing that
-//! opens as the checkpoint.
+//! that was cut short before its manifest was written, by an error or by
+//! the power, leaves nothing that opens as the checkpoint, and one that
+//! was cut short after it leaves the whole checkpoint or nothing that
+//! opens ("Durability, and a creation that fails").
 //!
 //! # Why that is the state of *vc*
 //!
 //! The checkpoint is what a power cut at the sampling step would have left
-//! of the live database, had the log survived it exactly to its end: the
+//! of the live database, had the log survived it to its end, or to the
+//! place it was durable to if that is behind the group of *vc*: the
 //! durable manifest, the files it names up to the lengths it vouches for,
 //! and the log. The store recovers from every such state to the last
 //! commit whose group the log holds whole, which is *vc*. Each part is
@@ -122,6 +135,15 @@
 //!   (FL7), and under the lock on the manifest that is the sampled one.
 //!   A manifest that was sampled later than the log could name a table
 //!   checkpoint that covers a commit after *vc*.
+//! - **Where the log is durable through *vc*, the checkpoint's log ends
+//!   where it is durable to.** That place is the end of the log as a sync
+//!   found it, at or after the group of *vc*, so it is the end of a record
+//!   and has every group up to *vc* before it. The mark of the table
+//!   checkpoint that the sampled manifest names is before it too, since a
+//!   manifest names a table checkpoint only once the log is durable
+//!   through its mark. What the log holds behind that place are records of
+//!   page steps, which the checkpoint does without: the values they placed
+//!   are read from the log, where a power cut would have left them.
 //! - **Segments, value-log files and the table checkpoint are taken at the
 //!   lengths the sampled manifest gives, and are not synced.** A manifest
 //!   vouches only for bytes that were synced before it was written, the
@@ -131,12 +153,12 @@
 //!   nobody but a store syncs a file it is writing.
 //! - **Only the log is synced, and the log does it.** A sync that fails
 //!   through another handle is invisible to the log (`lignin_store::wal`),
-//!   so the creation asks write-back for the sync and links the log's
-//!   files afterwards. It never syncs a log file, under its name or under
-//!   a link.
+//!   so the creation asks write-back for the sync, where one is needed,
+//!   and links the log's files afterwards. It never syncs a log file,
+//!   under its name or under a link.
 //! - **The file the sample ended in is named closed at the sampled end.**
-//!   The live database appends to it at once, and the sync of step 6
-//!   covers what it appended meanwhile. The checkpoint's manifest gives the
+//!   The live database appends to it at once, and a sync of step 6 covers
+//!   what it appended meanwhile. The checkpoint's manifest gives the
 //!   length of the sample, so none of it is read (CK5).
 //!
 //! `transactions.md` words three of its rules for a creation that records
@@ -226,14 +248,18 @@
 //! removes what it made in the target, the manifest first, and the target
 //! itself, so that the same call can be made again. It removes nothing it
 //! did not make: a file that somebody else put into the target while it
-//! was made stays, and the target with it, and where the creation does
-//! not get the lock of the target it has just made, somebody else has
-//! it, and nothing in the target is touched. Where the file layer fails
-//! the removal too, what is left is for the caller to remove. **No file
-//! goes while a manifest could come back**: where a manifest was written
-//! and its removal cannot be made durable, every file stays, so that a
-//! power cut leaves the whole checkpoint or a directory without a
-//! manifest, and not a manifest without one of its files. An error of
+//! was made stays, and the target with it. Where the creation does not
+//! get the lock of the target it has just made, somebody else may have
+//! it, and where it gets the lock and finds more than the lock file,
+//! somebody else has been there: nothing in the target is touched in
+//! either case. A manifest in the target is the creation's to remove only
+//! once it has begun to write one. Where the file layer fails the removal
+//! too, or fails the making of a file without saying whether it made it,
+//! what is left is for the caller to remove. **No file goes while a
+//! manifest could come back**: where a manifest was written and its
+//! removal cannot be made durable, every file stays, so that a power cut
+//! leaves the whole checkpoint or a directory without a manifest, and not
+//! a manifest without one of its files. An error of
 //! the catch-up of step 2 does not fail
 //! the creation: it is reported in [`Created::catch_up`], and the
 //! checkpoint's first open replays more log.
@@ -298,12 +324,15 @@
 //!
 //! - It removes nothing of a path that is no directory of its own, of a
 //!   directory that is no database of this engine, or of one that a handle
-//!   has open. An empty directory, and one that holds an empty lock file
-//!   and nothing else, it removes whatever they were: nothing is lost with
-//!   them, and a deletion that was cut short can leave both.
+//!   has open. A database is known by a manifest of this engine in a file
+//!   of the directory's own, and not by a name. An empty directory, and
+//!   the empty lock file of one that holds nothing else, it removes
+//!   whatever they were: nothing is lost with them, and a deletion that
+//!   was cut short can leave both.
 //! - **It makes the directory stop being a database before it removes a
-//!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], durably,
-//!   and then everything goes, the renamed manifest last. A deletion that
+//!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], nothing
+//!   is left under the manifest's own name, durably, and then everything
+//!   goes, the renamed manifest last. A deletion that
 //!   is cut short therefore never leaves a directory that opens with
 //!   something missing: not a file of the store, which an open would miss,
 //!   and not a file that the engine or Platform keeps beside them (P-17),
@@ -333,14 +362,15 @@
 //! - **The open of the engine** (TXN-07, GROVE-01) opens a checkpoint as
 //!   it opens any directory, and is told nothing by the directory.
 //!   - **Where it makes a database because it finds none, it must not
-//!     make one in a directory that a creation left** (above): one with a
-//!     directory of the store in it and no manifest, and, since a creation
-//!     can be cut before its first link, one that is empty and lies where
-//!     checkpoints are made. The store's own opens refuse the first kind
-//!     where a segment, a value-log file or a log file with data is left
-//!     there, since no manifest names it. They do not refuse one that is
-//!     left with a table checkpoint alone or with empty directories, and
-//!     nothing refuses the second kind. A rename of a directory in the
+//!     make one in a directory that a creation left** (above). That is
+//!     any directory that is there, where checkpoints are made, and has
+//!     no manifest: one with a directory of the store in it, one with the
+//!     lock file alone, and, since a creation can be cut before it has
+//!     its lock, one that is empty. The store's own opens refuse the
+//!     first kind where a segment, a value-log file or a log file with
+//!     data is left there, since no manifest names it. They do not refuse
+//!     one that is left with a table checkpoint alone or with empty
+//!     directories, and nothing refuses the other two kinds. A rename of a directory in the
 //!     file layer would let a creation build under another name and
 //!     appear whole, and is the owner's to decide on.
 //!   - **It makes no database in a directory that holds

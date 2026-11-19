@@ -292,6 +292,7 @@ fn a_checkpoint_whose_directory_is_removed_while_it_is_open_closes_cleanly() {
     let captured = world.model.clone();
     let live_files = || -> Vec<(PathBuf, Vec<u8>)> {
         (store_files(&StdVfs, &db.dir).into_iter())
+            .chain([PathBuf::from("MANIFEST")])
             .map(|file| {
                 let bytes = std::fs::read(db.dir.join(&file)).expect("a live file");
                 (file, bytes)

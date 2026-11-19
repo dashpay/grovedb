@@ -453,9 +453,9 @@ pub(super) fn bytes_of(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
     bytes
 }
 
-/// What a test has done right before the lock in a file is taken. An
-/// error is what the lock then fails with, untaken.
-pub(super) type BeforeLock = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
+/// What a test has done right before an operation on a path. An error is
+/// what the operation then fails with, undone.
+pub(super) type Before = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
 
 /// Writes the new file `path` of `vfs` with `bytes`, durably but for its
 /// name.
@@ -493,7 +493,10 @@ pub(super) struct Meddling {
     /// No hard link is made into this directory: one fails with this kind,
     /// as a file system does that cannot make it.
     pub(super) no_links: Option<(PathBuf, io::ErrorKind)>,
-    pub(super) before_lock: Option<BeforeLock>,
+    /// Before the lock in a file is taken.
+    pub(super) before_lock: Option<Before>,
+    /// Before a file is removed.
+    pub(super) before_remove: Option<Before>,
 }
 
 impl Meddling {
@@ -503,15 +506,27 @@ impl Meddling {
             inner,
             no_links: Some((under, kind)),
             before_lock: None,
+            before_remove: None,
         }
     }
 
     /// `inner`, with `before` run before each lock is taken.
-    pub(super) fn before_lock(inner: Arc<dyn Vfs>, before: BeforeLock) -> Self {
+    pub(super) fn before_lock(inner: Arc<dyn Vfs>, before: Before) -> Self {
         Self {
             inner,
             no_links: None,
             before_lock: Some(before),
+            before_remove: None,
+        }
+    }
+
+    /// `inner`, with `before` run before each file is removed.
+    pub(super) fn before_remove(inner: Arc<dyn Vfs>, before: Before) -> Self {
+        Self {
+            inner,
+            no_links: None,
+            before_lock: None,
+            before_remove: Some(before),
         }
     }
 }
@@ -542,6 +557,9 @@ impl Vfs for Meddling {
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
+        if let Some(before) = &self.before_remove {
+            before(path)?;
+        }
         self.inner.remove_file(path)
     }
 

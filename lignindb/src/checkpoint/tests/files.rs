@@ -20,7 +20,7 @@ use lignin_store::{
 
 use super::{
     block, checkpointer, checkpoints_in, everything_in, memory_dir, names_of, open, open_on, sim,
-    store_files, store_on, store_with_log, turn, write_file, BeforeLock, Meddling,
+    store_files, store_on, store_with_log, turn, write_file, Before, Meddling,
 };
 use crate::{
     checkpoint::{self, create::Step, CheckpointError, CheckpointOptions, DELETING_FILE_NAME},
@@ -63,7 +63,7 @@ fn store_without_links(kind: ErrorKind) -> (Arc<Db>, Versions) {
 
 /// A store on a file layer that runs `before` before it takes the lock of
 /// a directory among the store's checkpoints, given the lock's file.
-fn store_with_locks_met(before: BeforeLock) -> (Arc<Db>, Versions) {
+fn store_with_locks_met(before: Before) -> (Arc<Db>, Versions) {
     store_on_meddling(|plain, checkpoints| {
         let among = move |lock: &Path| match lock.starts_with(&checkpoints) {
             true => before(lock),
@@ -343,31 +343,43 @@ fn deleting_a_checkpoint_removes_its_directory() {
 
     // What a deletion leaves that was cut short is finished: a directory
     // with the renamed manifest and whatever else, a manifest that was
-    // made beside it since among that; an empty directory; and one with
-    // an empty lock file alone.
+    // made beside it since among that, or the same manifest under its own
+    // name still; an empty directory; and one with an empty lock file
+    // alone.
+    let a_manifest = std::fs::read(db.dir.join("MANIFEST")).expect("a manifest");
     let leftover = checkpoints.join("leftover");
-    let leftovers: [&[(&str, &[u8])]; 4] = [
-        &[
-            (DELETING_FILE_NAME, b"renamed"),
-            ("seg/00000001.seg", b"left"),
-            ("LOCK", b""),
-        ],
-        &[
-            (DELETING_FILE_NAME, b"renamed"),
-            ("MANIFEST", b"made since"),
-        ],
-        &[],
-        &[("LOCK", b"")],
-    ];
-    for files in leftovers {
+    let put = |files: &[(&str, &[u8])]| {
         std::fs::create_dir(&leftover).expect("a directory");
         for (name, bytes) in files {
             let path = leftover.join(name);
             std::fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
             std::fs::write(path, bytes).expect("a file");
         }
+    };
+    let leftovers: [&[(&str, &[u8])]; 5] = [
+        &[
+            (DELETING_FILE_NAME, &a_manifest),
+            ("seg/00000001.seg", b"left"),
+            ("LOCK", b""),
+        ],
+        &[
+            (DELETING_FILE_NAME, &a_manifest),
+            ("MANIFEST", b"made since"),
+        ],
+        &[(DELETING_FILE_NAME, &a_manifest), ("ENGINE", b"beside it")],
+        &[],
+        &[("LOCK", b"")],
+    ];
+    for (index, files) in leftovers.into_iter().enumerate() {
+        put(files);
+        if index == 2 {
+            // One file under both names: a rename of the one to the other
+            // changes nothing.
+            let renamed = leftover.join(DELETING_FILE_NAME);
+            std::fs::hard_link(renamed, leftover.join("MANIFEST")).expect("a second name");
+        }
         checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
-        assert!(!leftover.exists(), "{files:?}");
+        assert!(!leftover.exists(), "leftover {index}");
     }
     // The lock file alone, and somebody has its lock.
     std::fs::create_dir(&leftover).expect("a directory");
@@ -381,25 +393,43 @@ fn deleting_a_checkpoint_removes_its_directory() {
     checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
     assert!(!leftover.exists());
 
-    // No database, and nothing of it is touched: a directory of the
-    // caller's, though all it holds is a file that is named as the lock
-    // file is. That file is not empty, as a lock file is.
-    let not_one = checkpoints.join("not-one");
-    std::fs::create_dir(&not_one).expect("a directory");
-    std::fs::write(not_one.join("LOCK"), b"as it was").expect("a file");
-    let refused = checkpoint::delete(&StdVfs, &not_one);
-    assert!(
-        matches!(
-            &refused,
-            Err(CheckpointError::NotADatabase {
-                source: SegmentStoreError::NoManifest { .. },
-                ..
-            })
-        ),
-        "{refused:?}"
-    );
-    let kept = BTreeMap::from([(PathBuf::from("LOCK"), Some(b"as it was".to_vec()))]);
-    assert_eq!(everything_in(&StdVfs, &not_one), kept);
+    // No database, and nothing of it is touched, the lock file included: a
+    // directory of somebody else's is not known for one of this engine by
+    // the names in it. A lock file that holds something; files that are
+    // named as a renamed manifest and as a manifest and hold something
+    // else; a directory of such a name; and a link of such a name to a
+    // manifest.
+    let elsewhere = checkpoints.join("a-manifest");
+    std::fs::write(&elsewhere, &a_manifest).expect("a file");
+    let not_ours: [&[(&str, &[u8])]; 4] = [
+        &[("LOCK", b"as it was")],
+        &[(DELETING_FILE_NAME, b"renamed"), ("theirs", b"as it was")],
+        &[
+            ("MANIFEST", b"not one"),
+            ("theirs", b"as it was"),
+            ("LOCK", b""),
+        ],
+        &[("MANIFEST.deleting/in-it", b"as it was")],
+    ];
+    let refused_and_kept = |what: &str| {
+        let kept = everything_in(&StdVfs, &leftover);
+        let refused = checkpoint::delete(&StdVfs, &leftover);
+        assert!(
+            matches!(&refused, Err(CheckpointError::NotADatabase { dir, .. }) if *dir == leftover),
+            "{what}: {refused:?}"
+        );
+        assert_eq!(everything_in(&StdVfs, &leftover), kept, "{what}");
+        std::fs::remove_dir_all(&leftover).expect("the directory is removed");
+    };
+    for (index, files) in not_ours.into_iter().enumerate() {
+        put(files);
+        refused_and_kept(&format!("directory {index}"));
+    }
+    for name in ["MANIFEST", DELETING_FILE_NAME] {
+        put(&[("theirs", b"as it was")]);
+        std::os::unix::fs::symlink(&elsewhere, leftover.join(name)).expect("a link");
+        refused_and_kept(&format!("a link named {name}"));
+    }
 
     // No directory of its own: nothing, a file, a path with no name, and
     // a link to a checkpoint, which is not followed into it.
@@ -469,7 +499,7 @@ struct Kept {
     held: BTreeMap<PathBuf, Option<Vec<u8>>>,
 }
 
-fn kept(seed: u64) -> Kept {
+fn kept(seed: u64, twice_named: bool) -> Kept {
     let fs = sim(seed);
     let (db, versions) = store_on(&fs);
     let mut world = World::new(&db, &versions);
@@ -483,6 +513,12 @@ fn kept(seed: u64) -> Kept {
     write_file(&fs, &target.join("platform_state.bin"), b"the caller's");
     fs.create_dir(&target.join("theirs")).expect("a directory");
     write_file(&fs, &target.join("theirs").join("more"), b"the caller's");
+    if twice_named {
+        // The manifest has a second name, that of one that is being
+        // deleted: a rename of the one to the other changes nothing.
+        let renamed = target.join(DELETING_FILE_NAME);
+        (fs.hard_link(&target.join("MANIFEST"), &renamed)).expect("a second name");
+    }
     (fs.sync_dir(&target.join("theirs"))).expect("the caller's file is durable");
     (fs.sync_dir(&target)).expect("the files beside the store's are durable");
     let held = everything_in(&fs, &target);
@@ -515,7 +551,11 @@ impl Kept {
             seen.gone += 1;
             return;
         }
-        if read_manifest(left, &self.target).is_ok() {
+        let entries = left.read_dir(&self.target).expect("the directory");
+        if entries.iter().any(|entry| entry.name == "MANIFEST") {
+            // Whatever has the manifest's name has every file with it.
+            read_manifest(left, &self.target)
+                .unwrap_or_else(|error| panic!("{context}: the manifest: {error}"));
             assert_eq!(everything_in(left, &self.target), self.held, "{context}");
             if opens {
                 let vfs: Arc<dyn Vfs> = Arc::new(left.clone());
@@ -525,7 +565,6 @@ impl Kept {
             }
             seen.whole += 1;
         } else {
-            let entries = left.read_dir(&self.target).expect("the directory");
             let marked = entries.iter().any(|entry| entry.name == DELETING_FILE_NAME);
             assert!(marked || entries.is_empty(), "{context}: {entries:?}");
             seen.none += 1;
@@ -542,13 +581,21 @@ impl Kept {
 
 /// Each operation of a deletion is failed in turn. What is left opens as
 /// the whole checkpoint, with every file that was beside the store's, or
-/// has no manifest and is known for a deletion that was cut short: never a
-/// database with something missing. The deletion can be made again, and is
-/// durable when it returns.
+/// has nothing under the manifest's name and is known for a deletion that
+/// was cut short: never a database with something missing. The deletion
+/// can be made again, and is durable when it returns. The same holds for
+/// a checkpoint whose manifest has the name of a renamed one as well.
 #[test]
 fn a_deletion_that_the_file_layer_fails_leaves_the_checkpoint_or_no_database() {
+    for twice_named in [false, true] {
+        a_deletion_is_failed_at_every_operation(twice_named);
+    }
+}
+
+fn a_deletion_is_failed_at_every_operation(twice_named: bool) {
     use lignin_io::sim::{Fault, FaultRule};
 
+    let kept = |seed| kept(seed, twice_named);
     let whole = kept(67);
     let from = whole.fs.stats().ops;
     checkpoint::delete(&whole.fs, &whole.target).expect("the checkpoint is deleted");
@@ -575,15 +622,28 @@ fn a_deletion_that_the_file_layer_fails_leaves_the_checkpoint_or_no_database() {
     assert!(seen.whole > 2 && seen.none > 4 && seen.gone > 0, "{seen:?}");
 }
 
-/// The power is cut after each operation of a deletion. In every state the
-/// crash can leave, the directory is gone, or it opens as the whole
-/// checkpoint with every file that was beside the store's, or it has no
-/// manifest: never a database with something missing. In each, the
-/// deletion can be made again and ends it.
+/// The power is cut after each operation of a deletion. In each state
+/// that is looked at of those the crash can leave, the directory is gone,
+/// or it is the whole checkpoint with every file that was beside the
+/// store's, or it has nothing under the manifest's name: never a database
+/// with something missing. In each, the deletion can be made again and
+/// ends it. The same holds for a checkpoint whose manifest has the name of
+/// a renamed one as well.
+///
+/// The states are those of both ends, of a file system that writes in
+/// order, of one change lost at a time, and eight drawn ones, for every
+/// cut. The first two of a cut are also opened.
 #[test]
 fn a_deletion_that_the_power_cuts_leaves_the_checkpoint_or_no_database() {
+    for twice_named in [false, true] {
+        a_deletion_is_cut_at_every_operation(twice_named);
+    }
+}
+
+fn a_deletion_is_cut_at_every_operation(twice_named: bool) {
     use lignin_io::sim::CrashPoint;
 
+    let kept = |seed| kept(seed, twice_named);
     let whole = kept(68);
     let from = whole.fs.stats().ops;
     checkpoint::delete(&whole.fs, &whole.target).expect("the checkpoint is deleted");
@@ -666,6 +726,33 @@ fn a_target_whose_lock_somebody_else_has_is_left_to_them() {
     );
     assert!(!target.exists());
     world.check_committed();
+
+    // An opener that is done with the directory, and has given its lock
+    // back, before the creation takes it: the creation has the lock, and
+    // the directory is the opener's all the same.
+    let (db, versions) = store_with_locks_met(Box::new(|lock| {
+        let held = StdVfs.lock(lock)?;
+        std::fs::write(lock.with_file_name("MANIFEST"), b"theirs")?;
+        std::fs::write(lock.with_file_name("MANIFEST.tmp"), b"theirs too")?;
+        drop(held);
+        Ok(())
+    }));
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(74), 0, 10);
+    let target = checkpoints_in(&db).join("1");
+    let failed = checkpointer(&db, &versions).create(&target);
+    assert!(
+        matches!(&failed, Err(CheckpointError::TargetExists { target: theirs }) if *theirs == target),
+        "{failed:?}"
+    );
+    let left = BTreeMap::from([
+        (PathBuf::from("LOCK"), Some(Vec::new())),
+        (PathBuf::from("MANIFEST"), Some(b"theirs".to_vec())),
+        (PathBuf::from("MANIFEST.tmp"), Some(b"theirs too".to_vec())),
+    ]);
+    assert_eq!(everything_in(&StdVfs, &target), left);
+    assert_eq!(versions.pins_held(), 0);
+    world.check_committed();
 }
 
 /// A creation that fails takes away the files it made and no other: a file
@@ -689,9 +776,13 @@ fn a_file_that_somebody_else_put_into_the_target_is_not_removed() {
         .find(|file| file.starts_with("wal"))
         .expect("a log file");
     assert!(files.iter().any(|file| !file.starts_with("wal")));
+    // They also keep a file under the name a manifest is written to
+    // first. The creation fails before it writes one, so that is not its
+    // own to remove either.
     let pause = |step: Step| {
         if step == Step::Secured {
             std::fs::write(target.join(theirs), b"theirs").expect("their file");
+            std::fs::write(target.join("MANIFEST.tmp"), b"theirs too").expect("their file");
         }
     };
     let failed = checkpointer(&db, &versions).pausing(&pause).create(&target);
@@ -701,13 +792,60 @@ fn a_file_that_somebody_else_put_into_the_target_is_not_removed() {
         "{failed:?}"
     );
     // The copies that were made are gone, and the directories that have
-    // nothing in them. Their file is as it was.
+    // nothing in them. Their files are as they were.
     let left = BTreeMap::from([
+        (PathBuf::from("MANIFEST.tmp"), Some(b"theirs too".to_vec())),
         (PathBuf::from("wal"), None),
         (theirs.clone(), Some(b"theirs".to_vec())),
     ]);
     assert_eq!(everything_in(&StdVfs, &target), left);
     world.check_committed();
+
+    // A manifest that somebody wrote into the target while it was made is
+    // theirs too: the creation writes none over it, fails, and leaves it.
+    let second = checkpoints_in(&db).join("2");
+    let pause = |step: Step| {
+        if step == Step::Secured {
+            std::fs::write(second.join("MANIFEST"), b"theirs").expect("their file");
+        }
+    };
+    let failed = checkpointer(&db, &versions).pausing(&pause).create(&second);
+    assert!(
+        matches!(
+            &failed,
+            Err(CheckpointError::Install(
+                SegmentStoreError::ManifestExists { .. }
+            ))
+        ),
+        "{failed:?}"
+    );
+    let left = BTreeMap::from([(PathBuf::from("MANIFEST"), Some(b"theirs".to_vec()))]);
+    assert_eq!(everything_in(&StdVfs, &second), left);
+    world.check_committed();
+}
+
+/// Of a directory that holds an empty lock file and nothing else, the lock
+/// file is all that a deletion removes: what comes into the directory
+/// while it does stays, and the directory with it.
+#[test]
+fn a_file_that_comes_beside_a_lock_file_alone_is_not_removed() {
+    let dir = memory_dir();
+    let theirs = dir.path().join("theirs");
+    std::fs::create_dir(&theirs).expect("a directory");
+    std::fs::write(theirs.join("LOCK"), b"").expect("a file");
+    let into = theirs.clone();
+    let meddling = Meddling::before_remove(
+        Arc::new(StdVfs),
+        Box::new(move |_| std::fs::write(into.join("data"), b"put there meanwhile")),
+    );
+    let failed = checkpoint::delete(&meddling, &theirs);
+    assert!(
+        matches!(&failed, Err(CheckpointError::Io { action: "remove the directory", path, .. })
+            if *path == theirs),
+        "{failed:?}"
+    );
+    let left = BTreeMap::from([(PathBuf::from("data"), Some(b"put there meanwhile".to_vec()))]);
+    assert_eq!(everything_in(&StdVfs, &theirs), left);
 }
 
 /// The directory above a path, as the file layer is given it.

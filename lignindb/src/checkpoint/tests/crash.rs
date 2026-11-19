@@ -29,7 +29,7 @@ use super::{
     NO_CATCH_UP,
 };
 use crate::{
-    checkpoint::{CheckpointError, CheckpointOptions},
+    checkpoint::{self, CheckpointError, CheckpointOptions},
     snapshot::Versions,
     txn::tests::{
         store::{Db, Rng, SIZE},
@@ -226,7 +226,7 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
     made_whole.create(&whole.target).expect("a checkpoint");
     let ops = whole.fs.stats().ops - from;
 
-    let (mut failed, mut sync_failed) = (0, 0);
+    let (mut failed, mut sync_failed, mut lock_left) = (0, 0, 0);
     for at in 1..=ops {
         let context = format!("{fault:?} at operation {at} of {ops}");
         let made = made(41, files);
@@ -256,7 +256,20 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
         };
         failed += 1;
         // Nothing is left of the target, and the live store is as it was
-        // and goes on (CK10).
+        // and goes on (CK10). One failure leaves the target with its lock
+        // file: where the creation has the lock and cannot see what the
+        // target holds, it removes nothing from it. A deletion ends that.
+        let listed = made.fs.read_dir(&made.target);
+        if matches!(&error, CheckpointError::Io { action: "list", path, .. } if *path == made.target)
+        {
+            let names: Vec<_> = (listed.iter().flatten())
+                .map(|entry| entry.name.clone())
+                .collect();
+            assert_eq!(names, ["LOCK"], "{context}: {error}");
+            checkpoint::delete(&made.fs, &made.target)
+                .unwrap_or_else(|error| panic!("{context}: the leftover: {error}"));
+            lock_left += 1;
+        }
         let listed = made.fs.read_dir(&made.target);
         assert!(
             matches!(&listed, Err(error) if error.kind() == ErrorKind::NotFound),
@@ -285,6 +298,12 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
             (first, Err(second)) => panic!("{context}: {first}, and then {second}"),
         }
     }
+    // A listing fails for an error of the device, and not for a full disk.
+    assert_eq!(
+        lock_left,
+        usize::from(matches!(fault, Fault::Eio)),
+        "{fault:?}"
+    );
     (failed, sync_failed)
 }
 
@@ -344,6 +363,32 @@ fn a_manifest_whose_removal_is_not_durable_keeps_its_files() {
     let mut left = Left::default();
     made.check_crash(false, "a removal that is not durable", &mut left);
     assert!(left.whole > 0 && left.none > 0, "{left:?}");
+}
+
+/// The name of the target is durable before its manifest is written, as
+/// the store asks of a database directory (`lignin_store::segment`). The
+/// directory above the target cannot be synced, and nothing can be
+/// renamed: the creation fails at the sync, which it would not reach if it
+/// wrote the manifest first, and would not make if it left the name of
+/// the target to the manifest's own sync.
+#[test]
+fn the_name_of_the_target_is_durable_before_its_manifest_is_written() {
+    let made = made(71, Files::Linked);
+    let above = made.target.parent().expect("a directory").to_path_buf();
+    let sync = FaultRule::new(Fault::Eio).on(OpSet::of(&[OpKind::SyncDir]));
+    made.fs.add_rule(sync.forever().at(&above));
+    let rename = FaultRule::new(Fault::Eio).on(OpSet::of(&[OpKind::Rename]));
+    made.fs.add_rule(rename.forever());
+    let maker = checkpointer(&made.db, &made.versions).with_options(NO_CATCH_UP);
+    let failed = maker.create(&made.target);
+    made.fs.clear_rules();
+    assert!(
+        matches!(&failed, Err(CheckpointError::Io { action: "sync the directory", path, .. })
+            if *path == above),
+        "{failed:?}"
+    );
+    assert!(made.fs.read_dir(&made.target).is_err());
+    maker.create(&made.target).expect("a checkpoint");
 }
 
 /// A catch-up that the file layer fails changes nothing of the checkpoint

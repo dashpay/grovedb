@@ -28,8 +28,15 @@ use crate::{
 
 /// How much log a checkpoint leaves for its first open to replay before
 /// write-back is made to catch up first, unless
-/// [`CheckpointOptions::catch_up_above`] says another amount: 4 MiB.
-pub const DEFAULT_CATCH_UP_ABOVE: u64 = 4 << 20;
+/// [`CheckpointOptions::catch_up_above`] says another amount: 1 MiB.
+///
+/// It is about where the two cost the same. On a store of the reference
+/// database's size (`tests/reference.rs`) the first open of a checkpoint
+/// took some 25 ms longer for each megabyte of log it replayed, which is
+/// ten blocks of twenty documents, and a catch-up took a creation 15 to
+/// 30 ms. So a creation that finds more than a megabyte pays for the
+/// catch-up, and the open of its checkpoint replays nothing.
+pub const DEFAULT_CATCH_UP_ABOVE: u64 = 1 << 20;
 
 /// How a checkpoint is made.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,7 +64,9 @@ pub struct Created {
     /// first open lands on (CK1).
     pub version: CommitVersion,
     /// Where the checkpoint's log ends: the end of the live log at the
-    /// sampling step. `None` for a log with no record.
+    /// sampling step, or, where the live log was durable through the
+    /// version already, the place it was durable to. `None` for a log with
+    /// no record.
     pub log_end: Option<LogPlace>,
     /// The table checkpoint its manifest names, which is the one the live
     /// manifest named at the sampling step.
@@ -129,8 +138,11 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 struct Sample<'s> {
     /// The latest version.
     version: CommitVersion,
-    /// Where the log ends.
+    /// Where the checkpoint's log ends: behind the group of the version,
+    /// at the end of a record.
     end: Option<LogPlace>,
+    /// Whether the log is durable to there already.
+    durable: bool,
     /// The durable manifest.
     named: Manifest,
     /// The pin on the version, the hold on the whole log, and the hold on
@@ -207,13 +219,14 @@ impl<'s> Checkpointer<'s> {
     /// version in the live database** (CK4). `target` is then a database
     /// directory like any other, and is opened as one.
     ///
-    /// Commits are kept out for the sampling step, which reads three
-    /// things, and for nothing else of this call (CK5). A commit that
-    /// makes the log durable itself waits for a sync of the log that is
-    /// under way, as the log has it, and this call makes one: see the
-    /// [module documentation](super). Open write transactions are not
-    /// waited for, and nothing of them is in the checkpoint (CK8). Any
-    /// number of checkpoints may be made at once (CK9).
+    /// Commits are kept out for the sampling step, which reads a few
+    /// things, and for nothing else of this call (CK5). The call syncs the
+    /// log only where it is not durable through the version already, so a
+    /// commit that syncs the log itself waits for that sync in one case
+    /// alone, which the [module documentation](super) names. Open write
+    /// transactions are not waited for, and nothing of them is in the
+    /// checkpoint (CK8). Any number of checkpoints may be made at once
+    /// (CK9).
     ///
     /// If it fails, the live database is as it was (CK10), with one
     /// exception: where the sync of its log failed
@@ -307,12 +320,23 @@ impl<'s> Checkpointer<'s> {
                 latest: version,
             });
         }
+        // Where the log is durable through the version already, the
+        // checkpoint's log ends where the durable log ends, and nothing is
+        // synced for it: that place is behind the group of the version, at
+        // the end of a record, and what the log holds behind it are records
+        // of page steps, which a checkpoint can do without (PV6).
+        let synced = stores.log.durable();
+        let (end, durable) = match synced.place {
+            Some(place) if synced.version == version => (Some(place), true),
+            _ => (end, false),
+        };
         let log_hold = stores.log.hold_from(None)?;
         drop(commits);
         let value_hold = stores.values.hold_files();
         let sample = Sample {
             version,
             end,
+            durable,
             named,
             held: (pin, log_hold, value_hold),
         };
@@ -331,6 +355,7 @@ impl<'s> Checkpointer<'s> {
         let Sample {
             version,
             end,
+            durable,
             named,
             held,
         } = sample;
@@ -379,11 +404,13 @@ impl<'s> Checkpointer<'s> {
         #[cfg(all(test, not(loom)))]
         self.reached(Step::Sampled);
 
-        // The log makes itself durable: nobody else syncs a file of it
-        // (`lignin_store::wal`). The sync covers the sampled end, and with
-        // it the version of the checkpoint (CK4).
-        let durable = self.write_back.sync_log().map_err(CheckpointError::Sync)?;
-        let mut last_log_id = named.last_file_ids().wal;
+        // The log makes itself durable, unless it is: nobody else syncs a
+        // file of it (`lignin_store::wal`). The sync covers the sampled
+        // end, and with it the version of the checkpoint (CK4).
+        let durable = match durable {
+            true => log.durable(),
+            false => self.write_back.sync_log().map_err(CheckpointError::Sync)?,
+        };
         if let Some(end) = end {
             if durable.place < Some(end) {
                 return Err(CheckpointError::NotDurable {
@@ -419,7 +446,6 @@ impl<'s> Checkpointer<'s> {
                 };
                 target.take(source, &FileNames::WAL, id, len)?;
                 files.push(LiveFile::new(FileKind::Wal, id, FileState::Closed, len)?);
-                last_log_id = last_log_id.max(Some(id));
             }
             if !ended {
                 return Err(CheckpointError::LogFile {
@@ -441,11 +467,11 @@ impl<'s> Checkpointer<'s> {
         // cut leaves has every one of its files.
         target.sync_names()?;
         target.sync_parent()?;
-        let mut last_file_ids = named.last_file_ids();
-        last_file_ids.wal = last_log_id;
-        let first = Manifest::new(named.page_size(), last_file_ids, table, files)?;
-        ManifestStore::create(target.vfs().clone(), target.dir(), first)
-            .map_err(CheckpointError::Install)?;
+        // The last ids are the sampled manifest's: the log turns to no file
+        // that a durable manifest has not named, and a manifest is refused
+        // that names a file above them.
+        let first = Manifest::new(named.page_size(), named.last_file_ids(), table, files)?;
+        target.install(first)?;
         Ok(Created {
             version,
             log_end: end,

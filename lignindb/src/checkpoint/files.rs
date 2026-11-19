@@ -9,7 +9,7 @@ use std::{
     sync::Arc,
 };
 
-use lignin_format::FileId;
+use lignin_format::{manifest::Manifest, FileId};
 use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
 use lignin_store::segment::{read_manifest, FileNames, ManifestStore, SegmentStoreError};
 
@@ -20,9 +20,9 @@ use super::error::CheckpointError;
 pub(super) const LOCK_FILE_NAME: &str = "LOCK";
 
 /// The name the manifest of a directory has while [`delete`] removes the
-/// directory. A directory that holds a file of this name and no manifest
-/// was a database and is none any more: nothing opens it, nothing makes a
-/// database in it, and [`delete`] finishes its removal.
+/// directory. A directory that holds a manifest under this name and none
+/// under its own was a database and is none any more: nothing opens it,
+/// nothing makes a database in it, and [`delete`] finishes its removal.
 pub const DELETING_FILE_NAME: &str = "MANIFEST.deleting";
 
 /// How many bytes of a file are copied at a time.
@@ -83,6 +83,10 @@ pub(super) struct Target {
     /// The lock of the target as a database directory, held while it is
     /// made: whoever opens a directory takes it first.
     lock: Box<dyn VfsLock>,
+    /// Whether this creation has begun to write the manifest: only from
+    /// then on is a manifest in the target, or its temporary file, this
+    /// creation's to remove.
+    installing: bool,
     pub(super) linked: usize,
     pub(super) copied: usize,
     pub(super) copied_bytes: u64,
@@ -113,9 +117,13 @@ impl Target {
     /// of its directory (`lignin_store::segment`), and nobody that takes
     /// the lock opens a target that is being made.
     ///
-    /// Where the lock is not had, somebody else may have it, and whatever
-    /// is in the directory by then is theirs. So nothing in it is touched:
-    /// the directory goes if it is empty, and stays otherwise.
+    /// **The target is this creation's only if nobody got into it first.**
+    /// Between the making of the directory and the lock, somebody else can
+    /// take the lock, and put a database of their own there. So where the
+    /// lock is not had, nothing in the directory is touched: it goes if it
+    /// is empty, and stays otherwise. And where the lock is had and the
+    /// directory holds anything but the lock file, it is somebody else's
+    /// by now ([`CheckpointError::TargetExists`]), and stays as it is.
     pub(super) fn make(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<Self, CheckpointError> {
         let Some(parent) = parent_of(dir) else {
             return Err(CheckpointError::NoParent {
@@ -137,6 +145,14 @@ impl Target {
                 return Err(CheckpointError::io("lock", &lock_path)(source));
             }
         };
+        let entries = vfs
+            .read_dir(dir)
+            .map_err(CheckpointError::io("list", dir))?;
+        if entries.iter().any(|entry| entry.name != LOCK_FILE_NAME) {
+            return Err(CheckpointError::TargetExists {
+                target: dir.to_path_buf(),
+            });
+        }
         Ok(Self {
             vfs,
             dir: dir.to_path_buf(),
@@ -145,18 +161,11 @@ impl Target {
             files: Vec::new(),
             waiting: Vec::new(),
             lock,
+            installing: false,
             linked: 0,
             copied: 0,
             copied_bytes: 0,
         })
-    }
-
-    pub(super) fn dir(&self) -> &Path {
-        &self.dir
-    }
-
-    pub(super) fn vfs(&self) -> &Arc<dyn Vfs> {
-        &self.vfs
     }
 
     /// Makes the name of the target durable, with everything that is
@@ -304,13 +313,31 @@ impl Target {
         Ok(())
     }
 
+    /// Writes `first` as the manifest of the target, which makes it a
+    /// checkpoint. Every file `first` names is in the target, durably.
+    pub(super) fn install(&mut self, first: Manifest) -> Result<(), CheckpointError> {
+        match ManifestStore::create(self.vfs.clone(), &self.dir, first) {
+            Ok(_) => Ok(()),
+            // A manifest that is there is not this creation's: somebody
+            // wrote one into the target without its lock.
+            Err(theirs @ SegmentStoreError::ManifestExists { .. }) => {
+                Err(CheckpointError::Install(theirs))
+            }
+            Err(error) => {
+                self.installing = true;
+                Err(CheckpointError::Install(error))
+            }
+        }
+    }
+
     /// Takes away what this creation made, as far as the file layer lets
-    /// it: the manifest first, so that what is left is no checkpoint, then
-    /// the files it linked or created, the directories, the lock file and
-    /// the target. The lock of the target is held, so the manifest and the
-    /// lock file are this creation's. Nothing else is touched: a file that
-    /// somebody else put into the target stays, and the target with it.
-    /// What cannot be removed stays for the caller to remove.
+    /// it: the manifest first, if this creation got as far as writing one,
+    /// so that what is left is no checkpoint, then the files it linked or
+    /// created, the directories, the lock file and the target. The lock
+    /// file is this creation's: the target held nothing else when its lock
+    /// was taken. Nothing else is touched: a file that somebody else put
+    /// into the target since stays, and the target with it. What cannot be
+    /// removed stays for the caller to remove.
     ///
     /// **No file goes while the manifest could come back.** Where a
     /// manifest was written and its removal cannot be made durable,
@@ -319,12 +346,14 @@ impl Target {
     /// without a manifest, and never a manifest without one of its files.
     pub(super) fn remove(self) {
         let vfs = &*self.vfs;
-        match vfs.remove_file(&self.dir.join(ManifestStore::FILE_NAME)) {
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Ok(()) if vfs.sync_dir(&self.dir).is_ok() => {}
-            _ => return,
+        if self.installing {
+            match vfs.remove_file(&self.dir.join(ManifestStore::FILE_NAME)) {
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Ok(()) if vfs.sync_dir(&self.dir).is_ok() => {}
+                _ => return,
+            }
+            let _ = vfs.remove_file(&self.dir.join(ManifestStore::TEMP_FILE_NAME));
         }
-        let _ = vfs.remove_file(&self.dir.join(ManifestStore::TEMP_FILE_NAME));
         for file in self.files.iter().rev() {
             let _ = vfs.remove_file(file);
         }
@@ -375,8 +404,11 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// - `dir` is a directory of its own in the directory above it, and not a
 ///   link to one ([`CheckpointError::NotADirectory`]): a link is not
 ///   followed into what it leads to;
-/// - the directory has a manifest of this engine, or is what a deletion
-///   that was cut short left of one ([`CheckpointError::NotADatabase`]);
+/// - the directory has a manifest of this engine, under the manifest's
+///   name or under [`DELETING_FILE_NAME`], in a file of its own and not
+///   behind a link ([`CheckpointError::NotADatabase`]): a name alone is no
+///   proof, and a file that is named as either and holds anything else
+///   makes the directory nobody's that this call knows;
 /// - no handle has it open ([`CheckpointError::Open`]): the call takes the
 ///   directory's lock for the time of the removal, and looks again under
 ///   it at what the directory is.
@@ -387,21 +419,23 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// runs: whoever replaces `dir` by a link during the call has it followed.
 ///
 /// **The directory stops being a database before anything in it goes.**
-/// The manifest is renamed to [`DELETING_FILE_NAME`] and the rename made
-/// durable, and only then is the first file removed. So if the removal is
-/// cut short, by an error or by the power, the directory either opens as
-/// the whole checkpoint it was, with every file that anybody put beside
-/// it, or it has no manifest and opens as nothing. When the call returns
-/// `Ok`, the removal is durable.
+/// The manifest is renamed to [`DELETING_FILE_NAME`], nothing is left
+/// under the manifest's own name, and that is made durable. Only then is
+/// the first file removed. So if the removal is cut short, by an error or
+/// by the power, the directory either opens as the whole checkpoint it
+/// was, with every file that anybody put beside it, or it has no manifest
+/// and opens as nothing. When the call returns `Ok`, the removal is
+/// durable.
 ///
 /// **What a deletion leaves that was cut short is finished by the next
-/// call.** That is a directory with the renamed manifest, whatever else it
-/// holds; an empty directory; and a directory that holds an empty lock
-/// file and nothing else, which is left where somebody took the lock of
-/// the directory while its last names went, and by a creation that could
-/// not take the lock of its target. The last two are removed whatever
-/// they were, since nothing is lost with them: an empty directory without
-/// its lock, by a removal that fails if it is no longer empty.
+/// call**: a directory with the renamed manifest, whatever else it holds.
+/// Two more things are removed whatever they were, since nothing is lost
+/// with them. An empty directory is removed without its lock, by a removal
+/// that fails if it is no longer empty. And of a directory that holds an
+/// empty lock file and nothing else, the lock file is removed under its
+/// lock and then the directory in the same way: a deletion leaves one
+/// where somebody took the lock of the directory while its last names
+/// went, and a creation where it could not take the lock of its target.
 pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     let not_a_directory = || CheckpointError::NotADirectory {
         dir: dir.to_path_buf(),
@@ -444,14 +478,12 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
 enum Left {
     /// A database: it has a manifest of this engine.
     Database,
-    /// A database whose deletion has begun: it has the renamed manifest.
-    /// A manifest beside that one is of a database that was made in the
-    /// directory since, against the rule for one that is being deleted,
-    /// and goes with it.
-    BeingDeleted {
-        /// Whether it has a manifest as well.
-        manifest: bool,
-    },
+    /// A database whose deletion has begun: it has a manifest of this
+    /// engine under the name of one that is being deleted. Whatever it has
+    /// under the manifest's own name goes before anything else does: the
+    /// same file under its second name, or what somebody made of the
+    /// directory since, against the rule for one that is being deleted.
+    BeingDeleted,
     /// An empty lock file and nothing else.
     LockAlone,
 }
@@ -459,23 +491,35 @@ enum Left {
 impl Left {
     /// What the directory `dir` with `entries` is, or
     /// [`CheckpointError::NotADatabase`] for one that is none of these.
+    /// Nothing is read through a link: a manifest is a file that the
+    /// directory itself holds.
     fn of(vfs: &dyn Vfs, dir: &Path, entries: &[DirEntry]) -> Result<Self, CheckpointError> {
-        let has = |name: &str| {
+        let is_file = |name: &str| {
             (entries.iter()).any(|entry| entry.name == name && entry.kind == EntryKind::File)
         };
-        let manifest = has(ManifestStore::FILE_NAME);
-        if has(DELETING_FILE_NAME) {
-            return Ok(Self::BeingDeleted { manifest });
-        }
         let not_a_database = |source| CheckpointError::NotADatabase {
             dir: dir.to_path_buf(),
             source,
         };
-        if manifest || entries.len() != 1 || !has(LOCK_FILE_NAME) {
+        let no_manifest = || {
+            not_a_database(SegmentStoreError::NoManifest {
+                dir: dir.to_path_buf(),
+            })
+        };
+        // A renamed manifest is a manifest still, and is known by what it
+        // holds. A file that is only named like one says nothing.
+        let renamed = dir.join(DELETING_FILE_NAME);
+        if is_file(DELETING_FILE_NAME) && holds_manifest(vfs, &renamed)? {
+            return Ok(Self::BeingDeleted);
+        }
+        if is_file(ManifestStore::FILE_NAME) {
             return match read_manifest(vfs, dir) {
                 Ok(_) => Ok(Self::Database),
                 Err(source) => Err(not_a_database(source)),
             };
+        }
+        if entries.len() != 1 || !is_file(LOCK_FILE_NAME) {
+            return Err(no_manifest());
         }
         let lock_path = dir.join(LOCK_FILE_NAME);
         let len = vfs
@@ -484,11 +528,21 @@ impl Left {
             .map_err(CheckpointError::io("measure", &lock_path))?;
         match len {
             0 => Ok(Self::LockAlone),
-            _ => Err(not_a_database(SegmentStoreError::NoManifest {
-                dir: dir.to_path_buf(),
-            })),
+            _ => Err(no_manifest()),
         }
     }
+}
+
+/// Whether the file `path` holds a manifest of this engine.
+fn holds_manifest(vfs: &dyn Vfs, path: &Path) -> Result<bool, CheckpointError> {
+    let file = vfs
+        .open(path, OpenMode::Read)
+        .map_err(CheckpointError::io("open", path))?;
+    let len = file.len().map_err(CheckpointError::io("measure", path))?;
+    let mut bytes = vec![0; len.min(Manifest::MAX_ENCODED_LEN as u64 + 1) as usize];
+    file.read_exact_at(&mut bytes, 0)
+        .map_err(CheckpointError::io("read", path))?;
+    Ok(Manifest::decode(&bytes).is_ok())
 }
 
 /// Removes everything from the directory `dir`, whose lock the caller
@@ -509,17 +563,23 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
         }
     };
     // What the directory is, asked again now that nobody else is in it.
-    let renamed = match Left::of(vfs, dir, &list()?)? {
-        Left::Database | Left::BeingDeleted { manifest: true } => true,
-        Left::BeingDeleted { manifest: false } | Left::LockAlone => false,
-    };
-    if renamed {
-        let manifest = dir.join(ManifestStore::FILE_NAME);
-        vfs.rename(&manifest, &dir.join(DELETING_FILE_NAME))
-            .map_err(CheckpointError::io("rename", &manifest))?;
+    match Left::of(vfs, dir, &list()?)? {
+        // Nothing but the lock file is this call's to remove here. The
+        // directory goes afterwards if nothing has come into it.
+        Left::LockAlone => return remove(LOCK_FILE_NAME),
+        Left::Database => {
+            let manifest = dir.join(ManifestStore::FILE_NAME);
+            vfs.rename(&manifest, &dir.join(DELETING_FILE_NAME))
+                .map_err(CheckpointError::io("rename", &manifest))?;
+        }
+        Left::BeingDeleted => {}
     }
-    // From here the directory is no database, whatever a power cut keeps
-    // of the removals below.
+    // Nothing keeps the manifest's own name: a rename changes nothing
+    // where both names are of one file, and a directory that is being
+    // deleted may have been given a manifest since. From the sync on the
+    // directory is no database, whatever a power cut keeps of the removals
+    // below.
+    remove(ManifestStore::FILE_NAME)?;
     sync()?;
     let kept = [DELETING_FILE_NAME, LOCK_FILE_NAME];
     for entry in list()? {
