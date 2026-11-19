@@ -679,8 +679,20 @@ fn a_value_hash_that_only_its_writer_can_make_is_refused() {
     for (element, why) in references.chain(other_trees) {
         let value = bytes(element);
         let stored = [0x5c; 32];
-        for hosted in [&[][..], &[None][..], &[Some([1; 32])][..]] {
-            assert_eq!(made(&value, hosted), Err(HashRefusal::StatedByWriter(why)));
+        assert_eq!(made(&value, &[]), Err(HashRefusal::StatedByWriter(why)));
+        // Such an element hosts no Merk: a cell that does is refused as
+        // that, for an evaluation and for a check.
+        for hosted in [&[None][..], &[Some([1; 32]), None][..]] {
+            let hosts = HashRefusal::Hosted {
+                element: 0,
+                cell: hosted.len(),
+            };
+            assert_eq!(made(&value, hosted), Err(hosts.clone()));
+            let checked = with_leaf(b"key", &value, stored, |cell| {
+                MerkHashRules::for_check(version()).value_hash(cell, &value, hosted)
+            });
+            let checked = checked.expect_err("a cell that hosts a Merk");
+            assert_eq!(checked.downcast_ref::<HashRefusal>(), Some(&hosts));
         }
 
         // As a rule of an evaluation it refuses, and the hash stays marked.

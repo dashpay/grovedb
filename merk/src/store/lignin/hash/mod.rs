@@ -46,8 +46,8 @@
 //! | a tree whose data is a Merk | `combine_hash(value_hash(value), root)` with the root hash of the Merk it hosts | `PutLayeredReference` |
 //! | an indexed tree with one secondary | `combine_hash_three(value_hash(value), primary, secondary)` | `PutLayeredCountIndexedReference` |
 //! | an indexed tree with a list of axes | `combine_hash_three(value_hash(value), primary, axes_digest(axes))` | the same |
-//! | a reference of any kind | **refused**: it is made from the value hash of the element the reference ends at, which no rule is given | `PutCombinedReference`, `PutWithProvidedValueHash` |
-//! | a tree whose data is no Merk (MMR, bulk append, dense, commitment, private documents) | **refused**: it is made from the state root of that structure | `PutLayeredReference` |
+//! | a reference of any kind | **refused**: it is made from the value hash of the element the reference ends at, which no rule is given. Its cell hosts no Merk | `PutCombinedReference`, `PutWithProvidedValueHash` |
+//! | a tree whose data is no Merk (MMR, bulk append, dense, commitment, private documents) | **refused**: it is made from the state root of that structure. Its cell hosts no Merk | `PutLayeredReference` |
 //! | no element | **refused** | |
 //!
 //! The root hash of a hosted Merk is what the tree layer hands the rule
@@ -57,7 +57,8 @@
 //! position the cell has no pointer for: a cell points at the root of
 //! every Merk it hosts that has one (`tree-layout.md` C3, `tree-page.md`
 //! TP15), and the cell of a tree whose Merk never had a node hosts none.
-//! A cell that hosts more Merks than its element has is refused: whoever
+//! A cell that hosts more Merks than its element has is refused, whatever
+//! the element is, and also where a check takes the stored hash: whoever
 //! writes another element over a tree drops the tree's Merks or names what
 //! the new element hosts, so that a cell hosts what its element has.
 //!
@@ -69,12 +70,18 @@
 //! `GROVE_V1` and `GROVE_V2` insert a count sum tree, a provable count
 //! tree and a provable count sum tree outside a batch as plain values
 //! (`add_element_on_transaction` v0, frozen for the chain that was built
-//! with it). Such an element has `value_hash(value)` until something is
-//! written below it, and the combined hash from then on, also once its
-//! Merk is empty again, with the same bytes. So for these three types the
+//! with it). An element of these three types has `value_hash(value)` until
+//! something is written below it, and the combined hash from then on, also
+//! once its Merk is empty again, with the same bytes. So for them the
 //! bytes and the roots do not say which of the two an element with no root
 //! has ([`MerkHashRules::value_hash_at_insert`]). Whoever copies existing
 //! nodes, a load or a migration, hands over the value hashes they have.
+//!
+//! That insert names a count big sum tree beside the three. No GroveVersion
+//! brings one there: every version that selects that insert refuses to
+//! create such a tree before it is reached
+//! (`check_wide_sum_tree_creation`), so a count big sum tree has the
+//! combined hash from its insert on, and is not among them.
 //!
 //! A refused hash stays marked, and its evaluation stops
 //! ([`HashRefusal`]). A commit whose evaluation stops has failed, and its
@@ -241,6 +248,8 @@ enum ValueHash {
     /// From the value's bytes, the root hash of the primary Merk and the
     /// digest of the element's axes.
     IndexedByAxes,
+    /// From what no cell holds: its writer states it.
+    Stated(StatedByWriter),
 }
 
 impl ValueHash {
@@ -249,7 +258,7 @@ impl ValueHash {
         let element = ElementType::from_serialized_value(value)
             .map_err(|error| HashRefusal::NotAnElement(error.to_string()))?;
         if element.is_reference() {
-            return Err(HashRefusal::StatedByWriter(StatedByWriter::Reference));
+            return Ok(Self::Stated(StatedByWriter::Reference));
         }
         if element.is_backward_references_item() {
             return Ok(Self::Stripped);
@@ -268,7 +277,7 @@ impl ValueHash {
             | MmrTree
             | BulkAppendTree
             | DenseAppendOnlyFixedSizeTree
-            | PrivateDocumentStore => Err(HashRefusal::StatedByWriter(StatedByWriter::NonMerkTree)),
+            | PrivateDocumentStore => Ok(Self::Stated(StatedByWriter::NonMerkTree)),
             ProvableCountProvableSumIndexedTree | ProvableCountProvableBigSumIndexedTree => {
                 Ok(Self::IndexedByAxes)
             }
@@ -398,6 +407,12 @@ impl<'v> MerkHashRules<'v> {
         };
         let mut cost = OperationCost::default();
         let made = match how {
+            // A reference hosts no Merk, and neither does a tree whose
+            // data is none.
+            ValueHash::Stated(why) => {
+                hosts(0)?;
+                return Err(HashRefusal::StatedByWriter(why));
+            }
             ValueHash::Plain => {
                 hosts(0)?;
                 value_hash(value).unwrap_add_cost(&mut cost)
