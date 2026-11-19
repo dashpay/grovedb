@@ -30,6 +30,7 @@ use lignin_store::{
     cache::{BufferPool, OwnerId, PoolConfig},
     flush::{FlushConfig, FlushError, FlushState, Stores, WriteBack},
     load::{LoadBuffers, PageLoader},
+    recovery::{recover, RecoveryError, RecoveryOptions, RecoveryReport},
     segment::{ManifestStore, SegmentStore},
     stats::Stats,
     table::{PageTable, TableCheckpoints},
@@ -360,6 +361,68 @@ impl Db {
         }
         db.make_keyspaces(&versions);
         (db, versions)
+    }
+
+    /// The store that the directory `dir` of `vfs` holds, opened as every
+    /// session after a store's first is, and as a checkpoint is: by the
+    /// store's recovery (`lignin_store::recovery`), at the version that
+    /// lands on. The flat keyspaces, the directory and the keyspace of the
+    /// unlinked pages are those of `made`, the store that made the
+    /// directory or the one the directory is a checkpoint of: their root
+    /// pages are the same for good, and which they are is the engine's to
+    /// keep (TXN-07).
+    pub fn open(
+        vfs: Arc<dyn Vfs>,
+        dir: &Path,
+        frames: usize,
+        options: LogOptions,
+        flush: FlushConfig,
+        made: &Self,
+    ) -> Result<(Arc<Self>, Versions, RecoveryReport), RecoveryError> {
+        let manifest = ManifestStore::open(vfs.clone(), dir)?;
+        let recovery = RecoveryOptions {
+            pool_capacity: frames * (SIZE.get() + 512),
+            log: options,
+            flush: Some(flush),
+            ..RecoveryOptions::default()
+        };
+        let store = recover(manifest, &recovery)?;
+        let (landed, report) = (store.landed(), store.report);
+        let mut used = BTreeSet::new();
+        let (mut from, mut ids) = (Some(PageId::MIN), Vec::new());
+        while let Some(start) = from {
+            ids.clear();
+            from = store.allocator.scan(start, &mut ids);
+            used.extend(ids.iter().map(|(id, _)| *id));
+        }
+        let flush_errors = Arc::new(Mutex::new(Vec::new()));
+        let told = flush_errors.clone();
+        let told = move |error: &FlushError| locked(&told).push(error.to_string());
+        let db = Arc::new(Self {
+            segments: store.segments,
+            table: store.table,
+            pool: store.pool,
+            ids: store.allocator,
+            values: store.values,
+            commits: Commits::new(landed),
+            counts: Counts::default(),
+            log: store.log,
+            manifest: Mutex::new(store.manifest),
+            checkpoints: store.checkpoints,
+            flush: store.flush,
+            committing: CommitState::reporting(told),
+            flush_errors,
+            stats: Stats::new(),
+            vfs,
+            dir: dir.to_path_buf(),
+            keyspaces: OnceLock::from(made.keyspaces()),
+            directory: OnceLock::from(made.directory()),
+            flat_drops: OnceLock::from(made.flat_drops()),
+            used: Mutex::new(used),
+            _dir: None,
+        });
+        let versions = Versions::with_reclaim(landed, Box::new(Hook(db.clone())));
+        Ok((db, versions, report))
     }
 
     /// The write-back of this store under its `versions`.
