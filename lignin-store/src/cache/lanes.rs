@@ -209,6 +209,22 @@ mod tests {
     }
 
     #[test]
+    fn a_thread_that_ends_gives_its_number_to_the_next() {
+        // Many threads, one after the other, with the other tests' threads
+        // beside them: they get by with the numbers of the threads that
+        // run at one time.
+        let threads = if cfg!(miri) { 60 } else { 1_000 };
+        let numbers: std::collections::BTreeSet<usize> = (0..threads)
+            .map(|_| {
+                std::thread::spawn(thread_number)
+                    .join()
+                    .expect("the thread did not panic")
+            })
+            .collect();
+        assert!(numbers.len() < threads / 2, "{} numbers", numbers.len());
+    }
+
+    #[test]
     fn an_announcement_in_any_lane_is_found() {
         let lanes = Lanes::new(4);
         std::thread::scope(|scope| {
