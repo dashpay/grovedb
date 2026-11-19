@@ -55,6 +55,13 @@ fn rows<I: NodeCursor>(cursor: I, query: &Query, cost: &mut OperationCost) -> St
     format!("{found:?}")
 }
 
+thread_local! {
+    /// The edges the walks of this thread's test came to.
+    static EDGES: std::cell::RefCell<BTreeSet<&'static str>> = const {
+        std::cell::RefCell::new(BTreeSet::new())
+    };
+}
+
 /// Moves a cursor of `store` to places the numbers of `seed` choose, and
 /// says what it showed after each move. A cursor that stands on no record
 /// is sought again and not stepped: RocksDB does not say where a step from
@@ -64,6 +71,8 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
     let mut cursor = store.cursor();
     let mut seen = Vec::new();
     let mut valid = false;
+    // The first and the last key of the Merk, once the walk has been there.
+    let (mut first, mut last): (Option<Vec<u8>>, Option<Vec<u8>>) = (None, None);
     for _ in 0..240 {
         let mut target = match random.below(3) {
             0 => vec![random.below(256) as u8],
@@ -75,6 +84,11 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
         let choice = match valid {
             true => random.below(12),
             false => random.below(4),
+        };
+        let sought = match choice {
+            2 => Some((false, target.clone())),
+            3 => Some((true, target.clone())),
+            _ => None,
         };
         let to = match choice {
             0 => {
@@ -105,16 +119,49 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
         valid = cursor.valid().unwrap_add_cost(cost);
         let key = cursor.key().unwrap_add_cost(cost).map(<[u8]>::to_vec);
         // A walk reads the record, reads it twice, or reads only the key.
-        let value = match random.below(4) {
-            0 => None,
-            reads => {
-                if reads == 1 {
-                    cursor.value().unwrap_add_cost(cost);
-                }
-                Some(cursor.value().unwrap_add_cost(cost).map(<[u8]>::to_vec))
-            }
+        let reads = match random.below(4) {
+            0 => 0,
+            1 => 2,
+            _ => 1,
         };
+        if reads == 2 {
+            cursor.value().unwrap_add_cost(cost);
+        }
+        let value = (reads > 0).then(|| cursor.value().unwrap_add_cost(cost).map(<[u8]>::to_vec));
         cursor.status().expect("the cursor has not failed");
+
+        // Which edge of a walk this was.
+        match (choice, &key) {
+            (0, Some(key)) => first = Some(key.clone()),
+            (1, Some(key)) => last = Some(key.clone()),
+            _ => {}
+        }
+        let within = |target: &Vec<u8>| {
+            first.as_ref().is_some_and(|first| first < target)
+                && last.as_ref().is_some_and(|last| target < last)
+        };
+        let moved = match (choice, valid, &sought, &key) {
+            (4..=8, true, ..) => "a step to the next record",
+            (4..=8, false, ..) => "a step off the last record",
+            (9.., true, ..) => "a step to the record before",
+            (9.., false, ..) => "a step off the first record",
+            (_, _, Some((false, _)), None) => "a seek beyond the last record",
+            (_, _, Some((true, _)), None) => "a seek back beyond the first record",
+            (_, _, Some((_, target)), Some(key)) if key == target => "a seek to a key",
+            (_, _, Some((false, target)), Some(_)) if within(target) => "a seek between two keys",
+            (_, _, Some((true, target)), Some(_)) if within(target) => {
+                "a seek back between two keys"
+            }
+            _ => "another seek",
+        };
+        let read = match (valid, reads) {
+            (true, 0) => "a record that was not read",
+            (true, 1) => "a record that was read once",
+            (true, _) => "a record that was read twice",
+            (false, 0) => "no record, and none asked for",
+            (false, _) => "no record to read",
+        };
+        EDGES.with_borrow_mut(|edges| edges.extend([moved, read]));
         seen.push(Seen {
             to,
             valid,
@@ -377,7 +424,6 @@ fn with_both(
 
 #[test]
 fn a_cursor_shows_the_records_rocksdb_shows_and_charges_what_it_charges() {
-    let mut walked = String::new();
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
         with_both(tree_type, 0x05ee_d000 + seed as u64, 5, &[], |both| {
             let walks = [
@@ -391,73 +437,30 @@ fn a_cursor_shows_the_records_rocksdb_shows_and_charges_what_it_charges() {
             let answers = both.deferred(&walks);
             // The walk came to records, and a scan shows them all.
             assert!(answers[1].contains("valid: true"), "{}", answers[1]);
-            walked.push_str(&answers[1]);
             assert!(answers[2].len() > 1_000);
             assert_eq!(answers[6], "false");
             // A handle that writes at once reads the same records.
             both.immediate(&walks);
         });
     }
-    // The walks came to every edge: a step off either end, a seek beyond
-    // either end, a seek between two keys, and a position whose record was
-    // read, read twice or not read.
-    let after = |to: &str, shows: &str| format!("to: \"{to}\",\n        valid: {shows}");
-    for (edge, shown) in [
-        ("a step off the last record", after("the next", "false")),
-        (
-            "a step off the first record",
-            after("the one before", "false"),
-        ),
-        ("a step to a record", after("the next", "true")),
-        ("a step back to a record", after("the one before", "true")),
-        ("the first record", after("the first", "true")),
-        ("the last record", after("the last", "true")),
-        (
-            "a record whose value was not asked",
-            "value: None".to_owned(),
-        ),
-        (
-            "a record that was read",
-            "value: Some(\n            Some(".to_owned(),
-        ),
-        (
-            "no record to read",
-            "value: Some(\n            None,".to_owned(),
-        ),
+    // The walks came to every edge.
+    let edges = EDGES.take();
+    for edge in [
+        "a step to the next record",
+        "a step off the last record",
+        "a step to the record before",
+        "a step off the first record",
+        "a seek beyond the last record",
+        "a seek back beyond the first record",
+        "a seek to a key",
+        "a seek between two keys",
+        "a seek back between two keys",
+        "a record that was not read",
+        "a record that was read once",
+        "a record that was read twice",
+        "no record to read",
     ] {
-        assert!(walked.contains(&shown), "no walk came to {edge}");
-    }
-    let seeks = |back: bool| {
-        let to = match back {
-            true => "to: \"back from [",
-            false => "to: \"from [",
-        };
-        let all = walked.split("Seen {").filter(move |seen| seen.contains(to));
-        all.map(|seen| (seen.contains("valid: true"), seen.to_owned()))
-    };
-    for back in [false, true] {
-        assert!(
-            seeks(back).any(|(valid, _)| !valid),
-            "a seek beyond the end"
-        );
-        // The target of a seek is in its name: where the key it came to is
-        // another, it came to a record beside the target.
-        let beside = |seen: &String| {
-            let target = seen.split('[').nth(1).and_then(|at| at.split(']').next());
-            let key = seen.split("key: Some(").nth(1).map(|key| {
-                let digits: String = (key.chars())
-                    .take_while(|at| *at != ']')
-                    .filter(|at| !at.is_whitespace() && *at != '[')
-                    .collect();
-                digits.trim_end_matches(',').to_owned()
-            });
-            let target = target.map(|target| target.replace(' ', ""));
-            target.is_some() && key.is_some() && target != key
-        };
-        assert!(
-            seeks(back).any(|(valid, seen)| valid && beside(&seen)),
-            "a seek between two keys"
-        );
+        assert!(edges.contains(edge), "no walk came to {edge}: {edges:?}");
     }
 }
 
