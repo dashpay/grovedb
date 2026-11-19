@@ -7,7 +7,7 @@ use lignin_tree::node::NodeHandle;
 
 use super::{
     node::StagedNode,
-    staged::{Entry, Keys, Leave, Staged, SubtreeState, Write, ORDER},
+    staged::{Entry, Keys, Leave, Staged, SubtreeState, Write, DATA, ORDER},
 };
 use crate::txn::{
     Applied, Batch, BatchError, Column, HostPut, Hosted, MerkWrite, RecordWrite, RootPut, Scope,
@@ -120,25 +120,15 @@ impl<C> Resolved<C> {
         }
         // Where a subtree hangs is what the later statement says. An
         // element that the batch deletes hosts nothing.
-        let data = &staged.columns[ORDER.len() - 1];
-        let deleted = |subtree: &Subtree, key: &[u8]| {
-            let held = data.get(subtree).and_then(|keys| keys.get(key));
-            held.is_some_and(|entry| matches!(entry.write, Write::Remove { .. }))
-        };
-        let mut hosts: Vec<_> = (staged.hosts.iter())
-            .flat_map(|(subtree, hosts)| hosts.iter().map(move |host| (*subtree, host)))
-            .filter(|(subtree, (key, _))| !deleted(subtree, key))
-            .collect();
-        hosts.sort_by_key(|(_, (_, host))| host.order);
         let mut hung = BTreeMap::new();
-        for (subtree, (key, host)) in hosts {
+        for (subtree, key, host) in staged.hosts_in_order() {
             if host.hosted.len() > MAX_HOSTED {
                 return Err(BatchError::TooManyHosted { subtree });
             }
             for (position, hosted) in host.hosted.iter().enumerate() {
                 let at = Hung {
                     subtree,
-                    key: key.clone(),
+                    key: key.into(),
                     position: position as u8,
                 };
                 hung.insert(*hosted, at);
@@ -180,7 +170,7 @@ impl<C> Resolved<C> {
     /// Whether the batch writes nothing: its application adds nothing to
     /// the transaction (`transactions.md` GM0).
     pub fn is_empty(&self) -> bool {
-        self.staged.count() == 0 && self.staged.subtrees.is_empty()
+        self.len() == 0 && self.staged.subtrees.is_empty()
     }
 
     /// The outcome of each key, in the order a storage batch is iterated
@@ -218,8 +208,7 @@ impl<C> Resolved<C> {
     /// The subtrees whose data column holds an outcome for a node, with
     /// those outcomes: the Merks of the write.
     fn merks(&self) -> impl Iterator<Item = (Subtree, &Keys<C>)> {
-        let data = &self.staged.columns[ORDER.len() - 1];
-        (data.iter())
+        (self.staged.columns[DATA].iter())
             .filter(|(_, keys)| {
                 let is_node = |entry: &Entry<C>| {
                     matches!(
@@ -234,8 +223,7 @@ impl<C> Resolved<C> {
 
     /// Whether the batch puts the node `key` of `subtree`.
     fn puts(&self, subtree: Subtree, key: &[u8]) -> bool {
-        let data = &self.staged.columns[ORDER.len() - 1];
-        let held = data.get(&subtree).and_then(|keys| keys.get(key));
+        let held = self.staged.held(subtree, key);
         held.is_some_and(|entry| matches!(entry.write, Write::Node { .. }))
     }
 

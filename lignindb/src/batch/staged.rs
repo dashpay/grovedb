@@ -9,7 +9,7 @@ use crate::txn::{BatchError, Column, Hosted, NodePut, Subtree, Unit};
 /// (`cost-model.md` B1): the order `StorageBatch` iterates its maps in.
 pub(super) const ORDER: [Column; 4] = [Column::Meta, Column::Aux, Column::Roots, Column::Data];
 
-const DATA: usize = 3;
+pub(super) const DATA: usize = 3;
 
 const fn slot(column: Column) -> usize {
     match column {
@@ -212,12 +212,9 @@ impl<C> Staged<C> {
                 false => keys.len(),
             }
         };
-        (ORDER.iter().zip(&self.columns))
-            .flat_map(|(column, held)| {
-                held.iter()
-                    .map(move |(subtree, keys)| (*column, subtree, keys))
-            })
-            .map(|(column, subtree, keys)| stays(column, subtree, keys))
+        let columns = ORDER.into_iter().zip(&self.columns);
+        let keys = columns.flat_map(|(column, held)| held.iter().map(move |held| (column, held)));
+        keys.map(|(column, (subtree, keys))| stays(column, subtree, keys))
             .sum()
     }
 
@@ -326,22 +323,21 @@ impl<C> Staged<C> {
     /// outcome of the same operation stays.
     pub(super) fn delete(&mut self, unit: Unit, key: &[u8], node: bool, tag: C) {
         let generation = self.generation;
-        let column = &mut self.columns[slot(unit.column)];
-        let held = column.get_mut(&unit.subtree);
-        let held = held.and_then(|keys| match keys.get(key) {
-            Some(held) if held.generation >= generation => Some(None),
-            Some(_) => keys.remove(key).map(Some),
+        let held = match self.columns[slot(unit.column)].get_mut(&unit.subtree) {
+            Some(keys) if (keys.get(key)).is_some_and(|held| held.generation >= generation) => {
+                return;
+            }
+            Some(keys) => keys.remove(key),
             None => None,
-        });
-        let under = match held.map(|held| held.map(|held| held.write)) {
-            Some(None) => return,
-            Some(Some(Write::Node { node, stated, lost })) => match node.value {
+        };
+        let under = match held.map(|held| held.write) {
+            Some(Write::Node { node, stated, lost }) => match node.value {
                 Some(value) => Under::Value(value, stated),
                 None if lost => Under::Removed,
                 None => Under::Transaction,
             },
-            Some(Some(Write::Remove { .. })) => Under::Removed,
-            _ => Under::Transaction,
+            Some(Write::Remove { .. }) => Under::Removed,
+            Some(Write::Record(_)) | None => Under::Transaction,
         };
         self.insert(unit, key.into(), Write::Remove { node, under }, tag);
     }
@@ -384,12 +380,34 @@ impl<C> Staged<C> {
     /// and none has put it since: the batch holds that delete, or a delete
     /// of this operation that took its place.
     fn removed_before(&self, subtree: Subtree, key: &[u8]) -> bool {
-        let held = (self.columns[DATA].get(&subtree)).and_then(|keys| keys.get(key));
-        held.is_some_and(|held| match held.write {
-            Write::Remove { .. } if held.generation < self.generation => true,
-            Write::Remove { ref under, .. } => matches!(under, Under::Removed),
-            _ => false,
-        })
+        self.held(subtree, key)
+            .is_some_and(|held| match held.write {
+                Write::Remove { .. } if held.generation < self.generation => true,
+                Write::Remove { ref under, .. } => matches!(under, Under::Removed),
+                _ => false,
+            })
+    }
+
+    /// The outcome the batch holds for `key` in the data column of `subtree`.
+    pub(super) fn held(&self, subtree: Subtree, key: &[u8]) -> Option<&Entry<C>> {
+        self.columns[DATA].get(&subtree)?.get(key)
+    }
+
+    /// What was said of each element that the batch does not delete, in
+    /// the order it was said.
+    pub(super) fn hosts_in_order(&self) -> Vec<(Subtree, &[u8], &Host)> {
+        let deleted = |subtree: Subtree, key: &[u8]| {
+            let held = self.held(subtree, key);
+            held.is_some_and(|held| matches!(held.write, Write::Remove { .. }))
+        };
+        let mut hosts: Vec<_> = (self.hosts.iter())
+            .flat_map(|(subtree, hosts)| {
+                (hosts.iter()).map(move |(key, host)| (*subtree, &**key, host))
+            })
+            .filter(|(subtree, key, _)| !deleted(*subtree, key))
+            .collect();
+        hosts.sort_by_key(|(.., host)| host.order);
+        hosts
     }
 
     /// The state of `subtree`, with room for a statement of this
@@ -434,13 +452,13 @@ impl<C> Staged<C> {
         let mut below = Vec::new();
         let mut at = 0;
         while at < reached.len() {
+            let host = reached[at];
             // What hangs there by what was said of its elements, and what
             // hung there when the batch said it leaves.
             let left = (self.subtrees.iter())
-                .filter(|(_, state)| state.parent == Some(reached[at]))
+                .filter(|(_, state)| state.parent == Some(host))
                 .map(|(subtree, _)| *subtree);
-            let hung: Vec<Subtree> = self.hung_on(reached[at]).into_iter().chain(left).collect();
-            for hosted in hung {
+            for hosted in self.hung_on(host).into_iter().chain(left) {
                 if !below.contains(&hosted) {
                     below.push(hosted);
                 }
@@ -514,13 +532,16 @@ impl<C> Staged<C> {
     /// an earlier operation deleted has nothing hanging on it.
     fn hung_on(&self, subtree: Subtree) -> Vec<Subtree> {
         let generation = self.generation;
-        let keys = self.columns[DATA].get(&subtree);
-        let deleted = |key: &[u8], host: &Host| {
-            let held = keys.and_then(|keys| keys.get(key));
-            let earlier = held.is_some_and(|held| {
-                matches!(held.write, Write::Remove { .. }) && held.generation < generation
-            });
-            earlier || (self.removed_before(subtree, key) && host.generation < generation)
+        let deleted = |key: &[u8], host: &Host| match self.held(subtree, key) {
+            Some(Entry {
+                generation: at,
+                write: Write::Remove { under, .. },
+                ..
+            }) => {
+                *at < generation
+                    || (matches!(under, Under::Removed) && host.generation < generation)
+            }
+            _ => false,
         };
         let hosts = self.hosts.get(&subtree).into_iter().flatten();
         hosts
@@ -590,11 +611,10 @@ impl<C> Staged<C> {
         self.subtrees.retain(|_, state| !state.is_blank());
         // A node that stands and keeps the value of a node that an earlier
         // operation removed has no value.
-        let lost = |keys: &Keys<C>| {
-            let lost = |entry: &Entry<C>| matches!(entry.write, Write::Node { lost: true, .. });
-            keys.values().any(lost)
-        };
-        let lost = self.columns[DATA].iter().find(|(_, keys)| lost(keys));
+        let lost = |entry: &Entry<C>| matches!(entry.write, Write::Node { lost: true, .. });
+        let lost = self.columns[DATA]
+            .iter()
+            .find(|(_, keys)| keys.values().any(lost));
         let lost = lost.map(|(subtree, _)| BatchError::NoValue { subtree: *subtree });
         (self, refused.or(lost))
     }
@@ -608,17 +628,8 @@ impl<C> Staged<C> {
             self.refuse(refusal);
         }
         // What `other` said of an element it deletes is no outcome of it.
-        let deleted = |subtree: &Subtree, key: &[u8]| {
-            let held = (other.columns[DATA].get(subtree)).and_then(|keys| keys.get(key));
-            held.is_some_and(|held| matches!(held.write, Write::Remove { .. }))
-        };
-        let mut hosts: Vec<_> = (other.hosts.into_iter())
-            .flat_map(|(subtree, hosts)| hosts.into_iter().map(move |host| (subtree, host)))
-            .filter(|(subtree, (key, _))| !deleted(subtree, key))
-            .collect();
-        hosts.sort_by_key(|(_, (_, host))| host.order);
-        for (subtree, (key, host)) in hosts {
-            self.host(subtree, &key, &host.hosted);
+        for (subtree, key, host) in other.hosts_in_order() {
+            self.host(subtree, key, &host.hosted);
         }
         let mut enters = Vec::new();
         for (subtree, state) in other.subtrees {
