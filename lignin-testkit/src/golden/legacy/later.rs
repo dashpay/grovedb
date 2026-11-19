@@ -7,12 +7,16 @@ use std::collections::BTreeSet;
 use grovedb::{Element, ElementFlags, PathQuery, Query as GroveQuery, QueryItem as Item};
 use grovedb_merk::proofs::query::IndexAxis;
 
-use super::{case, insert, insert_only, item, path, proven, sized, BatchOp, Case, Op, Read, TOP};
-use crate::workload::{HandoverBatch, PartialBatch};
+use super::{
+    case, insert, insert_only, item, path, proven, sized, BatchOp, Case, Op, Read, Write, TOP,
+};
+use crate::workload::{HandoverBatch, IndexedTree, PartialBatch};
 
 const INDEX: &[u8] = b"index";
 const OTHER: &[u8] = b"other";
 const FILLED: &[u8] = b"filled";
+const RANKED: &[u8] = b"ranked";
+const BATCHED: &[u8] = b"batched";
 
 fn key(tag: u8, number: u8) -> Vec<u8> {
     vec![tag, b'0' + number]
@@ -401,6 +405,80 @@ fn full_handover_case() -> Case {
     )
 }
 
+/// Two trees ranked by count, each filled so that `k2` ends as its root
+/// with `k0` (holding `k1`) and `k3` (holding `k4`) under it: the smallest
+/// tree in which the removal of an entry leaves its row behind where the
+/// entry is read back by key. `k2` is removed from one through the method
+/// of the tree and from the other in a batch, and each tree is then
+/// repaired.
+fn ranking_drift_case() -> Case {
+    let ranked: &[&[u8]] = &[TOP, RANKED];
+    let batched: &[&[u8]] = &[TOP, BATCHED];
+    let ranking = |tree: &[&[u8]]| {
+        proven(PathQuery::new_axis_top_k(
+            path(tree),
+            IndexAxis::Count,
+            10,
+            0,
+            false,
+        ))
+    };
+    let mut ops = vec![insert(&[], TOP, Element::empty_tree())];
+    for tree in [ranked, batched] {
+        ops.push(insert(
+            &[TOP],
+            tree[1],
+            Element::empty_provable_count_indexed_tree(),
+        ));
+        for number in [0, 2, 3, 4, 1] {
+            ops.push(Op::Write(Write::IndexedInsert {
+                path: path(tree),
+                key: key(b'k', number),
+                element: item(&[b'v', number]),
+                tree: IndexedTree::Count,
+            }));
+        }
+    }
+    ops.extend([
+        Op::Commit,
+        Op::Write(Write::IndexedDelete {
+            path: path(ranked),
+            key: key(b'k', 2),
+            tree: IndexedTree::Count,
+        }),
+        Op::Commit,
+        everything(ranked),
+        ranking(ranked),
+        Op::Batch(vec![BatchOp::Delete {
+            path: path(batched),
+            key: key(b'k', 2),
+        }]),
+        Op::Commit,
+        everything(batched),
+        ranking(batched),
+        Op::Write(Write::ReconcileIndexed { path: path(ranked) }),
+        Op::Commit,
+        ranking(ranked),
+        Op::Write(Write::ReconcileIndexed {
+            path: path(batched),
+        }),
+        Op::Commit,
+        ranking(batched),
+    ]);
+    case(
+        "ranking-drift",
+        "The entry at the root of a tree ranked by count is removed, through the method of \
+         the tree and in a batch, and the tree is then repaired. Grove versions 1 to 4 read \
+         the entry back by key to see what the removal changed, find the record the \
+         pending removal has not taken out of storage yet, and leave the row of the entry \
+         in the ranking: on grove version 4 the ranking is then neither read nor proven, \
+         and the repair removes the row. Grove version 5 walks the tree and removes the \
+         row with the entry, and its repair changes nothing. Grove versions 1 to 3 refuse \
+         to read a ranking.",
+        ops,
+    )
+}
+
 /// The cases of this module, in the order they are documented.
 pub(super) fn cases() -> Vec<Case> {
     let mut cases = vec![
@@ -410,6 +488,10 @@ pub(super) fn cases() -> Vec<Case> {
         branch_without_subquery_case(),
     ];
     cases.extend(filled_tree_cases());
-    cases.extend([flag_length_case(), full_handover_case()]);
+    cases.extend([
+        flag_length_case(),
+        full_handover_case(),
+        ranking_drift_case(),
+    ]);
     cases
 }

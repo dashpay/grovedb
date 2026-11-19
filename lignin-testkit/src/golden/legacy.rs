@@ -55,6 +55,9 @@
 //!     which fails on grove versions 1 to 3 (`flags-of-another-length`),
 //!     and an update accounted as a replacement, which grove versions 1 to
 //!     4 refuse (`full-handover`).
+//! 13. **A ranking left out of step with its tree**: on grove versions 1
+//!     to 4 the removal of an entry can leave its row in the rankings of
+//!     an indexed tree, until a repair removes it (`ranking-drift`).
 //!
 //! Two more cases hold what every grove version refuses and the generators
 //! therefore never ask for: an offset where no count commits the rows it
@@ -762,7 +765,7 @@ mod tests {
     /// What the cases for refused operations and forms of query tally on
     /// grove versions 1 to 5: the operations refused, then the proofs
     /// refused.
-    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 23] = [
+    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 24] = [
         ("move-in-batch", [2, 2, 2, 0, 0], [0; 5]),
         ("drop-flat", [1, 1, 1, 0, 0], [0; 5]),
         ("drop-flat-in-batch", [1, 1, 1, 0, 0], [0; 5]),
@@ -794,6 +797,7 @@ mod tests {
         ),
         ("flags-of-another-length", [2, 2, 2, 0, 0], [0; 5]),
         ("full-handover", [1, 1, 1, 1, 0], [0; 5]),
+        ("ranking-drift", [4, 4, 4, 2, 0], [4, 4, 4, 2, 0]),
     ];
 
     /// The proofs of those cases that do not verify, on grove versions 1 to

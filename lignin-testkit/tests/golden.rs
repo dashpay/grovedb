@@ -248,6 +248,7 @@ fn only_the_hand_written_cases_record_a_failure() {
         case("filled-tree-entry-of-indexed-tree", &[1, 2, 3, 4, 5]),
         case("flags-of-another-length", &[1, 2, 3]),
         case("full-handover", &[1, 2, 3, 4]),
+        case("ranking-drift", &[1, 2, 3, 4]),
     ]
     .into_iter()
     .flatten()
