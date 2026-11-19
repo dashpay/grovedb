@@ -493,6 +493,33 @@ impl Model {
     /// durable item which was not dropped. With `whole`, nothing was lost:
     /// it holds every item that was not dropped.
     fn check(&self, read: &[Item], whole: bool) -> Result<(), String> {
+        self.check_from(read, whole, &self.starts)
+    }
+
+    /// As [`Self::check`], for what was read from the file system `fs`:
+    /// the log must begin where the manifest that is in force there begins
+    /// it, and that manifest must be one a crash can leave.
+    fn check_in(&self, fs: &lignin_io::SimVfs, read: &[Item], whole: bool) -> Result<(), String> {
+        // The manifest is read with no fault injected, as the log was.
+        let odds = fs.config().faults;
+        fs.set_faults(lignin_io::sim::FaultOdds::NONE);
+        let manifest = sim::manifest_in(fs);
+        fs.set_faults(odds);
+        let manifest = manifest.ok_or("no manifest")?;
+        let first_file = named(&manifest).first().map(LiveFile::id);
+        let all = self.all();
+        let begins = |item: &Item| first_file.is_some_and(|file| item.at.file() >= file);
+        let start = all.iter().position(begins).unwrap_or(all.len());
+        if !self.starts.contains(&start) {
+            return Err(format!(
+                "the manifest begins the log at item {start}, and a crash can leave one of {:?}",
+                self.starts
+            ));
+        }
+        self.check_from(read, whole, &[start])
+    }
+
+    fn check_from(&self, read: &[Item], whole: bool, starts: &[usize]) -> Result<(), String> {
         let all = self.all();
         let must_reach = if whole {
             self.items.len()
@@ -502,12 +529,12 @@ impl Model {
         let Some(head) = read.first() else {
             // A log that begins where nothing must be read may read as
             // nothing.
-            return if self.starts.iter().any(|&start| must_reach <= start) {
+            return if starts.iter().any(|&start| must_reach <= start) {
                 Ok(())
             } else {
                 Err(format!(
-                    "nothing was read, and the items up to {must_reach} must be, from one of {:?}",
-                    self.starts
+                    "nothing was read, and the items up to {must_reach} must be, from one of \
+                     {starts:?}"
                 ))
             };
         };
@@ -532,10 +559,9 @@ impl Model {
                 appended[wrong]
             ));
         }
-        if !self.starts.contains(&at) {
+        if !starts.contains(&at) {
             return Err(format!(
-                "the log was read from item {at} on, and it begins at one of {:?}",
-                self.starts
+                "the log was read from item {at} on, and it begins at one of {starts:?}"
             ));
         }
         if at + read.len() < must_reach {
@@ -947,7 +973,7 @@ impl Run {
         self.db = None;
         self.stats.restarts += 1;
         let read = Self::read(&self.fs).unwrap_or_else(|error| panic!("{}: {error}", self.at()));
-        if let Err(wrong) = self.model.check(&read, true) {
+        if let Err(wrong) = self.model.check_in(&self.fs, &read, true) {
             panic!("{} after a restart: {wrong}", self.at());
         }
         // What was taken back is not in the file: only a crash brings it
@@ -988,7 +1014,7 @@ impl Run {
         self.fs = self.fs.crash(draw);
         self.fs.set_faults(lignin_io::sim::FaultOdds::NONE);
         let read = Self::read(&self.fs).unwrap_or_else(|error| panic!("{}: {error}", self.at()));
-        if let Err(wrong) = self.model.check(&read, false) {
+        if let Err(wrong) = self.model.check_in(&self.fs, &read, false) {
             panic!("{} after a crash: {wrong}", self.at());
         }
         let before = self.model.items.len();
@@ -1022,7 +1048,7 @@ impl Run {
             state.set_faults(lignin_io::sim::FaultOdds::NONE);
             let read = read_log(&sim::shared(state), sim::db_dir())
                 .unwrap_or_else(|error| panic!("{}, plan {plan:?}: {error}", self.at()));
-            if let Err(wrong) = self.model.check(&read.0, false) {
+            if let Err(wrong) = self.model.check_in(state, &read.0, false) {
                 panic!("{}, plan {plan:?}: {wrong}", self.at());
             }
             seen(&read.0);

@@ -37,7 +37,7 @@ fn check_crash_states(run: &Run, seen: &mut Seen) {
             .unwrap_or_else(|error| panic!("{}: {error}", at()));
         let (items, end) = read_log(&sim::shared(state), sim::db_dir())
             .unwrap_or_else(|error| panic!("{}: {error}", at()));
-        if let Err(wrong) = run.model.check(&items, false) {
+        if let Err(wrong) = run.model.check_in(state, &items, false) {
             panic!("{}: {wrong}", at());
         }
         seen.states += 1;
