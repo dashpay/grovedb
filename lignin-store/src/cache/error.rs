@@ -18,8 +18,8 @@ pub enum CacheError {
     CapacityTooSmall {
         /// The configured size in bytes.
         capacity: usize,
-        /// The bytes one frame takes: a page, its header and its share of
-        /// the pool's table.
+        /// The bytes a pool of one frame takes: a page, its header, the
+        /// pool's table and a lane.
         frame: usize,
     },
     /// The configured size is more than one allocation can be.

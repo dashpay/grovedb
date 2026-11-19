@@ -107,8 +107,8 @@
 //!   the lock.
 //! - The pin is not a count on the frame. It is **announced**: the reader
 //!   writes the frame's number into a cell of its thread's own lane, two
-//!   cache lines that no other thread writes while the process has no more
-//!   threads than the pool has lanes. Whoever needs a frame to have no pin
+//!   cache lines that no other thread writes while no more threads run at
+//!   one time than the pool has lanes. Whoever needs a frame to have no pin
 //!   (eviction, a frame that a page step or [`BufferPool::reclaim`] took
 //!   out) looks through the lanes as well as at the frame's count.
 //! - The counts of hits and misses are kept in the lanes too.
@@ -291,7 +291,10 @@
 //!
 //! No call into the pool waits for more than that. A reader that finds its
 //! page in a fixed frame takes no lock at all, to find it or to give it
-//! back. Otherwise it takes the shared lock of one part of the table to
+//! back, unless the frame was taken out of the table while the reader held
+//! it: whoever gives back a pin of such a frame goes through the list of
+//! those frames, and puts on the free list what has no pin left.
+//! Otherwise a reader takes the shared lock of one part of the table to
 //! find its page, and none to give it back, unless the page is in a frame
 //! beside the fixed ones: the last pin of such a frame goes under the
 //! exclusive lock of its part of the table, so that the frame leaves in

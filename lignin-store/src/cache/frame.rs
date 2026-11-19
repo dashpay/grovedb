@@ -70,6 +70,17 @@
 //! misses an announcement, the step was before the announcer's second
 //! read, which then differs from the first.
 //!
+//! **Why what the announcer found is so.** What a lookup reads of a linked
+//! frame (its page, its versions, what it is, the next frame) is written
+//! by the frame's owner before it is linked, or in a change of the bucket.
+//! The changes of a bucket follow one another under its lock, and each
+//! ends with a step of the count. So the announcer's first read of the
+//! count comes after everything that was done to the bucket's frames in
+//! the changes up to that step, and what it reads afterwards is at least
+//! that new. With the same count read again, there was nothing newer: the
+//! announcer walked the bucket's arena frames as they were, and the frame
+//! it picked was linked, a page version, and the one it asked for.
+//!
 //! Three things outside the unsafe blocks carry these rules, and they are
 //! kept in this file and in `lanes.rs`:
 //!
@@ -101,8 +112,8 @@ use super::{
     error::CacheError,
     lanes::{Announcement, Lanes},
     sync::{
-        self, settled_u64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Mutex, Ordering, Padded,
-        Reading, RwLock, RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
+        self, settled_u64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Moment, Mutex, Ordering,
+        Padded, Reading, RwLock, RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
     },
 };
 
@@ -156,8 +167,9 @@ const NO_INDEX: u32 = u32::MAX;
 
 /// One frame: a header, and a pointer to `len` bytes.
 ///
-/// The header is two cache lines. The first holds what a lookup reads, and
-/// a reader of the page writes none of it. The second holds what changes
+/// The header is two cache lines. The first holds what a lookup reads. A
+/// reader of the page writes it once after each pass of the clock, to mark
+/// the frame as used, and not otherwise. The second holds what changes
 /// while the frame is in use: its count of pins, its latch, its attached
 /// values.
 #[repr(C, align(64))]
@@ -1086,10 +1098,15 @@ impl Chain {
     /// no such frame, when the bucket is being changed or was changed
     /// while this looked, and when the calling thread's lane has no cell
     /// left. `arena` is the arena of the pool the bucket belongs to.
+    ///
+    /// `at` is told when the frame is picked and when it is announced.
+    /// Nothing is done there but by a test, which changes the pool under
+    /// the reader at one of those moments.
     pub(super) fn pin_unlocked<'a>(
         &self,
         arena: &'a Arena,
         wanted: impl Fn(&Frame) -> bool,
+        mut at: impl FnMut(Moment),
     ) -> Unlocked<'a> {
         let links = &self.links;
         let before = links.changes.load(Ordering::SeqCst);
@@ -1104,13 +1121,16 @@ impl Chain {
             let Some(pointer) = NonNull::new(cursor) else {
                 return Unlocked::Not;
             };
-            debug_assert!(
+            assert!(
                 arena.holds(pointer),
                 "a chain of arena frames left the arena"
             );
-            // SAFETY: `first`, and `next` of an arena frame, point to arena
-            // frames only, and the header of an arena frame may be read by
-            // anyone for as long as the arena lives (A1).
+            // SAFETY: the pointer is to a header of `arena`, which was just
+            // checked, and the header of an arena frame may be read by
+            // anyone for as long as the arena lives (A1). That the walk
+            // comes to no other frame is what the two lists of a bucket
+            // are for: `first`, and `next` of an arena frame, point to
+            // arena frames only.
             let frame: &'a Frame = unsafe { pointer.as_ref() };
             if frame.kind() == kind::PUBLISHED && wanted(frame) {
                 break (FramePtr(pointer), frame);
@@ -1121,10 +1141,11 @@ impl Chain {
             steps -= 1;
             cursor = frame.next.load(Ordering::Acquire);
         };
-        assert_eq!(frame.home, arena.id, "a frame of another pool");
+        at(Moment::Picked);
         let Some(announcement) = arena.lanes.announce(frame.index) else {
             return Unlocked::Not;
         };
+        at(Moment::Announced);
         if links.changes.load(Ordering::SeqCst) != before {
             announcement.withdraw();
             return if frame.is_dead() {
@@ -1318,7 +1339,9 @@ pub(super) struct Arena {
 }
 
 // SAFETY: the arena owns its headers and its block, which are reached only
-// through the frames, and those are `Send` and `Sync`.
+// through the frames, and those are `Send` and `Sync`. Its lanes and its
+// list of dead frames are atomics and a lock around a pointer that is only
+// an address.
 unsafe impl Send for Arena {}
 // SAFETY: as above.
 unsafe impl Sync for Arena {}
@@ -1533,7 +1556,7 @@ impl Drop for Arena {
     }
 }
 
-#[cfg(all(test, not(loom), target_pointer_width = "64"))]
+#[cfg(all(test, not(loom), target_os = "linux", target_pointer_width = "64"))]
 mod layout {
     use std::mem::offset_of;
 

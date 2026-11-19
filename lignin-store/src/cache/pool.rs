@@ -12,7 +12,7 @@ use super::{
         NO_VERSION,
     },
     guard::{Blank, PageRef},
-    sync::{lock, Counter, Mutex, Padded},
+    sync::{lock, Counter, Moment, Mutex, Padded},
 };
 use crate::alloc::Epoch;
 
@@ -22,8 +22,9 @@ pub struct PoolConfig {
     /// The store's page size. A frame holds one page of it.
     pub page_size: PageSize,
     /// The memory the pool may use for what it caches, in bytes. It is
-    /// allocated when the pool is made, and it includes each frame's header
-    /// and the pool's table.
+    /// allocated when the pool is made, and it includes each frame's
+    /// header, the pool's table and its lanes: less than 512 bytes a frame
+    /// beside the page.
     pub capacity: usize,
 }
 
@@ -384,7 +385,7 @@ impl BufferPool {
             let chain = bucket.chain.read();
             for entry in chain.iter() {
                 let frame = entry.frame();
-                let pinned = frame.pins() > 0 || self.arena.announces(frame);
+                let pinned = self.arena.announces(frame) || frame.pins() > 0;
                 let unevictable = pinned || !evictable(frame);
                 match frame.kind() {
                     kind::PUBLISHED => census.published += 1,
@@ -436,9 +437,21 @@ impl BufferPool {
     /// the fixed ones, while that part is being changed, and by a thread
     /// that holds more pins at once than its lane has cells.
     pub fn get(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, Miss> {
+        self.get_while(page, at, |_| {})
+    }
+
+    /// [`Self::get`], with `meanwhile` told the moments of a read that
+    /// takes no lock: for a test that changes the pool under the reader at
+    /// one of them.
+    pub(super) fn get_while(
+        &self,
+        page: PageId,
+        at: CommitVersion,
+        meanwhile: impl FnMut(Moment),
+    ) -> Result<PageRef<'_>, Miss> {
         let bucket = self.bucket(page.get());
         let wanted = |frame: &Frame| stands_for(frame, page, at);
-        match bucket.chain.pin_unlocked(&self.arena, wanted) {
+        match bucket.chain.pin_unlocked(&self.arena, wanted, meanwhile) {
             Unlocked::Found(frozen) => {
                 frozen.frame().touch();
                 self.arena.lanes().count_hit();
@@ -626,6 +639,10 @@ impl BufferPool {
                 self.reset(&mut frame);
                 return Some(frame);
             }
+            // The frame has a pin after all. It keeps its mark, as a
+            // frame with a counted pin does, so the hand passes it once
+            // more before this part of the table is locked for it again.
+            frame.touch();
         }
         None
     }

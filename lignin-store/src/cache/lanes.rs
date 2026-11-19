@@ -3,13 +3,14 @@
 //!
 //! A lane is two cache lines: the cells in which a thread announces the
 //! frames it has pinned without counting, and its counts of hits and
-//! misses. A thread uses the lane of its number, and two threads share a
-//! lane only when the process has more threads than the pool has lanes.
+//! misses. A thread uses the lane of its number. The numbers of threads
+//! that have ended are given out again, so two threads share a lane only
+//! when more threads run at one time than the pool has lanes.
 //!
 //! This file has no unsafe code, and the access rules of `frame.rs` rest on
-//! it as they rest on a lock: a frame that is announced here is pinned
-//! (A1), and [`Lanes::announces`] finds every announcement that was made
-//! before it looked (A2, A3).
+//! it as they rest on a lock (A6): an announcement that its announcer has
+//! confirmed is a pin, and [`Lanes::announces`] finds every announcement
+//! that was made before it looked.
 
 use super::sync::{
     settled_u32, settled_usize, thread_number, AtomicU32, AtomicUsize, Counter, Ordering,
@@ -17,9 +18,9 @@ use super::sync::{
 
 /// The cells of one lane: with its two counts they fill 128 bytes.
 #[cfg(not(loom))]
-const CELLS: usize = 28;
+pub(super) const CELLS: usize = 28;
 #[cfg(loom)]
-const CELLS: usize = 2;
+pub(super) const CELLS: usize = 2;
 
 /// What a cell holds while nobody has claimed it. A claimed cell holds the
 /// number of a frame of the arena, plus one.
@@ -166,6 +167,7 @@ impl Lanes {
 mod tests {
     use super::*;
 
+    #[cfg(target_pointer_width = "64")]
     #[test]
     fn a_lane_is_two_cache_lines_of_its_own() {
         assert_eq!((size_of::<Lane>(), align_of::<Lane>()), (128, 128));

@@ -90,15 +90,54 @@ pub(super) fn settled_usize(value: usize) -> AtomicUsize {
     atomic
 }
 
-/// A number for the calling thread, which it keeps: the threads of a
-/// process are numbered as they first ask.
+/// The numbers of the threads that have ended, for the next threads to
+/// take, and the first number that no thread has had.
+#[cfg(not(loom))]
+static THREAD_NUMBERS: std::sync::Mutex<(Vec<usize>, usize)> =
+    std::sync::Mutex::new((Vec::new(), 0));
+
+/// The number of one thread, given back when the thread ends.
+#[cfg(not(loom))]
+struct ThreadNumber(usize);
+
+#[cfg(not(loom))]
+impl ThreadNumber {
+    fn take() -> Self {
+        let mut numbers = THREAD_NUMBERS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        Self(numbers.0.pop().unwrap_or_else(|| {
+            numbers.1 += 1;
+            numbers.1 - 1
+        }))
+    }
+}
+
+#[cfg(not(loom))]
+impl Drop for ThreadNumber {
+    fn drop(&mut self) {
+        THREAD_NUMBERS
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .0
+            .push(self.0);
+    }
+}
+
+/// A number for the calling thread, which it keeps until it ends: the
+/// smallest numbers that no running thread has are given out first, so the
+/// threads that run at one time have numbers below the most that ever ran
+/// at once.
+///
+/// A thread takes its number when it first asks, under a lock, and asks
+/// without one from then on. A thread that is ending and has given its
+/// number back is 0.
 #[cfg(not(loom))]
 pub(super) fn thread_number() -> usize {
-    static THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     thread_local! {
-        static NUMBER: usize = THREADS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        static NUMBER: ThreadNumber = ThreadNumber::take();
     }
-    NUMBER.try_with(|number| *number).unwrap_or(0)
+    NUMBER.try_with(|number| number.0).unwrap_or(0)
 }
 
 #[cfg(loom)]
@@ -197,4 +236,15 @@ impl Tracked {
             _access: self.cell.get_mut(),
         }
     }
+}
+
+/// A moment in a read that takes no lock, at which a test changes the pool
+/// under the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Moment {
+    /// The reader has picked a frame and has not announced it.
+    Picked,
+    /// The reader has announced the frame and has not looked at the count
+    /// of changes again.
+    Announced,
 }
