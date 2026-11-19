@@ -593,3 +593,88 @@ fn what_a_drop_left_waits_for_the_readers_from_before() {
     assert_eq!(done[0].cells as usize, addresses.len());
     check_reclaimed(&db, &grove);
 }
+
+/// A page that was made under an id which named another page before, and
+/// that write-back has not written, has the free link of that earlier page
+/// as the newest link of its id. The step that frees it is given no second
+/// one by the page table, and goes on: the reclaiming ends, the pool and
+/// the id are told of the free once, and what the reclaiming reports
+/// counts the page.
+#[test]
+fn a_page_under_a_reused_id_that_no_segment_holds_is_freed_without_a_link() {
+    // The first Merk under a host: written back, dropped with its host and
+    // reclaimed. Its pages have their free links, and their ids come back.
+    let Built {
+        db,
+        mut grove,
+        host,
+        ..
+    } = build_nested(40, 400, usize::MAX);
+    let mut txn = db.begin();
+    grove.drop_with_host(&mut txn, host);
+    db.commit(txn);
+    db.tick();
+    let first = reclaim_all(&db, &grove);
+    assert!(first[0].pages_freed > 2, "{:?}", first[0]);
+    assert_eq!(first[0].pages_never_linked, 0, "every page had a block");
+    let released: BTreeSet<PageId> = db.reclaim_ids().into_iter().collect();
+    assert!(released.len() > 2);
+
+    // A second Merk, whose pages take those ids. Nothing is written back:
+    // no segment holds one of them.
+    let mut txn = db.begin();
+    let host = grove.put(0, b"host again", b"a tree");
+    let merk = grove.host(host);
+    fill(&mut grove, merk, 400, 5_000);
+    grove.flush(&mut txn);
+    db.commit(txn);
+    grove.check(&db);
+    let live = |page: &&PageId| db.state(**page) == PageState::Live;
+    let reused: BTreeSet<PageId> = released.iter().filter(live).copied().collect();
+    assert!(reused.len() > 2, "{} ids were used again", reused.len());
+
+    let mut txn = db.begin();
+    grove.drop_with_host(&mut txn, host);
+    db.commit(txn);
+    db.tick();
+    let steps = db.reclaims().len();
+    let second = reclaim_all(&db, &grove);
+    let [done] = &second[..] else {
+        panic!("one Merk was dropped");
+    };
+    assert!(done.cells >= 400 && done.pages_freed > 2, "{done:?}");
+
+    // The pages the steps freed, each once.
+    let freed: Vec<PageId> = (db.reclaims()[steps..].iter())
+        .filter(|(_, freed, ..)| freed.is_some())
+        .map(|(page, ..)| *page)
+        .collect();
+    let once: BTreeSet<PageId> = freed.iter().copied().collect();
+    assert_eq!(once.len(), freed.len(), "a page was freed twice");
+    assert_eq!(once.len() as u64, done.pages_freed);
+    // Those under an id that was used again were given no free link, and
+    // the report says how many they are.
+    let never_linked: BTreeSet<PageId> = once.intersection(&reused).copied().collect();
+    assert!(never_linked.len() > 2, "{never_linked:?}");
+    assert_eq!(done.pages_never_linked, never_linked.len() as u64);
+    for page in &once {
+        assert_eq!(db.state(*page), PageState::Retired, "{page}");
+        assert!(db.current(*page).is_none(), "{page} is still a page");
+    }
+    check_reclaimed(&db, &grove);
+    // The ids come back once more, and a page that is made under one of
+    // them is written back and read.
+    let again: BTreeSet<PageId> = db.reclaim_ids().into_iter().collect();
+    assert!(never_linked.is_subset(&again));
+    let mut txn = db.begin();
+    let host = grove.put(0, b"host once more", b"a tree");
+    let merk = grove.host(host);
+    fill(&mut grove, merk, 200, 9_000);
+    grove.flush(&mut txn);
+    db.commit(txn);
+    db.write_back();
+    grove.check(&db);
+    assert!(never_linked
+        .iter()
+        .any(|page| db.state(*page) == PageState::Live));
+}

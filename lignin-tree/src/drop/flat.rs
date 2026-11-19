@@ -245,6 +245,12 @@ impl FlatDrops {
 pub struct FlatReclaimed {
     /// The pages freed.
     pub pages_freed: u64,
+    /// How many of them were given no free link: no segment ever held the
+    /// page under its id's present life, and the newest link of the id was
+    /// the free link of an earlier page ([`Reclaimed::pages_never_linked`]).
+    ///
+    /// [`Reclaimed::pages_never_linked`]: super::Reclaimed::pages_never_linked
+    pub pages_never_linked: u64,
     /// The value pointers that the entries of those pages held, which the
     /// value log was told of in the step that freed each page.
     pub values: u64,
@@ -419,8 +425,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             match self.free_unlinked(&frame, &released)? {
                 None => continue,
                 Some(Step::Refused(busy)) => return Ok(Met::Refused(busy)),
-                Some(Step::Made(miscount)) => {
+                Some(Step::Made(freed)) => {
+                    let miscount = freed.miscount;
                     done.pages_freed += 1;
+                    done.pages_never_linked += u64::from(freed.never_linked);
                     done.values += released.len() as u64;
                     done.value_bytes += value_bytes(&released);
                     done.miscounted(miscount);

@@ -53,6 +53,13 @@ pub struct Reclaimed {
     pub pages_written: u64,
     /// The pages that kept no cell and were freed.
     pub pages_freed: u64,
+    /// How many of the freed pages were given no free link. A page that was
+    /// made under an id which named another page before, and that
+    /// write-back has not written yet, has the free link of that earlier
+    /// page as the newest link of its id, and the page table takes no
+    /// second one. The pool and the id are told of the free all the same,
+    /// as a commit that frees such a page tells them.
+    pub pages_never_linked: u64,
     /// The value pointers that the removed cells and flat records held,
     /// which the value log was told of in the step that removed each.
     pub values: u64,
@@ -442,6 +449,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                         true => done.pages_freed += 1,
                         false => done.pages_written += 1,
                     }
+                    done.pages_never_linked += u64::from(removed.never_linked);
                     reclaim.miscounted(removed.miscount);
                     for target in removed.targets {
                         if !reclaim.found(target) {

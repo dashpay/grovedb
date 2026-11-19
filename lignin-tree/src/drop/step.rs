@@ -15,7 +15,7 @@ use lignin_store::{
     alloc::PageAllocator,
     cache::{Blank, BufferPool, PageRef, ValueId},
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
-    table::{Link, PageTable},
+    table::{Link, LinkError, PageTable},
     values::{CountStep, OwnersError, ValueChange, ValueStore, ValueStoreError},
 };
 
@@ -59,6 +59,18 @@ pub(super) struct CellsRemoved {
     /// How many of the cells held a value that no value-log file has yet.
     pub pending: u64,
     pub freed: bool,
+    /// Whether the page was freed and given no free link: the newest link
+    /// of its id was the free link of an earlier page.
+    pub never_linked: bool,
+    /// Why the released pointers could not be counted as reported.
+    pub miscount: Option<ValueStoreError>,
+}
+
+/// What a step that freed a flat page did.
+#[derive(Debug)]
+pub(super) struct PageFreed {
+    /// Whether the page was given no free link ([`CellsRemoved::never_linked`]).
+    pub never_linked: bool,
     /// Why the released pointers could not be counted as reported.
     pub miscount: Option<ValueStoreError>,
 }
@@ -383,17 +395,36 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// Gives the page its free link, tells the pool, and retires the id:
     /// the page was freed with `version` by a step whose record is in the
     /// log. The page table goes first, as the pool asks.
-    fn free(&self, page: PageId, version: CommitVersion) -> Result<(), DropError> {
+    ///
+    /// A page that was made under an id which named another page before,
+    /// and that no segment holds yet, has the free link of that earlier
+    /// page as the newest link of its id, and the table takes no second
+    /// one ([`LinkError::AlreadyFree`]). The table then has nothing to say
+    /// of the page that the earlier link does not say, and the step goes
+    /// on: the pool and the id are told, once, as a commit that frees such
+    /// a page tells them. Returns whether the free link was pushed.
+    ///
+    /// Every other refusal leaves the store other than its log has it
+    /// ([`DropError::Broken`]), and none of them is one a store that keeps
+    /// its rules meets: a free link older than the newest link of the
+    /// chain, a table that holds as many links as it can, a page version in
+    /// the pool that is not older than the free, which a commit installed
+    /// between the step's look and here (choice 11 of the module), and an
+    /// id that names no committed page.
+    fn free(&self, page: PageId, version: CommitVersion) -> Result<bool, DropError> {
         let broken = broken(page);
-        self.table
-            .push(page, Link::free(version))
-            .map_err(|error| broken(error.into()))?;
+        let linked = match self.table.push(page, Link::free(version)) {
+            Ok(()) => true,
+            Err(LinkError::AlreadyFree) => false,
+            Err(error) => return Err(broken(error.into())),
+        };
         self.pool
             .free(page, version)
             .map_err(|error| broken(error.into()))?;
         self.ids
             .free(page, version)
-            .map_err(|error| broken(error.into()))
+            .map_err(|error| broken(error.into()))?;
+        Ok(linked)
     }
 
     /// Takes `released` off the counts of live values, at the end of a step
@@ -459,9 +490,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 replaced.map_err(|refusal| broken(page)(refusal.into()))?;
             }
             drop(step);
-            if let Some(version) = freed {
-                self.free(page, version)?;
-            }
+            let linked = match freed {
+                Some(version) => self.free(page, version)?,
+                None => true,
+            };
             let miscount = self.count(counts, &found.released);
             return Ok(Step::Made(CellsRemoved {
                 cells: found.slots.len() as u64,
@@ -470,6 +502,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 released: found.released,
                 pending: found.pending.len() as u64,
                 freed: empties,
+                never_linked: !linked,
                 miscount,
             }));
         }
@@ -621,7 +654,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         &self,
         frame: &PageRef<'s>,
         released: &[ValuePointer],
-    ) -> Result<Option<Step<Option<ValueStoreError>>>, DropError> {
+    ) -> Result<Option<Step<PageFreed>>, DropError> {
         let page = frame.page();
         let counts = self.values.step()?;
         let step = self.pool.page_step(page);
@@ -640,8 +673,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         write_reclaim(page, None, Some(latest), listed, &mut record)?;
         self.log.append(&record).map_err(DropError::Store)?;
         drop(step);
-        self.free(page, latest)?;
-        Ok(Some(Step::Made(self.count(counts, released))))
+        let never_linked = !self.free(page, latest)?;
+        Ok(Some(Step::Made(PageFreed {
+            never_linked,
+            miscount: self.count(counts, released),
+        })))
     }
 }
 
