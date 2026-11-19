@@ -6,7 +6,7 @@ use grovedb_merk::{
     proofs::query::{AggregateFold, IndexAxis},
 };
 
-use super::DOMAIN_WIDE_RANKS;
+use super::{wide_sum, DOMAIN_WIDE_RANKS};
 use crate::workload::{
     build::{self, batch, child, path, value},
     op::{BatchOp, IndexedTree, Op, Path, Read, Write},
@@ -42,15 +42,16 @@ const BOARD_ROUNDS: u32 = 3;
 /// amounts and a pot to each tree, through the methods GroveDB has for the
 /// type of the tree and through a batch in turn. From the second round on
 /// it writes two amounts again, which moves them in the rankings, adds to
-/// an older pot and takes from one, and deletes two amounts and a key that
-/// is not stored. Every other round it deletes a pot with what it holds.
-/// The first rounds also create a tree of the first kind under `boards`,
-/// each with its entries and a pot in the batch that creates it.
+/// an older pot and takes from one that holds more than one amount, and
+/// deletes two amounts and a key that is not stored. Every other round it
+/// deletes a pot with what it holds. The first rounds also create a tree
+/// of the first kind under `boards`, each with its entries and a pot in
+/// the batch that creates it.
 ///
 /// On a grove version whose batches leave the rankings out of step with
 /// the entries they write ([`Features::indexed_batches_in_step`]), every
-/// entry is written through the methods of its tree, and a batch only
-/// creates the trees.
+/// entry is written through the methods of its tree, a batch only creates
+/// the trees, and a round that creates none has no batch.
 ///
 /// After each block the trees are read back as elements and as the numbers
 /// `query_item_value_or_sum` returns, and their entries as stored. Where
@@ -166,6 +167,9 @@ struct Generator {
     /// Whether a batch writes entries. Otherwise the methods of the trees
     /// write them all.
     batches: bool,
+    /// Whether the target reads the trees in the order of the axis they
+    /// rank their sums on.
+    ranked: bool,
     root: Path,
     entries: u32,
     /// The number the next key is made of.
@@ -188,6 +192,8 @@ impl WideRanks {
             features: self.features,
             wide: self.features.big_sum_tree_twins,
             batches: self.features.indexed_batches_in_step,
+            ranked: self.features.read_modes
+                && (self.features.big_sum_axis || !self.features.big_sum_tree_twins),
             root: path(&[ROOT]),
             entries: self.entries,
             next: 0,
@@ -215,14 +221,10 @@ impl Generator {
     /// A sum to rank by: three in four are credits. Two wide credits are
     /// more than an `i64` holds.
     fn sum(&mut self) -> i64 {
-        if !self.wide {
-            return build::sum(&mut self.rng);
-        }
-        let sum = i64::MAX - self.rng.below(1 << 40) as i64;
-        if self.rng.chance(1, 4) {
-            -sum
+        if self.wide {
+            wide_sum(&mut self.rng)
         } else {
-            sum
+            build::sum(&mut self.rng)
         }
     }
 
@@ -314,7 +316,9 @@ impl Generator {
             }
         }
         let filled = self.board(round, &mut pending);
-        self.ops.push(Op::Batch(pending));
+        if !pending.is_empty() {
+            self.ops.push(Op::Batch(pending));
+        }
         self.ops.extend(filled);
         if !self.batches {
             let boards = child(&root, BOARDS);
@@ -328,10 +332,10 @@ impl Generator {
     }
 
     /// Writes two amounts again and deletes two, one of each through the
-    /// methods of the tree and the other in the batch of the round, where
-    /// the grove version keeps the rankings in step with such a delete. Adds to
-    /// a pot, takes from one, and in every other round deletes the oldest
-    /// pot with what it holds.
+    /// methods of the tree and the other in the batch of the round where a
+    /// batch writes entries. Adds an amount to a pot, takes one from a pot
+    /// that holds more than one, and in every other round deletes the
+    /// oldest pot with what it holds.
     fn rewrite(
         &mut self,
         round: u32,
@@ -453,15 +457,11 @@ impl Generator {
         } else {
             filled.push(self.insert(board, &tree, &pot, board.pot(self.wide)));
         }
+        let inside = child(&tree, &pot);
         for _ in 0..2 {
             let item = self.key(b'i');
             let amount = Element::new_sum_item(self.sum());
-            let inside = child(&tree, &pot);
-            if self.batches {
-                pending.push(batch::insert_only(&inside, &item, amount));
-            } else {
-                filled.push(build::insert(&inside, &item, amount));
-            }
+            batch::insert_or_queue(self.batches, &mut filled, pending, &inside, &item, amount);
         }
         entries.push(pot);
         self.boards.push((name, entries));
@@ -518,11 +518,11 @@ impl Generator {
                 build::sized(&root, through, Some(limit), None),
                 proves,
             ));
-            if self.features.read_modes {
+            if self.ranked {
                 self.rankings(round, index, board, &tree);
             }
         }
-        if self.features.read_modes {
+        if self.ranked {
             let mut branches: Vec<Vec<u8>> =
                 self.boards.iter().map(|board| board.0.clone()).collect();
             branches.push(b"b9".to_vec());

@@ -22,6 +22,10 @@ const LOOKUPS: u16 = 4;
 /// keys before it and after it.
 pub const MIN_CAPPED_KEYS: u32 = 8;
 
+/// The most rounds [`CappedLayers`] runs: the documents a round adds to the
+/// second index have keys of one byte each.
+pub const MAX_CAPPED_ROUNDS: u32 = 32;
+
 /// An index whose keys each hold a few documents, read a page at a time.
 ///
 /// A page is a query that walks the keys of the index in order, descends
@@ -68,7 +72,8 @@ pub const MIN_CAPPED_KEYS: u32 = 8;
 pub struct CappedLayers {
     /// How many keys the index starts with, at least [`MIN_CAPPED_KEYS`].
     pub keys: u32,
-    /// How many rounds of writes and reads to run.
+    /// How many rounds of writes and reads to run, at most
+    /// [`MAX_CAPPED_ROUNDS`].
     pub rounds: u32,
     /// What the target grove version can store.
     pub features: Features,
@@ -112,6 +117,10 @@ impl CappedLayers {
             self.keys >= MIN_CAPPED_KEYS,
             "the index starts with at least {MIN_CAPPED_KEYS} keys"
         );
+        assert!(
+            self.rounds <= MAX_CAPPED_ROUNDS,
+            "at most {MAX_CAPPED_ROUNDS} rounds"
+        );
         let mut generator = Generator {
             rng: Rng::derive(seed, DOMAIN_CAPPED_LAYERS, 0),
             capped: self.features.instance_limits,
@@ -139,6 +148,18 @@ impl Generator {
         Element::new_item(value(&mut self.rng, 1, 32))
     }
 
+    /// A tree at `key` of `parent` with `documents` documents.
+    fn tree_with_documents(&mut self, parent: &Path, key: &[u8], documents: u16) {
+        self.ops
+            .push(build::insert(parent, key, Element::empty_tree()));
+        let tree = child(parent, key);
+        for document in 0..documents {
+            let item = self.document();
+            self.ops
+                .push(build::insert(&tree, &short_key(b'd', document), item));
+        }
+    }
+
     /// A key more for the index: a tree with up to three documents, more
     /// often than a tree with none, an item or a reference to an item of
     /// the other tree.
@@ -146,15 +167,12 @@ impl Generator {
         let index = self.tree(INDEX);
         let key = index_key(self.next * 3);
         self.next += 1;
-        match self.rng.below(10) {
-            0 | 1 => {
-                self.ops
-                    .push(build::insert(&index, &key, Element::empty_tree()));
-                self.trees.push((key, 0));
-            }
+        let documents = match self.rng.below(10) {
+            0 | 1 => 0,
             2 => {
                 let item = self.document();
                 self.ops.push(build::insert(&index, &key, item));
+                return;
             }
             3 => {
                 let target = short_key(b'l', self.rng.below(u64::from(LOOKUPS)) as u16);
@@ -162,22 +180,12 @@ impl Generator {
                     child(&self.tree(LOOKUP), &target),
                 ));
                 self.ops.push(build::insert(&index, &key, reference));
+                return;
             }
-            _ => {
-                self.ops
-                    .push(build::insert(&index, &key, Element::empty_tree()));
-                let documents = self.rng.between(1, 3) as u16;
-                for document in 0..documents {
-                    let item = self.document();
-                    self.ops.push(build::insert(
-                        &child(&index, &key),
-                        &short_key(b'd', document),
-                        item,
-                    ));
-                }
-                self.trees.push((key, documents));
-            }
-        }
+            _ => self.rng.between(1, 3) as u16,
+        };
+        self.tree_with_documents(&index, &key, documents);
+        self.trees.push((key, documents));
     }
 
     fn setup(&mut self, keys: u32) {
@@ -204,53 +212,47 @@ impl Generator {
                 .push(build::insert(&nested, &group_key, Element::empty_tree()));
             let group_path = child(&nested, &group_key);
             for key in 0..4 {
-                let key = short_key(b'k', key);
-                self.ops
-                    .push(build::insert(&group_path, &key, Element::empty_tree()));
-                for document in 0..self.rng.below(4) as u16 {
-                    let item = self.document();
-                    self.ops.push(build::insert(
-                        &child(&group_path, &key),
-                        &short_key(b'd', document),
-                        item,
-                    ));
-                }
+                let documents = self.rng.below(4) as u16;
+                self.tree_with_documents(&group_path, &short_key(b'k', key), documents);
             }
         }
         self.ops.push(Op::Commit);
     }
 
-    /// Two keys more, a document more for one tree, one document fewer for
-    /// another, which may leave it empty, and one tree deleted with what
-    /// it holds.
+    /// Two keys more and, where the index holds a tree, a document more
+    /// for one, the newest document of one taken away if it has any, which
+    /// may leave it empty, and one tree deleted with what it holds. A
+    /// document more for the second index.
     fn change(&mut self) {
         let index = self.tree(INDEX);
         for _ in 0..2 {
             self.add_key();
         }
-        let grown = self.rng.index(self.trees.len());
-        let (key, documents) = self.trees[grown].clone();
-        let item = self.document();
-        self.ops.push(build::insert(
-            &child(&index, &key),
-            &short_key(b'd', documents),
-            item,
-        ));
-        self.trees[grown].1 += 1;
-        let shrunk = self.rng.index(self.trees.len());
-        let (key, documents) = self.trees[shrunk].clone();
-        if documents > 0 {
-            // The newest document is still there: only this takes one
-            // away, and it takes the newest.
-            self.ops.push(build::delete(
+        if !self.trees.is_empty() {
+            let grown = self.rng.index(self.trees.len());
+            let (key, documents) = self.trees[grown].clone();
+            let item = self.document();
+            self.ops.push(build::insert(
                 &child(&index, &key),
-                &short_key(b'd', documents - 1),
+                &short_key(b'd', documents),
+                item,
             ));
-            self.trees[shrunk].1 -= 1;
+            self.trees[grown].1 += 1;
+            let shrunk = self.rng.index(self.trees.len());
+            let (key, documents) = self.trees[shrunk].clone();
+            if documents > 0 {
+                // The newest document is still there: only this takes one
+                // away, and it takes the newest.
+                self.ops.push(build::delete(
+                    &child(&index, &key),
+                    &short_key(b'd', documents - 1),
+                ));
+                self.trees[shrunk].1 -= 1;
+            }
+            let deleted = self.rng.index(self.trees.len());
+            let (key, _) = self.trees.swap_remove(deleted);
+            self.ops.push(build::delete(&index, &key));
         }
-        let deleted = self.rng.index(self.trees.len());
-        let (key, _) = self.trees.swap_remove(deleted);
-        self.ops.push(build::delete(&index, &key));
 
         let group = child(
             &self.tree(NESTED),
@@ -258,14 +260,17 @@ impl Generator {
         );
         let key = short_key(b'k', self.rng.below(4) as u16);
         let item = self.document();
-        // A document under a key of its own, so it replaces none.
+        // A document under a key of its own, so it replaces none: `next`
+        // grows by two a round, and there are no more than
+        // `MAX_CAPPED_ROUNDS` rounds.
         let document = short_key(b'e', self.next as u16 % 64);
         self.ops
             .push(build::insert(&child(&group, &key), &document, item));
     }
 
-    /// A range over the keys of the index, in either direction.
-    fn range(&mut self) -> Query {
+    /// A walk over a range of the keys of the index, in either direction,
+    /// and through the documents under each.
+    fn walk(&mut self) -> Query {
         let top = u64::from(self.next) * 3;
         let low = index_key(self.rng.below(top / 2) as u32);
         let high = index_key(self.rng.between(top / 2, top + 2) as u32);
@@ -275,7 +280,9 @@ impl Generator {
             3 => QueryItem::RangeFrom(low..),
             _ => QueryItem::RangeToInclusive(..=high),
         };
-        Query::new_single_query_item_with_direction(item, self.rng.chance(2, 3))
+        let mut keys = Query::new_single_query_item_with_direction(item, self.rng.chance(2, 3));
+        keys.set_subquery(Query::new_range_full());
+        keys
     }
 
     /// A read of `query` at `path` with a page of `page` rows: the limit
@@ -303,20 +310,17 @@ impl Generator {
 
     fn pages(&mut self) {
         let index = self.tree(INDEX);
-        let documents = Query::new_range_full;
 
         // Pages of the index.
         for _ in 0..2 {
-            let mut body = self.range();
-            body.set_subquery(documents());
+            let body = self.walk();
             let page = self.rng.between(1, 7) as u16;
             self.page(&index, body, page);
         }
 
         // A limit of the whole query next to the limit of the node, smaller
         // or larger than it.
-        let mut body = self.range();
-        body.set_subquery(documents());
+        let mut body = self.walk();
         let page = self.rng.between(2, 6) as u16;
         let whole = self.rng.between(1, 9) as u16;
         if self.capped {
@@ -326,8 +330,7 @@ impl Generator {
 
         // A node that descends differently for some keys: into the first
         // document only, and through the documents from their end.
-        let mut body = self.range();
-        body.set_subquery(documents());
+        let mut body = self.walk();
         let top = self.next * 3;
         let first_only = QueryItem::Range(index_key(top / 4)..index_key(top / 2));
         body.add_conditional_subquery(
@@ -357,7 +360,7 @@ impl Generator {
                 QueryItem::RangeFull(..),
                 self.rng.chance(1, 2),
             );
-            keys.set_subquery(documents());
+            keys.set_subquery(Query::new_range_full());
             if own_limit && self.capped {
                 keys.limit = Some(self.rng.between(1, 3) as u16);
             }
@@ -368,10 +371,9 @@ impl Generator {
         }
 
         // A page merged with a query for some keys of another tree.
-        let mut body = self.range();
+        let mut body = self.walk();
         // Merged queries walk in one direction.
         body.left_to_right = true;
-        body.set_subquery(documents());
         if self.capped {
             body.limit = Some(self.rng.between(1, 6) as u16);
         }
@@ -388,7 +390,7 @@ impl Generator {
 /// The query `PathQuery::merge` makes of queries for trees under `common`:
 /// a query for the keys of the trees, each with the query for its tree as
 /// the subquery of its key. The queries without a limit come first.
-pub(crate) fn merged<const N: usize>(common: &Path, branches: [(&[u8], Query); N]) -> PathQuery {
+fn merged<const N: usize>(common: &Path, branches: [(&[u8], Query); N]) -> PathQuery {
     let mut root = Query::new();
     for (key, body) in branches {
         root.insert_item(QueryItem::Key(key.to_vec()));

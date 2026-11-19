@@ -4,36 +4,18 @@
 
 use std::collections::BTreeSet;
 
-use grovedb::{
-    Element, ElementFlags, PathQuery, Query as GroveQuery, QueryItem as Item, SizedQuery,
-};
+use grovedb::{Element, ElementFlags, PathQuery, Query as GroveQuery, QueryItem as Item};
 use grovedb_merk::proofs::query::IndexAxis;
 
-use super::{insert, item, path, BatchOp, Case, Op, Read, TOP};
+use super::{case, insert, insert_only, item, path, proven, sized, BatchOp, Case, Op, Read, TOP};
 use crate::workload::{HandoverBatch, PartialBatch};
 
 const INDEX: &[u8] = b"index";
 const OTHER: &[u8] = b"other";
 const FILLED: &[u8] = b"filled";
 
-fn case(name: &str, about: &str, ops: Vec<Op>) -> Case {
-    Case {
-        name: name.to_string(),
-        about: about.to_string(),
-        ops,
-    }
-}
-
 fn key(tag: u8, number: u8) -> Vec<u8> {
     vec![tag, b'0' + number]
-}
-
-/// A path query that is run and, whatever the grove version, proven.
-fn proven(path_query: PathQuery) -> Op {
-    Op::Read(Read::PathQuery {
-        query: Box::new(path_query),
-        proven: true,
-    })
 }
 
 /// Everything the tree at `at` holds, as stored.
@@ -45,14 +27,6 @@ fn everything(at: &[&[u8]]) -> Op {
         )),
         raw: true,
     })
-}
-
-fn insert_only(at: &[&[u8]], key: &[u8], element: Element) -> BatchOp {
-    BatchOp::InsertOnly {
-        path: path(at),
-        key: key.to_vec(),
-        element,
-    }
 }
 
 fn replace(at: &[&[u8]], key: &[u8], element: Element) -> BatchOp {
@@ -76,7 +50,8 @@ fn index() -> Vec<Op> {
     for number in 0..6 {
         let in_index = key(b'k', number);
         ops.push(insert(&[TOP, INDEX], &in_index, Element::empty_tree()));
-        for document in 0..2 * u8::from(number > 0) {
+        let documents = if number == 0 { 0 } else { 2 };
+        for document in 0..documents {
             ops.push(insert(
                 &[TOP, INDEX, &in_index],
                 &key(b'd', document),
@@ -86,6 +61,13 @@ fn index() -> Vec<Op> {
     }
     ops.push(Op::Commit);
     ops
+}
+
+/// Every key of a tree and every document under each.
+fn documents_of_every_key() -> GroveQuery {
+    let mut keys = GroveQuery::new_range_full();
+    keys.set_subquery(GroveQuery::new_range_full());
+    keys
 }
 
 /// A page of three documents: the keys of the index in order, the
@@ -100,9 +82,7 @@ fn page(left_to_right: bool) -> GroveQuery {
 
 /// Pages of an index under a limit of the query node that walks its keys.
 fn limit_over_subqueries_case() -> Case {
-    let at_index = |query: GroveQuery, limit: Option<u16>| {
-        PathQuery::new(path(&[TOP, INDEX]), SizedQuery::new(query, limit, None))
-    };
+    let at_index = |query, limit| sized(&[TOP, INDEX], query, limit, None);
     // The page as `PathQuery::merge` joins it with a query for two keys of
     // the other tree: each is the subquery of its tree's key.
     let mut others = GroveQuery::new();
@@ -115,11 +95,7 @@ fn limit_over_subqueries_case() -> Case {
     }
     // The limit of the node at the top is in force on the layer below it.
     let mut trees = GroveQuery::new_single_key(INDEX.to_vec());
-    trees.set_subquery({
-        let mut keys = GroveQuery::new_range_full();
-        keys.set_subquery(GroveQuery::new_range_full());
-        keys
-    });
+    trees.set_subquery(documents_of_every_key());
     trees.limit = Some(3);
 
     let mut ops = index();
@@ -145,8 +121,7 @@ fn limit_over_subqueries_case() -> Case {
 /// A query that descends into every key of the index but some, which it
 /// takes as rows.
 fn branch_without_subquery_case() -> Case {
-    let mut keys = GroveQuery::new_range_full();
-    keys.set_subquery(GroveQuery::new_range_full());
+    let mut keys = documents_of_every_key();
     keys.add_conditional_subquery(Item::RangeFrom(key(b'k', 3)..), None, None);
     let mut ops = index();
     ops.push(proven(PathQuery::new_unsized(path(&[TOP, INDEX]), keys)));
@@ -213,14 +188,9 @@ fn limit_over_empty_subtrees_case() -> Case {
     }
     ops.push(Op::Commit);
     let page = |limit: u16| {
-        let mut keys = GroveQuery::new_range_full();
-        keys.set_subquery(GroveQuery::new_range_full());
         let mut groups = GroveQuery::new_range_full();
-        groups.set_subquery(keys);
-        proven(PathQuery::new(
-            path(&[TOP, INDEX]),
-            SizedQuery::new(groups, Some(limit), None),
-        ))
+        groups.set_subquery(documents_of_every_key());
+        proven(sized(&[TOP, INDEX], groups, Some(limit), None))
     };
     ops.extend([page(4), page(6)]);
     case(
@@ -229,8 +199,10 @@ fn limit_over_empty_subtrees_case() -> Case {
          four rows and of six. Grove versions 1 to 3 charge a key without documents to the \
          limit in one way when they read and in another when they prove: the read charges \
          the layer above for the rows that came back from below, or for one row if none \
-         did, and forgets what the walk below charged for its own empty keys. From grove \
-         version 4 the read counts as the prover does.",
+         did, and forgets what the walk below charged for its own empty keys. On grove \
+         versions 1 and 2 the two proofs do not verify. On grove version 3 they do, the \
+         second to other rows than the read returns. From grove version 4 the read counts \
+         as the prover does.",
         ops,
     )
 }

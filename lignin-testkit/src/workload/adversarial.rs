@@ -27,7 +27,7 @@ mod wide_sums;
 use std::collections::BTreeSet;
 
 pub use self::{
-    capped_layers::{CappedLayers, MIN_CAPPED_KEYS},
+    capped_layers::{CappedLayers, MAX_CAPPED_ROUNDS, MIN_CAPPED_KEYS},
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
     drops::FlatDrops,
     epochs::{FlagEpochs, MAX_LADDER_RUNGS},
@@ -51,6 +51,17 @@ use super::{
     zoo::TreeKind,
     Features, Prepared, Stream,
 };
+
+/// A sum close to the largest an `i64` holds, negative one time in four:
+/// two of them that are credits add up to more than an `i64` holds.
+fn wide_sum(rng: &mut Rng) -> i64 {
+    let sum = i64::MAX - rng.below(1 << 40) as i64;
+    if rng.chance(1, 4) {
+        -sum
+    } else {
+        sum
+    }
+}
 
 /// The longest key GroveDB accepts.
 pub const MAX_KEY_LEN: u32 = 255;

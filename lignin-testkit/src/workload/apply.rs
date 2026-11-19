@@ -109,12 +109,12 @@ use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
-// Used where `GroveDb` has no savepoint methods of its own: the engine the
-// corpus is pinned to.
 use super::op::{
     AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, PartialBatch, Prove, Query, QueryItem,
     Read, TransactionOp, TreeRead, Write,
 };
+// Used where `GroveDb` has no savepoint methods of its own: the engine the
+// corpus is pinned to.
 #[allow(unused_imports)]
 use super::pinned::Savepoints as _;
 

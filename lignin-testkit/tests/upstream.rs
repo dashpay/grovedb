@@ -6,7 +6,10 @@
 //! every read returns with a model that is told the writes and nothing
 //! else.
 
-use std::{collections::BTreeMap, thread};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    thread,
+};
 
 use grovedb::{
     operations::{
@@ -70,6 +73,11 @@ impl Trees {
             .insert(key.to_vec(), element.clone());
     }
 
+    /// What the tree at `path` holds, in the order of its keys.
+    fn entries(&self, path: &[Vec<u8>]) -> impl Iterator<Item = (&Vec<u8>, &Element)> {
+        self.held.get(path).into_iter().flatten()
+    }
+
     /// Removes `key` and what is under it. Returns whether it was held.
     fn remove(&mut self, path: &[Vec<u8>], key: &[u8]) -> bool {
         let held = self
@@ -119,10 +127,7 @@ impl Trees {
 
     /// The count and the sum the tree at `path` keeps of what it holds.
     fn total(&self, path: &[Vec<u8>]) -> (u64, i128) {
-        self.held
-            .get(path)
-            .into_iter()
-            .flatten()
+        self.entries(path)
             .fold((0, 0), |(count, sum), (key, element)| {
                 let (counted, summed) = self.adds(path, key, element);
                 (count + counted, sum + summed)
@@ -183,23 +188,36 @@ impl Trees {
         })
     }
 
+    /// `ranked`, keys of the tree at `path`, each with the element GroveDB
+    /// must hold under it.
+    fn with_elements(
+        &self,
+        path: &[Vec<u8>],
+        ranked: Vec<(i128, Vec<u8>)>,
+    ) -> Vec<(i128, Vec<u8>, Element)> {
+        ranked
+            .into_iter()
+            .map(|(value, key)| {
+                let element = self.stored(path, &key).expect("a held key");
+                (value, key, element)
+            })
+            .collect()
+    }
+
     /// The keys of the tree at `path` in the order of `axis`, lowest first,
     /// each with the value it is ranked by. Entries of one value are in the
     /// order of their keys.
     fn ranking(&self, path: &[Vec<u8>], axis: IndexAxis) -> Vec<(i128, Vec<u8>)> {
+        let (key, parent) = path.split_last().expect("a tree under the root");
         let wide = matches!(
-            path.last()
-                .and_then(|key| self.stored(&path[..path.len() - 1], key)),
+            self.held.get(parent).and_then(|tree| tree.get(key)),
             Some(
                 Element::ProvableBigSumIndexedTree(..)
                     | Element::ProvableCountProvableBigSumIndexedTree(..)
             )
         );
         let mut ranking: Vec<(i128, Vec<u8>)> = self
-            .held
-            .get(path)
-            .into_iter()
-            .flatten()
+            .entries(path)
             .map(|(key, element)| {
                 let (count, sum) = self.adds(path, key, element);
                 let value = match axis {
@@ -512,10 +530,7 @@ fn rank_rows(trees: &Trees, query: &PathQuery) -> Vec<PathKeyElementTrio> {
         }
     };
     trees
-        .held
-        .get(&path)
-        .into_iter()
-        .flatten()
+        .entries(&path)
         .filter(|(key, _)| items.iter().any(|item| item.contains(key)))
         .take(query.query.limit.map_or(usize::MAX, usize::from))
         .map(|(key, _)| {
@@ -555,13 +570,7 @@ fn check_rank_query(
             assert_eq!(axis.projection, AxisProjection::Entries, "{context}");
             let (expected, expected_skipped) =
                 selected(trees.ranking(&query.path, axis.axis), axis);
-            let expected: Vec<_> = expected
-                .into_iter()
-                .map(|(value, key)| {
-                    let element = trees.stored(&query.path, &key).expect("a held key");
-                    (value, key, element)
-                })
-                .collect();
+            let expected = trees.with_elements(&query.path, expected);
             let (read_axis, entries) = axis_entries(entries);
             assert_eq!(read_axis, axis.axis, "{context}");
             assert_eq!(entries, expected, "{context}");
@@ -632,17 +641,11 @@ fn check_rank_query(
                     panic!("{context}\n{item:?} is not a key");
                 };
                 let mut tree = below(&query.path, branch);
+                let held = trees.held.contains_key(&tree);
                 tree.extend(inner.iter().cloned());
-                let held = trees.held.contains_key(&below(&query.path, branch));
                 let page = held.then(|| {
-                    selected(trees.ranking(&tree, axis.axis), axis)
-                        .0
-                        .into_iter()
-                        .map(|(value, key)| {
-                            let element = trees.stored(&tree, &key).expect("a held key");
-                            (value, key, element)
-                        })
-                        .collect::<Vec<_>>()
+                    let (page, _) = selected(trees.ranking(&tree, axis.axis), axis);
+                    trees.with_elements(&tree, page)
                 });
                 expected.push((branch.clone(), page));
             }
@@ -676,10 +679,7 @@ fn walked<'a>(
     path: &[Vec<u8>],
 ) -> Vec<(&'a Vec<u8>, Option<&'a grovedb::Query>)> {
     let mut keys: Vec<_> = trees
-        .held
-        .get(path)
-        .into_iter()
-        .flatten()
+        .entries(path)
         .filter(|(key, _)| query.items.iter().any(|item| item.contains(key)))
         .map(|(key, element)| {
             let branch = query
@@ -820,6 +820,9 @@ fn layer_rows(
     (walk.rows, walk.layers_cut)
 }
 
+/// How many pages a round of `capped-layers` reads.
+const CAPPED_PAGES_PER_ROUND: u64 = 7;
+
 /// Every page of `capped-layers` holds the rows the index holds in the
 /// order the query walks them, up to its limits, on every grove version.
 #[test]
@@ -860,14 +863,13 @@ fn the_pages_hold_what_the_index_holds() {
                     .map(|(path, key, element)| (path, key, without_root_keys(element)))
                     .collect();
                 let (expected, cut) = layer_rows(&trees, query, features);
-                assert_eq!(returned.len(), expected.len(), "{context}");
                 assert_eq!(returned, expected, "{context}");
                 pages += 1;
                 layers_cut += cut;
             }
             assert_eq!(
                 pages,
-                7 * u64::from(workload.rounds),
+                CAPPED_PAGES_PER_ROUND * u64::from(workload.rounds),
                 "capped-layers on grove v{version}, seed {seed}"
             );
             assert_eq!(
@@ -925,7 +927,7 @@ fn one_of_each_later_kind() -> Vec<Op> {
             proven: true,
         })
     };
-    let amount = |sum: i64| Element::new_sum_item(sum);
+    let amount = Element::new_sum_item;
     let entry = |sum: i64| Element::new_item_with_sum_item(b"entry".to_vec(), sum);
     let page = || {
         let mut keys = grovedb::Query::new_range_full();
@@ -1032,14 +1034,14 @@ fn one_of_each_later_kind() -> Vec<Op> {
 const PINNED_LATER_KINDS: &str = "43c7cc3640aa743236003466b6192288969066856431f05cc0c33ea194bdc722";
 
 /// The canonical encoding of the kinds added for the indexed trees with a
-/// 128-bit sum: each differs from every other and from the kind of the
-/// tree with an `i64` sum, and the bytes are pinned. With the reads, they
+/// 128-bit sum: the bytes are pinned, and a write to one key encodes
+/// differently for each type of indexed tree. With the reads, they
 /// are every operation of [`LATER_GROUPS`], in a stream the latest grove
 /// version accepts.
 #[test]
 fn the_later_kinds_have_a_pinned_encoding() {
     let ops = one_of_each_later_kind();
-    let mut encodings = std::collections::BTreeSet::new();
+    let mut encodings = BTreeSet::new();
     for op in &ops {
         let mut bytes = Vec::new();
         op.encode(&mut bytes);
@@ -1049,31 +1051,34 @@ fn the_later_kinds_have_a_pinned_encoding() {
     assert_eq!(digest.ops(), ops.len() as u64);
     assert_eq!(digest.hex(), PINNED_LATER_KINDS);
 
-    let narrow = |op: &Op| match op.clone() {
-        Op::Write(Write::IndexedInsert {
-            path,
-            key,
-            element,
-            tree,
-        }) => Op::Write(Write::IndexedInsert {
-            path,
-            key,
-            element,
-            tree: match tree {
-                IndexedTree::BigSum => IndexedTree::Sum,
-                _ => IndexedTree::CountSum,
-            },
-        }),
-        other => other,
-    };
-    for op in ops
-        .iter()
-        .filter(|op| matches!(op, Op::Write(Write::IndexedInsert { .. })))
-    {
-        assert_ne!(
-            StreamDigest::of([op]).hex(),
-            StreamDigest::of([&narrow(op)]).hex()
-        );
+    // The same write to the same key differs by the type of the tree.
+    let methods = [
+        IndexedTree::Count,
+        IndexedTree::Sum,
+        IndexedTree::CountSum,
+        IndexedTree::BigSum,
+        IndexedTree::CountBigSum,
+    ];
+    let (tree, key) = (path(&[b"top", b"ranked"]), b"a".to_vec());
+    let mut of_one_key = BTreeSet::new();
+    for methods in methods {
+        let insert = Op::Write(Write::IndexedInsert {
+            path: tree.clone(),
+            key: key.clone(),
+            element: Element::new_sum_item(1),
+            tree: methods,
+        });
+        let delete = Op::Write(Write::IndexedDelete {
+            path: tree.clone(),
+            key: key.clone(),
+            tree: methods,
+        });
+        for op in [insert, delete] {
+            assert!(
+                of_one_key.insert(StreamDigest::of([&op]).hex()),
+                "{op:?} encodes as another type of tree does"
+            );
+        }
     }
 
     let coverage = Coverage::of(&ops);
@@ -1193,7 +1198,10 @@ fn a_page_is_proven_by_fewer_keys_from_grove_version_5() {
                 proofs.newer_bytes += new_proof.len();
             }
             println!("seed {seed}: {proofs:?}");
-            assert_eq!(proofs.pages, 7 * u64::from(CappedLayers::default().rounds));
+            assert_eq!(
+                proofs.pages,
+                CAPPED_PAGES_PER_ROUND * u64::from(CappedLayers::default().rounds)
+            );
             assert!(2 * proofs.shorter > proofs.pages, "seed {seed}: {proofs:?}");
         }
     });
@@ -1206,4 +1214,91 @@ fn on_a_big_stack(body: impl FnOnce() + Send) {
             .spawn_scoped(scope, body)
             .expect("spawn");
     });
+}
+
+/// `workload::apply` sets its savepoints through `GroveDb`'s own methods.
+/// It has a fallback for the engine the corpus is pinned to, which sets
+/// them on the transaction, and a method of `GroveDb` is preferred to it.
+/// Here the fallback is not in scope, so this builds only while `GroveDb`
+/// has the two methods.
+#[test]
+fn grovedb_sets_savepoints_itself() {
+    let (_dir, db) = open();
+    let grove_version = GroveVersion::latest();
+    let transaction = db.start_transaction();
+    let root = |transaction| db.root_hash(Some(transaction), grove_version).unwrap();
+    let before = root(&transaction).expect("root hash");
+    db.set_savepoint(&transaction).expect("a savepoint");
+    db.insert(
+        &[] as &[&[u8]],
+        b"key",
+        Element::empty_tree(),
+        None,
+        Some(&transaction),
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    assert_ne!(root(&transaction).expect("root hash"), before);
+    db.rollback_to_savepoint(&transaction).expect("back to it");
+    assert_eq!(root(&transaction).expect("root hash"), before);
+}
+
+/// The proofs of `legacy-limit-over-empty-subtrees`, which the corpus
+/// records as verified or not, against the rows the reads return: on grove
+/// versions 1 and 2 they do not verify, on grove version 3 the proof of
+/// the second page verifies to other rows than the read returns, and from
+/// grove version 4 read and proof agree.
+#[test]
+fn a_limit_over_keys_without_documents_is_proven_as_it_is_read_from_grove_version_4() {
+    let case = lignin_testkit::golden::legacy::cases()
+        .into_iter()
+        .find(|case| case.name == "limit-over-empty-subtrees")
+        .expect("the case");
+    let mut agreed = Vec::new();
+    for grove_version in GROVE_VERSIONS {
+        let (_dir, db) = open();
+        let mut transactions = Transactions::new(&db);
+        let mut pages = Vec::new();
+        for op in &case.ops {
+            let outcome = transactions
+                .apply(op, grove_version)
+                .unwrap()
+                .expect("applies");
+            let (Op::Read(Read::PathQuery { query, .. }), Outcome::Run(run)) = (op, outcome) else {
+                continue;
+            };
+            let PathQueryRun::Elements { elements, .. } = run else {
+                panic!("{query:?} returned {run:?}");
+            };
+            let read: Vec<_> = elements
+                .to_path_key_elements()
+                .into_iter()
+                .map(|(path, key, element)| (path, key, Some(element)))
+                .collect();
+            let proof = db
+                .prove_query(query, None, grove_version)
+                .unwrap()
+                .expect("proof");
+            pages.push(
+                match GroveDb::verify_path_query(&proof, query, grove_version) {
+                    Ok(VerifiedPathQuery::Elements { elements, .. }) => Some(elements == read),
+                    Ok(other) => panic!("{query:?} verified to {other:?}"),
+                    Err(_) => None,
+                },
+            );
+        }
+        agreed.push(pages);
+    }
+    println!("{agreed:?}");
+    assert_eq!(
+        agreed,
+        [
+            vec![None, None],
+            vec![None, None],
+            vec![Some(true), Some(false)],
+            vec![Some(true), Some(true)],
+            vec![Some(true), Some(true)],
+        ]
+    );
 }

@@ -65,7 +65,9 @@
 //! generated stream marks as not proven the ones its grove version refuses
 //! to prove. Every case is recorded with every step in full.
 
-use grovedb::{element::reference_path::ReferencePathType, Element};
+use grovedb::{
+    element::reference_path::ReferencePathType, Element, PathQuery, Query as GroveQuery, SizedQuery,
+};
 
 use crate::workload::{AppendEntry, BatchOp, Op, Query, QueryItem, Read, Write};
 
@@ -127,6 +129,34 @@ fn query(at: &[&[u8]], item: QueryItem, raw: bool) -> Op {
         left_to_right: true,
         raw,
     }))
+}
+
+/// A path query that is run and, whatever the grove version, proven.
+fn proven(path_query: PathQuery) -> Op {
+    Op::Read(Read::PathQuery {
+        query: Box::new(path_query),
+        proven: true,
+    })
+}
+
+fn sized(at: &[&[u8]], query: GroveQuery, limit: Option<u16>, offset: Option<u16>) -> PathQuery {
+    PathQuery::new(path(at), SizedQuery::new(query, limit, offset))
+}
+
+fn insert_only(at: &[&[u8]], key: &[u8], element: Element) -> BatchOp {
+    BatchOp::InsertOnly {
+        path: path(at),
+        key: key.to_vec(),
+        element,
+    }
+}
+
+fn case(name: &str, about: &str, ops: Vec<Op>) -> Case {
+    Case {
+        name: name.to_string(),
+        about: about.to_string(),
+        ops,
+    }
 }
 
 fn key(key: &[u8]) -> QueryItem {

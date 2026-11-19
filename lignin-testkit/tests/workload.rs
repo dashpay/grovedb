@@ -1123,11 +1123,12 @@ fn check_answer(
                 }
                 keys.into_iter()
                     .filter_map(|key| {
-                        let element = db
-                            .get(unpaged.path.as_slice(), key, transaction, grove_version)
-                            .unwrap()
-                            .ok()?;
-                        Some((unpaged.path.clone(), key.to_vec(), element))
+                        let got = db.get(unpaged.path.as_slice(), key, transaction, grove_version);
+                        match got.unwrap() {
+                            Ok(element) => Some((unpaged.path.clone(), key.to_vec(), element)),
+                            Err(grovedb::Error::PathKeyNotFound(_)) => None,
+                            Err(error) => panic!("{context}\nreading a key: {error:?}"),
+                        }
                     })
                     .collect()
             } else {
@@ -2537,10 +2538,10 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 22265, "6ff2244bf6ccf3aaea3e219e798cc56a5a4ca9090fead97935f4cb917de0577a"),
-    (2, 22265, "6ff2244bf6ccf3aaea3e219e798cc56a5a4ca9090fead97935f4cb917de0577a"),
-    (3, 22289, "30448ca4f45053c913a7d1983f7923141e5218db8d7fd571016835890c4281ff"),
-    (4, 22834, "7b328fe61b7fb472854a178d5e1b7048c82e18c4c29d24d7c9a0cc026a3cc3b6"),
+    (1, 22263, "0905aaa730389079f162bd5fd79a1f502d66e71554ab2e96034c312db6cb9f4b"),
+    (2, 22263, "0905aaa730389079f162bd5fd79a1f502d66e71554ab2e96034c312db6cb9f4b"),
+    (3, 22287, "e8bc7dd16cbb6ea40a0ece9bbb8cb64c351e04124cd1245ef718409d0b142b51"),
+    (4, 22832, "7febce58a738c15901c554605f97878364f8d881b9802688a302c0bb654f6148"),
     (5, 23062, "0f9f2bc5669681de8a60361923cfb1a95d4a63221feff8b5d4eec4cb262c99cd"),
 ];
 

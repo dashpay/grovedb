@@ -358,7 +358,9 @@ operations! {
         CappedLayer =
             "`Query::limit` on a query node that has subqueries: a limit in force on the layer \
              the node walks.",
-        InheritedCap = "A layer with subqueries under the limit of a query node above it.",
+        InheritedCap =
+            "A layer with subqueries and no limit of its own under the limit of a query node \
+             above it.",
         CappedLayerInBranch =
             "A capped layer on one branch of a query, which is what `PathQuery::merge` makes \
              of a page.";
