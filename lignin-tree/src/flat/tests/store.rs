@@ -1473,6 +1473,9 @@ fn the_bytes_of_a_pending_value_are_with_its_page_under_its_name() {
     let mut writer = db.writer();
     let owner = OwnerId::new(db.state.borrow().owners);
     let before = pending_of(&db.reader().page(root).expect("the root"));
+    // The writer reads a page it has not taken as a reader does.
+    assert_eq!(get(&writer, &tree, &key(6)), Some(big(6)));
+    assert_eq!(writer.written().count(), 0);
     tree.put(&mut writer, &key(1), &big(1)).expect("a put");
     tree.put(&mut writer, &key(3), b"small").expect("a put");
     assert!(tree.delete(&mut writer, &key(4)).expect("a delete"));
@@ -1635,16 +1638,24 @@ fn a_write_whose_values_the_writer_does_not_hold_changes_nothing() {
         }
         leaf.finish()
     };
+    // The copy's bytes, and what is with its frame: each name with its
+    // bytes.
     let copy = || {
         let copy = db.pool.private(owner, root).expect("the writer's copy");
         let latch = copy.read();
-        let attached = latch.attachments().map(|(name, bytes)| (name, bytes.len()));
-        let [attached, held] = attached_and_held(&latch, attached.collect());
-        assert_eq!(attached, held);
+        let mut attached: Vec<(ValueId, Vec<u8>)> = latch
+            .attachments()
+            .map(|(name, bytes)| (name, bytes.to_vec()))
+            .collect();
+        attached.sort_unstable();
+        let lengths = attached.iter().map(|(name, bytes)| (*name, bytes.len()));
+        let [lengths, held] = attached_and_held(&latch, lengths.collect());
+        assert_eq!(lengths, held);
         (latch.to_vec(), attached)
     };
     let before = copy();
     assert_eq!(before.1.len(), 1);
+    assert_eq!(before.1[0].1, first);
 
     // The second entry says another length than its value has.
     let shorter = PendingValue::new(two.id(), 2_500).expect("a pending value");
@@ -1664,11 +1675,11 @@ fn a_write_whose_values_the_writer_does_not_hold_changes_nothing() {
     // The image whose entries say what the writer holds is taken, and its
     // commit names both values.
     writer.write(root, &image([one, two])).expect("written");
-    let (_, names) = copy();
-    assert_eq!(names, {
-        let mut names = [(one.id(), 2_000), (two.id(), 3_000)];
-        names.sort_unstable();
-        names
+    let (_, attached) = copy();
+    assert_eq!(attached, {
+        let mut attached = [(one.id(), vec![1; 2_000]), (two.id(), vec![2; 3_000])];
+        attached.sort_unstable();
+        attached
     });
     db.commit(writer);
     assert_eq!(get(&db.reader(), &tree, b"x"), Some(vec![1; 2_000]));
