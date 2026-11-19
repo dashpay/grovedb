@@ -63,7 +63,7 @@ impl Lignin {
 
     /// The key of the root of the Merk under `subtree`, as the subtree
     /// directory of the latest commit has it.
-    fn root_in_directory(&self, subtree: [u8; 32]) -> Option<Vec<u8>> {
+    fn root_in_directory(&self, subtree: Prefix) -> Option<Vec<u8>> {
         let guard = self.versions.guard();
         let pages = self.db.committed(&guard, self.versions.latest());
         let directory = self.db.directory_at(&pages);

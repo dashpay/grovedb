@@ -25,7 +25,8 @@
 //!    transaction is committed. The check of the committed tree pages
 //!    walks every Merk from the root its entry in the subtree directory
 //!    names, and must reach the keys RocksDB holds for that Merk and no
-//!    others, with a pointer in its host at every hosted root. Then every
+//!    others. The cell of the element that hosts a Merk must point, at the
+//!    Merk's position, at that root, and no cell at another. Then every
 //!    node of every Merk is read from the committed pages and compared, as
 //!    a record, with RocksDB's. Equal records from the root down are an
 //!    equal tree shape, and the root hash is a function of the root's
@@ -57,14 +58,20 @@ use grovedb_merk::{
 };
 use grovedb_storage::Storage;
 use grovedb_version::version::GroveVersion;
+use lignin_format::{CellAddress, CommitVersion};
+use lignin_store::load::LoadBuffers;
 use lignin_testkit::{
     golden::plan::{plan, Planned, Scale},
     layout_sim::{ChangeSet, Grove, MerkId, Observer},
     workload::apply::Transactions,
 };
-use lignindb::txn::{
-    testing::{Db, Outcome},
-    Subtree, WriteTxn,
+use lignin_tree::node::{Lease, NodePage};
+use lignindb::{
+    snapshot::Versions,
+    txn::{
+        testing::{Db, Outcome},
+        Subtree, WriteTxn,
+    },
 };
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
@@ -208,6 +215,37 @@ impl Change<'_> {
     }
 }
 
+/// What `changes` did to the nodes under each prefix that holds a Merk
+/// now. A tree that is deleted and inserted again in one operation is
+/// two Merks of the mirror under one prefix: the nodes of the first
+/// went with its drop, and the nodes of the second are written.
+fn by_prefix<'c>(grove: &'c Grove, changes: &'c ChangeSet) -> BTreeMap<Prefix, Change<'c>> {
+    let mut by_prefix: BTreeMap<Prefix, Change<'c>> = BTreeMap::new();
+    for event in &changes.events {
+        let node = grove.node(event.node);
+        let prefix = grove.merk(node.merk).prefix;
+        let change = (by_prefix.entry(prefix)).or_insert_with(|| Change::of(node.merk));
+        let written = (
+            &*node.key,
+            event.created,
+            event.value_changed,
+            event.links_changed,
+        );
+        change.written.push(written);
+    }
+    // A node that went with a Merk that is still there was cleared out
+    // of it: Merk removes each such node by its key.
+    let cleared = changes.dropped.iter();
+    let cleared = cleared.filter(|id| grove.merk(grove.node(**id).merk).live);
+    for id in changes.removed.iter().chain(cleared) {
+        let node = grove.node(*id);
+        let prefix = grove.merk(node.merk).prefix;
+        let change = (by_prefix.entry(prefix)).or_insert_with(|| Change::of(node.merk));
+        change.removed.push(&node.key);
+    }
+    by_prefix
+}
+
 struct Replay<'a> {
     db: &'a GroveDb,
     kinds: Kinds,
@@ -221,7 +259,7 @@ struct Replay<'a> {
 
 impl Replay<'_> {
     /// Forgets the entered subtree `prefix` and every subtree under it.
-    fn forget(&mut self, prefix: [u8; 32]) {
+    fn forget(&mut self, prefix: Prefix) {
         self.entered.remove(&prefix);
         let below = self.under.remove(&prefix).unwrap_or_default();
         for prefix in below.into_values().flatten() {
@@ -272,10 +310,12 @@ impl Replay<'_> {
 
         for id in &changes.merks_created {
             let merk = grove.merk(*id);
-            let at = merk.host.map(|at| grove.node(at));
             let subtree = subtree(grove, *id);
             (batch.enter(&subtree, TREE_TYPE)).expect("a Merk is among those its host hosts");
-            let at = at.map(|node| (node.merk, node.key.to_vec()));
+            let at = merk.host.map(|at| {
+                let node = grove.node(at);
+                (node.merk, node.key.to_vec())
+            });
             if let Some((host, key)) = &at {
                 let under = self.under.entry(grove.merk(*host).prefix).or_default();
                 under.entry(key.clone()).or_default().push(merk.prefix);
@@ -288,41 +328,6 @@ impl Replay<'_> {
         }
     }
 
-    /// What `changes` did to the nodes under each prefix that holds a Merk
-    /// now. A tree that is deleted and inserted again in one operation is
-    /// two Merks of the mirror under one prefix: the nodes of the first
-    /// went with its drop, and the nodes of the second are written.
-    fn by_prefix<'c>(
-        &self,
-        grove: &'c Grove,
-        changes: &'c ChangeSet,
-    ) -> BTreeMap<[u8; 32], Change<'c>> {
-        let mut by_prefix: BTreeMap<[u8; 32], Change<'c>> = BTreeMap::new();
-        for event in &changes.events {
-            let node = grove.node(event.node);
-            let prefix = grove.merk(node.merk).prefix;
-            let change = (by_prefix.entry(prefix)).or_insert_with(|| Change::of(node.merk));
-            let written = (
-                &*node.key,
-                event.created,
-                event.value_changed,
-                event.links_changed,
-            );
-            change.written.push(written);
-        }
-        // A node that went with a Merk that is still there was cleared out
-        // of it: Merk removes each such node by its key.
-        let cleared = changes.dropped.iter();
-        let cleared = cleared.filter(|id| grove.merk(grove.node(**id).merk).live);
-        for id in changes.removed.iter().chain(cleared) {
-            let node = grove.node(*id);
-            let prefix = grove.merk(node.merk).prefix;
-            let change = (by_prefix.entry(prefix)).or_insert_with(|| Change::of(node.merk));
-            change.removed.push(&node.key);
-        }
-        by_prefix
-    }
-
     /// Hands LigninDB what one operation did to the nodes of every Merk, as
     /// one batch, and compares each written node.
     fn write(
@@ -333,12 +338,12 @@ impl Replay<'_> {
         changes: &ChangeSet,
     ) {
         let storage = self.db.raw_storage();
-        let rocks = |prefix: [u8; 32]| {
+        let rocks = |prefix: Prefix| {
             storage
                 .get_transactional_storage_context_by_subtree_prefix(prefix, None, transaction)
                 .unwrap()
         };
-        let by_prefix = self.by_prefix(grove, changes);
+        let by_prefix = by_prefix(grove, changes);
         let version = GroveVersion::latest();
 
         let batch = LigninBatch::new();
@@ -417,23 +422,21 @@ impl Replay<'_> {
     }
 
     /// Compares what LigninDB has committed with the records RocksDB
-    /// holds: the keys the check of the tree pages reached from the root of
-    /// each Merk in the subtree directory (`reached`), the pointers to
-    /// hosted roots it followed (`pointers`), and every node of every Merk,
-    /// read through `committed`.
+    /// holds. `committed` says what the check of the tree pages reached
+    /// from the root of each Merk in the subtree directory, and every node
+    /// of every Merk is read through `reader`.
     fn compare_all(
         &mut self,
-        committed: &WriteTxn<'_>,
-        reached: &BTreeMap<Subtree, Vec<Vec<u8>>>,
-        pointers: u64,
+        committed: &Committed<'_>,
+        reader: &WriteTxn<'_>,
         transaction: &Transaction,
         grove: &Grove,
     ) {
         let storage = self.db.raw_storage();
         let (mut with_nodes, mut hosted) = (0, 0);
-        for (_, merk) in grove.merks().filter(|(_, merk)| merk.live) {
+        for (id, merk) in grove.merks().filter(|(_, merk)| merk.live) {
             let root = merk.root.map(|root| grove.node(root).key.to_vec());
-            let store = LigninNodeStore::read_only(committed, LigninSubtree::alone(merk.prefix));
+            let store = LigninNodeStore::read_only(reader, LigninSubtree::alone(merk.prefix));
             let stored = storage
                 .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
                 .unwrap();
@@ -452,18 +455,78 @@ impl Replay<'_> {
                 );
             }
             let keys: Vec<&[u8]> = expected.iter().map(|(key, _)| key.as_slice()).collect();
-            let from_root = reached.get(&Subtree::new(merk.prefix));
+            let subtree = Subtree::new(merk.prefix);
+            let from_root = committed.reached.get(&subtree);
             assert_eq!(
                 from_root.map_or(Vec::new(), |keys| keys.iter().map(Vec::as_slice).collect()),
                 keys,
                 "the keys under the root of the Merk {path:?} in the directory"
             );
             with_nodes += usize::from(!keys.is_empty());
-            hosted += u64::from(!keys.is_empty() && merk.host.is_some());
             self.tally.compared += expected.len() as u64;
+
+            // The cell of the element that hosts the Merk points, at the
+            // Merk's position, at the root its directory entry names.
+            let Some(host) = merk.host.map(|host| grove.node(host)) else {
+                continue;
+            };
+            let position = (host.hosted.iter().position(|hosted| *hosted == id))
+                .expect("a Merk is among those its host hosts");
+            let cell = reader
+                .node(
+                    Subtree::new(grove.merk(host.merk).prefix),
+                    &host.key,
+                    |node| node.and_then(|node| node.handle()),
+                )
+                .expect("the host is read")
+                .expect("a committed node has a place");
+            let pointers = committed.hosted_roots(cell.address());
+            assert_eq!(
+                pointers.get(position).copied().flatten(),
+                committed.roots.get(&subtree).copied(),
+                "the pointer to the Merk {path:?} in its host"
+            );
+            hosted += u64::from(!keys.is_empty());
         }
-        assert_eq!(reached.len(), with_nodes, "the Merks that have a node");
-        assert_eq!(pointers, hosted, "the hosts that point at a root");
+        let reached = committed.reached.len();
+        assert_eq!(reached, with_nodes, "the Merks that have a node");
+        assert_eq!(committed.pointers, hosted, "the pointers to a hosted root");
+    }
+}
+
+/// What the latest commit of a LigninDB store holds, as its check of the
+/// tree pages and its subtree directory have it.
+struct Committed<'a> {
+    db: &'a Db,
+    at: CommitVersion,
+    /// The keys reached from the root of each Merk that has a node.
+    reached: BTreeMap<Subtree, Vec<Vec<u8>>>,
+    /// The cell of the root of each Merk that has a node.
+    roots: BTreeMap<Subtree, CellAddress>,
+    /// How many pointers to the root of a hosted Merk the cells hold.
+    pointers: u64,
+}
+
+impl<'a> Committed<'a> {
+    fn check(db: &'a Db, versions: &Versions) -> Self {
+        let at = versions.latest();
+        Self {
+            db,
+            at,
+            reached: db.check_trees(versions, at),
+            roots: db.roots(versions, at),
+            pointers: db.counts.hosted.load(Ordering::Relaxed),
+        }
+    }
+
+    /// The roots the cell at `host` points at, by the position of the Merk
+    /// among those its node hosts.
+    fn hosted_roots(&self, host: CellAddress) -> Vec<Option<CellAddress>> {
+        let (loader, mut buffers) = (self.db.loader(), LoadBuffers::new());
+        let frame = (loader.get(host.page(), self.at, &mut buffers)).expect("the page of a host");
+        let page = NodePage::open(&frame, Lease::take()).expect("a tree page");
+        let node = page.node(host.slot()).expect("the cell of a host");
+        node.hosted_roots().collect()
     }
 }
 
@@ -514,11 +577,10 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         let outcome = lignin.commit(&versions, &transaction);
         assert_ne!(outcome.expect("a commit"), Outcome::Conflict);
 
-        let reached = lignin.check_trees(&versions, versions.latest());
-        let pointers = lignin.counts.hosted.load(Ordering::Relaxed);
-        let committed = path.begin();
+        let committed = Committed::check(&lignin, &versions);
+        let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
-        replay.compare_all(&committed, &reached, pointers, block, grove);
+        replay.compare_all(&committed, &reader, block, grove);
     }
 
     // Of the values it was handed, the store wrote exactly those whose
