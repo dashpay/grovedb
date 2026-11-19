@@ -55,6 +55,7 @@ mod tests {
         db
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Overwrite the row at the canonical secondary key with `row`,
     /// bound to `target_hash`. Passing the honest target hash isolates a
     /// row-CONTENT change; passing a different one isolates a
@@ -138,6 +139,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The sentinel path `verify_grovedb` files an issue under for the
     /// count axis of the PCIT built above.
     fn sentinel_path(kind: &str) -> Vec<Vec<u8>> {
@@ -149,6 +151,7 @@ mod tests {
         ]
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_only_issue(db: &GroveDb, kind: &str, grove_version: &GroveVersion) {
         let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();
         let want = sentinel_path(kind);
@@ -248,6 +251,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A legacy placeholder row — the representation this change
     /// replaced — must be rejected, not silently accepted.
     #[test]
@@ -259,6 +263,7 @@ mod tests {
         assert_only_issue(&db, "secondary_non_canonical_row", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A plain `Reference` folds to `(1, 0)` in a PCPS secondary, which
     /// would silently zero the band Total. It is not canonical.
     #[test]
@@ -276,6 +281,7 @@ mod tests {
         assert_only_issue(&db, "secondary_non_canonical_row", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A non-sibling reference type would make row size grow with grove
     /// depth and breaks the logical-origin rule.
     #[test]
@@ -301,6 +307,7 @@ mod tests {
         assert_only_issue(&db, "secondary_non_canonical_row", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The hop budget is part of the binding rule: one hop means the row
     /// binds the IMMEDIATE primary node. A different budget is a
     /// different binding and must not be accepted as canonical.
@@ -323,6 +330,7 @@ mod tests {
         assert_only_issue(&db, "secondary_non_canonical_row", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Canonical shape, but pointing at a different primary key than the
     /// secondary-key suffix encodes. The suffix and the reference are two
     /// independent encodings of the same fact and must agree.
@@ -345,6 +353,7 @@ mod tests {
         assert_only_issue(&db, "secondary_wrong_reference_target", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Canonical shape and target, wrong carried sum. On the count axis
     /// the payload sum is the COUNT, so a wrong one corrupts band totals
     /// while leaving the sort position — and therefore every key-only
@@ -368,6 +377,7 @@ mod tests {
         assert_only_issue(&db, "secondary_wrong_payload_sum", grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The headline case for the reference representation: every BYTE of
     /// the row is canonical and correct, and only the commitment is
     /// stale. This is what a value-only primary update produces if the
@@ -501,6 +511,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// An axis PROOF must not merely assume that a committed reference
     /// points at the key encoded in the row it sits in.
     ///

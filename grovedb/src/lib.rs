@@ -139,6 +139,12 @@
     all(test, not(feature = "rocksdb_storage")),
     allow(dead_code, unused_imports)
 )]
+// A test build for an engine other than RocksDB leaves out the tests that
+// reach under RocksDB, and with them the only users of some imports.
+#![cfg_attr(
+    all(test, not(grovedb_test_engine = "rocksdb")),
+    allow(unused_imports)
+)]
 
 #[cfg(feature = "engine_generic")]
 pub mod batch;
@@ -200,6 +206,8 @@ pub use element::ElementFlags;
 pub use engine::Engine;
 #[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
 use engine::NoEngine;
+#[cfg(feature = "rocksdb_storage")]
+use engine::DefaultEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::RocksDbEngine;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
@@ -347,7 +355,7 @@ type Hash = [u8; 32];
 /// verifiers and the estimated costs.
 #[cfg(feature = "engine_generic")]
 pub struct GroveDb<
-    #[cfg(feature = "rocksdb_storage")] E: Engine = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E: Engine = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E = NoEngine,
 > {
     db: E,
@@ -366,7 +374,7 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 #[cfg(feature = "engine_generic")]
 pub type Transaction<
     'db,
-    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E,
 > = <E as Engine>::Transaction<'db>;
 /// An optional transaction: `None` runs the operation in a transaction of
@@ -375,7 +383,7 @@ pub type Transaction<
 pub type TransactionArg<
     'db,
     'a,
-    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
     #[cfg(not(feature = "rocksdb_storage"))] E,
 > = Option<&'a Transaction<'db, E>>;
 

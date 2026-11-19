@@ -56,6 +56,7 @@ mod tests {
         db.get(path, key, None, gv).unwrap().expect("get")
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn placeholder(label: &str) -> CryptoHash {
         blake3::hash(label.as_bytes()).into()
     }
@@ -64,6 +65,7 @@ mod tests {
         path.iter().map(|segment| segment.to_vec()).collect()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `element` at `key` of the tree at `path` with `feature_type` as
     /// its node's own aggregate, whatever the element is worth, then
     /// propagate. Propagation re-derives every hash and every ancestor's
@@ -107,6 +109,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Assert the only issue is the recomputed-aggregate one at `path`, with
     /// the given labels.
     fn assert_only_aggregate_issue(
@@ -133,6 +136,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `element` at `key` of the tree at `path` with `feature_type` as
     /// its node's own aggregate and commit, without propagating. For a
     /// planted value that makes the tree's stored aggregate unreadable:
@@ -169,6 +173,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The root key the indexed tree element records for its `axis`
     /// secondary.
     fn recorded_secondary_root_key(indexed_tree: &Element, axis: IndexAxis) -> Option<Vec<u8>> {
@@ -185,6 +190,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// In the `axis` secondary of the indexed tree at `tree_path`, write the
     /// row at `row_key` (the row of the entry `item_key`) back unchanged with
     /// `feature_type` as its node's own aggregate, and commit. Every row
@@ -259,6 +265,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rebind the count indexed tree element at `tree_path` to the root
     /// hashes its primary and its secondary have now, and propagate, so the
     /// hash chain is whole again after a write to the secondary. The element
@@ -335,6 +342,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The root hash of the Merk of the tree at `path`.
     fn root_hash(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> CryptoHash {
         let tx = db.start_transaction();
@@ -346,6 +354,7 @@ mod tests {
             .unwrap()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The reason the Merk of the tree at `path` gives for not being able to
     /// read its stored aggregate.
     fn unreadable_aggregate_reason(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> String {
@@ -363,6 +372,7 @@ mod tests {
     // Drift is reported
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_sum_tree_whose_stored_sum_differs_from_its_sum_items() {
         let gv = GroveVersion::latest();
@@ -414,6 +424,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_count_tree_whose_stored_count_differs_from_its_elements() {
         let gv = GroveVersion::latest();
@@ -456,6 +467,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_drift_in_every_other_aggregate_tree_type() {
         let gv = GroveVersion::latest();
@@ -538,6 +550,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_provable_count_tree_whose_stored_count_differs_from_its_elements() {
         let gv = GroveVersion::latest();
@@ -579,6 +592,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_only_the_drifted_tree_when_it_is_nested_in_aggregate_trees() {
         let gv = GroveVersion::latest();
@@ -631,6 +645,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_drifted_count_tree_under_an_indexed_tree() {
         let gv = GroveVersion::latest();
@@ -682,6 +697,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_sum_items_totalling_more_than_the_tree_can_hold() {
         let gv = GroveVersion::latest();
@@ -728,6 +744,7 @@ mod tests {
     // Indexed tree secondaries
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A count indexed tree at `[TEST_LEAF, cidx]` holding the items `a`,
     /// `b` and `c`.
     fn make_count_indexed_tree(db: &GroveDb, gv: &GroveVersion) {
@@ -751,6 +768,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_an_indexed_tree_secondary_whose_stored_aggregate_differs_from_its_rows() {
         let gv = GroveVersion::latest();
@@ -783,6 +801,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_drift_in_the_secondary_of_every_indexed_tree_axis() {
         let gv = GroveVersion::latest();
@@ -906,6 +925,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_an_indexed_tree_whose_recorded_aggregate_differs_from_its_primary() {
         let gv = GroveVersion::latest();
@@ -1001,6 +1021,7 @@ mod tests {
     // A stored aggregate that cannot be read
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_sum_tree_whose_stored_sum_cannot_be_read() {
         let gv = GroveVersion::latest();
@@ -1037,6 +1058,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_still_check_the_hash_chain_of_a_sum_tree_whose_stored_sum_cannot_be_read() {
         let gv = GroveVersion::latest();
@@ -1074,6 +1096,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_provable_count_tree_whose_stored_count_cannot_be_read() {
         let gv = GroveVersion::latest();
@@ -1150,6 +1173,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_an_indexed_tree_whose_primary_or_secondary_aggregate_cannot_be_read() {
         let gv = GroveVersion::latest();
@@ -1207,6 +1231,7 @@ mod tests {
     // A stored aggregate of another kind than the tree's
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// One node of every feature type.
     fn every_feature_type() -> [TreeFeatureType; 9] {
         [
@@ -1222,6 +1247,7 @@ mod tests {
         ]
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The label for a root node whose aggregate is not of the kind the
     /// tree's root hash commits to.
     fn another_kind_label(stored: AggregateData, tree_type: TreeType) -> String {
@@ -1231,6 +1257,7 @@ mod tests {
         )
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The aggregate the Merk of the tree at `path` stores.
     fn stored_aggregate(db: &GroveDb, path: &[&[u8]], gv: &GroveVersion) -> AggregateData {
         let tx = db.start_transaction();
@@ -1242,6 +1269,7 @@ mod tests {
             .expect("the stored aggregate can be read")
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The aggregate the count secondary of the indexed tree at `tree_path`
     /// stores.
     fn count_secondary_stored_aggregate(
@@ -1267,6 +1295,7 @@ mod tests {
         .expect("the stored aggregate can be read")
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_a_root_node_whose_aggregate_is_of_another_kind_than_its_tree() {
         let gv = GroveVersion::latest();
@@ -1361,6 +1390,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_report_an_indexed_tree_whose_root_aggregate_is_of_another_kind() {
         let gv = GroveVersion::latest();

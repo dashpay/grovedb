@@ -101,20 +101,7 @@ mod tests {
     /// Number of records physically present in the data namespace of
     /// `prefix` (committed state).
     fn records_in(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.storage().start_transaction();
-        let ctx = db
-            .db
-            .storage()
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        let mut count = 0;
-        while iter.valid().unwrap() {
-            count += 1;
-            iter.next().unwrap();
-        }
-        count
+        crate::tests::data_keyspace_len(db, prefix, None)
     }
 
     fn prefix_of(subtree: &[&[u8]]) -> [u8; 32] {

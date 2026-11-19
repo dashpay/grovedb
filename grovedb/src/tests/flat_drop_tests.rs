@@ -44,39 +44,13 @@ mod tests {
     /// Number of keys physically present in the data namespace under
     /// `prefix` (committed state).
     fn data_namespace_key_count(db: &TempGroveDb, prefix: [u8; 32]) -> usize {
-        let tx = db.db.storage().start_transaction();
-        let ctx = db
-            .db
-            .storage()
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        let mut count = 0;
-        while iter.valid().unwrap() {
-            count += 1;
-            iter.next().unwrap();
-        }
-        count
+        crate::tests::data_keyspace_len(db, prefix, None)
     }
 
     /// Whether a pending-prefix-drop redo record exists for `prefix`
     /// (committed state).
     fn record_exists(db: &TempGroveDb, prefix: [u8; 32]) -> bool {
-        let tx = db.db.storage().start_transaction();
-        let ctx = db
-            .db
-            .storage()
-            .get_transactional_storage_context_by_subtree_prefix(
-                *pending_prefix_drops_namespace(),
-                None,
-                &tx,
-            )
-            .unwrap();
-        ctx.get_meta(prefix)
-            .unwrap()
-            .expect("read record")
-            .is_some()
+        crate::tests::pending_prefix_drop_recorded(db, prefix)
     }
 
     fn prefix_of(path: &[&[u8]]) -> [u8; 32] {
@@ -154,6 +128,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write `value` at `key` straight into the data storage of the subtree
     /// at `path`, bypassing Merk.
     fn put_raw(db: &TempGroveDb, path: &[&[u8]], key: &[u8], value: &[u8]) {
@@ -171,6 +146,7 @@ mod tests {
         db.commit_transaction(tx).unwrap().expect("commit raw put");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The bytes stored at `key` in the data storage of the subtree at
     /// `path`, read without Merk.
     fn get_raw_bytes(db: &TempGroveDb, path: &[&[u8]], key: &[u8]) -> Vec<u8> {
@@ -413,6 +389,7 @@ mod tests {
         assert_grove_verifies(&db, grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn flush_resumes_after_simulated_crash_between_tombstones_and_record_removal() {
         let grove_version = GroveVersion::latest();
@@ -781,6 +758,7 @@ mod tests {
         assert_grove_verifies(&db, grove_version);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn should_count_a_record_whose_liveness_check_fails_and_keep_draining() {
         let grove_version = GroveVersion::latest();

@@ -39,6 +39,7 @@ mod tests {
     // Helpers
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
         let mut k = Vec::with_capacity(8 + item_key.len());
         k.extend_from_slice(&count.to_be_bytes());
@@ -106,6 +107,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Drift the count secondary of a PCIT away from its primary while keeping
     /// the tree *structurally* sound: the rows are added/removed directly, then
     /// the parent element is rebound to the secondary's new `(root_hash,
@@ -273,6 +275,7 @@ mod tests {
     // Repair: delete rows the primary does not justify
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A secondary row with no matching primary entry (`__cidx_secondary_orphan__`)
     /// must be deleted by reconcile.
     ///
@@ -348,6 +351,7 @@ mod tests {
     // Repair: insert rows the primary requires
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A primary entry with no secondary row (`__cidx_primary_orphan__`) must be
     /// re-indexed by reconcile at the count the primary actually records.
     #[test]
@@ -404,6 +408,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Both repair directions in one pass, against a non-trivial count: the row
     /// for `a` is at the wrong count, so reconcile must delete `(7, "a")` *and*
     /// insert `(1, "a")`. Pins that the deletion set and the insertion set are
@@ -462,6 +467,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// The rebuild replays the desired keyset from a `BTreeSet`, so the repaired
     /// secondary's AVL shape — and therefore the `combine_hash_three` parent
     /// binding and the GroveDB root hash — depends only on the primary's
@@ -524,6 +530,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Reconcile must derive counts from the primary's *aggregates*, not assume
     /// every entry contributes 1. A PCIT whose children are `ProvableCountTree`
     /// subtrees carries their descendant counts, and the repaired secondary must
@@ -669,6 +676,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A primary key longer than the 247-byte cidx ceiling cannot be mirrored:
     /// `sort_key ‖ item_key` would exceed Merk's 256-byte limit. Every write
     /// door refuses such a key, so reaching it means the primary was written by
@@ -796,6 +804,7 @@ mod tests {
     // Malformed secondary rows must surface, not be silently dropped
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_short_key_corruption(err: Error, context: &str) {
         match err {
             Error::CorruptedData(message) => assert!(
@@ -806,6 +815,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A secondary row whose key is shorter than the axis's 8-byte sort prefix
     /// carries no recoverable `(count, original_key)` pair. Every place that
     /// decodes a row must raise `CorruptedData` naming the axis and the
@@ -1006,6 +1016,7 @@ mod tests {
 
     use crate::operations::indexed_tree::{axis_secondary_tree_type, make_axis_secondary_key};
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn make_psit_with(db: &TempGroveDb, key: &[u8], sums: &[(&[u8], i64)], gv: &GroveVersion) {
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -1059,6 +1070,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Axis-aware sibling of [`drift_secondary`]: edit rows in ONE axis
     /// secondary of any indexed variant, then rebind the parent element to
     /// every axis's current `(root_hash, root_key)` so the damage is a
@@ -1219,6 +1231,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rebind a PCIT's parent element so its `secondary_root_key` names a
     /// key that does not exist in the count secondary, leaving every row
     /// and hash otherwise intact. Produces the state a counted read must
@@ -1307,6 +1320,7 @@ mod tests {
         tx.commit().expect("tx commit");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// A parent element whose `secondary_root_key` names a node that does
     /// not exist must fail loud through the counted path. The pinned view
     /// read the element itself, so a dangling root key is corruption, not
@@ -1350,6 +1364,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// PSIT: an orphan row in the sum secondary is removed and the root
     /// returns to the pristine twin's — the repair covers the sum axis, not
     /// just count.
@@ -1389,6 +1404,7 @@ mod tests {
         assert_clean(&db, gv);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// PCPSIT: a row at the CORRECT avg sort key carrying a damaged payload
     /// must be rewritten. Key-presence alone cannot detect this — it is the
     /// content-compare path the count-only reconcile never needed. The
@@ -1434,6 +1450,7 @@ mod tests {
         assert_clean(&db, gv);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Two PCPSITs damaged DIFFERENTLY (a ghost row on the sum axis, a
     /// deleted row on the avg axis) must both reconcile back to the pristine
     /// twin's root — canonical content repair across axes, with damage whose

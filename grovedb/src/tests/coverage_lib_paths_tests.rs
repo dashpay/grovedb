@@ -41,6 +41,7 @@ mod tests {
         path.into()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Derived storage prefix of an indexed primary's per-axis secondary
     /// namespace (`Blake3(primary_prefix ‖ axis_tag)`).
     fn axis_secondary_prefix(primary_path: &[&[u8]], axis: IndexAxis) -> [u8; 32] {
@@ -48,6 +49,7 @@ mod tests {
         RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag()).unwrap()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Write a raw key/value straight into a subtree's data namespace,
     /// bypassing the Merk tree structure entirely. The row is invisible to
     /// tree traversal but IS visible to the raw iteration that
@@ -73,6 +75,7 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Same, but into an indexed primary's per-axis secondary namespace.
     /// Insert a row into an axis secondary through the Merk API, so the
     /// stored bytes are a real node the integrity walk can decode. Raw
@@ -134,6 +137,7 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn raw_put_in_axis_secondary(
         db: &GroveDb,
         primary_path: &[&[u8]],
@@ -162,6 +166,7 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Insert an element straight into a subtree's Merk, bypassing the
     /// grovedb-level insert API (and therefore the indexed-tree secondary
     /// mirroring and key-length validation).
@@ -197,6 +202,7 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Rewrite the axes list of an existing PCPSIT element in place.
     ///
     /// The constructors and the insert path validate axis tags, but
@@ -259,6 +265,7 @@ mod tests {
         tx.commit().expect("commit tx");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Drive `propagate_changes_with_transaction_with_initial_deferred`
     /// directly, seeding its `merk_cache` with the Merk at `path`. This is
     /// the entry point every mutating operation funnels through; calling it
@@ -307,6 +314,7 @@ mod tests {
         result
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn issue_keys(issues: &crate::VerificationIssues) -> Vec<String> {
         issues
             .keys()
@@ -319,6 +327,7 @@ mod tests {
             .collect()
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn sentinel_path(primary: &[&[u8]], sentinel: &str, item_key: &[u8]) -> Vec<Vec<u8>> {
         let mut p: Vec<Vec<u8>> = primary.iter().map(|s| s.to_vec()).collect();
         p.push(sentinel.as_bytes().to_vec());
@@ -385,6 +394,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn open_with_cidx_integrity_check_rejects_drifted_secondary() {
         let grove_version = GroveVersion::latest();
@@ -474,6 +484,7 @@ mod tests {
     // `propagate_changes_with_transaction_with_initial_deferred` guards
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_with_deferred_secondary_over_plain_tree_is_rejected() {
         // A deferred secondary means "the child I just came from was an
@@ -627,6 +638,7 @@ mod tests {
     // PCPSIT propagation: rebuilding the axes digest from on-disk state
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn all_axes() -> Vec<(u8, Option<Vec<u8>>)> {
         vec![
             (IndexAxis::Count.tag(), None),
@@ -635,6 +647,7 @@ mod tests {
         ]
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_from_pcpsit_primary_rebuilds_axes_digest_from_disk() {
         // When propagation starts AT an indexed primary and no per-axis
@@ -725,6 +738,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_from_pcpsit_primary_with_unknown_axis_tag_is_rejected() {
         // The axes list is read back from the element, so a tag outside
@@ -757,6 +771,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn propagate_mirror_over_indexed_element_with_unknown_axis_tag_is_rejected() {
         // Same corrupt element, but reached from BELOW: the mirror step
@@ -863,6 +878,7 @@ mod tests {
     // `verify_indexed_axis_content`: malformed / oversize key sentinels
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_flags_oversize_primary_key_in_pcit() {
         // A primary item key longer than the 247-byte cidx ceiling cannot
@@ -939,6 +955,7 @@ mod tests {
         )));
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_flags_malformed_secondary_key_in_pcit() {
         // A secondary row whose key is shorter than the axis sort-key
@@ -996,6 +1013,7 @@ mod tests {
     // `verify_indexed_axis_content`: per-axis decoded mismatch reporting
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_reports_psit_sum_mismatch_with_decoded_sums() {
         // Plant a second row for item `a` under a LOWER sum sort key. The
@@ -1051,6 +1069,7 @@ mod tests {
         assert_eq!(&entry.1[..24], &[0u8; 24], "sum is right-aligned");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_reports_pcpsit_avg_mismatch_with_decoded_averages() {
         // Same shape on the avg axis, whose sort key is a 16-byte
@@ -1120,6 +1139,7 @@ mod tests {
     // `verify_grovedb`: hard errors surfacing out of the indexed arms
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_undecodable_row_error(err: Error) {
         match err {
             Error::MerkError(_) | Error::ElementError(_) | Error::CorruptedData(_) => {}
@@ -1127,6 +1147,7 @@ mod tests {
         }
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_pcit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1162,6 +1183,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_psit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1197,6 +1219,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_in_pcpsit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1233,6 +1256,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_pcit_primary() {
         // The bad row lives one level DEEPER than the primary, so the
@@ -1276,6 +1300,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_psit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1316,6 +1341,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_undecodable_row_below_pcpsit_primary() {
         let grove_version = GroveVersion::latest();
@@ -1357,6 +1383,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn verify_grovedb_errors_on_pcpsit_element_with_unknown_axis_tag() {
         let grove_version = GroveVersion::latest();

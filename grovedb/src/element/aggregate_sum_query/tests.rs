@@ -3086,6 +3086,7 @@ fn test_descending_reference_followed() {
     );
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn test_cyclic_reference_detected_in_aggregate_sum_query() {
     // Two references form a cycle: ref_a -> ref_b -> ref_a.
@@ -3171,6 +3172,7 @@ fn test_cyclic_reference_detected_in_aggregate_sum_query() {
     );
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn test_self_referencing_element_detected_in_aggregate_sum_query() {
     // A reference that points to itself: ref_self -> ref_self.

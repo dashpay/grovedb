@@ -511,6 +511,7 @@ fn test_private_document_store_rejects_child_element_inserts() {
 // Delete tests
 // ===========================================================================
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 #[test]
 fn test_private_document_store_delete() {
     let grove_version = GroveVersion::latest();

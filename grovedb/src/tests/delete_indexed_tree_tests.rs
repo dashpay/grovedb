@@ -27,6 +27,7 @@ mod tests {
         Element, Error,
     };
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Seed a stale ("drifted") raw KV directly into an indexed tree's
     /// per-axis secondary storage namespace, bypassing the primary. This
     /// mirrors a bug where the secondary index fails to be mirror-cleaned
@@ -69,18 +70,11 @@ mod tests {
         secondary_prefix
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// Assert whether the secondary namespace at `secondary_prefix` has
     /// any rows.
     fn secondary_namespace_non_empty(db: &crate::GroveDb, secondary_prefix: [u8; 32]) -> bool {
-        let tx = db.start_transaction();
-        let ctx = db
-            .db
-            .storage()
-            .get_transactional_storage_context_by_subtree_prefix(secondary_prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        iter.valid().unwrap()
+        crate::tests::data_keyspace_len(db, secondary_prefix, None) > 0
     }
 
     fn delete_options_allow_non_empty() -> DeleteOptions {
@@ -675,6 +669,7 @@ mod tests {
     // the fix (gate = `is_count_indexed_primary()`, axis = Count only) the
     // Sum/Avg orphans on PSIT/PCPSIT would survive the delete.
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn delete_empty_psit_clears_drifted_sum_secondary() {
         let grove_version = GroveVersion::latest();
@@ -716,6 +711,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn delete_empty_pcpsit_clears_all_drifted_axis_secondaries() {
         let grove_version = GroveVersion::latest();

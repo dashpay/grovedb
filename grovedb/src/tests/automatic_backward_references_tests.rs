@@ -1323,6 +1323,7 @@ fn initial_segment_removal_keeps_its_own_declaration() {
     }
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 /// A skipped callback `DeleteTree(Skip)` must not erase the cleanup behavior
 /// of the `DeleteTree(DeleteChildren)` the initial segment executed at the
 /// same path: the removed subtree's storage is still cleaned.
@@ -1621,6 +1622,7 @@ fn delete_up_tree_honors_the_declared_displaced_value() {
         .is_ok());
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 /// A callback `DeleteTree(DontCheckWithNoCleanup)` at the same key as an
 /// initial-segment `DeleteTree(DeleteChildren)` must not change how the
 /// initial deletion is cleaned up: the cleanup walk still runs, so it still

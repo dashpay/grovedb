@@ -1343,6 +1343,7 @@ mod tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_range_query() {
         let grove_version = GroveVersion::latest();
@@ -1460,6 +1461,7 @@ mod tests {
         assert_eq!(skipped, 0);
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_range_inclusive_query() {
         let grove_version = GroveVersion::latest();

@@ -2380,6 +2380,7 @@ fn plain_writes_still_route_through_pre_v4_dispatch() {
     );
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 /// `verify_grovedb` recomputes the combined (inner ‖ backrefs) hash for
 /// backward-references items and reports nodes whose stored value hash
 /// does not match — e.g. one written with a corrupt provided hash.
@@ -3426,6 +3427,7 @@ fn automatic_delete_handles_specialized_descendants() {
         .is_empty());
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 /// `verify_grovedb` audits reciprocity: a forged referrer entry naming a
 /// position that does not point back is reported.
 #[test]
@@ -3846,6 +3848,7 @@ fn proof_generation_respects_bidi_max_hop() {
     );
 }
 
+#[cfg(grovedb_test_engine = "rocksdb")]
 /// The reciprocity audit reports BOTH directions: a live edge whose
 /// target lost its registration (planted via a direct merk write with a
 /// consistent hash, so only the forward-membership audit can see it) and

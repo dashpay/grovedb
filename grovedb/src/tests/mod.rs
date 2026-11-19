@@ -2,9 +2,11 @@
 
 pub mod common;
 pub(crate) mod faultable_reads;
+pub(crate) mod pinned_reads;
 
 mod query_tests;
 
+mod suite_engine_tests;
 mod sum_tree_tests;
 
 mod aggregate_count_and_sum_carrier_query_tests;
@@ -196,6 +198,67 @@ use crate::{
     reference_path::ReferencePathType,
     tests::common::compare_result_tuples,
 };
+
+/// The engine this build of the suite runs on: the one `GROVEDB_TEST_ENGINE`
+/// names, or the first of `grovedb/test-engines.txt`.
+///
+/// In a test build it is the default engine of `GroveDb`
+/// ([`DefaultEngine`](crate::engine::DefaultEngine)). So a test that names no
+/// engine runs on it: `GroveDb`, `Transaction`, `GroveDb::open` and the
+/// fixtures below all mean this engine. A test that is about one engine names
+/// that engine, or is compiled for it alone with
+/// `#[cfg(grovedb_test_engine = "..")]`.
+#[cfg(grovedb_test_engine = "rocksdb")]
+pub type SuiteEngine = crate::RocksDbEngine;
+#[cfg(grovedb_test_engine = "pinned-reads")]
+pub type SuiteEngine = pinned_reads::PinnedReads;
+
+/// The number of records in the data keyspace of the subtree with `prefix`,
+/// as `transaction` reads it, or in the committed state with none.
+///
+/// The keyspace holds Merk nodes or the records of an append-only tree,
+/// never both, and an engine may keep the two apart. Both cursors are
+/// walked, and the larger count is the keyspace's.
+pub(crate) fn data_keyspace_len(db: &GroveDb, prefix: [u8; 32], transaction: TransactionArg) -> usize {
+    use grovedb_merk::store::{NodeCursor, NodeStore};
+    use grovedb_storage::{FlatStore, RawIterator};
+
+    let local = db.start_transaction();
+    let handle = db
+        .db
+        .subtree_by_prefix(prefix, None, transaction.unwrap_or(&local))
+        .unwrap();
+
+    let mut nodes = 0;
+    let mut cursor = NodeStore::cursor(&handle);
+    NodeCursor::seek_to_first(&mut cursor).unwrap();
+    while NodeCursor::valid(&cursor).unwrap() {
+        nodes += 1;
+        NodeCursor::next(&mut cursor).unwrap();
+    }
+
+    let mut records = 0;
+    let mut cursor = FlatStore::cursor(&handle);
+    RawIterator::seek_to_first(&mut cursor).unwrap();
+    while RawIterator::valid(&cursor).unwrap() {
+        records += 1;
+        RawIterator::next(&mut cursor).unwrap();
+    }
+
+    nodes.max(records)
+}
+
+/// Whether the engine holds a committed pending-prefix-drop record for the
+/// subtree with `prefix`.
+pub(crate) fn pending_prefix_drop_recorded(db: &GroveDb, prefix: [u8; 32]) -> bool {
+    use grovedb_storage::flat::PendingPrefixDrops;
+
+    db.db
+        .pending_prefix_drop_records()
+        .expect("the pending drops are listed")
+        .iter()
+        .any(|record| record.primary_prefix == prefix)
+}
 
 pub const TEST_LEAF: &[u8] = b"test_leaf";
 
@@ -3830,6 +3893,7 @@ mod general_tests {
         assert!(matches!(result, Err(Error::PathKeyNotFound(_))));
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_subtree_pairs_iterator() {
         let grove_version = GroveVersion::latest();
@@ -4019,6 +4083,7 @@ mod general_tests {
         );
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_root_subtree_has_root_key() {
         let grove_version = GroveVersion::latest();
@@ -4045,6 +4110,7 @@ mod general_tests {
         assert!(root_key.is_some())
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn test_get_subtree() {
         let grove_version = GroveVersion::latest();

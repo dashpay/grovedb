@@ -1,0 +1,10 @@
+# The engines GroveDB's test suite runs on, one name a line.
+#
+# `cargo test -p grovedb` runs the suite on the first. Another is selected by
+# name: `GROVEDB_TEST_ENGINE=pinned-reads cargo test -p grovedb`. CI runs the
+# suite once for every line (`.github/workflows/grovedb.yml`).
+#
+# A name is given its engine type in `src/tests/mod.rs` (`SuiteEngine`).
+# `docs/lignindb/test-engines.md` says what registering an engine takes.
+rocksdb
+pinned-reads

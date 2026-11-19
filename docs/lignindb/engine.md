@@ -203,12 +203,15 @@ Three things stay with the RocksDB engine and exist on `GroveDb<RocksDbEngine>` 
 ## GroveDb<E>
 
 ```rust
-pub struct GroveDb<E: Engine = RocksDbEngine> { db: E }
-pub type Transaction<'db, E = RocksDbEngine> = <E as Engine>::Transaction<'db>;
-pub type TransactionArg<'db, 'a, E = RocksDbEngine> = Option<&'a Transaction<'db, E>>;
+pub type DefaultEngine = RocksDbEngine;
+pub struct GroveDb<E: Engine = DefaultEngine> { db: E }
+pub type Transaction<'db, E = DefaultEngine> = <E as Engine>::Transaction<'db>;
+pub type TransactionArg<'db, 'a, E = DefaultEngine> = Option<&'a Transaction<'db, E>>;
 ```
 
 `GroveDb`, `Transaction<'db>` and `TransactionArg<'db, 'a>` with no engine named are what they were: `GroveDb<RocksDbEngine>`, `Tx<'db>` and `Option<&'a Tx<'db>>`. Platform builds against this branch with no change to its source.
+
+`grovedb::engine::DefaultEngine` is the one place that says which engine that is. In GroveDB's own unit tests it is the engine the suite was built for instead, which is how the tests, naming no engine, run on every registered engine ([`test-engines.md`](test-engines.md), SEAM-06).
 
 Three rules decide where a function of `GroveDb` lives:
 
@@ -272,7 +275,7 @@ Ten associated functions of `GroveDb` that name no engine are free functions of 
 - on a `Merk<S>`, generic over `S: NodeStore`: `update_tree_item_preserve_flag` and its two batch variants, `get_element_from_subtree`, `capture_indexed_entry_state`, and from the verification `verify_indexed_axis_content` and `element_for_reciprocity_audit`
 - on batch operations or plain values: `insert_indexed_tree_item_into_batch_operations`, `indexed_tree_item_with_root_state_into_batch_operations`, and `axis_label`
 
-Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an engine, so a test can run them on a store of its own. `FaultableReads` (`grovedb/src/tests/faultable_reads.rs`) is such a store: it wraps any `NodeStore` and fails the node reads of an armed key with a storage error. `open_merk` reads a subtree's parent element through it in test builds, on every engine. The ten tests of `parent_read_fault_tests.rs` (GroveDB #1056) open their handles with `Engine::subtree` and read them as a `NodeStore` or a `FlatStore`, so they name no storage context. What ties them to RocksDB is the fixture that opens their database, which is SEAM-06's to make generic. One of them already runs on a second engine: `a_failed_parent_read_is_a_storage_error_on_a_second_engine`.
+Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an engine, so a test can run them on a store of its own. `FaultableReads` (`grovedb/src/tests/faultable_reads.rs`) is such a store: it wraps any `NodeStore` and fails the node reads of an armed key with a storage error. `open_merk` reads a subtree's parent element through it in test builds, on every engine. The ten tests of `parent_read_fault_tests.rs` (GroveDB #1056) open their handles with `Engine::subtree` and read them as a `NodeStore` or a `FlatStore`, so they name no storage context. The fixture that opens their database opens the engine of the suite ([`test-engines.md`](test-engines.md)), so they run on every registered engine. `a_failed_parent_read_is_a_storage_error_on_a_second_engine` names its engine, `PinnedReads`, and runs on it in every run.
 
 ## How the RocksDB engine is checked
 
@@ -292,7 +295,7 @@ Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an
 | `a_retargeted_cursor_keeps_the_state_it_was_opened_on` | A cursor retargeted after a commit does not show it, and the next cursor does. |
 | `a_checkpoint_opens_with_the_state_it_captured`, `wipe_empties_every_keyspace`, `pending_prefix_drops_are_the_storages` | The operations outside the transaction. |
 | `a_merk_runs_on_a_subtree_handle_of_any_engine` | A function written for any `E: Engine` opens a Merk on a handle, commits through the batch, and reads the node back. |
-| `grovedb/src/tests/one_transaction_per_operation_tests.rs` | `GroveDb` on a second engine, `PinnedReads`: the RocksDB engine, except that the transaction of a read is a read-only snapshot and the engine counts the transactions it starts. Read operations given no transaction each start exactly one read transaction and no write transaction, among them a `get` that follows a reference, a query with a subquery, the getters of an MMR tree and the five reads of the big sum axis. None of these starts a snapshot. A proof starts the snapshot it pins and one read transaction for the row that is a reference. A proof of a layer under a per-instance cap, which proves that layer twice, starts one snapshot and nothing else, and its bytes are those of the default engine. `insert`, `delete`, `apply_batch`, `put_aux` and the four entry points of the indexed trees with a 128-bit sum each start one write transaction and no read, and an MMR append starts one of each. With a transaction of the caller's, none is started. A parent read that fails in a handle of this engine comes back as the storage error, and a parent that is not there as absence. |
+| `grovedb/src/tests/one_transaction_per_operation_tests.rs` | `GroveDb` on a second engine, `PinnedReads` (`grovedb/src/tests/pinned_reads.rs`): the RocksDB engine, except that the transaction of a read is a read-only snapshot and the engine counts the transactions it starts. It is also registered as an engine of the whole suite ([`test-engines.md`](test-engines.md)). Read operations given no transaction each start exactly one read transaction and no write transaction, among them a `get` that follows a reference, a query with a subquery, the getters of an MMR tree and the five reads of the big sum axis. None of these starts a snapshot. A proof starts the snapshot it pins and one read transaction for the row that is a reference. A proof of a layer under a per-instance cap, which proves that layer twice, starts one snapshot and nothing else, and its bytes are those of the default engine. `insert`, `delete`, `apply_batch`, `put_aux` and the four entry points of the indexed trees with a 128-bit sum each start one write transaction and no read, and an MMR append starts one of each. With a transaction of the caller's, none is started. A parent read that fails in a handle of this engine comes back as the storage error, and a parent that is not there as absence. |
 | `a_grovedb_is_opened_on_an_engine_and_sets_savepoints_through_it` | `open_with_engine`, `from_engine` and `engine()`, and `GroveDb`'s savepoints: a rollback undoes what came after the savepoint, and both are refused while a scope of the transaction is open. |
 
 Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, and so do the GroveDB and Merk suites.
@@ -302,7 +305,7 @@ Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, a
 | Task | What it builds on |
 | --- | --- |
 | SEAM-05 | Every storage charge GroveDB sees comes back from a call on `Engine`, on a handle or on a cursor. The fee rules that sit in the RocksDB engine today are listed under [Choices](#choices-this-task-made), item 9. |
-| SEAM-06 | Every operation of `GroveDb` is on `GroveDb<E>`. A suite written for `E: Engine` opens its database with `GroveDb::<E>::open_with_engine(path)`. The tests still name `GroveDb`, which is the RocksDB engine. A test that reaches under GroveDB to read or damage stored records says so: it calls `RocksDbEngine::storage()` and works on the storage contexts. `merk/src/test_utils` is unchanged and still opens RocksDB contexts. |
+| SEAM-06 | Every operation of `GroveDb` is on `GroveDb<E>`. The tests name `GroveDb`, which in a test build is the engine the suite was built for, and the suite is built and run once for every registered engine. A test that reaches under GroveDB to read or damage stored records says so: it calls `RocksDbEngine::storage()`, works on the storage contexts, and is compiled for the RocksDB engine alone. `merk/src/test_utils` is a harness over a `TestEngine` of Merk's own. All of it is in [`test-engines.md`](test-engines.md). |
 | SEAM-07 | Done: see [Features and engines](#features-and-engines). What named RocksDB in `grovedb` outside `grovedb::engine` was `RocksDbStorage::build_prefix` and `secondary_prefix_for`, the estimated-cost helpers with their `S: Storage` parameter, the debugger, `raw_storage` and `ingest_subtree_sst`, and the `impl GroveDb` blocks of rule 2, which exist for the default engine. |
 | GROVE-01 | The trait to implement. `Transaction<'db>` has to stand for a write transaction, a snapshot, the transaction of one read and a scope's view. `start_read_transaction` is where RD2 goes: a snapshot held for the operation. `Subtree<'a>` has to be a type of Merk that is a `NodeStore` (see [the RocksDB adapter](node-store.md#the-rocksdb-adapter)) and a `FlatStore`. The conflict maps to `Error::Commit(CommitError::Conflict)`. |
 | GROVE-03 | `SubtreeMove`: the re-hosting move behind the stepper, with the charges of the copy. |
@@ -329,6 +332,6 @@ The plan left these open. Later tasks build on them.
 10. **Static functions that name no engine stay on the default engine** (rule 2 above). They would otherwise need an engine written out at every call, in Platform too.
 11. **Savepoints are operations of the engine and of `GroveDb`**, so that an engine can refuse one while a scope is open. `Tx::set_savepoint` and `Tx::rollback_to_savepoint` stay, and Platform calls them.
 12. **`GroveDb`'s lifetimes in generic code** are as described under [Lifetimes](#lifetimes).
-13. **`merk/src/test_utils` is unchanged.** SEAM-06 decides what it becomes.
+13. **`merk/src/test_utils` is unchanged.** SEAM-06 decided what it becomes: the harness of [`test-engines.md`](test-engines.md#merk).
 14. **A read that is given no transaction starts one of its own kind**, `start_read_transaction`, so that an engine can tell it from a write and pin it (RD2). Which operations read was decided by one rule: an operation that never commits the transaction it started. A read starts exactly one, and hands it on. This changed how many transactions a read starts on RocksDB, from one for each part of the operation to one, and nothing a caller can see.
 15. **A test that reaches under GroveDB names the RocksDB storage**, through `RocksDbEngine::storage()`. It reads or damages records as RocksDB stores them, and no other engine has those.

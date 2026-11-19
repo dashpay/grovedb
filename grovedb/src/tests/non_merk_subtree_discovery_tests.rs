@@ -85,15 +85,7 @@ impl Family {
 }
 
 fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32], tx: TransactionArg) -> bool {
-    let local_tx = db.start_transaction();
-    let storage = db
-        .db
-        .storage()
-        .get_transactional_storage_context_by_subtree_prefix(prefix, None, tx.unwrap_or(&local_tx))
-        .unwrap();
-    let mut iter = storage.raw_iter();
-    iter.seek_to_first().unwrap();
-    iter.valid().unwrap()
+    crate::tests::data_keyspace_len(db, prefix, tx) > 0
 }
 
 fn prefix(path: &[&[u8]]) -> [u8; 32] {

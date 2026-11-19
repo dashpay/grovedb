@@ -910,6 +910,7 @@ mod tests {
         planned.value.expect("plan");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_moved_record_is_billed_exactly() {
         let grove_version = GroveVersion::latest();

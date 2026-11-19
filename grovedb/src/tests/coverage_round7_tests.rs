@@ -1426,6 +1426,7 @@ mod tests {
     // Section D — verify.rs and lib.rs targeted runs
     // =================================================================
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// verify_grovedb hard-error: when we corrupt a PCIT secondary by
     /// deleting an entry, the lib.rs corruption-detection branch fires
     /// and returns issues. This walks specific arms in
@@ -1566,6 +1567,7 @@ mod tests {
         assert!(result.is_empty());
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     /// visualize_verify_grovedb after PCIT secondary corruption: returns
     /// a non-empty map of hex-encoded paths. Exercises the conversion
     /// at L1217-1226 (lib.rs).

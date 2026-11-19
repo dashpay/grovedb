@@ -163,15 +163,7 @@ mod tests {
 
     /// Whether the storage namespace at `prefix` holds any rows.
     fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32]) -> bool {
-        let tx = db.start_transaction();
-        let ctx = db
-            .db
-            .storage()
-            .get_transactional_storage_context_by_subtree_prefix(prefix, None, &tx)
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        iter.valid().unwrap()
+        crate::tests::data_keyspace_len(db, prefix, None) > 0
     }
 
     /// Assert that all three axis namespaces of the indexed primary at
