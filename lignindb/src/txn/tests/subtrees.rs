@@ -1335,7 +1335,7 @@ fn a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it() {
     const LOWER: u8 = ENTERED + 16;
     const NESTED: u8 = ENTERED + 17;
     let names = [
-        1, 5, OUTER, INNER, NEW, HOSTED, UPPER, MIDDLE, LOWER, NESTED,
+        1, 4, 5, OUTER, INNER, NEW, HOSTED, UPPER, MIDDLE, LOWER, NESTED,
     ];
     let (db, versions) = Db::new(128);
     let mut world = World::new(&db, &versions);
@@ -1366,6 +1366,9 @@ fn a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it() {
         for index in 0..5u8 {
             items.insert(vec![b'k', index], vec![index; 20]);
         }
+    });
+    world.edit(&tx, 4, |items| {
+        drop(items.insert(b"solo".to_vec(), vec![4; 20]))
     });
     let scope = tx.txn.scope().expect("a scope");
     let through_inner = Some((inner.clone(), TREE_TYPE.to_vec(), below_outer.clone()));
@@ -1511,6 +1514,29 @@ fn a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it() {
         Some((Some(b"again".to_vec()), TREE_TYPE.to_vec(), None))
     );
     same(&world, &framed, &by_key, &names, "after a write of it");
+
+    // A change set that removes the last node of a Merk states that it
+    // has no root, with no clear: of a committed Merk, and of one the
+    // transaction wrote.
+    for name in [4, 5] {
+        assert!(shown(&framed, name).is_some_and(|(root, ..)| root.is_some()));
+        both(&world, [&framed, &by_key], |world, tx| {
+            let merk = world.merk(tx, name, |items| items.clear());
+            assert_eq!(merk.root, Some(None), "the change set states no root");
+            OwnedBatch {
+                merks: vec![merk],
+                ..OwnedBatch::default()
+            }
+        });
+        assert_eq!(shown(&framed, name), Some((None, TREE_TYPE.to_vec(), None)));
+    }
+    same(
+        &world,
+        &framed,
+        &by_key,
+        &names,
+        "after the last nodes went",
+    );
 
     // A subtree that is entered and not written goes with a subtree above
     // it that is cleared: under one the transaction entered and wrote,
@@ -1958,7 +1984,8 @@ fn random_run(seed: u64) -> (usize, usize) {
             // A place to go back to, and a rollback to one.
             88..94 => {
                 let (idle, writer) = scopes.take().expect("the scopes");
-                (writer.merge(), idle.merge());
+                writer.merge();
+                idle.merge();
                 marks.push((
                     framed.txn.mark(),
                     by_key.txn.mark(),
@@ -1976,7 +2003,8 @@ fn random_run(seed: u64) -> (usize, usize) {
                 let (framed_mark, by_key_mark, beside_mark, before) = marks.pop().expect("a mark");
                 assert!(framed.txn.rewind(framed_mark) && by_key.txn.rewind(by_key_mark));
                 let (idle, writer) = scopes.take().expect("the scopes");
-                (writer.merge(), idle.merge());
+                writer.merge();
+                idle.merge();
                 assert!(beside.txn.rewind(beside_mark));
                 scopes = Some(open());
                 held = before;
@@ -2020,7 +2048,8 @@ fn random_run(seed: u64) -> (usize, usize) {
     // The scope's writes are laid out when it merges, and the frames then
     // show what it was shown.
     let (idle, writer) = scopes.take().expect("the scopes");
-    (writer.merge(), idle.merge());
+    writer.merge();
+    idle.merge();
     for name in POOL {
         assert_eq!(shown(&beside, name), held.shown(name), "{name}, merged");
     }
