@@ -217,8 +217,8 @@
 //! open one, are refused at once with [`TxnError::ScopeOpen`], as a claim
 //! never waits (SC3). A scope merges or is rolled back, and the rollback is
 //! a rollback to the mark the scope took (SC6). Claims, scopes that run at
-//! the same time and their reconciliation are TXN-09's, and savepoints,
-//! which are marks kept in a stack, are TXN-04's: [`Mark`] and the
+//! the same time and their reconciliation are TXN-09's, and savepoints
+//! are marks kept in a stack ([`crate::savepoint`]): [`Mark`] and the
 //! rollback to one are what both build on.
 //!
 //! Every call holds the transaction's own lock (LT7 level 2) for its
@@ -366,6 +366,7 @@ pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide};
 pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
+pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};
 pub use view::{LinkView, NodeView};
 pub use write::{
