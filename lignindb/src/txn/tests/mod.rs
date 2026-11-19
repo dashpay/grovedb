@@ -404,18 +404,19 @@ fn check_under(cursor: &mut MerkCursor<'_, '_>, key: &[u8], expected: &model::No
     use lignin_format::tree_page::Side;
 
     let mut children = ChildKeys::new();
-    cursor
+    // A record names its children in its links, which `check` compares,
+    // and a cell has their keys read with it.
+    let is_record = cursor
         .node_with_children(&mut children, |shown| {
-            expected.check(key, &shown.expect("a node under the cursor's key"))
+            let shown = shown.expect("a node under the cursor's key");
+            expected.check(key, &shown);
+            shown.is_record()
         })
         .expect("the node is read");
     for side in [Side::Left, Side::Right] {
         let child = expected.link(side).map(|link| &link.key[..]);
-        assert_eq!(
-            children.key(side),
-            child.unwrap_or_default(),
-            "a child of {key:?}"
-        );
+        let read = child.filter(|_| !is_record).unwrap_or_default();
+        assert_eq!(children.key(side), read, "a child of {key:?}");
     }
 }
 

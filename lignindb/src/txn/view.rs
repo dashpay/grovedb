@@ -71,13 +71,15 @@ pub struct LinkView<'a> {
     pub key: Option<&'a [u8]>,
 }
 
-/// The keys of the children of one node, read with the node
+/// The keys of the children of one cell, read with the node
 /// ([`MerkCursor::node_with_children`](super::MerkCursor::node_with_children)).
 ///
 /// A cell names its children by address and holds the length of each
 /// child's key (`tree-page.md` TP10): the key itself is in the child's
 /// cell. Merk's record of a node names each child by its key, so whoever
-/// builds that record reads the two cells too.
+/// builds that record reads the two cells too. A record of the write set
+/// names its children by key, in its links ([`LinkView::key`]), and no key
+/// is read for it.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ChildKeys {
     keys: [Vec<u8>; 2],
@@ -90,8 +92,8 @@ impl ChildKeys {
     }
 
     /// The key of the child on `side`. It is empty where the node has no
-    /// child there, as the key of a child can be: [`NodeView::link`] says
-    /// whether there is one.
+    /// child there, as the key of a child can be, and where the node's
+    /// link holds the key itself: [`NodeView::link`] says which.
     pub fn key(&self, side: Side) -> &[u8] {
         &self.keys[Self::at(side)]
     }
@@ -114,13 +116,9 @@ impl ChildKeys {
         self.keys.iter_mut().for_each(Vec::clear);
     }
 
-    /// Takes the keys from a record of the write set, which names its
-    /// children by key.
-    pub(crate) fn of_record(&mut self, node: &NodeView<'_>) {
-        for side in [Side::Left, Side::Right] {
-            let key = node.link(side).and_then(|link| link.key);
-            self.slot(side).extend_from_slice(key.unwrap_or_default());
-        }
+    /// Takes the key on `side` out, and leaves it empty.
+    pub fn take(&mut self, side: Side) -> Vec<u8> {
+        std::mem::take(&mut self.keys[Self::at(side)])
     }
 }
 

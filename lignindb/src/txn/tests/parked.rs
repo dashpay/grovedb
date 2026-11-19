@@ -31,6 +31,16 @@ fn change<'s>(
     }
 }
 
+/// A batch that clears the Merk `subtree` and writes it anew with `items`.
+fn anew(subtree: Subtree, items: &BTreeMap<Vec<u8>, Vec<u8>>) -> OwnedBatch {
+    let merk = OwnedMerk::change(subtree, &BTreeMap::new(), items);
+    OwnedBatch {
+        records: World::root_record(&merk).into_iter().collect(),
+        merks: vec![merk],
+        subtrees: vec![OwnedSubtree::Clear(subtree)],
+    }
+}
+
 /// Applies `batch` through `scope`, which stays open, and to the model of
 /// its transaction.
 fn apply_through<'s>(world: &World<'s>, tx: &Tx<'s>, scope: &Scope<'_, 's>, batch: &OwnedBatch) {
@@ -73,7 +83,7 @@ fn a_parked_cursor_reads_its_version_and_holds_no_page() {
     assert!(format!("{parked:?}").starts_with("ParkedCursor"));
     {
         let scope = scope.lock().unwrap();
-        let cursor = scope.resume(&mut parked).expect("its own scope");
+        let mut cursor = scope.resume(&mut parked).expect("its own scope");
         assert_eq!(cursor.version(), opened);
         cursor.seek(&key(10)).expect("a seek");
         assert_eq!(cursor.key(), Some(&key(10)[..]));
@@ -115,7 +125,7 @@ fn a_parked_cursor_reads_its_version_and_holds_no_page() {
         let (scope, parked) = (&scope, &mut parked);
         let there = threads.spawn(move || {
             let scope = scope.lock().unwrap();
-            let cursor = scope.resume(parked).expect("its own scope");
+            let mut cursor = scope.resume(parked).expect("its own scope");
             cursor.next().expect("a step");
             cursor.key().map(<[u8]>::to_vec)
         });
@@ -135,13 +145,13 @@ fn a_parked_cursor_reads_its_version_and_holds_no_page() {
     let frames = db.pool.census().pinned;
     let view = tx.model.borrow().view(&at_open, unit);
     let keys: Vec<Vec<u8>> = view.keys().cloned().collect();
-    let cursor = scope.resume(&mut parked).expect("its own scope");
+    let mut cursor = scope.resume(&mut parked).expect("its own scope");
     assert_eq!(cursor.version(), opened);
     assert_eq!(cursor.key(), Some(&key(12)[..]), "it kept its place");
     cursor.next().expect("a step");
     assert_eq!(cursor.key(), Some(&b"0012x"[..]));
-    assert_eq!(scan_merk(cursor, &view, false), keys);
-    let mut back = scan_merk(cursor, &view, true);
+    assert_eq!(scan_merk(cursor.cursor(), &view, false), keys);
+    let mut back = scan_merk(cursor.cursor(), &view, true);
     back.reverse();
     assert_eq!(back, keys);
     assert_eq!(db.pool.census().pinned, frames, "the cursor pins none");
@@ -194,7 +204,7 @@ fn a_parked_cursor_is_resumed_by_the_scope_that_opened_it_and_no_other() {
         drop(items.insert(key(20), b"the second scope's".to_vec()))
     });
     apply_through(&world, &tx, &second, &written);
-    let cursor = first.resume(&mut parked).expect("its own scope");
+    let mut cursor = first.resume(&mut parked).expect("its own scope");
     let refused = cursor.seek_to_first().expect_err("the Merk is held");
     assert!(
         matches!(refused, TxnError::ScopeOverlap { unit } if unit == Unit::data(subtree)),
@@ -203,7 +213,7 @@ fn a_parked_cursor_is_resumed_by_the_scope_that_opened_it_and_no_other() {
     assert_eq!(cursor.key(), None);
     let refused = cursor.node(|node| node.is_some());
     assert!(matches!(refused, Ok(false)), "it stands on no key");
-    let cursor = first.resume(&mut elsewhere).expect("its own scope");
+    let mut cursor = first.resume(&mut elsewhere).expect("its own scope");
     cursor.seek_to_first().expect("a seek");
     assert_eq!(cursor.key(), Some(&key(0)[..]));
 
@@ -214,8 +224,8 @@ fn a_parked_cursor_is_resumed_by_the_scope_that_opened_it_and_no_other() {
     let keys: Vec<Vec<u8>> = view.keys().cloned().collect();
     assert!(!second.is_laid_out());
     let mut own = second.parked_merk_cursor(subtree).expect("a cursor");
-    let cursor = second.resume(&mut own).expect("its own scope");
-    assert_eq!(scan_merk(cursor, &view, false), keys);
+    let mut cursor = second.resume(&mut own).expect("its own scope");
+    assert_eq!(scan_merk(cursor.cursor(), &view, false), keys);
     cursor.seek(&key(20)).expect("a seek");
     assert!(cursor
         .node(|node| node.is_some_and(|node| node.is_record()))
@@ -224,7 +234,7 @@ fn a_parked_cursor_is_resumed_by_the_scope_that_opened_it_and_no_other() {
 
     // Once the second scope has merged, the first reads what it wrote.
     second.merge();
-    let cursor = first.resume(&mut parked).expect("its own scope");
+    let mut cursor = first.resume(&mut parked).expect("its own scope");
     cursor.seek_to_last().expect("a seek");
     assert_eq!(cursor.key(), Some(&key(20)[..]));
 
@@ -274,7 +284,7 @@ fn a_parked_cursor_asks_for_its_subtree_again_after_a_drop_and_a_clear() {
         .parked_merk_cursor(model::subtree(2))
         .expect("a cursor");
     for parked in [&mut dropped, &mut cleared] {
-        let cursor = scope.resume(parked).expect("its own scope");
+        let mut cursor = scope.resume(parked).expect("its own scope");
         cursor.seek(&key(5)).expect("a seek");
         assert_eq!(cursor.key(), Some(&key(5)[..]));
     }
@@ -287,16 +297,10 @@ fn a_parked_cursor_asks_for_its_subtree_again_after_a_drop_and_a_clear() {
     };
     apply_through(&world, &tx, &scope, &leaves);
     let items: BTreeMap<Vec<u8>, Vec<u8>> = [(key(3), vec![9; 9]), (key(30), vec![9; 9])].into();
-    let anew = OwnedMerk::change(model::subtree(2), &BTreeMap::new(), &items);
-    let anew = OwnedBatch {
-        records: World::root_record(&anew).into_iter().collect(),
-        merks: vec![anew],
-        subtrees: vec![OwnedSubtree::Clear(model::subtree(2))],
-    };
-    apply_through(&world, &tx, &scope, &anew);
+    apply_through(&world, &tx, &scope, &anew(model::subtree(2), &items));
 
     // Each cursor stands on its key, with no node under it.
-    let cursor = scope.resume(&mut dropped).expect("its own scope");
+    let mut cursor = scope.resume(&mut dropped).expect("its own scope");
     assert_eq!(cursor.key(), Some(&key(5)[..]));
     assert!(cursor.node(|node| node.is_none()).expect("a read"));
     cursor.next().expect("a step");
@@ -304,7 +308,7 @@ fn a_parked_cursor_asks_for_its_subtree_again_after_a_drop_and_a_clear() {
     cursor.seek_to_first().expect("a seek");
     assert_eq!(cursor.key(), None);
 
-    let cursor = scope.resume(&mut cleared).expect("its own scope");
+    let mut cursor = scope.resume(&mut cleared).expect("its own scope");
     let mut children = ChildKeys::new();
     let none = cursor.node_with_children(&mut children, |node| node.is_none());
     assert!(none.expect("a read"));
@@ -316,7 +320,7 @@ fn a_parked_cursor_asks_for_its_subtree_again_after_a_drop_and_a_clear() {
         .model
         .borrow()
         .view(&world.model.records, Unit::data(model::subtree(2)));
-    assert_eq!(scan_merk(cursor, &view, false), [key(3), key(30)]);
+    assert_eq!(scan_merk(cursor.cursor(), &view, false), [key(3), key(30)]);
 
     scope.merge();
     drop((dropped, cleared));
@@ -347,6 +351,20 @@ fn the_children_of_a_node_that_is_found_by_its_key_are_read_at_the_cursors_versi
     let view = tx.model.borrow().view(&world.model.records, unit);
     let items = Committed::items(&view);
     let mut cursor = tx.txn.merk_cursor(subtree).expect("a cursor");
+    // A commit outside gives the Merk another shape after the cursor was
+    // opened: the cursor's version is not the latest one.
+    world.edit_outside(
+        2,
+        |items| {
+            for index in 0..14 {
+                match index % 3 {
+                    0 => drop(items.remove(&key(index))),
+                    _ => drop(items.insert(key(index + 100), vec![1; 5])),
+                }
+            }
+        },
+        &[&tx],
+    );
     let mut with_children = 0;
     for (at, expected) in &view {
         let Val::Node(expected) = expected else {
@@ -356,19 +374,14 @@ fn the_children_of_a_node_that_is_found_by_its_key_are_read_at_the_cursors_versi
         // comes to the key over the transaction's nodes alone: its
         // committed side is not read, and stays where it was.
         let mark = tx.txn.mark();
-        let anew = OwnedMerk::change(subtree, &BTreeMap::new(), &items);
-        let anew = OwnedBatch {
-            records: World::root_record(&anew).into_iter().collect(),
-            merks: vec![anew],
-            subtrees: vec![OwnedSubtree::Clear(subtree)],
-        };
-        world.apply(&tx, &anew).expect("the Merk is written anew");
+        (world.apply(&tx, &anew(subtree, &items))).expect("the Merk is written anew");
         cursor.seek(at).expect("a seek");
         assert_eq!(cursor.key(), Some(&at[..]));
         check_under(&mut cursor, at, expected);
 
         // The writes are taken back. The cursor stands on the key, and the
-        // node under it is the committed one.
+        // node under it is the one of the cursor's version, with the
+        // children it has there.
         assert!(tx.txn.rewind(mark));
         tx.forget();
         assert_eq!(cursor.key(), Some(&at[..]));

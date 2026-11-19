@@ -13,7 +13,7 @@ use lignin_tree::directory::MerkId;
 use super::*;
 use crate::{
     scope::table::{Lineage, MarkChange, MarkKey, Refused, ScopeId},
-    txn::{key::KeySet, Hosted, MerkSide, ParkedCursor, RecordWrite},
+    txn::{key::KeySet, Hosted, MerkSide, ParkedCursor, RecordWrite, Resumed},
 };
 
 /// The handle one thread writes a transaction through (`transactions.md`
@@ -96,9 +96,9 @@ impl<'t, 's> Scope<'t, 's> {
     /// writer share its scope behind a lock, which they take for each
     /// call.
     ///
-    /// The cursor is parked: it keeps its version pinned, its lease and
-    /// the key it stands on, and no page. It is moved and read through
-    /// [`Self::resume`] only, so by no one once this scope has ended.
+    /// The cursor is parked ([`ParkedCursor`]): it is moved and read
+    /// through [`Self::resume`] only, so by no one once this scope has
+    /// ended.
     pub fn parked_merk_cursor(
         &self,
         subtree: Subtree,
@@ -120,7 +120,7 @@ impl<'t, 's> Scope<'t, 's> {
     pub fn resume<'a, C>(
         &'a self,
         parked: &'a mut ParkedCursor<'t, 's, C>,
-    ) -> Option<&'a mut crate::txn::Cursor<'t, 's, C>> {
+    ) -> Option<Resumed<'a, 't, 's, C>> {
         parked.resume(self.txn, self.who())
     }
 
@@ -627,27 +627,6 @@ impl<'s> WriteTxn<'s> {
         match self.below_unlaid(state, op, &subtree)? {
             true => Ok(Ok(read(None))),
             false => Ok(Err(read)),
-        }
-    }
-
-    /// Reads into `children` the keys of the children of the node that
-    /// [`Self::unlaid_node`] shows under `key`, where that is the scope's
-    /// own record: a record names its children by key. For every other key
-    /// `children` holds none.
-    pub(super) fn unlaid_children(
-        &self,
-        state: &State<'s>,
-        who: Who,
-        subtree: Subtree,
-        key: &[u8],
-        children: &mut ChildKeys,
-    ) {
-        children.clear();
-        let unit = Unit::data(subtree);
-        let unlaid = who.id().is_some_and(|id| !state.scopes.laid(id))
-            && (state.set.newest(unit, key)).is_some_and(|newest| state.set.unlaid(newest));
-        if let (true, Own::Node(id)) = (unlaid, state.set.own(unit, key)) {
-            children.of_record(&NodeView::record(&state.set, id));
         }
     }
 

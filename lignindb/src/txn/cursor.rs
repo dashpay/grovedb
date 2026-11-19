@@ -191,12 +191,9 @@ impl<'s> MerkSide<'s> {
         &mut self,
         guard: &OperationGuard<'s>,
         key: &[u8],
-        mut children: Option<&mut ChildKeys>,
+        children: Option<&mut ChildKeys>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
-        if let Some(children) = children.as_deref_mut() {
-            children.clear();
-        }
         if self.cursor.key() == Some(key) {
             let reader = self.reader(guard);
             let node = self.cursor.node(&reader, &mut self.buffers)?;
@@ -415,10 +412,12 @@ impl<'t, 's> MerkCursor<'t, 's> {
     }
 
     /// As [`Self::node`], and reads the key of each child of the node into
-    /// `children`, in the same operation: from the child's cell in the
-    /// transaction's frames for a node it wrote, and otherwise from the
-    /// child's cell at the cursor's version. With no node shown,
-    /// `children` holds no key.
+    /// `children`, in the same operation, where the node is shown from a
+    /// cell: from the child's cell in the transaction's frames for a node
+    /// it wrote, and otherwise from the child's cell at the cursor's
+    /// version. A node that is shown as a record of the write set has the
+    /// keys in its links ([`LinkView::key`](super::LinkView::key)), and
+    /// `children` holds none, as with no node shown.
     ///
     /// It is what a record of the node as Merk encodes it takes
     /// (`tree-page.md`, section 7): a cell holds the length of a child's
@@ -464,9 +463,10 @@ impl<'t, 's> MerkCursor<'t, 's> {
 /// the scope borrowed for as long as the cursor lives. A parked cursor
 /// borrows the transaction instead and offers no call of its own: it is
 /// moved and read through [`Scope::resume`](super::Scope::resume) of the
-/// scope that opened it, which is given for the length of one borrow. So
-/// it is never used without its scope, nor after the scope has ended, and
-/// it can be kept beside a scope that is behind a lock.
+/// scope that opened it, which gives a [`Resumed`] for the length of one
+/// borrow of the scope. So it is never used without its scope, nor after
+/// the scope has ended, and it can be kept beside a scope that is behind a
+/// lock.
 ///
 /// Parked, it holds what a cursor holds between two calls: the pin of its
 /// version, its lease, and the key it stands on (RD6). It holds no page:
@@ -494,9 +494,93 @@ impl<'t, 's, C> ParkedCursor<'t, 's, C> {
         &mut self,
         txn: &WriteTxn<'s>,
         who: Who,
-    ) -> Option<&mut Cursor<'t, 's, C>> {
+    ) -> Option<Resumed<'_, 't, 's, C>> {
         let opened = std::ptr::eq(self.cursor.txn, txn) && self.cursor.who == who;
-        opened.then_some(&mut self.cursor)
+        opened.then_some(Resumed {
+            cursor: &mut self.cursor,
+        })
+    }
+}
+
+/// A parked cursor for the length of one borrow of the scope that opened
+/// it ([`Scope::resume`](super::Scope::resume)): the calls of a [`Cursor`],
+/// each as the cursor makes it.
+///
+/// It does not hand the cursor out. A cursor that could be taken from its
+/// place could be used once its scope has ended.
+pub struct Resumed<'a, 't, 's, C = FlatSide<'s>> {
+    cursor: &'a mut Cursor<'t, 's, C>,
+}
+
+impl<'s, C: CommittedSide<'s>> Resumed<'_, '_, 's, C> {
+    /// [`Cursor::version`].
+    pub fn version(&self) -> CommitVersion {
+        self.cursor.version()
+    }
+
+    /// [`Cursor::valid`].
+    pub fn valid(&self) -> bool {
+        self.cursor.valid()
+    }
+
+    /// [`Cursor::key`].
+    pub fn key(&self) -> Option<&[u8]> {
+        self.cursor.key()
+    }
+
+    /// [`Cursor::seek`].
+    pub fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        self.cursor.seek(key)
+    }
+
+    /// [`Cursor::seek_for_prev`].
+    pub fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        self.cursor.seek_for_prev(key)
+    }
+
+    /// [`Cursor::seek_to_first`].
+    pub fn seek_to_first(&mut self) -> Result<(), TxnError> {
+        self.cursor.seek_to_first()
+    }
+
+    /// [`Cursor::seek_to_last`].
+    pub fn seek_to_last(&mut self) -> Result<(), TxnError> {
+        self.cursor.seek_to_last()
+    }
+
+    /// [`Cursor::next`].
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<(), TxnError> {
+        self.cursor.next()
+    }
+
+    /// [`Cursor::prev`].
+    pub fn prev(&mut self) -> Result<(), TxnError> {
+        self.cursor.prev()
+    }
+}
+
+#[cfg(test)]
+impl<'t, 's, C> Resumed<'_, 't, 's, C> {
+    /// The cursor itself, for the tests of this crate.
+    pub(crate) fn cursor(&mut self) -> &mut Cursor<'t, 's, C> {
+        self.cursor
+    }
+}
+
+impl<'s> Resumed<'_, '_, 's, MerkSide<'s>> {
+    /// [`MerkCursor::node`].
+    pub fn node<R>(&mut self, read: impl FnOnce(Option<NodeView<'_>>) -> R) -> Result<R, TxnError> {
+        self.cursor.node(read)
+    }
+
+    /// [`MerkCursor::node_with_children`].
+    pub fn node_with_children<R>(
+        &mut self,
+        children: &mut ChildKeys,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        self.cursor.node_with_children(children, read)
     }
 }
 

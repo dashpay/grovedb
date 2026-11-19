@@ -195,8 +195,8 @@ impl State<'_> {
 enum Beside<'c> {
     /// A handle of the node, which is followed while it is good (PN8).
     Hint(Option<NodeHandle>),
-    /// Where the keys of the node's children go, for a cursor that reads
-    /// them with the node.
+    /// Where the keys of the children of a cell go, for a cursor that
+    /// reads them with the node.
     Children(Option<&'c mut ChildKeys>),
 }
 
@@ -910,13 +910,10 @@ impl<'s> WriteTxn<'s> {
     where
         F: FnOnce(Option<NodeView<'_>>) -> R,
     {
-        let (hint, mut children) = match beside {
+        let (hint, children) = match beside {
             Beside::Hint(hint) => (hint, None),
             Beside::Children(children) => (None, children),
         };
-        if let Some(children) = children.as_deref_mut() {
-            children.clear();
-        }
         if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             // The frames show the transaction's view (WT3): the node is
             // where a good handle says, or where its key leads to.
@@ -942,13 +939,7 @@ impl<'s> WriteTxn<'s> {
             state.keyed += 1;
         }
         match own {
-            Own::Node(id) => {
-                let node = NodeView::record(&state.set, id);
-                if let Some(children) = children {
-                    children.of_record(&node);
-                }
-                Ok(Ok(read(Some(node))))
-            }
+            Own::Node(id) => Ok(Ok(read(Some(NodeView::record(&state.set, id))))),
             Own::Deleted => Ok(Ok(read(None))),
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
             Own::Unwritten => Ok(Err(read)),
@@ -1000,14 +991,15 @@ impl<'s> WriteTxn<'s> {
     /// `read` is handed back, and nothing committed is read: a cursor then
     /// shows the node of its own version (RD6).
     ///
-    /// `children`, where it is given, takes the key of each child of the
-    /// node that is shown, in the same operation.
+    /// `children`, where it is given, takes the key of each child of a
+    /// node that is shown from a cell of the frames, in the same operation.
+    /// A record of the write set names its children itself.
     pub(crate) fn own_node_in<R, F>(
         &self,
         who: Who,
         subtree: Subtree,
         key: &[u8],
-        mut children: Option<&mut ChildKeys>,
+        children: Option<&mut ChildKeys>,
         read: F,
     ) -> Result<Result<R, F>, TxnError>
     where
@@ -1017,9 +1009,6 @@ impl<'s> WriteTxn<'s> {
         let state = &mut *state;
         let op = self.begin(state, false)?;
         self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
-        if let Some(children) = children.as_deref_mut() {
-            self.unlaid_children(state, who, subtree, key, children);
-        }
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(Ok(shown)),
             Err(read) => read,
