@@ -41,11 +41,12 @@
 //!   read a unit and then writes it keeps the unit if no other scope holds
 //!   it.
 //! - **A claim never waits.** It is granted or refused inside the call,
-//!   under the transaction's lock. A call that is refused reads nothing,
-//!   writes nothing and claims nothing, and its scope stays open and
-//!   usable. It is an operation of the transaction all the same: it takes
-//!   in the commits that were published since the last one, which can end
-//!   the node handles read before (PN8).
+//!   under the transaction's lock. A call that is refused adds no write of
+//!   its batch, shows the caller no record and keeps no claim, and its
+//!   scope stays open and usable. It is an operation of the transaction
+//!   all the same: it takes in the commits that were published since the
+//!   last one, which can end the node handles read before (PN8), and it
+//!   reads the subtree directory where it has to ask what is below what.
 //! - **A scope keeps its claims until it ends**, also the claims of a
 //!   batch that was then refused for what it says.
 //! - **The claims of one batch are granted together or not at all.**
@@ -92,7 +93,8 @@
 //! ([`Fragments::apply`](lignin_tree::fragment::Fragments::apply)). A
 //! scope that was opened beside another makes no change to a page before
 //! that, so it holds no copy of a page, takes no page id and cannot move a
-//! cell of another scope's Merk. Its rollback leaves the pages alone.
+//! cell of another scope's Merk. A rollback of it before that leaves the
+//! pages alone.
 //!
 //! What it gives up until its writes are laid out:
 //!
@@ -154,10 +156,13 @@
 //!   with a rollback to a savepoint that was set before the scope merged
 //!   (WT8).
 //! - **The changes of a scope take effect at its merge**, in the order of
-//!   the merges and not in the order they were made. The two agree for
-//!   every element: the write that names an element's roots again reads
-//!   the Merks it hosts, so no scope takes a mark off beside an open scope
-//!   that writes one of them.
+//!   the merges and not in the order they were made. The two agree for an
+//!   element whose mark is taken off as SC9 has it, by the scope that
+//!   makes the write which names the element's roots again: that write
+//!   reads the Merks the element hosts, so it is refused beside an open
+//!   scope that writes one of them. [`Scope::clear_pending`] by itself
+//!   takes no claim, and a caller that takes a mark off without that write
+//!   is not held to the order.
 //! - **Who is shown which mark.** [`Scope::is_pending`] answers from the
 //!   marks the scope set and took off, and otherwise from those of the
 //!   merged scopes. A mark of another open scope is not shown. A snapshot
