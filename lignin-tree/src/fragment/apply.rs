@@ -189,7 +189,10 @@ fn sync<V: Values>(
         let new = link.map(|link| {
             let kid = entry.kid(Via::Link(side));
             let child = kid.and_then(|kid| places[kid]);
-            tree_link(&link, child.expect("the child of a written node has a cell"))
+            tree_link(
+                &link,
+                child.expect("the child of a written node has a cell"),
+            )
         });
         let (address, hash) = match (node.node().link(side), new) {
             (None, None) => continue,
@@ -499,9 +502,8 @@ pub(super) fn apply<P: Pages, V: Values>(
     }
 
     for (&id, page_work) in &work {
-        let idle = page_work.kept.is_empty()
-            && page_work.fixes.is_empty()
-            && page_work.marks.is_empty();
+        let idle =
+            page_work.kept.is_empty() && page_work.fixes.is_empty() && page_work.marks.is_empty();
         if idle {
             continue;
         }
@@ -562,9 +564,7 @@ pub(super) fn apply<P: Pages, V: Values>(
         let entry = &cells[cell];
         let Some(from) = entry.origin else { continue };
         let hosted_by = match (entry.parent, entry.via) {
-            (Some(host), Some(Via::Hosted(position))) => {
-                places[host].map(|host| (host, position))
-            }
+            (Some(host), Some(Via::Hosted(position))) => places[host].map(|host| (host, position)),
             _ => None,
         };
         report.carried.push(Carried {

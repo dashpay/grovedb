@@ -112,7 +112,9 @@ fn name(
         None => by_place.expect("a new node is in the write"),
         Some(at) if plain => Target::At(at),
         Some(_) if kept && rng.chance(30) => Target::Kept,
-        Some(at) => by_place.filter(|_| rng.chance(40)).unwrap_or(Target::At(at)),
+        Some(at) => by_place
+            .filter(|_| rng.chance(40))
+            .unwrap_or(Target::At(at)),
     }
 }
 
@@ -177,7 +179,9 @@ impl Grove {
             Side::Left => Side::Right,
             Side::Right => Side::Left,
         };
-        let child = self.child(node, side).expect("the side that rises has a child");
+        let child = self
+            .child(node, side)
+            .expect("the side that rises has a child");
         let inner = self.child(child, other);
         self.set_child(node, side, inner);
         self.set_child(child, other, Some(node));
@@ -444,7 +448,12 @@ impl Grove {
     /// Gives the node under `key` another value in a write that holds no
     /// other node and no root pointer, and leaves its hashes as they are. A
     /// write that is refused leaves the grove as it was.
-    pub fn alone(&mut self, merk: usize, key: &[u8], value: &[u8]) -> Result<Report, FragmentError> {
+    pub fn alone(
+        &mut self,
+        merk: usize,
+        key: &[u8],
+        value: &[u8],
+    ) -> Result<Report, FragmentError> {
         let node = self.find(merk, key).expect("the key is in the Merk");
         let old = std::mem::replace(&mut self.nodes[node].value, value.to_vec());
         self.nodes[node].value_dirty = true;
@@ -594,18 +603,33 @@ impl Grove {
 
         assert_eq!(report.nodes.len(), written.len());
         assert_eq!(report.carries.total().cells, report.carried.len() as u64);
-        let created = written.iter().filter(|node| nodes[**node].at.is_none()).count();
+        let created = written
+            .iter()
+            .filter(|node| nodes[**node].at.is_none())
+            .count();
         let arrived = created + report.carried.len();
-        assert_eq!(self.mem.count(from, Rec::Insert), arrived, "a cell arrives once");
+        assert_eq!(
+            self.mem.count(from, Rec::Insert),
+            arrived,
+            "a cell arrives once"
+        );
         let left = removed.len() + report.carried.len();
-        assert_eq!(self.mem.count(from, Rec::Remove), left, "a cell leaves once");
+        assert_eq!(
+            self.mem.count(from, Rec::Remove),
+            left,
+            "a cell leaves once"
+        );
         assert_eq!(self.mem.count(from, Rec::Replace), 0);
         for address in &removed {
             self.by_address.remove(address);
         }
         let mut moved = Vec::new();
         for carried in &report.carried {
-            assert_ne!(carried.from.page(), carried.to.page(), "a carry changes the page");
+            assert_ne!(
+                carried.from.page(),
+                carried.to.page(),
+                "a carry changes the page"
+            );
             let node = match carried.node {
                 Some(index) => written[index],
                 None => self.by_address[&carried.from],
@@ -613,7 +637,12 @@ impl Grove {
             assert_eq!(self.nodes[node].at, Some(carried.from));
             moved.push((node, carried.to.address()));
         }
-        moved.extend(written.iter().zip(&report.nodes).map(|(node, handle)| (*node, handle.address())));
+        moved.extend(
+            written
+                .iter()
+                .zip(&report.nodes)
+                .map(|(node, handle)| (*node, handle.address())),
+        );
         for (node, _) in &moved {
             if let Some(old) = self.nodes[*node].at.take() {
                 self.by_address.remove(&old);
@@ -621,7 +650,10 @@ impl Grove {
         }
         for (node, at) in moved {
             self.nodes[node].at = Some(at);
-            assert!(self.by_address.insert(at, node).is_none_or(|other| other == node));
+            assert!(self
+                .by_address
+                .insert(at, node)
+                .is_none_or(|other| other == node));
         }
         for (id, parts) in written.iter().zip(parts) {
             let node = &mut self.nodes[*id];
@@ -654,7 +686,10 @@ impl Grove {
         }
         for handle in &report.nodes {
             let view = self.mem.view(handle.page());
-            assert!(view.resolve(*handle).is_some(), "the report's handles are good");
+            assert!(
+                view.resolve(*handle).is_some(),
+                "the report's handles are good"
+            );
         }
         Ok(report)
     }
@@ -662,8 +697,10 @@ impl Grove {
     fn check_page(&self, id: PageId) {
         let view = self.mem.view(id);
         let page = view.tree_page();
-        page.check(self.mem.size).expect("a valid page in its frame");
-        page.check_fragments().expect("the marks are what the links say");
+        page.check(self.mem.size)
+            .expect("a valid page in its frame");
+        page.check_fragments()
+            .expect("the marks are what the links say");
         assert!(!view.is_empty(), "a page with no cell is freed");
         let shadow = NodePage::open(&self.mem.shadow.frames[&id], self.mem.lease).expect("a page");
         assert_eq!(
@@ -694,9 +731,18 @@ impl Grove {
             }
         }
         assert_eq!(self.mem.shadow.frames.len(), self.mem.frames.len());
-        let live = self.log.logged.values().filter(|logged| logged.live).count();
+        let live = self
+            .log
+            .logged
+            .values()
+            .filter(|logged| logged.live)
+            .count();
         assert_eq!(pointers, live, "each live value has one owner");
-        assert_eq!(pending, self.log.pending.len(), "each pending value has one owner");
+        assert_eq!(
+            pending,
+            self.log.pending.len(),
+            "each pending value has one owner"
+        );
 
         let mut reached = 0;
         match (self.merks[0].root, self.root_at) {
@@ -719,7 +765,10 @@ impl Grove {
         assert_eq!(cell.value_hash(), &node.value_hash);
         assert_eq!(cell.kv_hash(), &node.kv_hash);
         assert_eq!(self.log.read(cell.value(), at.page()), node.value);
-        assert_eq!(cell.value().is_inline(), node.value.len() <= self.inline_max);
+        assert_eq!(
+            cell.value().is_inline(),
+            node.value.len() <= self.inline_max
+        );
         assert_eq!(cell.is_fragment_root(), above != Some(at.page()));
         *reached += 1;
         for (side, child) in Side::BOTH.into_iter().zip([node.left, node.right]) {
@@ -805,7 +854,9 @@ impl Grove {
                 while let Some(node) = pending.pop() {
                     bytes += node.cell().encoded_len() + 2;
                     let links = Side::BOTH.into_iter().filter_map(|side| node.link(side));
-                    let below = links.map(|link| link.child).chain(node.hosted_roots().flatten());
+                    let below = links
+                        .map(|link| link.child)
+                        .chain(node.hosted_roots().flatten());
                     let here = below.filter(|child| child.page() == id);
                     pending.extend(here.filter_map(|child| view.node(child.slot())));
                 }

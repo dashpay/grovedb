@@ -67,7 +67,10 @@ impl Run {
     fn insert(&mut self) {
         let merk = self.merk();
         self.next_key += 1;
-        let scattered = self.next_key.wrapping_mul(0x9E37_79B9_7F4A_7C15).to_be_bytes();
+        let scattered = self
+            .next_key
+            .wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            .to_be_bytes();
         let mut key = scattered.to_vec();
         key.truncate(1 + self.grove.rng.below(8));
         key.extend_from_slice(&self.next_key.to_be_bytes());
@@ -192,7 +195,10 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
     );
     assert!(pages > 60, "the groves span many pages: {pages}");
     assert!(carried > 3000, "the writes carried cells: {carried}");
-    assert!(reorganised > 100, "writes that changed no node carried cells: {reorganised}");
+    assert!(
+        reorganised > 100,
+        "writes that changed no node carried cells: {reorganised}"
+    );
 }
 
 #[test]
@@ -214,7 +220,10 @@ fn a_tree_that_only_grows_fills_its_pages_as_the_layout_says() {
         counters.carries[Cause::Merge].cells,
     );
     assert!(fill > 0.60, "fill is {fill}");
-    assert!(per_insert < 1.6, "{per_insert} cells are carried for each one inserted");
+    assert!(
+        per_insert < 1.6,
+        "{per_insert} cells are carried for each one inserted"
+    );
     assert_eq!(counters.carries[Cause::Delete].cells, 0);
     assert_eq!(counters.created, 6000);
 }

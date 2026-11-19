@@ -138,16 +138,24 @@ impl fmt::Display for WriteError {
         match self {
             Self::NoNode { address } => write!(f, "no node at {address}"),
             Self::KeyChanged { node } => {
-                write!(f, "node {node} has another key than the cell at its address")
+                write!(
+                    f,
+                    "node {node} has another key than the cell at its address"
+                )
             }
             Self::Twice { address } => write!(f, "the cell at {address} is named twice"),
-            Self::TwoPointers { address: Some(address) } => {
+            Self::TwoPointers {
+                address: Some(address),
+            } => {
                 write!(f, "two pointers name the node at {address}")
             }
             Self::TwoPointers { address: None } => f.write_str("two pointers name one new node"),
             Self::NoSuchNode { node } => write!(f, "the write has no node {node}"),
             Self::Removed { address } => {
-                write!(f, "a pointer names the cell at {address}, which the write removes")
+                write!(
+                    f,
+                    "a pointer names the cell at {address}, which the write removes"
+                )
             }
             Self::NothingKept { node } => {
                 write!(f, "node {node} keeps a pointer its cell does not have")

@@ -130,7 +130,10 @@ fn a_node_that_takes_the_place_of_a_deleted_node_takes_its_page() {
         let key = grove.nodes[gone].key.clone();
         let (was, from) = (grove.nodes[gone].at, grove.nodes[successor].at);
         let report = grove.delete(0, &key);
-        let carried = report.carried.iter().find(|carried| Some(carried.from) == from);
+        let carried = report
+            .carried
+            .iter()
+            .find(|carried| Some(carried.from) == from);
         let carried = carried.expect("the node that took the place was carried");
         if carried.cause == Cause::Delete {
             assert_eq!(Some(carried.to.page()), was.map(|was| was.page()));
@@ -138,8 +141,30 @@ fn a_node_that_takes_the_place_of_a_deleted_node_takes_its_page() {
         }
     }
     grove.check();
-    assert!(taken > 20, "{taken} nodes took the page of the node they replaced");
+    assert!(
+        taken > 20,
+        "{taken} nodes took the page of the node they replaced"
+    );
     assert!(grove.fragments.counters().carries[Cause::Delete].cells >= taken);
+}
+
+#[test]
+fn a_node_that_replaces_the_last_node_of_a_page_stays_where_it_is() {
+    let mut grove = grove(HALVING);
+    grove.inline_max = 5000;
+    for key in [b"m", b"c", b"x"] {
+        grove.put(0, key, &value(3000, 8));
+    }
+    // The root is alone in its page, and what hung below it is in another.
+    let below = grove.page_of(0, b"x");
+    assert_eq!(grove.page_of(0, b"m"), page(1));
+    assert_eq!((grove.page_of(0, b"c"), below), (page(2), page(2)));
+    let report = grove.delete(0, b"m");
+    assert!(report.carried.is_empty());
+    assert_eq!(report.freed, [page(1)]);
+    assert_eq!(grove.root_at, grove.node(0, b"x").at);
+    assert_eq!(grove.page_of(0, b"x"), below);
+    grove.check();
 }
 
 #[test]
@@ -165,7 +190,10 @@ fn a_full_page_sends_a_part_of_its_fragment_to_a_fresh_page() {
     let capacity = grove.fragments.layout().capacity();
     for id in [page(1), page(2)] {
         let used = grove.mem.used(id);
-        assert!(used > capacity / 4 && used < capacity * 3 / 4, "{id} holds {used}");
+        assert!(
+            used > capacity / 4 && used < capacity * 3 / 4,
+            "{id} holds {used}"
+        );
     }
     grove.check();
 }
@@ -190,7 +218,9 @@ fn a_fragment_that_leaves_goes_to_a_page_beside_it_that_has_room() {
 /// The pages `grove` read or changed in its last write that the write
 /// neither changed nor holds a node in.
 fn read_for_nothing(grove: &Grove, from: usize, report: &Report) -> usize {
-    let changed = grove.mem.shadow.records[from..].iter().map(|(page, _)| *page);
+    let changed = grove.mem.shadow.records[from..]
+        .iter()
+        .map(|(page, _)| *page);
     let mut held: Vec<PageId> = changed.chain(report.freed.iter().copied()).collect();
     held.extend(report.nodes.iter().map(|node| node.page()));
     let mut read = grove.mem.touched.clone();
@@ -282,10 +312,15 @@ fn a_small_hosted_merk_goes_with_its_host() {
                 continue;
             };
             let view = grove.mem.view(host.page());
-            let cell = view.node(host.slot()).expect("the host is where the report says");
+            let cell = view
+                .node(host.slot())
+                .expect("the host is where the report says");
             let root = cell.hosted_roots().nth(usize::from(position)).flatten();
             assert_eq!(root, Some(carried.to.address()));
-            let with_host = report.carried.iter().any(|other| other.to.address() == host);
+            let with_host = report
+                .carried
+                .iter()
+                .any(|other| other.to.address() == host);
             together += usize::from(with_host && host.page() == carried.to.page());
         }
     };
@@ -411,7 +446,10 @@ fn a_node_that_nothing_in_the_write_points_at_stays_in_its_page() {
     // One of the two is small enough to have come back (M1).
     assert!((1..=2).contains(&report.carried.len()));
     assert!(report.carried.iter().all(|carried| carried.node.is_none()));
-    assert!(report.carried.iter().all(|carried| carried.to.page() == page(2)));
+    assert!(report
+        .carried
+        .iter()
+        .all(|carried| carried.to.page() == page(2)));
     grove.check();
 
     // Now its page holds nothing else the write could move.
@@ -420,14 +458,19 @@ fn a_node_that_nothing_in_the_write_points_at_stays_in_its_page() {
         match grove.alone(0, b"m", &value(len, 7)) {
             Ok(_) => len += 50,
             Err(error) => {
-                assert_eq!(grove.mem.frames, before.0, "a refused write changes no page");
+                assert_eq!(
+                    grove.mem.frames, before.0,
+                    "a refused write changes no page"
+                );
                 assert_eq!(grove.mem.shadow.records.len(), before.1);
                 break error;
             }
         }
     };
     assert!(matches!(error, FragmentError::NoRoom { page: Some(id) } if id == page(1)));
-    assert!(error.to_string().ends_with("is full of cells the write does not hold"));
+    assert!(error
+        .to_string()
+        .ends_with("is full of cells the write does not hold"));
     assert!(std::error::Error::source(&error).is_none());
     let unplaced = FragmentError::NoRoom { page: None };
     assert_eq!(unplaced.to_string(), "a new page is above its capacity");
@@ -466,12 +509,36 @@ fn the_parameters_are_checked_against_each_other() {
 
     let refused = |params| Layout::new(SIZE, params).expect_err("refused");
     let cases = [
-        (params(50, 1, 75, 35), LayoutError::SmallFragment, "a small fragment is at most half a page"),
-        (params(9, 64, 75, 35), LayoutError::LargestFragment, "the largest fragment is 10 to 100 percent of a page"),
-        (params(101, 16, 75, 35), LayoutError::LargestFragment, "the largest fragment is 10 to 100 percent of a page"),
-        (params(50, 4, 75, 35), LayoutError::SmallAgainstLargest, "three small fragments must fit in a largest one"),
-        (params(50, 16, 101, 35), LayoutError::SeedLimit, "the seed limit is at most a full page"),
-        (params(50, 16, 30, 35), LayoutError::MergeThreshold, "the merge threshold is at most the seed limit"),
+        (
+            params(50, 1, 75, 35),
+            LayoutError::SmallFragment,
+            "a small fragment is at most half a page",
+        ),
+        (
+            params(9, 64, 75, 35),
+            LayoutError::LargestFragment,
+            "the largest fragment is 10 to 100 percent of a page",
+        ),
+        (
+            params(101, 16, 75, 35),
+            LayoutError::LargestFragment,
+            "the largest fragment is 10 to 100 percent of a page",
+        ),
+        (
+            params(50, 4, 75, 35),
+            LayoutError::SmallAgainstLargest,
+            "three small fragments must fit in a largest one",
+        ),
+        (
+            params(50, 16, 101, 35),
+            LayoutError::SeedLimit,
+            "the seed limit is at most a full page",
+        ),
+        (
+            params(50, 16, 30, 35),
+            LayoutError::MergeThreshold,
+            "the merge threshold is at most the seed limit",
+        ),
     ];
     for (params, error, text) in cases {
         assert_eq!(refused(params), error);

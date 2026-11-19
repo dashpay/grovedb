@@ -295,12 +295,19 @@ impl Log {
             CellValue::OutOfLine(pointer) => {
                 let logged = &self.logged[&pointer];
                 assert!(logged.live, "a cell holds a live value");
-                assert_eq!(logged.owner, page, "the value's record names the cell's page");
+                assert_eq!(
+                    logged.owner, page,
+                    "the value's record names the cell's page"
+                );
                 logged.bytes.clone()
             }
             CellValue::Pending(pending) => {
                 let (bytes, owner) = &self.pending[&pending.id()];
-                assert_eq!(*owner, Some(page), "the pending value is owned by the cell's page");
+                assert_eq!(
+                    *owner,
+                    Some(page),
+                    "the pending value is owned by the cell's page"
+                );
                 bytes.clone()
             }
         }
@@ -318,7 +325,11 @@ impl Log {
                     .pending
                     .remove(&pending.id())
                     .expect("the pending value is known");
-                assert_eq!(owner, Some(id), "the value is appended for the page that holds it");
+                assert_eq!(
+                    owner,
+                    Some(id),
+                    "the value is appended for the page that holds it"
+                );
                 self.next += 1;
                 let file = FileId::new(7).expect("a file");
                 let pointer = ValuePointer::new(file, self.next * 4096, pending.value_len())

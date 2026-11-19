@@ -86,7 +86,10 @@ impl Cell {
     }
 
     pub fn kid(&self, via: Via) -> Option<usize> {
-        self.kids.iter().find(|kid| kid.via == via).map(|kid| kid.cell)
+        self.kids
+            .iter()
+            .find(|kid| kid.via == via)
+            .map(|kid| kid.cell)
     }
 }
 
@@ -495,7 +498,8 @@ impl<P: Pages> Planner<'_, '_, P> {
                 continue;
             }
             let entry = &self.plan.cells[cell];
-            let placed = |cell: usize| Some(self.plan.cells[cell].page).filter(|page| *page != NOWHERE);
+            let placed =
+                |cell: usize| Some(self.plan.cells[cell].page).filter(|page| *page != NOWHERE);
             let page = reserved
                 .iter()
                 .find(|(taker, _)| *taker == cell)
@@ -772,7 +776,8 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     fn kids_in(&self, cell: usize, page: usize) -> Vec<usize> {
         let kids = self.plan.cells[cell].kids.iter().map(|kid| kid.cell);
-        kids.filter(|kid| self.plan.cells[*kid].page == page).collect()
+        kids.filter(|kid| self.plan.cells[*kid].page == page)
+            .collect()
     }
 
     /// The root of the fragment `cell` is in.
@@ -820,9 +825,6 @@ impl<P: Pages> Planner<'_, '_, P> {
 
     /// Moves the fragment under `root` to the page `to`.
     fn move_fragment(&mut self, root: usize, to: usize, cause: Cause) -> Result<(), FragmentError> {
-        if self.plan.cells[root].page == to {
-            return Ok(());
-        }
         for cell in self.fragment(root)? {
             self.carry(cell, to, cause)?;
         }
@@ -835,9 +837,6 @@ impl<P: Pages> Planner<'_, '_, P> {
     /// page goes with it (L2).
     fn lift(&mut self, cell: usize, to: usize, cause: Cause) -> Result<(), FragmentError> {
         let page = self.plan.cells[cell].page;
-        if page == to {
-            return Ok(());
-        }
         self.read(cell)?;
         let small = self.layout.small_fragment();
         let hosted: Vec<usize> = self.plan.cells[cell]
@@ -886,9 +885,6 @@ impl<P: Pages> Planner<'_, '_, P> {
         let mut next = 0;
         while let Some(&cell) = self.held.get(next) {
             next += 1;
-            if self.plan.cells[cell].page == NOWHERE {
-                continue;
-            }
             let root = self.fragment_root(cell);
             let Some(parent) = self.up(root) else {
                 continue;
@@ -1091,13 +1087,12 @@ impl<P: Pages> Planner<'_, '_, P> {
     /// there.
     fn absorb(&mut self) -> Result<(), FragmentError> {
         let small = self.layout.small_fragment();
-        for root in self.held_roots(|page| page != NOWHERE) {
-            let page = self.plan.cells[root].page;
+        for root in self.held_roots(|_| true) {
             let Some(parent) = self.up(root) else {
                 continue;
             };
             let above = self.plan.cells[parent].page;
-            if above == NOWHERE || above == page {
+            if above == self.plan.cells[root].page {
                 continue;
             }
             let bytes = self.fragment_bytes(root, small)?;

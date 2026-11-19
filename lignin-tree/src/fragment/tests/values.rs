@@ -31,7 +31,9 @@ fn pointer(grove: &Grove, key: &[u8]) -> ValuePointer {
     let at = grove.node(0, key).at.expect("the node has a cell");
     let view = grove.mem.view(at.page());
     let cell = view.node(at.slot()).expect("the cell");
-    cell.value().pointer().expect("the value is in the value log")
+    cell.value()
+        .pointer()
+        .expect("the value is in the value log")
 }
 
 /// The acceptance test of TREE-03, second sentence: a node with an
@@ -71,7 +73,9 @@ fn a_carried_cell_has_its_value_appended_again_for_its_new_page() {
             // The cell in the new page is pending, and the value that will
             // be appended for it is owned by that page.
             let view = grove.mem.view(*to);
-            let node = view.resolve(carried.to).expect("the report's handle is good");
+            let node = view
+                .resolve(carried.to)
+                .expect("the report's handle is good");
             let waiting = node.value().pending().expect("pending until it is placed");
             assert_eq!(grove.log.pending[&waiting.id()].1, Some(*to));
         }
@@ -86,12 +90,18 @@ fn a_carried_cell_has_its_value_appended_again_for_its_new_page() {
     }
     write_back(&mut grove);
     grove.check();
-    assert!(placed > 300 && pending > 10, "{placed} placed, {pending} pending");
+    assert!(
+        placed > 300 && pending > 10,
+        "{placed} placed, {pending} pending"
+    );
     let carries = grove.fragments.counters().carries;
     assert_eq!(carries.total().values, grove.log.appended_again as u64);
     assert_eq!(carries.total().value_bytes, 400 * carries.total().values);
     assert_eq!(carries.total().cells, carries.total().values);
-    assert!(grove.log.released.is_empty(), "nothing was deleted or overwritten");
+    assert!(
+        grove.log.released.is_empty(),
+        "nothing was deleted or overwritten"
+    );
     println!(
         "{:.2} values appended again for each value written, {} of them by a split",
         carries.total().values as f64 / 1200.0,
@@ -112,21 +122,33 @@ fn a_value_is_released_when_its_cell_is_deleted_or_given_another_value() {
     // is owned by the cell's page.
     let old = pointer(&grove, &key(3));
     grove.put(0, &key(3), &big(999));
-    assert_eq!(grove.log.released.last(), Some(&(ValuePlace::Placed(old), page)));
+    assert_eq!(
+        grove.log.released.last(),
+        Some(&(ValuePlace::Placed(old), page))
+    );
     let view = grove.mem.view(page);
     let waiting = view.pending_in(grove.node(0, &key(3)).at);
     assert_eq!(grove.log.pending[&waiting.id()].1, Some(page));
 
     // A value that was not placed yet is released as what it is.
     grove.put(0, &key(3), &big(1000));
-    assert_eq!(grove.log.released.last(), Some(&(ValuePlace::Pending(waiting), page)));
+    assert_eq!(
+        grove.log.released.last(),
+        Some(&(ValuePlace::Pending(waiting), page))
+    );
     let waiting = grove.mem.view(page).pending_in(grove.node(0, &key(3)).at);
     grove.put(0, &key(3), b"small");
-    assert_eq!(grove.log.released.last(), Some(&(ValuePlace::Pending(waiting), page)));
+    assert_eq!(
+        grove.log.released.last(),
+        Some(&(ValuePlace::Pending(waiting), page))
+    );
 
     let old = pointer(&grove, &key(5));
     grove.delete(0, &key(5));
-    assert_eq!(grove.log.released.last(), Some(&(ValuePlace::Placed(old), page)));
+    assert_eq!(
+        grove.log.released.last(),
+        Some(&(ValuePlace::Placed(old), page))
+    );
     assert_eq!(grove.log.released.len(), 4);
 
     // A hash, a link, a rotation and a new node beside it leave a value
@@ -159,7 +181,10 @@ fn a_cell_that_is_carried_and_given_a_value_in_one_write_costs_the_new_value_onl
             (page_of(successor) != page_of(id)).then_some((id, successor))
         });
         let Some((gone, successor)) = pair else { break };
-        let (gone, taker) = (grove.nodes[gone].key.clone(), grove.nodes[successor].key.clone());
+        let (gone, taker) = (
+            grove.nodes[gone].key.clone(),
+            grove.nodes[successor].key.clone(),
+        );
         let from = grove.nodes[successor].at.expect("placed");
         let held = pointer(&grove, &taker);
         let (carried, released) = (grove.log.carried.len(), grove.log.released.len());
@@ -172,12 +197,17 @@ fn a_cell_that_is_carried_and_given_a_value_in_one_write_costs_the_new_value_onl
         // owned by the page the cell ended in, which the grove checks.
         let place = ValuePlace::Placed(held);
         assert!(grove.log.released[released..].contains(&(place, from.page())));
-        assert!(!grove.log.carried[carried..].iter().any(|told| told.0 == place));
+        assert!(!grove.log.carried[carried..]
+            .iter()
+            .any(|told| told.0 == place));
         assert_eq!(grove.page_of(0, &taker), moved.to.page());
         seen += 1;
     }
     grove.check();
-    assert!(seen > 10, "{seen} cells were carried and written in one write");
+    assert!(
+        seen > 10,
+        "{seen} cells were carried and written in one write"
+    );
 }
 
 trait PendingIn {

@@ -2,7 +2,7 @@
 
 use std::error::Error;
 
-use lignin_format::tree_page::Hash;
+use lignin_format::tree_page::{Hash, Side};
 
 use super::*;
 
@@ -176,7 +176,10 @@ fn a_write_that_names_what_is_not_there_is_refused() {
         left: link(Target::Kept),
         ..node(Some(c), b"c")
     };
-    assert_eq!(bare.refused_nodes(&[leaf]), WriteError::NothingKept { node: 0 });
+    assert_eq!(
+        bare.refused_nodes(&[leaf]),
+        WriteError::NothingKept { node: 0 }
+    );
     let new = NodeWrite {
         right: link(Target::Kept),
         ..node(None, b"n")
@@ -211,11 +214,14 @@ fn a_write_that_names_what_is_not_there_is_refused() {
     let report = report.expect("the write is applied");
     assert_eq!(report.nodes[0].address(), m);
     assert_eq!(report.roots, [Some(m)]);
-    assert_eq!(report, Report {
-        nodes: report.nodes.clone(),
-        roots: vec![Some(m)],
-        ..Report::default()
-    });
+    assert_eq!(
+        report,
+        Report {
+            nodes: report.nodes.clone(),
+            roots: vec![Some(m)],
+            ..Report::default()
+        }
+    );
 }
 
 #[test]
@@ -253,7 +259,10 @@ fn a_cell_that_is_too_large_is_refused() {
         },
     ];
     for case in cases {
-        assert_eq!(bare.refused_nodes(&[case]), WriteError::FieldTooLong { node: 0 });
+        assert_eq!(
+            bare.refused_nodes(&[case]),
+            WriteError::FieldTooLong { node: 0 }
+        );
     }
 }
 
@@ -305,6 +314,142 @@ fn a_cell_that_still_points_at_a_removed_cell_is_found_when_it_is_read() {
         roots: &[root(Some(m), Target::Kept)],
     });
     assert_eq!(error, WriteError::Removed { address: a });
+}
+
+/// The cell at `at`, read from its page, with the page checked.
+fn stored(bare: &Bare, at: CellAddress) -> lignin_format::tree_page::TreeCell<'_> {
+    let view = bare.mem.view(at.page());
+    let page = view.tree_page();
+    page.check(SIZE).expect("a valid page");
+    page.check_fragments()
+        .expect("the marks are what the links say");
+    let shadow = NodePage::open(&bare.mem.shadow.frames[&at.page()], bare.mem.lease);
+    let shadow = shadow.expect("a page").tree_page().to_image();
+    assert_eq!(shadow, page.to_image(), "the records give the page");
+    view.node(at.slot()).expect("the cell").cell()
+}
+
+#[test]
+fn every_part_of_a_cell_can_get_longer_and_shorter() {
+    let (mut bare, [m, c, x]) = Bare::new();
+    let wide = [9; 9];
+    let long = |child: Target| {
+        Some(LinkWrite {
+            aggregate: &wide,
+            ..link(child).expect("a link")
+        })
+    };
+    let grown = NodeWrite {
+        feature: &wide,
+        left: long(Target::At(c)),
+        right: long(Target::Kept),
+        hosted: HostedWrite::Set(&[Some(Target::Node(1)), None, Some(Target::Node(2))]),
+        value: ValueWrite::Inline(&[5; 300]),
+        ..node(Some(m), b"m")
+    };
+    let report = bare.apply(&Write {
+        nodes: &[grown, node(None, b"p"), node(None, b"q")],
+        removed: &[],
+        roots: &[root(Some(m), Target::Kept)],
+    });
+    let report = report.expect("the write is applied");
+    let [p, q] = [1, 2].map(|node| report.nodes[node].address());
+    let cell = stored(&bare, m);
+    assert_eq!(cell.feature(), wide);
+    assert_eq!(
+        cell.hosted_roots().collect::<Vec<_>>(),
+        [Some(p), None, Some(q)]
+    );
+    assert_eq!(cell.value().inline(), Some(&[5; 300][..]));
+    for (side, child) in Side::BOTH.into_iter().zip([c, x]) {
+        let link = cell.link(side).expect("a link");
+        assert_eq!((link.child, link.aggregate), (child, &wide[..]));
+    }
+
+    // Each part shorter again, with a hosted root that is new.
+    let shrunk = NodeWrite {
+        left: link(Target::Kept),
+        right: link(Target::At(x)),
+        hosted: HostedWrite::Set(&[Some(Target::Node(1))]),
+        value: ValueWrite::Inline(b"v"),
+        ..node(Some(m), b"m")
+    };
+    let report = bare.apply(&Write {
+        nodes: &[shrunk, node(None, b"r")],
+        removed: &[],
+        roots: &[root(Some(m), Target::Kept)],
+    });
+    let mut report = report.expect("the write is applied");
+    let r = report.nodes[1].address();
+    report.orphaned.sort_unstable();
+    assert_eq!(report.orphaned, [p.min(q), p.max(q)]);
+    let cell = stored(&bare, m);
+    assert_eq!(cell.feature(), [0]);
+    assert_eq!(cell.hosted_roots().collect::<Vec<_>>(), [Some(r)]);
+    assert_eq!(cell.value().inline(), Some(&b"v"[..]));
+    for (side, child) in Side::BOTH.into_iter().zip([c, x]) {
+        let link = cell.link(side).expect("a link");
+        assert_eq!((link.child, link.aggregate), (child, &[0][..]));
+    }
+    for orphan in [p, q] {
+        assert!(stored(&bare, orphan).is_fragment_root());
+    }
+}
+
+#[test]
+fn a_write_is_not_refused_for_room_that_it_makes_itself() {
+    let mut bare = Bare::new().0;
+    bare.mem = Mem::new(SIZE);
+    let large = [1; 3900];
+    let nodes = [
+        NodeWrite {
+            left: link(Target::Node(1)),
+            right: link(Target::Node(2)),
+            ..node(None, b"m")
+        },
+        NodeWrite {
+            value: ValueWrite::Inline(&large),
+            ..node(None, b"c")
+        },
+        NodeWrite {
+            value: ValueWrite::Inline(&large),
+            ..node(None, b"x")
+        },
+    ];
+    let report = bare.apply(&Write {
+        nodes: &nodes,
+        removed: &[],
+        roots: &[RootWrite {
+            was: None,
+            now: Some(Target::Node(0)),
+        }],
+    });
+    let at = report.expect("the write is applied").nodes;
+    let [m, c] = [0, 1].map(|node| at[node].address());
+    let free = bare.mem.view(page(1)).tree_page().free_bytes(SIZE);
+    assert!(free < 100, "the page is full: {free} bytes are left");
+
+    // The first node of the write grows by more than the page has left,
+    // and the second gives up more than that.
+    let grown = NodeWrite {
+        left: link(Target::Kept),
+        right: link(Target::Kept),
+        value: ValueWrite::Inline(&[3; 800]),
+        ..node(Some(m), b"m")
+    };
+    let shrunk = NodeWrite {
+        value: ValueWrite::Inline(&large[..3000]),
+        ..node(Some(c), b"c")
+    };
+    let report = bare.apply(&Write {
+        nodes: &[grown, shrunk],
+        removed: &[],
+        roots: &[root(Some(m), Target::Kept)],
+    });
+    let report = report.expect("the write is applied");
+    assert!(report.carried.is_empty() && report.created.is_empty());
+    assert_eq!(stored(&bare, m).value().inline(), Some(&[3; 800][..]));
+    assert_eq!(stored(&bare, c).value().inline(), Some(&large[..3000]));
 }
 
 #[test]
@@ -360,7 +505,10 @@ fn every_error_says_what_is_wrong() {
             WriteError::KeyChanged { node: 2 },
             "node 2 has another key than the cell at its address",
         ),
-        (WriteError::Twice { address: at }, "the cell at 3/4 is named twice"),
+        (
+            WriteError::Twice { address: at },
+            "the cell at 3/4 is named twice",
+        ),
         (
             WriteError::TwoPointers { address: Some(at) },
             "two pointers name the node at 3/4",
@@ -369,7 +517,10 @@ fn every_error_says_what_is_wrong() {
             WriteError::TwoPointers { address: None },
             "two pointers name one new node",
         ),
-        (WriteError::NoSuchNode { node: 5 }, "the write has no node 5"),
+        (
+            WriteError::NoSuchNode { node: 5 },
+            "the write has no node 5",
+        ),
         (
             WriteError::Removed { address: at },
             "a pointer names the cell at 3/4, which the write removes",
@@ -378,7 +529,10 @@ fn every_error_says_what_is_wrong() {
             WriteError::NothingKept { node: 1 },
             "node 1 keeps a pointer its cell does not have",
         ),
-        (WriteError::NoValue { node: 0 }, "the new node 0 has no value"),
+        (
+            WriteError::NoValue { node: 0 },
+            "the new node 0 has no value",
+        ),
         (
             WriteError::Cycle,
             "the nodes of the write point at each other in a circle",
@@ -391,10 +545,16 @@ fn every_error_says_what_is_wrong() {
             },
             "the cell of node 1 takes 9 bytes, above 8",
         ),
-        (WriteError::FieldTooLong { node: 6 }, "a part of node 6 is too long"),
+        (
+            WriteError::FieldTooLong { node: 6 },
+            "a part of node 6 is too long",
+        ),
     ];
     for (error, text) in cases {
         assert_eq!(error.to_string(), text);
-        assert_eq!(FragmentError::from(error).to_string(), format!("write: {text}"));
+        assert_eq!(
+            FragmentError::from(error).to_string(),
+            format!("write: {text}")
+        );
     }
 }
