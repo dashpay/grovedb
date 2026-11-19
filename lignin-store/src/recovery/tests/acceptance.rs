@@ -152,9 +152,17 @@ fn state(store: &Recovered) -> impl PartialEq + std::fmt::Debug {
 }
 
 /// Builds a store whose log holds `log_bytes` bytes after its table
-/// checkpoint, kills the session, and recovers the store twice. Returns
-/// how long each recovery took and what the first did.
-fn recover_twice_after(log_bytes: u64) -> ([Duration; 2], RecoveryReport) {
+/// checkpoint, kills the session, and recovers the store once for each
+/// entry of `kept`, with that many rebuilt pages kept in memory
+/// ([`RecoveryOptions::max_replay_pages`]): `None` keeps them all here,
+/// and a number makes replay write pages to a segment while it reads the
+/// log. Between two recoveries the store is dropped as a killed process
+/// leaves it, and each lands on the same state. Returns how long each
+/// recovery took and what it did.
+///
+/// The store is built in memory, where the syncs of the session that
+/// builds it cost nothing, and recovered where [`Dir::on_disk`] puts it.
+fn recover_after(log_bytes: u64, kept: &[Option<usize>]) -> Vec<(Duration, RecoveryReport)> {
     let dir = Dir::of(PageSize::DEFAULT);
     let mut workload = Workload::begin(&dir);
     while workload.logged() < log_bytes {
@@ -164,45 +172,50 @@ fn recover_twice_after(log_bytes: u64) -> ([Duration; 2], RecoveryReport) {
     let latest = workload.session.latest();
     let pending = workload.waiting.len() as u64;
     let model = workload.session.kill();
+    let dir = dir.on_disk().unwrap_or(dir);
 
-    let recover = || {
+    let mut first = None;
+    let mut recoveries = Vec::with_capacity(kept.len());
+    for &kept in kept {
+        let options = RecoveryOptions {
+            max_replay_pages: kept,
+            ..RecoveryOptions::default()
+        };
         let began = Instant::now();
-        let store = recover(dir.manifest(), &RecoveryOptions::default()).expect("the store");
-        (began.elapsed(), store)
-    };
-    let (first_took, first) = recover();
-    let report = first.report;
-    assert_eq!(first.landed(), latest);
-    assert!(report.log_bytes >= logged, "{report:?}");
-    assert_eq!(u64::from(blocks), report.commits);
-    assert_eq!(report.pending_values, pending);
-    assert_eq!((report.pages_spilled, report.changes_dropped), (0, 0));
-    check(&first, &model, &[]);
-    let covers = report.covers;
-    assert!(first.checkpoint.is_some() && covers < latest);
-    let found = format!("{:?}", state(&first));
-    // The store is dropped as a killed process leaves it, and recovered
-    // again: replaying twice gives the same state.
-    drop(first);
-    let (second_took, second) = recover();
-    assert_eq!(second.landed(), latest);
-    assert_eq!(second.report.commits, report.commits);
-    assert_eq!(second.report.covers, covers);
-    check(&second, &model, &[]);
-    assert_eq!(format!("{:?}", state(&second)), found);
-    ([first_took, second_took], report)
+        let store = recover(dir.manifest(), &options).expect("the store");
+        let took = began.elapsed();
+        let report = store.report;
+        assert_eq!(store.landed(), latest);
+        assert!(report.log_bytes >= logged, "{report:?}");
+        assert_eq!(u64::from(blocks), report.commits);
+        assert_eq!(report.pending_values, pending);
+        assert_eq!(report.changes_dropped, 0);
+        assert_eq!(report.pages_spilled > 0, kept.is_some(), "{report:?}");
+        assert!(store.checkpoint.is_some() && report.covers < latest);
+        check(&store, &model, &[]);
+        let found = (report.covers, format!("{:?}", state(&store)));
+        assert_eq!(first.get_or_insert_with(|| found.clone()), &found);
+        recoveries.push((took, report));
+    }
+    recoveries
 }
 
 /// **Replaying twice gives the same state**, on a store of the reference
 /// workload's shape with a few megabytes of log: both recoveries land on
 /// the last commit, and every page, every pending value, every count of
-/// live values and every page id is what the session left.
+/// live values and every page id is what the session left. So does a
+/// third, which keeps fewer pages in memory than the log changes and
+/// writes the others to a segment.
 #[test]
 fn replaying_twice_gives_the_same_state() {
-    let (_, report) = recover_twice_after(3 << 20);
+    let recoveries = recover_after(3 << 20, &[None, None, Some(400)]);
+    let (_, report) = recoveries[0];
     assert!(report.commits > 100, "{report:?}");
     assert!(report.steps > 2_000, "{report:?}");
     assert!(report.pages_rebuilt > 500, "{report:?}");
+    let (_, wrote) = recoveries[2];
+    assert!(wrote.pages_spilled > 400, "{wrote:?}");
+    assert!(wrote.pages_rebuilt < report.pages_rebuilt, "{wrote:?}");
 }
 
 /// **Recovery after 256 MB of log completes within 5 s.** The log after
@@ -210,17 +223,27 @@ fn replaying_twice_gives_the_same_state() {
 /// session hold (`FlushConfig::max_log_held`), and the session was killed
 /// with nothing synced since its log last turned. The time is that of
 /// [`recover`] alone, from the manifest to a store that takes commits.
+///
+/// The store is recovered three times. The log changes fewer pages than
+/// replay keeps by default, so the first two recoveries write no page. The
+/// third keeps 1024, which is more than the session changes in turn and
+/// fewer than the log changes in all: it writes pages to a segment
+/// several times over, and is held to the same 5 s.
+///
+/// The store is in memory unless `LIGNIN_STORE_TEST_DIR` names a
+/// directory on a disk. There the time is the replay and a dozen syncs
+/// (see "What a recovery costs"), so the test measures the disk's syncs as
+/// much as the recovery, and fails on a disk that takes seconds for one.
 #[test]
 #[ignore = "the acceptance measurement, for a release build: 256 MiB of log, about 1 GiB of memory"]
 fn recovery_after_256_mb_of_log_completes_within_5_s() {
-    let (took, report) = recover_twice_after(256 << 20);
-    println!(
-        "recovered {} MiB of log in {:?}, and again in {:?}: {report:?}",
-        report.log_bytes >> 20,
-        took[0],
-        took[1]
-    );
-    assert!(report.log_bytes >= 256 << 20, "{report:?}");
-    assert!(took[0] < Duration::from_secs(5), "{:?}", took[0]);
-    assert!(took[1] < Duration::from_secs(5), "{:?}", took[1]);
+    let recoveries = recover_after(256 << 20, &[None, None, Some(1024)]);
+    for (took, report) in &recoveries {
+        println!(
+            "recovered {} MiB of log in {took:?}: {report:?}",
+            report.log_bytes >> 20
+        );
+        assert!(report.log_bytes >= 256 << 20, "{report:?}");
+        assert!(*took < Duration::from_secs(5), "{took:?}");
+    }
 }

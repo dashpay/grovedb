@@ -59,20 +59,15 @@ fn slot(raw: u16) -> SlotId {
     SlotId::new(raw).expect("a slot")
 }
 
-/// How the tests recover a store of pages of `size`: a small pool, and
-/// the thresholds of write-back at their defaults.
-fn options(size: PageSize) -> RecoveryOptions {
+/// How the tests recover a store: with a small pool.
+fn options() -> RecoveryOptions {
     RecoveryOptions {
         pool_capacity: 8 << 20,
-        flush: Some(FlushConfig::new(size)),
         ..RecoveryOptions::default()
     }
 }
 
-/// A database directory: in the directory that the environment variable
-/// `LIGNIN_STORE_TEST_DIR` names, if it is set, which is how the
-/// acceptance measurement is put on a disk, and otherwise in memory where
-/// there is such a place.
+/// A database directory, in memory where there is such a place.
 struct Dir {
     _tmp: TempDir,
     vfs: Arc<dyn Vfs>,
@@ -89,10 +84,9 @@ impl Dir {
 
     fn of(size: PageSize) -> Self {
         let memory = Path::new("/dev/shm");
-        let tmp = match std::env::var_os("LIGNIN_STORE_TEST_DIR") {
-            Some(named) => tempfile::tempdir_in(named),
-            None if memory.is_dir() => tempfile::tempdir_in(memory),
-            None => tempfile::tempdir(),
+        let tmp = match memory.is_dir() {
+            true => tempfile::tempdir_in(memory),
+            false => tempfile::tempdir(),
         }
         .expect("a directory");
         let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
@@ -106,6 +100,38 @@ impl Dir {
         }
     }
 
+    /// A copy of the directory, every file synced, in the directory that
+    /// the environment variable `LIGNIN_STORE_TEST_DIR` names, if it is
+    /// set: this is how the acceptance measurement is put on a disk.
+    fn on_disk(&self) -> Option<Self> {
+        let named = std::env::var_os("LIGNIN_STORE_TEST_DIR")?;
+        let tmp = tempfile::tempdir_in(named).expect("a directory");
+        let mut dirs = vec![self.path.clone()];
+        while let Some(dir) = dirs.pop() {
+            let copy = tmp
+                .path()
+                .join(dir.strip_prefix(&self.path).expect("inside"));
+            std::fs::create_dir_all(&copy).expect("a directory");
+            for entry in std::fs::read_dir(&dir).expect("a directory") {
+                let path = entry.expect("an entry").path();
+                if path.is_dir() {
+                    dirs.push(path);
+                    continue;
+                }
+                let to = copy.join(path.file_name().expect("a name"));
+                std::fs::copy(&path, &to).expect("copied");
+                let synced = std::fs::File::open(&to).and_then(|file| file.sync_all());
+                synced.expect("synced");
+            }
+        }
+        Some(Self {
+            path: tmp.path().to_path_buf(),
+            _tmp: tmp,
+            vfs: self.vfs.clone(),
+            size: self.size,
+        })
+    }
+
     fn manifest(&self) -> ManifestStore {
         ManifestStore::open(self.vfs.clone(), &self.path).expect("a manifest")
     }
@@ -115,7 +141,7 @@ impl Dir {
     }
 
     fn recover(&self) -> Result<Recovered, RecoveryError> {
-        self.recover_with(&options(self.size))
+        self.recover_with(&options())
     }
 
     /// The store, recovered.
@@ -253,7 +279,7 @@ impl<'d> Session<'d> {
     /// Opens the store of `dir` and goes on from `model`, which is what
     /// its pages say.
     fn begin(dir: &'d Dir, model: Model) -> Self {
-        Self::begin_with(dir, model, &options(dir.size))
+        Self::begin_with(dir, model, &options())
     }
 
     fn begin_with(dir: &'d Dir, model: Model, options: &RecoveryOptions) -> Self {

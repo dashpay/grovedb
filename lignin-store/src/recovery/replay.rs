@@ -4,7 +4,7 @@
 //! LG15, LG16, LG28, LG29; `transactions.md` DU2, DU5).
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -31,7 +31,7 @@ use crate::{
     load::{LoadBuffers, PageLoader, FRAME_FORMAT},
     segment::{BlockLocation, ManifestStore, SegmentStore, SegmentStoreError, SegmentWriter},
     table::{Link, LinkKind, PageTable},
-    values::{Miscount, ValueChange, ValueRecovery, ValueStoreError},
+    values::{net, Miscount, ValueChange, ValueRecovery, ValueStoreError},
     wal::{LogEnd, LogRead, LogStore},
 };
 
@@ -60,11 +60,22 @@ impl Rebuilt {
         self.oldest.get_or_insert(version);
     }
 
-    /// Makes the page the flat page whose image is `image`.
-    fn put_image(&mut self, image: &[u8]) {
+    /// Applies the run of a flat page to the page, which becomes the image
+    /// the run gives. `image` is memory for that image. A run that starts
+    /// from an image of its own does not read the page. On an error the
+    /// page is as it was.
+    fn apply_flat(
+        &mut self,
+        run: &FlatRun<'_>,
+        capacity: usize,
+        image: &mut Vec<u8>,
+    ) -> Result<(), FormatError> {
+        image.clear();
+        run.apply(Some(&self.bytes), FRAME_FORMAT, capacity, image)?;
         let (start, rest) = self.bytes.split_at_mut(image.len());
         start.copy_from_slice(image);
         rest.fill(0);
+        Ok(())
     }
 }
 
@@ -88,10 +99,14 @@ pub(super) struct Replay<'s> {
     spill_at: usize,
     /// The items that were replayed since the last one.
     since_spill: usize,
-    segment_len: u64,
 
     /// The pages that replay has changed and no block holds.
     pages: HashMap<PageId, Rebuilt>,
+    /// The pages that hold the change of a replayed commit, whether replay
+    /// keeps them or has written them to a segment. The chain that the
+    /// checkpoint copied lacks that commit, and so every background change
+    /// that was made to the page after it.
+    replayed: HashSet<PageId>,
     /// The pages that had a change dropped because the table has no image
     /// of them, and that no later item has freed or made again (K11).
     dropped: BTreeSet<PageId>,
@@ -101,8 +116,6 @@ pub(super) struct Replay<'s> {
     last_group: Option<CommitVersion>,
     /// Whether the mark of the checkpoint's sample was found at its place.
     marked: bool,
-    /// Whether a commit that the checkpoint does not cover was read.
-    uncovered: bool,
     /// The segment that rebuilt pages are written to while the log is
     /// read.
     writer: Option<SegmentWriter>,
@@ -140,14 +153,13 @@ impl<'s> Replay<'s> {
             max_pages,
             spill_at: max_pages,
             since_spill: 0,
-            segment_len: flush.config().segment_len,
             pages: HashMap::new(),
+            replayed: HashSet::new(),
             dropped: BTreeSet::new(),
             counts,
             ids: alloc::Recovery::new(),
             last_group: None,
             marked: false,
-            uncovered: false,
             writer: None,
             buffers: LoadBuffers::new(),
             image: Vec::new(),
@@ -176,11 +188,12 @@ impl<'s> Replay<'s> {
         let mut group = None;
         match read.item {
             LogItem::Commit(commit) => group = self.commit(read.at, &commit, counted)?,
-            LogItem::Change(change) if counted => self.change(read.at, &change)?,
-            LogItem::Change(_) => {}
+            LogItem::Change(change) => self.change(read.at, &change, counted)?,
             LogItem::Mark(mark) => self.mark(read.end, &mark)?,
         }
-        if self.uncovered {
+        // From the first commit that the checkpoint does not cover on, the
+        // log is held until a later checkpoint covers it.
+        if self.report.commits > 0 {
             self.flush
                 .replayed(group.map(|version| (version, read.at)), len);
         }
@@ -236,7 +249,6 @@ impl<'s> Replay<'s> {
         if !replayed {
             return Ok(None);
         }
-        self.uncovered = true;
         self.report.commits += 1;
         Ok(Some(version))
     }
@@ -268,19 +280,23 @@ impl<'s> Replay<'s> {
             .filter(|link| link.kind != LinkKind::Free)
     }
 
-    fn buffer(&mut self) -> Vec<u8> {
-        self.spare.pop().unwrap_or_else(|| vec![0; self.size.get()])
-    }
-
-    /// Takes the page in `frame` among the pages replay changes.
-    fn take_in(&mut self, page: PageId, frame: &PageRef<'_>) -> &mut Rebuilt {
-        let mut bytes = self.buffer();
-        bytes.copy_from_slice(frame);
-        self.pages.entry(page).or_insert(Rebuilt {
-            bytes,
-            born: frame.born(),
+    /// The page `page` among the pages replay changes. If it is not there,
+    /// it is put there, born at `born`, with bytes that mean nothing yet.
+    fn rebuilt(&mut self, page: PageId, born: CommitVersion) -> &mut Rebuilt {
+        let (spare, size) = (&mut self.spare, self.size.get());
+        self.pages.entry(page).or_insert_with(|| Rebuilt {
+            bytes: spare.pop().unwrap_or_else(|| vec![0; size]),
+            born,
             oldest: None,
         })
+    }
+
+    /// Takes the page in `frame`, which replay does not have yet, among the
+    /// pages it changes.
+    fn take_in(&mut self, page: PageId, frame: &PageRef<'_>) -> &mut Rebuilt {
+        let rebuilt = self.rebuilt(page, frame.born());
+        rebuilt.bytes.copy_from_slice(frame);
+        rebuilt
     }
 
     /// The page `page` for a change of a commit: as replay has it, or as
@@ -294,30 +310,17 @@ impl<'s> Replay<'s> {
         fresh: bool,
     ) -> Result<Option<&mut Rebuilt>, RecoveryError> {
         if fresh {
-            if !self.pages.contains_key(&page) {
-                let bytes = self.buffer();
-                self.pages.insert(
-                    page,
-                    Rebuilt {
-                        bytes,
-                        born: CommitVersion::EMPTY,
-                        oldest: None,
-                    },
-                );
-            }
-            let rebuilt = self.pages.get_mut(&page);
-            if let Some(rebuilt) = rebuilt {
-                // Nothing of what the id named before is in the new page.
-                rebuilt.bytes.fill(0);
-                rebuilt.oldest = None;
-            }
-            return Ok(self.pages.get_mut(&page));
+            // Nothing of what the id named before is in the new page.
+            let rebuilt = self.rebuilt(page, CommitVersion::EMPTY);
+            rebuilt.bytes.fill(0);
+            rebuilt.oldest = None;
+            return Ok(Some(rebuilt));
         }
         if !self.pages.contains_key(&page) {
             let Some(frame) = self.load(at, page)? else {
                 return Ok(None);
             };
-            self.take_in(page, &frame);
+            return Ok(Some(self.take_in(page, &frame)));
         }
         Ok(self.pages.get_mut(&page))
     }
@@ -348,6 +351,7 @@ impl<'s> Replay<'s> {
         run.apply(&mut rebuilt.bytes, size, FRAME_FORMAT)
             .map_err(|source| RecoveryError::Change { page, at, source })?;
         rebuilt.changed_by(version);
+        self.replayed.insert(page);
         self.dropped.remove(&page);
         Ok(())
     }
@@ -364,28 +368,21 @@ impl<'s> Replay<'s> {
             return Ok(());
         }
         let capacity = self.size.image_capacity();
-        // A run that starts from an image needs no page before it.
-        let whole = run.image().is_some();
         let mut image = std::mem::take(&mut self.image);
-        image.clear();
-        let applied = self.page_to_change(at, page, whole).map(|rebuilt| {
-            rebuilt.map(|rebuilt| {
-                let base = (!whole).then_some(&rebuilt.bytes[..]);
-                run.apply(base, FRAME_FORMAT, capacity, &mut image)
-                    .map(|()| {
-                        rebuilt.put_image(&image);
-                        rebuilt.changed_by(version);
-                    })
-            })
-        });
-        self.image = image;
-        match applied? {
-            Some(applied) => {
-                applied.map_err(|source| RecoveryError::Change { page, at, source })?;
-                self.dropped.remove(&page);
-            }
-            None => self.drop_change(page),
+        // A run that starts from an image needs no page before it.
+        let Some(rebuilt) = self.page_to_change(at, page, run.image().is_some())? else {
+            self.image = image;
+            self.drop_change(page);
+            return Ok(());
+        };
+        let applied = rebuilt.apply_flat(run, capacity, &mut image);
+        if applied.is_ok() {
+            rebuilt.changed_by(version);
         }
+        self.image = image;
+        applied.map_err(|source| RecoveryError::Change { page, at, source })?;
+        self.replayed.insert(page);
+        self.dropped.remove(&page);
         Ok(())
     }
 
@@ -405,6 +402,7 @@ impl<'s> Replay<'s> {
         if let Some(rebuilt) = self.pages.remove(&page) {
             self.spare.push(rebuilt.bytes);
         }
+        self.replayed.remove(&page);
         self.dropped.remove(&page);
         if self.newest_in_use(page).is_some() {
             self.table
@@ -418,11 +416,36 @@ impl<'s> Replay<'s> {
 
     /// Applies the change of one record to the counts of the value log.
     ///
+    /// The value log reports the first pointer of a change that it could
+    /// not count, and counts the releases first. So the releases and the
+    /// acquired pointers of a record are handed over one after the other,
+    /// which is the order they are counted in: a release that no count
+    /// included, which recovery goes on from, then cannot hide a pointer
+    /// to a value that is not there, which it does not go on from. A
+    /// pointer that the record both releases and acquires is in neither
+    /// part, as the value log counts it.
+    fn count(&mut self, at: LogPlace, change: &ValueChange) -> Result<(), RecoveryError> {
+        if change.released().is_empty() || change.acquired().is_empty() {
+            return self.count_part(at, change);
+        }
+        let (released, acquired) = net(change);
+        let mut part = ValueChange::new();
+        released
+            .into_iter()
+            .for_each(|pointer| part.release(pointer));
+        self.count_part(at, &part)?;
+        let mut part = ValueChange::new();
+        acquired
+            .into_iter()
+            .for_each(|pointer| part.acquire(pointer));
+        self.count_part(at, &part)
+    }
+
     /// A release that a count did not include leaves its file kept for
     /// good, which is the value log's own answer to a count that is wrong,
     /// and is reported. A pointer to a value that is not there is not
     /// something to go on from.
-    fn count(&mut self, at: LogPlace, change: &ValueChange) -> Result<(), RecoveryError> {
+    fn count_part(&mut self, at: LogPlace, change: &ValueChange) -> Result<(), RecoveryError> {
         if change.is_empty() {
             return Ok(());
         }
@@ -442,24 +465,44 @@ impl<'s> Replay<'s> {
         }
     }
 
-    /// The record of a background change, from the place of the sample on.
-    fn change(&mut self, at: LogPlace, change: &Change<'_>) -> Result<(), RecoveryError> {
-        self.report.changes += 1;
-        let mut counted = ValueChange::new();
-        match change {
-            Change::Value(step) => {
-                step.released()
-                    .into_iter()
-                    .for_each(|from| counted.release(from));
-                counted.acquire(step.acquired());
+    /// The record of a background change. `counted` says that it is at or
+    /// after the place of the sample.
+    ///
+    /// From the place on, every record is looked at: for the counts, and
+    /// for its page by LG28.
+    ///
+    /// Before the place the sample includes what the record did to the
+    /// counts, and the chain that the checkpoint copied holds what it did
+    /// to its page (K13). That is said of a page whose chain was copied.
+    /// It is not so for a page of which replay has something that no
+    /// copied chain holds, and the record of such a page is looked at for
+    /// the page, by the same rule ([`Self::beyond_the_copy`]).
+    fn change(
+        &mut self,
+        at: LogPlace,
+        change: &Change<'_>,
+        counted: bool,
+    ) -> Result<(), RecoveryError> {
+        if counted {
+            let mut pointers = ValueChange::new();
+            match change {
+                Change::Value(step) => {
+                    step.released()
+                        .into_iter()
+                        .for_each(|from| pointers.release(from));
+                    pointers.acquire(step.acquired());
+                }
+                Change::Reclaim(reclaim) => reclaim
+                    .released()
+                    .for_each(|pointer| pointers.release(pointer)),
             }
-            Change::Reclaim(reclaim) => reclaim
-                .released()
-                .for_each(|pointer| counted.release(pointer)),
+            // What the record does to the counts is applied whatever
+            // becomes of its change to the page (DU5).
+            self.count(at, &pointers)?;
+        } else if !self.beyond_the_copy(change) {
+            return Ok(());
         }
-        // What the record does to the counts is applied whatever becomes
-        // of its change to the page (DU2).
-        self.count(at, &counted)?;
+        self.report.changes += 1;
 
         // LG28, 1: a page whose newest link is of a version above the last
         // group before the record has the change.
@@ -478,6 +521,33 @@ impl<'s> Replay<'s> {
         }
     }
 
+    /// Whether replay has, of the page of `change`, what no chain that the
+    /// checkpoint copied holds, so that the change is to be made although
+    /// its record is before the place of the sample.
+    ///
+    /// - **The page holds the change of a replayed commit.** Replay made
+    ///   that change because the chain lacked it (K3). A block that held
+    ///   a background change made after the commit would hold the commit
+    ///   too, under a link of its version or a later one. So the chain
+    ///   lacks every background change that followed the commit, and the
+    ///   commits that follow in the log were made on a page that had
+    ///   them: a cell that a reclaiming step took out gave its slot to a
+    ///   later commit.
+    /// - **The page had a change dropped, and the record frees it.** The
+    ///   checkpoint has lost the page (K10, K11), and no commit freed it:
+    ///   the record is all that says the page is gone, and with which
+    ///   version.
+    ///
+    /// Both come about only where the checkpoint lacks the chain of a
+    /// page that was freed and trimmed away after commits it does not
+    /// cover had changed it. A page that was in use when its chain was
+    /// copied holds every background change before the place (K1).
+    fn beyond_the_copy(&self, change: &Change<'_>) -> bool {
+        let page = change.page();
+        let frees = matches!(change, Change::Reclaim(reclaim) if reclaim.freed().is_some());
+        self.replayed.contains(&page) || (frees && self.dropped.contains(&page))
+    }
+
     /// A background change to a page that there is no image of. It is
     /// dropped like a commit's (K11) when the table has no link of the
     /// page. A page whose newest link is a free link is freed, and the
@@ -488,29 +558,45 @@ impl<'s> Replay<'s> {
         }
     }
 
+    /// Whether a page step is still to be made to `page`, which `due` tells
+    /// from the bytes of the page as replay has it or as its chain gives
+    /// it. A page that the step is due on is taken among the pages replay
+    /// changes. A step on a page that there is no image of is not made.
+    fn due_step(
+        &mut self,
+        at: LogPlace,
+        page: PageId,
+        due: impl Fn(&[u8]) -> Result<bool, FormatError>,
+    ) -> Result<bool, RecoveryError> {
+        let refused = |source| RecoveryError::Change { page, at, source };
+        if let Some(rebuilt) = self.pages.get(&page) {
+            return due(&rebuilt.bytes).map_err(refused);
+        }
+        let Some(frame) = self.load(at, page)? else {
+            self.no_image(page);
+            return Ok(false);
+        };
+        let is_due = due(&frame).map_err(refused)?;
+        if is_due {
+            self.take_in(page, &frame);
+        }
+        Ok(is_due)
+    }
+
     /// LG28, 2: the placing or the move of a value is made exactly when
     /// the cell still holds what the record says it held.
     fn value_step(&mut self, at: LogPlace, step: &ValueMove) -> Result<(), RecoveryError> {
         let page = step.page();
         let size = self.size;
-        let refused = |source| RecoveryError::Change { page, at, source };
-        if !self.pages.contains_key(&page) {
-            let Some(frame) = self.load(at, page)? else {
-                self.no_image(page);
-                return Ok(());
-            };
-            if !page::is_due(&frame, step).map_err(refused)? {
-                return Ok(());
-            }
-            self.take_in(page, &frame);
+        if !self.due_step(at, page, |frame| page::is_due(frame, step))? {
+            return Ok(());
         }
         let Some(rebuilt) = self.pages.get_mut(&page) else {
             return Ok(());
         };
-        if page::is_due(&rebuilt.bytes, step).map_err(refused)? {
-            page::apply_step(&mut rebuilt.bytes, size, step).map_err(refused)?;
-            self.report.steps += 1;
-        }
+        page::apply_step(&mut rebuilt.bytes, size, step)
+            .map_err(|source| RecoveryError::Change { page, at, source })?;
+        self.report.steps += 1;
         Ok(())
     }
 
@@ -519,71 +605,58 @@ impl<'s> Replay<'s> {
     /// when the page is not freed.
     fn reclaim(&mut self, at: LogPlace, reclaim: &Reclaim<'_>) -> Result<(), RecoveryError> {
         let page = reclaim.page();
-        let size = self.size;
-        let capacity = size.image_capacity();
+        let (size, capacity) = (self.size, self.size.image_capacity());
         let refused = |source| RecoveryError::Change { page, at, source };
-        if !self.pages.contains_key(&page) {
-            let Some(frame) = self.load(at, page)? else {
-                match reclaim.freed() {
-                    // The page is freed already, or the checkpoint has
-                    // lost it, and this is the step that freed it.
-                    Some(version) if self.table.newest(page).is_none() => {
-                        self.ids.freed(page, version);
-                        self.dropped.remove(&page);
-                    }
-                    Some(_) => {}
-                    None => self.no_image(page),
-                }
-                return Ok(());
-            };
-            let due = match reclaim.removed() {
-                Some(removed) => first_is_there(&frame, &removed).map_err(refused)?,
-                None => true,
-            };
-            if !due {
+        let removed = reclaim.removed();
+        let is_due = |frame: &[u8]| match &removed {
+            Some(removed) => first_is_there(frame, removed),
+            None => Ok(true),
+        };
+
+        let Some(version) = reclaim.freed() else {
+            // Cells leave, and the page stays.
+            if !self.due_step(at, page, is_due)? {
                 return Ok(());
             }
-            if reclaim.freed().is_none() {
-                self.take_in(page, &frame);
-            }
-        }
-        if let Some(version) = reclaim.freed() {
-            // The cells go with the page.
-            let due = match (self.pages.get(&page), reclaim.removed()) {
-                (Some(rebuilt), Some(removed)) => {
-                    first_is_there(&rebuilt.bytes, &removed).map_err(refused)?
-                }
-                _ => true,
+            let (Some(rebuilt), Some(removed)) = (self.pages.get_mut(&page), removed) else {
+                return Ok(());
             };
-            if due {
+            match removed {
+                Removed::Tree(run) => run.apply(&mut rebuilt.bytes, size, FRAME_FORMAT),
+                Removed::Flat(run) => rebuilt.apply_flat(&run, capacity, &mut self.image),
+            }
+            .map_err(refused)?;
+            self.report.steps += 1;
+            return Ok(());
+        };
+
+        // The step frees the page, and the cells go with it.
+        let due = match self.pages.get(&page) {
+            Some(rebuilt) => Some(is_due(&rebuilt.bytes).map_err(refused)?),
+            None => match self.load(at, page)? {
+                Some(frame) => Some(is_due(&frame).map_err(refused)?),
+                None => None,
+            },
+        };
+        match due {
+            Some(true) => {
                 self.ids.freed(page, version);
                 self.free_page(page, version)?;
                 self.report.steps += 1;
             }
-            return Ok(());
-        }
-        let (Some(rebuilt), Some(removed)) = (self.pages.get_mut(&page), reclaim.removed()) else {
-            return Ok(());
-        };
-        if !first_is_there(&rebuilt.bytes, &removed).map_err(refused)? {
-            return Ok(());
-        }
-        match removed {
-            Removed::Tree(run) => run
-                .apply(&mut rebuilt.bytes, size, FRAME_FORMAT)
-                .map_err(refused)?,
-            Removed::Flat(run) => {
-                let mut image = std::mem::take(&mut self.image);
-                image.clear();
-                let applied = run.apply(Some(&rebuilt.bytes), FRAME_FORMAT, capacity, &mut image);
-                if applied.is_ok() {
-                    rebuilt.put_image(&image);
-                }
-                self.image = image;
-                applied.map_err(refused)?;
+            // A page that had the step would be freed. This one is in use,
+            // and the cells that the step took out of it are not there.
+            Some(false) => return Err(RecoveryError::StepOnAnotherPage { page, at }),
+            // The checkpoint has lost the page (K10), and this is the step
+            // that freed it: what was dropped of the page for want of an
+            // image is settled.
+            None if self.table.newest(page).is_none() => {
+                self.ids.freed(page, version);
+                self.free_page(page, version)?;
             }
+            // The page is freed already.
+            None => {}
         }
-        self.report.steps += 1;
         Ok(())
     }
 
@@ -650,7 +723,7 @@ impl<'s> Replay<'s> {
         manifest: &mut ManifestStore,
         page: PageId,
     ) -> Result<BlockLocation, RecoveryError> {
-        let segment_len = self.segment_len;
+        let segment_len = self.flush.config().segment_len;
         if let Some(mut full) = self.writer.take_if(|writer| writer.end() >= segment_len) {
             full.seal()?;
         }
@@ -679,7 +752,7 @@ impl<'s> Replay<'s> {
     /// Puts a rebuilt page into the pool as the current version of its
     /// page, which write-back owes to a segment, and returns it pinned.
     fn install(
-        &mut self,
+        &self,
         page: PageId,
         rebuilt: &Rebuilt,
         attached: Vec<(ValueId, Arc<[u8]>)>,
@@ -760,13 +833,10 @@ impl<'s> Replay<'s> {
     /// of its pending values, which are read from `log`, and tells
     /// write-back which commits each of them holds.
     pub(super) fn install_rebuilt(&mut self, log: &LogStore) -> Result<(), RecoveryError> {
-        let mut ids: Vec<PageId> = self.pages.keys().copied().collect();
-        ids.sort_unstable();
+        let mut rebuilt: Vec<(PageId, Rebuilt)> = self.pages.drain().collect();
+        rebuilt.sort_unstable_by_key(|(page, _)| *page);
         let mut record = Vec::new();
-        for page in ids {
-            let Some(rebuilt) = self.pages.remove(&page) else {
-                continue;
-            };
+        for (page, rebuilt) in rebuilt {
             let cells = page::pending_cells(&rebuilt.bytes)
                 .map_err(|source| RecoveryError::Rebuilt { page, source })?;
             let mut attached = Vec::with_capacity(cells.len());
@@ -801,7 +871,9 @@ impl<'s> Replay<'s> {
 }
 
 /// Whether the page in `frame` has a value that is not in the value log
-/// yet. Such a page is written to no segment (`page-delta.md` PD16).
+/// yet. Such a page is written to no segment (`page-delta.md` PD16). It is
+/// asked before the image of a page is made, which is the dearer of the
+/// two: replay asks again and again of pages whose values wait.
 fn has_pending(frame: &[u8]) -> Result<bool, FormatError> {
     Ok(match page::kind_of(frame) {
         PageKind::Tree => TreePage::from_validated(frame, FRAME_FORMAT)?.has_pending_value(),

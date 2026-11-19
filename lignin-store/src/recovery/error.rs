@@ -21,12 +21,13 @@ use crate::{
 /// log it names holds what it held. So a recovery that failed because the
 /// file layer did can be made again.
 ///
-/// The variants from [`Self::LogBehindCheckpoint`] on say that what the
-/// directory holds is not what a session of this store leaves, whatever
-/// the crash: the files are damaged, or a rule that keeps the log ahead of
-/// the table checkpoint was broken by whoever wrote them. Recovery repairs
-/// none of them. [`Self::is_damage`] tells them from a failure of the file
-/// layer.
+/// Some of the variants say that what the directory holds is not what a
+/// session of this store leaves, whatever the crash: the files are
+/// damaged, or a rule that keeps the log ahead of the table checkpoint was
+/// broken by whoever wrote them. Recovery repairs none of them.
+/// [`Self::is_damage`] says which they are, and tells them from a failure
+/// of the file layer and from the error of a part of the store, which says
+/// for itself what it found.
 #[derive(Debug)]
 pub enum RecoveryError {
     /// The manifest could not be read or replaced, or a segment could not
@@ -160,6 +161,15 @@ pub enum RecoveryError {
         /// What the value log found.
         why: Miscount,
     },
+    /// A reclaiming step frees a page that is in use and does not hold
+    /// what the step took out of it. A page that has the step is freed,
+    /// and one that lacks it holds those cells (`log-format.md` LG28).
+    StepOnAnotherPage {
+        /// The page.
+        page: PageId,
+        /// Where the record of the step begins in the log.
+        at: LogPlace,
+    },
     /// A pending value of a rebuilt page is named by the log, not carried
     /// in it (`log-format.md` LG23). No session of this version writes
     /// such a group, because nothing keeps the file a named value is in
@@ -188,6 +198,7 @@ impl RecoveryError {
                 | Self::WrongMark { .. }
                 | Self::ChangesWithoutPage { .. }
                 | Self::ValueNotThere { .. }
+                | Self::StepOnAnotherPage { .. }
                 | Self::NamedValue { .. }
         )
     }
@@ -267,6 +278,12 @@ impl fmt::Display for RecoveryError {
                 item(at),
                 pointer.offset(),
                 pointer.file()
+            ),
+            Self::StepOnAnotherPage { page, at } => write!(
+                f,
+                "the reclaiming step at {} frees page {page}, which is in use and does not hold \
+                 what the step took out of it",
+                item(at)
             ),
             Self::NamedValue { page } => write!(
                 f,

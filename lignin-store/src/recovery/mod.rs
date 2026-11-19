@@ -107,7 +107,7 @@
 //! | 5 | The log is opened where it was found to end, and held from the place of the checkpoint's sample. | [`LogStore::open`] |
 //! | 6 | The pages that replay rebuilt and still keeps go into the buffer pool, each as the current version of its page, with the bytes of its pending values. | [`BufferPool::install`] |
 //! | 7 | The counts of the value log and the page ids of *Lr* are made. | [`ValueRecovery::finish`], [`alloc::Recovery::finish`] |
-//! | 8 | The manifest is replaced: it names every segment and value-log file of the earlier sessions closed. | [`SegmentStore::commit`], [`ValueStore::commit`] |
+//! | 8 | The manifest is replaced: it names every segment and value-log file of the earlier sessions closed. | [`SegmentStore::describe`], [`ValueStore::describe`], [`ManifestStore::update`] |
 //! | 9 | The log is made durable to its end and turned to the first file of this session, under a manifest that names every earlier log file closed where its last whole item ends. From here no later recovery reads a byte behind that end (DU3), and the counts that were recovered are durable. | [`LogStore::roll`], [`ValueStore::mark_durable`] |
 //!
 //! **It lands on one committed version** (DU2): *Lr* is at or after the
@@ -130,7 +130,7 @@
 //! | --- | --- | --- | --- |
 //! | The group of a commit at or before *C* | Nothing: every chain holds what it did (K1). | Its released and acquired pointers, if the group is after the place of the sample. | Nothing. |
 //! | The group of a commit after *C* | Each run is applied to its page, unless the page's newest link is of that version or a later one: then the page has it (K3). A run that makes its page needs no page. A freed page gets its free link. | The same. | Every page with a run was written, and every freed page freed (LG15). |
-//! | The record of a background change before the place of the sample | Nothing: the chain that the checkpoint copied holds it, and the sample counts it (K13, K14). | Nothing. | Nothing. |
+//! | The record of a background change before the place of the sample | Nothing: the chain that the checkpoint copied holds it (K13, K14). It is looked at as a record after the place is, for a page of which replay has what no copied chain holds (below). | Nothing: the sample counts it. | A page that a reclaiming step freed, of those pages, is freed. |
 //! | The record of a background change after that place | It is skipped for a page whose newest link is of a later version than the last group before the record. Otherwise it is made exactly when the page still has what the record says it had: the cell holds the place the value is moved from, the cells a reclaiming step takes out are there, or the page it frees is not freed (LG28). | What it releases and acquires, whatever became of its change to the page (DU5). | A page that a reclaiming step freed is freed. |
 //! | A checkpoint mark | The one that ends at the place of the sample must cover *C* (LG29). | | |
 //!
@@ -140,9 +140,39 @@
 //! **A change with no image is dropped** (K11). The checkpoint can lack a
 //! page that was freed and trimmed away, while the log still holds what
 //! commits after *C* did to it before it was freed. Such a change has
-//! nothing to apply to. It is dropped, and replay goes on to the commit
-//! that frees the page or makes it again. A page that is left with a
-//! dropped change when the log ends is damage.
+//! nothing to apply to. It is dropped, and replay goes on to what frees
+//! the page or makes it again: a later commit, or the reclaiming step that
+//! freed it, whose record is durable before a checkpoint that lost the
+//! page is named (K14). A page that is left with a dropped change when
+//! the log ends is damage.
+//!
+//! **A background change before the place is made to a page that the
+//! copied chains do not account for.** K13 has replay look at no record
+//! before the place, because the chain that was copied holds its change.
+//! That is so for a page that was in use when its chain was copied (K1).
+//! A page that was freed since, and whose chain the table trimmed away
+//! before the copy (K10), has no chain. If the checkpoint covers a version
+//! below the one that freed the page, the log holds what commits after *C*
+//! did to the page, and replay meets it with nothing from the checkpoint:
+//!
+//! - **A page that holds the change of a replayed commit has every
+//!   background change after that commit made to it**, by the rule of
+//!   LG28. Replay made the commit's change because the chain lacked it
+//!   (K3), and a block that held a later background change would hold the
+//!   commit too. The commits that follow in the log were made on a page
+//!   with those changes: a reclaiming step takes a cell out, and a later
+//!   commit puts another into its slot, which does not apply to a page
+//!   that still has the cell. This is the page that one of those commits
+//!   made.
+//! - **A page with a dropped change is freed by the record of the step
+//!   that freed it.** A subtree drop frees a page in a page step
+//!   (`page-alloc.md` A4), so no commit says that the page is gone, and
+//!   K11 would find the dropped change unsettled when the log ends.
+//!
+//! The counts take nothing from such a record: the sample includes it.
+//! `page-table.md` K11 and K13 and `log-format.md` LG28 were written
+//! before a page step could free a page or take a cell out, and do not
+//! say this.
 //!
 //! # The pages replay rebuilds
 //!
@@ -219,6 +249,28 @@
 //! the same version with the same pages, counts and page ids, and so is a
 //! recovery that completed and whose session committed nothing.
 //!
+//! # What a recovery costs
+//!
+//! **The time is the log's.** Every item of the log is read once, in the
+//! order it was appended, and each change is made in memory to a page that
+//! was read once. Nothing is synced while the log is read, unless replay
+//! holds more pages than it keeps.
+//!
+//! **What it makes durable does not grow with the log.** A recovery
+//! replaces the manifest three times and creates two log files: one
+//! manifest closes the segments and the value-log files of the earlier
+//! sessions, one closes their log files and names this session's first,
+//! and one names the log file in reserve ([`LogStore::roll`]). A recovery
+//! that finds nothing to close replaces it twice. On a file system whose
+//! syncs are slow this is what a recovery waits for, and not the replay.
+//!
+//! Two things grow with what the last session left. The part of its last
+//! log file that no sync is known to cover is written again, at most one
+//! file of [`LogOptions::target_file_len`] bytes (see the log's "A file of
+//! an earlier session"). And the pages replay writes when it holds more
+//! than it keeps are appended to a segment, which is synced once when it
+//! is full and once when the log ends.
+//!
 //! # What is refused
 //!
 //! A directory that is not what a session of this store leaves, whatever
@@ -230,15 +282,16 @@
 //! | The log goes on from a later commit than the one after *C*. | [`RecoveryError::CommitsMissing`] | K1 |
 //! | The checkpoint holds a link of a later version than *Lr*. Nothing is discarded by its version: the log goes first, and what such a link replaced may be gone. | [`RecoveryError::LinksAfterLanding`] | K4, FL4 |
 //! | No mark ends at the place of the sample, or the mark there covers another version. | [`RecoveryError::MarkMissing`], [`RecoveryError::WrongMark`] | LG29 |
-//! | A page with a dropped change was not freed or made again by a later commit. | [`RecoveryError::ChangesWithoutPage`] | K11 |
+//! | A page with a dropped change was not freed or made again by a later commit or reclaiming step. | [`RecoveryError::ChangesWithoutPage`] | K11 |
+//! | A reclaiming step frees a page that is in use and does not hold what the step took out of it. | [`RecoveryError::StepOnAnotherPage`] | LG28 |
 //! | A logged change does not apply to its page. | [`RecoveryError::Change`] | |
 //! | A cell is given a pointer to a value that the value log does not have. | [`RecoveryError::ValueNotThere`] | FL7 |
 //! | A pending value is named by the log and not carried in it. No session of this version writes one, because nothing keeps the file the name leads to (LG24). | [`RecoveryError::NamedValue`] | LG23 |
 //!
 //! A release of a value pointer that no count included is not refused: the
 //! value log keeps the file for good, which is its own answer to a count
-//! that is wrong, and [`RecoveryReport::miscounts`] says how many there
-//! were.
+//! that is wrong, and [`RecoveryReport::miscounts`] says how many records
+//! had one.
 //!
 //! Everything else that fails is the error of the part that failed, with
 //! the part named: a file that is gone or damaged, or the file layer.
@@ -274,10 +327,11 @@
 //! [`alloc::Recovery::finish`]: crate::alloc::Recovery::finish
 //! [`ValueRecovery::finish`]: crate::values::ValueRecovery::finish
 //! [`ValueStore::recover`]: crate::values::ValueStore::recover
-//! [`ValueStore::commit`]: crate::values::ValueStore::commit
+//! [`ValueStore::describe`]: crate::values::ValueStore::describe
 //! [`ValueStore::mark_durable`]: crate::values::ValueStore::mark_durable
 //! [`SegmentStore::open`]: crate::segment::SegmentStore::open
-//! [`SegmentStore::commit`]: crate::segment::SegmentStore::commit
+//! [`SegmentStore::describe`]: crate::segment::SegmentStore::describe
+//! [`ManifestStore::update`]: crate::segment::ManifestStore::update
 //! [`TableCheckpoints::open`]: crate::table::TableCheckpoints::open
 //! [`PageTable::load`]: crate::table::PageTable::load
 //! [`LogStore::open`]: crate::wal::LogStore::open
@@ -288,9 +342,6 @@
 //! [`WriteBack::adopt`]: crate::flush::WriteBack::adopt
 //! [`WriteBack::run`]: crate::flush::WriteBack::run
 //! [`WriteBack::consolidate_long_chains`]: crate::flush::WriteBack::consolidate_long_chains
-//! [`PoolConfig::capacity`]: crate::cache::PoolConfig::capacity
-//! [`FlushConfig::max_unwritten`]: crate::flush::FlushConfig::max_unwritten
-//! [`alloc`]: crate::alloc
 
 mod error;
 mod replay;
@@ -368,7 +419,8 @@ pub struct RecoveryReport {
     /// covers.
     pub commits: u64,
     /// The records of background changes that were looked at: those from
-    /// the place of the checkpoint's sample on.
+    /// the place of the checkpoint's sample on, and those before it of
+    /// pages that the copied chains do not account for.
     pub changes: u64,
     /// The background changes among them that were made to their page,
     /// which did not have them yet.
@@ -387,9 +439,9 @@ pub struct RecoveryReport {
     /// The pending values of those pages, whose bytes were read from the
     /// log and are with their frames.
     pub pending_values: u64,
-    /// The releases of value pointers that a count of the value log did
-    /// not include. The file of each is kept from now on, whatever its
-    /// count says ([`FileCount::miscounted`]).
+    /// The records that released a value pointer which no count of the
+    /// value log included. The file of such a pointer is kept from now on,
+    /// whatever its count says ([`FileCount::miscounted`]).
     pub miscounts: u64,
 }
 
@@ -525,8 +577,13 @@ pub fn recover(
         (values, allocator, log, report)
     };
 
-    segments.commit(&mut manifest)?;
-    values.commit(&mut manifest)?;
+    // One manifest says what the segments and the value-log files of the
+    // earlier sessions are now.
+    manifest.update(|current| -> Result<_, RecoveryError> {
+        Ok(values.describe(&segments.describe(current)?)?)
+    })?;
+    segments.manifest_replaced(&manifest)?;
+    values.manifest_replaced(&manifest)?;
     log.roll(&mut manifest)?;
     values.mark_durable(values.applied())?;
 

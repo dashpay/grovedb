@@ -318,6 +318,130 @@ fn a_reclaiming_step_frees_a_page_that_the_checkpoint_has_no_image_of() {
     assert_eq!(store.allocator.state(page(2)), PageState::Retired);
 }
 
+/// **A page that a reclaiming step freed before the sample was taken is
+/// free, also where the checkpoint has lost it.** The table trims the
+/// chain of a freed page away once no reader needs it (K10), so a
+/// checkpoint that is written afterwards has no link of the page, and
+/// nothing in it says that there was one. It can cover a version below
+/// the one the page was freed with: then the log still holds what commits
+/// did to the page, and the record of the step, which is before the place
+/// of the sample, is all that says the page is gone.
+///
+/// Here page 2 has a change with no image, and page 3 is made, both by
+/// commits the checkpoint does not cover. A step frees each of them, a
+/// later commit makes a page under the id of page 2 again, and only then
+/// is the sample taken.
+#[test]
+fn a_page_that_a_step_freed_before_the_sample_is_free_where_the_checkpoint_lost_it() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    session.commit(&[
+        insert((1, 1), b"a", inline(b"one")),
+        insert((2, 1), b"b", inline(b"left over")),
+    ]);
+    session.write_back(1, 1);
+    session.commit(&[
+        hash((1, 1), 2),
+        hash((2, 1), 2),
+        insert((3, 1), b"c", inline(b"made and dropped")),
+    ]);
+    session.commit(&[hash((1, 1), 3)]);
+    session.reclaim(2, &[], Some(3));
+    session.reclaim(3, &[], Some(3));
+    session.commit(&[insert((2, 1), b"n", inline(b"under the id again"))]);
+    // The table has no link of page 2 or of page 3, as after a trim, and
+    // page 1 is in a block as commit 1 left it.
+    session.checkpoint(1);
+    let model = session.kill();
+
+    for kept in [None, Some(1)] {
+        let options = RecoveryOptions {
+            max_replay_pages: kept,
+            ..options()
+        };
+        let store = dir.recover_with(&options).expect("the store recovers");
+        assert_eq!(
+            (store.report.covers, store.landed()),
+            (version(1), version(4))
+        );
+        // Both records are before the place of the sample. Page 3 was
+        // there to be freed, and of page 2 there was a dropped change.
+        assert_eq!((store.report.changes, store.report.steps), (2, 1));
+        assert_eq!(store.report.changes_dropped, 1);
+        assert_eq!(store.report.pages_freed, 2);
+        // With one page kept, page 3 is in a segment when it is freed.
+        assert_eq!(store.report.pages_spilled > 0, kept.is_some());
+        check(&store, &model, &[3]);
+        assert_eq!(store.allocator.state(page(3)), PageState::Retired);
+        assert_eq!(store.allocator.state(page(2)), PageState::Live);
+        assert_eq!(
+            frame_of(&store, page(2)).expect("the page").born(),
+            version(4)
+        );
+    }
+}
+
+/// **A cell that a reclaiming step took out before the sample was taken
+/// is out of a page that replay made.** A commit that the checkpoint does
+/// not cover makes page 3. A step takes a cell out of it, and a later
+/// commit puts another cell into the slot. Then a commit frees the page,
+/// its chain is trimmed away, and the sample is taken: every record of
+/// the page is before the place, and the checkpoint has no link of it.
+/// Replay makes the page from the log, and the cell that the later commit
+/// puts in fits only where the step's has left.
+///
+/// Page 2 is the same with a chain in the checkpoint that lacks the
+/// commit before the step. Write-back takes no such checkpoint: it writes
+/// the page first (K1). Replay holds the page with that commit's change,
+/// so it makes the step all the same, and the page says what the session
+/// left.
+#[test]
+fn a_cell_that_a_step_took_out_before_the_sample_is_out_of_a_page_replay_made() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    session.commit(&[
+        insert((1, 1), b"a", inline(b"one")),
+        insert((2, 1), b"b", inline(b"stays")),
+        insert((2, 2), b"c", inline(b"left over")),
+    ]);
+    session.write_back(1, 1);
+    session.write_back(2, 1);
+    session.commit(&[
+        hash((2, 1), 2),
+        insert((3, 1), b"d", inline(b"stays")),
+        insert((3, 2), b"e", inline(b"left over")),
+    ]);
+    session.reclaim(2, &[2], None);
+    session.reclaim(3, &[2], None);
+    session.commit(&[
+        insert((2, 2), b"f", inline(b"in its place")),
+        insert((3, 2), b"g", inline(b"in its place")),
+    ]);
+    session.commit(&[hash((1, 1), 4), Op::Free { page: 3 }]);
+    session.checkpoint(1);
+    let model = session.kill();
+
+    for kept in [None, Some(1)] {
+        let options = RecoveryOptions {
+            max_replay_pages: kept,
+            ..options()
+        };
+        let store = dir.recover_with(&options).expect("the store recovers");
+        assert_eq!(
+            (store.report.covers, store.landed()),
+            (version(1), version(4))
+        );
+        assert_eq!((store.report.changes, store.report.steps), (2, 2));
+        assert_eq!(store.report.changes_dropped, 0);
+        assert_eq!(store.report.pages_spilled > 0, kept.is_some());
+        check(&store, &model, &[3]);
+        let frame = frame_of(&store, page(2)).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        let keys: Vec<&[u8]> = tree.cells().map(|(_, cell)| cell.key()).collect();
+        assert_eq!(keys, [b"b".as_slice(), b"f".as_slice()]);
+    }
+}
+
 /// **A value that is pending where recovery lands has its bytes with the
 /// frame of its page** (FL7): a reader is answered from the frame, and
 /// write-back places the value from there.
@@ -376,7 +500,7 @@ fn rebuilt_pages_beyond_what_replay_keeps_are_written_to_a_segment() {
 
     let few = RecoveryOptions {
         max_replay_pages: Some(2),
-        ..options(dir.size)
+        ..options()
     };
     let store = dir.recover_with(&few).expect("the store recovers");
     assert_eq!(store.landed(), version(24));
@@ -577,4 +701,216 @@ fn store_counts_at(dir: &Dir, place: LogPlace) -> Vec<FileCount> {
             miscounted: count.miscounted,
         })
         .collect()
+}
+
+/// A reclaiming step that takes cells out of a page and frees it in the
+/// same step: the page goes with its cells, and the values the cells held
+/// are released.
+#[test]
+fn a_reclaiming_step_that_removes_and_frees_takes_the_page() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    session.commit(&[
+        insert((1, 1), b"a", inline(b"keep")),
+        insert((2, 1), b"b", long(1, 600)),
+        insert((2, 2), b"c", inline(b"left over")),
+    ]);
+    session.place((2, 1));
+    // A page is freed with a version after the one it was born with.
+    session.commit(&[insert((1, 2), b"d", inline(b"later"))]);
+    session.write_back(1, 2);
+    session.write_back(2, 1);
+    session.checkpoint(2);
+    session.reclaim(2, &[1, 2], Some(2));
+    let model = session.kill();
+
+    let store = dir.open();
+    assert_eq!((store.report.changes, store.report.steps), (1, 1));
+    assert_eq!(store.report.pages_freed, 1);
+    check(&store, &model, &[2]);
+    assert!(store.values.counts().iter().all(|count| count.values == 0));
+    assert_eq!(store.allocator.state(page(2)), PageState::Retired);
+}
+
+/// The entries of the flat page in `frame`: the keys of a leaf, or the
+/// separators of a branch.
+fn flat_keys(frame: &[u8]) -> Vec<Vec<u8>> {
+    use lignin_format::flat_page::FlatPage;
+    let flat = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
+    match (flat.leaf(), flat.branch()) {
+        (Some(leaf), _) => leaf.iter().map(|(key, _)| key.to_vec()).collect(),
+        (_, Some(branch)) => (0..branch.len())
+            .filter_map(|at| branch.separator(at))
+            .map(|key| key.to_vec())
+            .collect(),
+        _ => unreachable!("a flat page is a leaf or a branch"),
+    }
+}
+
+/// **Flat pages.** A commit logs a flat page as an image or as changes by
+/// key, and a reclaiming step takes entries out of a leaf, one or a range,
+/// and separators out of a branch. Each step is made once: a record that
+/// is looked at again finds its first entry gone.
+#[test]
+fn flat_pages_are_replayed_by_key_and_reclaimed_once() {
+    use lignin_format::{
+        flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatValue},
+        wal::{FlatChange, FlatRun, FlatRunWriter},
+    };
+
+    let dir = Dir::new();
+    let session = Session::begin(&dir, Model::default());
+    let capacity = dir.size.image_capacity();
+    let log = &session.store.log;
+    let commit = |write: &dyn Fn(&mut GroupWriter<'_>)| {
+        let at = log.next_group().expect("a place");
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
+        write(&mut group);
+        group.finish();
+        log.append_group(&at, &bytes).expect("appended");
+    };
+    let reclaim = |id: u32, removes: &[FlatChange<'_>]| {
+        let mut run = Vec::new();
+        let mut records = FlatRunWriter::new(page(id), &mut run);
+        for change in removes {
+            records.push(change).expect("a change");
+        }
+        records.finish().expect("a run");
+        let removed = Removed::Flat(FlatRun::decode(&run, V1).expect("a run"));
+        let mut record = Vec::new();
+        write_reclaim(page(id), Some(removed), None, [], &mut record).expect("a record");
+        log.append_change(&record).expect("appended");
+    };
+
+    // Commit 1: a leaf with five entries and a branch with three
+    // separators, each as an image.
+    let mut leaf = FlatLeafBuilder::new(page(5), b"", capacity).expect("a leaf");
+    for key in [b"a", b"b", b"c", b"d", b"e"] {
+        leaf.push(key, FlatValue::Inline(b"value"))
+            .expect("an entry");
+    }
+    let leaf = leaf.finish();
+    let mut branch = FlatBranchBuilder::new(page(6), b"", capacity, 1, page(50)).expect("a branch");
+    for (key, child) in [(b"k", 51), (b"m", 52), (b"p", 53)] {
+        branch.push(key, page(child)).expect("a separator");
+    }
+    let branch = branch.finish();
+    commit(&|group| {
+        group
+            .flat_run_with(page(5), |run| run.push(&FlatChange::Image(&leaf)))
+            .expect("a run");
+        group
+            .flat_run_with(page(6), |run| run.push(&FlatChange::Image(&branch)))
+            .expect("a run");
+    });
+    // Commit 2: changes of the leaf by key.
+    commit(&|group| {
+        group
+            .flat_run_with(page(5), |run| {
+                run.push(&FlatChange::Insert {
+                    key: b"f",
+                    value: FlatValue::Inline(b"new"),
+                })?;
+                run.push(&FlatChange::Replace {
+                    key: b"a",
+                    value: FlatValue::Inline(b"other"),
+                })
+            })
+            .expect("a run");
+    });
+    // Reclaiming steps: one entry leaves the leaf, then a range of two,
+    // and a separator leaves the branch. Each record stands twice.
+    let one = [FlatChange::Remove { key: b"b" }];
+    let range = [FlatChange::RemoveRange {
+        key: b"c",
+        count: 2,
+    }];
+    let of_branch = [FlatChange::Remove { key: b"m" }];
+    for _ in 0..2 {
+        reclaim(5, &one);
+        reclaim(5, &range);
+        reclaim(6, &of_branch);
+    }
+    drop(session);
+
+    let store = dir.open();
+    assert_eq!(store.landed(), version(2));
+    assert_eq!((store.report.changes, store.report.steps), (6, 3));
+    let keys = |id| flat_keys(&frame_of(&store, page(id)).expect("the page"));
+    assert_eq!(keys(5), [b"a".to_vec(), b"e".to_vec(), b"f".to_vec()]);
+    assert_eq!(keys(6), [b"k".to_vec(), b"p".to_vec()]);
+    let born = |id| frame_of(&store, page(id)).expect("the page").born();
+    assert_eq!((born(5), born(6)), (version(2), version(1)));
+}
+
+/// A page that only page steps changed is written to a segment like any
+/// other when replay keeps too many pages: its block is a base image
+/// under a link of the version the page had, behind the link that was
+/// there, and a later step finds the page through it.
+#[test]
+fn a_page_that_only_steps_changed_is_written_under_the_version_it_had() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    let pages = 1..=4u32;
+    for id in pages.clone() {
+        session.commit(&[insert((id, 1), b"a", long(id as u8, 500))]);
+        session.place((id, 1));
+    }
+    for id in pages.clone() {
+        session.write_back(id, u64::from(id));
+    }
+    session.checkpoint(4);
+    // After the sample every value is moved, and the value of page 1 a
+    // second time.
+    let mut moved_twice = None;
+    for id in pages.clone().chain([1]) {
+        let frame = &session.model.pages[&page(id)];
+        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+        let from = tree
+            .cell(slot(1))
+            .and_then(|cell| cell.value_pointer())
+            .expect("placed");
+        let to = session.append_value(id, &vec![id as u8; 500]);
+        let step =
+            ValueMove::in_tree(page(id), slot(1), ValuePlace::Placed(from), to).expect("a move");
+        moved_twice = Some(session.step(&step));
+    }
+    let model = session.kill();
+
+    let one = RecoveryOptions {
+        max_replay_pages: Some(1),
+        ..options()
+    };
+    let store = dir.recover_with(&one).expect("the store recovers");
+    assert_eq!(
+        (store.report.covers, store.landed()),
+        (version(4), version(4))
+    );
+    assert_eq!((store.report.commits, store.report.steps), (0, 5));
+    assert!(store.report.pages_spilled >= 4, "{:?}", store.report);
+    // Every page reads with its last pointer, whether its frame is in the
+    // pool or its block is read. The values are other bytes than the
+    // model's, so the pages are compared and not the values.
+    for id in pages.clone() {
+        let frame = frame_of(&store, page(id)).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        assert_eq!(Some(tree.to_image()), model.image(page(id)), "page {id}");
+        assert_eq!(frame.born(), version(u64::from(id)));
+    }
+    // Page 1 was written with its first move, and read back for its
+    // second: two base images of version 1 follow the one it had.
+    let mut chain = Vec::new();
+    store.table.chain(page(1), &mut chain);
+    let kinds: Vec<bool> = chain
+        .iter()
+        .map(|link| link.version == version(1) && matches!(link.kind, LinkKind::Base(_)))
+        .collect();
+    assert!(
+        kinds.len() == 3 && kinds.iter().all(|&base| base),
+        "{chain:?}"
+    );
+    assert!(moved_twice.is_some());
+    let live: u64 = store.values.counts().iter().map(|count| count.values).sum();
+    assert_eq!(live, 4);
 }

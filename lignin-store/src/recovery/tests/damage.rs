@@ -140,7 +140,7 @@ fn a_log_that_begins_after_the_commit_it_has_to_begin_with_is_refused() {
                 target_file_len: 200,
                 ..LogOptions::default()
             },
-            ..options(dir.size)
+            ..options()
         };
         let mut session = Session::begin_with(&dir, Model::default(), &small);
         session.commit(&[insert((1, 1), b"a", inline(&[7; 100]))]);
@@ -527,4 +527,76 @@ fn a_file_that_is_damaged_or_gone_is_the_error_of_the_part_that_reads_it() {
     );
     assert!(error.to_string().starts_with("the log was not recovered: "));
     assert!(!error.is_damage() && error.source().is_some());
+}
+
+/// A page that had a reclaiming step which frees it would be freed. A
+/// page that is in use and does not hold the cells of such a step is not
+/// the page the step was made on.
+#[test]
+fn a_reclaiming_step_that_frees_a_page_without_its_cells_is_refused() {
+    let dir = Dir::new();
+    let mut session = two_pages(&dir);
+    session.checkpoint(1);
+    // The record says that slot 7 of page 2 left and that the page was
+    // freed. Page 2 has no such cell.
+    let mut run = Vec::new();
+    let mut records = DeltaRunWriter::new(page(2), None, &mut run);
+    records
+        .push(&Delta::Remove { slot: slot(7) })
+        .expect("a record");
+    records.finish().expect("a run");
+    let removed = Removed::Tree(DeltaRun::decode(&run, V1).expect("a run"));
+    let mut record = Vec::new();
+    write_reclaim(page(2), Some(removed), Some(version(1)), [], &mut record).expect("a record");
+    let appended = session.store.log.append_change(&record).expect("appended");
+    session.kill();
+
+    let error = refused(&dir);
+    assert!(
+        matches!(
+            &error,
+            RecoveryError::StepOnAnotherPage { page: of, at } if *of == page(2) && *at == appended.at
+        ),
+        "{error}"
+    );
+    assert!(error.is_damage() && error.source().is_none());
+    assert_eq!(
+        error.to_string(),
+        format!(
+            "the reclaiming step at offset {} of log file 1 frees page 2, which is in use and \
+             does not hold what the step took out of it",
+            appended.at.offset()
+        )
+    );
+}
+
+/// A release that no count included is gone on from, and must not hide,
+/// in the same record, a pointer to a value that is not there.
+#[test]
+fn a_miscounted_release_does_not_hide_a_pointer_to_a_value_that_is_not_there() {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    // A cell holds a pointer that no step counted.
+    let uncounted = session.append_value(1, &[5; 400]);
+    session.commit(&[insert((1, 1), b"a", Value::At(uncounted))]);
+    // A move takes the value from there to a place past the end of the
+    // file: the release is one that no count included, and the pointer
+    // the cell is given leads nowhere.
+    let beyond = ValuePointer::new(uncounted.file(), 1 << 30, 400).expect("a pointer");
+    let moved = ValueMove::in_tree(page(1), slot(1), ValuePlace::Placed(uncounted), beyond)
+        .expect("a move");
+    let mut record = Vec::new();
+    moved.write(&mut record).expect("a record");
+    session.store.log.append_change(&record).expect("appended");
+    session.kill();
+
+    let error = refused(&dir);
+    assert!(
+        matches!(
+            &error,
+            RecoveryError::ValueNotThere { pointer, why: Miscount::OutOfBounds, .. }
+                if *pointer == beyond
+        ),
+        "{error}"
+    );
 }
