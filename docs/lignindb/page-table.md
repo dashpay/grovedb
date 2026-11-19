@@ -423,6 +423,17 @@ change of a commit up to *C* is still to be written back, except to a page
 whose free link has been pushed since (T18). A commit that failed (CM9) made
 no page version, and has no link.
 
+"Covers" speaks of commits. A background change, which a page step makes
+and which has no version (PV6 of `transactions.md`), is vouched for by its
+place in the log: every background change whose record is before the place
+of the checkpoint's sample is in a block that a link points to when the
+chain of its page is copied, with the same exception (DU5 of
+`transactions.md`). Replay looks at none of them (K13). Writing them all
+back before the first chain is copied makes sure of that, and is more than
+recovery needs: a page that is written back while the checkpoint copies
+other chains, and before its own, is as good. For the commits up to *C*
+the time is as above, when the checkpoint is begun.
+
 **K2. A checkpoint is a copy of every chain, not a cut at *C*.** It holds
 the chains as the table had them, which can include links of versions above
 *C*: blocks that were written back before the checkpoint was taken. The end
@@ -553,27 +564,114 @@ names no checkpoint has no sample: the counts start empty, and every change
 in the log applies.
 
 **K13. The place of the sample is its own.** A checkpoint copies each chain
-at another moment (K5), and none of those moments has to be the sample's. A
-page that the checkpoint copied may already hold a change whose record is
-after the sample's place. Replay skips that change for the page (K3) and
+at another moment (K5), and every one of those moments comes after the
+sample's (K14). A page that the checkpoint copied may already hold a change
+whose record is after the sample's place. Replay skips that change for the page (K3) and
 still applies it to the counts: what the counts include is decided by the
 place alone. So a recovery reads the log from two points, the group of
 *C* + 1 for the pages and the place for the counts, and needs it from the
 earlier one on. A background change has no version, so K3 does not tell
 whether a page has it: from the place on, replay takes every background
 change for its page too, by the rule of [`log-format.md`](log-format.md),
-LG28, wherever the group of *C* + 1 stands. What the writer of a
-checkpoint owes the log for that is LG29 of the same document.
+LG28, wherever the group of *C* + 1 stands. It takes none from before the
+place: each of those is in the chain that was copied (K1, K14). What the
+writer of a checkpoint owes the log for that is K14, which is LG29 of the
+same document as the table sees it.
 
-**K14. A checkpoint is named only once the log is durable up to the place
-of its sample.** Whoever installs the checkpoint says how far the log is
-durable, as a commit version (K4) and as a place, and a checkpoint whose
-sample was taken after that place is refused
-(`PageTableError::LogBehindSample`). Otherwise a crash could leave a log
-that ends before the sample was taken, and counts that include changes
-recovery does not have. The checkpoint file, and the sample in it, is
-durable before it is named (step 3 below). A sample with no place asks
-nothing of the log.
+**K14. What the sample and the copy of a checkpoint ask of the log.** K4
+speaks of versions, and a background change has none: a page step places a
+value, moves one or removes what a dropped subtree left, and its record
+stands in the log between the groups (LG25 of `log-format.md`). So these
+three rules speak of places. FMT-05 found the second and the third, and
+that the first was only the way `TableCheckpoints::write` happened to be
+called (the owner's decision D-063, item 4).
+
+1. **The sample is taken, and its mark written, before the checkpoint
+   copies its first chain.** Whoever takes the sample reads the counts and
+   appends the mark while it holds the counts lock, and the place is the end
+   of the mark (LG29). Recovery looks at the background changes from the
+   place on and at none before it (K13). That is right only if every chain
+   was copied after every page step whose record is before the place.
+
+   The code holds two parts of this. The sample is an argument of
+   `TableCheckpoints::write`, so it exists before the first chain is
+   copied, whoever calls. And `write` asks for the end of the log before it
+   copies anything, and refuses a sample whose place is after that end
+   (`PageTableError::SampleAhead`): a mark that ends there was not in the
+   log yet. Nothing is written, and no checkpoint id is taken.
+
+   That check compares two places, and no more. What the code cannot hold
+   is the caller's and recovery's: that the item which ends at the place is
+   the sample's mark, which recovery checks when it reads the log (LG29);
+   that the counts are those of the place (K15); and that the page steps
+   before the place are written back in time (K1).
+
+2. **The log is synced after the last chain is copied, and the checkpoint
+   is named only then.** A page step can place or move a value after the
+   sample was taken and before the chain of its page is copied. Its record
+   is then after the place, and its change is in a block that the
+   checkpoint points to. If the checkpoint were named and a crash lost the
+   record, recovery would have a page whose cell holds a pointer that no
+   count includes: the sample was taken before the step, and the record
+   that would count it is gone. The value-log file could then be deleted
+   with a live value in it. Durable up to the place of the sample is not
+   enough, and K4 cannot ask for more, because the step has no version.
+
+   So `write` asks for the end of the log a second time, after it has
+   copied the last chain, and the checkpoint keeps it:
+   `CheckpointInfo::log_place_needed`. The record of every change that a
+   copied chain holds is before that place, because a page step appends its
+   record before its change reaches a block. Whoever installs the
+   checkpoint says how far the log is durable, as a commit version (K4) and
+   as a place (`LogDurable`), and a checkpoint whose copy ended after that
+   place is refused (`PageTableError::LogBehindCopy`).
+
+   - The place is never before the place of the sample: `write` takes the
+     later of the two ends it was given, and the first was not before the
+     sample. So this rule includes the one that stood here before it, that
+     the log is durable up to the place of the sample. Without that, a crash
+     could leave a log that ends before the sample was taken, and counts
+     that include changes recovery does not have.
+   - **The checkpoint file does not hold it**, as it does not hold the
+     newest trimmed free link (K10): once the checkpoint is named, the log
+     is durable up to it and stays so. For a checkpoint that was loaded,
+     `log_place_needed` is the place of the sample.
+   - A log with no record gives no place, and a checkpoint that was copied
+     while the log had none asks nothing of it.
+   - With an end of the log that is truthful, this rule gives K4 and K10 as
+     well: the group of a commit is in the log before a link of its version
+     is pushed (T6, T8; CM3 of `transactions.md`), so the log that was there
+     when the last chain was copied holds every version the checkpoint
+     covers, reaches or lost. Both checks stay. The one by version does not
+     depend on what the caller says of the log's end.
+
+3. **The log file that the place of the sample names is kept while the
+   checkpoint is in force**, and so is every log file after it. This holds
+   also when the mark is the last item of its file and every commit in the
+   file is covered, which is when FL6 would otherwise let the file go.
+   Recovery reads that file from its start to check the mark (LG29), and
+   begins at the place with the background changes and the counts (K13).
+
+   `CheckpointInfo::log_kept_from` is the place to ask, for a checkpoint
+   that was written and for one that was loaded. Whoever deletes log files
+   (STORE-01, and STORE-07 when recovery ends) deletes none from the file of
+   that place on, for:
+
+   - the checkpoint the manifest names;
+   - a checkpoint that was written and may still be named: from the moment
+     its sample is taken until it is discarded, or until its installation
+     has failed and the manifest is known to name another;
+   - after `SegmentStoreError::ManifestInDoubt`, both the checkpoint that
+     was named and the one that was being named, until the manifest has
+     been opened again.
+
+   With K15 the places do not go back, so the earliest of these is the
+   place of the checkpoint the manifest named last. The table cannot check
+   the rule: it knows no log file. The log is also kept from the group of
+   *C* + 1, which can be in an earlier file (K13).
+
+The checkpoint file, and the sample in it, is durable before it is named
+(step 3 below).
 
 **K15. What the table does not check about a sample.**
 
@@ -594,15 +692,40 @@ nothing of the log.
 | 1 | The file `table/<id>.pt` is created under an id above every id used before, with its header, and the file and its name are made durable. |
 | 2 | The links are appended, a record at a time, then the counts of the sample, and then the end record. |
 | 3 | The file is synced. |
-| 4 | The checkpoint is refused unless the log is durable through what it covers, reaches and may have lost (K4, K10), and up to the place of its sample (K14). Every segment is synced. |
+| 4 | The checkpoint is refused unless the log is durable through what it covers, reaches and may have lost (K4, K10), and up to where the log ended when the last chain was copied (K14). Every segment is synced. |
 | 5 | The manifest is replaced by one that names the checkpoint, and the segments with the lengths that are now durable (K6). |
 | 6 | The file of the checkpoint that was named before is deleted. |
 
 Steps 1 to 3 are `TableCheckpoints::write`, and steps 4 to 6 are
-`TableCheckpoints::install`. Between them the caller makes the log durable
-through `CheckpointInfo::log_needed` (K4). At the end of step 2, when the
-last chain has been copied, the newest free link the table has trimmed away
-is noted (K10).
+`TableCheckpoints::install`. The sample is taken, and its mark written,
+before step 1, and `write` asks for the end of the log before step 1 and
+refuses a sample that is ahead of it (K14). In step 2, when the last chain
+has been copied and before the counts are appended, two things are noted:
+the newest free link the table has trimmed away (K10), and the end of the
+log (K14). Between `write` and `install` the caller makes the log durable
+through `CheckpointInfo::log_needed` (K4) and up to
+`CheckpointInfo::log_place_needed` (K14): one sync of the log, begun after
+`write` has returned, does both.
+
+**What a checkpoint is refused for**, in the order of the checks:
+
+| By | Refused when | Error | Rule |
+| --- | --- | --- | --- |
+| `write`, before step 1 | the place of the sample is after the end of the log | `SampleAhead` | K14, 1 |
+| `write`, in step 2 | the counts of the sample are out of order, or two are of one file | `Format` | P17 |
+| `write`, in step 2, at the end record | the place of the sample is one the file cannot hold: an offset from 45 to 61 of its log file, before the end of the first mark a file can hold (a `LogPlace` has no offset below 45 or above the largest) | `Format` | P18 |
+| `install` | the manifest or the segment store is of another directory | `Store(WrongDirectory)` | |
+| `install` | the log is durable through an earlier version than the checkpoint covers, reaches or lost a free link of | `LogBehind` | K4, K10 |
+| `install` | the log is durable up to an earlier place than its end when the last chain was copied, which is not before the place of the sample | `LogBehindCopy` | K14, 2 |
+| `install`, step 5 | it covers an earlier version than the checkpoint in force | `CoversWentBack` | K7 |
+| `install`, step 5 | the manifest does not vouch for a block it points to | `NotCovered` | K6 |
+
+A checkpoint that `write` refused before step 1 has no file. One that it
+refused in step 2 had its file removed again; if that removal fails as
+well, the file stays in `table/` with no manifest naming it, and a later
+call or the next session removes it (K9). A checkpoint that `install`
+refused is still there, and can be installed again, once the log is durable
+further or the segments are named, or discarded.
 
 **K8. A checkpoint id is never given to two files that a manifest named.**
 The manifest records the last id it named (M7). An id whose file was written
@@ -637,10 +760,22 @@ in use at that version, and no other (K1, K4, K10).
 
 | Failed | Left behind |
 | --- | --- |
-| Steps 1 to 3 | No new checkpoint: the file is removed. Its id is not used again in this session. |
+| Steps 1 to 3 | No new checkpoint. The file is removed; if that fails as well, it stays in `table/` with no manifest naming it, until a later call or the next session removes it (K9). Its id is not used again in this session. |
 | Step 4, or step 5 before its rename | The old manifest and its checkpoint, in force. The new checkpoint can be installed again or discarded. |
 | Step 5, in its rename or the sync of the directory | The old manifest or the new one. Neither checkpoint file is deleted until the manifest has been opened again. |
 | Step 6 | The new manifest, in force, and the old file, which the next call or the next session deletes. |
+
+### 4.6 What the tasks around the log do
+
+The table knows no log. It is given places, and these rows say whose they
+are. Each is a rule the table cannot check, except where a refusal is
+named.
+
+| Task | What it does for a checkpoint |
+| --- | --- |
+| STORE-01 Write-ahead log | Says where the log ends: the place after its last record, which never goes back, and is after the record of every change that has reached a block. Says how far the log is durable after a sync, as the version of the last group and as a place. Keeps the log file that `CheckpointInfo::log_kept_from` names, and every file after it, for each checkpoint K14 lists: also a file that ends with the mark and holds only covered commits. Keeps the log from the group of *C* + 1 as well (K1). |
+| STORE-06 Delta write-back | 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Has written back the commits up to *C* when it begins step 3 (K1). Writes back every page that a page step changed before that place, before the chain of that page is copied; all such pages before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
+| STORE-07 Recovery | Loads the checkpoint the manifest names. Reads the log file of `log_kept_from` from its start, and the item that ends at the place must be a mark that covers what the checkpoint covers (LG29). From the place on: every count change, and every background change for its page by LG28. From the group of *C* + 1 on: the commits, with K3 and K11. Deletes no log file from the file of the place on while that checkpoint is in force. With no checkpoint named: the whole log, from empty counts. |
 
 ## 5. Sizes
 
@@ -788,16 +923,67 @@ STORE-10 build on it.
     The decoder, which could check only that an offset is not inside the
     header of its file, now refuses one before offset 62 or past the
     largest offset.
-21. **Installing a checkpoint checks the place of its sample against the
-    log** (K14), so `TableCheckpoints::install` is told how far the log is
-    durable as a version and as a place (`LogDurable`). The value log asks
-    for this of "whoever stores a sample"; here it is enforced, as K4 is.
+21. **Installing a checkpoint checks places against the log** (K14), so
+    `TableCheckpoints::install` is told how far the log is durable as a
+    version and as a place (`LogDurable`). The value log asks for a log
+    that is durable up to the sample's place of "whoever stores a sample";
+    here it is enforced, as K4 is, and since FMT-05 the place asked for is
+    the later one of item 24.
 22. **That the place never goes back is left to whoever takes the samples**
     (K15).
 23. **The bytes of the checkpoint file changed with the sample**: the end
     record is 53 bytes, not 33, and there is a third record kind. Format
     version 1 is not frozen, and no checkpoint of the earlier layout
     exists outside tests.
+24. **`write` is given a way to ask where the log ends, and asks twice**
+    (K14; FMT-05's finding, the owner's decision D-063 item 4). The table
+    still knows no log: the caller passes a function, and the places are
+    the caller's. The ways not taken:
+    - A rule on the caller alone, "sync the log after `write` returns".
+      `install` is told how far the log is durable, and cannot tell a sync
+      that was made before the copy from one made after it. With the end of
+      the log read by `write` itself, after its last chain, the checkpoint
+      knows the least it must be given.
+    - The caller reads the end of the log after `write` returns and passes
+      it to `install`. That is the same rule on the caller, with one more
+      argument.
+    - A log that the checkpoints hold from the moment they are opened. The
+      table would then depend on STORE-01, which is built on it being
+      separate.
+25. **A sample whose place the log has not reached is refused; a sample
+    taken after the first chain cannot be passed** (K14, 1). The sample is
+    an argument of `write`, so the second needs no check. The first is one
+    comparison with the end of the log, read before anything is copied. It
+    is a check of position: a mark that is written late ends past that end
+    and is refused, and a place at which no mark stands is not found here.
+    Recovery finds it (LG29). `write` could instead take a function that
+    takes the sample, and call it before the first chain: the table would
+    then run inside the counts lock's order (LT7 of `transactions.md`), and
+    could still not tell whether the mark was written.
+26. **The end of the copy is not in the checkpoint file** (K14, 2), like
+    the newest trimmed free link (item 17): nothing reads it once the
+    checkpoint is named. FMT-05 said the bytes need no change, and they
+    have none.
+27. **One refusal for the place, `LogBehindCopy`, where there was
+    `LogBehindSample`.** The end of the copy is never before the sample's
+    place, so one comparison covers both, and the error names what the log
+    has to reach.
+28. **Keeping the log file of the sample's place is a rule on whoever
+    deletes log files, and the checkpoint says which place**
+    (`CheckpointInfo::log_kept_from`; K14, 3). The table has no list of
+    log files to check it against. The place could be put in the manifest,
+    next to the checkpoint it names, so that the manifest alone says which
+    log files it needs: that is a change to the manifest's bytes
+    (`segment-manifest.md`), and recovery reads the checkpoint before it
+    reads the log in any case.
+29. **A background change before the place of the sample is written back
+    before the chain of its page is copied** (K1). `transactions.md` DU5
+    has the rule, for "the place where replay starts for the pages"; with
+    LG28 that place is the sample's. LG28 says such a change "is in the
+    checkpoint" because its step was finished before the sample. A step
+    that is finished has changed the page in the buffer pool. It is in the
+    checkpoint only once a block holds it. To write all such pages back
+    before the first chain is copied is enough and is not required.
 
 ## 7. Code and tests
 
@@ -813,7 +999,7 @@ Run the tests with `cargo test -p lignin-format table` and
 | T18 | none: a rule for STORE-06 | The model of 4.4 has commits whose changes stay in the buffer pool, is told that a checkpoint covers them once their page is freed, and never writes them back: every landing version still has every page. |
 | T14, T15 | `table::chains` | **Acceptance test:** the newest link is one node read, and a page version one read for each of its links, in tables of 1 to 1,000,000 pages and for any page id. |
 | T16 | `PageTable` | Readers on three threads see whole chains while a writer pushes, relocates and trims. |
-| Section 5 | `PageTable::memory_usage`, `TableCheckpoints::write` | **Acceptance test** (`tests/page_table.rs`): one million pages are at most 32,000,000 bytes in memory and exactly 28,002,258 in the checkpoint file, which loads back; so are one million pages with 1.1 million links, in memory. |
+| Section 5 | `PageTable::memory_usage`, `TableCheckpoints::write` | **Acceptance test** (`tests/page_table.rs`): one million pages are at most 32,000,000 bytes in memory and exactly 28,002,278 in the checkpoint file, which loads back; so are one million pages with 1.1 million links, in memory. |
 | P1 to P6 | `lignin_format::table::{Encoder, Decoder, encode, decode}` | Golden bytes; round trip in both directions; records of 4095, 4096, 4097 and 8192 links; misplaced, empty and oversized records; every shorter and longer input; every single-bit flip; zero-filled bytes. |
 | P7 to P11 | `lignin_format::table::{Link, LinkKind, BlockPointer}` | A forged link for each rule, with a valid checksum; each order and chain that is refused, also across records; every chain that is allowed. |
 | P12, P13 | `lignin_format::table::End` | Each total wrong; bytes after the end record. |
@@ -827,10 +1013,13 @@ Run the tests with `cargo test -p lignin-format table` and
 | K10 | `TableCheckpoints::{write, install}`, `CheckpointInfo::{trimmed_free, log_needed}` | The case STORE-10 found: base image at 1, free link at 2, trim at 2, a checkpoint that covers 1 is refused with the log durable through 1, the checkpoint in force still gives the page at 1, and it is named once the log is durable through 2. What a checkpoint needs of the log when it covers, reaches or lost the newest version, and when the id is used again. What a loaded checkpoint and table say. Checkpoints written while another thread frees pages and trims them away, from the last page down: a checkpoint that lacks a page asks for the log through the commit that freed it, also when that came after the write began. |
 | K11 | none: a rule for STORE-07 | The model of 4.4 replays the log on what each crash leaves, drops a change it has no image for, and fails if a page is left that way. |
 | K12, K13 | `TableCheckpoints::write`, `PageTable::load`, `CheckpointInfo::sample` | A checkpoint gives back the sample it was written with: none, a few counts, 8195 counts in three records, a place and no count. A sample whose counts are out of order is not written, and its file is removed. In the crash tests of 4.4 every checkpoint is written with a drawn sample, and the sample of the checkpoint each crash leaves in force is the one written with it. |
-| K14 | `TableCheckpoints::install`, `LogDurable` | A checkpoint is refused while the log is durable to no place, to an earlier file or to an earlier offset than its sample's, and named at that place and after it; the version is asked for first; a sample with no place asks nothing. |
+| K14, 1 | `TableCheckpoints::write`, `PageTableError::SampleAhead` | A check of position only. A sample whose place is after the end of the log, in a log with no record, in an earlier file and at an earlier offset, is refused: no file is written and no id taken. So is one whose mark comes into the log while the chains are copied: the end of the log is asked for before anything is copied. A mark that is the last record of the log is in it. |
+| K14, 2 | `TableCheckpoints::{write, install}`, `CheckpointInfo::log_place_needed`, `LogDurable`, `PageTableError::LogBehindCopy` | The case FMT-05 found: a sample at a place, a page step's record behind it, the block with its change linked before the copy. The checkpoint is refused while the log is durable to no place, to an earlier file, to the place of the sample or one byte short of the copy's end, and named at that end; the version is asked for first; a loaded checkpoint says the place of its sample. The end of the log is asked for when every record of links is in the file and nothing after them is; an end that is reported earlier the second time is not taken; a log with no record asks nothing, and a sample from before every record still waits for the copy's end. |
+| K14, 3 | `CheckpointInfo::log_kept_from`; the rule is for STORE-01 and STORE-07 | A checkpoint that was written and one that was loaded give the place of their sample, also with no count, and none where the sample has none. No test has log files: that they are kept is for STORE-01 to test. |
+| K1, K13: background changes | none: rules for STORE-06 and STORE-07 | The model of 4.4 has page steps of background work: a record of no commit, and a block with the change. It replays them as LG28 says, from the place of the sample on and none before it, and for every log a crash can leave each page must hold exactly the steps whose records are left. Two of the script's steps are on a page that a checkpoint then holds whose sample was taken before them, with the log not durable through their records. In 2,801 of the script's recoveries replay makes a page step that the chain of the checkpoint lacks. |
 | K6, K7 | `TableCheckpoints::install`, `PageTable::load` | A link past a segment's end and one into no segment are not installed; a manifest with a shorter or a missing segment does not load; a checkpoint that covers less is refused. |
 | K8, K9 | `TableCheckpoints::{open, discard, manifest_replaced}` | Ids across sessions; an older checkpoint does not replace a newer one; what opening removes and leaves. |
-| 4.4 | the whole module | A crash after every operation that can leave something new, in a script of 41 steps: all 190 crash points, every state of each (82,723 plans, 1,469 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes, 51 of which lose commits. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. The model keeps the log, the version it is durable through and the commits each block holds, and for every version the crash can land on it works out what the checkpoint and the replayed log give of each page: that must be the page of that version, for a page in use and for a free one. The script frees pages and trims them away while the log is behind, one with a change that was never written back and one whose id is used again, and takes checkpoints that cover no more than the log has: 288 of its recoveries are from a checkpoint that has no link of a page which was in use at the version it covers, and replay drops a change in each. |
+| 4.4 | the whole module | A crash after every operation that can leave something new, in a script of 47 steps: all 210 crash points, every state of each (401,874 plans, 3,330 distinct states); again with writes torn at 16 bytes; three drawn workloads; a database that goes on through 100 crashes, 50 of which lose commits. Each state is opened as a session opens it and checked against a model: the checkpoint is the old one or the new one, it loads, every block it points to reads back with the bytes appended, `table/` holds no other checkpoint, and a new checkpoint can be installed. The model keeps the log, item by item, how many of its items are durable and the changes each block holds, and for every number of items the crash can leave it works out what the checkpoint and the replayed log give of each page: that must be the page as those items left it, for a page in use and for a free one, with the page steps whose records are left and no other. The script frees pages and trims them away while the log is behind, one with a change that was never written back and one whose id is used again, and takes checkpoints that cover no more than the log has, with a sample from where the durable log ends: 864 of its recoveries are from a checkpoint that has no link of a page which was in use at the version it covers, and replay drops a change in each. |
 | 4.5 | the whole module | `EIO` and `ENOSPC` at every operation of the same script, once and as a full disk, and appends that cannot be taken back: the step fails with the injected error, every crash state and the next session are checked as above, and a session that settles the failure goes on. |
 
 The golden bytes and their checksums were computed with an independent

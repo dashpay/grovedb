@@ -7,11 +7,11 @@
 //! the file system is checked against the model by [`check_recovered`].
 //!
 //! The model also keeps what the table is never told: the log, which is
-//! what each commit did to its page, the version the log is durable
-//! through, and the commits each block holds. A crash can land on any
-//! version from the durable one to the last, and for each of them the model
-//! works out what recovery has of every page: the chain of the checkpoint,
-//! and the log replayed on it.
+//! what each commit and each background page step did to its page, how
+//! much of the log is durable, and the changes each block holds. A crash
+//! can leave any whole number of the log's items from the durable ones on,
+//! and for each of them the model works out what recovery has of every
+//! page: the chain of the checkpoint, and the log replayed on it.
 
 use std::{
     cell::Cell,
@@ -39,11 +39,14 @@ pub(super) struct Recoveries {
     pub(super) forgotten: usize,
     /// Those in which replay dropped a change it had no image for.
     pub(super) dropped: usize,
+    /// Those in which replay made a page step of background work that the
+    /// chain of the checkpoint lacked.
+    pub(super) steps: usize,
 }
 
 thread_local! {
     pub(super) static RECOVERIES: Cell<Recoveries> = const {
-        Cell::new(Recoveries { pages: 0, forgotten: 0, dropped: 0 })
+        Cell::new(Recoveries { pages: 0, forgotten: 0, dropped: 0, steps: 0 })
     };
 }
 
@@ -251,44 +254,76 @@ pub(super) struct Checkpointed {
     pub(super) sample: CountSample,
 }
 
-/// Where the log ends once the commit of `version` is in it: five commits
-/// to a log file. Nowhere before the first commit.
-fn log_end(version: u64) -> Option<LogPlace> {
-    let commit = version.checked_sub(1)?;
-    let file = id(1 + (commit / 5) as u32);
-    Some(LogPlace::new(file, 20 + 64 * (1 + commit % 5)).expect("a place"))
+/// The items of the log that each of its files holds.
+const ITEMS_PER_LOG_FILE: usize = 5;
+
+/// Where a log of `items` items ends. Nowhere while it has none.
+fn log_end(items: usize) -> Option<LogPlace> {
+    let last = items.checked_sub(1)?;
+    let file = id(1 + (last / ITEMS_PER_LOG_FILE) as u32);
+    let offset = 20 + 64 * (1 + (last % ITEMS_PER_LOG_FILE) as u64);
+    Some(LogPlace::new(file, offset).expect("a place"))
 }
 
-/// How far the log is durable when it is durable through `version`.
-fn log_through(version: u64) -> LogDurable {
-    LogDurable {
-        version: self::version(version),
-        place: log_end(version),
-    }
+/// How many items the log has before `place`: what [`log_end`] was given.
+fn items_before(place: Option<LogPlace>) -> usize {
+    let Some(place) = place else {
+        return 0;
+    };
+    let in_file = ((place.offset() - 20) / 64) as usize;
+    (place.file().get() as usize - 1) * ITEMS_PER_LOG_FILE + in_file
 }
 
-/// What a commit did to its page.
+/// What a commit, or a page step of background work, did to its page.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Change {
-    /// It made the page, with its first content.
+    /// The commit made the page, with its first content.
     Created,
-    /// It changed the page.
+    /// The commit changed the page.
     Changed,
-    /// It freed the page.
+    /// The commit freed the page.
     Freed,
+    /// A page step placed or moved a value of the page. It is of no commit.
+    Stepped,
 }
 
-/// A page as a commit left it: the commits that made it up since it was
-/// made, or `None` for a page that is not in use.
+/// One item of the log, as far as it is about one page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Logged {
+    /// How many items the log has before this one.
+    at: usize,
+    /// The version of the commit, or of the last commit before a page step.
+    version: u64,
+    /// What names the change in a page: the version of a commit, a number
+    /// from [`FIRST_STEP`] on for a page step.
+    name: u64,
+    change: Change,
+}
+
+/// The names of page steps begin here, above every commit version.
+const FIRST_STEP: u64 = 1 << 40;
+
+/// A page as the log left it: the changes that made it up since it was
+/// made, by their names, or `None` for a page that is not in use.
 type Page = Option<Vec<u64>>;
 
-/// Applies the change of commit `version` to `page`, as it is logged.
-/// Returns `false` for a change to a page that is not there.
-fn apply(page: &mut Page, version: u64, change: Change) -> bool {
-    match (change, page.as_mut()) {
-        (Change::Created, _) => *page = Some(vec![version]),
-        (Change::Changed, Some(commits)) => commits.push(version),
-        (Change::Changed, None) => return false,
+/// The commits among the changes of `page`.
+fn commits_of(page: Page) -> Page {
+    page.map(|changes| {
+        changes
+            .into_iter()
+            .filter(|name| *name < FIRST_STEP)
+            .collect()
+    })
+}
+
+/// Applies the change `logged` to `page`. Returns `false` for a change to a
+/// page that is not there.
+fn apply(page: &mut Page, logged: &Logged) -> bool {
+    match (logged.change, page.as_mut()) {
+        (Change::Created, _) => *page = Some(vec![logged.name]),
+        (Change::Changed | Change::Stepped, Some(changes)) => changes.push(logged.name),
+        (Change::Changed | Change::Stepped, None) => return false,
         (Change::Freed, _) => *page = None,
     }
     true
@@ -299,7 +334,7 @@ fn apply(page: &mut Page, version: u64, change: Change) -> bool {
 struct Block {
     content: BlockContent,
     payload: Vec<u8>,
-    /// The commits whose changes the block holds: all that make up the
+    /// The changes the block holds, by their names: all that make up the
     /// page, for a base image, and those of the run, for a delta run.
     holds: Vec<u64>,
 }
@@ -310,11 +345,16 @@ pub(super) struct Model {
     pub(super) table: ModelTable,
     /// The last commit version.
     pub(super) version: u64,
-    /// The version the log is durable through. A crash lands on it or on
-    /// any later version, up to the last.
-    pub(super) log_durable: u64,
-    /// The log: what each commit did, by its page, in order.
-    log: BTreeMap<u32, Vec<(u64, Change)>>,
+    /// The log: for each of its items, the version of the last commit up to
+    /// it. An item is the group of a commit or the record of a page step.
+    pub(super) items: Vec<u64>,
+    /// How many items of the log are durable. A crash leaves them, and any
+    /// number of the items after them, in order.
+    pub(super) durable_items: usize,
+    /// How many page steps were made, in every session.
+    steps_made: u64,
+    /// The log: what each item did, by its page, in order.
+    log: BTreeMap<u32, Vec<Logged>>,
     /// The commits that are not written back, by their page: the buffer
     /// pool holds their changes, and no link does.
     held: BTreeMap<u32, Vec<u64>>,
@@ -337,32 +377,89 @@ impl Model {
         }
     }
 
+    fn log_item(&mut self, raw_page: u32, name: u64, change: Change) {
+        let logged = Logged {
+            at: self.items.len(),
+            version: self.version,
+            name,
+            change,
+        };
+        self.items.push(self.version);
+        self.log.entry(raw_page).or_default().push(logged);
+    }
+
     /// Takes the next version for a commit that does `change` to
     /// `raw_page`, and logs it.
     fn commit(&mut self, raw_page: u32, change: Change) -> u64 {
         self.version += 1;
-        let logged = (self.version, change);
-        self.log.entry(raw_page).or_default().push(logged);
+        self.log_item(raw_page, self.version, change);
         self.version
     }
 
-    fn logged(&self, raw_page: u32) -> &[(u64, Change)] {
+    /// Logs a page step of background work on `raw_page`, and returns its
+    /// name.
+    fn step(&mut self, raw_page: u32) -> u64 {
+        self.steps_made += 1;
+        let name = FIRST_STEP + self.steps_made;
+        self.log_item(raw_page, name, Change::Stepped);
+        name
+    }
+
+    fn logged(&self, raw_page: u32) -> &[Logged] {
         self.log.get(&raw_page).map_or(&[], Vec::as_slice)
     }
 
-    /// The page as the commit of version `at` left it.
-    fn page_at(&self, raw_page: u32, at: u64) -> Page {
+    /// The version of the last commit among the first `items` of the log.
+    pub(super) fn version_at(&self, items: usize) -> u64 {
+        items.checked_sub(1).map_or(0, |last| self.items[last])
+    }
+
+    /// How many items the log has up to the group of the commit of
+    /// `version`, with that group.
+    fn items_through(&self, version: u64) -> usize {
+        let before = self.items.iter().take_while(|at| **at < version).count();
+        (before + usize::from(version > 0)).min(self.items.len())
+    }
+
+    /// The version the log is durable through.
+    pub(super) fn log_durable(&self) -> u64 {
+        self.version_at(self.durable_items)
+    }
+
+    /// How far the log is durable.
+    fn durable(&self) -> LogDurable {
+        LogDurable {
+            version: version(self.log_durable()),
+            place: log_end(self.durable_items),
+        }
+    }
+
+    /// Syncs the log through the commit of `version` and up to `place`, and
+    /// no further.
+    fn sync_log(&mut self, version: u64, place: Option<LogPlace>) {
+        let through = self.items_through(version).max(items_before(place));
+        assert!(through <= self.items.len());
+        self.durable_items = self.durable_items.max(through);
+    }
+
+    /// The page as the first `items` of the log left it.
+    fn page_at(&self, raw_page: u32, items: usize) -> Page {
         let mut page = None;
-        for (version, change) in self.logged(raw_page) {
-            if *version <= at {
-                apply(&mut page, *version, *change);
+        for logged in self.logged(raw_page) {
+            if logged.at < items {
+                apply(&mut page, logged);
             }
         }
         page
     }
 
+    /// The page as it is now.
+    fn page_now(&self, raw_page: u32) -> Page {
+        self.page_at(raw_page, self.items.len())
+    }
+
     fn is_live(&self, raw_page: u32) -> bool {
-        self.page_at(raw_page, self.version).is_some()
+        self.page_now(raw_page).is_some()
     }
 
     /// The newest version a checkpoint can cover: every change up to it is
@@ -385,52 +482,74 @@ impl Model {
         Some(commits)
     }
 
-    /// What a recovery has of `raw_page` when it loads a checkpoint that
-    /// covers `covers` and holds `chain`, and lands on `landing`: what the
-    /// chain gives, and on it the logged changes after `covers` and after
-    /// the chain's newest link.
-    fn recovered(&self, raw_page: u32, chain: &[Link], covers: u64, landing: u64) -> Page {
+    /// What a recovery has of `raw_page` when it loads the checkpoint
+    /// `found`, which holds `chain` of the page, and the crash left the
+    /// first `landing` items of the log: what the chain gives, and on it
+    /// the logged changes of the commits after the version the checkpoint
+    /// covers and after the chain's newest link, and the page steps from
+    /// the place of the checkpoint's sample on that the page lacks.
+    fn recovered(&self, raw_page: u32, chain: &[Link], found: Found, landing: usize) -> Page {
         let newest = chain.last().map(|link| link.version.get());
         let mut page = self.chain_holds(chain);
         if let Some(newest) = newest {
+            let landed = self.version_at(landing);
             assert!(
-                newest <= landing,
-                "page {raw_page} has a link of version {newest}, and recovery lands on {landing}"
+                newest <= landed,
+                "page {raw_page} has a link of version {newest}, and recovery lands on {landed}"
             );
+            let as_committed = self.page_at(raw_page, self.items_through(newest));
             assert_eq!(
-                page,
-                self.page_at(raw_page, newest),
+                commits_of(page.clone()),
+                commits_of(as_committed),
                 "the chain of page {raw_page} at version {newest}"
             );
         }
-        let from = newest.map_or(covers, |newest| newest.max(covers));
-        let (mut whole, mut dropped) = (true, false);
-        for (version, change) in self.logged(raw_page) {
-            if from < *version && *version <= landing {
-                whole = apply(&mut page, *version, *change);
+        let from = newest.map_or(found.covers, |newest| newest.max(found.covers));
+        let (mut whole, mut dropped, mut stepped) = (true, false, false);
+        for logged in self.logged(raw_page) {
+            if logged.at >= landing {
+                break;
+            }
+            let due = if logged.change == Change::Stepped {
+                // A page step has no version: it is looked at from the
+                // place of the sample on, and made where the page lacks it.
+                logged.at >= found.sampled
+                    && newest.is_none_or(|newest| newest <= logged.version)
+                    && page
+                        .as_ref()
+                        .is_none_or(|changes| !changes.contains(&logged.name))
+            } else {
+                logged.version > from
+            };
+            if due {
+                whole = apply(&mut page, logged);
                 dropped |= !whole;
+                stepped |= whole && logged.change == Change::Stepped;
             }
         }
-        let forgotten = chain.is_empty() && self.page_at(raw_page, covers).is_some();
+        let covered = self.items_through(found.covers);
+        let forgotten = chain.is_empty() && self.page_at(raw_page, covered).is_some();
         RECOVERIES.with(|met| {
             let mut recoveries = met.get();
             recoveries.pages += 1;
             recoveries.forgotten += usize::from(forgotten);
             recoveries.dropped += usize::from(dropped);
+            recoveries.steps += usize::from(stepped);
             met.set(recoveries);
         });
         assert!(
             whole,
-            "replay up to {landing} leaves page {raw_page} changed and without an image"
+            "replay of {landing} items leaves page {raw_page} changed and without an image"
         );
         page
     }
 
-    /// Checks that a recovery that loads `links`, as a checkpoint that
-    /// covers `covers`, and lands on `landing` has every page as the commit
-    /// of `landing` left it: none that is in use is missing, and none that
-    /// is free is there.
-    fn check_landing(&self, links: &[(PageId, Link)], covers: u64, landing: u64) {
+    /// Checks that a recovery that loads `links`, as the checkpoint `found`,
+    /// and is left the first `landing` items of the log has every page as
+    /// those items left it: none that is in use is missing, none that is
+    /// free is there, and each holds the page steps whose records are among
+    /// the items, and no other.
+    fn check_landing(&self, links: &[(PageId, Link)], found: Found, landing: usize) {
         let table = ModelTable::of(links);
         let pages: BTreeSet<u32> = table
             .chains
@@ -440,31 +559,53 @@ impl Model {
             .collect();
         for raw_page in pages {
             assert_eq!(
-                self.recovered(raw_page, table.chain(raw_page), covers, landing),
+                self.recovered(raw_page, table.chain(raw_page), found, landing),
                 self.page_at(raw_page, landing),
-                "page {raw_page} at version {landing}, from a checkpoint that covers {covers}"
+                "page {raw_page} after {landing} items of the log, from a checkpoint that covers \
+                 {} and was sampled after {} items",
+                found.covers,
+                found.sampled
             );
         }
     }
 
-    /// Checks every version a crash can land on now.
-    fn check_every_landing(&self, links: &[(PageId, Link)], covers: u64) {
-        for landing in self.log_durable..=self.version {
-            self.check_landing(links, covers, landing);
+    /// Checks every log a crash can leave now.
+    fn check_every_landing(&self, links: &[(PageId, Link)], found: Found) {
+        for landing in self.durable_items..=self.items.len() {
+            self.check_landing(links, found, landing);
         }
     }
 
-    /// A crash lost the commits after `landing`.
-    fn land_on(&mut self, landing: u64) {
-        assert!((self.log_durable..=self.version).contains(&landing));
-        self.version = landing;
-        for commits in self.log.values_mut() {
-            commits.retain(|(version, _)| *version <= landing);
+    /// A crash lost the items of the log after the first `landing`.
+    fn land_on(&mut self, landing: usize) {
+        assert!((self.durable_items..=self.items.len()).contains(&landing));
+        self.items.truncate(landing);
+        self.version = self.version_at(landing);
+        for logged in self.log.values_mut() {
+            logged.retain(|logged| logged.at < landing);
         }
     }
 
     fn installed(&mut self) {
         self.acked = Some(self.pending.take().expect("an installation in progress"));
+    }
+}
+
+/// What a recovery reads from the checkpoint it loads, apart from the
+/// chains: the version it covers and how many items of the log were before
+/// the place of its sample. Both are 0 where no checkpoint is named.
+#[derive(Clone, Copy, Debug)]
+struct Found {
+    covers: u64,
+    sampled: usize,
+}
+
+impl Found {
+    fn of(info: Option<&CheckpointInfo>) -> Self {
+        Self {
+            covers: info.map_or(0, |info| info.covers().get()),
+            sampled: items_before(info.and_then(|info| info.log_kept_from())),
+        }
     }
 }
 
@@ -489,6 +630,10 @@ pub(super) enum Step {
     Free(u32),
     /// A commit changes the page, and the change stays in the buffer pool.
     Change(u32),
+    /// A page step of background work places or moves a value of the page:
+    /// one record in the log, of no commit. The page is written back with
+    /// the change.
+    Background(u32),
     /// The changes of the page that the buffer pool holds are written as
     /// one delta run.
     WriteBack(u32),
@@ -506,7 +651,8 @@ pub(super) enum Step {
     /// that is written back is written and installed.
     Checkpoint,
     /// A checkpoint is written that covers no more than the log is durable
-    /// through. The log is synced only as far as the checkpoint needs, and
+    /// through, with a sample that was taken where the durable part of the
+    /// log ends. The log is synced only as far as the checkpoint needs, and
     /// then the checkpoint is installed.
     CheckpointBehind,
     /// A checkpoint is written and discarded.
@@ -547,8 +693,8 @@ impl Run {
     }
 
     /// Goes on after a crash, on the file system `fs` that the crash left,
-    /// from the commit version `landing`.
-    pub(super) fn crashed(&mut self, fs: &SimVfs, new: bool, landing: u64) {
+    /// with the first `landing` items of the log.
+    pub(super) fn crashed(&mut self, fs: &SimVfs, new: bool, landing: usize) {
         self.session = None;
         self.fs = fs.clone();
         if new {
@@ -578,7 +724,7 @@ impl Run {
         let (table, info) = db.load()?;
         let model = &mut self.model;
         let links = all_links(&table);
-        let covers = info.as_ref().map_or(0, |info| info.covers().get());
+        let read = Found::of(info.as_ref());
         let found = info.as_ref().map(|info| Checkpointed {
             covers: info.covers(),
             links: links.clone(),
@@ -590,7 +736,7 @@ impl Run {
         model.pending = None;
         assert_eq!(found, model.acked);
         assert_eq!(info.and_then(|info| info.trimmed_free()), None);
-        model.check_landing(&links, covers, model.version);
+        model.check_landing(&links, read, model.items.len());
         model.table = ModelTable::of(&links);
         model.held.clear();
         model.segments = db
@@ -606,31 +752,36 @@ impl Run {
             writer: None,
             written: None,
         });
-        let replayed = self.replay(covers);
+        let replayed = self.replay();
         if replayed.is_err() {
             self.session = None;
         }
         replayed
     }
 
-    /// Does what recovery and the write-back after it do: every page with a
-    /// commit after `covers` that its chain does not hold gets a base image
-    /// of what it is now, or its free link.
-    fn replay(&mut self, covers: u64) -> Result<(), PageTableError> {
+    /// Does what recovery and the write-back after it do: every page whose
+    /// chain does not give it as the log left it gets a base image of what
+    /// it is now, or its free link.
+    fn replay(&mut self) -> Result<(), PageTableError> {
         let pages: Vec<u32> = self.model.log.keys().copied().collect();
         for raw_page in pages {
-            let newest = self.model.table.chain(raw_page).last().copied();
-            let from = newest.map_or(covers, |link| link.version.get().max(covers));
-            let Some(&(last, _)) = self.model.logged(raw_page).last() else {
-                continue;
-            };
-            if last <= from {
+            let chain = self.model.table.chain(raw_page);
+            let newest = chain.last().copied();
+            let now = self.model.page_now(raw_page);
+            if now == self.model.chain_holds(chain) {
                 continue;
             }
-            match self.model.page_at(raw_page, last) {
-                Some(commits) => {
+            // The version of the page is that of the last commit to it: a
+            // page step has none.
+            let mut last = self.model.logged(raw_page).iter().rev();
+            let last = last
+                .find(|logged| logged.change != Change::Stepped)
+                .map(|logged| logged.version)
+                .expect("a logged commit");
+            match now {
+                Some(changes) => {
                     let payload = self.payload();
-                    let image = self.append(raw_page, BlockContent::Base, payload, commits)?;
+                    let image = self.append(raw_page, BlockContent::Base, payload, changes)?;
                     self.push(raw_page, Link::base(version(last), image));
                 }
                 None if newest.is_some_and(|link| link.kind != LinkKind::Free) => {
@@ -683,9 +834,9 @@ impl Run {
         Ok(location)
     }
 
-    /// A sample of the value counts, as one taken when the log ended after
-    /// the commit of `at`: the counts of up to three value-log files.
-    fn sample(&mut self, at: u64) -> CountSample {
+    /// A sample of the value counts, as one taken when the log had `at`
+    /// items: the counts of up to three value-log files.
+    fn sample(&mut self, at: usize) -> CountSample {
         let mut file = 0;
         let counts = (0..self.rng.below(4))
             .map(|_| {
@@ -739,7 +890,7 @@ impl Run {
                 let mut commits = self.model.held.remove(&raw_page).unwrap_or_default();
                 commits.push(born);
                 if content == BlockContent::Base {
-                    commits = self.model.page_at(raw_page, born).expect("a page in use");
+                    commits = self.model.page_now(raw_page).expect("a page in use");
                 }
                 let payload = self.payload();
                 let location = self.append(raw_page, content, payload, commits)?;
@@ -761,6 +912,20 @@ impl Run {
                 if self.model.is_live(raw_page) {
                     let born = self.model.commit(raw_page, Change::Changed);
                     self.model.held.entry(raw_page).or_default().push(born);
+                }
+            }
+            Step::Background(raw_page) => {
+                // Only a page that is written back: the block that follows
+                // holds the step, and what the buffer pool holds of a page
+                // goes to a segment in the order it was made.
+                let written_back = newest(&self.model, raw_page)
+                    .filter(|link| link.kind != LinkKind::Free)
+                    .filter(|_| !self.model.held.contains_key(&raw_page));
+                if let Some(link) = written_back {
+                    let name = self.model.step(raw_page);
+                    let payload = self.payload();
+                    let run = self.append(raw_page, BlockContent::Delta, payload, vec![name])?;
+                    self.push(raw_page, Link::delta(link.version, run));
                 }
             }
             Step::WriteBack(raw_page) => {
@@ -809,28 +974,44 @@ impl Run {
                 db.segments.sync()?;
                 db.segments.commit(&mut db.manifest)?;
             }
-            Step::SyncLog => self.model.log_durable = self.model.version,
+            Step::SyncLog => self.model.durable_items = self.model.items.len(),
             Step::Checkpoint | Step::CheckpointBehind => {
                 let behind = step == Step::CheckpointBehind;
                 let mut covers = self.model.written_back();
                 if behind {
-                    covers = covers.min(self.model.log_durable);
+                    covers = covers.min(self.model.log_durable());
                 }
                 let covers = version(covers);
                 let sampled_at = if behind {
-                    self.model.log_durable
+                    self.model.durable_items
                 } else {
-                    self.model.version
+                    self.model.items.len()
                 };
                 let sample = self.sample(sampled_at);
+                let end = log_end(self.model.items.len());
+                // As if the items after the sample came into the log while
+                // the chains were copied, each before the chain of its page
+                // was: the log ends at the sample when the copy begins.
+                let asked = Cell::new(false);
+                let log_end = || {
+                    if asked.replace(true) {
+                        end
+                    } else {
+                        sample.place
+                    }
+                };
                 let session = self.session.as_mut().expect("a session");
-                let written = session
-                    .db
-                    .checkpoints
-                    .write(&session.table, covers, &sample)?;
+                let written =
+                    session
+                        .db
+                        .checkpoints
+                        .write(&session.table, covers, &sample, log_end)?;
+                assert!(asked.get());
                 let expected = self.model.checkpointed(covers, &sample);
                 assert_eq!(written.covers(), covers);
                 assert_eq!(written.sample(), &sample);
+                assert_eq!(written.log_kept_from(), sample.place);
+                assert_eq!(written.log_place_needed(), end);
                 assert_eq!(written.links(), expected.links.len() as u64);
                 assert_eq!(
                     written.reaches(),
@@ -839,25 +1020,32 @@ impl Run {
                 session.written = Some(written.clone());
                 let db = &mut session.db;
                 let needed = written.log_needed();
+                let durable = self.model.durable();
                 if !behind {
-                    self.model.log_durable = self.model.version;
-                } else if needed.get() > self.model.log_durable {
-                    let durable = log_through(self.model.log_durable);
+                    self.model.durable_items = self.model.items.len();
+                } else if needed > durable.version || end > durable.place {
                     let refused =
                         db.checkpoints
                             .install(&written, durable, &mut db.manifest, &db.segments);
-                    assert!(
-                        matches!(
-                            refused,
-                            Err(PageTableError::LogBehind { needed: asked, durable: found })
-                                if asked == needed && found == durable.version
-                        ),
-                        "{refused:?}"
+                    let expected = if needed > durable.version {
+                        PageTableError::LogBehind {
+                            needed,
+                            durable: durable.version,
+                        }
+                    } else {
+                        PageTableError::LogBehindCopy {
+                            needed: end.expect("a log with an item"),
+                            durable: durable.place,
+                        }
+                    };
+                    assert_eq!(
+                        refused.map_err(|error| error.to_string()),
+                        Err(expected.to_string())
                     );
-                    self.model.log_durable = needed.get();
+                    self.model.sync_log(needed.get(), end);
                 }
                 self.model.pending = Some(expected);
-                let durable = log_through(self.model.log_durable);
+                let durable = self.model.durable();
                 db.checkpoints
                     .install(&written, durable, &mut db.manifest, &db.segments)?;
                 session.written = None;
@@ -865,12 +1053,14 @@ impl Run {
             }
             Step::Abandon => {
                 let covers = version(self.model.written_back());
-                let sample = self.sample(self.model.version);
+                let sample = self.sample(self.model.items.len());
+                let end = sample.place;
                 let session = self.session.as_mut().expect("a session");
-                let written = session
-                    .db
-                    .checkpoints
-                    .write(&session.table, covers, &sample)?;
+                let written =
+                    session
+                        .db
+                        .checkpoints
+                        .write(&session.table, covers, &sample, || end)?;
                 session.written = Some(written.clone());
                 session
                     .db
@@ -918,8 +1108,9 @@ impl Run {
             3..17 => Step::Base(raw_page),
             17..35 => Step::Delta(raw_page),
             35..44 => Step::Free(raw_page),
-            44..50 => Step::Change(raw_page),
-            50..54 => Step::WriteBack(raw_page),
+            44..48 => Step::Change(raw_page),
+            48..51 => Step::Background(raw_page),
+            51..54 => Step::WriteBack(raw_page),
             54..60 => Step::Consolidate(raw_page),
             60..65 => Step::Relocate(raw_page),
             65..77 => Step::Trim(raw_page),
@@ -1017,9 +1208,9 @@ impl Run {
 /// last installation that returned, or the one an installation was naming;
 /// it loads; every block it points to is in a segment and holds what was
 /// appended there; and `table/` holds no other checkpoint. Whichever
-/// version the recovery lands on, from the one the log is durable through
-/// to the last, the checkpoint and the log after it give every page as that
-/// version has it. Then the new session writes a checkpoint of its own,
+/// part of the log the crash leaves, from the durable items to all of them,
+/// the checkpoint and the log after it give every page as those items left
+/// it, with the page steps whose records are among them and no other. Then the new session writes a checkpoint of its own,
 /// which a crash right after it leaves in force.
 ///
 /// Returns whether the checkpoint found is the one that was being installed.
@@ -1046,7 +1237,7 @@ pub(super) fn check_recovered(fs: &SimVfs, model: &Model) -> bool {
         );
     }
     let covers = found.as_ref().map_or(0, |found| found.covers.get());
-    model.check_every_landing(&links, covers);
+    model.check_every_landing(&links, Found::of(info.as_ref()));
 
     let mut buf = Vec::new();
     for (page, link) in &links {

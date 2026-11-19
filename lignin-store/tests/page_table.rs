@@ -90,7 +90,7 @@ fn the_table_for_a_million_pages_fits_in_32_megabytes() {
     let checkpoints = TableCheckpoints::open(&manifest).expect("the checkpoints open");
     let start = Instant::now();
     let written = checkpoints
-        .write(&table, version(999), &CountSample::default())
+        .write(&table, version(999), &CountSample::default(), || None)
         .expect("the checkpoint is written");
     let wrote = start.elapsed();
     let path = FileNames::PAGE_TABLE.path(dir.path(), written.file());

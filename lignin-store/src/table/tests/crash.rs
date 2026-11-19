@@ -22,9 +22,13 @@ use crate::segment::tests::sim::{
 /// of the table while the log is not durable through the commits that freed
 /// them, one of them with a change that was never written back and one
 /// whose id is used again, each followed by a checkpoint that covers no
-/// more than the log has. The blocks are small enough for every state of
-/// every crash to be counted.
-pub(super) const TABLE_LIFE: [Step; 41] = [
+/// more than the log has. Page steps of background work come in between:
+/// one that only a later session's replay brings to its page, one that a
+/// checkpoint holds whose sample was taken before it, with the log not
+/// durable through its record, and one on a page that is freed and trimmed
+/// away. The blocks are small enough for every state of every crash to be
+/// counted.
+pub(super) const TABLE_LIFE: [Step; 47] = [
     Step::Base(1),
     Step::Base(2),
     Step::Delta(1),
@@ -47,12 +51,17 @@ pub(super) const TABLE_LIFE: [Step; 41] = [
     Step::Sync,
     Step::Base(1),
     Step::Delta(1),
+    Step::Background(1),
     Step::Checkpoint,
+    Step::Background(2),
     Step::Restart,
     Step::Free(3),
     Step::Trim(3),
     Step::Checkpoint,
+    Step::Background(2),
+    Step::CheckpointBehind,
     Step::Delta(2),
+    Step::Background(2),
     Step::Free(2),
     Step::Trim(2),
     Step::CheckpointBehind,
@@ -64,6 +73,7 @@ pub(super) const TABLE_LIFE: [Step; 41] = [
     Step::Change(1),
     Step::SyncLog,
     Step::Delta(3),
+    Step::Background(3),
     Step::CheckpointBehind,
     Step::WriteBack(1),
 ];
@@ -156,7 +166,10 @@ fn every_state_of_a_crash_at_any_step_of_a_tables_life_has_a_checkpoint_and_its_
     assert!(tally.crash_points >= 180, "{tally:?}");
     assert_eq!(tally.exhaustive, tally.crash_points, "{tally:?}");
     assert!(tally.old > 0 && tally.new > 0, "{tally:?}");
-    assert!(met.forgotten > 0 && met.dropped > 0, "{met:?}");
+    assert!(
+        met.forgotten > 0 && met.dropped > 0 && met.steps > 0,
+        "{met:?}"
+    );
 }
 
 #[test]
@@ -173,7 +186,7 @@ fn a_crash_tears_writes_at_any_sixteen_bytes_of_a_tables_life() {
 #[test]
 fn a_crash_at_any_operation_of_a_drawn_workload_leaves_what_the_model_allows() {
     let mut all = Tally::default();
-    for seed in [25, 30, 34] {
+    for seed in [33, 40, 41] {
         let tally = crash_everywhere(&SimConfig::new(seed), seed, &SOME_STATES, |run| run.run(90));
         println!("seed {seed}: {tally:?}");
         assert!(tally.crash_points >= 100, "{tally:?}");
@@ -183,7 +196,10 @@ fn a_crash_at_any_operation_of_a_drawn_workload_leaves_what_the_model_allows() {
     let met = RECOVERIES.get();
     println!("{met:?}");
     assert!(all.old > 0 && all.new > 0, "{all:?}");
-    assert!(met.forgotten > 0 && met.dropped > 0, "{met:?}");
+    assert!(
+        met.forgotten > 0 && met.dropped > 0 && met.steps > 0,
+        "{met:?}"
+    );
 }
 
 #[test]
@@ -210,9 +226,9 @@ fn a_database_goes_on_through_one_crash_after_another() {
             let plan = image.sample(crash);
             let new = check_recovered(&image.recover(&plan).unwrap(), &run.model);
             let left = image.recover(&plan).unwrap();
-            let lost = run.model.version - run.model.log_durable;
-            let landing = run.model.log_durable + (seed + 3 * crash) % (lost + 1);
-            lost_commits += usize::from(landing < run.model.version);
+            let lost = run.model.items.len() - run.model.durable_items;
+            let landing = run.model.durable_items + (seed + 3 * crash) as usize % (lost + 1);
+            lost_commits += usize::from(run.model.version_at(landing) < run.model.version);
             run.crashed(&left, new, landing);
             installed += usize::from(run.model.acked.is_some());
             fs = left;

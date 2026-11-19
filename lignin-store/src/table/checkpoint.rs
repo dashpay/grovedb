@@ -29,26 +29,30 @@ use crate::segment::{
 /// checkpoint stores it for recovery.
 ///
 /// The table does not read it. Whoever takes a checkpoint takes the sample
-/// from the value log, with the place the log had reached, and whoever
-/// recovers gives it back to the value log.
+/// from the value log, with the place the log had reached, before
+/// [`TableCheckpoints::write`] copies the first chain, and whoever recovers
+/// gives it back to the value log.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct CountSample {
     /// The sample's place in the log: the counts include every change whose
-    /// record is before it and none whose record is after it. `None` is the
-    /// place before every record of the log.
+    /// record is before it and none whose record is after it. It is the end
+    /// of the mark that was written to the log when the sample was taken.
+    /// `None` is the place before every record of the log.
     pub place: Option<LogPlace>,
     /// The count of each value-log file that has one, in ascending order of
     /// file id.
     pub counts: Vec<ValueCount>,
 }
 
-/// How far the log is durable.
+/// How far the log is durable, as whoever installs a checkpoint has made
+/// sure of after [`TableCheckpoints::write`] returned it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogDurable {
     /// The log is durable through the commit of this version.
     pub version: CommitVersion,
-    /// Every record of the log before this place is durable. `None` if
-    /// none is known to be.
+    /// Every record of the log before this place is durable: the records of
+    /// commits and those of background changes, which have no version.
+    /// `None` if none is known to be.
     pub place: Option<LogPlace>,
 }
 
@@ -61,6 +65,7 @@ pub struct CheckpointInfo {
     links: u64,
     segments: BTreeMap<FileId, u64>,
     sample: CountSample,
+    log_end: Option<LogPlace>,
 }
 
 impl CheckpointInfo {
@@ -107,11 +112,38 @@ impl CheckpointInfo {
         held.map_or(self.covers(), |held| held.max(self.covers()))
     }
 
+    /// The place the log must be durable up to before a manifest names the
+    /// checkpoint: where the log ended when the last chain had been copied.
+    /// A chain can hold a change whose record is after the place of the
+    /// sample, and no record whose change a chain holds is at or after this
+    /// place. It is never before the place of the sample.
+    ///
+    /// The file does not hold this. For a checkpoint that was loaded it is
+    /// the place of the sample: the log was durable up to the end of the
+    /// copy before the checkpoint was named.
+    pub fn log_place_needed(&self) -> Option<LogPlace> {
+        self.log_end
+    }
+
     /// The sample of the value log's counts that the checkpoint holds. A
     /// recovery from the checkpoint starts the counts from it, and the log
     /// is needed from its place on.
     pub fn sample(&self) -> &CountSample {
         &self.sample
+    }
+
+    /// The place from which the log is kept while a manifest names the
+    /// checkpoint, or may come to: the place of the sample. The log file
+    /// that it names is not deleted, also when the place is that file's
+    /// end, and no later one is. A recovery reads that file to check the
+    /// mark the sample was taken at, and takes the background changes and
+    /// the count changes from the place on. `None` is the place before
+    /// every record: the whole log is kept.
+    ///
+    /// The log is also kept from the group of the commit after
+    /// [`Self::covers`], which can be in an earlier file.
+    pub fn log_kept_from(&self) -> Option<LogPlace> {
+        self.sample.place
     }
 
     /// The number of links in the checkpoint.
@@ -335,14 +367,40 @@ impl TableCheckpoints {
     /// loaded. Its counts must be in ascending order of file id, one for a
     /// file. A database with no value-log file has an empty sample.
     ///
+    /// `log_end` says where the log ends at the moment it is asked: the
+    /// place after its last record, or `None` while it has none. The record
+    /// of every change that the table holds at that moment is before the
+    /// place, and the place never goes back. It is asked twice:
+    ///
+    /// - Before the first chain is copied. The sample must have been taken,
+    ///   and its mark written, by then: a sample whose place is after the
+    ///   log's end is refused ([`PageTableError::SampleAhead`]), and nothing
+    ///   is written. Only the two places are compared: that the record
+    ///   which ends at the sample's place is its mark is not checked here.
+    /// - After the last chain is copied. The checkpoint is installed only
+    ///   once the log is durable up to that place
+    ///   ([`CheckpointInfo::log_place_needed`]).
+    ///
     /// If this fails, the file is removed again and the id is not used a
-    /// second time in this session.
+    /// second time in this session. If the removal fails as well, the file
+    /// is left with no manifest naming it, and a later call that is told of
+    /// a manifest, or the next session, removes it.
     pub fn write(
         &self,
         table: &PageTable,
         covers: CommitVersion,
         sample: &CountSample,
+        log_end: impl Fn() -> Option<LogPlace>,
     ) -> Result<CheckpointInfo, PageTableError> {
+        let began = log_end();
+        if let Some(place) = sample.place
+            && Some(place) > began
+        {
+            return Err(PageTableError::SampleAhead {
+                place,
+                log_end: began,
+            });
+        }
         let id = {
             let mut files = self.files();
             let next = files.last_id.map_or(1, |last| last.get().wrapping_add(1));
@@ -356,7 +414,10 @@ impl TableCheckpoints {
             files.on_disk.insert(id);
             files.waiting.insert(id);
         }
-        let written = write_records(&*file, &self.path(id), id, table, covers, sample);
+        // A log's end does not go back, so this is not before the sample.
+        let log_end = || log_end().max(began);
+        let path = self.path(id);
+        let written = write_records(&*file, &path, id, table, covers, sample, &log_end);
         drop(file);
         if written.is_err() {
             self.files().waiting.remove(&id);
@@ -377,10 +438,16 @@ impl TableCheckpoints {
     /// below a link of the checkpoint it loads, and never where a page that
     /// the checkpoint has no link of is still in use.
     ///
-    /// It is also refused if the place of its sample of the value counts is
-    /// after [`LogDurable::place`] ([`PageTableError::LogBehindSample`]):
-    /// a recovery applies to the sample the changes after its place, so the
-    /// log it finds must reach that place.
+    /// It is also refused if the log ended, when the last chain had been
+    /// copied, after [`LogDurable::place`]
+    /// ([`PageTableError::LogBehindCopy`]). Sync the log after `write` has
+    /// returned, up to [`CheckpointInfo::log_place_needed`] or further. A
+    /// chain can hold a change that a background step made after the sample
+    /// was taken, and such a change has no version: were its record lost,
+    /// the checkpoint would hold a value pointer that no count includes. A
+    /// recovery also applies to the sample the changes after its place, so
+    /// the log it finds must reach that place, which is not after the end
+    /// of the copy.
     ///
     /// Then every segment is synced, so that the blocks the checkpoint
     /// points to are durable. The new manifest names the segments as they
@@ -413,10 +480,10 @@ impl TableCheckpoints {
                 durable: log.version,
             });
         }
-        if let Some(needed) = checkpoint.sample.place
+        if let Some(needed) = checkpoint.log_end
             && Some(needed) > log.place
         {
-            return Err(PageTableError::LogBehindSample {
+            return Err(PageTableError::LogBehindCopy {
                 needed,
                 durable: log.place,
             });
@@ -510,6 +577,7 @@ fn write_records(
     table: &PageTable,
     covers: CommitVersion,
     sample: &CountSample,
+    log_end: &dyn Fn() -> Option<LogPlace>,
 ) -> Result<CheckpointInfo, PageTableError> {
     let mut end = Appender {
         file,
@@ -533,9 +601,12 @@ fn write_records(
             end.append(&mut records)?;
         }
     }
-    // Read after the last chain was copied: a free link that a trim removed
-    // before its chain was copied is then no newer than this.
+    // Both are read after the last chain was copied. A free link that a
+    // trim removed before its chain was copied is then no newer than
+    // the one, and the record of a change that a copied chain holds is
+    // before the other.
     let trimmed_free = table.trimmed_free();
+    let log_end = log_end();
     for count in &sample.counts {
         let offset = end.len + records.len() as u64;
         encoder
@@ -560,6 +631,7 @@ fn write_records(
         links: totals.links,
         segments: extents.finish(),
         sample: sample.clone(),
+        log_end,
     })
 }
 
@@ -665,6 +737,7 @@ impl PageTable {
                 place: end.place,
                 counts,
             },
+            log_end: end.place,
         };
         info.check_covered_by(manifest)?;
         Ok((Self::from_chains(chains), Some(info)))

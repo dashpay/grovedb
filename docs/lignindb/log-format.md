@@ -773,8 +773,8 @@ was written and never named leaves a mark that nothing points to.
 
 Three things about a sample follow from what the log holds. They are for
 whoever writes and installs a checkpoint (STORE-06) and whoever keeps the
-log's files (STORE-01), and `page-table.md` states only part of them
-(K13, K14):
+log's files (STORE-01). `page-table.md` states them as K14, with what
+`TableCheckpoints` checks of each:
 
 - **The sample is taken, and its mark written, before the checkpoint
   copies its first chain.** LG28 rests on it: a background change before
@@ -981,7 +981,7 @@ block change is in the group once. PERF-04 measures the whole.
 | Task | Takes from here | Still its own to define |
 | --- | --- | --- |
 | STORE-01 Write-ahead log | The file: header, start record, items (section 2). `write_file_start` for a new file, with `LogStart::next` of the file before it. One item is one append. A commit is told the address its group will begin at, and nothing else is appended before the group (LG22, with the two ways to keep it). A background change and a mark are appended with nothing but their bytes (LG25, D-059). `LogCursor` with `record_len` is the recovery iterator: it stops at the first incomplete group, and `valid_len` is where an open file is cut, never below the manifest's valid length (LG30, LG32). The file that the place of a checkpoint's sample names is kept while the checkpoint is in force (LG29). `LogStart::check_next` across files (LG9). | Rotation, sync policies, the locks, which files it reads, the cut after a failed append. |
-| STORE-06 Delta write-back | A commit's values come out of its group as `Group::values`, each with its address. The placing of a value is `ValueMove` with `from` the pending value, written in the page step (LG25, LG26). The mark when it takes a sample, before it copies the first chain, and a sync of the log after it copied the last, before the checkpoint is named (LG29). **To name carried values it keeps LG24:** a hold on the file a carried value names, until the end of the pending value is durable. Until it does, groups repeat. | Thresholds, the page step. The sample is taken, and the mark written, before `TableCheckpoints::write` copies the chains: see the open point below the table. |
+| STORE-06 Delta write-back | A commit's values come out of its group as `Group::values`, each with its address. The placing of a value is `ValueMove` with `from` the pending value, written in the page step (LG25, LG26). The mark when it takes a sample, before it copies the first chain, and a sync of the log after it copied the last, before the checkpoint is named (LG29). **To name carried values it keeps LG24:** a hold on the file a carried value names, until the end of the pending value is durable. Until it does, groups repeat. | Thresholds, the page step. The sample is taken, and the mark written, before `TableCheckpoints::write` copies the chains: see below the table, and K14 of `page-table.md`. |
 | STORE-07 Recovery | `scan` or `LogCursor` for each file, in order, with LG9 between them. For a group: runs by page, with K3; `Entry::Freed` and the pages of the runs for `alloc::Recovery` (LG15); `Entry::Released` and `Entry::Acquired` for the counts, by the place (DU5). For a change: every one from the sample's place on, wherever the group of *C* + 1 stands; LG28 for the page, and its counts by the place. A tail below a file's valid length in the manifest is damage (LG32). The item that ends at the sample's place is a mark that covers what the checkpoint covers (LG29). With named values, the holds of LG24, put back at the end of replay. | Replay. |
 | STORE-03 Page table | `LogPlace` is now `lignin_format::wal::LogPlace`, re-exported by `table`. Its offset is from 45, and a sample's place from 62 (P18). The checkpoint's bytes are as they were. | |
 | STORE-09 Value log, STORE-08 | The record of a moved value is `ValueMove` with `from` the old pointer. The count changes of a value record are `released` and `acquired`. A file that a carried value names is held, and the end of the hold is a retirement (LG24). | |
@@ -1000,9 +1000,14 @@ For background changes neither is enough, and LG28 and LG29 say what is:
 the pages take the background changes from the sample's place on; the
 sample comes before the first chain is copied; the log is synced after the
 last chain is copied and before the checkpoint is named; and the file the
-place names is kept. K13 now points to LG28 for background changes. The
-second and third are rules for the checkpoint's writer, and K14 is
-STORE-03's to change.
+place names is kept. K13 now points to LG28 for background changes, and
+K14 has since been changed to state the other three (the owner's decision
+D-063, item 4): before it copies its first chain,
+`TableCheckpoints::write` refuses a sample whose place is after the end of
+the log, and `TableCheckpoints::install` refuses a log that is durable less
+far than its end when the last chain was copied. The first compares two
+places: that the item which ends at the place is the mark, and covers what
+the checkpoint covers, is still recovery's to check (LG29).
 
 ## 12. Choices made here that the plan left open
 

@@ -63,7 +63,7 @@
 //! // checkpoint holds, here 2. Installing it syncs the segments first.
 //! // It also holds a sample of the value log's counts, which is empty
 //! // here: there is no value-log file.
-//! let written = checkpoints.write(&table, version(2), &CountSample::default())?;
+//! let written = checkpoints.write(&table, version(2), &CountSample::default(), || None)?;
 //! let log = LogDurable {
 //!     version: version(2),
 //!     place: None,
@@ -178,20 +178,46 @@
 //! Whoever takes a checkpoint takes the sample from the value log, with the
 //! place the log had reached ([`LogPlace`]), and passes it to
 //! [`TableCheckpoints::write`]. Whoever recovers gets it back in
-//! [`CheckpointInfo::sample`] and hands it to the value log. The sample does
-//! not have to be of the moment any chain was copied: the place alone says
-//! which changes the counts include. A database with no value-log file has
-//! an empty sample, and a manifest that names no checkpoint has none.
+//! [`CheckpointInfo::sample`] and hands it to the value log. The sample is
+//! not of the moment any chain was copied: the place alone says which
+//! changes the counts include. A database with no value-log file has an
+//! empty sample, and a manifest that names no checkpoint has none.
 //!
-//! A checkpoint is named only once the log is durable up to the place of
-//! its sample ([`PageTableError::LogBehindSample`]).
+//! # The checkpoint and the log
+//!
+//! The table knows no log. It is told places in it, and holds three rules
+//! with them. A commit has a version, and the log goes first by versions
+//! ([`CheckpointInfo::log_needed`]). A change that background work makes
+//! to a page, placing or moving a value, has no version: its record stands
+//! in the log between the commits, so these rules are by place.
+//!
+//! - **The sample comes before the copy.** It is taken, and its mark is
+//!   written to the log, before [`TableCheckpoints::write`] copies its
+//!   first chain: a recovery looks for background changes from the
+//!   sample's place on, so every chain must be copied after every change
+//!   before that place. The sample is an argument of `write`, and `write`
+//!   asks for the end of the log before it copies anything: a sample whose
+//!   place is after it is refused ([`PageTableError::SampleAhead`]). That
+//!   compares two places. Whether the record that ends at the sample's
+//!   place is its mark is for the recovery to check.
+//! - **The log is synced after the copy.** A chain can hold a change that
+//!   was made after the sample. Were its record lost in a crash, the
+//!   checkpoint would hold a value pointer that no count includes. So
+//!   `write` asks for the end of the log again once the last chain is
+//!   copied ([`CheckpointInfo::log_place_needed`]), and a checkpoint is
+//!   named only once the log is durable up to that place
+//!   ([`PageTableError::LogBehindCopy`]). The place is never before the
+//!   sample's.
+//! - **The log is kept from the sample's place.** The log file that
+//!   [`CheckpointInfo::log_kept_from`] names, and every one after it, is
+//!   not deleted while a manifest names the checkpoint or may come to.
 //!
 //! # The life of a checkpoint
 //!
 //! | Step | What happens |
 //! | --- | --- |
-//! | Write | [`TableCheckpoints::write`] creates `table/<id>.pt` under an id above every id used before, appends the links, the counts of the sample and the end record, and syncs the file. |
-//! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint needs ([`CheckpointInfo::log_needed`]), syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
+//! | Write | [`TableCheckpoints::write`] checks that the log has reached the place of the sample, creates `table/<id>.pt` under an id above every id used before, appends the links, notes where the log ends, appends the counts of the sample and the end record, and syncs the file. |
+//! | Install | [`TableCheckpoints::install`] checks that the log is durable through all the checkpoint needs ([`CheckpointInfo::log_needed`], [`CheckpointInfo::log_place_needed`]), syncs the segments, replaces the manifest with one that names the checkpoint and the segments as they are then, and deletes the checkpoint that was named before. |
 //!
 //! Between the two the caller makes the log durable (see below). A
 //! checkpoint that is written and not installed is deleted by
@@ -222,7 +248,7 @@
 //!
 //! | Failed | Left behind |
 //! | --- | --- |
-//! | [`TableCheckpoints::write`] | No new checkpoint: its file is removed. The id is not used again in this session. |
+//! | [`TableCheckpoints::write`] | No new checkpoint. Its file is removed, or, if that fails as well, is left with no manifest naming it, for a later call or the next session to remove. The id is not used again in this session. |
 //! | [`TableCheckpoints::install`], before the rename of the manifest | The old manifest and its checkpoint, in force. The new checkpoint can be installed again or discarded. |
 //! | [`TableCheckpoints::install`], in the rename or the sync of the directory | The old manifest or the new one, whole, with its checkpoint. Neither checkpoint file is touched until the manifest has been opened again and [`TableCheckpoints::manifest_replaced`] called. |
 //! | The deletion of the checkpoint that was replaced | The new manifest, in force, and the old file, which the next call or the next session deletes ([`PageTableError::NotDeleted`]). |
@@ -233,17 +259,25 @@
 //! - It holds the directory's lock while a [`TableCheckpoints`] of the
 //!   directory exists, and opens it after the manifest.
 //! - It passes [`TableCheckpoints::write`] a version that the table covers.
-//! - It keeps the log ahead of the checkpoint. Between `write` and
-//!   `install` it syncs the log through [`CheckpointInfo::log_needed`], and
-//!   it tells `install` how far the log is durable ([`LogDurable`]). A
-//!   checkpoint that needs more is refused ([`PageTableError::LogBehind`]),
-//!   because a recovery could then land below one of its links, on a page
-//!   version its chain no longer gives, or below the commit that freed a
-//!   page it has no link of.
+//! - It keeps the log ahead of the checkpoint. After `write` has returned
+//!   it syncs the log, through [`CheckpointInfo::log_needed`] and up to
+//!   [`CheckpointInfo::log_place_needed`], and it tells `install` how far
+//!   the log is durable ([`LogDurable`]). A checkpoint that needs more is
+//!   refused ([`PageTableError::LogBehind`],
+//!   [`PageTableError::LogBehindCopy`]), because a recovery could then land
+//!   below one of its links, on a page version its chain no longer gives,
+//!   below the commit that freed a page it has no link of, or before the
+//!   record of a background change that one of its chains holds.
 //! - It takes the sample of the value counts for a checkpoint after the
-//!   sample of every checkpoint before it, syncs the log up to the sample's
-//!   place before `install`, and keeps the log from the place of the
-//!   checkpoint in force on.
+//!   sample of every checkpoint before it, and writes the sample's mark to
+//!   the log, before it calls `write`. A page that background work changed
+//!   before the sample's place is written back before its chain is copied:
+//!   writing them all back before the call makes sure of it.
+//! - It gives `write` a function that says where the log ends when it is
+//!   called: after the record of every change that is in a block.
+//! - It keeps the log from the place of the checkpoint in force on, and of
+//!   one it has written and may install, with the log file that the place
+//!   names ([`CheckpointInfo::log_kept_from`]).
 //! - Once a commit has pushed the free link of a page, it writes back
 //!   nothing older of that page: the table would refuse the link. Readers
 //!   below the freeing version are served from the buffer pool, and no
