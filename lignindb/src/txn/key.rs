@@ -191,6 +191,23 @@ impl KeySet {
         self
     }
 
+    /// Adds every key and every range of `other`: the key set of a commit
+    /// that writes what both say (CF1).
+    pub fn merge(&mut self, other: &Self) -> &mut Self {
+        for (unit, keys) in &other.units {
+            let own = self.units.entry(*unit).or_default();
+            own.keys.extend(keys.keys.iter().cloned());
+            for range in &keys.ranges {
+                if !own.ranges.contains(range) {
+                    own.ranges.push(range.clone());
+                }
+            }
+        }
+        self.subtrees.extend(other.subtrees.iter().copied());
+        self.everything |= other.everything;
+        self
+    }
+
     /// Whether the set has no key and no range.
     pub fn is_empty(&self) -> bool {
         !self.everything

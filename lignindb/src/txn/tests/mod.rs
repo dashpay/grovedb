@@ -1,4 +1,4 @@
-mod model;
+pub(crate) mod model;
 #[cfg(not(feature = "testing"))]
 pub(crate) mod store;
 #[cfg(feature = "testing")]
@@ -8,7 +8,7 @@ mod acceptance;
 mod errors;
 mod handles;
 mod hashes;
-mod random;
+pub(crate) mod random;
 mod reads;
 
 mod rebase;
@@ -34,31 +34,31 @@ use super::*;
 use crate::snapshot::Versions;
 
 /// A store with the model of its committed records.
-struct World<'s> {
-    db: &'s Db,
-    versions: &'s Versions,
-    path: WritePath<'s>,
-    model: Committed,
+pub(crate) struct World<'s> {
+    pub(crate) db: &'s Db,
+    pub(crate) versions: &'s Versions,
+    pub(crate) path: WritePath<'s>,
+    pub(crate) model: Committed,
     /// Every subtree that was entered with a host, with the subtree of
     /// its host: what the model knows of which subtree is below which.
-    hosts: RefCell<Vec<(Subtree, Subtree)>>,
+    pub(crate) hosts: RefCell<Vec<(Subtree, Subtree)>>,
 }
 
 /// A write transaction with its model.
-struct Tx<'s> {
-    txn: WriteTxn<'s>,
-    model: RefCell<TxnModel>,
+pub(crate) struct Tx<'s> {
+    pub(crate) txn: WriteTxn<'s>,
+    pub(crate) model: RefCell<TxnModel>,
 }
 
 impl Tx<'_> {
     /// Forgets the writes of the model: the transaction was rolled back.
-    fn forget(&self) {
+    pub(crate) fn forget(&self) {
         *self.model.borrow_mut() = TxnModel::default();
     }
 }
 
 impl<'s> World<'s> {
-    fn new(db: &'s Db, versions: &'s Versions) -> Self {
+    pub(crate) fn new(db: &'s Db, versions: &'s Versions) -> Self {
         let model = Committed {
             records: BTreeMap::new(),
             version: versions.latest().get(),
@@ -72,11 +72,11 @@ impl<'s> World<'s> {
         }
     }
 
-    fn latest(&self) -> CommitVersion {
+    pub(crate) fn latest(&self) -> CommitVersion {
         self.versions.latest()
     }
 
-    fn begin(&self) -> Tx<'s> {
+    pub(crate) fn begin(&self) -> Tx<'s> {
         Tx {
             txn: self.path.begin(),
             model: RefCell::default(),
@@ -85,7 +85,7 @@ impl<'s> World<'s> {
 
     /// The change set that makes of the Merk `name`, as `tx` reads it, the
     /// Merk that `edit` leaves.
-    fn merk(
+    pub(crate) fn merk(
         &self,
         tx: &Tx<'s>,
         name: u8,
@@ -102,7 +102,7 @@ impl<'s> World<'s> {
     /// nodes, as GroveDB writes the element that hosts the Merk, or the
     /// base root key (`transactions.md` 14.1, GM1). Two transactions that
     /// each make the first node of one Merk meet in it (GM3).
-    fn root_record(merk: &OwnedMerk) -> Option<Write> {
+    pub(crate) fn root_record(merk: &OwnedMerk) -> Option<Write> {
         let unit = Unit::new(Column::Roots, merk.subtree);
         merk.root.as_ref().map(|root| match root {
             Some(root) => put(unit, b"root", root),
@@ -112,7 +112,7 @@ impl<'s> World<'s> {
 
     /// Applies `batch` through a scope of `tx` that merges, and to the
     /// model.
-    fn apply(&self, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<Applied, TxnError> {
+    pub(crate) fn apply(&self, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<Applied, TxnError> {
         let first_write = self.latest().get();
         let scope = tx.txn.scope()?;
         let applied = batch.with(|batch| scope.apply(batch));
@@ -148,7 +148,7 @@ impl<'s> World<'s> {
     }
 
     /// Every subtree that was entered below `subtree`, at any depth.
-    fn below(&self, subtree: Subtree) -> Vec<Subtree> {
+    pub(crate) fn below(&self, subtree: Subtree) -> Vec<Subtree> {
         let hosts = self.hosts.borrow();
         let mut below = vec![subtree];
         let mut at = 0;
@@ -164,7 +164,7 @@ impl<'s> World<'s> {
     }
 
     /// Applies one change of one Merk.
-    fn edit(
+    pub(crate) fn edit(
         &self,
         tx: &Tx<'s>,
         name: u8,
@@ -184,7 +184,7 @@ impl<'s> World<'s> {
     }
 
     /// Applies writes of flat records.
-    fn write(&self, tx: &Tx<'s>, records: Vec<Write>) {
+    pub(crate) fn write(&self, tx: &Tx<'s>, records: Vec<Write>) {
         let merks = Vec::new();
         self.apply(
             tx,
@@ -199,7 +199,7 @@ impl<'s> World<'s> {
 
     /// Commits `tx` in the store and in the model, and tells the models of
     /// `others`, which stay open.
-    fn commit(&mut self, tx: Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
+    pub(crate) fn commit(&mut self, tx: Tx<'s>, others: &[&Tx<'s>]) -> Outcome {
         let outcome = self.db.commit(self.versions, &tx.txn).expect("a commit");
         let model = tx.model.borrow();
         let expected = match (model.writes.is_empty(), model.conflicts()) {
@@ -234,14 +234,14 @@ impl<'s> World<'s> {
 
     /// A write made with no transaction: a transaction of its own around
     /// one batch (RD7).
-    fn write_outside(&mut self, batch: &OwnedBatch, others: &[&Tx<'s>]) -> Outcome {
+    pub(crate) fn write_outside(&mut self, batch: &OwnedBatch, others: &[&Tx<'s>]) -> Outcome {
         let tx = self.begin();
         self.apply(&tx, batch).expect("the batch is applied");
         self.commit(tx, others)
     }
 
     /// One change of one Merk, made with no transaction.
-    fn edit_outside(
+    pub(crate) fn edit_outside(
         &mut self,
         name: u8,
         edit: impl FnOnce(&mut BTreeMap<Vec<u8>, Vec<u8>>),
@@ -253,7 +253,7 @@ impl<'s> World<'s> {
     }
 
     /// The units that the committed records or the writes of `tx` name.
-    fn units(&self, tx: &Tx<'s>) -> BTreeSet<Unit> {
+    pub(crate) fn units(&self, tx: &Tx<'s>) -> BTreeSet<Unit> {
         let committed = self.model.records.keys().map(|(unit, _)| *unit);
         let model = tx.model.borrow();
         let written = model.writes.iter().map(|(write, ..)| write.unit());
@@ -261,7 +261,7 @@ impl<'s> World<'s> {
     }
 
     /// The keys of `unit` that have, or had, a record that `tx` could read.
-    fn keys(&self, tx: &Tx<'s>, unit: Unit) -> BTreeSet<Vec<u8>> {
+    pub(crate) fn keys(&self, tx: &Tx<'s>, unit: Unit) -> BTreeSet<Vec<u8>> {
         let mut keys = model::keys_of(&self.model.records, unit);
         for (write, ..) in &tx.model.borrow().writes {
             match write {
@@ -277,7 +277,7 @@ impl<'s> World<'s> {
     /// Checks every read through `tx` against the model: each record by its
     /// key (RD3, RD5), the committed read of each key (RD10), and a cursor
     /// over each unit of flat records, in both directions (RD6).
-    fn check(&self, tx: &Tx<'s>) {
+    pub(crate) fn check(&self, tx: &Tx<'s>) {
         let committed = &self.model.records;
         let model = tx.model.borrow();
         for unit in self.units(tx) {
@@ -350,7 +350,7 @@ impl<'s> World<'s> {
 
     /// Checks the committed state against the model: every record as a
     /// transaction that has written nothing reads it, and the tree pages.
-    fn check_committed(&self) {
+    pub(crate) fn check_committed(&self) {
         let reader = self.begin();
         self.check(&reader);
         let keys = self.db.check_trees(self.versions, self.latest());
@@ -365,7 +365,7 @@ impl<'s> World<'s> {
 }
 
 /// Every record a cursor shows from one end to the other.
-fn scan(cursor: &mut Cursor<'_, '_>, back: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(crate) fn scan(cursor: &mut Cursor<'_, '_>, back: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut records = Vec::new();
     match back {
         false => cursor.seek_to_first(),
@@ -390,7 +390,7 @@ fn scan(cursor: &mut Cursor<'_, '_>, back: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
 
 /// The key of every node a cursor over a Merk shows from one end to the
 /// other, each node checked against the record `view` has under its key.
-fn scan_merk(
+pub(crate) fn scan_merk(
     cursor: &mut MerkCursor<'_, '_>,
     view: &BTreeMap<Vec<u8>, Val>,
     back: bool,
@@ -419,19 +419,19 @@ fn scan_merk(
 }
 
 /// The bytes of a node's value, wherever the value is.
-fn value_of(view: &NodeView<'_>) -> Vec<u8> {
+pub(crate) fn value_of(view: &NodeView<'_>) -> Vec<u8> {
     let mut buf = lignin_tree::value::ValueBuf::new();
     view.value(&mut buf).expect("the value is read").to_vec()
 }
 
-fn flat(value: &[u8]) -> Val {
+pub(crate) fn flat(value: &[u8]) -> Val {
     Val::Flat(value.to_vec())
 }
 
-fn put(unit: Unit, key: &[u8], value: &[u8]) -> Write {
+pub(crate) fn put(unit: Unit, key: &[u8], value: &[u8]) -> Write {
     Write::Put(unit, key.to_vec(), flat(value))
 }
 
-fn delete(unit: Unit, key: &[u8]) -> Write {
+pub(crate) fn delete(unit: Unit, key: &[u8]) -> Write {
     Write::Delete(unit, key.to_vec())
 }

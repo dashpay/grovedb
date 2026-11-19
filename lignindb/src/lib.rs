@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod batch;
+pub mod commit;
 pub mod savepoint;
 pub mod scope;
 pub mod snapshot;

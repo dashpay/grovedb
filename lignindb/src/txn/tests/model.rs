@@ -217,7 +217,8 @@ impl Write {
         }
     }
 
-    fn meets(&self, other: &Self) -> bool {
+    /// Whether the two writes write a key in common (CF2).
+    pub fn meets(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {

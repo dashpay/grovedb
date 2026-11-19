@@ -203,17 +203,25 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> FlatFrames<'s, 'g, G> {
 }
 
 impl<'s> FlatFrames<'s, 's, Idle> {
-    /// Ends the flat pages and hands the writer to the commit, which
-    /// installs them in the operation that holds `guard`.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
-    pub(crate) fn into_writer<'g>(mut self, guard: &'g OperationGuard<'s>) -> FlatWriter<'s, 'g> {
+    /// The flat pages for the commit, which logs them in the operation
+    /// that holds `guard`. They are still given up when they are dropped.
+    pub(crate) fn for_commit<'g>(
+        self,
+        guard: &'g OperationGuard<'s>,
+    ) -> FlatFrames<'s, 'g, OperationGuard<'s>> {
+        self.under(guard)
+    }
+}
+
+impl<'s: 'g, 'g> FlatFrames<'s, 'g, OperationGuard<'s>> {
+    /// Ends the flat pages and hands their copies to the commit, which
+    /// installs them (`lignin_tree::flat`, "What a commit writes"). From
+    /// here on nothing gives them up but the commit.
+    pub(crate) fn into_parts(mut self) -> lignin_tree::flat::Parts<'s> {
         let writer = self.0.take();
         writer
             .expect("the writer is there until it is taken")
-            .under(guard)
+            .into_parts()
     }
 }
 

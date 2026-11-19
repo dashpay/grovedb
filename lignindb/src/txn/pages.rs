@@ -159,10 +159,6 @@ pub(crate) struct TreeCopy<'s> {
 
 impl TreeCopy<'_> {
     /// Whether the copy is as the page was: its run has no record.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
     pub(crate) fn is_unchanged(&self) -> bool {
         self.run.len() <= DeltaRun::HEADER_LEN
     }
@@ -336,11 +332,18 @@ impl<'s> TreePages<'s> {
         result
     }
 
+    /// The copies of the pages the transaction changed or made, in
+    /// ascending order of page id: what the commit logs, each with its run.
+    pub(crate) fn written(&self) -> impl Iterator<Item = (PageId, &TreeCopy<'s>)> + '_ {
+        self.copies.iter().map(|(page, copy)| (*page, copy))
+    }
+
+    /// The committed pages the transaction freed, in ascending order.
+    pub(crate) fn freed(&self) -> impl Iterator<Item = PageId> + '_ {
+        self.freed.keys().copied()
+    }
+
     /// Ends the pages and hands what they hold to the commit.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
-    )]
     pub(crate) fn into_parts(mut self) -> TreeParts<'s> {
         TreeParts {
             written: std::mem::take(&mut self.copies).into_iter().collect(),
@@ -362,10 +365,6 @@ impl Drop for TreePages<'_> {
 /// What the tree pages of a transaction leave for its commit
 /// (`transactions.md` CM3 step 7).
 #[derive(Debug)]
-#[cfg_attr(
-    any(not(any(test, feature = "testing")), loom),
-    expect(dead_code, reason = "the commit (TXN-05) is its one reader")
-)]
 pub(crate) struct TreeParts<'s> {
     /// The copies of the pages the transaction changed or made, in
     /// ascending order of page id. One that is as the page was is
