@@ -736,6 +736,56 @@ fn a_hit_gives_way_to_a_change_of_its_part_of_the_table() {
 }
 
 #[test]
+fn a_read_with_no_lock_takes_page_versions_only() {
+    use crate::cache::frame::Unlocked;
+
+    let pool = pool(2);
+    let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+    let chain = &pool.buckets[0].chain;
+
+    // Whatever frame the caller asks for, a private copy is not pinned as
+    // a page version: its bytes can still change.
+    let pinned = chain.pin_unlocked(&pool.arena, |frame| frame.page_raw() == 1, |_| {});
+    assert!(matches!(pinned, Unlocked::Not));
+    assert_eq!(
+        pool.census().pinned,
+        1,
+        "the copy's handle and nothing else"
+    );
+    pool.discard(&copy).expect("a private copy");
+    drop(copy);
+    check(&pool, 0);
+}
+
+#[test]
+fn a_dead_frame_whose_last_pin_went_is_taken_before_one_is_allocated() {
+    use crate::cache::frame::Unlocked;
+
+    let pool = pool(2);
+    drop(create(&pool, 1, 1));
+    let chain = &pool.buckets[0].chain;
+    let pinned = chain.pin_unlocked(&pool.arena, |frame| frame.page_raw() == 1, |_| {});
+    let Unlocked::Found(found) = pinned else {
+        panic!("nothing changes the table now");
+    };
+
+    // A page step replaces the frame under the reader, into the last free
+    // frame. The reader then gives its pin back, and has not yet gone
+    // through the dead frames.
+    step_once(&pool, 1);
+    assert!(found.into_pin().unpin(), "the frame is dead");
+    assert_eq!(free_frames(&pool), 0);
+
+    // A frame is wanted, none is free and the other one is unwritten: the
+    // dead frame is taken, and none is allocated beside the two.
+    let blank = pool.blank();
+    assert_eq!(pool.overflow_frames(), 0);
+    drop(blank);
+    assert_eq!(free_frames(&pool), 1);
+    check(&pool, 0);
+}
+
+#[test]
 fn a_frame_that_was_given_another_page_meanwhile_is_not_pinned() {
     let pool = pool(2);
     drop(seed(&pool, content(1, 1, 0), None));
