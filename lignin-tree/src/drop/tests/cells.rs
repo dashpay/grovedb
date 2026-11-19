@@ -125,7 +125,7 @@ fn a_drop_writes_the_page_of_its_host_and_the_directory_whatever_the_merk_holds(
         let mut txn = db.begin();
         let left = grove.drop_merks(&mut txn, &[merk], false);
         let host_page = grove.nodes[host].at.expect("the host").page();
-        let touched = txn.tree.touched();
+        let touched = txn.tree.changed();
         assert!(touched.contains(&host_page));
         assert!(
             touched.iter().all(|page| path.contains(page)),
@@ -163,7 +163,9 @@ fn a_drop_reads_and_writes_nothing_of_the_merks_nested_in_it() {
     let mut txn = db.begin();
     grove.drop_merks(&mut txn, &[merk], false);
     let host_page = grove.nodes[host].at.expect("the host").page();
-    assert_eq!(txn.tree.touched(), [host_page]);
+    assert_eq!(txn.tree.changed(), [host_page]);
+    // What it read beside that page, it read of the dropped root.
+    assert!(txn.tree.touched().len() <= 2);
     // One record of each kind is written, each in one leaf, and the
     // branches above them: no more than that for any number of Merks.
     assert!(txn.flat.written().count() <= 8);

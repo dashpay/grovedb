@@ -258,6 +258,8 @@ impl Db {
                 freed: BTreeMap::new(),
                 sink: Recorder::default(),
                 buffers: LoadBuffers::new(),
+                reads_uncopied: false,
+                after_read: None,
             },
             values: TreeValues::new(InlinePolicy::DEFAULT),
             flat: Private::new(self.reader_at(at), &self.pool, self.owner(), &self.ids),
@@ -274,7 +276,11 @@ impl Db {
             mut values,
             mut flat,
         } = txn;
-        let counts = self.values.step().expect("the counts");
+        // A commit whose cells stop holding value pointers holds the lock on
+        // the counts from before its append to its count (LT7). Any other
+        // commit takes no lock that a page step takes, but that of a page.
+        let releases = !values.released_pointers().is_empty() || !flat.released().is_empty();
+        let counts = releases.then(|| self.values.step().expect("the counts"));
         let source = ValueSource::new(&self.values, self.loader(), tree.at);
         let version = version(self.latest.load(Ordering::SeqCst) + 1);
         let mut unchanged = Vec::new();
@@ -373,7 +379,9 @@ impl Db {
         for pointer in parts.released {
             change.release(pointer);
         }
-        counts.apply(&change, version).expect("counted");
+        if let Some(counts) = counts {
+            counts.apply(&change, version).expect("counted");
+        }
         self.pins.latest.store(version.get(), Ordering::SeqCst);
         self.latest.store(version.get(), Ordering::SeqCst);
         version
@@ -705,6 +713,12 @@ struct Copy<'d> {
 
 /// The tree pages of one write transaction: private copies in the buffer
 /// pool, over the committed pages of the version it reads.
+///
+/// **A page is copied before a write is planned on it.** Fragment
+/// maintenance reads the pages of a write, plans, and then changes them
+/// (`fragment`, "One writer"): nothing may change a page between the two,
+/// and a page step can, on any page that has no private copy
+/// (`transactions.md` PV7). So what a write reads is its own copy.
 pub(super) struct TreePages<'d> {
     db: &'d Db,
     owner: OwnerId,
@@ -714,6 +728,11 @@ pub(super) struct TreePages<'d> {
     freed: BTreeMap<PageId, PrivateRef<'d>>,
     sink: Recorder,
     buffers: LoadBuffers,
+    /// Reads a committed page for a write without copying it first, which
+    /// no writer may do.
+    pub reads_uncopied: bool,
+    /// Called after a write has read a page.
+    pub after_read: Option<Box<dyn FnMut(PageId) + 'd>>,
 }
 
 fn unreachable_page(error: impl std::fmt::Display) -> FragmentError {
@@ -752,6 +771,14 @@ impl<'d> TreePages<'d> {
         let freed = self.freed.keys();
         self.copies.keys().chain(freed).copied().collect()
     }
+
+    /// The tree pages the transaction changed, made or freed: what its
+    /// commit writes of.
+    pub fn changed(&self) -> Vec<PageId> {
+        let written = self.sink.runs.keys();
+        let freed = self.freed.keys();
+        written.chain(freed).copied().collect()
+    }
 }
 
 impl Pages for TreePages<'_> {
@@ -760,13 +787,24 @@ impl Pages for TreePages<'_> {
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, FragmentError> {
-        if let Some(copy) = self.copies.get(&page) {
-            let latch = copy.frame.read();
-            return Ok(read(NodePage::open(&latch, self.lease)?));
+        if !self.reads_uncopied {
+            self.own(page)?;
         }
-        let frame = self.db.loader().get(page, self.at, &mut self.buffers);
-        let frame = frame.map_err(unreachable_page)?;
-        Ok(read(NodePage::open(&frame, self.lease)?))
+        let found = match self.copies.get(&page) {
+            Some(copy) => {
+                let latch = copy.frame.read();
+                read(NodePage::open(&latch, self.lease)?)
+            }
+            None => {
+                let frame = self.db.loader().get(page, self.at, &mut self.buffers);
+                let frame = frame.map_err(unreachable_page)?;
+                read(NodePage::open(&frame, self.lease)?)
+            }
+        };
+        if let Some(after_read) = &mut self.after_read {
+            after_read(page);
+        }
+        Ok(found)
     }
 
     fn write<R>(
