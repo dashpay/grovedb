@@ -8,10 +8,10 @@ use lignin_format::{CommitVersion, PageId};
 
 use super::{
     error::{CacheError, StepRefusal},
-    frame::{flag, kind, Chain, Exclusive, NO_VERSION},
+    frame::{flag, kind, Exclusive, Links, NO_VERSION},
     guard::{Blank, PageRef, PrivateRef},
     pool::{current, lookup, privates, published, BufferPool, Held, Miss},
-    sync::{lock, read, write, MutexGuard},
+    sync::{lock, MutexGuard},
 };
 
 /// Who a private copy belongs to: a write scope, or a write transaction for
@@ -56,7 +56,7 @@ pub enum NotMade {
 
 /// Checks that a commit of `version` can follow every version of `page` in
 /// the chain.
-fn follows(chain: &Chain, page: PageId, version: CommitVersion) -> Result<(), CacheError> {
+fn follows(chain: &Links, page: PageId, version: CommitVersion) -> Result<(), CacheError> {
     let newest = published(chain, page)
         .map(|entry| entry.frame().born())
         .max();
@@ -134,7 +134,7 @@ impl BufferPool {
     ) -> Result<Result<PrivateRef<'_>, PrivateRef<'_>>, Miss> {
         let bucket = self.bucket(page.get());
         let find = || {
-            let chain = read(&bucket.chain);
+            let chain = bucket.chain.read();
             let existing = privates(&chain, page)
                 .find(|entry| entry.frame().owner() == owner.get())
                 .map(|entry| entry.pin(&self.arena));
@@ -160,7 +160,7 @@ impl BufferPool {
         // that was pinned, or another operation of this owner may have made
         // the copy. From here on neither can happen: both are page steps.
         let made =
-            privates(&read(&bucket.chain), page).any(|entry| entry.frame().owner() == owner.get());
+            privates(&bucket.chain.read(), page).any(|entry| entry.frame().owner() == owner.get());
         if made || source.frame().kind() != kind::PUBLISHED {
             source = match find()? {
                 Ok(source) => source,
@@ -175,7 +175,9 @@ impl BufferPool {
         header.set_owner(owner.get());
         header.set_base(source.born().get());
         frame.set_kind(kind::PRIVATE);
-        let pin = write(&bucket.chain)
+        let pin = bucket
+            .chain
+            .write()
             .link(&self.arena, frame)
             .pin(&self.arena);
         drop(step);
@@ -192,7 +194,7 @@ impl BufferPool {
         blank.fill(0);
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
-        let mut chain = write(&bucket.chain);
+        let mut chain = bucket.chain.write();
         if privates(&chain, page).any(|entry| entry.frame().owner() == owner.get()) {
             return Err(CacheError::AlreadyPrivate { page, owner });
         }
@@ -210,7 +212,7 @@ impl BufferPool {
 
     /// The private copy that `owner` has of `page`, pinned, if it has one.
     pub fn private(&self, owner: OwnerId, page: PageId) -> Option<PrivateRef<'_>> {
-        let chain = read(&self.bucket(page.get()).chain);
+        let chain = self.bucket(page.get()).chain.read();
         let pin = privates(&chain, page)
             .find(|entry| entry.frame().owner() == owner.get())
             .map(|entry| entry.pin(&self.arena));
@@ -231,7 +233,7 @@ impl BufferPool {
         let page = copy.page();
         let bucket = self.bucket(page.get());
         let _step = lock(&bucket.step);
-        let chain = write(&bucket.chain);
+        let chain = bucket.chain.write();
         let mut copies = privates(&chain, page);
         let Some(entry) = copies.find(|entry| entry.pointer() == copy.pointer()) else {
             return Err(CacheError::NotPrivate { page });
@@ -273,7 +275,10 @@ impl BufferPool {
         let latch = self.latch_of(copy)?;
         let bucket = self.bucket(copy.page().get());
         let step = lock(&bucket.step);
-        write(&bucket.chain).retire_pinned(copy.pointer());
+        bucket
+            .chain
+            .write()
+            .retire_pinned(&self.arena, copy.pointer());
         drop(step);
         drop(latch);
         Ok(())
@@ -309,7 +314,7 @@ impl BufferPool {
         let page = copy.page();
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
-        let mut chain = write(&bucket.chain);
+        let chain = bucket.chain.write();
 
         let frame = latch.frame();
         let base = frame.base();
@@ -340,12 +345,12 @@ impl BufferPool {
         frame.set_flags(flag::UNWRITTEN | (frame.flags() & flag::ATTACHED));
         let sealed = latch.publish();
         frame.touch();
-        chain.stamp += 1;
+        chain.advance_stamp();
         // The reader's pin is taken under the table's lock, before a page
         // step can replace the frame.
         let frozen = copy.pin().again().into_frozen();
         drop(chain);
-        lock(&self.unwritten).add(version.get(), page);
+        lock(&self.turnover.unwritten).add(version.get(), page);
         drop(step);
         drop(sealed);
         Ok(PageRef::new(
@@ -372,7 +377,7 @@ impl BufferPool {
     pub fn free(&self, page: PageId, version: CommitVersion) -> Result<(), CacheError> {
         let bucket = self.bucket(page.get());
         let step = lock(&bucket.step);
-        let mut chain = write(&bucket.chain);
+        let chain = bucket.chain.write();
         follows(&chain, page, version)?;
         if let Some(entry) = current(&chain, page) {
             entry.frame().set_superseded(version.get());
@@ -391,9 +396,9 @@ impl BufferPool {
                 });
             }
         }
-        chain.stamp += 1;
+        chain.advance_stamp();
         drop(chain);
-        let mut unwritten = lock(&self.unwritten);
+        let mut unwritten = lock(&self.turnover.unwritten);
         for entry in &held {
             unwritten.remove(entry.born, page);
         }
@@ -445,7 +450,7 @@ impl<'p> PageStep<'p> {
 
     /// The current version of the page, pinned, if it is in the pool.
     pub fn current(&self) -> Option<PageRef<'p>> {
-        let chain = read(&self.pool.bucket(self.page.get()).chain);
+        let chain = self.pool.bucket(self.page.get()).chain.read();
         let frozen = current(&chain, self.page).and_then(|entry| entry.freeze(&self.pool.arena));
         drop(chain);
         frozen.map(|frozen| PageRef::new(self.pool, frozen))
@@ -453,7 +458,7 @@ impl<'p> PageStep<'p> {
 
     /// How many private copies of the page open write transactions hold.
     pub fn private_copies(&self) -> usize {
-        let chain = read(&self.pool.bucket(self.page.get()).chain);
+        let chain = self.pool.bucket(self.page.get()).chain.read();
         privates(&chain, self.page).count()
     }
 
@@ -461,7 +466,7 @@ impl<'p> PageStep<'p> {
     /// no commit has superseded or freed the page since `frame` was pinned,
     /// and no page step has replaced the frame.
     pub fn is_current(&self, frame: &PageRef<'_>) -> bool {
-        let chain = read(&self.pool.bucket(self.page.get()).chain);
+        let chain = self.pool.bucket(self.page.get()).chain.read();
         current(&chain, self.page).is_some_and(|entry| entry.pointer() == frame.pointer())
     }
 
@@ -486,7 +491,7 @@ impl<'p> PageStep<'p> {
         if !new.is_of(pool) {
             return Err(StepRefusal::WrongPool);
         }
-        let mut chain = write(&pool.bucket(page.get()).chain);
+        let mut chain = pool.bucket(page.get()).chain.write();
         let Some(entry) = current(&chain, page).filter(|entry| entry.pointer() == old.pointer())
         else {
             return Err(StepRefusal::NotCurrent);
@@ -506,11 +511,11 @@ impl<'p> PageStep<'p> {
         header.touch();
         frame.set_kind(kind::PUBLISHED);
         let frozen = chain.link(&pool.arena, frame).freeze(&pool.arena);
-        chain.retire_pinned(old.pointer());
-        chain.stamp += 1;
+        chain.retire_pinned(&pool.arena, old.pointer());
+        chain.advance_stamp();
         drop(chain);
         if !owed {
-            lock(&pool.unwritten).add(born, page);
+            lock(&pool.turnover.unwritten).add(born, page);
         }
         Ok(PageRef::new(
             pool,

@@ -10,6 +10,8 @@
 //! | `SECS` | 1 | the length of one run; three are made of each, and the median is given |
 //! | `THREADS` | 1, 2, 4, 8, 14, 20, 28, 56 up to the cores, and the cores | the numbers of reader threads |
 //! | `COMMITS` | 2000 | the commits the writer makes in a second |
+//! | `KINDS` | all four | the kinds of read to measure, by name, with commas between them |
+//! | `WRITER` | both | `one` for the runs beside a writer only, `none` for those without |
 //!
 //! One read is what a read with no transaction does (`transactions.md`
 //! RD2): take a snapshot, begin an operation, read some pages at the
@@ -38,7 +40,11 @@
 //! 8 KiB, in a pool of twice as many frames. It keeps the pages of the
 //! latest version only and trims its page table, so its memory does not
 //! grow with the length of the run; its segment file grows by three small
-//! blocks a commit. The peak of memory is printed at the end.
+//! blocks a commit. The peak of memory is printed at the end, and so is the
+//! number of reads that were counted in all the runs together: with
+//! `KINDS`, `WRITER` and `THREADS` set to one thing each, that is what a
+//! count of the whole process, such as `perf stat -e instructions:u`, is
+//! divided by.
 
 use std::{
     hint::black_box,
@@ -57,6 +63,9 @@ use crate::snapshot::Versions;
 
 const READER_PAGES: u32 = 3;
 const ROOT: u32 = 1;
+
+/// The reads that were counted in every run of the measurement so far.
+static READS: AtomicU64 = AtomicU64::new(0);
 
 /// The pages of a store that `readers` readers read.
 fn pages_for(readers: u32) -> u32 {
@@ -204,6 +213,7 @@ fn run(
         stop.store(true, Ordering::Relaxed);
         seconds = started.elapsed().as_secs_f64();
     });
+    READS.fetch_add(total.load(Ordering::Relaxed), Ordering::Relaxed);
     let reads = total.load(Ordering::Relaxed) as f64;
     let cpu_seconds = cpu_nanos.load(Ordering::Relaxed) as f64 / 1e9;
     let measured = cpu_seconds > 0.0;
@@ -285,8 +295,19 @@ fn reader_throughput_by_the_number_of_readers() {
     let optional = |value: Option<f64>, scale: f64| {
         value.map_or_else(|| "?".to_owned(), |value| format!("{:.0}", value * scale))
     };
-    for commits in [commits, 0] {
-        for (kind, name) in Kind::ALL {
+    let kinds = std::env::var("KINDS").ok();
+    let measured = |name: &str| {
+        kinds
+            .as_deref()
+            .is_none_or(|kinds| kinds.split(',').any(|kind| kind.trim() == name))
+    };
+    let writer = std::env::var("WRITER").unwrap_or_else(|_| "both".to_owned());
+    let beside = [(commits, "one"), (0, "none")]
+        .into_iter()
+        .filter(|(_, which)| writer == "both" || writer == *which)
+        .map(|(commits, _)| commits);
+    for commits in beside {
+        for (kind, name) in Kind::ALL.into_iter().filter(|(_, name)| measured(name)) {
             let with = if commits > 0 {
                 "one writer"
             } else {
@@ -326,9 +347,10 @@ fn reader_throughput_by_the_number_of_readers() {
         }
     }
     println!(
-        "pool: {:?}\n{:?}\npeak memory: {}",
+        "pool: {:?}\n{:?}\npeak memory: {}\nreads counted in all runs: {}",
         store.pool.stats(),
         store.counts,
-        status_line("VmHWM:").unwrap_or_else(|| "?".to_owned())
+        status_line("VmHWM:").unwrap_or_else(|| "?".to_owned()),
+        READS.load(Ordering::Relaxed)
     );
 }

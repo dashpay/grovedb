@@ -8,7 +8,7 @@ use super::{
     frame::{flag, kind, NO_VERSION},
     guard::PageRef,
     pool::{published, BufferPool, Held},
-    sync::{lock, write},
+    sync::lock,
 };
 use crate::alloc::Pins;
 
@@ -18,7 +18,7 @@ impl BufferPool {
     /// segment, or is of a page that was freed since (`page-table.md` K1,
     /// T18).
     pub fn oldest_unwritten(&self) -> Option<CommitVersion> {
-        let unwritten = lock(&self.unwritten);
+        let unwritten = lock(&self.turnover.unwritten);
         let oldest = unwritten.versions.keys().next().copied();
         oldest.and_then(CommitVersion::new)
     }
@@ -26,7 +26,7 @@ impl BufferPool {
     /// Adds to `out` every commit that bore a page version write-back still
     /// owes, oldest first.
     pub fn unwritten_versions(&self, out: &mut Vec<CommitVersion>) {
-        let unwritten = lock(&self.unwritten);
+        let unwritten = lock(&self.turnover.unwritten);
         out.extend(
             unwritten
                 .versions
@@ -43,7 +43,7 @@ impl BufferPool {
     /// representation: a page step that changes a page version whose
     /// content was in a segment puts the page back on that commit's list.
     pub fn unwritten_pages(&self, version: CommitVersion, out: &mut Vec<PageId>) {
-        let unwritten = lock(&self.unwritten);
+        let unwritten = lock(&self.turnover.unwritten);
         if let Some(pages) = unwritten.versions.get(&version.get()) {
             out.extend_from_slice(pages);
         }
@@ -89,7 +89,7 @@ impl BufferPool {
         let header = frame.frame();
         let bucket = self.bucket(page.get());
         let _step = lock(&bucket.step);
-        let chain = write(&bucket.chain);
+        let chain = bucket.chain.write();
         let flags = header.flags();
         let superseded = header.superseded();
         if header.kind() != kind::PUBLISHED {
@@ -107,7 +107,7 @@ impl BufferPool {
         let kept = if hold { flag::HELD } else { 0 };
         header.set_flags((flags & !flag::UNWRITTEN) | kept);
         drop(chain);
-        let mut unwritten = lock(&self.unwritten);
+        let mut unwritten = lock(&self.turnover.unwritten);
         unwritten.remove(born.get(), page);
         if hold {
             unwritten.held.push(Held {
@@ -134,7 +134,7 @@ impl BufferPool {
     /// published and after the oldest pin is dropped. With nothing held it
     /// asks nothing.
     pub fn reclaim<P: Pins + ?Sized>(&self, pins: &P) -> usize {
-        if lock(&self.unwritten).held.is_empty() {
+        if lock(&self.turnover.unwritten).held.is_empty() {
             return 0;
         }
         let oldest = pins.oldest_pin().get();
@@ -142,7 +142,7 @@ impl BufferPool {
         let guard = pins.oldest_guard();
 
         let mut gone = Vec::new();
-        lock(&self.unwritten).held.retain_mut(|held| {
+        lock(&self.turnover.unwritten).held.retain_mut(|held| {
             if held.superseded > oldest {
                 return true;
             }
@@ -156,11 +156,11 @@ impl BufferPool {
         for &(page, born) in &gone {
             let bucket = self.bucket(page.get());
             let step = lock(&bucket.step);
-            let mut chain = write(&bucket.chain);
+            let mut chain = bucket.chain.write();
             let held = published(&chain, page)
                 .find(|entry| entry.frame().born() == born && entry.frame().has(flag::HELD))
                 .map(|entry| entry.pointer());
-            let freed = held.and_then(|pointer| chain.retire(pointer));
+            let freed = held.and_then(|pointer| chain.retire(&self.arena, pointer));
             drop(chain);
             drop(step);
             if let Some(frame) = freed {

@@ -4,40 +4,85 @@
 //! This file holds all the unsafe code of the pool. The rules that make it
 //! sound are stated here once, as the **access rules**, and every unsafe
 //! block names the rule it relies on. The rest of the pool is safe code
-//! over three types of this file, each of which stands for one way of being
-//! allowed to reach a frame: a [`Chain`] (the bucket's lock is held), a
-//! [`Pinned`] (a pin is held) and an [`OwnedFrame`] (the frame is nobody
-//! else's). A [`Frozen`] is a pin on content that can no longer change, and
-//! a [`Shared`] or an [`Exclusive`] is a pin with the frame's latch.
+//! over the types of this file, each of which stands for one way of being
+//! allowed to reach a frame: a [`ChainRead`] or a [`ChainWrite`] (the
+//! bucket's lock is held), a [`Pinned`] (a pin is held) and an
+//! [`OwnedFrame`] (the frame is nobody else's). A [`Frozen`] is a pin on
+//! content that can no longer change, and a [`Shared`] or an [`Exclusive`]
+//! is a pin with the frame's latch.
 //!
 //! # Access rules
 //!
 //! A frame's *content* is its bytes and its attached values. Its header is
-//! made of atomics and can be read by anyone who may reach the frame.
+//! made of atomics and of fields that are set when the frame is made and
+//! never again.
 //!
 //! - **A1. A frame is reached through its bucket's lock, through a pin, or
 //!   by its owner.** A pointer to a frame is followed only by a thread that
 //!   holds the lock of the bucket the frame is linked in, that holds a pin
-//!   on the frame, or that owns the frame outright (A3). The pin count goes
-//!   from zero to one only under that bucket's lock, while the frame is
-//!   linked.
+//!   on the frame, or that owns the frame outright (A3). One thing more is
+//!   allowed, of the header alone: **the header of an arena frame may be
+//!   read by anyone.** It lives as long as the arena and never moves, so a
+//!   thread with no lock and no pin can follow a bucket's arena frames from
+//!   one header to the next. What such a thread reads decides nothing until
+//!   it holds a pin (A6). A bucket keeps its arena frames and its frames
+//!   beside the arena in two lists, so that this walk never comes to a
+//!   frame that can be freed.
 //! - **A2. A frame that is linked or has a pin is not freed and not given
 //!   to anyone else.** An arena frame's memory lives as long as the arena.
 //!   An overflow frame is deallocated only by its owner (A3).
 //! - **A3. A frame is owned outright by exactly one thread** when it is
 //!   unlinked and has no pin: it was taken off the free list or newly
-//!   allocated, it was unlinked with no pin under its bucket's lock, or its
-//!   last pin went after it was retired. An [`OwnedFrame`] is that
-//!   ownership.
+//!   allocated; it was unlinked under its bucket's lock while it had no
+//!   pin; it is an overflow frame and its last pin went after it was
+//!   retired; or it is an arena frame that was retired, and was found
+//!   without a pin under the lock of the arena's list of dead frames. An
+//!   [`OwnedFrame`] is that ownership.
 //! - **A4. Content is written only with exclusive access**: by the owner
 //!   (A3), or under the exclusive latch of a private frame.
 //! - **A5. Content is read only while it cannot be written**: under a pin on
 //!   a frame that is published or dead, whose content does not change again
 //!   until the frame is owned outright; or under a latch of a private
 //!   frame; or by the owner.
+//! - **A6. A pin is a count on the frame or an announcement of it.** The
+//!   count is in the frame's header. An announcement is the frame's number
+//!   in a cell of the announcer's own lane (`lanes.rs`), and only an arena
+//!   frame is announced.
+//!   - The count leaves zero only under the bucket's lock while the frame
+//!     is linked, or by the holder of an announcement of the frame.
+//!   - An announcement is a pin once the announcer has found, after it
+//!     announced, that the bucket was not changed since before it found the
+//!     frame linked there ([`Chain::pin_unlocked`]). Until then it is
+//!     nothing, and the announcer takes it back.
+//!   - Whoever needs a frame to have no pin looks for announcements first
+//!     and at the count after them. A second pin is a count taken under the
+//!     first, never an announcement, so no pin moves to where the look has
+//!     already been.
 //!
-//! Two things outside the unsafe blocks carry these rules, and both are
-//! kept in this file:
+//! **Why an announcement holds.** Every change of a bucket is made under
+//! its lock, between two steps of the bucket's count of changes
+//! ([`ChainWrite`]), and a frame is taken out of a bucket only in such a
+//! change. The announcer reads the count, finds the frame, announces, and
+//! reads the count again; the one who takes a frame out steps the count
+//! and then looks for announcements. All four are `SeqCst`. If the
+//! announcer read the same count twice, its second read was before the
+//! step, so its announcement was too, and the look finds it. If the look
+//! misses an announcement, the step was before the announcer's second
+//! read, which then differs from the first.
+//!
+//! **Why what the announcer found is so.** What a lookup reads of a linked
+//! frame (its page, its versions, what it is, the next frame) is written
+//! by the frame's owner before it is linked, or in a change of the bucket.
+//! The changes of a bucket follow one another under its lock, and each
+//! ends with a step of the count. So the announcer's first read of the
+//! count comes after everything that was done to the bucket's frames in
+//! the changes up to that step, and what it reads afterwards is at least
+//! that new. With the same count read again, there was nothing newer: the
+//! announcer walked the bucket's arena frames as they were, and the frame
+//! it picked was linked, a page version, and the one it asked for.
+//!
+//! Three things outside the unsafe blocks carry these rules, and they are
+//! kept in this file and in `lanes.rs`:
 //!
 //! - **What a frame is** (`kind`) says whether it can be written under a
 //!   latch. It changes for a frame that is owned ([`OwnedFrame::set_kind`]),
@@ -45,10 +90,15 @@
 //!   ([`Exclusive::publish`]), and to dead when a chain retires a frame. A
 //!   published frame never becomes private again while it has a pin.
 //! - **Which arena a frame belongs to** (`home`). A chain links only frames
-//!   of its own arena ([`Chain::link`]), and an arena frees only its own
-//!   ([`Arena::free_overflow`]), so a frame never outlives the arena whose
-//!   borrow its pins carry.
+//!   of its own arena ([`ChainWrite::link`]), and an arena frees only its
+//!   own ([`Arena::free_overflow`]), so a frame never outlives the arena
+//!   whose borrow its pins carry.
+//! - **The count of changes of a bucket**, which only [`ChainWrite`] steps,
+//!   and the lanes, which find every announcement made before they are
+//!   looked through.
 
+// The atomics that are plain in every build: a model does not follow them.
+use std::sync::atomic as plain;
 use std::{
     alloc::{self, Layout},
     cell::UnsafeCell,
@@ -62,9 +112,10 @@ use lignin_format::value_log::PendingValue;
 
 use super::{
     error::CacheError,
+    lanes::{Announcement, Lanes},
     sync::{
-        self, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Ordering, Reading, RwLock,
-        RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
+        self, settled_u64, AtomicPtr, AtomicU32, AtomicU64, AtomicU8, Mutex, Ordering, Padded,
+        Reading, RwLock, RwLockReadGuard, RwLockWriteGuard, Tracked, Writing,
     },
 };
 
@@ -112,26 +163,39 @@ pub(super) struct Attached {
     pub(super) bytes: Arc<[u8]>,
 }
 
+/// The number of an arena frame is below this, so that it fits a cell of a
+/// lane with one added.
+const NO_INDEX: u32 = u32::MAX;
+
 /// One frame: a header, and a pointer to `len` bytes.
+///
+/// The header is two cache lines. The first holds what a lookup reads. A
+/// reader of the page writes it once after each pass of the clock, to mark
+/// the frame as used, and not otherwise. The second holds what changes
+/// while the frame is in use: its count of pins, its latch, its attached
+/// values.
+#[repr(C, align(64))]
 pub(super) struct Frame {
-    /// The pin count in the low 32 bits, and the retired mark above them.
-    state: AtomicU64,
+    page: AtomicU32,
     kind: AtomicU8,
     flags: AtomicU8,
-    referenced: std::sync::atomic::AtomicBool,
-    overflow: bool,
-    page: AtomicU32,
+    referenced: plain::AtomicBool,
     born: AtomicU64,
     superseded: AtomicU64,
-    base: AtomicU64,
-    owner: AtomicU64,
-    /// The arena the frame belongs to.
-    home: u64,
     next: AtomicPtr<Frame>,
-    latch: RwLock<()>,
-    access: Tracked,
     bytes: NonNull<u8>,
     len: usize,
+    /// The arena the frame belongs to.
+    home: u64,
+    /// The frame's number in its arena, or [`NO_INDEX`] for a frame beside
+    /// it.
+    index: u32,
+    /// The pin count in the low 32 bits, and the retired mark above them.
+    state: AtomicU64,
+    base: AtomicU64,
+    owner: AtomicU64,
+    latch: RwLock<()>,
+    access: Tracked,
     attached: UnsafeCell<Vec<Attached>>,
 }
 
@@ -151,30 +215,30 @@ impl fmt::Debug for Frame {
             .field("born", &self.born())
             .field("superseded", &self.superseded())
             .field("pins", &self.pins())
-            .field("overflow", &self.overflow)
+            .field("overflow", &self.is_overflow())
             .finish_non_exhaustive()
     }
 }
 
 impl Frame {
-    fn new(bytes: NonNull<u8>, len: usize, overflow: bool, home: u64) -> Self {
+    fn new(bytes: NonNull<u8>, len: usize, home: u64, index: u32) -> Self {
         Self {
-            state: AtomicU64::new(0),
+            page: AtomicU32::new(0),
             kind: AtomicU8::new(kind::FREE),
             flags: AtomicU8::new(0),
-            referenced: std::sync::atomic::AtomicBool::new(false),
-            overflow,
-            page: AtomicU32::new(0),
+            referenced: plain::AtomicBool::new(false),
             born: AtomicU64::new(NO_VERSION),
             superseded: AtomicU64::new(NO_VERSION),
-            base: AtomicU64::new(NO_VERSION),
-            owner: AtomicU64::new(0),
-            home,
             next: AtomicPtr::new(ptr::null_mut()),
-            latch: RwLock::new(()),
-            access: Tracked::new(),
             bytes,
             len,
+            home,
+            index,
+            state: AtomicU64::new(0),
+            base: AtomicU64::new(NO_VERSION),
+            owner: AtomicU64::new(0),
+            latch: RwLock::new(()),
+            access: Tracked::new(),
             attached: UnsafeCell::new(Vec::new()),
         }
     }
@@ -187,8 +251,20 @@ impl Frame {
     /// A5), so only this file changes it: for a frame that is owned, under
     /// the exclusive latch of a private copy, or when a chain retires a
     /// frame.
+    ///
+    /// The store is `SeqCst` for the one who retires a frame, against the
+    /// one who takes an announcement back ([`Self::is_dead_after`]).
     fn set_kind(&self, kind: u8) {
-        self.kind.store(kind, Ordering::Release);
+        self.kind.store(kind, Ordering::SeqCst);
+    }
+
+    /// Takes back an announcement of this frame, and says whether the
+    /// frame is dead, in that order: whoever retires a frame marks it dead
+    /// and then looks for announcements, so one of the two sees the other,
+    /// and a dead frame whose last pin this was is not left unnoticed.
+    fn is_dead_after(&self, announcement: Announcement<'_>) -> bool {
+        announcement.withdraw();
+        self.kind.load(Ordering::SeqCst) == kind::DEAD
     }
 
     pub(super) fn flags(&self) -> u8 {
@@ -205,7 +281,7 @@ impl Frame {
 
     /// Whether the frame was allocated beside the arena.
     pub(super) fn is_overflow(&self) -> bool {
-        self.overflow
+        self.index == NO_INDEX
     }
 
     /// The page id the frame holds, or 0 for none.
@@ -250,12 +326,11 @@ impl Frame {
     }
 
     fn next(&self) -> Option<FramePtr> {
-        NonNull::new(self.next.load(Ordering::Acquire)).map(FramePtr)
+        pointer_of(self.next.load(Ordering::Acquire))
     }
 
     fn set_next(&self, next: Option<FramePtr>) {
-        let raw = next.map_or(ptr::null_mut(), |next| next.0.as_ptr());
-        self.next.store(raw, Ordering::Release);
+        self.next.store(raw_of(next), Ordering::Release);
     }
 
     /// Marks the frame as used, for the clock.
@@ -265,9 +340,10 @@ impl Frame {
         }
     }
 
-    /// Takes the clock's mark off, and says whether it was set.
+    /// Takes the clock's mark off, and says whether it was set. A mark
+    /// that is not set is not written.
     pub(super) fn take_referenced(&self) -> bool {
-        self.referenced.swap(false, Ordering::Relaxed)
+        self.referenced.load(Ordering::Relaxed) && self.referenced.swap(false, Ordering::Relaxed)
     }
 
     fn pin(&self) {
@@ -290,11 +366,12 @@ impl Frame {
         before & PINS == 0
     }
 
+    /// The frame's count of pins. An announcement is not in it (A6).
     pub(super) fn pins(&self) -> u32 {
         (self.state.load(Ordering::Acquire) & PINS) as u32
     }
 
-    /// Whether the frame has no pin and is not retired.
+    /// Whether the frame has no counted pin and is not retired.
     pub(super) fn is_unpinned(&self) -> bool {
         self.state.load(Ordering::Acquire) == 0
     }
@@ -461,15 +538,18 @@ impl OwnedFrame {
     }
 }
 
-/// One pin on a frame, taken from an arena that lives for `'a`. While it
-/// lives, the frame is neither freed nor given to anyone else (A2).
+/// One pin on a frame, taken from an arena that lives for `'a`: a count on
+/// the frame, or an announcement of it (A6). While it lives, the frame is
+/// neither freed nor given to anyone else (A2).
 ///
-/// It is not dropped: [`Pinned::unpin`] or [`Chain::unpin_linked`] gives the
-/// pin back.
+/// It is not dropped: [`Pinned::unpin`] or [`ChainWrite::unpin_linked`]
+/// gives the pin back.
 #[must_use]
 #[derive(Debug)]
 pub(super) struct Pinned<'a> {
     frame: FramePtr,
+    /// The cell that announces the frame, for a pin that is not counted.
+    announced: Option<Announcement<'a>>,
     arena: PhantomData<&'a Arena>,
 }
 
@@ -484,26 +564,45 @@ impl<'a> Pinned<'a> {
         self.frame
     }
 
-    /// A second pin on the same frame.
+    /// Whether the pin is an announcement, which only an arena frame has.
+    pub(super) fn is_announced(&self) -> bool {
+        self.announced.is_some()
+    }
+
+    /// A second pin on the same frame. It is a count, whatever the first
+    /// is (A6).
     pub(super) fn again(&self) -> Pinned<'a> {
         self.frame().pin();
         Pinned {
             frame: self.frame,
+            announced: None,
             arena: PhantomData,
         }
     }
 
-    /// Gives the pin back. If the frame was retired and this was its last
-    /// pin, the caller now owns it.
+    /// Gives back a pin on an arena frame. `true` says that the frame is
+    /// dead and may have lost its last pin: the caller then takes what the
+    /// arena's dead frames give ([`Arena::take_dead`]).
     ///
-    /// The caller does not use this for an overflow frame that is not
-    /// retired: such a frame is unpinned under its bucket's lock
-    /// ([`Chain::unpin_linked`]), so that it can be taken out in the same
-    /// step.
-    pub(super) fn unpin(self) -> Option<OwnedFrame> {
-        // By A3 the frame is owned outright once it is retired, which
-        // unlinked it, and its last pin is gone.
-        self.frame().unpin().then_some(OwnedFrame(self.frame))
+    /// A pin on a frame beside the arena is given back under the frame's
+    /// bucket's lock instead ([`ChainWrite::unpin_linked`]), so that the
+    /// frame can be taken out in the same step.
+    pub(super) fn unpin(self) -> bool {
+        // SAFETY: the pin is held (A1) until it is given back below, and
+        // from then on only the header of an arena frame is read, which
+        // anyone may read (A1): an announced frame is an arena frame (A6),
+        // and a counted pin on any other frame is refused first.
+        let frame = unsafe { self.frame.frame() };
+        match self.announced {
+            Some(announcement) => frame.is_dead_after(announcement),
+            None => {
+                assert!(
+                    !frame.is_overflow(),
+                    "a frame beside the arena is unpinned under its bucket's lock"
+                );
+                frame.unpin()
+            }
+        }
     }
 
     /// The pin as one on frozen content, if the frame is a page version
@@ -700,17 +799,43 @@ impl fmt::Debug for Exclusive<'_> {
     }
 }
 
-/// The frames of one bucket. It is only ever reached under the bucket's
-/// lock, which is what lets it follow the pointers it holds (A1).
-#[derive(Debug)]
+/// The frames of one bucket, and the lock they are reached under.
+///
+/// Whoever holds the lock may follow the pointers the bucket holds (A1): a
+/// [`ChainRead`] to look, a [`ChainWrite`] to change. A reader with no lock
+/// pins a page version of the bucket's arena frames with
+/// [`Chain::pin_unlocked`].
 pub(super) struct Chain {
-    head: Option<FramePtr>,
-    /// How many times a commit has installed or freed a page of this
-    /// bucket, or a page step has replaced a frame of it.
-    pub(super) stamp: u64,
+    lock: RwLock<()>,
+    links: Links,
 }
 
-/// A frame of a chain, for as long as the chain is borrowed.
+impl fmt::Debug for Chain {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Chain").finish_non_exhaustive()
+    }
+}
+
+/// What a bucket links. Outside this file it is reached only through a
+/// [`ChainRead`] or a [`ChainWrite`], so under the bucket's lock.
+pub(super) struct Links {
+    /// Two steps for every change of the bucket: one when its lock is
+    /// taken for writing, one before it is given back. It is odd while a
+    /// change is under way.
+    changes: AtomicU64,
+    /// The first of the bucket's arena frames, each of which leads to the
+    /// next. These pointers are to arena frames and to nothing else (A1).
+    first: AtomicPtr<Frame>,
+    /// The first of the bucket's frames beside the arena. It is read and
+    /// written under the lock only.
+    beside: plain::AtomicPtr<Frame>,
+    /// How many times a commit has installed or freed a page of this
+    /// bucket, or a page step has replaced a frame of it. It is read and
+    /// written under the lock only.
+    stamp: plain::AtomicU64,
+}
+
+/// A frame of a chain, for as long as the chain's lock is held.
 #[derive(Clone, Copy)]
 pub(super) struct Entry<'c> {
     pointer: FramePtr,
@@ -726,14 +851,14 @@ impl<'c> Entry<'c> {
         self.pointer
     }
 
-    /// Pins the frame. This is the one place a pin count leaves zero: the
-    /// chain is borrowed, so the bucket's lock is held and the frame is
-    /// linked (A1).
+    /// Pins the frame, by its count. The chain's lock is held and the frame
+    /// is linked, which is one of the two ways a count leaves zero (A6).
     pub(super) fn pin<'a>(&self, arena: &'a Arena) -> Pinned<'a> {
         assert_eq!(self.frame.home, arena.id, "a frame of another pool");
         self.frame.pin();
         Pinned {
             frame: self.pointer,
+            announced: None,
             arena: PhantomData,
         }
     }
@@ -753,66 +878,100 @@ impl<'c> Entry<'c> {
 
 pub(super) struct Entries<'c> {
     cursor: Option<FramePtr>,
-    chain: PhantomData<&'c Chain>,
+    /// The frames beside the arena, which come after the arena frames.
+    beside: Option<FramePtr>,
+    chain: PhantomData<&'c Links>,
 }
 
 impl<'c> Iterator for Entries<'c> {
     type Item = Entry<'c>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let pointer = self.cursor?;
-        // SAFETY: the pointer is in a chain that is borrowed for `'c`, so
-        // the bucket's lock is held for `'c` and the frame is linked (A1),
-        // and a linked frame is not freed (A2).
+        let pointer = match self.cursor {
+            Some(pointer) => pointer,
+            None => self.beside.take()?,
+        };
+        // SAFETY: the pointer is in a chain whose lock is held for `'c`, so
+        // the frame is linked (A1), and a linked frame is not freed (A2).
         let frame: &'c Frame = unsafe { pointer.frame() };
         self.cursor = frame.next();
         Some(Entry { pointer, frame })
     }
 }
 
-impl Chain {
-    pub(super) fn new() -> Self {
+fn pointer_of(raw: *mut Frame) -> Option<FramePtr> {
+    NonNull::new(raw).map(FramePtr)
+}
+
+fn raw_of(pointer: Option<FramePtr>) -> *mut Frame {
+    pointer.map_or(ptr::null_mut(), |pointer| pointer.0.as_ptr())
+}
+
+impl Links {
+    fn new() -> Self {
         Self {
-            head: None,
-            stamp: 0,
+            changes: settled_u64(0),
+            first: AtomicPtr::new(ptr::null_mut()),
+            beside: plain::AtomicPtr::new(ptr::null_mut()),
+            stamp: plain::AtomicU64::new(0),
         }
     }
 
+    fn first(&self) -> Option<FramePtr> {
+        pointer_of(self.first.load(Ordering::Acquire))
+    }
+
+    fn beside(&self) -> Option<FramePtr> {
+        pointer_of(self.beside.load(plain::Ordering::Relaxed))
+    }
+
+    /// The frames of the bucket: its arena frames, and then those beside
+    /// the arena.
     pub(super) fn iter(&self) -> Entries<'_> {
         Entries {
-            cursor: self.head,
+            cursor: self.first(),
+            beside: self.beside(),
             chain: PhantomData,
         }
     }
 
-    /// Links a frame its caller owned. From here on other threads can reach
-    /// it.
-    pub(super) fn link(&mut self, arena: &Arena, frame: OwnedFrame) -> Entry<'_> {
-        assert!(arena.owns(&frame), "a frame of another pool");
-        let pointer = frame.0;
-        frame.header().set_next(self.head);
-        self.head = Some(pointer);
-        Entry {
-            pointer,
-            // SAFETY: the frame is linked in this chain now, and the chain
-            // stays borrowed while the entry lives (A1).
-            frame: unsafe { pointer.frame() },
-        }
+    /// How many times a commit has installed or freed a page of this
+    /// bucket, or a page step has replaced a frame of it.
+    pub(super) fn stamp(&self) -> u64 {
+        self.stamp.load(plain::Ordering::Relaxed)
     }
 
-    fn unlink(&mut self, pointer: FramePtr) -> bool {
+    /// Takes a frame out of the list it is linked in. The caller holds the
+    /// bucket's lock for writing, or is the only one who can reach the
+    /// bucket.
+    fn unlink(&self, pointer: FramePtr) -> bool {
+        let in_arena = self.unlink_from(self.first(), pointer, |first| {
+            self.first.store(raw_of(first), Ordering::Release);
+        });
+        in_arena
+            || self.unlink_from(self.beside(), pointer, |beside| {
+                self.beside.store(raw_of(beside), plain::Ordering::Relaxed);
+            })
+    }
+
+    fn unlink_from(
+        &self,
+        head: Option<FramePtr>,
+        pointer: FramePtr,
+        set_head: impl FnOnce(Option<FramePtr>),
+    ) -> bool {
         let mut before: Option<FramePtr> = None;
-        let mut cursor = self.head;
+        let mut cursor = head;
         while let Some(current) = cursor {
-            // SAFETY: `current` is linked in this chain, which is borrowed
-            // mutably, so the bucket's lock is held (A1, A2).
+            // SAFETY: `current` is linked in this chain, and the caller
+            // holds its lock for writing (A1, A2).
             let frame = unsafe { current.frame() };
             let after = frame.next();
             if current == pointer {
                 match before {
                     // SAFETY: as above, `before` is linked in this chain.
                     Some(before) => unsafe { before.frame() }.set_next(after),
-                    None => self.head = after,
+                    None => set_head(after),
                 }
                 frame.set_next(None);
                 return true;
@@ -822,24 +981,229 @@ impl Chain {
         }
         false
     }
+}
+
+/// The shared lock of a bucket: its frames can be looked at, and none comes
+/// or goes.
+pub(super) struct ChainRead<'c> {
+    links: &'c Links,
+    _lock: RwLockReadGuard<'c, ()>,
+}
+
+impl std::ops::Deref for ChainRead<'_> {
+    type Target = Links;
+
+    fn deref(&self) -> &Links {
+        self.links
+    }
+}
+
+/// The exclusive lock of a bucket, and one change of it: the bucket's count
+/// of changes is odd for as long as this lives, and whoever pins without
+/// the lock sees that the bucket was changed (A6).
+pub(super) struct ChainWrite<'c> {
+    links: &'c Links,
+    _lock: RwLockWriteGuard<'c, ()>,
+}
+
+impl std::ops::Deref for ChainWrite<'_> {
+    type Target = Links;
+
+    fn deref(&self) -> &Links {
+        self.links
+    }
+}
+
+impl Drop for ChainWrite<'_> {
+    fn drop(&mut self) {
+        // The lock is given back after this, when the fields are dropped.
+        self.links.changes.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+/// A moment in a read that takes no lock ([`Chain::pin_unlocked`]), at
+/// which a test changes the pool under the reader.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Moment {
+    /// The reader has picked a frame and has not announced it.
+    Picked,
+    /// The reader has announced the frame and has not looked at the count
+    /// of changes again.
+    Announced,
+}
+
+/// What became of a pin that was asked for with no lock
+/// ([`Chain::pin_unlocked`]).
+#[derive(Debug)]
+pub(super) enum Unlocked<'a> {
+    /// The page version, pinned by an announcement.
+    Found(Frozen<'a>),
+    /// Nothing was pinned: the caller asks under the bucket's lock.
+    Not,
+    /// As [`Self::Not`], and an announcement was taken back from a frame
+    /// that is dead: the caller takes what the arena's dead frames give
+    /// ([`Arena::take_dead`]).
+    Dead,
+}
+
+impl Chain {
+    pub(super) fn new() -> Self {
+        Self {
+            lock: RwLock::new(()),
+            links: Links::new(),
+        }
+    }
+
+    /// Takes the bucket's lock to look.
+    pub(super) fn read(&self) -> ChainRead<'_> {
+        ChainRead {
+            _lock: sync::read(&self.lock),
+            links: &self.links,
+        }
+    }
+
+    /// Takes the bucket's lock to change the bucket, and counts the change.
+    pub(super) fn write(&self) -> ChainWrite<'_> {
+        let lock = sync::write(&self.lock);
+        self.links.changes.fetch_add(1, Ordering::SeqCst);
+        ChainWrite {
+            links: &self.links,
+            _lock: lock,
+        }
+    }
+
+    /// Pins, with no lock and by an announcement, the page version among
+    /// the bucket's arena frames that `wanted` picks.
+    ///
+    /// It gives up, and the caller then asks under the lock, when there is
+    /// no such frame, when the bucket is being changed or was changed
+    /// while this looked, and when the calling thread's lane has no cell
+    /// left. `arena` is the arena of the pool the bucket belongs to.
+    ///
+    /// `at` is told when the frame is picked and when it is announced.
+    /// Nothing is done there but by a test, which changes the pool under
+    /// the reader at one of those moments.
+    pub(super) fn pin_unlocked<'a>(
+        &self,
+        arena: &'a Arena,
+        wanted: impl Fn(&Frame) -> bool,
+        mut at: impl FnMut(Moment),
+    ) -> Unlocked<'a> {
+        let links = &self.links;
+        let before = links.changes.load(Ordering::SeqCst);
+        if before % 2 == 1 {
+            return Unlocked::Not;
+        }
+        // A chain has no more frames than the arena. More steps than that
+        // are a walk that other threads keep leading on.
+        let mut steps = arena.len();
+        let mut cursor = links.first.load(Ordering::Acquire);
+        let (pointer, frame) = loop {
+            let Some(pointer) = NonNull::new(cursor) else {
+                return Unlocked::Not;
+            };
+            assert!(
+                arena.holds(pointer),
+                "a chain of arena frames left the arena"
+            );
+            // SAFETY: the pointer came from `first` or from the `next` of a
+            // frame, which hold pointers to the starts of headers, and it
+            // lies among the headers of `arena`, which was just checked.
+            // The header of an arena frame may be read by anyone for as
+            // long as the arena lives (A1). That the walk comes to no
+            // other frame is what the two lists of a bucket are for:
+            // `first`, and `next` of an arena frame, point to arena frames
+            // only.
+            let frame: &'a Frame = unsafe { pointer.as_ref() };
+            if frame.kind() == kind::PUBLISHED && wanted(frame) {
+                break (FramePtr(pointer), frame);
+            }
+            if steps == 0 {
+                return Unlocked::Not;
+            }
+            steps -= 1;
+            cursor = frame.next.load(Ordering::Acquire);
+        };
+        at(Moment::Picked);
+        let Some(announcement) = arena.lanes.announce(frame.index) else {
+            return Unlocked::Not;
+        };
+        at(Moment::Announced);
+        if links.changes.load(Ordering::SeqCst) != before {
+            return if frame.is_dead_after(announcement) {
+                Unlocked::Dead
+            } else {
+                Unlocked::Not
+            };
+        }
+        // The bucket was not changed between the two reads of its count.
+        // So all the while the frame was linked in it, a page version, and
+        // as `wanted` saw it, and it was so after the announcement was
+        // made: the announcement is a pin (A6), on content that does not
+        // change again while the frame has a pin (A5).
+        Unlocked::Found(Frozen {
+            _reading: frame.reading(),
+            pin: Pinned {
+                frame: pointer,
+                announced: Some(announcement),
+                arena: PhantomData,
+            },
+        })
+    }
 
     /// Empties the chain of a pool that is going away. The arena is borrowed
     /// mutably, so no pin on any of its frames is left, and the caller owns
     /// every frame that was linked.
     pub(super) fn take_all(&mut self, _arena: &mut Arena) -> Vec<OwnedFrame> {
+        let links = &self.links;
         let mut frames = Vec::new();
-        while let Some(pointer) = self.head {
-            self.unlink(pointer);
+        while let Some(pointer) = links.first().or_else(|| links.beside()) {
+            links.unlink(pointer);
             // By A3: unlinked, and a `Pinned` borrows the arena.
             frames.push(OwnedFrame(pointer));
         }
         frames
+    }
+}
+
+impl ChainWrite<'_> {
+    /// Stamps the bucket for a commit that installed or freed a page of
+    /// it, or a page step that replaced a frame of it: a load that began
+    /// before is turned back.
+    pub(super) fn advance_stamp(&self) {
+        self.links.stamp.fetch_add(1, plain::Ordering::Relaxed);
+    }
+
+    /// Links a frame its caller owned. From here on other threads can reach
+    /// it.
+    pub(super) fn link(&mut self, arena: &Arena, frame: OwnedFrame) -> Entry<'_> {
+        assert!(arena.owns(&frame), "a frame of another pool");
+        let pointer = frame.0;
+        let header = frame.header();
+        if header.is_overflow() {
+            header.set_next(self.links.beside());
+            self.links
+                .beside
+                .store(raw_of(Some(pointer)), plain::Ordering::Relaxed);
+        } else {
+            header.set_next(self.links.first());
+            self.links
+                .first
+                .store(raw_of(Some(pointer)), Ordering::Release);
+        }
+        Entry {
+            pointer,
+            // SAFETY: the frame is linked in this chain now, and the chain
+            // stays borrowed while the entry lives (A1).
+            frame: unsafe { pointer.frame() },
+        }
     }
 
     /// Takes a frame out of the chain if it is linked here, has no pin and
     /// passes `check`. The caller then owns it.
     pub(super) fn take_unpinned(
         &mut self,
+        arena: &Arena,
         pointer: FramePtr,
         check: impl FnOnce(&Frame) -> bool,
     ) -> Option<OwnedFrame> {
@@ -847,51 +1211,70 @@ impl Chain {
         if !entry.frame.is_unpinned() || !check(entry.frame) {
             return None;
         }
-        self.unlink(pointer);
-        // By A3: the frame is unlinked, and it had no pin while this
-        // chain's lock was held, under which alone a first pin is taken.
+        // Announcements first, and the count once more after them (A6).
+        if arena.announces(entry.frame) || !entry.frame.is_unpinned() {
+            return None;
+        }
+        self.links.unlink(pointer);
+        // By A3: the frame is unlinked. It had no announcement that is a
+        // pin, because this change of the bucket was counted before the
+        // lanes were looked through, and no count after that, under the
+        // lock without which a count leaves zero only by an announcement.
         Some(OwnedFrame(pointer))
     }
 
     /// Takes a frame out of the chain whatever pins it has, and marks it
-    /// dead. If it has no pin the caller owns it. Otherwise whoever gives
-    /// back its last pin does.
-    pub(super) fn retire(&mut self, pointer: FramePtr) -> Option<OwnedFrame> {
-        if !self.unlink(pointer) {
+    /// dead. If it has no pin the caller owns it. Otherwise an overflow
+    /// frame is owned by whoever gives back its last pin, and an arena
+    /// frame waits among the arena's dead frames ([`Arena::take_dead`]).
+    pub(super) fn retire(&mut self, arena: &Arena, pointer: FramePtr) -> Option<OwnedFrame> {
+        if !self.links.unlink(pointer) {
             return None;
         }
         // SAFETY: the frame was linked in this chain until the line above,
         // under the chain's lock, so it was not freed (A2). It is not
-        // retired yet, so no other thread can come to own it before
-        // `Frame::retire` below, which is the last use of the reference.
+        // retired yet, so no other thread can come to own it before it is
+        // marked retired below, after which the reference to an overflow
+        // frame is not used again.
         let frame = unsafe { pointer.frame() };
         frame.set_kind(kind::DEAD);
-        // By A3: the frame is unlinked, and `retire` saw no pin.
-        frame.retire().then_some(OwnedFrame(pointer))
+        if frame.is_overflow() {
+            // By A3: the frame is unlinked, it is never announced, and
+            // `retire` saw no pin.
+            return frame.retire().then_some(OwnedFrame(pointer));
+        }
+        arena.bury(pointer)
     }
 
     /// Takes out of the chain a frame that the caller holds a pin on, and
-    /// marks it dead. Whoever gives back its last pin owns it.
-    pub(super) fn retire_pinned(&mut self, pointer: FramePtr) {
-        let owned = self.retire(pointer);
+    /// marks it dead.
+    pub(super) fn retire_pinned(&mut self, arena: &Arena, pointer: FramePtr) {
+        let owned = self.retire(arena, pointer);
         assert!(owned.is_none(), "the caller holds a pin on the frame");
     }
 
-    /// Gives a pin back under the lock of the bucket the frame's page is
-    /// in. If that leaves the frame with no pin and `idle` holds for it, the
-    /// frame is taken out of the chain in the same step, and the caller owns
-    /// it. A retired frame whose last pin this was is owned as well.
+    /// Gives back a counted pin on an overflow frame, under the lock of the
+    /// bucket the frame's page is in. If that leaves the frame with no pin
+    /// and `idle` holds for it, the frame is taken out of the chain in the
+    /// same step, and the caller owns it. A retired frame whose last pin
+    /// this was is owned as well.
     pub(super) fn unpin_linked(
         &mut self,
+        arena: &Arena,
         pin: Pinned<'_>,
         idle: impl FnOnce(&Frame) -> bool,
     ) -> Option<OwnedFrame> {
+        assert!(
+            pin.frame().is_overflow() && !pin.is_announced(),
+            "an arena frame is unpinned with no lock"
+        );
         let pointer = pin.frame;
         if pin.frame().unpin() {
-            // By A3: retired, which unlinked it, and this was the last pin.
+            // By A3: retired, which unlinked it, and this was the last pin
+            // of a frame that is never announced.
             return Some(OwnedFrame(pointer));
         }
-        self.take_unpinned(pointer, idle)
+        self.take_unpinned(arena, pointer, idle)
     }
 }
 
@@ -928,10 +1311,18 @@ pub(super) struct Arena {
     memory: NonNull<u8>,
     layout: Layout,
     frame_len: usize,
+    /// Where the pins that are not counted are announced (A6).
+    lanes: Lanes,
+    /// The arena frames that were retired while they had a pin, linked
+    /// through their headers. A frame leaves this list for its owner when
+    /// it is found here without a pin (A3).
+    dead: Padded<Mutex<Option<FramePtr>>>,
 }
 
 // SAFETY: the arena owns its headers and its block, which are reached only
-// through the frames, and those are `Send` and `Sync`.
+// through the frames, and those are `Send` and `Sync`. Its lanes and its
+// list of dead frames are atomics and a lock around a pointer that is only
+// an address.
 unsafe impl Send for Arena {}
 // SAFETY: as above.
 unsafe impl Sync for Arena {}
@@ -955,16 +1346,20 @@ impl Arena {
         frame_len: usize,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
-        static ARENAS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
-        let id = ARENAS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        static ARENAS: plain::AtomicU64 = plain::AtomicU64::new(1);
+        let id = ARENAS.fetch_add(1, plain::Ordering::Relaxed);
         let layout = layout(frame_len, count)?;
+        let last = u32::try_from(count - 1).map_err(|_| CacheError::CapacityTooLarge)?;
+        if last >= NO_INDEX - 1 {
+            return Err(CacheError::CapacityTooLarge);
+        }
         let memory = allocate(layout);
-        let headers: Box<[Frame]> = (0..count)
+        let headers: Box<[Frame]> = (0..=last)
             .map(|index| {
                 // SAFETY: `index * frame_len` is below the size of the block
                 // that `memory` points to, so the result is inside it.
-                let bytes = unsafe { memory.add(index * frame_len) };
-                Frame::new(bytes, frame_len, false, id)
+                let bytes = unsafe { memory.add(index as usize * frame_len) };
+                Frame::new(bytes, frame_len, id, index)
             })
             .collect();
         let frames =
@@ -976,6 +1371,8 @@ impl Arena {
             memory,
             layout,
             frame_len,
+            lanes: Lanes::new(Lanes::count_for(count)),
+            dead: Padded(Mutex::new(None)),
         };
         // By A3: nothing has seen these frames yet.
         let owned = (0..count)
@@ -1000,6 +1397,82 @@ impl Arena {
         self.frame_len
     }
 
+    /// The lanes of the pool: its announcements, and its threads' counts.
+    pub(super) fn lanes(&self) -> &Lanes {
+        &self.lanes
+    }
+
+    /// Whether `pointer` lies among the arena's own headers. A pointer that
+    /// a chain or a frame keeps is to the start of a header, so one that
+    /// lies among these is to one of the arena's frames.
+    fn holds(&self, pointer: NonNull<Frame>) -> bool {
+        let first = self.frames.as_ptr().addr();
+        pointer.as_ptr().addr().wrapping_sub(first) < self.count * size_of::<Frame>()
+    }
+
+    /// Whether a cell of a lane announces `frame` at the moment this looks
+    /// at it. A frame beside the arena is never announced (A6).
+    fn announces(&self, frame: &Frame) -> bool {
+        !frame.is_overflow() && self.lanes.announces(frame.index)
+    }
+
+    /// Takes an arena frame that was just retired: the caller owns it if it
+    /// has no pin, and otherwise it waits among the dead frames.
+    fn bury(&self, pointer: FramePtr) -> Option<OwnedFrame> {
+        // SAFETY: the header of an arena frame may be read by anyone (A1).
+        let frame = unsafe { pointer.frame() };
+        let mut dead = sync::lock(&self.dead);
+        frame.retire();
+        if self.has_no_pin(frame) {
+            // By A3: the frame was unlinked in a change of its bucket,
+            // which was counted before this look, and it is on no list.
+            return Some(OwnedFrame(pointer));
+        }
+        frame.set_next(*dead);
+        *dead = Some(pointer);
+        None
+    }
+
+    /// Whether a frame has no pin: no announcement, and after that no count
+    /// (A6). For a frame that can still be found in its bucket, the answer
+    /// is of one moment and decides nothing.
+    pub(super) fn has_no_pin(&self, frame: &Frame) -> bool {
+        !self.announces(frame) && frame.pins() == 0
+    }
+
+    /// One of the dead frames that has no pin any more, taken off their
+    /// list: the caller owns it. `None` if every dead frame has a pin.
+    ///
+    /// It is asked whenever a pin on a dead frame was given back
+    /// ([`Pinned::unpin`], [`Unlocked::Dead`]), until it gives nothing.
+    pub(super) fn take_dead(&self) -> Option<OwnedFrame> {
+        let mut dead = sync::lock(&self.dead);
+        let mut before: Option<FramePtr> = None;
+        let mut cursor = *dead;
+        while let Some(current) = cursor {
+            // SAFETY: the list holds arena frames, whose headers may be
+            // read by anyone (A1).
+            let frame = unsafe { current.frame() };
+            let after = frame.next();
+            if self.has_no_pin(frame) {
+                match before {
+                    // SAFETY: as above.
+                    Some(before) => unsafe { before.frame() }.set_next(after),
+                    None => *dead = after,
+                }
+                frame.set_next(None);
+                // By A3: the frame was retired, which unlinked it, it is
+                // off the list of dead frames under that list's lock, and
+                // it has no pin. No pin is taken on it from here on: it is
+                // in no bucket, and a second pin needs a first.
+                return Some(OwnedFrame(current));
+            }
+            before = Some(current);
+            cursor = after;
+        }
+        None
+    }
+
     /// The header of an arena frame, which lives as long as the arena.
     pub(super) fn frame(&self, index: usize) -> &Frame {
         // SAFETY: the header is in the arena's slice, which lives as long
@@ -1018,7 +1491,7 @@ impl Arena {
     pub(super) fn allocate_overflow(&self) -> OwnedFrame {
         let layout = layout(self.frame_len, 1).expect("the arena has this layout many times");
         let bytes = allocate(layout);
-        let frame = Box::new(Frame::new(bytes, self.frame_len, true, self.id));
+        let frame = Box::new(Frame::new(bytes, self.frame_len, self.id, NO_INDEX));
         let frame = NonNull::new(Box::into_raw(frame)).expect("a box is not null");
         // By A3: nothing has seen this frame yet.
         OwnedFrame(FramePtr(frame))
@@ -1050,5 +1523,43 @@ impl Drop for Arena {
         // SAFETY: `memory` was allocated with `layout` in `new`, and the
         // headers that pointed into it are gone.
         unsafe { alloc::dealloc(self.memory.as_ptr(), self.layout) };
+    }
+}
+
+#[cfg(all(test, not(loom), target_os = "linux", target_pointer_width = "64"))]
+mod layout {
+    use std::mem::offset_of;
+
+    use super::Frame;
+
+    /// What a lookup reads of a frame is on the first cache line of its
+    /// header, and what a pin, a latch or an attached value writes is on the
+    /// second: a reader of a page is not slowed by the pins others count on
+    /// it.
+    #[test]
+    fn a_lookup_reads_the_line_of_a_header_that_pins_do_not_write() {
+        assert_eq!((size_of::<Frame>(), align_of::<Frame>()), (128, 64));
+        let read = [
+            offset_of!(Frame, page),
+            offset_of!(Frame, kind),
+            offset_of!(Frame, flags),
+            offset_of!(Frame, referenced),
+            offset_of!(Frame, born),
+            offset_of!(Frame, superseded),
+            offset_of!(Frame, next),
+            offset_of!(Frame, bytes),
+            offset_of!(Frame, len),
+            offset_of!(Frame, home),
+            offset_of!(Frame, index),
+        ];
+        let written = [
+            offset_of!(Frame, state),
+            offset_of!(Frame, base),
+            offset_of!(Frame, owner),
+            offset_of!(Frame, latch),
+            offset_of!(Frame, attached),
+        ];
+        assert!(read.iter().all(|&offset| offset < 64), "{read:?}");
+        assert!(written.iter().all(|&offset| offset >= 64), "{written:?}");
     }
 }

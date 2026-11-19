@@ -136,6 +136,126 @@ fn a_page_is_read_while_its_frame_is_wanted() {
     });
 }
 
+/// A hit against an eviction and a reload of the same frame: page 1 is in
+/// the one frame, a reader finds it there with no lock, and another thread
+/// wants the frame for page 2. Whichever comes first, the reader's page is
+/// whole for as long as it is held, and the frame is filled again only
+/// when the reader does not hold it.
+#[test]
+fn a_hit_keeps_its_frame_from_a_reload() {
+    model(3, || {
+        let pool = Arc::new(pool(1));
+        drop(seed(&pool, content(1, 1, 0), None));
+        let threads = [1, 2]
+            .into_iter()
+            .map(|page| {
+                let pool = Arc::clone(&pool);
+                thread::spawn(move || {
+                    let found = fetch_one(&pool, page, 5);
+                    assert_eq!(Content::read(&found), content(page, 1, 0));
+                })
+            })
+            .collect();
+        join(threads);
+        assert_eq!(pool.overflow_frames(), 0);
+        assert_eq!(pool.census().published, 1);
+        check(&pool, 0);
+    });
+}
+
+/// A second pin under an announced one: the reader takes it and gives the
+/// first one back, while another thread wants the frame. The count alone
+/// then keeps the frame, though it was taken with no lock.
+#[test]
+fn a_second_pin_keeps_the_frame_when_the_first_is_gone() {
+    model(3, || {
+        let pool = Arc::new(pool(1));
+        drop(seed(&pool, content(1, 1, 0), None));
+        let reader = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let found = fetch_one(&pool, 1, 5);
+                let again = found.clone();
+                drop(found);
+                assert_eq!(Content::read(&again), content(1, 1, 0));
+            })
+        };
+        let other = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let found = fetch_one(&pool, 2, 5);
+                assert_eq!(Content::read(&found), content(2, 1, 0));
+            })
+        };
+        join(vec![reader, other]);
+        assert_eq!(pool.overflow_frames(), 0);
+        check(&pool, 0);
+    });
+}
+
+/// A frame that a page step takes out while two readers hold it with no
+/// count: it is made free exactly once, by whichever of the three is last,
+/// and it is not left waiting when all of them have returned.
+#[test]
+fn a_frame_that_two_hits_hold_is_freed_once_when_it_is_replaced() {
+    model(2, || {
+        let pool = Arc::new(pool(2));
+        drop(seed(&pool, content(1, 1, 0), None));
+        let mut threads: Vec<_> = (0..2)
+            .map(|_| {
+                let pool = Arc::clone(&pool);
+                thread::spawn(move || {
+                    let found = pool.get(page(1), version(5)).expect("in the pool");
+                    let seen = Content::read(&found);
+                    assert!(seen == content(1, 1, 0) || seen == content(1, 1, 1));
+                })
+            })
+            .collect();
+        threads.push({
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || step_once(&pool, 1))
+        });
+        join(threads);
+        assert_eq!(free_frames(&pool), 1, "the frame that was replaced is free");
+        assert_eq!(pool.census().published, 1);
+        check(&pool, 0);
+    });
+}
+
+/// A reader in a lane of its own against an eviction: the pool has two
+/// lanes, the reader announces in the second, and the clock comes to the
+/// reader's frame first. It passes that frame for as long as the reader
+/// holds it.
+#[test]
+fn a_hit_in_another_lane_is_seen_by_the_clock() {
+    model(2, || {
+        let pool = Arc::new(pool(4));
+        for raw in 1..=4 {
+            drop(seed(&pool, content(raw, 1, 0), None));
+        }
+        let reader = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                #[cfg(loom)]
+                crate::cache::sync::set_thread_number(1);
+                let found = fetch_one(&pool, 1, 5);
+                assert_eq!(Content::read(&found), content(1, 1, 0));
+            })
+        };
+        let other = {
+            let pool = Arc::clone(&pool);
+            thread::spawn(move || {
+                let found = fetch_one(&pool, 5, 5);
+                assert_eq!(Content::read(&found), content(5, 1, 0));
+            })
+        };
+        join(vec![reader, other]);
+        assert_eq!(pool.overflow_frames(), 0);
+        assert_eq!(pool.census().published, 4);
+        check(&pool, 0);
+    });
+}
+
 /// Two loads of one page version at once: both readers end with the page,
 /// one frame holds it, and the other frame is given back.
 #[test]
