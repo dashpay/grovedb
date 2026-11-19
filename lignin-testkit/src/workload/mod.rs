@@ -62,6 +62,7 @@ mod query_encoding;
 use std::collections::VecDeque;
 
 use grovedb::TreeType;
+mod pinned;
 use grovedb_version::version::GroveVersion;
 
 pub use self::{

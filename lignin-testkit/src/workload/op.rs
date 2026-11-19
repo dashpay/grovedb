@@ -103,10 +103,10 @@ pub enum TransactionOp {
     /// rollback, and another is started. The transaction belongs to the
     /// caller of [`super::apply()`], which is told to do so.
     Abandon,
-    /// `Transaction::set_savepoint`: a savepoint is pushed on the stack of
-    /// the open transaction.
+    /// `GroveDb::set_savepoint`: a savepoint is pushed on the stack of the
+    /// open transaction.
     SetSavepoint,
-    /// `Transaction::rollback_to_savepoint`: every write since the newest
+    /// `GroveDb::rollback_to_savepoint`: every write since the newest
     /// savepoint is discarded and that savepoint is popped.
     RollbackToSavepoint,
     /// `GroveDb::start_snapshot_read_transaction`: the committed state of

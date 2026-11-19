@@ -295,8 +295,8 @@ operations! {
     "rollbacks and savepoints":
         Rollback = "`GroveDb::rollback_transaction`.",
         Abandon = "A transaction dropped without a commit.",
-        Savepoint = "`Transaction::set_savepoint`.",
-        SavepointRollback = "`Transaction::rollback_to_savepoint`.",
+        Savepoint = "`GroveDb::set_savepoint`.",
+        SavepointRollback = "`GroveDb::rollback_to_savepoint`.",
         NestedSavepoint = "A savepoint set while another is on the stack.",
         SavepointKept = "A savepoint still on the stack when its transaction commits.",
         SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",

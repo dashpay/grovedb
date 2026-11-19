@@ -109,10 +109,14 @@ use grovedb_merk::element::tree_type::ElementTreeTypeExtensions;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::GroveVersion;
 
+// Used where `GroveDb` has no savepoint methods of its own: the engine the
+// corpus is pinned to.
 use super::op::{
     AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, PartialBatch, Prove, Query, QueryItem,
     Read, TransactionOp, TreeRead, Write,
 };
+#[allow(unused_imports)]
+use super::pinned::Savepoints as _;
 
 /// What applying an [`Op`] produced.
 #[derive(Debug)]
@@ -401,12 +405,12 @@ fn apply_transaction_op(
             open.and_then(|transaction| db.rollback_transaction(transaction))
                 .map(|()| Outcome::RolledBack),
         ),
-        TransactionOp::SetSavepoint => free(open.map(|transaction| {
-            transaction.set_savepoint();
-            Outcome::SavepointSet
-        })),
+        TransactionOp::SetSavepoint => free(
+            open.and_then(|transaction| db.set_savepoint(transaction))
+                .map(|()| Outcome::SavepointSet),
+        ),
         TransactionOp::RollbackToSavepoint => free(
-            open.and_then(|transaction| transaction.rollback_to_savepoint().map_err(Error::from))
+            open.and_then(|transaction| db.rollback_to_savepoint(transaction))
                 .map(|()| Outcome::RolledBack),
         ),
         TransactionOp::Abandon => free(Ok(Outcome::Abandoned)),

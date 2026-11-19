@@ -125,18 +125,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "Transaction::is_snapshot_read",
         produced(&[Operation::SnapshotRead]),
     ),
+    ("Transaction::set_savepoint", inside("set_savepoint")),
     ("Transaction::rollback", inside("rollback_transaction")),
     (
         "Transaction::rollback_to_savepoint",
-        produced(&[Operation::SavepointRollback]),
-    ),
-    (
-        "Transaction::set_savepoint",
-        produced(&[
-            Operation::Savepoint,
-            Operation::NestedSavepoint,
-            Operation::SavepointKept,
-        ]),
+        inside("rollback_to_savepoint"),
     ),
     (
         "Transaction::snapshot_age",
@@ -609,13 +602,7 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "rollback_to_savepoint",
-        Status::LeftOut(
-            "`Transaction::rollback_to_savepoint` reached through the engine, which refuses it \
-             while a write scope of the transaction is open. No stream opens a scope, so on \
-             RocksDB it is the operation the streams reach through the transaction. An engine \
-             with a transaction of its own has no other way to it: the BASE-01 follow-up owes \
-             `workload::apply` the call",
-        ),
+        produced(&[Operation::SavepointRollback]),
     ),
     ("rollback_transaction", produced(&[Operation::Rollback])),
     ("root_hash", produced(&[Operation::RootChunk])),
@@ -645,13 +632,11 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "set_savepoint",
-        Status::LeftOut(
-            "`Transaction::set_savepoint` reached through the engine, which refuses it while a \
-             write scope of the transaction is open. No stream opens a scope, so on RocksDB it \
-             is the operation the streams reach through the transaction. An engine with a \
-             transaction of its own has no other way to it: the BASE-01 follow-up owes \
-             `workload::apply` the call",
-        ),
+        produced(&[
+            Operation::Savepoint,
+            Operation::NestedSavepoint,
+            Operation::SavepointKept,
+        ]),
     ),
     (
         "start_snapshot_read_transaction",
