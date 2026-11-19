@@ -390,38 +390,77 @@ impl<'d> Session<'d> {
     /// a manifest that covers it, and returns its pointer. No cell holds
     /// it yet.
     fn append_value(&mut self, id: u32, bytes: &[u8]) -> ValuePointer {
+        let pointer = self.append_uncovered(id, bytes);
+        self.cover_values();
+        pointer
+    }
+
+    /// Appends `bytes` to the value log as a value of the page `id`. No
+    /// manifest covers it until [`Self::cover_values`].
+    fn append_uncovered(&mut self, id: u32, bytes: &[u8]) -> ValuePointer {
         let store = &mut self.store;
+        if let Some(full) = self.values.take_if(|writer| writer.is_full()) {
+            full.finish().expect("finished");
+        }
         if self.values.is_none() {
             let writer = store.values.create().expect("a value-log file");
             store.values.commit(&mut store.manifest).expect("named");
             self.values = Some(writer);
         }
         let writer = self.values.as_mut().expect("a writer");
-        let pointer = writer
+        writer
             .append(&mut self.hold, page(id), bytes)
-            .expect("appended");
-        writer.sync().expect("synced");
+            .expect("appended")
+    }
+
+    /// Makes the values that were appended durable, and has a manifest
+    /// cover them.
+    fn cover_values(&mut self) {
+        let store = &mut self.store;
+        store.values.sync().expect("synced");
         store.values.commit(&mut store.manifest).expect("covered");
-        pointer
+    }
+
+    /// The pending value that the cell at `at` holds.
+    fn pending_of(&self, at: (u32, u16)) -> PendingValue {
+        let frame = &self.model.pages[&page(at.0)];
+        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+        let cell = tree.cell(slot(at.1)).expect("the cell");
+        match cell.value() {
+            CellValue::Pending(pending) => pending,
+            other => panic!("the cell holds {other:?}"),
+        }
     }
 
     /// The page step that write-back makes for a pending value: the value
     /// of the cell goes to the value log, and the cell gets its pointer.
     /// Returns the step and where its record lies.
     fn place(&mut self, at: (u32, u16)) -> (ValueMove, Appended) {
-        let (id, cell) = (page(at.0), slot(at.1));
-        let frame = &self.model.pages[&id];
-        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
-        let pending = tree
-            .pending_values()
-            .find(|(of, _)| *of == cell)
-            .expect("a pending value")
-            .1;
+        let pending = self.pending_of(at);
         let bytes = self.model.pending[&pending.id()].clone();
         let to = self.append_value(at.0, &bytes);
-        let step = ValueMove::in_tree(id, cell, ValuePlace::Pending(pending), to).expect("a step");
+        let from = ValuePlace::Pending(pending);
+        let step = ValueMove::in_tree(page(at.0), slot(at.1), from, to).expect("a step");
         let appended = self.step(&step);
         (step, appended)
+    }
+
+    /// Places the pending values of the cells `cells` as one run of
+    /// write-back does: the values are appended, one manifest covers them
+    /// all, and then each cell gets its pointer in a page step.
+    fn place_all(&mut self, cells: &[(u32, u16)]) {
+        let mut steps = Vec::with_capacity(cells.len());
+        for &at in cells {
+            let pending = self.pending_of(at);
+            let bytes = self.model.pending.remove(&pending.id()).expect("its bytes");
+            let to = self.append_uncovered(at.0, &bytes);
+            let from = ValuePlace::Pending(pending);
+            steps.push(ValueMove::in_tree(page(at.0), slot(at.1), from, to).expect("a step"));
+        }
+        self.cover_values();
+        for step in &steps {
+            self.step(step);
+        }
     }
 
     /// Makes the page step `step`: its record goes to the log, the model

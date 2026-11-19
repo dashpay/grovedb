@@ -460,9 +460,11 @@ impl FlushState {
         self.logged.fetch_add(len, Ordering::Relaxed);
     }
 
-    /// Notes that the page version of `page` which a recovery has put into
-    /// the pool holds the changes of every replayed commit from `oldest`
-    /// on, and that no block holds any of them.
+    /// Notes a page version that a recovery has put into the pool for
+    /// write-back to write. `oldest` is the oldest replayed commit whose
+    /// change to `page` it holds, if it holds one: the page version then
+    /// holds the changes of every replayed commit from that one on, and
+    /// no block holds any of them.
     ///
     /// The pool lists that page version under the commit that bore it,
     /// which is the newest of those commits. Without this note write-back
@@ -471,7 +473,10 @@ impl FlushState {
     /// the log alone. With it they wait, as the changes of a page version
     /// that is kept for its readers do, for the block of the page's next
     /// version that is written.
-    pub(crate) fn replayed_page(&self, page: PageId, oldest: CommitVersion) {
-        lock(&self.kept).fold(page, oldest.get());
+    pub(crate) fn replayed_page(&self, page: PageId, oldest: Option<CommitVersion>) {
+        if let Some(oldest) = oldest {
+            lock(&self.kept).fold(page, oldest.get());
+        }
+        self.owed.fetch_add(1, Ordering::Relaxed);
     }
 }

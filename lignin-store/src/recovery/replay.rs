@@ -779,9 +779,7 @@ impl<'s> Replay<'s> {
                 self.report.pending_values += 1;
             }
             self.install(page, &rebuilt, attached)?;
-            if let Some(oldest) = rebuilt.oldest {
-                self.flush.replayed_page(page, oldest);
-            }
+            self.flush.replayed_page(page, rebuilt.oldest);
             self.report.pages_rebuilt += 1;
         }
         Ok(())
