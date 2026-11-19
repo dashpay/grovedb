@@ -574,6 +574,174 @@ fn what_hangs_below_is_what_the_operation_and_those_before_it_said() {
 }
 
 #[test]
+fn a_subtree_that_an_earlier_operation_dropped_goes_with_a_later_leave_above_it() {
+    let host = leaf(b"h", b"element");
+    // What the second operation does to the element that hosted the
+    // subtree it drops, and how the third takes the subtree above.
+    for (element, clear) in [(0, false), (1, false), (2, false), (0, true)] {
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        put(&batch, A, &host, true);
+        batch.next_operation();
+        batch.drop_subtree(subtree(C));
+        match element {
+            0 => batch.delete_node(subtree(A), b"h", ()),
+            1 => batch.host(subtree(A), b"h", &[]),
+            _ => batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[])), ()),
+        }
+        batch.next_operation();
+        match clear {
+            false => batch.drop_subtree(subtree(A)),
+            true => batch.clear(subtree(A)),
+        }
+        // The transaction has the dropped subtree below the one that
+        // leaves, and takes one name for both.
+        let left = match clear {
+            false => "drop 1",
+            true => "clear 1",
+        };
+        assert_eq!(resolved(batch).subtrees, [left], "{element} {clear}");
+    }
+
+    // Where the subtree hung goes with its drop into the batch it is
+    // merged into.
+    let batch = StagedBatch::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    put(&batch, A, &host, true);
+    batch.next_operation();
+    batch.drop_subtree(subtree(C));
+    batch.delete_node(subtree(A), b"h", ());
+    let group = StagedBatch::new();
+    group.merge_overwriting(batch.take_pending());
+    group.drop_subtree(subtree(A));
+    assert_eq!(resolved(group).subtrees, ["drop 1"]);
+
+    // A batch that was never told where the subtree hung names both.
+    let batch = StagedBatch::<()>::new();
+    batch.drop_subtree(subtree(C));
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    assert_eq!(resolved(batch).subtrees, ["drop 1", "drop 3"]);
+}
+
+#[test]
+fn a_leave_above_does_not_take_a_refusal_with_it() {
+    // The second enter is one the transaction would refuse, and the drop
+    // above comes after it.
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.enter(subtree(C), b"t");
+    batch.next_operation();
+    batch.enter(subtree(C), b"t");
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    assert!(!batch.is_empty());
+    let entered = BatchError::Entered {
+        subtree: subtree(C),
+    };
+    assert_eq!(batch.resolve().map(|_| ()), Err(entered));
+
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.drop_subtree(subtree(C));
+    batch.next_operation();
+    batch.clear(subtree(C));
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    let not_entered = BatchError::NotEntered {
+        subtree: subtree(C),
+    };
+    assert_eq!(batch.resolve().map(|_| ()), Err(not_entered));
+}
+
+#[test]
+fn a_node_that_is_put_after_its_delete_hosts_what_is_said_from_then_on() {
+    let host = leaf(b"h", b"element");
+    let batch = StagedBatch::new();
+    batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(B)])), ());
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"h", ());
+    batch.next_operation();
+    // Said of an element that is not there.
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.next_operation();
+    put(&batch, A, &host, true);
+    assert_eq!(resolved(batch).merks[0].nodes[0].2, None);
+
+    // Said by the operation that puts the node, before the put or after.
+    for host_first in [true, false] {
+        let batch = StagedBatch::new();
+        batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(B)])), ());
+        batch.next_operation();
+        batch.delete_node(subtree(A), b"h", ());
+        batch.next_operation();
+        if host_first {
+            batch.host(subtree(A), b"h", &[subtree(C)]);
+        }
+        put(&batch, A, &host, true);
+        if !host_first {
+            batch.host(subtree(A), b"h", &[subtree(C)]);
+        }
+        assert_eq!(resolved(batch).merks[0].nodes[0].2, Some(vec![C]));
+    }
+}
+
+#[test]
+fn a_kept_value_is_asked_of_the_put_that_stands() {
+    let staged = || {
+        let batch = StagedBatch::new();
+        put(&batch, A, &leaf(b"k", b"first"), true);
+        batch.next_operation();
+        batch.delete_node(subtree(A), b"k", ());
+        batch.next_operation();
+        put(&batch, A, &leaf(b"k", b"unused"), false);
+        batch
+    };
+    let refused = BatchError::NoValue {
+        subtree: subtree(A),
+    };
+    assert_eq!(staged().resolve().map(|_| ()), Err(refused));
+    // Another put that keeps has no more to keep.
+    let batch = staged();
+    batch.next_operation();
+    put(&batch, A, &leaf(b"k", b"unused"), false);
+    assert_eq!(batch.resolve().map(|_| ()), Err(refused));
+    // A delete of the operation does not give the node a value.
+    let batch = staged();
+    batch.delete_node(subtree(A), b"k", ());
+    assert_eq!(batch.resolve().map(|_| ()), Err(refused));
+    // A later put that states its value stands in its place, and so does
+    // a later delete.
+    let batch = staged();
+    put(&batch, A, &leaf(b"k", b"stated"), true);
+    assert_eq!(resolved(batch).merks[0].nodes, [node("k", Some("stated"))]);
+    let batch = staged();
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"k", ());
+    assert_eq!(resolved(batch).merks[0].removed, ["k"]);
+    // A batch that is refused refuses the batch it is merged into.
+    let batch = StagedBatch::new();
+    batch.merge_overwriting(staged());
+    put(&batch, A, &leaf(b"k", b"stated"), true);
+    assert_eq!(batch.resolve().map(|_| ()), Err(refused));
+}
+
+#[test]
+fn what_a_merged_batch_said_of_an_element_it_deletes_is_not_merged() {
+    let host = leaf(b"h", b"element");
+    let batch = StagedBatch::new();
+    put(&batch, A, &host, true);
+    let other = StagedBatch::new();
+    other.host(subtree(A), b"h", &[subtree(C)]);
+    other.next_operation();
+    other.delete_node(subtree(A), b"h", ());
+    // The delete does not stand against the put of this operation, and
+    // the element hosts what it hosted.
+    batch.merge(other);
+    assert_eq!(resolved(batch).merks[0].nodes, [node("h", Some("element"))]);
+}
+
+#[test]
 fn an_entered_subtree_has_the_element_that_hosts_it_as_its_host() {
     let batch = StagedBatch::<()>::new();
     batch.enter(subtree(D), b"alone");

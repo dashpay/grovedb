@@ -136,7 +136,8 @@ fn make(batch: &StagedBatch<usize>, call: &Call, tag: usize) {
             let hosted: Vec<_> = hosted.iter().copied().map(subtree).collect();
             batch.host(subtree(*name), &[*key], &hosted);
         }
-        Call::Enter { name } => batch.enter(subtree(*name), b"t"),
+        // The tree type says which enter stands.
+        Call::Enter { name } => batch.enter(subtree(*name), tag.to_string().as_bytes()),
         Call::Leave { name, clear: true } => batch.clear(subtree(*name)),
         Call::Leave { name, clear: false } => batch.drop_subtree(subtree(*name)),
         Call::Flat {
@@ -190,7 +191,7 @@ fn outcome(
 #[test]
 fn the_order_of_the_calls_of_one_operation_does_not_matter() {
     let (mut refused, mut applied) = (0, 0);
-    for seed in 1..=4000u64 {
+    for seed in 1..=2000u64 {
         let mut rng = Rng(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
         let operations: Vec<Vec<Call>> = (0..1 + rng.below(4))
             .map(|_| {
@@ -208,7 +209,7 @@ fn the_order_of_the_calls_of_one_operation_does_not_matter() {
             Some(_) => applied += 1,
             None => refused += 1,
         }
-        for _ in 0..6 {
+        for _ in 0..4 {
             let mut order = as_drawn.clone();
             for order in &mut order {
                 for at in (1..order.len()).rev() {

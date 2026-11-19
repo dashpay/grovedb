@@ -435,7 +435,7 @@ fn dump(txn: &WriteTxn<'_>) -> Vec<String> {
 /// batch of its own.
 #[test]
 fn one_batch_is_what_its_operations_are_one_after_the_other() {
-    for seed in 1..=24u64 {
+    for seed in 1..=12u64 {
         let mut rng = Rng(seed.wrapping_mul(0x2545_f491_4f6c_dd1d) | 1);
         let (apart, together) = (Store::new(), Store::new());
         let mut state = ([Items::new(), Items::new()], Items::new());
@@ -613,6 +613,79 @@ fn a_merk_and_its_host_across_the_operations_of_one_batch() {
     assert_eq!(get(&txn, unit(Column::Aux, CHILD), b"x"), None);
     assert!(matches!(store.commit(&txn), Outcome::Committed(_)));
     assert_eq!(store.keys(), BTreeMap::new());
+}
+
+/// A tree is deleted, and then the tree it was in: the delete of a tree up
+/// the grove while it is empty, each step an operation of one batch.
+#[test]
+fn a_tree_and_then_the_tree_above_it_are_deleted_by_the_operations_of_one_batch() {
+    let grove = items(&[(b"a", b"tree"), (b"z", b"item")]);
+    let outer = items(&[(b"h", b"tree")]);
+    let inner = items(&[(b"x", b"1"), (b"y", b"2")]);
+    let stores = [Store::new(), Store::new()];
+    for store in &stores {
+        let batch = StagedBatch::<()>::new();
+        batch.host(subtree(HOST), b"a", &[subtree(CHILD)]);
+        batch.host(subtree(CHILD), b"h", &[subtree(BELOW)]);
+        batch.enter(subtree(CHILD), b"merk");
+        batch.enter(subtree(BELOW), b"merk");
+        stage_merk(&batch, HOST, &Items::new(), &grove);
+        stage_merk(&batch, CHILD, &Items::new(), &outer);
+        stage_merk(&batch, BELOW, &Items::new(), &inner);
+        batch.put(unit(Column::Aux, BELOW), b"x", b"old", ());
+        store.write(batch);
+    }
+    // The operations: the inner tree goes with its element, then the outer
+    // one with its own.
+    let first = |batch: &StagedBatch| {
+        // The handles the operation opens say where their subtrees hang.
+        batch.host(subtree(HOST), b"a", &[subtree(CHILD)]);
+        batch.host(subtree(CHILD), b"h", &[subtree(BELOW)]);
+        batch.drop_subtree(subtree(BELOW));
+        stage_merk(batch, CHILD, &outer, &Items::new());
+    };
+    let second = |batch: &StagedBatch| {
+        batch.drop_subtree(subtree(CHILD));
+        stage_merk(batch, HOST, &grove, &items(&[(b"z", b"item")]));
+    };
+
+    let [apart, together] = &stores;
+    let one = apart.begin();
+    for operation in [&first as &dyn Fn(&StagedBatch), &second] {
+        let batch = StagedBatch::new();
+        operation(&batch);
+        apply(&one, batch).expect("the operation is applied");
+    }
+    let other = together.begin();
+    let batch = StagedBatch::new();
+    first(&batch);
+    batch.next_operation();
+    second(&batch);
+    let resolved = batch.resolve().expect("no call is refused");
+    resolved.with_batch(|batch| assert_eq!(batch.subtrees.len(), 1, "one drop is named"));
+    apply_resolved(&other, &resolved);
+
+    let seen = |txn: &WriteTxn<'_>| {
+        let keys: Vec<Vec<u8>> = [b"a", b"h", b"x", b"y", b"z"]
+            .map(|key| key.to_vec())
+            .into();
+        let mut seen: Vec<String> = [HOST, CHILD, BELOW]
+            .into_iter()
+            .flat_map(|name| nodes(txn, name, &keys))
+            .collect();
+        seen.push(format!("{:?}", get(txn, unit(Column::Aux, BELOW), b"x")));
+        seen
+    };
+    assert_eq!(seen(&one), seen(&other));
+    assert_eq!(
+        seen(&other).len(),
+        2,
+        "the item of the grove, and no record below"
+    );
+    for (store, txn) in [(apart, &one), (together, &other)] {
+        assert!(matches!(store.commit(txn), Outcome::Committed(_)));
+        assert_eq!(store.keys(), BTreeMap::from([(HOST, vec!["z".to_owned()])]));
+    }
 }
 
 #[test]

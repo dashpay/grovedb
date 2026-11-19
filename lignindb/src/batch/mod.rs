@@ -62,7 +62,9 @@
 //!
 //! [`StagedBatch::merge`] makes again, in the generation this batch is in,
 //! the calls that the other batch holds an outcome of: so a delete of the
-//! other does not take the place of an outcome of that generation.
+//! other does not take the place of an outcome of that generation. What
+//! the other batch no longer holds is not made again: a call that did not
+//! stand in it, and what it said of an element that it deletes.
 //! [`StagedBatch::merge_overwriting`] makes the other batch a later
 //! operation, and what follows later still.
 //!
@@ -87,9 +89,11 @@
 //!   has when the batch is applied. So a Merk that stays open across
 //!   operations writes a value once and then only hashes, and the value is
 //!   not lost with the put it came in. Where an earlier operation of the
-//!   batch removed the node, there is no value to keep, and the batch is
-//!   refused ([`BatchError::NoValue`]), as the transaction would refuse the
-//!   second of the two operations. A delete of the same operation does not
+//!   batch removed the node, there is no value to keep, and a batch in
+//!   which that put stands is refused ([`BatchError::NoValue`]), as the
+//!   transaction would refuse the second of the two operations. A put that
+//!   states its value, or a delete of a later operation, takes its place
+//!   and the refusal with it. A delete of the same operation does not
 //!   count, in either order: the put wins over it, and keeps what the node
 //!   had without it. A drop or a clear of the same operation does count, in
 //!   either order: it comes before the put, which then keeps the value the
@@ -101,7 +105,7 @@
 //!   was said of an element is said of the node under its key until an
 //!   operation removes that node: an element that the batch deletes hosts
 //!   nothing, and a node that a later operation puts under the key is
-//!   new, and hosts what is said from that operation on.
+//!   new, and hosts what that operation and those after it say.
 //!
 //! The root of a Merk ([`StagedBatch::set_root`]) is held as a record is:
 //! a root key is a put, and "no root" is a delete. So it stays in step
@@ -146,8 +150,12 @@
 //!   every column, with their enters, drops and clears: a drop names the
 //!   outermost subtree. Below is what hung there before the operation and
 //!   what the operation itself says hangs there
-//!   ([`StagedBatch::host`]). A write below that the batch was not told of
-//!   stays, and the transaction refuses the batch
+//!   ([`StagedBatch::host`]), and a subtree that an earlier operation
+//!   dropped or cleared where it hung then, whatever became of its host
+//!   since: the transaction has it there. So the operation that drops a
+//!   subtree, or writes in one, says what the element that hosts it hosts.
+//!   A write below that the batch was not told of stays, and so does a
+//!   drop below, and the transaction refuses the batch
 //!   ([`BatchError::NotEntered`]).
 //! - **A drop takes back the enter of an earlier operation**: the subtree
 //!   was the batch's own, and the transaction never sees it. A clear of
@@ -155,20 +163,25 @@
 //! - **An enter and a drop of one operation** are the drop of the subtree
 //!   as it was before the operation, and then the enter of a new one.
 //!
-//! What a leave takes out is taken out when its operation ends, at
-//! [`StagedBatch::next_operation`] or when the batch is resolved or
-//! merged, when everything the operation says is known.
+//! What a leave takes out is taken out when its operation ends: at
+//! [`StagedBatch::next_operation`], and when the batch is resolved or is
+//! merged into another, when everything the operation says is known.
 //! [`StagedBatch::len`] and [`StagedBatch::is_empty`] say what the batch
 //! holds once it has.
 //!
 //! A call that no outcome can stand for is refused when the batch is
-//! resolved, with the error the transaction would give the operation that
-//! made it: an enter of a subtree that an earlier operation entered or
-//! cleared ([`BatchError::Entered`]), a drop or a clear of a subtree that
-//! an earlier operation dropped ([`BatchError::NotEntered`]), and two
-//! enters or two leaves of one subtree in one operation
-//! ([`BatchError::SubtreeTwice`]). A batch that is refused applies
-//! nothing.
+//! resolved, with the error the transaction gives an operation that makes
+//! it: an enter of a subtree that an earlier operation entered or cleared,
+//! or that the same operation clears ([`BatchError::Entered`]), a drop or
+//! a clear of a subtree that an earlier operation dropped
+//! ([`BatchError::NotEntered`]), and two enters or two leaves of one
+//! subtree in one operation ([`BatchError::SubtreeTwice`]). A batch that
+//! is refused applies nothing, and refuses the batch it is merged into.
+//!
+//! Only what the batch ends up holding is applied, so the transaction is
+//! not asked about an operation whose writes a later one took the place
+//! of: a batch can stand where its operations, applied one after the
+//! other, would have been refused half way.
 //!
 //! # What is not here
 //!
@@ -342,7 +355,8 @@ impl<C> StagedBatch<C> {
     }
 
     /// Drops `subtree` with every subtree below it. The outermost subtree
-    /// is named.
+    /// is named, by an operation that has said what the element that
+    /// hosts it hosts ([`Self::host`]).
     pub fn drop_subtree(&self, subtree: Subtree) {
         self.staged().leave(subtree, Leave::Drop);
     }
