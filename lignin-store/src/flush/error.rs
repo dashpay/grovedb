@@ -73,7 +73,9 @@ pub enum FlushError {
         born: CommitVersion,
     },
     /// The place of a sample of the value counts is before the place of
-    /// the sample before it (`page-table.md` K15). Nothing was written.
+    /// the sample before it (`page-table.md` K15). No checkpoint was
+    /// written for it. Its mark is in the log, where a mark that no
+    /// checkpoint names changes nothing.
     SampleWentBack {
         /// The place of the sample before.
         before: LogPlace,

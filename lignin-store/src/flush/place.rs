@@ -221,8 +221,11 @@ impl<'s> WriteBack<'s> {
             return Ok(Step::GivenUp);
         }
 
-        // The counts lock comes before the page's (LT7, level 4a).
+        // The counts lock comes before the page's (LT7, level 4a). What
+        // the value log says of the pointer is asked before the page's
+        // lock is taken, under which only the pool is called.
         let counts = values.step()?;
+        let covered = values.covers(ready.pointer);
         let step = pool.page_step(page);
         let Some(old) = step.current() else {
             return Ok(Step::GivenUp);
@@ -230,7 +233,7 @@ impl<'s> WriteBack<'s> {
         if !page::is_due(&old, &change).unwrap_or(false) {
             return Ok(Step::GivenUp);
         }
-        if step.private_copies() > 0 || !values.covers(ready.pointer) {
+        if step.private_copies() > 0 || !covered {
             count(&self.state.counters.steps_put_off, 1);
             return Ok(Step::PutOff);
         }
