@@ -1,14 +1,22 @@
-use std::{collections::HashSet, sync::atomic::AtomicU64, thread};
+use std::{
+    cell::Cell,
+    collections::HashSet,
+    sync::atomic::{AtomicU64, Ordering},
+    thread,
+};
 
 use lignin_format::tree_page::{HashField, Side};
 
 use super::*;
 
+/// More leases than a block has, on each of eight threads: every thread
+/// goes back to the process's counter, and no two leases are one.
 #[test]
 fn a_lease_is_taken_once() {
+    let each = 2 * handle::BLOCK as usize + 500;
     let taken: Vec<Lease> = thread::scope(|scope| {
         let threads: Vec<_> = (0..8)
-            .map(|_| scope.spawn(|| (0..500).map(|_| Lease::take()).collect::<Vec<_>>()))
+            .map(|_| scope.spawn(|| (0..each).map(|_| Lease::take()).collect::<Vec<_>>()))
             .collect();
         threads
             .into_iter()
@@ -16,19 +24,41 @@ fn a_lease_is_taken_once() {
             .collect()
     });
     let distinct: HashSet<u64> = taken.iter().map(|lease| lease.get()).collect();
-    assert_eq!(distinct.len(), 4_000);
+    assert_eq!(distinct.len(), 8 * each);
 
     let lease = taken[0];
     assert_eq!(format!("{lease:?}"), format!("lease#{}", lease.get()));
     assert_eq!(lease.to_string(), format!("lease {}", lease.get()));
 }
 
+/// A thread takes its numbers from the process a block at a time: the
+/// leases it takes follow each other inside a block, and the block of
+/// another thread is another one.
+#[test]
+fn a_thread_takes_its_leases_from_a_block_of_its_own() {
+    let take = || {
+        let first = Lease::take().get();
+        (first, Lease::take().get(), Lease::take().get())
+    };
+    let here = take();
+    let there = thread::scope(|scope| scope.spawn(take).join().expect("the thread ends"));
+    for (first, second, third) in [here, there] {
+        // Three leases cross from one block into the next at most once.
+        let steps = [second.wrapping_sub(first), third.wrapping_sub(second)];
+        assert!(steps.contains(&1), "{first} {second} {third}");
+    }
+    let block = |number: u64| (number - 1) / handle::BLOCK;
+    assert_ne!(block(here.2), block(there.0));
+    assert_ne!(block(here.2), block(there.2));
+}
+
 /// The numbers run out before one is given twice.
 #[test]
 fn a_lease_number_is_not_given_twice_when_they_run_out() {
+    let own = Cell::default();
     let counter = AtomicU64::new(u64::MAX - 2);
     let issued: Vec<_> = (0..5)
-        .map(|_| handle::issue(&counter).map(|number| number.get()))
+        .map(|_| handle::issue(&own, &counter, 1).map(|number| number.get()))
         .collect();
     assert_eq!(
         issued,
@@ -40,8 +70,9 @@ fn a_lease_number_is_not_given_twice_when_they_run_out() {
         let threads: Vec<_> = (0..8)
             .map(|_| {
                 scope.spawn(|| {
+                    let own = Cell::default();
                     (0..500)
-                        .map(|_| handle::issue(&counter).expect("a number").get())
+                        .map(|_| handle::issue(&own, &counter, 1).expect("a number").get())
                         .collect::<Vec<_>>()
                 })
             })
@@ -54,6 +85,75 @@ fn a_lease_number_is_not_given_twice_when_they_run_out() {
     let distinct: HashSet<u64> = taken.iter().copied().collect();
     assert_eq!((distinct.len(), distinct.contains(&0)), (4_000, false));
     assert_eq!(distinct.iter().max(), Some(&4_000));
+}
+
+/// A block is taken whole or not at all: where the counter has fewer
+/// numbers left than a block, nothing more is given, to whoever asks, and
+/// what a holder took before it still gives.
+#[test]
+fn a_block_of_lease_numbers_is_not_taken_past_the_end() {
+    const LEN: u64 = 8;
+    let start = u64::MAX - 2 * LEN - 3;
+    let counter = AtomicU64::new(start);
+    let (one, other) = (Cell::default(), Cell::default());
+    let mut issued = Vec::new();
+    // The first holder takes the first block, the second holder the last
+    // whole one.
+    issued.push(handle::issue(&one, &counter, LEN).expect("a number").get());
+    for _ in 0..LEN {
+        issued.push(
+            handle::issue(&other, &counter, LEN)
+                .expect("a number")
+                .get(),
+        );
+    }
+    assert_eq!(handle::issue(&other, &counter, LEN), None);
+    assert_eq!(handle::reserve(&counter, LEN), None);
+    assert_eq!(handle::reserve(&counter, 4), None);
+    for _ in 1..LEN {
+        issued.push(handle::issue(&one, &counter, LEN).expect("a number").get());
+    }
+    for holder in [&one, &other, &one] {
+        assert_eq!(handle::issue(holder, &counter, LEN), None);
+    }
+    issued.sort_unstable();
+    assert_eq!(issued, (start..start + 2 * LEN).collect::<Vec<_>>());
+    assert_eq!(counter.load(Ordering::Relaxed), start + 2 * LEN);
+}
+
+/// Holders on eight threads take blocks from one counter that has fewer
+/// than they ask for: every number is given once, and each holder is
+/// refused from its first empty block on.
+#[test]
+fn blocks_of_lease_numbers_run_out_under_many_takers() {
+    const LEN: u64 = 16;
+    const BLOCKS: u64 = 100;
+    let start = u64::MAX - BLOCKS * LEN - 5;
+    let counter = AtomicU64::new(start);
+    let taken: Vec<u64> = thread::scope(|scope| {
+        let threads: Vec<_> = (0..8)
+            .map(|_| {
+                scope.spawn(|| {
+                    let own = Cell::default();
+                    let mut taken = Vec::new();
+                    while let Some(number) = handle::issue(&own, &counter, LEN) {
+                        taken.push(number.get());
+                    }
+                    assert_eq!(handle::issue(&own, &counter, LEN), None);
+                    taken
+                })
+            })
+            .collect();
+        threads
+            .into_iter()
+            .flat_map(|thread| thread.join().expect("the thread ends"))
+            .collect()
+    });
+    let distinct: HashSet<u64> = taken.iter().copied().collect();
+    assert_eq!(taken.len() as u64, BLOCKS * LEN);
+    assert_eq!(distinct.len() as u64, BLOCKS * LEN);
+    assert_eq!(distinct.iter().min(), Some(&start));
+    assert_eq!(distinct.iter().max(), Some(&(start + BLOCKS * LEN - 1)));
 }
 
 #[test]

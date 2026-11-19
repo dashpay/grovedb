@@ -2,8 +2,10 @@
 //! under.
 
 use std::{
+    cell::Cell,
     fmt,
     num::NonZeroU64,
+    ops::Range,
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -11,17 +13,42 @@ use lignin_format::{CellAddress, PageId, SlotId};
 
 static NEXT_LEASE: AtomicU64 = AtomicU64::new(1);
 
-/// The next lease number of `counter`, or `None` once every number has been
-/// given out. No number is given twice.
-pub(super) fn issue(counter: &AtomicU64) -> Option<NonZeroU64> {
+/// How many lease numbers a thread takes from the process's counter at a
+/// time. A read with no transaction takes a lease, so a counter that every
+/// lease is taken from is a line every reader writes.
+pub(super) const BLOCK: u64 = 1 << 10;
+
+thread_local! {
+    /// The numbers this thread took from [`NEXT_LEASE`] and has not given
+    /// out. Those it still has when it ends are given to nobody.
+    static OWN: Cell<Range<u64>> = const { Cell::new(0..0) };
+}
+
+/// The next `len` numbers of `counter`, or `None` once fewer are left. No
+/// number is in two blocks.
+pub(super) fn reserve(counter: &AtomicU64, len: u64) -> Option<Range<u64>> {
     let mut next = counter.load(Ordering::Relaxed);
     loop {
-        let after = next.checked_add(1)?;
+        let after = next.checked_add(len)?;
         match counter.compare_exchange_weak(next, after, Ordering::Relaxed, Ordering::Relaxed) {
-            Ok(_) => return NonZeroU64::new(next),
+            Ok(_) => return Some(next..after),
             Err(current) => next = current,
         }
     }
+}
+
+/// The next lease number of `own`, which takes `len` more from `counter`
+/// when it has none, or `None` once `counter` has fewer than `len` left. No
+/// number is given twice, whatever number of holders take from one
+/// counter.
+pub(super) fn issue(own: &Cell<Range<u64>>, counter: &AtomicU64, len: u64) -> Option<NonZeroU64> {
+    let mut block = own.take();
+    if block.is_empty() {
+        block = reserve(counter, len)?;
+    }
+    let number = block.next();
+    own.set(block);
+    number.and_then(NonZeroU64::new)
 }
 
 /// One line of descent of pages, as one holder reads it. A [`NodeHandle`] is
@@ -72,7 +99,9 @@ pub(super) fn issue(counter: &AtomicU64) -> Option<NonZeroU64> {
 /// A handle of a lease that was given up is refused from then on.
 ///
 /// A lease is a number that no other lease of the process has. It is never
-/// written to a file.
+/// written to a file. A thread takes its numbers from the process in blocks,
+/// so taking a lease writes nothing that another thread reads, but for one
+/// time in a block.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Lease(NonZeroU64);
 
@@ -81,9 +110,11 @@ impl Lease {
     ///
     /// # Panics
     ///
-    /// When the process has taken 2^64 - 2 leases.
+    /// When the threads of the process have taken every block of lease
+    /// numbers: 2^54 of them.
     pub fn take() -> Self {
-        Self(issue(&NEXT_LEASE).expect("the process has lease numbers left"))
+        let number = OWN.with(|own| issue(own, &NEXT_LEASE, BLOCK));
+        Self(number.expect("the process has lease numbers left"))
     }
 
     /// The lease's number.
