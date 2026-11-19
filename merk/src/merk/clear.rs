@@ -14,6 +14,10 @@ where
     /// estimated from committed DB state. This is acceptable for a
     /// bulk-clear operation. See `RocksDbStorage::continue_write_batch`
     /// for the full rationale.
+    ///
+    /// The nodes are found by a walk of the store's cursor. If the cursor
+    /// reports an error the walk has not come to every node, and `clear`
+    /// fails with that error before it removes any.
     pub fn clear(&mut self) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
 
@@ -27,6 +31,10 @@ where
             }
             iter.next().unwrap_add_cost(&mut cost);
         }
+        if let Err(error) = iter.status() {
+            return Err(Error::StorageError(error)).wrap_with_cost(cost);
+        }
+        to_delete.state_root(None);
         cost_return_on_error!(&mut cost, self.storage.commit(to_delete));
         self.tree.set(None);
         Ok(()).wrap_with_cost(cost)

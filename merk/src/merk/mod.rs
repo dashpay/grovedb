@@ -592,12 +592,22 @@ where
     }
 
     /// Checks if it's an empty tree
+    ///
+    /// A cursor that reports an error answers "not empty": the first node
+    /// could not be read, so nothing is known of the tree. That is the safe
+    /// side. A caller acts on "empty" by removing the tree's element and
+    /// leaving its nodes alone, which would strand the nodes of a tree
+    /// that has some; on "not empty" it refuses or walks the tree.
     pub fn is_empty_tree(&self) -> CostContext<bool> {
         let mut iter = self.storage.cursor();
-        iter.seek_to_first().flat_map(|_| iter.valid().map(|x| !x))
+        iter.seek_to_first()
+            .flat_map(|_| iter.valid().map(|x| !x && iter.status().is_ok()))
     }
 
     /// Checks if it's an empty tree excluding exceptions
+    ///
+    /// A cursor that reports an error answers "not empty", as for
+    /// [`Self::is_empty_tree`]: the walk did not come to every node.
     pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> CostContext<bool> {
         let mut cost = OperationCost::default();
 
@@ -609,7 +619,7 @@ where
             }
             iter.next().unwrap_add_cost(&mut cost)
         }
-        true.wrap_with_cost(cost)
+        iter.status().is_ok().wrap_with_cost(cost)
     }
 
     /// Use tree

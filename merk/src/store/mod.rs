@@ -130,7 +130,7 @@ pub trait NodeChangeSet {
     /// States the key of the Merk's root node as this change set leaves it,
     /// or `None` for a Merk it leaves empty. `Merk::commit` states it in
     /// every change set, whether or not the root is another node than
-    /// before.
+    /// before, and `Merk::clear` states that it leaves no node.
     ///
     /// It is not a write and is charged nothing. A store that finds every
     /// node by its key has no use for it, which is the default. A store
