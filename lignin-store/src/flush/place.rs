@@ -9,7 +9,7 @@ use lignin_format::{value_log::PendingValue, CommitVersion, PageId};
 use super::{
     config::count,
     error::FlushError,
-    page::{self, PendingCell},
+    page::{self, PageKind, PendingCell},
     state::{lock, Files, Ready},
     write_back::{Stores, WriteBack},
 };
@@ -41,7 +41,13 @@ impl<'s> WriteBack<'s> {
         files: &mut Files,
         owed: &BTreeMap<PageId, Vec<CommitVersion>>,
     ) -> Result<usize, FlushError> {
-        let Stores { pool, values, .. } = self.stores;
+        let Stores {
+            pool,
+            values,
+            page_values,
+            ..
+        } = self.stores;
+        let mut order = Vec::new();
         let mut fresh = Vec::new();
         for (&page, versions) in owed {
             let Some(frame) = versions
@@ -53,7 +59,21 @@ impl<'s> WriteBack<'s> {
             if !pool.page_step(page).is_current(&frame) {
                 continue;
             }
-            let cells = page::pending_cells(&frame).map_err(FlushError::page(page))?;
+            let mut cells = page::pending_cells(&frame).map_err(FlushError::page(page))?;
+            if let Some(page_values) = page_values
+                && cells.len() > 1
+                && page::kind_of(&frame) == PageKind::Tree
+            {
+                // In the order a scan reads them, so that the values of a
+                // page lie in the value log as they will be read.
+                order.clear();
+                page_values.scan_order(&frame, &mut order);
+                let place = |cell: &PendingCell| {
+                    let found = order.iter().position(|&slot| Some(slot) == cell.slot);
+                    found.unwrap_or(usize::MAX)
+                };
+                cells.sort_by_key(place);
+            }
             for cell in cells {
                 if self.is_ready(page, &cell.pending) {
                     continue;
@@ -100,7 +120,7 @@ impl<'s> WriteBack<'s> {
         frame: &PageRef<'s>,
         cell: PendingCell,
     ) -> Result<Ready, FlushError> {
-        let Stores { values, log, .. } = self.stores;
+        let log = self.stores.log;
         let born = frame.born();
         let len = cell.pending.value_len() as usize;
         files.value.clear();
@@ -121,14 +141,7 @@ impl<'s> WriteBack<'s> {
             return Err(FlushError::PendingValue { page, born });
         }
 
-        if files.values.as_ref().is_none_or(|writer| writer.is_full()) {
-            if let Some(writer) = files.values.take() {
-                writer.finish()?;
-            }
-            let writer = values.create()?;
-            values.commit(&mut *self.manifest()?)?;
-            files.values = Some(writer);
-        }
+        self.value_writer(files)?;
         let writer = files.values.as_mut().expect("a writer was just made");
         let mut hold = ValueHold::new();
         let pointer = match writer.append(&mut hold, page, &files.value) {
@@ -226,7 +239,7 @@ impl<'s> WriteBack<'s> {
         }
         blank.detach(ready.cell.pending.id());
 
-        if let Err(error) = self.append_change(old.born(), &record) {
+        if let Err(error) = self.append_change(&record) {
             drop(blank);
             drop(step);
             drop(counts);

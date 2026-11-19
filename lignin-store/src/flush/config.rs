@@ -111,6 +111,9 @@ pub struct FlushStats {
     /// Values that were appended and then given up, because their cell was
     /// gone before it could be given the pointer. They are dead space.
     pub values_given_up: u64,
+    /// Values that were appended again and repointed when the values of
+    /// their page were regrouped.
+    pub values_regrouped: u64,
     /// Page steps that were put off because a write transaction held a
     /// private copy of the page.
     pub steps_put_off: u64,
@@ -145,6 +148,7 @@ pub(super) struct Counters {
     pub(super) value_bytes: AtomicU64,
     pub(super) values_placed: AtomicU64,
     pub(super) values_given_up: AtomicU64,
+    pub(super) values_regrouped: AtomicU64,
     pub(super) steps_put_off: AtomicU64,
     pub(super) held_for_readers: AtomicU64,
     pub(super) links_refused: AtomicU64,
@@ -173,6 +177,7 @@ impl Counters {
             value_bytes: read(&self.value_bytes),
             values_placed: read(&self.values_placed),
             values_given_up: read(&self.values_given_up),
+            values_regrouped: read(&self.values_regrouped),
             steps_put_off: read(&self.steps_put_off),
             held_for_readers: read(&self.held_for_readers),
             links_refused: read(&self.links_refused),

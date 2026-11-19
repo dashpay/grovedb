@@ -80,6 +80,15 @@ pub enum FlushError {
         /// The place of the sample that was taken.
         taken: LogPlace,
     },
+    /// What regroups the values of a page failed
+    /// ([`PageValues::regroup`](super::PageValues::regroup)). The page
+    /// steps it had made stand.
+    Regroup {
+        /// The page.
+        page: PageId,
+        /// What it reported.
+        source: super::RegroupError,
+    },
     /// A sync of a segment failed earlier in this session. The blocks that
     /// were not durable then cannot be made durable, so no table checkpoint
     /// is installed until the store is opened again. Reads and commits go
@@ -133,6 +142,9 @@ impl fmt::Display for FlushError {
                 before.offset(),
                 before.file()
             ),
+            Self::Regroup { page, source } => {
+                write!(f, "the values of page {page} were not regrouped: {source}")
+            }
             Self::SegmentsNotDurable => write!(
                 f,
                 "a sync of a segment failed in this session, and no table checkpoint is \
@@ -153,6 +165,7 @@ impl std::error::Error for FlushError {
             Self::Page { source, .. } => Some(source),
             Self::Link { source, .. } => Some(source),
             Self::StepRefused { source, .. } => Some(source),
+            Self::Regroup { source, .. } => Some(&**source),
             Self::FrameSize { .. }
             | Self::PendingValue { .. }
             | Self::SampleWentBack { .. }

@@ -19,4 +19,4 @@ pub use config::{
 pub use error::FlushError;
 pub use run::{Room, Tick};
 pub use state::FlushState;
-pub use write_back::{Pass, Published, Stores, WriteBack};
+pub use write_back::{PageValues, Pass, Published, RegroupError, Stores, WriteBack};

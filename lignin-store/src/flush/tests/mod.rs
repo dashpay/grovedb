@@ -359,6 +359,7 @@ impl Db {
             checkpoints: &self.checkpoints,
             manifest: &self.manifest,
             versions: &self.versions,
+            page_values: None,
         };
         WriteBack::new(stores, &self.state).expect("write-back")
     }
@@ -495,7 +496,7 @@ impl Db {
         if past_write_back {
             self.log.append_change(&record).expect("appended");
         } else {
-            self.wb().append_change(old.born(), &record).expect("appended");
+            self.wb().append_change(&record).expect("appended");
         }
         let mut blank = self.pool.blank();
         blank.copy_from(&old);

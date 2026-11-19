@@ -10,7 +10,7 @@ use lignin_format::{
     delta::DeltaRun,
     segment::{BlockContent, Compression, FRAME_LEN},
     wal::{Change, Entry, Record, Removed},
-    CommitVersion, FormatError, FormatVersion, PageId, PageSize,
+    CommitVersion, FormatError, FormatVersion, PageId, PageSize, SlotId,
 };
 
 use super::{
@@ -25,7 +25,7 @@ use crate::{
     load::FRAME_FORMAT,
     segment::{BlockLocation, ManifestStore, SegmentStore, SegmentStoreError, SegmentWriter},
     table::{Link, LinkError, LinkKind, LogPlace, PageTable, TableCheckpoints},
-    values::ValueStore,
+    values::{ValueStore, ValueWriter},
     wal::{Appended, LogError, LogStore},
 };
 
@@ -44,6 +44,43 @@ pub trait Published: Pins + Sync {
     /// page table names when `work` reads it stay readable until `work`
     /// returns, whatever a cleaner does meanwhile.
     fn guarded(&self, work: &mut dyn FnMut());
+}
+
+/// Why a regrouping of a page's values failed: the error of whoever
+/// implements [`PageValues`].
+pub type RegroupError = Box<dyn std::error::Error + Send + Sync>;
+
+/// What write-back asks of the layer that knows what the cells of a tree
+/// page are to each other: the order in which a scan reads them, and the
+/// regrouping of a page's values in that order (`lignin-tree`,
+/// out-of-line values). The store knows no tree, so it is handed this.
+pub trait PageValues: Sync {
+    /// Adds to `out` the slots of the cells of the tree page in `frame`,
+    /// in the order a scan reads their values. Write-back appends the
+    /// pending values of a page in that order, so that the values of a new
+    /// page lie in the value log as a scan will read them. A cell that is
+    /// not listed comes after those that are, in slot order.
+    fn scan_order(&self, frame: &[u8], out: &mut Vec<SlotId>);
+
+    /// Regroups the values of the current version of the tree page `page`,
+    /// if they lie badly enough to be worth it: appends each of them again
+    /// to `to`, back to back in scan order, calls `cover`, which makes the
+    /// copies durable and has the manifest cover them, and then gives each
+    /// cell the pointer to its copy, each in a page step whose record goes
+    /// to the log through [`WriteBack::append_change`]. Returns how many
+    /// values it moved. A page that a write transaction holds a private
+    /// copy of is left as it is.
+    ///
+    /// Write-back calls this, under an operation guard, for a page it is
+    /// about to write a new base image of, after it has placed the page's
+    /// pending values, and then writes the image with the new pointers. It
+    /// gives `to` no other value meanwhile.
+    fn regroup(
+        &self,
+        page: PageId,
+        to: &mut ValueWriter,
+        cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
+    ) -> Result<u64, RegroupError>;
 }
 
 /// The parts of one open store that write-back works on.
@@ -66,6 +103,10 @@ pub struct Stores<'s> {
     pub manifest: &'s Mutex<ManifestStore>,
     /// The published version, the pins and the guards.
     pub versions: &'s dyn Published,
+    /// The scan order of tree pages and the regrouping of their values, if
+    /// the layer above has them. With `None`, pending values are appended
+    /// in slot order and no page is regrouped.
+    pub page_values: Option<&'s dyn PageValues>,
 }
 
 impl std::fmt::Debug for Stores<'_> {
@@ -103,6 +144,10 @@ pub struct WriteBack<'s> {
     pub(super) stores: Stores<'s>,
     pub(super) state: &'s FlushState,
     pub(super) size: PageSize,
+}
+
+fn is_tree(frame: &[u8]) -> bool {
+    page::kind_of(frame) == PageKind::Tree
 }
 
 /// What became of one page version that a pass looked at.
@@ -227,38 +272,46 @@ impl<'s> WriteBack<'s> {
     /// Appends the record of a background change to the log, and keeps
     /// what it does to a tree page for the block that will hold it. This is
     /// [`LogStore::append_change`] for every page step: of write-back
-    /// itself, of the value log's cleaner, and of whoever removes what a
-    /// dropped subtree left.
+    /// itself, of the value log's cleaner, of a regrouping, and of whoever
+    /// removes what a dropped subtree left. It has the shape of the tree
+    /// layer's `StepLog::append`.
     ///
-    /// `born` is the version that bore the page version the step changes:
-    /// the current one of its page. The step calls this under its own lock
-    /// on the page, after its checks, and installs its change only when
-    /// this has returned `Ok`, as for the log itself.
+    /// The step calls this under its own lock on the page, after its
+    /// checks, and installs its change only when this has returned `Ok`,
+    /// as for the log itself. The change is to the current version of the
+    /// page the record names.
     ///
     /// A page step whose record does not come this way is still written
     /// back correctly: its page is then written as a base image.
-    pub fn append_change(&self, born: CommitVersion, record: &[u8]) -> Result<Appended, LogError> {
+    pub fn append_change(&self, record: &[u8]) -> Result<Appended, LogError> {
         let appended = self
             .stores
             .log
             .append_change(record)
             .inspect_err(|error| self.append_failed(error))?;
         if let Ok((Record::Change(change), _)) = Record::decode(record, FormatVersion::CURRENT) {
-            let mut kept = lock(&self.state.kept);
+            // Under the step's lock the current version cannot change.
+            let born = |page| {
+                let current = self.stores.pool.get(page, CommitVersion::MAX).ok();
+                current.map(|frame| frame.born().get())
+            };
             match change {
                 Change::Value(step) => {
-                    if let Some(delta) = step.delta() {
+                    let delta = step.delta().zip(born(step.page()));
+                    if let Some((delta, born)) = delta {
                         let mut records = Vec::with_capacity(delta.encoded_len());
                         if delta.encode_into(&mut records).is_ok() {
-                            kept.stepped(step.page(), born.get(), &records);
+                            lock(&self.state.kept).stepped(step.page(), born, &records);
                         }
                     }
                 }
                 Change::Reclaim(reclaim) => match (reclaim.freed(), reclaim.removed()) {
-                    (Some(_), _) => kept.forget(reclaim.page()),
+                    (Some(_), _) => lock(&self.state.kept).forget(reclaim.page()),
                     (None, Some(Removed::Tree(run))) => {
-                        let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
-                        kept.stepped(reclaim.page(), born.get(), records);
+                        if let Some(born) = born(reclaim.page()) {
+                            let records = &run.as_bytes()[DeltaRun::HEADER_LEN..];
+                            lock(&self.state.kept).stepped(reclaim.page(), born, records);
+                        }
                     }
                     (None, _) => {}
                 },
@@ -349,6 +402,28 @@ impl<'s> WriteBack<'s> {
         oldest_pin: CommitVersion,
         pass: &mut Pass,
     ) -> Result<(), FlushError> {
+        // A regrouping puts other frames in place of the current
+        // version's, so the page is then looked at again, for that version.
+        match self.write_owed(files, page, owed, oldest_pin, pass, false)? {
+            None => Ok(()),
+            Some(born) => self
+                .write_owed(files, page, &[born], oldest_pin, pass, true)
+                .map(drop),
+        }
+    }
+
+    /// One look at a page: its owed versions are written, oldest first.
+    /// Returns the version to look at again if the values of the page's
+    /// current version were regrouped on the way.
+    fn write_owed(
+        &self,
+        files: &mut Files,
+        page: PageId,
+        owed: &[CommitVersion],
+        oldest_pin: CommitVersion,
+        pass: &mut Pass,
+        regrouped: bool,
+    ) -> Result<Option<CommitVersion>, FlushError> {
         let Stores { pool, table, .. } = self.stores;
         // The frames and what is kept of the page are taken in one page
         // step, so that the records are those that lead to the frames.
@@ -366,7 +441,7 @@ impl<'s> WriteBack<'s> {
         table.chain(page, &mut files.links);
         let mut links = std::mem::take(&mut files.links);
 
-        let mut result = Ok(());
+        let mut result = Ok(None);
         for (index, frame) in frames.iter().enumerate() {
             let born = frame.born();
             if let Some(freed) = links.last().filter(|link| link.kind == LinkKind::Free)
@@ -424,8 +499,17 @@ impl<'s> WriteBack<'s> {
                     continue;
                 }
             }
-            match self.write_version(files, page, frame, &links, &changes, &gap) {
-                Ok(Outcome::Written(link)) => {
+            let written = self.plan(files, page, frame, &links, &changes, &gap).and_then(|as_run| {
+                // A page that is about to get a new base image has its
+                // values regrouped first, and is then looked at again.
+                let regroup = !as_run && is_current && !regrouped && is_tree(frame);
+                if regroup && self.regroup(files, page)? > 0 {
+                    return Ok(None);
+                }
+                self.store(files, page, frame, as_run).map(Some)
+            });
+            match written {
+                Ok(Some(Outcome::Written(link))) => {
                     links.push(link);
                     gap.clear();
                     let mut kept = lock(&self.state.kept);
@@ -433,8 +517,12 @@ impl<'s> WriteBack<'s> {
                     kept.wrote(page, &changes, born.get());
                     pass.written += 1;
                 }
-                Ok(Outcome::Refused) => {
+                Ok(Some(Outcome::Refused)) => {
                     lock(&self.state.kept).forget(page);
+                    break;
+                }
+                Ok(None) => {
+                    result = Ok(Some(born));
                     break;
                 }
                 Err(error) => {
@@ -445,6 +533,55 @@ impl<'s> WriteBack<'s> {
         }
         files.links = links;
         result
+    }
+
+    /// Has the values of the current version of `page` regrouped, if the
+    /// store was given what does that. Returns how many values were moved.
+    fn regroup(&self, files: &mut Files, page: PageId) -> Result<u64, FlushError> {
+        let Stores {
+            values,
+            versions,
+            page_values,
+            ..
+        } = self.stores;
+        let Some(page_values) = page_values else {
+            return Ok(0);
+        };
+        self.value_writer(files)?;
+        let writer = files.values.as_mut().expect("a writer was just made");
+        let mut cover = |writer: &mut ValueWriter| -> Result<(), FlushError> {
+            writer.sync()?;
+            values.commit(&mut *self.manifest()?)?;
+            Ok(())
+        };
+        let mut moved = Ok(0);
+        versions.guarded(&mut || moved = page_values.regroup(page, writer, &mut cover));
+        match moved {
+            Ok(moved) => {
+                count(&self.state.counters.values_regrouped, moved);
+                Ok(moved)
+            }
+            Err(source) => {
+                // The copies are given up, and the next value goes to
+                // another file: a sync of this one may have failed.
+                files.values = None;
+                Err(FlushError::Regroup { page, source })
+            }
+        }
+    }
+
+    /// Makes sure that write-back has a value-log file that takes values.
+    pub(super) fn value_writer(&self, files: &mut Files) -> Result<(), FlushError> {
+        let values = self.stores.values;
+        if files.values.as_ref().is_none_or(|writer| writer.is_full()) {
+            if let Some(writer) = files.values.take() {
+                writer.finish()?;
+            }
+            let writer = values.create()?;
+            values.commit(&mut *self.manifest()?)?;
+            files.values = Some(writer);
+        }
+        Ok(())
     }
 
     /// Puts a frame without its attached values in place of `frame`, the
@@ -471,10 +608,10 @@ impl<'s> WriteBack<'s> {
             .map_err(|source| FlushError::StepRefused { page, source })
     }
 
-    /// Writes the page version in `frame` to a segment, as a run of deltas
-    /// behind the chain `links` or as a base image, pushes its link and
-    /// tells the pool.
-    fn write_version(
+    /// Puts the image of the page in `frame` into `files.image`, and says
+    /// whether the page is to be written as the run that is then in
+    /// `files.run`, behind the chain `links`, or as that image.
+    fn plan(
         &self,
         files: &mut Files,
         page: PageId,
@@ -482,8 +619,7 @@ impl<'s> WriteBack<'s> {
         links: &[Link],
         changes: &[Changes],
         gap: &[u64],
-    ) -> Result<Outcome, FlushError> {
-        let Stores { pool, table, .. } = self.stores;
+    ) -> Result<bool, FlushError> {
         let born = frame.born();
         files.image.clear();
         let pending =
@@ -491,9 +627,21 @@ impl<'s> WriteBack<'s> {
         if pending {
             return Err(FlushError::PendingValue { page, born });
         }
+        Ok(is_tree(frame) && self.run_for(files, page, born, links, changes, gap)?)
+    }
 
-        let as_run = page::kind_of(frame) == PageKind::Tree
-            && self.run_for(files, page, born, links, changes, gap)?;
+    /// Writes the page version in `frame` to a segment, as the run in
+    /// `files.run` or as the image in `files.image`, pushes its link and
+    /// tells the pool.
+    fn store(
+        &self,
+        files: &mut Files,
+        page: PageId,
+        frame: &PageRef<'s>,
+        as_run: bool,
+    ) -> Result<Outcome, FlushError> {
+        let Stores { pool, table, .. } = self.stores;
+        let born = frame.born();
         let (content, location) = if as_run {
             let compression = match files.run.len() {
                 len if len < COMPRESS_FROM => Compression::Raw,

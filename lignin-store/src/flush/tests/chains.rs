@@ -244,6 +244,7 @@ fn a_chain_that_is_over_the_thresholds_is_consolidated() {
             checkpoints: &db.checkpoints,
             manifest: &db.manifest,
             versions: &db.versions,
+            page_values: None,
         },
         &strict,
     )
