@@ -9,7 +9,7 @@ use super::{
     *,
 };
 
-const PARENT: u8 = 10;
+pub(super) const PARENT: u8 = 10;
 
 /// The shortest value that the store of these tests puts out of line.
 const LONG: usize = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 1;
@@ -17,18 +17,18 @@ const LONG: usize = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 1;
 /// The keys and values of one Merk.
 type Items = BTreeMap<Vec<u8>, Vec<u8>>;
 
-fn element(index: usize) -> Vec<u8> {
+pub(super) fn element(index: usize) -> Vec<u8> {
     format!("element-{index:03}").into_bytes()
 }
 
-fn child(index: usize) -> u8 {
+pub(super) fn child(index: usize) -> u8 {
     100 + index as u8
 }
 
 /// A batch that changes the children `changed` and, as every write
 /// propagates to the root, the elements that host them, which name the
 /// children's roots again.
-fn hosted_batch<'s>(
+pub(super) fn hosted_batch<'s>(
     world: &World<'s>,
     tx: &Tx<'s>,
     changed: &[usize],

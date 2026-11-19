@@ -965,6 +965,53 @@ fn a_cursor_reads_no_committed_record_of_a_subtree_that_went_with_a_drop() {
     assert_eq!(db.private_ids(), 0);
 }
 
+/// An enter that is taken back leaves the subtree below nothing: entered
+/// again as a subtree that stands alone, it stays when what would have
+/// hosted it is dropped.
+#[test]
+fn an_enter_that_was_taken_back_puts_the_subtree_below_nothing() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    let outer = world.merk(&tx, OUTER, |items| {
+        drop(items.insert(b"host".to_vec(), b"tree".to_vec()))
+    });
+    let batch = OwnedBatch {
+        merks: vec![outer],
+        subtrees: vec![enter(OUTER)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree is entered");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    let tx = world.begin();
+    let (mark, writes) = (tx.txn.mark(), tx.model.borrow().writes.len());
+    let below = OwnedBatch {
+        records: vec![put(aux(INNER), b"below", b"1")],
+        subtrees: vec![hosted(INNER, OUTER, b"host")],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &below).expect("it is entered below");
+    assert!(tx.txn.rewind(mark));
+    tx.model.borrow_mut().writes.truncate(writes);
+    world.check(&tx);
+    // It is entered again, with no host, and what was to host it goes.
+    let alone = OwnedBatch {
+        records: vec![put(aux(INNER), b"alone", b"2")],
+        subtrees: vec![enter(INNER)],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &alone).expect("it is entered alone");
+    drop_outer(&world, &tx);
+    world.check(&tx);
+    let mut out = Vec::new();
+    assert!(tx.txn.get(aux(INNER), b"alone", &mut out).expect("a read"));
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+    assert_eq!(census(&db), (u64::from(ENTERED) + 1, 0, 1));
+    assert_eq!(db.private_ids(), 0);
+}
+
 fn cell(page: u32, slot: u16) -> CellAddress {
     let page = PageId::new(page).expect("a page id");
     CellAddress::new(page, SlotId::new(slot).expect("a slot"))

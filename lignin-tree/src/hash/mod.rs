@@ -97,7 +97,7 @@
 //! a rule is called for.
 //!
 //! **One page at a time.** Every step is one call of
-//! [`Pages`](crate::fragment::Pages) on one page (`transactions.md` LT3):
+//! [`Pages`] on one page (`transactions.md` LT3):
 //! a marked node is read once and written once, and a node that is not
 //! marked and whose hash is needed is read once. A value that is not in its
 //! cell is read between two steps, never inside one.
@@ -121,7 +121,7 @@
 //! and evaluated when that is asked for.
 //!
 //! A host whose element is still to be written is behind
-//! ([`Pages::host_is_behind`](crate::fragment::Pages::host_is_behind)). Its
+//! ([`Pages::host_is_behind`]). Its
 //! pointers are not followed and its value hash is not made: an evaluation
 //! that reaches a marked value hash of such a host stops with
 //! [`HashError::HostBehind`].
