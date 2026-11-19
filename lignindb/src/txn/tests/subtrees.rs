@@ -548,6 +548,20 @@ fn a_drop_outside_is_seen_by_the_next_read_and_meets_the_writes_under_it() {
     let own = world.begin();
     world.write(&own, vec![put(aux(1), b"met", b"1")]);
     drop_outer(&world, &own);
+    // And one writes the Merk below and nothing of the subtree that will
+    // be dropped: its host is not written (never on existing
+    // GroveVersions). A node of it keeps its committed value.
+    let below = world.begin();
+    let mut merk = world.merk(&below, INNER, |items| {
+        drop(items.insert(b"three".to_vec(), vec![5; 20]))
+    });
+    merk.anchored = true;
+    assert!(merk.nodes.iter().any(|(.., stated)| !stated));
+    let batch = OwnedBatch {
+        merks: vec![merk],
+        ..OwnedBatch::default()
+    };
+    world.apply(&below, &batch).expect("a node below");
     assert_eq!(node_count(&beside, INNER, &inner), 2);
     assert_eq!(node_count(&own, INNER, &inner), 0);
 
@@ -564,7 +578,7 @@ fn a_drop_outside_is_seen_by_the_next_read_and_meets_the_writes_under_it() {
 
     let dropper = world.begin();
     drop_outer(&world, &dropper);
-    let others = [&beside, &under, &own];
+    let others = [&beside, &under, &own, &below];
     assert!(matches!(
         world.commit(dropper, &others),
         Outcome::Committed(_)
@@ -595,6 +609,25 @@ fn a_drop_outside_is_seen_by_the_next_read_and_meets_the_writes_under_it() {
     assert_eq!(under.txn.stats().overlapped, 1);
     assert_eq!(world.commit(under, &[]), Outcome::Conflict);
     assert_eq!(world.commit(own, &[]), Outcome::Conflict);
+    // The one that wrote below is not met: the key set of the drop names
+    // the dropped subtree, and nothing below it that its transaction had
+    // not written. It reads its own nodes, with the values they kept, and
+    // nothing committed of the Merk. Its writes cannot be laid out any
+    // more, so its commit is refused, and it is rolled back.
+    world.check(&below);
+    assert_eq!(below.txn.stats().overlapped, 0);
+    assert_eq!(node_count(&below, INNER, &[b"one", b"two", b"three"]), 2);
+    let refused = db.commit(&versions, &below.txn);
+    assert!(
+        matches!(
+            refused,
+            Err(TxnError::Batch(BatchError::NotEntered { subtree })) if subtree == model::subtree(INNER)
+        ),
+        "its commit is refused"
+    );
+    below.txn.rollback().expect("a rollback");
+    let held = below.txn.stats();
+    assert_eq!((held.writes, held.pinned, held.base), (0, None, None));
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
@@ -657,6 +690,12 @@ fn what_the_transaction_wrote_below_a_dropped_subtree_goes_with_it() {
         (world.apply(&tx, &batch)).expect("the subtrees are entered again");
         world.check(&tx);
         assert_eq!(node_count(&tx, INNER, &[b"own", b"one", b"two", b"new"]), 1);
+        // And dropped again: what went below is found by the hosts of the
+        // subtrees the transaction entered itself.
+        drop_outer(&world, &tx);
+        world.check(&tx);
+        assert_eq!(node_count(&tx, INNER, &[b"own", b"one", b"two", b"new"]), 0);
+        assert!(!tx.txn.get(aux(INNER), b"fresh", &mut out).expect("a read"));
         match by_key {
             true => assert_eq!(world.commit(tx, &[]), Outcome::Conflict),
             false => tx.txn.rollback().expect("a rollback"),

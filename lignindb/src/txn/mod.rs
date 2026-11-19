@@ -328,7 +328,8 @@
 //!   transaction had written. A commit outside that writes another one
 //!   below does not meet the drop. The other way is caught late: a
 //!   transaction that wrote below a subtree which a commit outside dropped
-//!   cannot lay its writes out any more, and its commit is refused
+//!   cannot lay its writes out any more. It serves its own records by key
+//!   from then on, and its commit is refused
 //!   ([`BatchError::NotEntered`]) and not failed as a conflict. On
 //!   existing GroveVersions neither happens: a write below also writes the
 //!   element that hosts its subtree, which is a key of the dropped one.

@@ -446,7 +446,12 @@ impl<'s> WriteTxn<'s> {
                     state.base = Some(pin);
                 }
                 Err(error) if is_refusal(&error) => {
-                    self.keep_values(state, &guard, at)?;
+                    // The values the write set keeps are read at the
+                    // version it kept them at, while that is pinned: at
+                    // `at` a commit that met no key of the transaction may
+                    // have dropped a subtree above one it wrote.
+                    let kept = state.base.as_ref().map_or(at, VersionPin::version);
+                    self.keep_values(state, &guard, kept)?;
                     state.base = None;
                     state.stuck = Some((at, state.set.ops()));
                 }

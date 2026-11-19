@@ -392,6 +392,13 @@ impl Pages for TreePages<'_> {
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, FragmentError> {
+        // A write is planned on the pages as they are and then applied, so
+        // nothing may change them in between (`lignin_tree::fragment`,
+        // "One writer"). What a write reads for its plan is therefore the
+        // transaction's own copy: no page step is installed beside a
+        // private copy (CL6), where a committed page that is only read can
+        // lose the cells of a dropped Merk between the plan and the write.
+        self.copy(page).map_err(TxnError::into_pages)?;
         self.page(page, read).map_err(TxnError::into_pages)
     }
 

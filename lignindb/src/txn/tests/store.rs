@@ -139,6 +139,10 @@ pub struct Counts {
     pub rule_calls: AtomicU64,
     /// The Merks that commits dropped or cleared and that left something.
     pub dropped: AtomicU64,
+    /// The private copies of tree pages that commits were handed, and
+    /// those among them that no write had changed.
+    pub tree_copies: AtomicU64,
+    pub tree_copies_unchanged: AtomicU64,
     /// The Merks in use, the entries below a dropped Merk, and the dropped
     /// Merks, as the last check of the tree pages found them.
     pub census: Mutex<(u64, u64, u64)>,
@@ -389,7 +393,9 @@ impl Db {
             .fetch_add(parts.dropped.len() as u64, Ordering::Relaxed);
         let tree = tree.into_parts();
         for (page, copy) in tree.written {
+            self.counts.tree_copies.fetch_add(1, Ordering::Relaxed);
             if copy.is_unchanged() {
+                (self.counts.tree_copies_unchanged).fetch_add(1, Ordering::Relaxed);
                 self.pool.discard(&copy.frame).expect("it is discarded");
                 continue;
             }
