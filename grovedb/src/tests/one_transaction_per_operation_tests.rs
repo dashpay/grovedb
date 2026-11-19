@@ -598,6 +598,120 @@ fn the_big_sum_axis_is_written_and_read_in_one_transaction_each() {
     );
 }
 
+/// A conversion to a 128-bit sum reads every node of the tree and writes it
+/// again, and for an indexed tree rebuilds the rows of its axes. A repair
+/// rebuilds them too. On an engine that is not the default one each starts
+/// one write transaction, and none when the caller gives one.
+#[test]
+fn a_conversion_and_a_repair_are_one_write_transaction_each() {
+    let grove_version = GroveVersion::latest();
+    let (_dir, db) = database(grove_version);
+    let root: &[&[u8]] = &[];
+    let ranked: &[&[u8]] = &[RANKED];
+    let sums: &[&[u8]] = &[SUMS];
+    db.insert(
+        root,
+        RANKED,
+        Element::empty_provable_sum_indexed_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    for (key, sum) in [(b"a", 5), (b"b", -3), (b"c", 40)] {
+        db.insert_into_provable_sum_indexed_tree(
+            ranked,
+            key,
+            Element::new_sum_item(sum),
+            None,
+            grove_version,
+        )
+        .unwrap()
+        .expect("insert_into_provable_sum_indexed_tree");
+    }
+
+    let (repaired, reads, writes) = started(&db, || {
+        db.reconcile_indexed_tree_secondaries(ranked, None, grove_version)
+    });
+    repaired.unwrap().expect("reconcile");
+    assert_eq!((reads, writes), (0, 1), "a repair");
+
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, SUMS, None, grove_version)
+    });
+    converted.unwrap().expect("convert a sum tree");
+    assert_eq!((reads, writes), (0, 1), "a sum tree");
+    assert!(matches!(
+        db.get(root, SUMS, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::BigSumTree(_, 12, _)
+    ));
+    db.insert(
+        sums,
+        b"s3",
+        Element::new_sum_item(i64::MAX),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("the converted tree takes a sum past an i64");
+
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, RANKED, None, grove_version)
+    });
+    converted.unwrap().expect("convert an indexed tree");
+    assert_eq!((reads, writes), (0, 1), "an indexed tree");
+    let (page, reads, writes) = started(&db, || {
+        db.indexed_big_sum_top_k_paginated(ranked, 10, 0, true, None, grove_version)
+    });
+    let page = page.unwrap().expect("indexed_big_sum_top_k_paginated");
+    assert_eq!((reads, writes), (1, 0), "the ranking of the converted tree");
+    let keys: Vec<&[u8]> = page
+        .entries
+        .iter()
+        .map(|entry| entry.primary_key.as_slice())
+        .collect();
+    assert_eq!(keys, [b"c".as_slice(), b"a", b"b"]);
+
+    db.insert(
+        root,
+        COUNTED,
+        Element::empty_count_sum_tree(),
+        None,
+        None,
+        grove_version,
+    )
+    .unwrap()
+    .expect("insert");
+    let transaction = db.start_transaction();
+    let (converted, reads, writes) = started(&db, || {
+        db.convert_to_big_sum_tree(root, COUNTED, Some(&transaction), grove_version)
+    });
+    converted.unwrap().expect("convert in a transaction");
+    assert_eq!((reads, writes), (0, 0), "in the caller's transaction");
+    let (repaired, reads, writes) = started(&db, || {
+        db.reconcile_indexed_tree_secondaries(ranked, Some(&transaction), grove_version)
+    });
+    repaired.unwrap().expect("reconcile in a transaction");
+    assert_eq!((reads, writes), (0, 0), "in the caller's transaction");
+    assert!(matches!(
+        db.get(root, COUNTED, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::CountSumTree(..)
+    ));
+    db.commit_transaction(transaction).unwrap().expect("commit");
+    assert!(matches!(
+        db.get(root, COUNTED, None, grove_version)
+            .unwrap()
+            .expect("get"),
+        Element::CountBigSumTree(..)
+    ));
+}
+
 /// `index` holds six trees with one item each.
 fn insert_index<E: Engine>(db: &GroveDb<E>, grove_version: &GroveVersion) {
     let root: &[&[u8]] = &[];
