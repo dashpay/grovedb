@@ -11,7 +11,7 @@ use super::{
     config::count,
     error::FlushError,
     page::PageKind,
-    state::{lock, Checkpoints, Named},
+    state::{lock, segments_of, Checkpoints, Named},
     write_back::{Stores, WriteBack},
 };
 use crate::{
@@ -355,6 +355,7 @@ impl<'s> WriteBack<'s> {
         let named = Named {
             covers,
             place: Some(place),
+            segments: segments_of(&info),
             _hold: hold,
         };
         let durable = match self.sync_log() {

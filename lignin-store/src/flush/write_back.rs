@@ -291,7 +291,7 @@ impl<'s> WriteBack<'s> {
     /// The manifest, settled: if a replacement left it in doubt, it is
     /// opened again first, and every store is told of the manifest that is
     /// in force.
-    pub(super) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
+    pub(crate) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
         let mut manifest = lock(self.stores.manifest);
         if manifest.manifest().is_err() {
             let reopened = ManifestStore::open(manifest.vfs().clone(), manifest.dir())?;
@@ -1122,6 +1122,57 @@ impl<'s> WriteBack<'s> {
             count(&self.state.counters.segment_syncs_failed, 1);
             files.failed.push(writer);
         }
+    }
+
+    /// Removes from the chain of each of `pages` the links that no reader
+    /// at the oldest pinned version or later needs (`page-table.md` T11),
+    /// between two passes, and returns the removed links that point to a
+    /// block. Their blocks are counted as dead space
+    /// ([`FlushState::dead_space`]).
+    ///
+    /// This is for whoever cleans segments, which trims the chains that a
+    /// pass does not: those of freed pages, and those an earlier session
+    /// left. **A chain is trimmed between passes because a trim can take
+    /// the free link of a page away**, with everything older. A pass looks
+    /// at the page versions that were unwritten when it began, and what
+    /// tells it that one of them is of a page that a commit has freed since
+    /// is that free link (T18). A pass that begins afterwards does not
+    /// list such a version: the pool takes it off its list before the
+    /// freeing commit is published, and the oldest pin reaches no version
+    /// that is not published.
+    ///
+    /// It waits for a pass that is under way, and holds no other lock of
+    /// the store while it does.
+    pub fn trim_chains(&self, pages: &[PageId]) -> Vec<Link> {
+        let _files = lock(&self.state.files);
+        let oldest = self.stores.versions.oldest_pin();
+        let mut removed = Vec::new();
+        for &page in pages {
+            self.stores.table.trim(page, oldest, &mut removed);
+        }
+        if !removed.is_empty() {
+            let mut kept = lock(&self.state.kept);
+            removed.iter().for_each(|link| kept.died(link));
+        }
+        removed
+    }
+
+    /// Seals the segment that write-back is filling, if it has one with a
+    /// block in it, so that the next block goes to a new segment. Returns
+    /// the segment that was sealed.
+    ///
+    /// A segment is not cleaned while it is written. Whoever cleans
+    /// segments asks for this when the segment that is being filled holds
+    /// more dead blocks than it can leave there. It waits for a pass that
+    /// is under way.
+    pub fn seal_segment(&self) -> Result<Option<lignin_format::FileId>, FlushError> {
+        let mut files = lock(&self.state.files);
+        let Some(writer) = files.segment.take_if(|writer| writer.block_count() > 0) else {
+            return Ok(None);
+        };
+        let file = writer.file_id();
+        self.seal(&mut files, writer)?;
+        Ok(Some(file))
     }
 
     /// Removes the links that no reader needs any more from the chains of

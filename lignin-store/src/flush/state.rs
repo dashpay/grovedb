@@ -3,14 +3,14 @@
 //! the files it appends to, and the checkpoint in force.
 
 use std::{
-    collections::{BTreeMap, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     sync::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Condvar, Mutex, MutexGuard, PoisonError,
     },
 };
 
-use lignin_format::{value_log::ValuePointer, CommitVersion, PageId};
+use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, PageId};
 
 use super::{
     config::{Counters, Dead, DeadSpace, FlushConfig, FlushStats},
@@ -263,9 +263,16 @@ pub(super) struct Files {
 pub(super) struct Named {
     pub(super) covers: CommitVersion,
     pub(super) place: Option<LogPlace>,
+    /// The segments the checkpoint points into (`page-table.md` K6).
+    pub(super) segments: BTreeSet<FileId>,
     /// Keeps the log from the place of the checkpoint's sample
     /// (`page-table.md` K14).
     pub(super) _hold: LogHold,
+}
+
+/// The segments that the checkpoint `info` points into.
+pub(super) fn segments_of(info: &CheckpointInfo) -> BTreeSet<FileId> {
+    info.segments().keys().copied().collect()
 }
 
 /// The table checkpoints of the session. Its lock makes checkpoints one
@@ -364,10 +371,14 @@ impl FlushState {
         self.counters.snapshot()
     }
 
-    /// The blocks of each segment that a trim took out of every chain after
-    /// write-back had put a newer base image in front of them. Whoever
-    /// cleans segments counts them as dead space.
-    pub fn dead_space(&self) -> BTreeMap<lignin_format::FileId, DeadSpace> {
+    /// The blocks of each segment that a trim took out of every chain:
+    /// after write-back had put a newer base image in front of them, or
+    /// when whoever cleans segments had the chains trimmed
+    /// ([`WriteBack::trim_chains`](super::WriteBack::trim_chains)). They are
+    /// dead space. Blocks that never had a link, or lost it to a
+    /// relocation, are not among them: the page table is what says which
+    /// blocks are live.
+    pub fn dead_space(&self) -> BTreeMap<FileId, DeadSpace> {
         lock(&self.kept).dead()
     }
 
@@ -412,6 +423,26 @@ impl FlushState {
         Some((named.covers, named.place))
     }
 
+    /// The segments that the table checkpoint in force points into, with
+    /// those of a checkpoint whose installation left the manifest in doubt:
+    /// none of them is dropped (`page-table.md` K6). `None` until
+    /// write-back was told of the session's start
+    /// ([`WriteBack::adopt`](super::WriteBack::adopt)).
+    ///
+    /// It waits for a table checkpoint that is being taken, so what it
+    /// returns is of a moment at which none was: a checkpoint that is taken
+    /// later copies the page table as it is then. Whoever cleans segments
+    /// asks this once the page table points into a segment no more, and
+    /// drops the segment if it is not listed.
+    pub fn checkpoint_segments(&self) -> Option<BTreeSet<FileId>> {
+        let checkpoints = lock(&self.checkpoints);
+        let mut segments = checkpoints.in_force.as_ref()?.segments.clone();
+        if let Some((_, named)) = &checkpoints.in_doubt {
+            segments.extend(&named.segments);
+        }
+        Some(segments)
+    }
+
     pub(super) fn wake(&self) {
         *lock(&self.wake) = true;
         self.woken.notify_all();
@@ -433,6 +464,7 @@ impl FlushState {
         checkpoints.in_force = Some(Named {
             covers: in_force.map_or(CommitVersion::EMPTY, CheckpointInfo::covers),
             place,
+            segments: in_force.map(segments_of).unwrap_or_default(),
             _hold: hold,
         });
         Ok(())

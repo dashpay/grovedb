@@ -1,0 +1,396 @@
+//! The cleaner: dead space in segments and in the value log is found and
+//! given back (STORE-08).
+//!
+//! Segments are written once and never changed. A page that is written
+//! back again leaves its older blocks behind, and so does a page that is
+//! freed. The cleaner is what makes that space go:
+//!
+//! - It keeps the **accounting**: for each segment, the bytes of the blocks
+//!   that a link of the [page table](crate::table) points to, and the bytes
+//!   of the others ([`Space`]).
+//! - It **trims** the chains that hold links no reader needs any more.
+//! - It **moves** the live blocks out of the segments that are mostly dead,
+//!   into a segment of its own, and points their links at the copies.
+//! - It **deletes** a segment once nothing points into it and nobody can
+//!   still be reading it.
+//! - It drives the cleaning of the [value log](crate::values), whose rules
+//!   are that module's.
+//!
+//! `docs/lignindb/transactions.md` has the rules it keeps (CL1 to CL7,
+//! PN6, CK3) and `page-table.md` those of the table (T10, T11, K6). It
+//! knows no tree, key or hash, and it never looks into a block.
+//!
+//! [`CleanerState`] is what the cleaner keeps for one open store, made
+//! beside the state of [write-back](crate::flush). [`Cleaner`] is a view
+//! of write-back's stores and of that state. The store has no thread of
+//! its own: whoever opens it runs [`Cleaner::run`] on one.
+//!
+//! ```
+//! use std::sync::{
+//!     atomic::{AtomicU64, Ordering},
+//!     Arc, Mutex,
+//! };
+//!
+//! use lignin_format::{
+//!     manifest::Manifest,
+//!     segment::{BlockContent, Compression},
+//!     CommitVersion, PageId, PageSize,
+//! };
+//! use lignin_io::StdVfs;
+//! use lignin_store::{
+//!     alloc::{Epoch, Pins},
+//!     cache::{BufferPool, PoolConfig},
+//!     cleaner::{Cleaner, CleanerConfig, CleanerState},
+//!     flush::{FlushConfig, FlushState, Published, Stores, WriteBack},
+//!     segment::{ManifestStore, SegmentStore},
+//!     table::{Link, PageTable, TableCheckpoints},
+//!     values::ValueStore,
+//!     wal::{LogOptions, LogReader, LogStore},
+//! };
+//!
+//! // Who publishes commits and keeps the pins is the transaction layer.
+//! // Here nothing is pinned, and no operation outlives a call.
+//! struct Versions(AtomicU64);
+//!
+//! impl Pins for Versions {
+//!     fn oldest_pin(&self) -> CommitVersion {
+//!         self.latest()
+//!     }
+//!
+//!     fn next_epoch(&self) -> Epoch {
+//!         Epoch::new(1)
+//!     }
+//!
+//!     fn oldest_guard(&self) -> Epoch {
+//!         Epoch::new(1)
+//!     }
+//! }
+//!
+//! impl Published for Versions {
+//!     fn latest(&self) -> CommitVersion {
+//!         CommitVersion::new(self.0.load(Ordering::SeqCst)).expect("a version")
+//!     }
+//!
+//!     fn guarded(&self, work: &mut dyn FnMut()) {
+//!         work()
+//!     }
+//! }
+//!
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
+//! // A new store, opened, with write-back's view of it.
+//! let dir = tempfile::tempdir()?;
+//! let size = PageSize::DEFAULT;
+//! let vfs = Arc::new(StdVfs);
+//! let empty = Manifest::new(size, Default::default(), None, Vec::new())?;
+//! let mut manifest = ManifestStore::create(vfs.clone(), dir.path(), empty)?;
+//! let segments = SegmentStore::open(&manifest)?;
+//! let values = ValueStore::open(&manifest, &[])?;
+//! let checkpoints = TableCheckpoints::open(&manifest)?;
+//! let end = LogReader::new(vfs, dir.path(), manifest.manifest()?).into_end()?;
+//! let log = LogStore::open(&manifest, &end, LogOptions::default())?;
+//! log.roll(&mut manifest)?;
+//! let table = PageTable::new();
+//! let pool = BufferPool::new(PoolConfig {
+//!     page_size: size,
+//!     capacity: 8 << 20,
+//! })?;
+//! let manifest = Mutex::new(manifest);
+//! let versions = Versions(AtomicU64::new(0));
+//! let flush = FlushState::new(FlushConfig::new(size));
+//! let stores = Stores {
+//!     pool: &pool,
+//!     table: &table,
+//!     segments: &segments,
+//!     values: &values,
+//!     log: &log,
+//!     checkpoints: &checkpoints,
+//!     manifest: &manifest,
+//!     versions: &versions,
+//!     page_values: None,
+//! };
+//! let write_back = WriteBack::new(stores, &flush, size)?;
+//! write_back.adopt(None)?;
+//!
+//! // Commit 1 wrote page 7, commit 2 wrote it again, and write-back put
+//! // an image of each into a segment, which is full and sealed.
+//! let page = PageId::new(7).expect("not zero");
+//! let version = |raw| CommitVersion::new(raw).expect("a version");
+//! let mut writer = segments.create()?;
+//! segments.commit(&mut manifest.lock().expect("the manifest"))?;
+//! let first = writer.append(page, BlockContent::Base, Compression::Raw, &[1; 4096])?;
+//! table.push(page, Link::base(version(1), first))?;
+//! let second = writer.append(page, BlockContent::Base, Compression::Raw, &[2; 4096])?;
+//! table.push(page, Link::base(version(2), second))?;
+//! writer.seal()?;
+//! drop(writer);
+//! versions.0.store(2, Ordering::SeqCst);
+//!
+//! // Both blocks have a link: the first is what a reader at version 1 is
+//! // given. Nothing is dead yet.
+//! let state = CleanerState::new(CleanerConfig::new());
+//! let cleaner = Cleaner::new(write_back, &state);
+//! let space = cleaner.space()?;
+//! assert_eq!((space.live_bytes(), space.dead_bytes()), (8208, 0));
+//!
+//! // No reader can ask for version 1 any more: a pass trims its link,
+//! // finds the segment half dead, moves the live image to a segment of
+//! // its own, and deletes the old segment. Here nothing has to be waited
+//! // for: no operation is running, and no table checkpoint is in force.
+//! let pass = cleaner.pass()?;
+//! assert_eq!((pass.links_trimmed, pass.blocks_moved), (1, 1));
+//! assert_eq!((pass.retired, pass.dropped, pass.waiting), (1, 1, 0));
+//! let moved = table.newest(page).and_then(|link| link.location()).expect("a block");
+//! assert_ne!(moved.file, second.file);
+//! let mut buf = Vec::new();
+//! assert_eq!(segments.read(moved, 4096, &mut buf)?.payload()?, &[2; 4096][..]);
+//! let space = cleaner.space()?;
+//! assert_eq!((space.segments.len(), space.dead_bytes()), (1, 0));
+//! # Ok(())
+//! # }
+//! ```
+//!
+//! # What is live
+//!
+//! **A block is live while a link of the page table points to it, and dead
+//! otherwise** (CL1). The table keeps the link of a block for as long as a
+//! reader at the oldest pinned version or later can be given it, so this
+//! is the liveness of `transactions.md`, by its simple test (PV3): a block
+//! that only a pinned version needs has its link, and is live.
+//!
+//! The accounting is a read of the page table and keeps no count of its
+//! own between passes. A count that is kept up with every write goes
+//! wrong where a link is refused, a recovery is cut short or a session
+//! ends between a block and its link, and each of those leaves blocks
+//! that no chain points to. Read from the table, they are dead because
+//! nothing says otherwise: the blocks that the session before wrote after
+//! its last table checkpoint, and the segments of a recovery that failed,
+//! are found and deleted with no rule of their own. [`Space`] is what one
+//! read found, for each segment: the bytes of its blocks, the live ones
+//! among them, and those of the live ones that a version pin alone keeps
+//! ([`SegmentSpace::pinned_bytes`], the cost of PN7).
+//!
+//! **The dead space of a store is the dead bytes in a hundred of the
+//! bytes of all its blocks** ([`Space::dead_percent`]). File headers and
+//! the footers of sealed segments are not counted on either side: no
+//! cleaning gives them back. A segment that waits to be deleted counts,
+//! with every byte dead.
+//!
+//! The read takes the table chain by chain while the store is in use
+//! ([`PageTable::scan`]). What it relies on is that links into a segment
+//! that takes no more blocks only ever go: it looks at which segments
+//! have a writer first, and a segment without one that the read finds no
+//! link into is one that nothing points into, then and afterwards.
+//!
+//! # Trimming
+//!
+//! A pass trims every chain in which a trim at the oldest pinned version
+//! removes a link (`page-table.md` T11): the chains of freed pages, which
+//! go whole once no reader below the freeing version is left, and the
+//! chains an earlier session left with links under a newer base image.
+//! Write-back trims the chains it gives a base image itself.
+//!
+//! The chains are trimmed through [`WriteBack::trim_chains`], between two
+//! passes of write-back. A trim can take the free link of a page away,
+//! and that link is what tells a pass of write-back that a page version
+//! it listed as unwritten is of a page that was freed since
+//! (`page-table.md` T18). Trimmed while a pass is under way, the chain of
+//! a freed page could get a block again.
+//!
+//! # Moving
+//!
+//! While the dead space is above [`CleanerConfig::target_dead_percent`],
+//! a pass moves the live blocks out of the segments that take no more
+//! blocks, the one with the largest share of dead bytes first, until
+//! deleting them would bring the dead space within the target, or until
+//! it has moved [`CleanerConfig::max_pass_bytes`]. The segments that
+//! already wait to be deleted are left out of that sum.
+//!
+//! A block is moved in three steps: it is read, which verifies its
+//! checksum; its payload is appended to the cleaner's segment as a block
+//! of the same kind; and the link is pointed at the copy
+//! ([`PageTable::relocate`]). **Nothing a reader is given changes** (CL2):
+//! the copy holds the same payload under the same link, with the same
+//! version. A block that was superseded and still has its link is moved
+//! like any other, and stays superseded. **If the link is gone when it is
+//! to be switched**, because a trim took it while the block was copied,
+//! the table refuses, and the copy is dead: a block that left its chain is
+//! never brought back (CL4).
+//!
+//! A reader that took the old location from the table before the switch
+//! reads the old block, which is there until its segment is deleted.
+//!
+//! The cleaner's segment is a segment like write-back's: it takes blocks
+//! once a manifest names it, the sync before a table checkpoint is named
+//! covers it, and it is sealed at [`CleanerConfig::segment_len`]. The
+//! copies are durable before anything depends on them, because a segment
+//! is deleted only under a table checkpoint that was named after them.
+//!
+//! # Deleting
+//!
+//! A segment is deleted in two steps (CL3, PN6).
+//!
+//! It is **retired** when it takes no more blocks and the page table
+//! points into it no more: a read of the table found no link, or the pass
+//! moved its last live block. From then on no operation can find a
+//! location in it. The epoch of the clock of retirements is started at
+//! that moment ([`Pins::next_epoch`]), after the links are gone.
+//!
+//! It is **taken out of the store**, and its file deleted, when all of
+//! this holds:
+//!
+//! | Condition | Why |
+//! | --- | --- |
+//! | Every operation guard that was held when it was retired has been released ([`Pins::oldest_guard`]). | An operation may have read a location in it and not yet read the block (PN5). A version pin alone keeps nothing here: what a pin needs has its link. |
+//! | Neither the table checkpoint in force, nor one whose installation left the manifest in doubt, points into it ([`FlushState::checkpoint_segments`]). | A recovery starts from that checkpoint and reads the blocks it points to (`page-table.md` K6). The copies of moved blocks are in no checkpoint until the next one is named. |
+//! | No checkpoint of the database that is being created holds the files ([`SegmentStore::hold_files`]). | It links the files of the manifest it sampled (CK3). |
+//!
+//! The answer about the table checkpoint waits for a checkpoint that is
+//! being taken, and one that is begun later copies a table that points
+//! into no retired segment. The drop and the manifest that no longer
+//! names the segment are made under the manifest's lock, which a
+//! checkpoint of the database holds while it samples and takes its hold.
+//! A finished checkpoint of the database needs nothing here: it has its
+//! own links to the files (CK7).
+//!
+//! **Waiting is not enough when nothing takes a table checkpoint.** A
+//! pass asks write-back for one ([`WriteBack::checkpoint`]) when the
+//! segments that only the checkpoint in force keeps hold
+//! [`CleanerConfig::checkpoint_dead_percent`] of the bytes of all blocks.
+//!
+//! **A segment is not cleaned while it is written.** The one that
+//! write-back fills holds what the pages it wrote first have left behind
+//! since. A pass has it sealed ([`WriteBack::seal_segment`]) when its
+//! dead bytes are [`CleanerConfig::seal_dead_percent`] of the bytes of
+//! all blocks and it holds [`CleanerConfig::min_segment_len`] at least.
+//! So a store is held to the target once its blocks are large against
+//! that length, whatever length a segment is sealed at when nobody asks.
+//!
+//! # The value log
+//!
+//! [`Cleaner::pass_values`] is the cleaner's pass over the value log, in
+//! the order [`crate::values`] asks for (CL5). It drops the files that
+//! are empty for every reader; if the dead space of the value log
+//! ([`ValueSpace`]) is above [`CleanerConfig::value_dead_percent`], it
+//! cleans the closed file with the largest share of dead bytes
+//! ([`ValueStore::copy_live`], a sync, a manifest,
+//! [`ValueStore::install`]); and it makes the log durable and asks which
+//! files are empty from now on ([`ValueStore::retire`]), for a later pass
+//! to drop once the operations that are running now have ended.
+//!
+//! The owners of values are the layers' above, and there are two kinds:
+//! [`BothOwners`] makes one [`ValueOwners`] of them.
+//!
+//! # The throttle
+//!
+//! A pass over the segments moves at most
+//! [`CleanerConfig::max_pass_bytes`], a pass over the value log cleans
+//! one file, and the loop sleeps [`CleanerConfig::idle`] between two
+//! turns. A pass that finds the store as the pass before left it, with no
+//! segment waiting, reads nothing. The bytes the cleaner writes are
+//! counted for the store ([`Stats::count_cleaner_bytes`]).
+//!
+//! # Locks
+//!
+//! The cleaner has one lock of its own, which makes its passes one at a
+//! time. It is taken before any lock of write-back or of the stores, and
+//! nothing that holds one of those calls the cleaner. Under it a pass
+//! takes, one after another and never one inside the other: write-back's
+//! lock on its checkpoints (for the segments of the checkpoint in force,
+//! and for a checkpoint it asks for), write-back's lock on the files it
+//! appends to (for a trim, and for the sealing of a segment), and the
+//! manifest (level 3 of `transactions.md` LT7). It takes no latch, no
+//! page step and no lock on the value counts itself: a pointer rewrite
+//! takes them in [`ValueStore::install`].
+//!
+//! **No reader and no committer waits for the cleaner** (CL7). A reader
+//! takes none of those locks. A committer waits for write-back's turns
+//! when write-back is over its bounds, and a trim or a sealing holds
+//! write-back's files only for the table's own steps or one footer.
+//!
+//! # When something fails
+//!
+//! No failure loses a block that a link points to. A pass that failed can
+//! be made again.
+//!
+//! | What fails | What is left |
+//! | --- | --- |
+//! | The read of a live block, or its payload | The block and its link, as they were. The segment is left alone until the store is opened again ([`CleanerError::Block`], [`CleanerStats::segments_unreadable`]): it can never be emptied, so moving the rest of it would gain nothing. |
+//! | An append to the cleaner's segment, or its sealing | What the segment holds is synced, and the next copy goes to a new segment. The block that was being moved is where it was. |
+//! | A sync of the cleaner's segment | Links point to copies that cannot be made durable. The segment's writer is kept, so that they stay readable, and write-back installs no table checkpoint until the store is opened again, so no segment that a recovery needs is deleted ([`CleanerError::SegmentNotDurable`]). |
+//! | The manifest that stops naming a dropped segment | The segment is out of the store. Its file is deleted by a later replacement of the manifest or by the next session. |
+//! | A table checkpoint the cleaner asked for | The checkpoint in force stays, and the retired segments wait. |
+//! | A cleaning of a value-log file | What [`crate::values`] says: the rewrites that were installed stand, each counted, and the other copies are dead space. |
+//!
+//! After a crash nothing of the cleaner is left to undo. The page table
+//! of the next session is the one of the table checkpoint the manifest
+//! names, which points only to blocks of segments the manifest names, and
+//! the log does not hold a location. A copy that no checkpoint points to
+//! is dead space in its segment, which the next session cleans.
+//!
+//! # What the caller does
+//!
+//! - **Whoever opens the store** makes a [`CleanerState`] beside
+//!   write-back's state and runs [`Cleaner::run`] on a thread, with a
+//!   closure that makes the owners of values and calls
+//!   [`Cleaner::pass_values`]. It hands over the store's [`Stats`]
+//!   ([`Cleaner::with_stats`]).
+//! - **Whoever closes it** stops the loop ([`Cleaner::stop`]) and calls
+//!   [`Cleaner::finish`], before write-back's own.
+//! - **A checkpoint of the database** (TXN-06) takes
+//!   [`SegmentStore::hold_files`] in its sampling step, under the
+//!   manifest's lock, beside its hold on the files of the value log, and
+//!   drops both once the files are linked.
+//! - **Whoever answers for the pins** ([`Published`]) gives true lower
+//!   bounds. The cleaner uses each answer as the bound it is and does not
+//!   assume that a later one is higher.
+//!
+//! # What it does not do
+//!
+//! - It does not reclaim page ids or the frames the pool holds for
+//!   readers: the allocator and the pool do, when the engine asks them.
+//! - It removes nothing of a dropped subtree from a page. The tree
+//!   layer's reclaimer does (CL6), and the pages it frees are trimmed
+//!   here like any freed page.
+//! - It does not consolidate chains: write-back does. A chain is moved
+//!   block by block, as it is.
+//! - It does not move a block that only a version pin keeps to another
+//!   place than a block that is current, and it does not wait for a pin:
+//!   every block with a link is moved alike. A pin that is held for long
+//!   costs the space of what it keeps, which the accounting reports.
+//!
+//! [`PageTable::scan`]: crate::table::PageTable::scan
+//! [`PageTable::relocate`]: crate::table::PageTable::relocate
+//! [`WriteBack::trim_chains`]: crate::flush::WriteBack::trim_chains
+//! [`WriteBack::checkpoint`]: crate::flush::WriteBack::checkpoint
+//! [`WriteBack::seal_segment`]: crate::flush::WriteBack::seal_segment
+//! [`FlushState::checkpoint_segments`]: crate::flush::FlushState::checkpoint_segments
+//! [`Published`]: crate::flush::Published
+//! [`Pins::next_epoch`]: crate::alloc::Pins::next_epoch
+//! [`Pins::oldest_guard`]: crate::alloc::Pins::oldest_guard
+//! [`SegmentStore::hold_files`]: crate::segment::SegmentStore::hold_files
+//! [`ValueStore::copy_live`]: crate::values::ValueStore::copy_live
+//! [`ValueStore::install`]: crate::values::ValueStore::install
+//! [`ValueStore::retire`]: crate::values::ValueStore::retire
+//! [`ValueOwners`]: crate::values::ValueOwners
+//! [`Stats`]: crate::stats::Stats
+//! [`Stats::count_cleaner_bytes`]: crate::stats::Stats::count_cleaner_bytes
+
+mod clean;
+mod config;
+mod error;
+mod owners;
+mod run;
+mod space;
+mod state;
+mod values;
+
+#[cfg(test)]
+mod tests;
+
+pub use clean::{Cleaner, Pass};
+pub use config::{CleanerConfig, CleanerStats, DEFAULT_PASS_BYTES, DEFAULT_TARGET_DEAD_PERCENT};
+pub use error::CleanerError;
+pub use owners::{BothOwners, FoundBy};
+pub use space::{SegmentSpace, Space, ValueSpace};
+pub use state::CleanerState;
+pub use values::ValuePass;

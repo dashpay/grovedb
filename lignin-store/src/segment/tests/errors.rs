@@ -125,6 +125,10 @@ fn every_error_says_what_went_wrong() {
             "segment 7 still has a writer",
         ),
         (
+            SegmentStoreError::SegmentHeld { file },
+            "segment 7 is held for a checkpoint that is being created",
+        ),
+        (
             SegmentStoreError::FileIdsExhausted,
             "every segment id has been used",
         ),
