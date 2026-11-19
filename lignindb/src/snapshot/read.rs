@@ -16,10 +16,11 @@ use super::{
 
 /// The read path of one database: its versions, and its pages.
 ///
-/// Whoever opens the database makes it, once, from the [`Versions`] that
-/// the store's reclaimers ask and the loader of that same store. Every
-/// snapshot and every operation is taken from it, so that a pin is always
-/// on the versions of the store whose pages it reads.
+/// It is made in one place, where the database is opened, from the
+/// [`Versions`] that the store's reclaimers ask and the loader of that same
+/// store. Nothing outside this crate can make one, and every snapshot and
+/// every operation is taken from it, so a pin is always on the versions of
+/// the store whose pages it reads.
 #[derive(Debug, Clone, Copy)]
 pub struct ReadPath<'s> {
     versions: &'s Versions,
@@ -28,8 +29,16 @@ pub struct ReadPath<'s> {
 
 impl<'s> ReadPath<'s> {
     /// The read path of the database whose versions are `versions` and
-    /// whose pages `pages` loads.
-    pub fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
+    /// whose pages `pages` loads. The caller vouches that the two are of
+    /// one store: a pin on other versions keeps nothing of these pages.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(
+            dead_code,
+            reason = "the engine's open (TXN-07) and the write transaction (TXN-03) call it"
+        )
+    )]
+    pub(crate) fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
         Self { versions, pages }
     }
 

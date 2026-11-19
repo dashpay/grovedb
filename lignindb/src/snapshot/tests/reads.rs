@@ -4,20 +4,18 @@
 //! page versions into segments, the pool evicts them, and each reclaim
 //! takes back page ids, held frames and page-table links.
 
-mod store;
-
 use std::{
     sync::atomic::{AtomicBool, AtomicU64, Ordering},
     thread,
 };
 
+use super::store::{page, read_page, version, Changes, Pages, Rng, Store};
+use crate::snapshot::{LatestLease, Operation, SnapshotError, Versions};
 use lignin_format::{CellAddress, SlotId};
 use lignin_store::{
     alloc::Pins,
     load::{LoadBuffers, LoadError},
 };
-use lignindb::snapshot::{LatestLease, Operation, SnapshotError, Versions};
-use store::{page, read_page, version, Changes, Pages, Rng, Store};
 
 /// Reads every page of `pages` through `operation` and checks that each is
 /// the page the commit named there wrote.

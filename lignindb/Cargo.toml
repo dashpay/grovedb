@@ -20,9 +20,5 @@ loom = "0.7.2"
 lignin-io = { version = "6.1.1", path = "../lignin-io" }
 tempfile = { workspace = true }
 
-[[bench]]
-name = "snapshot_scaling"
-harness = false
-
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(loom)'] }

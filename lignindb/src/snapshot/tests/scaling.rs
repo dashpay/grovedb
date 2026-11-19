@@ -1,7 +1,8 @@
 //! Reader throughput by the number of reader threads, with one writer
 //! committing all the time: the acceptance measurement of snapshot reads.
 //!
-//! `TMPDIR=<a directory on disk> cargo bench -p lignindb --bench snapshot_scaling`,
+//! It is a test that every normal run leaves out:
+//! `TMPDIR=<a directory on disk> cargo test --release -p lignindb --lib -- --ignored --nocapture reader_throughput`,
 //! with these settings in the environment:
 //!
 //! | Setting | Default | Is |
@@ -28,18 +29,16 @@
 //! a second of the readers' own processor time, from
 //! `/proc/thread-self/schedstat`, and the share of a core each reader got.
 //!
-//! Every thread of a run starts at one signal, and the reads and the
-//! commits are those between that signal and the one that stops them. A
-//! run with a writer that made no commit is made again.
+//! Every thread of a run waits for one signal, which is given after the
+//! clock was read, so the reads and the commits that are counted are
+//! those between that reading and the signal that stops them. A run with a
+//! writer that made no commit is made again.
 //!
 //! The store has one page for all readers and four for each reader, of
 //! 8 KiB, in a pool of twice as many frames. It keeps the pages of the
 //! latest version only and trims its page table, so its memory does not
 //! grow with the length of the run; its segment file grows by three small
 //! blocks a commit. The peak of memory is printed at the end.
-
-#[path = "../tests/store/mod.rs"]
-mod store;
 
 use std::{
     hint::black_box,
@@ -52,8 +51,9 @@ use std::{
 };
 
 use lignin_store::load::LoadBuffers;
-use lignindb::snapshot::Versions;
-use store::{page, Changes, Rng, Store};
+
+use super::store::{page, Changes, Rng, Store};
+use crate::snapshot::Versions;
 
 const READER_PAGES: u32 = 3;
 const ROOT: u32 = 1;
@@ -133,6 +133,7 @@ fn run(
     let pages = store.pages_at(versions.latest()).len() as u32;
     let reads_of = store.reads(versions);
     let start = Barrier::new(readers as usize + usize::from(commits > 0) + 1);
+    let go = AtomicBool::new(false);
     let stop = AtomicBool::new(false);
     let total = AtomicU64::new(0);
     let cpu_nanos = AtomicU64::new(0);
@@ -140,12 +141,13 @@ fn run(
     let mut seconds = 0.0;
     thread::scope(|scope| {
         for reader in 0..readers {
-            let (start, stop, total, cpu_nanos) = (&start, &stop, &total, &cpu_nanos);
+            let (start, go, stop) = (&start, &go, &stop);
+            let (total, cpu_nanos) = (&total, &cpu_nanos);
             scope.spawn(move || {
                 let path = path(kind, reader);
                 let mut buffers = LoadBuffers::new();
                 let mut reads = 0u64;
-                start.wait();
+                wait_for(start, go);
                 let before = on_cpu_nanos();
                 while !stop.load(Ordering::Relaxed) {
                     let snapshot = reads_of.snapshot();
@@ -167,11 +169,11 @@ fn run(
             });
         }
         if commits > 0 {
-            let (start, stop, committed) = (&start, &stop, &committed);
+            let (start, go, stop, committed) = (&start, &go, &stop, &committed);
             scope.spawn(move || {
                 let mut rng = Rng::new(7);
                 let every = Duration::from_secs(1) / commits;
-                start.wait();
+                wait_for(start, go);
                 let mut due = Instant::now();
                 while !stop.load(Ordering::Relaxed) {
                     let mut write = vec![page(ROOT)];
@@ -197,6 +199,7 @@ fn run(
         }
         start.wait();
         let started = Instant::now();
+        go.store(true, Ordering::SeqCst);
         thread::sleep(length);
         stop.store(true, Ordering::Relaxed);
         seconds = started.elapsed().as_secs_f64();
@@ -209,6 +212,15 @@ fn run(
         per_cpu_second: measured.then(|| reads / cpu_seconds),
         share: measured.then(|| cpu_seconds / seconds / f64::from(readers)),
         commits: committed.load(Ordering::Relaxed) as f64 / seconds,
+    }
+}
+
+/// Waits until every thread of the run is there, and then for the signal
+/// that the run's clock has been read.
+fn wait_for(start: &Barrier, go: &AtomicBool) {
+    start.wait();
+    while !go.load(Ordering::SeqCst) {
+        std::hint::spin_loop();
     }
 }
 
@@ -243,7 +255,9 @@ fn setting<T: std::str::FromStr>(name: &str, default: T) -> T {
         .unwrap_or(default)
 }
 
-fn main() {
+#[test]
+#[ignore = "a measurement: minutes, and all the cores of the machine"]
+fn reader_throughput_by_the_number_of_readers() {
     let cores = thread::available_parallelism().map_or(1, |cores| cores.get() as u32);
     let length = Duration::from_secs_f64(setting("SECS", 1.0));
     let commits: u32 = setting("COMMITS", 2_000);

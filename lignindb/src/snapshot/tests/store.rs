@@ -18,6 +18,7 @@ use std::{
     },
 };
 
+use crate::snapshot::{ReadPath, Reclaim, Versions};
 use lignin_format::{
     manifest::Manifest,
     segment::{BlockContent, Compression},
@@ -32,7 +33,6 @@ use lignin_store::{
     segment::{ManifestStore, SegmentStore, SegmentWriter},
     table::{Link, PageTable},
 };
-use lignindb::snapshot::{ReadPath, Reclaim, Versions};
 
 pub const SIZE: PageSize = PageSize::MIN;
 

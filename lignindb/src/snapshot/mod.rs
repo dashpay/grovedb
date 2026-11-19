@@ -159,7 +159,8 @@
 //!   waits: what does not pass stays retired until a later call.
 //! - **Whoever opens the database** makes the [`Versions`] with the version
 //!   recovery landed on, and one [`ReadPath`] from them and the loader of
-//!   the same store. Its [`Reclaim`] runs the store's reclaimers, and its
+//!   the same store. That is the one place where the two are paired, and
+//!   it is inside this crate. Its [`Reclaim`] runs the store's reclaimers, and its
 //!   [`Reclaim::wake`] lets background work know.
 //!
 //! # Models and tests
@@ -170,10 +171,11 @@
 //! - `tests/model_check.rs`: [`Versions`] in the place of the model of pins
 //!   and guards in the page id allocator's model check (`page-alloc.md`
 //!   section 6), with the real allocator.
-//! - `lignindb/tests/snapshot_reads.rs`: snapshots over a store on disk
-//!   while a writer supersedes, frees and reuses pages.
-//! - `lignindb/benches/snapshot_scaling.rs`: reader throughput by the
-//!   number of reader threads, with one writer.
+//! - `tests/reads.rs`, over the store of `tests/store.rs`: snapshots over a
+//!   store on disk while a writer supersedes, frees and reuses pages.
+//! - `tests/scaling.rs`: reader throughput by the number of reader threads,
+//!   with one writer. It is left out of a normal run:
+//!   `cargo test --release -p lignindb --lib -- --ignored --nocapture reader_throughput`.
 
 mod error;
 mod read;
