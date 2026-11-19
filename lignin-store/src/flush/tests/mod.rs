@@ -5,7 +5,9 @@
 mod acceptance;
 mod chains;
 mod checkpoint;
+mod crash;
 mod errors;
+mod recover;
 mod regroup;
 mod values;
 
@@ -272,22 +274,115 @@ pub(super) fn long(seed: u8, len: usize) -> Val {
 }
 
 /// What a cell says, with its value as a reader gets it: wherever it is.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(super) struct Cell {
     slot: u16,
     key: Vec<u8>,
     value_hash: [u8; 32],
     value: Vec<u8>,
+    /// Where the value is, if it is in the value log.
+    pub(super) pointer: Option<ValuePointer>,
+}
+
+impl Cell {
+    /// The cell without the place of its value, which write-back and a
+    /// cleaner change and no reader sees.
+    fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
+        (self.slot, &self.key, &self.value_hash, &self.value)
+    }
+}
+
+/// Whether two pages say the same: their cells, with the values wherever
+/// they are.
+pub(super) fn same(found: &[Cell], expected: &[Cell]) -> bool {
+    found.iter().map(Cell::said).eq(expected.iter().map(Cell::said))
+}
+
+/// What the cells of the tree page in `frame` say, with each value read
+/// from where it is: the cell, the frame the page is in, the log, or the
+/// value log.
+pub(super) fn cells_of(
+    id: PageId,
+    frame: &[u8],
+    attached: Option<&PageRef<'_>>,
+    values: &ValueStore,
+    log: &LogStore,
+) -> Vec<Cell> {
+    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+    assert_eq!(tree.id(), id);
+    let mut buf = Vec::new();
+    tree.cells()
+        .map(|(slot, cell)| {
+            let value = match cell.value() {
+                CellValue::Inline(bytes) => bytes.to_vec(),
+                CellValue::OutOfLine(pointer) => {
+                    let value = values.read(pointer, id, &mut buf);
+                    value.expect("the value is in the value log").to_vec()
+                }
+                CellValue::Pending(pending) => {
+                    match attached.and_then(|frame| frame.attached(pending.id())) {
+                        Some(bytes) => bytes.to_vec(),
+                        None => {
+                            let logged = log.read_pending(&pending, id, &mut buf);
+                            let bytes = logged.expect("the value is in the log").bytes();
+                            bytes.expect("the value's bytes").to_vec()
+                        }
+                    }
+                }
+            };
+            assert_eq!(value.len(), cell.value_len() as usize);
+            Cell {
+                slot: slot.get(),
+                key: cell.key().to_vec(),
+                value_hash: *cell.value_hash(),
+                value,
+                pointer: cell.value_pointer(),
+            }
+        })
+        .collect()
+}
+
+/// What the cells of the page in `frame` say, as the commit that installs
+/// it knows them, with no file read: a value in the value log is the one
+/// its cell had before the commit (`before`, by slot), and a pending value
+/// is with the frame, or among the values the commit wrote (`written`), or
+/// was pending before.
+fn committed_cells(
+    frame: &PageRef<'_>,
+    before: &BTreeMap<u16, Vec<u8>>,
+    written: &BTreeMap<[u8; 8], Vec<u8>>,
+) -> Vec<Cell> {
+    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+    tree.cells()
+        .map(|(slot, cell)| {
+            let earlier = || before.get(&slot.get()).expect("the cell had its value").clone();
+            let value = match cell.value() {
+                CellValue::Inline(bytes) => bytes.to_vec(),
+                CellValue::OutOfLine(_) => earlier(),
+                CellValue::Pending(pending) => match frame.attached(pending.id()) {
+                    Some(bytes) => bytes.to_vec(),
+                    None => written.get(&pending.id()).cloned().unwrap_or_else(earlier),
+                },
+            };
+            Cell {
+                slot: slot.get(),
+                key: cell.key().to_vec(),
+                value_hash: *cell.value_hash(),
+                value,
+                pointer: cell.value_pointer(),
+            }
+        })
+        .collect()
 }
 
 /// What every version of every page says, as the commits left it.
-#[derive(Debug, Default)]
-struct Model {
-    pages: BTreeMap<PageId, Vec<(u64, Option<Vec<Cell>>)>>,
+#[derive(Debug, Default, Clone)]
+pub(super) struct Model {
+    pub(super) pages: BTreeMap<PageId, Vec<(u64, Option<Vec<Cell>>)>>,
 }
 
 impl Model {
-    fn at(&self, page: PageId, at: CommitVersion) -> Option<(u64, &[Cell])> {
+    pub(super) fn at(&self, page: PageId, at: CommitVersion) -> Option<(u64, &[Cell])> {
         let versions = self.pages.get(&page)?;
         let (born, cells) = versions.iter().rev().find(|(born, _)| *born <= at.get())?;
         cells.as_deref().map(|cells| (*born, cells))
@@ -330,7 +425,7 @@ pub(super) struct Db {
     pub(super) versions: Versions,
     pub(super) state: FlushState,
     owners: AtomicU64,
-    model: Mutex<Model>,
+    pub(super) model: Mutex<Model>,
 }
 
 impl Db {
@@ -466,37 +561,7 @@ impl Db {
     /// What the cells of the tree page in `frame` say, with each value read
     /// from where it is: the cell, the frame, or the value log.
     fn cells(&self, id: PageId, frame: &[u8], attached: Option<&PageRef<'_>>) -> Vec<Cell> {
-        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
-        assert_eq!(tree.id(), id);
-        let mut buf = Vec::new();
-        tree.cells()
-            .map(|(slot, cell)| {
-                let value = match cell.value() {
-                    CellValue::Inline(bytes) => bytes.to_vec(),
-                    CellValue::OutOfLine(pointer) => {
-                        let value = self.values.read(pointer, id, &mut buf);
-                        value.expect("the value is in the value log").to_vec()
-                    }
-                    CellValue::Pending(pending) => {
-                        match attached.and_then(|frame| frame.attached(pending.id())) {
-                            Some(bytes) => bytes.to_vec(),
-                            None => {
-                                let logged = self.log.read_pending(&pending, id, &mut buf);
-                                let bytes = logged.expect("the value is in the log").bytes();
-                                bytes.expect("the value's bytes").to_vec()
-                            }
-                        }
-                    }
-                };
-                assert_eq!(value.len(), cell.value_len() as usize);
-                Cell {
-                    slot: slot.get(),
-                    key: cell.key().to_vec(),
-                    value_hash: *cell.value_hash(),
-                    value,
-                }
-            })
-            .collect()
+        cells_of(id, frame, attached, &self.values, &self.log)
     }
 
     /// The pending values of the current version of `page`.
@@ -634,7 +699,10 @@ impl Db {
                         });
                         assert_eq!(frame.born().get(), born, "page {id} at version {at}");
                         let found = self.cells(id, &frame, (!cold).then_some(&frame));
-                        assert_eq!(found, cells, "page {id} at version {at}");
+                        assert!(
+                            same(&found, cells),
+                            "page {id} at version {at}: {found:?}, not {cells:?}"
+                        );
                         if cold {
                             let tree = TreePage::from_validated(&frame, FRAME_FORMAT);
                             assert!(!tree.expect("a tree page").has_pending_value());
@@ -740,6 +808,12 @@ impl<'d> Txn<'d> {
             .map(|op| Some(group.value(op.page(), op.out()?).expect("a value")))
             .collect();
 
+        let written: BTreeMap<[u8; 8], Vec<u8>> = ops
+            .iter()
+            .zip(&pending)
+            .filter_map(|(op, pending)| Some(((*pending)?.id(), op.out()?.to_vec())))
+            .collect();
+
         let mut released = Vec::new();
         for &id in &ids {
             let (copy, created) = &self.copies[&id];
@@ -833,8 +907,14 @@ impl<'d> Txn<'d> {
                 model.pages.entry(id).or_default().push((committed.get(), None));
             } else {
                 let frame = db.pool.install(&copy, committed).expect("installed");
-                let cells = db.cells(id, &frame, Some(&frame));
                 let versions = model.pages.entry(id).or_default();
+                let before = match versions.last() {
+                    Some((_, Some(cells))) => {
+                        cells.iter().map(|cell| (cell.slot, cell.value.clone())).collect()
+                    }
+                    _ => BTreeMap::new(),
+                };
+                let cells = committed_cells(&frame, &before, &written);
                 versions.push((committed.get(), Some(cells)));
             }
         }
