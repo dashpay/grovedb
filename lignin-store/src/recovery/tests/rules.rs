@@ -914,3 +914,156 @@ fn a_page_that_only_steps_changed_is_written_under_the_version_it_had() {
     let live: u64 = store.values.counts().iter().map(|count| count.values).sum();
     assert_eq!(live, 4);
 }
+
+/// One act of a session's history.
+enum Act {
+    Commit(Vec<Op>),
+    /// Write-back places the pending value of a cell.
+    Place(u32, u16),
+    /// Write-back writes a page, born at the version, to a segment.
+    WriteBack(u32, u64),
+    /// A reclaiming step takes the cells of the slots out of a page, or
+    /// frees the page with the version.
+    Reclaim(u32, Vec<u16>, Option<u64>),
+    /// A table checkpoint that covers the version begins: the sample of
+    /// the counts is taken and its mark is in the log.
+    Sample(u64),
+    /// The checkpoint that began is written and named.
+    Install,
+}
+
+/// Runs `acts` on a new store and kills the session. Returns the
+/// directory, what the pages say then, and the last commit.
+fn left_by(acts: &[Act]) -> (Dir, Model, CommitVersion) {
+    let dir = Dir::new();
+    let mut session = Session::begin(&dir, Model::default());
+    let mut begun = None;
+    for act in acts {
+        match act {
+            Act::Commit(ops) => drop(session.commit(ops)),
+            Act::Place(id, slot) => drop(session.place((*id, *slot))),
+            Act::WriteBack(id, born) => session.write_back(*id, *born),
+            Act::Reclaim(id, slots, freed) => drop(session.reclaim(*id, slots, *freed)),
+            Act::Sample(covers) => begun = Some((*covers, session.sample(*covers))),
+            Act::Install => {
+                let (covers, sample) = begun.take().expect("a checkpoint that began");
+                session.checkpoint_with(covers, &sample, None);
+            }
+        }
+    }
+    let latest = session.latest();
+    let model = session.kill();
+    (dir, model, latest)
+}
+
+/// **Wherever the session is killed, the pages that a checkpoint has lost
+/// are what the session left.** One history, killed after each of its
+/// acts, and each store recovered twice, the second time with one page
+/// kept. Every page, page id and count is held to a model that the acts
+/// made, and that knows nothing of checkpoints.
+///
+/// The history has every way in which a page step meets a page that the
+/// checkpoint in force has no chain of. The table of these tests never
+/// has a link of a page that was not written back, which is how a table
+/// is after the chain of a freed page was trimmed away (K10):
+///
+/// - Page 2 is older than the checkpoint, changed by a commit after it,
+///   and freed by a step. A commit makes a page under its id again.
+/// - Page 3 is made by a commit that the checkpoint does not cover. A
+///   step takes a cell out, a commit puts another into the slot, and
+///   steps take a cell out and free the page after the sample was taken.
+/// - Page 4 is older than the checkpoint, with a value in the value log.
+///   Everything that steps do to it comes between the sample and the
+///   copy of the chains: its cell leaves, with the pointer, and it is
+///   freed.
+///
+/// Before the first checkpoint is named the whole log is replayed on an
+/// empty table, and every record counts. Afterwards the same records are
+/// before and after the place of a sample. Both give what the model says.
+/// The second checkpoint covers everything, and what follows it is the
+/// plain case.
+#[test]
+fn a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_killed() {
+    let history = [
+        Act::Commit(vec![
+            insert((1, 1), b"a", inline(b"one")),
+            insert((2, 1), b"b", inline(b"two")),
+            insert((2, 2), b"c", inline(b"left over")),
+            insert((4, 1), b"g", inline(b"four")),
+            insert((4, 2), b"h", long(4, 700)),
+        ]),
+        Act::Place(4, 2),
+        Act::WriteBack(1, 1),
+        Act::Commit(vec![
+            hash((1, 1), 2),
+            hash((2, 1), 2),
+            hash((4, 1), 2),
+            insert((3, 1), b"d", inline(b"three")),
+            insert((3, 2), b"e", long(3, 600)),
+        ]),
+        Act::Place(3, 2),
+        Act::Reclaim(3, vec![2], None),
+        Act::Commit(vec![
+            insert((3, 2), b"f", inline(b"in its place")),
+            hash((1, 1), 3),
+        ]),
+        Act::Reclaim(2, vec![2], None),
+        Act::Reclaim(2, vec![], Some(3)),
+        Act::Commit(vec![
+            insert((2, 1), b"n", inline(b"under the id again")),
+            hash((1, 1), 4),
+        ]),
+        // The first checkpoint, which covers commit 1 and has the chain of
+        // page 1 alone. Between its sample and its copy, steps go on.
+        Act::Sample(1),
+        Act::Reclaim(3, vec![1], None),
+        Act::Reclaim(4, vec![2], None),
+        Act::Commit(vec![hash((1, 1), 5)]),
+        Act::Reclaim(3, vec![], Some(5)),
+        Act::Reclaim(4, vec![], Some(5)),
+        Act::Install,
+        Act::Commit(vec![
+            hash((2, 1), 6),
+            insert((3, 1), b"p", inline(b"under the id again")),
+        ]),
+        // The second checkpoint, which covers every commit so far.
+        Act::WriteBack(1, 5),
+        Act::WriteBack(2, 6),
+        Act::WriteBack(3, 6),
+        Act::Sample(6),
+        Act::Install,
+        Act::Commit(vec![hash((3, 1), 7)]),
+    ];
+
+    let (mut from_a_checkpoint, mut looked_at_before_the_place) = (0, 0);
+    for acts in 0..=history.len() {
+        let (dir, model, latest) = left_by(&history[..acts]);
+        let gone: Vec<u32> = (1..=4)
+            .filter(|&id| !model.pages.contains_key(&page(id)))
+            .collect();
+        for kept in [None, Some(1)] {
+            let options = RecoveryOptions {
+                max_replay_pages: kept,
+                ..options()
+            };
+            let store = dir
+                .recover_with(&options)
+                .unwrap_or_else(|error| panic!("after {acts} acts, {kept:?} kept: {error}"));
+            assert_eq!(store.landed(), latest, "after {acts} acts");
+            check(&store, &model, &gone);
+            let report = store.report;
+            from_a_checkpoint += u64::from(store.checkpoint.is_some());
+            // With the first checkpoint in force, the records of the steps
+            // before its sample are looked at for the pages it lost.
+            if report.covers == version(1) {
+                assert_eq!(report.changes_dropped, 3, "after {acts} acts: {report:?}");
+                looked_at_before_the_place += report.changes - 4;
+            }
+        }
+    }
+    // Eight of the stores have a checkpoint, six of them the first, and
+    // each recovery from the first looks at three records before its
+    // place: the value of page 3 that was placed, the cell that left the
+    // page, and the step that freed page 2.
+    assert_eq!((from_a_checkpoint, looked_at_before_the_place), (16, 36));
+}
