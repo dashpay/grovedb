@@ -21,7 +21,7 @@ use lignindb::{
 };
 
 use super::{
-    access::{Access, Child, Location, Prefix, StoredNode, Write, Written},
+    access::{Access, Child, Location, Prefix, StoredNode, Walk, Write, Written},
     LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore, LigninSubtree,
     LigninWriter, Mode,
 };
@@ -31,6 +31,8 @@ use crate::{
     tree::{kv::ValueDefinedCostType, AggregateData, TreeNode},
     Error, Link, Merk, Op, TreeFeatureType, TreeType,
 };
+
+mod cursor;
 
 pub(super) const NO_VALUE_DEFINED_COST: Option<
     fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
@@ -1273,26 +1275,6 @@ fn a_handle_that_only_reads_refuses_every_write() {
 }
 
 #[test]
-fn the_cursor_is_not_built_and_says_so() {
-    let lignin = Lignin::new();
-    let path = lignin.path();
-    let transaction = path.begin();
-    let mut cursor = LigninNodeStore::read_only(&transaction, ROOT).cursor();
-    cursor.seek_to_first().unwrap();
-    cursor.seek_to_last().unwrap();
-    cursor.seek(b"k").unwrap();
-    cursor.seek_for_prev(b"k").unwrap();
-    cursor.next().unwrap();
-    cursor.prev().unwrap();
-    assert!(!cursor.valid().unwrap());
-    assert_eq!(cursor.key().unwrap(), None);
-    assert_eq!(cursor.value().unwrap(), None);
-    let status = cursor.status().unwrap_err();
-    assert!(status.to_string().contains("not built yet"), "{status}");
-    assert_eq!(format!("{cursor:?}"), "LigninCursor");
-}
-
-#[test]
 fn a_merk_on_lignindb_moves_to_another_thread_and_is_written_there() {
     let lignin = Lignin::new();
     let path = lignin.path();
@@ -1342,6 +1324,10 @@ fn take(left: &AtomicUsize) -> bool {
 }
 
 impl Access for Unsteady<'_> {
+    fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
+        self.under.cursor(subtree)
+    }
+
     fn node(
         &self,
         subtree: &Prefix,
