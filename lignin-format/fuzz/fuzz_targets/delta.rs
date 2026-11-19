@@ -10,7 +10,7 @@
 use libfuzzer_sys::fuzz_target;
 use lignin_format::{
     delta::{apply_chain, consolidate, DeltaRun, DeltaRunWriter},
-    tree_page::TreePage,
+    tree_page::{TreePage, TreePageMut},
     FormatVersion, PageId, PageSize,
 };
 use lignin_format_fuzz::{ok, pieces, tree::check_valid, Input};
@@ -78,16 +78,44 @@ fn frame_of(base: Option<&[u8]>, size: PageSize) -> Vec<u8> {
 }
 
 /// Applies each run by itself to the base, or to nothing if it creates its
-/// page. Whatever a record does or refuses, the frame holds a valid page.
+/// page, whole and record by record. Whatever a record does or refuses, the
+/// frame holds a valid page; a refused record changes nothing and ends the
+/// run (A3, A4).
 fn alone(base: Option<&[u8]>, runs: &[DeltaRun<'_>], size: PageSize) {
     for run in runs.iter().take(8) {
         if base.is_none() && run.created().is_none() {
             continue;
         }
         let mut frame = frame_of(base, size);
-        let _ = ok(run.apply(&mut frame, size, V1));
+        let applied = ok(run.apply(&mut frame, size, V1)).is_some();
         let page = TreePage::from_validated(&frame, V1).expect("a page");
         assert_eq!(ok(page.check(size)), Some(()), "a run broke the page");
+
+        let mut stepped = frame_of(base, size);
+        match run.created() {
+            Some(departures) => {
+                TreePageMut::init(&mut stepped, size, run.page(), departures).expect("a frame");
+            }
+            None => {
+                let page = TreePage::from_validated(&stepped, V1).expect("a page");
+                if page.id() != run.page() {
+                    assert!(!applied);
+                    continue;
+                }
+            }
+        }
+        let mut refused = false;
+        for delta in run.deltas() {
+            let before = stepped.clone();
+            let mut page = TreePageMut::open(&mut stepped, size, V1).expect("a valid page");
+            if ok(delta.apply(&mut page)).is_none() {
+                assert_eq!(stepped, before, "a refused record wrote");
+                refused = true;
+                break;
+            }
+        }
+        assert_eq!(applied, !refused);
+        assert_eq!(stepped, frame);
     }
 }
 

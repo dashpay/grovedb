@@ -53,6 +53,17 @@ whose LZ4 stream is not part of the format, to the bytes the writers write.
 
 While version 1 is open (U10 of `format.md`), a deliberate change of a layout
 rewrites the files with
-`LIGNIN_WRITE_GOLDEN=1 cargo test -p lignin-format --test golden_files`. Once a
-version is released its files never change, and a new version adds its own
-directory next to them (U9).
+`LIGNIN_WRITE_GOLDEN=1 cargo test -p lignin-format --test golden_files`; run the
+test again without the variable to check them. Once a version is released its
+files never change, and a new version adds its own directory next to them
+(U9).
+
+## What the fuzzer cannot reach
+
+A value of the value log or of the log is cut into records of at most
+2^27 - 14 bytes, and a commit group into parts of at most 2^27 - 4 bytes, and
+every record but the last must be full. An input of 128 MiB is far beyond
+what a fuzzer builds, so the paths that read a second record of a value or a
+second part of a group are fuzzed only up to the check that refuses a short
+first one. The unit tests of `value_log` and `wal` run those paths with small
+limits.

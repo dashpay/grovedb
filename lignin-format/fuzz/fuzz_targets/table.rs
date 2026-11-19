@@ -17,13 +17,13 @@ fuzz_target!(|data: &[u8]| {
     let Some(input) = Input::split(data) else {
         return;
     };
-    match input.control >> 1 & 3 {
-        0 | 1 => file(&input, sealed_file(&input, default_frame_len)),
-        2 => payloads(input.bytes),
-        _ => {
+    match (input.control >> 1 & 3, input.bit(4)) {
+        (2, _) => payloads(input.bytes),
+        (3, true) => {
             let expanded = expand(input.bytes);
             file(&input, expanded);
         }
+        _ => file(&input, sealed_file(&input, default_frame_len)),
     }
 });
 
@@ -88,13 +88,13 @@ fn step(file: &[u8], id: FileId) -> Option<Checkpoint> {
 }
 
 /// Hands payloads to the decoder without their frame. Each is a `u16`
-/// length, with the top bit asking for the length times 64, and that many
+/// length, with the top bit asking for the length times 4, and that many
 /// bytes.
 fn payloads(mut bytes: &[u8]) {
     let mut decoder = Decoder::new(FormatVersion::V1);
     while let Some(len) = take_u16(&mut bytes) {
         let len = if len & 0x8000 != 0 {
-            usize::from(len & 0x7FFF) * 64
+            usize::from(len & 0x7FFF) * 4
         } else {
             usize::from(len)
         };
@@ -133,8 +133,8 @@ fn expand(mut bytes: &[u8]) -> Vec<u8> {
         CommitVersion, PageId,
     };
 
-    let links = take_u16(&mut bytes).unwrap_or(0) as usize % (2 * LINKS_PER_RECORD + 2);
-    let counts = take_u16(&mut bytes).unwrap_or(0) as usize % (2 * LINKS_PER_RECORD + 2);
+    let links = near_a_boundary(take_u16(&mut bytes).unwrap_or(0));
+    let counts = near_a_boundary(take_u16(&mut bytes).unwrap_or(0));
     let page_step = take_u16(&mut bytes).unwrap_or(1).max(1) as u32;
     let file_step = take_u16(&mut bytes).unwrap_or(1).max(1) as u32;
     let id = FileId::new(7).unwrap();
@@ -190,4 +190,16 @@ fn expand(mut bytes: &[u8]) -> Vec<u8> {
         seal_file(&mut file, default_frame_len);
     }
     file
+}
+
+/// A number of items, mostly around the sizes where a record is full: 4096
+/// and 8192.
+fn near_a_boundary(raw: u16) -> usize {
+    let raw = usize::from(raw);
+    match raw % 4 {
+        0 => raw / 4 % 17,
+        1 => LINKS_PER_RECORD - 2 + raw / 4 % 5,
+        2 => 2 * LINKS_PER_RECORD - 2 + raw / 4 % 4,
+        _ => raw % (2 * LINKS_PER_RECORD + 2),
+    }
 }

@@ -57,8 +57,12 @@ fn file(file: &[u8]) {
 
         let bytes = value.to_vec();
         assert_eq!(bytes.len(), value.value_len() as usize);
-        assert_eq!(value.contiguous(), Some(bytes.as_slice()));
-        assert_eq!(value.parts().count(), 1);
+        let parts = (value.value_len() as usize).div_ceil(value_log::MAX_PART_LEN);
+        assert_eq!(value.parts().count(), parts);
+        assert_eq!(
+            value.contiguous(),
+            Some(bytes.as_slice()).filter(|_| parts == 1)
+        );
         let mut written = Vec::new();
         write_value(value.owner(), &bytes, &mut written).expect("a value that was read");
         assert_eq!(written, extent[..value.encoded_len()]);

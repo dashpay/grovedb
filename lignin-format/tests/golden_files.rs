@@ -389,6 +389,21 @@ fn segment() -> Vec<u8> {
     out
 }
 
+/// The segment the other files name: the committed one, or, while the
+/// files are written, the one the writers write. Its LZ4 streams may differ
+/// from what the writers write today, so the page table and the manifest
+/// take its offsets and length from it.
+fn segment_file() -> Vec<u8> {
+    match writing() {
+        true => segment(),
+        false => committed("segment"),
+    }
+}
+
+fn writing() -> bool {
+    env::var_os("LIGNIN_WRITE_GOLDEN").is_some()
+}
+
 /// Where each block of [`segment`] is: its offset and length.
 fn block_pointers(segment: &[u8]) -> Vec<BlockPointer> {
     let index = SegmentIndex::decode_tail(V1, segment, segment.len() as u64).expect("an index");
@@ -405,7 +420,7 @@ fn block_pointers(segment: &[u8]) -> Vec<BlockPointer> {
 /// delta in segment 310, page 9 was freed, page 12 was created by a delta's
 /// base, and two value-log files are counted.
 fn page_table() -> Checkpoint {
-    let blocks = block_pointers(&segment());
+    let blocks = block_pointers(&segment_file());
     let links = vec![
         Link {
             page: page(7),
@@ -562,7 +577,7 @@ fn manifest() -> Manifest {
             FileKind::Segment,
             310,
             FileState::Sealed,
-            segment().len() as u64,
+            segment_file().len() as u64,
         ),
         live(FileKind::Segment, 311, FileState::Open, 20),
         live(
@@ -605,7 +620,12 @@ fn committed(name: &str) -> Vec<u8> {
 
 #[test]
 fn the_writers_write_the_golden_files() {
-    let write = env::var_os("LIGNIN_WRITE_GOLDEN").is_some();
+    assert_eq!(
+        FormatVersion::CURRENT,
+        V1,
+        "the writers write a new version: add its golden directory and keep v1 decoding (U9)"
+    );
+    let write = writing();
     if write {
         fs::create_dir_all(directory()).expect("the golden directory");
     }
