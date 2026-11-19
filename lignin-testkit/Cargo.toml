@@ -25,4 +25,7 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 lignin-format = { version = "6.1.1", path = "../lignin-format" }
+lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-store = { version = "6.1.1", path = "../lignin-store" }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
 syn = { version = "2", features = ["full", "visit"] }
