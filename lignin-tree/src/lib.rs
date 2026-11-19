@@ -5,6 +5,7 @@
 pub mod bulk;
 pub mod cursor;
 pub mod directory;
+pub mod drop;
 pub mod flat;
 pub mod fragment;
 mod guard;
