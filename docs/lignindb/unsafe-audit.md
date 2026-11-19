@@ -72,7 +72,7 @@ Every unsafe block names the rule it relies on. The types of the file stand for 
 | `Frame::bytes_mut` | unsafe fn | `A4` | The frame's bytes as an exclusive slice. The caller says that it alone reaches them. | `tests::basic::a_miss_is_loaded_and_then_hit` |
 | `Frame::bytes_mut` | block 1 | `A4` | `from_raw_parts_mut` over the same bytes. | `tests::basic::a_miss_is_loaded_and_then_hit` |
 | `Frame::attached` | unsafe fn | `A5` | The attached values, shared. As `bytes`. | `tests::private::attached_values_travel_with_the_copy_and_the_commit` |
-| `Frame::attached` | block 1 | `A5` | A shared reference into the `UnsafeCell`. | `tests::private::attached_values_travel_with_the_copy_and_the_commit` |
+| `Frame::attached` | block 1 | `A5` | A shared reference into the `UnsafeCell`. | `tests::private::attached_values_travel_with_the_copy_and_the_commit`, `tests::basic::threads_read_the_attached_values_of_one_page_at_once` |
 | `Frame::attached_mut` | unsafe fn | `A4` | The attached values, to change. As `bytes_mut`. | `tests::private::attached_values_travel_with_the_copy_and_the_commit` |
 | `Frame::attached_mut` | block 1 | `A4` | An exclusive reference into the `UnsafeCell`. | `tests::private::attached_values_travel_with_the_copy_and_the_commit` |
 | `impl Send for FramePtr` | unsafe impl | `A1` | The pointer is an address. What it points to is used through `FramePtr::frame` only. | `tests::basic::the_handles_of_the_pool_can_go_to_other_threads`, `tests::threads::threads_read_what_was_committed` |
@@ -156,9 +156,10 @@ No block was found that is unsound as the pool uses it. Four things were found i
 What was found in the tests:
 
 5. **A frame's bytes are read before they are written**, by design: a `Blank` is a slice from its first moment. That is sound only because the block and every frame beside it are allocated zeroed. No test read a frame first, so a change to plain `alloc` passed every test and every Miri run. `tests::basic::a_frame_can_be_read_before_anything_is_written_to_it` does now, for a fixed frame and for one beside them, and Miri fails it on memory that was not zeroed.
-6. **One branch was reached by accident only**: taking a dead frame from behind another dead frame (`Arena::take_dead`, block 2) was executed by one deterministic test, which is about something else. `tests::basic::a_dead_frame_is_made_free_while_another_still_waits` is the test for it.
-7. **The counting allocators of nine test targets had no safety comment.** Each has one now (section 5).
-8. **Binaries, integration tests, build scripts and documentation tests are crates of their own**, which a library's `#![forbid(unsafe_code)]` does not reach. The scan of section 2 does.
+6. **The attached values of one page were never read by two threads at once**, which is what A5 allows of them, as of the bytes. Miri sees a reader that does more than read only beside another reader, so a planted fault of that kind (the list handed out to write under a shared access) passed every run. `tests::basic::threads_read_the_attached_values_of_one_page_at_once` reads them from three threads, under the shared latch of a private copy and with no latch once the page is published, and Miri fails it on that fault.
+7. **One branch was reached by accident only**: taking a dead frame from behind another dead frame (`Arena::take_dead`, block 2) was executed by one deterministic test, which is about something else. `tests::basic::a_dead_frame_is_made_free_while_another_still_waits` is the test for it.
+8. **The counting allocators of nine test targets had no safety comment.** Each has one now (section 5).
+9. **Binaries, integration tests, build scripts and documentation tests are crates of their own**, which a library's `#![forbid(unsafe_code)]` does not reach. The scan of section 2 does.
 
 What this audit did not do, and where it is done:
 

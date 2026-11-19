@@ -339,10 +339,25 @@ fn inner_attributes(tokens: &[Placed]) -> Vec<(usize, String)> {
 }
 
 /// Whether an attribute leaves its item out of every build but that of
-/// the tests: `cfg(test)`, or `cfg(all(test, …))`. A condition that only
-/// names the tests (`cfg(not(test))`, `cfg(any(test, …))`) does not.
+/// the tests: `cfg(test)`, or `cfg(all(…))` with `test` among what it asks
+/// for. A condition that only names the tests (`cfg(not(test))`,
+/// `cfg(any(test, …))`) does not.
 fn is_for_tests(attribute: &str) -> bool {
-    attribute == "cfg(test)" || attribute.starts_with("cfg(all(test,")
+    let all = attribute
+        .strip_prefix("cfg(all(")
+        .and_then(|rest| rest.strip_suffix("))"));
+    // The conditions of the `all`, which are parted by the commas that are
+    // inside no other condition.
+    let mut depth = 0;
+    let asks_for_tests = all.is_some_and(|conditions| {
+        conditions
+            .split(|c| {
+                depth += i32::from(c == '(') - i32::from(c == ')');
+                c == ',' && depth == 0
+            })
+            .any(|condition| condition == "test")
+    });
+    attribute == "cfg(test)" || asks_for_tests
 }
 
 /// A module that is written where it is declared: the tokens of its braces,
@@ -1083,6 +1098,19 @@ fn a_way_to_reach_a_frame_is_handed_out_where_the_audit_read_it() {
                       #[cfg(any(test, feature = \"x\"))]\nmod either { fn e() { A(5) } }";
     assert_eq!(count(with_tests, "A("), 4);
     assert_eq!(occurrences(&tokens(with_tests), "A("), 6);
+    for (attribute, for_tests) in [
+        ("cfg(test)", true),
+        ("cfg(all(test,not(loom)))", true),
+        ("cfg(all(not(loom),test))", true),
+        ("cfg(all(not(loom),any(unix,test),feature=))", false),
+        ("cfg(all(not(test),unix))", false),
+        ("cfg(not(test))", false),
+        ("cfg(any(test,unix))", false),
+        ("cfg_attr(test,allow(dead_code))", false),
+        ("test", false),
+    ] {
+        assert_eq!(is_for_tests(attribute), for_tests, "{attribute}");
+    }
 }
 
 fn library_of(source: &str) -> Vec<Placed> {

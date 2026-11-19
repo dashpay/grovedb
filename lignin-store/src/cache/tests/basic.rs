@@ -860,6 +860,47 @@ fn the_handles_of_the_pool_can_go_to_other_threads() {
     .expect("the thread did not panic");
 }
 
+/// The attached values of a page are read by any number of threads at once:
+/// under the shared latch of a private copy, and with no latch once the
+/// page is published (A5). A reader that did anything to the frame's list
+/// of them but read it would do so beside the other readers, and Miri would
+/// report the two.
+#[cfg(not(loom))]
+#[test]
+fn threads_read_the_attached_values_of_one_page_at_once() {
+    fn read_by_three(read: impl Fn() + Sync) {
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| (0..3).for_each(|_| read()));
+            }
+        });
+    }
+
+    let pool = pool(2);
+    let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+    {
+        let mut latch = copy.write().expect("a private copy");
+        content(1, 1, 0).write(&mut latch);
+        latch.attach(name(1), value(b"one"));
+        latch.attach(name(2), value(b"two"));
+    }
+    let latch = copy.read();
+    read_by_three(|| {
+        assert_eq!(latch.attached(name(1)), Some(&b"one"[..]));
+        assert_eq!(latch.attachments().count(), 2);
+        assert_eq!(Content::read(&latch), content(1, 1, 0));
+    });
+    drop(latch);
+
+    let found = pool.install(&copy, version(1)).expect("a commit");
+    read_by_three(|| {
+        assert_eq!(found.attached(name(2)), Some(&b"two"[..]));
+        assert_eq!(found.attachments().count(), 2);
+        assert_eq!(Content::read(&found), content(1, 1, 0));
+    });
+    assert_eq!(pool.attached_bytes(), 6);
+}
+
 /// Two frames that were taken out while readers held them wait together.
 /// The one whose reader goes first is made free, though it waits behind the
 /// other, and the other waits on.
