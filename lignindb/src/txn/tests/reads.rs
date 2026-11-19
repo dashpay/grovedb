@@ -407,6 +407,245 @@ fn a_scope_writes_under_its_own_cursor() {
     world.check_committed();
 }
 
+/// RD6 for the nodes of a Merk: the cursor reads the Merk as the version
+/// of its opening has it, merged in key order with the transaction's nodes
+/// as they are at each step. Commits outside that free and reuse the pages
+/// under it change nothing it shows (T-RD7).
+#[test]
+fn a_merk_cursor_reads_its_version_and_the_transactions_nodes() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(7);
+    let key = |index: usize| format!("{index:04}").into_bytes();
+    let subtree = model::subtree(1);
+    let unit = Unit::data(subtree);
+    world.edit_outside(
+        1,
+        |items| {
+            for index in 0..60 {
+                items.insert(key(index * 2), value(&mut rng, 60));
+            }
+        },
+        &[],
+    );
+
+    // The transaction writes nodes before, between and after the committed
+    // ones, gives one another value and deletes two.
+    let tx = world.begin();
+    world.edit(&tx, 1, |items| {
+        items.insert(b"/first".to_vec(), b"before every committed key".to_vec());
+        items.insert(key(3), b"between two committed keys".to_vec());
+        items.insert(key(5), b"and again".to_vec());
+        items.insert(key(10), b"another value".to_vec());
+        items.remove(&key(12));
+        items.remove(&key(14));
+        items.insert(b"zz".to_vec(), b"after every committed key".to_vec());
+    });
+    let view = tx.model.borrow().view(&world.model.records, unit);
+    let keys: Vec<Vec<u8>> = view.keys().cloned().collect();
+    assert_eq!(keys.len(), 60 + 4 - 2);
+
+    let mut cursor = tx.txn.merk_cursor(subtree).expect("a cursor");
+    let opened = cursor.version();
+    assert_eq!(opened, world.latest());
+    assert!(!cursor.valid());
+    assert!(cursor.node(|node| node.is_none()).expect("no node"));
+    assert!(format!("{cursor:?}").contains("MerkSide"));
+    let shown = |cursor: &mut MerkCursor<'_, '_>, at: Option<usize>| {
+        assert_eq!(cursor.key(), at.map(|at| &keys[at][..]));
+        let Some(at) = at else {
+            return;
+        };
+        let Some(Val::Node(expected)) = view.get(&keys[at]) else {
+            unreachable!("a Merk");
+        };
+        (cursor.node(|node| expected.check(&keys[at], &node.expect("a node")))).expect("a read");
+    };
+    for _ in 0..300 {
+        let target = match rng.below(3) {
+            0 => key(rng.below(125)),
+            1 => keys[rng.below(keys.len())].clone(),
+            _ => vec![b'/' + rng.below(4) as u8, b'0' + rng.below(10) as u8],
+        };
+        let mut at = if rng.chance(50) {
+            cursor.seek(&target).expect("a seek");
+            keys.iter().position(|key| *key >= target)
+        } else {
+            cursor.seek_for_prev(&target).expect("a seek");
+            keys.iter().rposition(|key| *key <= target)
+        };
+        shown(&mut cursor, at);
+        for _ in 0..rng.below(8) {
+            if rng.chance(60) {
+                cursor.next().expect("a step");
+                at = at.and_then(|at| (at + 1 < keys.len()).then_some(at + 1));
+            } else {
+                cursor.prev().expect("a step");
+                at = at.and_then(|at| at.checked_sub(1));
+            }
+            shown(&mut cursor, at);
+        }
+    }
+    // The cursor of another transaction sees the committed Merk.
+    let other = world.begin();
+    let committed = other.model.borrow().view(&world.model.records, unit);
+    let mut theirs = other.txn.merk_cursor(subtree).expect("a cursor");
+    assert_eq!(scan_merk(&mut theirs, &committed, false).len(), 60);
+    drop(theirs);
+
+    // Commits outside, after the cursor was opened: new nodes, another
+    // value, a delete, and then the whole Merk made again four times, which
+    // frees its pages and makes others.
+    let at_open = world.model.records.clone();
+    world.edit_outside(
+        1,
+        |items| {
+            items.insert(key(7), b"outside".to_vec());
+            items.insert(key(20), b"outside".to_vec());
+            items.remove(&key(30));
+        },
+        &[&tx],
+    );
+    for round in 0..4u8 {
+        world.edit_outside(
+            1,
+            |items| {
+                items.clear();
+                for index in 0..90 {
+                    items.insert(key(index), vec![round; 100]);
+                }
+            },
+            &[&tx],
+        );
+    }
+    assert!(world.latest() > opened && cursor.version() == opened);
+    // The cursor still shows the Merk of its opening under the keys the
+    // transaction has not written, and the transaction's nodes.
+    let expected = tx.model.borrow().view(&at_open, unit);
+    assert_eq!(scan_merk(&mut cursor, &expected, false), keys);
+    let mut back = scan_merk(&mut cursor, &expected, true);
+    back.reverse();
+    assert_eq!(back, keys);
+    assert!(
+        tx.txn.stats().overlapped > 0,
+        "it serves its records by key"
+    );
+    // A cursor that is opened now reads the latest version.
+    world.check(&tx);
+
+    // A write under the open cursor is seen when the cursor comes to it.
+    cursor.seek(&key(40)).expect("a seek");
+    assert_eq!(cursor.key(), Some(&key(40)[..]));
+    world.edit(&tx, 1, |items| {
+        items.insert(key(41), b"written under the cursor".to_vec());
+        items.remove(&key(42));
+    });
+    let value = |node: Option<NodeView<'_>>| match node.map(|node| node.value()) {
+        Some(NodeValue::Bytes(bytes)) => Some(bytes.to_vec()),
+        Some(other) => panic!("the value is {other:?}"),
+        None => None,
+    };
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), Some(&key(41)[..]));
+    assert_eq!(
+        cursor.node(value).expect("a read"),
+        Some(b"written under the cursor".to_vec())
+    );
+    // The node it deleted is gone. What comes next is the next key of the
+    // cursor's version or of the transaction's writes: the change set
+    // wrote more nodes than the one it added, those whose links changed.
+    let now = tx.model.borrow().view(&at_open, unit);
+    assert!(!now.contains_key(&key(42)));
+    let after = now.keys().find(|at| **at > key(41)).expect("more nodes");
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), Some(&after[..]), "the deleted node is gone");
+    let mut all = scan_merk(&mut cursor, &now, true);
+    all.reverse();
+    assert_eq!(all, now.keys().cloned().collect::<Vec<_>>());
+    // The node it stands on is deleted, and then everything is rolled
+    // back: the cursor stands on its key and reads what is under it now.
+    cursor.seek(&key(44)).expect("a seek");
+    assert_eq!(cursor.key(), Some(&key(44)[..]));
+    world.edit(&tx, 1, |items| drop(items.remove(&key(44))));
+    assert_eq!(cursor.node(value).expect("a read"), None);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    let at_44 = cursor.node(value).expect("a read");
+    assert_eq!(
+        at_44.map(|value| value.len()),
+        Some(60),
+        "the version's node"
+    );
+    cursor.prev().expect("a step");
+    assert_eq!(cursor.key(), Some(&key(42)[..]), "it is there again");
+    drop(cursor);
+
+    // Through a scope, and not beside one.
+    let scope = tx.txn.scope().expect("no scope is open");
+    let mut inside = scope.merk_cursor(subtree).expect("a cursor");
+    inside.seek_to_last().expect("a seek");
+    assert_eq!(inside.key(), Some(&key(89)[..]));
+    let mut outside = tx.txn.merk_cursor(subtree).expect("a cursor");
+    assert!(matches!(outside.seek_to_first(), Err(TxnError::ScopeOpen)));
+    assert!(matches!(outside.node(|node| node.is_some()), Ok(false)));
+    drop((inside, outside));
+    scope.rollback();
+    world.check(&tx);
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A node the transaction wrote and took back: the cursor that stands on
+/// its key reads no node there, and goes on from the key.
+#[test]
+fn a_merk_cursor_stands_on_a_key_whose_node_was_rolled_back() {
+    let (db, versions) = Db::new(48);
+    let mut world = World::new(&db, &versions);
+    world.edit_outside(
+        2,
+        |items| {
+            items.insert(b"a".to_vec(), b"1".to_vec());
+            items.insert(b"c".to_vec(), b"3".to_vec());
+        },
+        &[],
+    );
+    let subtree = model::subtree(2);
+    // With frames, and served by key after a commit outside met a write.
+    for overlapped in [false, true] {
+        let tx = world.begin();
+        world.write(&tx, vec![put(aux(), b"mine", b"1")]);
+        if overlapped {
+            let outside = OwnedBatch {
+                merks: Vec::new(),
+                records: vec![put(aux(), b"mine", b"2")],
+            };
+            world.write_outside(&outside, &[&tx]);
+        }
+        let mark = tx.txn.mark();
+        let writes = tx.model.borrow().writes.len();
+        world.edit(&tx, 2, |items| {
+            drop(items.insert(b"b".to_vec(), b"uncommitted".to_vec()))
+        });
+        let mut cursor = tx.txn.merk_cursor(subtree).expect("a cursor");
+        cursor.seek(b"b").expect("a seek");
+        assert_eq!(cursor.key(), Some(&b"b"[..]));
+        assert!(cursor.node(|node| node.is_some()).expect("a read"));
+
+        assert!(tx.txn.rewind(mark));
+        tx.model.borrow_mut().writes.truncate(writes);
+        assert_eq!(cursor.key(), Some(&b"b"[..]), "it stands on the key");
+        assert!(cursor.node(|node| node.is_none()).expect("a read"));
+        cursor.next().expect("a step");
+        assert_eq!(cursor.key(), Some(&b"c"[..]));
+        cursor.prev().expect("a step");
+        assert_eq!(cursor.key(), Some(&b"a"[..]), "no node is between them");
+        drop(cursor);
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().overlapped > 0, overlapped);
+    }
+    world.check_committed();
+}
+
 /// T-RD7: a cursor of a transaction, with an empty write set and with a
 /// non-empty one, keeps reading its opening version while commits outside
 /// free the pages under it and make new ones.

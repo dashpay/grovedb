@@ -4,14 +4,21 @@
 use std::{cmp::Ordering, fmt, ops::Bound};
 
 use lignin_format::CommitVersion;
-use lignin_tree::flat::{self, Committed};
+use lignin_store::load::LoadBuffers;
+use lignin_tree::{
+    cursor as tree,
+    flat::{self, Committed},
+    node::{Lease, NodeReader},
+};
 
 use super::{
     error::TxnError,
     frames::stored_key,
-    key::Unit,
+    key::{Subtree, Unit},
+    pages::find,
     path::{FlatReader, Idle, WritePath, IDLE},
-    txn::WriteTxn,
+    txn::{show_committed, WriteTxn},
+    view::NodeView,
     write_set::{Own, WriteSet},
 };
 use crate::snapshot::{OperationGuard, VersionPin};
@@ -20,8 +27,9 @@ use crate::snapshot::{OperationGuard, VersionPin};
 /// (`transactions.md` RD6): an ordered cursor over the records of one unit
 /// as one committed version has them.
 ///
-/// [`FlatSide`] is the one for flat records. The one for the nodes of a
-/// Merk is the ordered cursor of the tree layer (TREE-06, MERK-05).
+/// [`FlatSide`] is the one for flat records, and [`MerkSide`] the one for
+/// the nodes of a Merk. What a side shows under a key is its own to say: a
+/// value, or a node.
 ///
 /// Every call that reads a page is given the guard of the operation it is
 /// made in (PN5). The version is the cursor's, which keeps it pinned from
@@ -47,16 +55,6 @@ pub trait CommittedSide<'s> {
 
     /// The key the side stands on, if it stands on one.
     fn key(&self) -> Option<&[u8]>;
-
-    /// Appends the value of the record under `key` to `out`, and says
-    /// whether the committed version has one. `key` is mostly the key the
-    /// side stands on.
-    fn value(
-        &mut self,
-        guard: &OperationGuard<'s>,
-        key: &[u8],
-        out: &mut Vec<u8>,
-    ) -> Result<bool, TxnError>;
 }
 
 /// The committed flat records of one unit at one version.
@@ -127,7 +125,12 @@ impl<'s> CommittedSide<'s> for FlatSide<'s> {
     fn key(&self) -> Option<&[u8]> {
         self.cursor.key()
     }
+}
 
+impl<'s> FlatSide<'s> {
+    /// Appends the value of the record under `key` to `out`, and says
+    /// whether the committed version has one. `key` is mostly the key the
+    /// side stands on.
     fn value(
         &mut self,
         guard: &OperationGuard<'s>,
@@ -143,6 +146,105 @@ impl<'s> CommittedSide<'s> for FlatSide<'s> {
         })?)
     }
 }
+
+/// The committed nodes of one Merk at one version, in key order: the
+/// ordered cursor of the tree layer ([`lignin_tree::cursor`]), which keeps
+/// the way it came and no page pinned between two calls.
+///
+/// It reads under a lease of its own, taken when it is opened (PN1): its
+/// handles are of the one version the cursor keeps pinned, whatever the
+/// transaction's frames do meanwhile.
+pub struct MerkSide<'s> {
+    path: WritePath<'s>,
+    at: CommitVersion,
+    lease: Lease,
+    cursor: tree::Cursor,
+    buffers: LoadBuffers,
+}
+
+impl fmt::Debug for MerkSide<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MerkSide")
+            .field("at", &self.at)
+            .field("root", &self.cursor.root())
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'s> MerkSide<'s> {
+    /// The reader of the side's version for the operation that holds
+    /// `guard`.
+    fn reader<'g>(&self, guard: &'g OperationGuard<'s>) -> NodeReader<'g, OperationGuard<'s>> {
+        NodeReader::new(self.path.loader, guard, self.lease, self.at)
+    }
+
+    /// Shows `read` the committed node under `key`, or `None` if the
+    /// version has none. `key` is mostly the key the side stands on.
+    fn node<R>(
+        &mut self,
+        guard: &OperationGuard<'s>,
+        key: &[u8],
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        if self.cursor.key() == Some(key) {
+            let reader = self.reader(guard);
+            let node = self.cursor.node(&reader, &mut self.buffers)?;
+            let view = node.as_ref().map(|node| NodeView::cell(node.node(), None));
+            return Ok(read(view));
+        }
+        // The cursor stands on a key that the transaction wrote and has
+        // taken back since: the version's node under it, if it has one, is
+        // found by the key.
+        let mut pages = (self.path).committed_pages(self.at, self.lease, &mut self.buffers);
+        let found = find(&mut pages, self.cursor.root(), key)?;
+        show_committed(&mut pages, found, read)
+    }
+}
+
+impl<'s> CommittedSide<'s> for MerkSide<'s> {
+    fn seek(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.seek(&reader, &mut self.buffers, key)?;
+        Ok(())
+    }
+
+    fn seek_for_prev(&mut self, guard: &OperationGuard<'s>, key: &[u8]) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.seek_for_prev(&reader, &mut self.buffers, key)?;
+        Ok(())
+    }
+
+    fn seek_to_first(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.seek_to_first(&reader, &mut self.buffers)?;
+        Ok(())
+    }
+
+    fn seek_to_last(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.seek_to_last(&reader, &mut self.buffers)?;
+        Ok(())
+    }
+
+    fn next(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.next(&reader, &mut self.buffers)?;
+        Ok(())
+    }
+
+    fn prev(&mut self, guard: &OperationGuard<'s>) -> Result<(), TxnError> {
+        let reader = self.reader(guard);
+        self.cursor.prev(&reader, &mut self.buffers)?;
+        Ok(())
+    }
+
+    fn key(&self) -> Option<&[u8]> {
+        self.cursor.key()
+    }
+}
+
+/// A cursor through a write transaction over the nodes of one Merk.
+pub type MerkCursor<'t, 's> = Cursor<'t, 's, MerkSide<'s>>;
 
 /// Which way a cursor last moved, which says where its committed side
 /// stands: at the first committed key at or after the cursor's key, or at
@@ -204,6 +306,81 @@ impl<'t, 's> Cursor<'t, 's> {
         };
         Self::over(txn, scoped, unit, pin, side)
     }
+
+    /// Appends the value under the key the cursor stands on to `out`, and
+    /// says whether there is one: none if the cursor stands on no key, or
+    /// if the transaction has deleted the record since the cursor came to
+    /// it.
+    pub fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, TxnError> {
+        let Some(key) = &self.key else {
+            return Ok(false);
+        };
+        let guard = self.txn.path().versions().guard();
+        let unit = self.unit;
+        let own = self
+            .txn
+            .with_set(self.scoped, |set| match set.own(unit, key) {
+                Own::Put(value) => {
+                    out.extend_from_slice(value);
+                    Ok(Some(true))
+                }
+                Own::Deleted => Ok(Some(false)),
+                Own::Unwritten => Ok(None),
+                Own::Node(_) => Err(TxnError::Damaged("a Merk node under a cursor of records")),
+            })??;
+        match own {
+            Some(found) => Ok(found),
+            None => self.side.value(&guard, key, out),
+        }
+    }
+}
+
+impl<'t, 's> MerkCursor<'t, 's> {
+    pub(crate) fn merk(
+        txn: &'t WriteTxn<'s>,
+        scoped: bool,
+        subtree: Subtree,
+    ) -> Result<Self, TxnError> {
+        let path = *txn.path();
+        // The root is the one the pinned version has, read under a guard
+        // (PN5). The lease is the cursor's own (PN1).
+        let guard = path.versions().guard();
+        let pin = path.versions().pin();
+        let at = pin.version();
+        let committed = path.committed(&guard, at);
+        let root =
+            (path.directory.committed_root(&committed, &subtree)).map_err(TxnError::Directory)?;
+        let lease = Lease::take();
+        let reader = NodeReader::new(path.loader, &guard, lease, at);
+        let side = MerkSide {
+            path,
+            at,
+            lease,
+            cursor: tree::Cursor::open(&reader, root),
+            buffers: LoadBuffers::new(),
+        };
+        Ok(Self::over(txn, scoped, Unit::data(subtree), pin, side))
+    }
+
+    /// Shows `read` the node under the key the cursor stands on: the
+    /// transaction's own node if it has written the key, and otherwise the
+    /// node of the cursor's version. `None` if the cursor stands on no
+    /// key, or if the transaction has deleted the node since the cursor
+    /// came to it.
+    ///
+    /// `read` runs inside the operation: it must not call the transaction.
+    pub fn node<R>(&mut self, read: impl FnOnce(Option<NodeView<'_>>) -> R) -> Result<R, TxnError> {
+        let Some(key) = &self.key else {
+            return Ok(read(None));
+        };
+        let subtree = self.unit.subtree;
+        let read = match (self.txn).own_node_in(self.scoped, subtree, key, read)? {
+            Ok(shown) => return Ok(shown),
+            Err(read) => read,
+        };
+        let guard = self.txn.path().versions().guard();
+        self.side.node(&guard, key, read)
+    }
 }
 
 impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
@@ -241,33 +418,6 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// The key the cursor stands on.
     pub fn key(&self) -> Option<&[u8]> {
         self.key.as_deref()
-    }
-
-    /// Appends the value under the key the cursor stands on to `out`, and
-    /// says whether there is one: none if the cursor stands on no key, or
-    /// if the transaction has deleted the record since the cursor came to
-    /// it.
-    pub fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, TxnError> {
-        let Some(key) = &self.key else {
-            return Ok(false);
-        };
-        let guard = self.txn.path().versions().guard();
-        let unit = self.unit;
-        let own = self
-            .txn
-            .with_set(self.scoped, |set| match set.own(unit, key) {
-                Own::Put(value) => {
-                    out.extend_from_slice(value);
-                    Ok(Some(true))
-                }
-                Own::Deleted => Ok(Some(false)),
-                Own::Unwritten => Ok(None),
-                Own::Node(_) => Err(TxnError::Damaged("a Merk node under a cursor of records")),
-            })??;
-        match own {
-            Some(found) => Ok(found),
-            None => self.side.value(&guard, key, out),
-        }
     }
 
     /// Goes to the first key at or after `key`.
@@ -415,12 +565,13 @@ fn visible(set: &WriteSet, unit: Unit, key: &[u8], written: bool) -> bool {
     }
 }
 
-impl<C> fmt::Debug for Cursor<'_, '_, C> {
+impl<C: fmt::Debug> fmt::Debug for Cursor<'_, '_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cursor")
             .field("unit", &self.unit)
             .field("version", &self.pin.version())
             .field("key", &self.key)
+            .field("side", &self.side)
             .finish_non_exhaustive()
     }
 }

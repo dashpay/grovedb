@@ -6,7 +6,7 @@ use lignin_format::{FormatError, PageId};
 use lignin_store::{
     alloc::AllocError, cache::CacheError, load::LoadError, values::ValueStoreError,
 };
-use lignin_tree::{flat::FlatError, fragment::FragmentError, node::NodeError};
+use lignin_tree::{cursor::CursorError, flat::FlatError, fragment::FragmentError, node::NodeError};
 
 use super::key::{Subtree, Unit};
 
@@ -171,6 +171,9 @@ pub enum TxnError {
     Fragment(FragmentError),
     /// A tree page was not read.
     Node(NodeError),
+    /// The committed side of a cursor over the nodes of a Merk did not
+    /// move.
+    Cursor(CursorError),
     /// A flat keyspace was not read or not written.
     Flat(FlatError),
     /// The buffer pool refused a private copy.
@@ -208,6 +211,7 @@ impl fmt::Display for TxnError {
             Self::ScopeOpen => f.write_str("another scope of the transaction is open"),
             Self::Fragment(error) => write!(f, "tree pages: {error}"),
             Self::Node(error) => write!(f, "node: {error}"),
+            Self::Cursor(error) => write!(f, "cursor: {error}"),
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
             Self::Cache(error) => write!(f, "buffer pool: {error}"),
             Self::Alloc(error) => write!(f, "page ids: {error}"),
@@ -233,6 +237,7 @@ impl Error for TxnError {
             Self::Batch(error) => Some(error),
             Self::Fragment(error) => Some(error),
             Self::Node(error) => Some(error),
+            Self::Cursor(error) => Some(error),
             Self::Flat(error) => Some(error),
             Self::Cache(error) => Some(error),
             Self::Alloc(error) => Some(error),
@@ -262,6 +267,7 @@ from! {
     BatchError => Batch,
     FragmentError => Fragment,
     NodeError => Node,
+    CursorError => Cursor,
     FlatError => Flat,
     CacheError => Cache,
     AllocError => Alloc,

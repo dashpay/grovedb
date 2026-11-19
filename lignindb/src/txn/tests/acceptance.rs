@@ -183,6 +183,34 @@ fn a_cursor_inside_the_transaction_sees_its_changes_in_key_order() {
 
     // The cursor of another transaction sees none of it.
     assert_eq!(scan(&mut world.begin().txn.cursor(aux), false), committed);
+
+    // The nodes of a Merk, the same way: new nodes between the committed
+    // ones, another value, and a delete.
+    let merk = Unit::data(model::subtree(1));
+    let committed_nodes = (tx.model.borrow()).view(&world.model.records, merk);
+    world.edit(&tx, 1, |items| {
+        items.insert(key(3), b"between two committed nodes".to_vec());
+        items.insert(key(9), b"and again".to_vec());
+        items.insert(key(10), b"another value".to_vec());
+        items.remove(&key(12));
+    });
+    let nodes = tx.model.borrow().view(&world.model.records, merk);
+    let keys: Vec<Vec<u8>> = nodes.keys().cloned().collect();
+    assert_eq!(keys.len(), 70 + 2 - 1);
+    assert!(keys.contains(&key(3)) && !keys.contains(&key(12)));
+    let mut cursor = tx.txn.merk_cursor(merk.subtree).expect("a cursor");
+    let forward = scan_merk(&mut cursor, &nodes, false);
+    assert!(forward.windows(2).all(|pair| pair[0] < pair[1]));
+    assert_eq!(forward, keys, "every node, in key order");
+    let mut back = scan_merk(&mut cursor, &nodes, true);
+    back.reverse();
+    assert_eq!(back, keys);
+    drop(cursor);
+    let other = world.begin();
+    let mut theirs = other.txn.merk_cursor(merk.subtree).expect("a cursor");
+    assert_eq!(scan_merk(&mut theirs, &committed_nodes, false).len(), 70);
+    drop(theirs);
+
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     assert_eq!(scan(&mut world.begin().txn.cursor(aux), false), expected);

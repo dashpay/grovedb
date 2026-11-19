@@ -11,7 +11,8 @@
 //!   ([`RecordWrite`]) and the change sets of Merks ([`MerkWrite`]), whose
 //!   nodes are named by their keys ([`NodePut`]).
 //! - [`NodeView`] is a node as a transaction shows it, and [`Cursor`] walks
-//!   the records of one unit in key order.
+//!   the flat records of one unit, or the nodes of one Merk
+//!   ([`MerkCursor`]), in key order.
 //! - [`KeySet`] is the key set of a commit, which decides whether a commit
 //!   outside a transaction has met one of its writes.
 //!
@@ -33,7 +34,7 @@
 //! | [`WriteTxn::get`], [`WriteTxn::node`] | the transaction's newest write that covers the key, and with none the record of the latest committed state at the moment of the call (RD3) |
 //! | [`WriteTxn::follow`], [`WriteTxn::child`] | the same record, through a node handle while that is good (PN8) |
 //! | [`WriteTxn::committed_get`], [`WriteTxn::committed_node`] | the record of the latest committed state, whatever the transaction wrote there (RD10) |
-//! | [`Cursor`] | the committed records of the version the cursor was opened on, merged with the transaction's writes as they are at each step (RD6) |
+//! | [`Cursor`], from [`WriteTxn::cursor`] for flat records and from [`WriteTxn::merk_cursor`] for the nodes of a Merk | the committed records of the version the cursor was opened on, merged with the transaction's writes as they are at each step (RD6) |
 //!
 //! Each call is one operation (RD4): it takes an operation guard, reads the
 //! latest version once, and reads every committed record at that version.
@@ -173,7 +174,7 @@
 //!
 //! - **A version pin** on its base while it has frames, and none while it
 //!   is idle or serves its records by key. Each cursor has a pin of its
-//!   own.
+//!   own, and a cursor over a Merk a lease of its own beside it.
 //! - **Private copies** of the pages it changed, made or freed. The pool
 //!   cannot evict them, and no page step changes a page under one (PV7).
 //!   A copy of a tree page is asked for with
@@ -234,9 +235,11 @@
 //!
 //! # What is not here
 //!
-//! - **The committed side of a cursor over the nodes of a Merk**
-//!   ([`CommittedSide`]): the ordered cursor of the tree layer (TREE-06,
-//!   MERK-05). The merge with the transaction's writes is the same.
+//! - **The record Merk's callers expect from a cursor**, which is built
+//!   from a node and its children's cells (MERK-05). A cursor over a Merk
+//!   shows the node ([`MerkCursor::node`]): the transaction's own, or the
+//!   one that the ordered cursor of the tree layer
+//!   ([`lignin_tree::cursor`]) stands on at the cursor's version.
 //! - **Dropping or clearing a Merk** (CV9): the unlink is TREE-09's. A
 //!   range of flat records is deleted here, and a flat write among the
 //!   nodes of a Merk is refused ([`BatchError::NotFlat`]).
@@ -263,7 +266,7 @@ mod write_set;
 mod tests;
 
 pub use commits::Commits;
-pub use cursor::{CommittedSide, Cursor, FlatSide};
+pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide};
 pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub use path::{Directory, DirectoryError, FlatReader, FlatWriter, Keyspaces, WritePath};

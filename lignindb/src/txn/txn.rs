@@ -649,18 +649,22 @@ impl<'s> WriteTxn<'s> {
         (path.directory.committed_root(&committed, subtree)).map_err(TxnError::Directory)
     }
 
-    fn node_in<R>(
+    /// Shows `read` the node under `key` as the transaction has it: in its
+    /// frames, which show its whole view, or as the record it wrote. Where
+    /// it serves its records by key and has written none under `key`,
+    /// `read` is handed back: the node is then a committed one.
+    fn own_node<R, F>(
         &self,
-        scoped: bool,
+        state: &mut State<'s>,
+        op: &Op<'s>,
         subtree: Subtree,
         key: &[u8],
         hint: Option<NodeHandle>,
-        read: impl FnOnce(Option<NodeView<'_>>) -> R,
-    ) -> Result<R, TxnError> {
-        let mut state = self.enter(scoped)?;
-        let state = &mut *state;
-        let op = self.begin(state, false)?;
-        let path = &self.path;
+        read: F,
+    ) -> Result<Result<R, F>, TxnError>
+    where
+        F: FnOnce(Option<NodeView<'_>>) -> R,
+    {
         if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             // The frames show the transaction's view (WT3): the node is
             // where a good handle says, or where its key leads to.
@@ -672,38 +676,77 @@ impl<'s> WriteTxn<'s> {
                 }
                 None => {
                     state.keyed += 1;
-                    let root = frames.root(path, &subtree)?;
+                    let root = frames.root(&self.path, &subtree)?;
                     find(&mut frames.tree, root, key)?
                 }
             };
-            return show_framed(&mut frames, at, read);
+            return show_framed(&mut frames, at, read).map(Ok);
         }
         let own = state.set.own(Unit::data(subtree), key);
         if own != Own::Unwritten {
             state.keyed += 1;
         }
         match own {
-            Own::Node(id) => Ok(read(Some(NodeView::record(&state.set, id)))),
-            Own::Deleted => Ok(read(None)),
+            Own::Node(id) => Ok(Ok(read(Some(NodeView::record(&state.set, id))))),
+            Own::Deleted => Ok(Ok(read(None))),
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
-            Own::Unwritten => {
-                let lease = state.lease;
-                let mut pages = path.committed_pages(op.at, lease, &mut state.buffers);
-                let followed = hint.and_then(|handle| follow(&mut pages, lease, handle, key));
-                let at = match followed {
-                    Some(at) => {
-                        state.followed += 1;
-                        Some(at)
-                    }
-                    None => {
-                        state.keyed += 1;
-                        let root = self.committed_root(&op, &subtree)?;
-                        find(&mut pages, root, key)?
-                    }
-                };
-                show_committed(&mut pages, at, read)
-            }
+            Own::Unwritten => Ok(Err(read)),
         }
+    }
+
+    fn node_in<R>(
+        &self,
+        scoped: bool,
+        subtree: Subtree,
+        key: &[u8],
+        hint: Option<NodeHandle>,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        let mut state = self.enter(scoped)?;
+        let state = &mut *state;
+        let op = self.begin(state, false)?;
+        let read = match self.own_node(state, &op, subtree, key, hint, read)? {
+            Ok(shown) => return Ok(shown),
+            Err(read) => read,
+        };
+        let lease = state.lease;
+        let mut pages = (self.path).committed_pages(op.at, lease, &mut state.buffers);
+        let followed = hint.and_then(|handle| follow(&mut pages, lease, handle, key));
+        let at = match followed {
+            Some(at) => {
+                state.followed += 1;
+                Some(at)
+            }
+            None => {
+                state.keyed += 1;
+                let root = self.committed_root(&op, &subtree)?;
+                find(&mut pages, root, key)?
+            }
+        };
+        show_committed(&mut pages, at, read)
+    }
+
+    /// Shows `read` the transaction's own node under `key`, or that it
+    /// deleted the node, if it has a write that covers the key. With none,
+    /// `read` is handed back, and nothing committed is read: a cursor then
+    /// shows the node of its own version (RD6).
+    pub(crate) fn own_node_in<R, F>(
+        &self,
+        scoped: bool,
+        subtree: Subtree,
+        key: &[u8],
+        read: F,
+    ) -> Result<Result<R, F>, TxnError>
+    where
+        F: FnOnce(Option<NodeView<'_>>) -> R,
+    {
+        let mut state = self.enter(scoped)?;
+        let state = &mut *state;
+        let op = self.begin(state, false)?;
+        if state.set.own(Unit::data(subtree), key) == Own::Unwritten {
+            return Ok(Err(read));
+        }
+        self.own_node(state, &op, subtree, key, None, read)
     }
 
     fn committed_node_in<R>(
@@ -947,7 +990,7 @@ fn show_framed<R>(
 }
 
 /// Shows the committed cell at `at`, or no node.
-fn show_committed<R>(
+pub(crate) fn show_committed<R>(
     pages: &mut CommittedPages<'_, '_>,
     at: Option<CellAddress>,
     read: impl FnOnce(Option<NodeView<'_>>) -> R,
@@ -1061,6 +1104,14 @@ macro_rules! reads {
         /// moment, which it keeps pinned.
         pub fn cursor(&self, unit: Unit) -> super::Cursor<'_, 's> {
             super::Cursor::flat(self.txn(), $scoped, unit)
+        }
+
+        /// A cursor over the nodes of the Merk `subtree`, in key order, not
+        /// positioned (RD6). Its committed side is the Merk as the latest
+        /// committed state of this moment has it, which the cursor keeps
+        /// pinned, and it reads that under a lease of its own (PN1).
+        pub fn merk_cursor(&self, subtree: Subtree) -> Result<super::MerkCursor<'_, 's>, TxnError> {
+            super::Cursor::merk(self.txn(), $scoped, subtree)
         }
     };
 }

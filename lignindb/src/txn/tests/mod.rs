@@ -269,6 +269,13 @@ impl<'s> World<'s> {
                 let mut back = scan(&mut tx.txn.cursor(unit), true);
                 back.reverse();
                 assert_eq!(back, records, "{unit}, backwards");
+            } else {
+                let keys: Vec<Vec<u8>> = view.keys().cloned().collect();
+                let mut cursor = tx.txn.merk_cursor(unit.subtree).expect("a cursor");
+                assert_eq!(scan_merk(&mut cursor, &view, false), keys, "{unit}");
+                let mut back = scan_merk(&mut cursor, &view, true);
+                back.reverse();
+                assert_eq!(back, keys, "{unit}, backwards");
             }
         }
         assert_eq!(tx.txn.stats().overlapped, model.met(), "the overlap set");
@@ -312,6 +319,36 @@ fn scan(cursor: &mut Cursor<'_, '_>, back: bool) -> Vec<(Vec<u8>, Vec<u8>)> {
         .expect("a step");
     }
     records
+}
+
+/// The key of every node a cursor over a Merk shows from one end to the
+/// other, each node checked against the record `view` has under its key.
+fn scan_merk(
+    cursor: &mut MerkCursor<'_, '_>,
+    view: &BTreeMap<Vec<u8>, Val>,
+    back: bool,
+) -> Vec<Vec<u8>> {
+    let mut keys = Vec::new();
+    match back {
+        false => cursor.seek_to_first(),
+        true => cursor.seek_to_last(),
+    }
+    .expect("a seek");
+    while let Some(key) = cursor.key().map(<[u8]>::to_vec) {
+        let Some(Val::Node(expected)) = view.get(&key) else {
+            panic!("the cursor shows {key:?}, which is no node of the view");
+        };
+        cursor
+            .node(|shown| expected.check(&key, &shown.expect("a node under the cursor's key")))
+            .expect("the node is read");
+        keys.push(key);
+        match back {
+            false => cursor.next(),
+            true => cursor.prev(),
+        }
+        .expect("a step");
+    }
+    keys
 }
 
 fn flat(value: &[u8]) -> Val {

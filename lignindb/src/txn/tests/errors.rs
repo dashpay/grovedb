@@ -767,6 +767,12 @@ fn every_error_says_what_it_is() {
             expected: page,
         }),
         TxnError::Flat(lignin_tree::flat::FlatError::Freed { page }),
+        TxnError::Cursor(lignin_tree::cursor::CursorError::Node(
+            lignin_tree::node::NodeError::WrongPage {
+                found: page,
+                expected: page,
+            },
+        )),
         TxnError::Cache(lignin_store::cache::CacheError::Latched { page }),
         TxnError::Alloc(lignin_store::alloc::AllocError::Exhausted),
         TxnError::Load(lignin_store::load::LoadError::NoPage {
@@ -780,7 +786,7 @@ fn every_error_says_what_it_is() {
         TxnError::Damaged("a page"),
         TxnError::PendingValue { subtree },
     ];
-    let sourceless = [1usize, 10, 11, 12];
+    let sourceless = [1usize, 11, 12, 13];
     for (at, error) in errors.iter().enumerate() {
         assert_eq!(
             error.source().is_none(),
