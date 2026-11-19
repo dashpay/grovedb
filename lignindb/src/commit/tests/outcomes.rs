@@ -366,6 +366,8 @@ fn a_commit_whose_sync_fails_is_published_and_not_durable() {
 #[test]
 fn a_commit_that_cannot_be_installed_halts_the_session() {
     let (db, versions) = Db::new(64);
+    // The page table of this store is damaged on purpose.
+    db.unchecked();
     let mut world = World::new(&db, &versions);
     let committer = db.committer(&versions);
     // Enough flat records for several leaves, so that a range delete

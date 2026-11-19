@@ -1,8 +1,11 @@
 //! A page store on disk with what a write transaction needs around it that
 //! is not built yet: the open of the engine (TXN-07), reduced to making the
-//! stores, the log and the first commit, and the check of the committed
-//! tree pages (VER-07). The subtree directory is the real one
-//! (`lignin_tree::directory`), and so is the commit (`crate::commit`).
+//! stores, the log and the first commit. The subtree directory is the real
+//! one (`lignin_tree::directory`), and so is the commit (`crate::commit`).
+//!
+//! A store is checked by the physical invariant checker (`crate::verify`)
+//! when it is dropped, in a debug build: [`Db::verify`] is the check, and
+//! the end of this file says when it is left out.
 
 #![allow(dead_code)]
 
@@ -10,7 +13,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
     },
 };
@@ -35,7 +38,10 @@ use lignin_store::{
 };
 use lignin_tree::{
     directory::Directory,
-    drop::{self, Busy, FlatDrop, FlatDrops, FlatReclaimed, Progress, Reclaimed, Reclaimer, Wait},
+    drop::{
+        self, Busy, Column as FlatColumn, FlatDrop, FlatDrops, FlatReclaimed, Progress, Reclaimed,
+        Reclaimer, Wait,
+    },
     flat::{Committed, FlatConfig, FlatPages, FlatTree, Private, StepLog},
     fragment::Layout,
     hash::{HashRules, Refusal},
@@ -47,6 +53,7 @@ use crate::{
     commit::{CommitError, CommitState, Committer, Published},
     snapshot::{ReadPath, Reclaim, Versions},
     txn::{path::Store, Batch, Commits, KeySet, Keyspaces, Subtree, TxnError, WritePath, WriteTxn},
+    verify::{self, Finding, Grove, Options, Place, Report, Rule, Scope},
 };
 
 pub const SIZE: PageSize = PageSize::MIN;
@@ -198,6 +205,13 @@ pub struct Db {
     directory: OnceLock<FlatTree>,
     flat_drops: OnceLock<FlatDrops>,
     used: Mutex<BTreeSet<PageId>>,
+    /// Whether the store is left out of the check that its drop makes.
+    unchecked: AtomicBool,
+    /// The rules that the check of its drop recomputes the hashes by, where
+    /// they are not those of the model of these tests.
+    hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
+    /// Whether the check of its drop recomputes no hash.
+    unhashed: AtomicBool,
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -239,6 +253,11 @@ pub struct Swept {
     /// still there.
     pub waiting: bool,
 }
+
+/// The guard of a check that runs when nothing else does.
+struct AtRest;
+
+impl lignin_tree::OperationGuard for AtRest {}
 
 struct Hook(Arc<Db>);
 
@@ -327,6 +346,11 @@ impl Db {
             directory: OnceLock::new(),
             flat_drops: OnceLock::new(),
             used: Mutex::new(BTreeSet::new()),
+            // A store on files that a test may fail or cut is checked by
+            // the test that knows what it did to them.
+            unchecked: AtomicBool::new(keep.is_none()),
+            hash_rules: Mutex::new(None),
+            unhashed: AtomicBool::new(false),
             _dir: keep,
         });
         let versions = Versions::with_reclaim(CommitVersion::EMPTY, Box::new(Hook(db.clone())));
@@ -418,6 +442,79 @@ impl Db {
         self.commits.record(commit, Default::default());
         versions.publish(commit).expect("the first version");
         drop(lock);
+    }
+
+    /// Commits by hand what `write` does to the flat pages of the latest
+    /// version, as the first commit of a store is made: for a test that
+    /// writes what no write transaction would. Nothing else commits
+    /// meanwhile, and `write` gives no value out of line.
+    pub fn commit_flat(
+        &self,
+        versions: &Versions,
+        write: impl FnOnce(&mut crate::txn::FlatWriter<'_, '_>),
+    ) -> CommitVersion {
+        let guard = versions.guard();
+        let base = self.committed(&guard, versions.latest());
+        let mut pages = Private::new(base, &self.pool, WritePath::next_owner(), &self.ids);
+        write(&mut pages);
+
+        let lock = self.committing.lock();
+        let counts = self.values.step().expect("the counts");
+        let at = self.log.next_group().expect("a place");
+        let commit = at.version();
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(commit, at.address(), &mut bytes).expect("a group");
+        pages.log_values(&mut group).expect("no value");
+        let mut changed = BTreeSet::new();
+        let written: BTreeSet<PageId> = pages.written().collect();
+        let freed: BTreeSet<PageId> = pages.freed().collect();
+        for page in written.union(&freed) {
+            if freed.contains(page) {
+                group.freed(*page).expect("a freed page");
+            } else if pages.log_page(*page, &mut group).expect("a run") {
+                changed.insert(*page);
+            }
+        }
+        assert!(pages.released().is_empty(), "a value was released");
+        group.finish();
+        let appended = self.log.append_group(&at, &bytes).expect("it is appended");
+        (self.write_back(versions))
+            .committed(commit, appended.at, &bytes)
+            .expect("write-back is told");
+        let parts = pages.into_parts();
+        for (copy, created) in parts.written {
+            let page = copy.page();
+            if !changed.contains(&page) {
+                self.pool.discard(&copy).expect("it is discarded");
+                continue;
+            }
+            drop(self.pool.install(&copy, commit).expect("it installs"));
+            if created {
+                self.ids.publish(page).expect("it is private");
+                locked(&self.used).insert(page);
+            }
+        }
+        for copy in parts.freed {
+            let page = copy.page();
+            self.pool.discard(&copy).expect("it is discarded");
+            match self
+                .table
+                .push(page, lignin_store::table::Link::free(commit))
+            {
+                Ok(()) | Err(lignin_store::table::LinkError::AlreadyFree) => {}
+                Err(error) => panic!("the free link of {page}: {error}"),
+            }
+            self.pool.free(page, commit).expect("it is freed");
+            self.ids.free(page, commit).expect("it is live");
+        }
+        for page in parts.unused {
+            self.ids.release(page).expect("it is private");
+        }
+        drop(counts);
+        self.commits.record(commit, Default::default());
+        versions.publish(commit).expect("the next version");
+        drop(lock);
+        commit
     }
 
     pub fn keyspaces(&self) -> Keyspaces {
@@ -891,6 +988,143 @@ impl Db {
     /// The oldest pinned version, as a reclaimer is told.
     pub fn oldest_pin(&self, versions: &Versions) -> CommitVersion {
         versions.oldest_pin()
+    }
+
+    /// Runs the physical invariant checker (`crate::verify`) on the
+    /// version `at` of this store, with `rules` to recompute the hashes by,
+    /// or none of them with `None`.
+    ///
+    /// With [`Scope::Still`] the caller vouches that nothing writes to the
+    /// store meanwhile and that `at` is its latest version.
+    pub fn verify(
+        &self,
+        at: CommitVersion,
+        scope: Scope,
+        rules: Option<&mut dyn HashRules>,
+    ) -> Report {
+        self.verify_with(at, scope, rules, None)
+    }
+
+    /// As [`Self::verify`], for a store that keeps the pages of its lazy
+    /// range deletes in `flat_drops`.
+    pub fn verify_with(
+        &self,
+        at: CommitVersion,
+        scope: Scope,
+        rules: Option<&mut dyn HashRules>,
+        flat_drops: Option<FlatDrops>,
+    ) -> Report {
+        let keyspaces = self.keyspaces();
+        let columns = [
+            keyspaces.data,
+            keyspaces.aux,
+            keyspaces.roots,
+            keyspaces.meta,
+        ]
+        .map(|tree| FlatColumn { tree, lead: &[] });
+        let store = verify::Store {
+            loader: self.loader(),
+            table: &self.table,
+            segments: &self.segments,
+            values: &self.values,
+            page_size: SIZE,
+            ids: Some(&self.ids),
+            grove: Grove::Directory {
+                tree: self.directory(),
+                columns: &columns,
+            },
+            flat_drops,
+            flat: &[],
+            values_counted: true,
+        };
+        verify::check(&store, &AtRest, Options::new(at, scope), rules)
+    }
+
+    /// Runs the checker on the latest version of this store, which is
+    /// still, with the hash rules of the model of these tests.
+    pub fn verify_still(&self) -> Report {
+        let calls = AtomicU64::new(0);
+        self.verify(
+            self.commits.newest(),
+            Scope::Still,
+            Some(&mut Rules(&calls)),
+        )
+    }
+
+    /// Leaves the store out of the check that its drop makes: for a test
+    /// that damages its store, or leaves it in the middle of something.
+    pub fn unchecked(&self) {
+        self.unchecked.store(true, Ordering::Relaxed);
+    }
+
+    /// The rules that the check at the drop of this store recomputes the
+    /// hashes by: for a store whose nodes were not written with the hashes
+    /// of the model of these tests ([`Rules`]).
+    pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
+        *locked(&self.hash_rules) = Some(rules);
+    }
+
+    /// Has the check at the drop of this store recompute no hash: for a
+    /// test that states hashes which no rule makes.
+    pub fn unhashed(&self) {
+        self.unhashed.store(true, Ordering::Relaxed);
+    }
+
+    /// The findings of `report` that say this store is unsound.
+    ///
+    /// One finding is the fixture's own doing and is left out. The Merks
+    /// that every store of the tests has from its first commit stand alone
+    /// ([`ENTERED`]): their entries name no host, and tests let a node host
+    /// one of them all the same, which an engine never does
+    /// ([`Rule::HostUnnamed`]).
+    pub fn unsound<'r>(&self, report: &'r Report) -> Vec<&'r Finding> {
+        let stands_alone = |finding: &Finding| match finding.place {
+            Place::Merk(prefix) if finding.rule == Rule::HostUnnamed => {
+                prefix[0] < ENTERED && prefix == [prefix[0]; 32]
+            }
+            _ => false,
+        };
+        (report.findings.iter())
+            .filter(|finding| !stands_alone(finding))
+            .collect()
+    }
+}
+
+/// The physical invariant checker runs after every test, in a debug build:
+/// a store that is dropped is still, and is checked at its latest version.
+///
+/// It is left out for a store that a test took out ([`Db::unchecked`]), for
+/// one on files that the test chose ([`Db::on`] with no directory to keep),
+/// and where the test is failing already. The hashes are recomputed by the
+/// rules that were given ([`Db::check_hashes_by`]), or not at all
+/// ([`Db::unhashed`]). With none given, the tests of this crate use the
+/// rules of their model ([`Rules`]), and the tests of another crate, whose
+/// nodes have the hashes of their own rules, have no hash recomputed. What
+/// counts as unsound is [`Db::unsound`].
+#[cfg(debug_assertions)]
+impl Drop for Db {
+    fn drop(&mut self) {
+        if std::thread::panicking() || self.unchecked.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.keyspaces.get().is_none() || self.directory.get().is_none() {
+            return;
+        }
+        let at = self.commits.newest();
+        let calls = AtomicU64::new(0);
+        let mut model = Rules(&calls);
+        let mut given = locked(&self.hash_rules).take();
+        let rules: Option<&mut dyn HashRules> = match &mut given {
+            _ if self.unhashed.load(Ordering::Relaxed) => None,
+            Some(rules) => Some(rules.as_mut()),
+            None if cfg!(test) => Some(&mut model),
+            None => None,
+        };
+        let report = self.verify(at, Scope::Still, rules);
+        assert!(
+            self.unsound(&report).is_empty() && report.more_findings == 0,
+            "the store of a test is left unsound at version {at}:\n{report}"
+        );
     }
 }
 

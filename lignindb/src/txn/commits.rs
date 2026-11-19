@@ -105,6 +105,14 @@ impl Commits {
         inner.prune();
     }
 
+    /// The newest version whose key set was recorded, or the version the
+    /// database had when these were made: the latest version, once the
+    /// commit that recorded it has published it.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn newest(&self) -> CommitVersion {
+        self.lock().newest
+    }
+
     /// How many key sets are kept.
     pub fn kept(&self) -> usize {
         self.lock().sets.len()

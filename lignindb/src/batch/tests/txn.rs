@@ -35,6 +35,7 @@ struct Store {
 impl Store {
     fn new() -> Self {
         let (db, versions) = Db::new(256);
+        db.check_hashes_by(Box::new(super::TestRules));
         Self { db, versions }
     }
 
