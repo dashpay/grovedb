@@ -242,8 +242,13 @@ impl Run<'_, '_, '_> {
         }
         if let Some(leaf) = page.leaf() {
             for (slot, (_, value)) in leaf.iter().enumerate() {
+                // The value of every record is read here, whatever reaches
+                // its leaf: a keyspace, the record of a range delete, or
+                // nothing.
                 if let Some(value) = out_of_line(value) {
-                    self.count_value(value, Place::FlatEntry { page: id, slot }, frame);
+                    let holder = Place::FlatEntry { page: id, slot };
+                    self.count_value(value, holder, frame);
+                    self.check_value(value, id, holder);
                 }
             }
         }
@@ -330,7 +335,7 @@ impl Run<'_, '_, '_> {
 
 /// The place of the value that a record of a flat leaf holds out of line,
 /// if it holds one.
-pub(super) fn out_of_line(value: FlatValue<'_>) -> Option<ValuePlace> {
+fn out_of_line(value: FlatValue<'_>) -> Option<ValuePlace> {
     let FlatValue::OutOfLine(bytes) = value else {
         return None;
     };

@@ -38,7 +38,7 @@ use crate::{
         },
         Column,
     },
-    verify::Rule,
+    verify::{Place, Rule},
 };
 
 /// One corruption: what it is, the change that makes it, and the rule
@@ -1074,6 +1074,64 @@ const WHAT_IS_LEFT: &[Injection] = &[
         },
     ),
 ];
+
+/// A flat leaf that nothing reaches is a finding, and the values of its
+/// records are read all the same: both are reported for the one leaf.
+#[test]
+fn a_value_in_a_flat_leaf_that_nothing_reaches_is_read() {
+    let store = plant();
+    store.db.unchecked();
+    {
+        let mut world = World::new(&store.db, &store.versions);
+        let tx = world.begin();
+        let aux = model::unit(Column::Aux, FLAT);
+        let many = (0..600).map(|index| put(aux, &key(index), &[index as u8; 1100]));
+        world.write(&tx, many.collect());
+        world.commit(tx, &[]);
+    }
+    write_back(&store.db, &store.versions);
+    assert!(store.check().is_sound());
+
+    // The root of the keyspace is a branch over leaves. One leaf whose
+    // records hold values out of line is taken out of it: the branch names
+    // the leaf beside it in its place.
+    let root = store.db.keyspaces().aux.root();
+    let children: Vec<PageId> = {
+        let frame = store.frame(root);
+        let branch = FlatPage::decode(&frame, FRAME_FORMAT).expect("a flat page");
+        let branch = branch.branch().expect("the keyspace has grown a branch");
+        assert_eq!(branch.level(), 1);
+        (0..=branch.len())
+            .map(|index| branch.child(index).expect("a child"))
+            .collect()
+    };
+    let holds_places = |page: &PageId| {
+        let frame = store.frame(*page);
+        let leaf = FlatPage::decode(&frame, FRAME_FORMAT).expect("a flat page");
+        (leaf.leaf()).is_some_and(|leaf| leaf.iter().any(|(_, value)| !value.is_inline()))
+    };
+    let at = (1..children.len())
+        .find(|at| holds_places(&children[*at]))
+        .expect("a leaf with values out of line");
+    let lost = children[at];
+    store.rebuild_branch(root, |children, _| children[at] = children[at - 1]);
+    let mut slot = 0;
+    store.rebuild_leaf(lost, |entries| {
+        slot = entries.iter().position(|entry| entry.2).expect("a place");
+        let pointer = ValuePointer::decode(entries[slot].1[..].try_into().expect("16 bytes"));
+        entries[slot].1 = moved(pointer.expect("a pointer")).encode().to_vec();
+    });
+
+    let report = store.check();
+    let unreached = (report.findings.iter()).any(|finding| {
+        finding.rule == Rule::FlatPageUnreached && finding.place == Place::Page(lost)
+    });
+    assert!(unreached, "{report}");
+    let place = Place::FlatEntry { page: lost, slot };
+    let unread = (report.findings.iter())
+        .any(|finding| finding.rule == Rule::ValueUnreadable && finding.place == place);
+    assert!(unread, "{report}");
+}
 
 #[test]
 fn every_corruption_of_the_cells_is_found() {

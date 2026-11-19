@@ -61,19 +61,25 @@
 //! with nothing that leads to them. They are in no state and no read
 //! returns them. Only a walk of every page finds them, and this is that
 //! walk: [`Unreached`] says how many there are, how much room they take and
-//! where the first of them are. They are not a finding, because nothing in
-//! the pages tells them from what a reclaiming leaves while it runs.
+//! where the first of them are. That nothing reaches a cell is no finding,
+//! because nothing in the pages tells such a cell from what a reclaiming
+//! leaves while it runs.
 //!
-//! One thing about them is a finding: a cell that nothing reaches and that
-//! names a cell in use gives that cell a second stored address
-//! ([`Rule::CellNamedTwice`]).
+//! What such a cell holds can still be a finding, as for any other cell:
+//! one that names a cell in use gives that cell a second stored address
+//! ([`Rule::CellNamedTwice`]), and a value pointer in it is read like every
+//! other.
 //!
 //! The cells that a dropped Merk left and that its record still leads to
-//! are walked as a tree of their own. Their addresses, keys, fragments and
-//! values are checked, and their hashes are not: they are no state. The
-//! values are, because the reclaimer releases the pointer it finds in a
-//! cell it takes out, and so are those of the cells that nothing reaches
-//! and of the flat pages that a range delete left.
+//! are walked as a tree of their own. Their addresses, keys and fragments
+//! are checked, and their hashes are not: they are no state.
+//!
+//! **Every value out of line is read**, whatever holds its place: a cell in
+//! use, a cell that a dropped Merk left, a cell that nothing reaches, and a
+//! record of any flat leaf of the version, in a keyspace, left by a range
+//! delete, or reached by nothing. The reclaimer releases the pointer it
+//! finds in what it takes out, and a pointer that nothing reaches stays
+//! counted as live.
 //!
 //! # What is not checked
 //!
