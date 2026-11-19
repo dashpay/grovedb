@@ -1568,8 +1568,7 @@ fn write_stale<'s>(
 }
 
 /// Checks that `tx` shows the stale hashes of `marks` and no other, for
-/// every node of the Merk 1 that it wrote, and returns how many nodes have
-/// one.
+/// every node it reads in the Merk 1, and returns how many nodes have one.
 fn assert_stale(world: &World<'_>, tx: &Tx<'_>, marks: &Marks) -> usize {
     for key in items(world, tx, 1).into_keys() {
         let read = |view: Option<NodeView<'_>>| {
@@ -1615,9 +1614,9 @@ fn a_rollback_to_a_savepoint_gives_back_the_stale_hashes_it_had() {
     let saved = marks.clone();
     set.set(&tx);
 
-    // After the savepoint more nodes are written with stale hashes, some of
-    // the first are written again with every hash made, and pages are cut,
-    // so marks are carried with their cells.
+    // After the savepoint more nodes are written with stale hashes, and
+    // the nodes whose links change with them are written again with every
+    // hash made: two of the first twelve by name, and their ancestors.
     write_stale(&world, &tx, &mut marks, &second, |items| {
         for node in 0..60 {
             items.insert(key(1_000 + node), value(&mut rng, 150));
@@ -1640,7 +1639,8 @@ fn a_rollback_to_a_savepoint_gives_back_the_stale_hashes_it_had() {
         );
         items.remove(&first[7]);
     });
-    assert_ne!(assert_stale(&world, &tx, &marks), stale);
+    assert_ne!(marks, outer);
+    assert_stale(&world, &tx, &marks);
     set.roll_back(&world, &tx);
     assert_eq!(assert_stale(&world, &tx, &outer), stale);
 

@@ -37,7 +37,8 @@
 //!   after it is there again, with every Merk below it and the flat
 //!   records beside them (CV9); one that was cleared has its nodes; one
 //!   that was entered is entered no more, and a write to it is refused. An
-//!   enter is no write of the write set and is taken back like one.
+//!   enter writes no record, but it is a part of its operation in the
+//!   write set and is cut with it.
 //! - **The hashes that were stale at the savepoint are stale, and no
 //!   other.** No copy of the marks is kept at a savepoint: a node the
 //!   remaining writes left stale is marked when its frame is made again,
