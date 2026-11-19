@@ -310,9 +310,10 @@ type BilledNode<L, M> = ((L, Option<NodeWriteCost>), (M, Option<NodeWriteCost>))
 struct Billed<L, M> {
     lignin: L,
     mirror: M,
-    /// How many nodes the replay has written and removed so far, which is
-    /// what the next one's cost is chosen by.
+    /// How many nodes the replay has written so far, which the cost of the
+    /// next written node is chosen by.
     written: u64,
+    /// The same for the nodes it has removed.
     removed: u64,
     uncosted_removals: u64,
 }
@@ -355,7 +356,9 @@ impl<L: NodeChangeSet, M: NodeChangeSet> Billed<L, M> {
     ) -> Result<(), Error> {
         assert!(unbilled.is_none(), "the replay bills no node itself");
         self.lignin.put_node(key, lignin.0, lignin.1)?;
-        self.mirror.put_node(key, mirror.0, mirror.1)
+        (self.mirror.put_node(key, mirror.0, mirror.1))
+            .expect("the mirror takes the put LigninDB took");
+        Ok(())
     }
 
     fn delete_node(&mut self, key: &[u8], unbilled: Option<KeyValueStorageCost>) {

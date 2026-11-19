@@ -343,9 +343,10 @@ fn mark_charged(charged: &mut Charged, reads: &[(OperationCost, String)]) {
 /// the root hash. Then, of each of the four `keys`, the reads by key and
 /// the query of a branch.
 ///
-/// A read is charged the fetches of the nodes no read before it loaded.
-/// So the reads of the tree are made in another order with every `turn`,
-/// and each of them is the first read of a Merk in one turn of sixteen.
+/// A read that walks the tree is charged the fetches of the nodes no read
+/// before it loaded. So the reads of the tree are made in another order
+/// with every `turn`, and each of them is the first read of a Merk in one
+/// turn of sixteen.
 fn read_as_a_client<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     keys: &[Vec<u8>; 4],
@@ -400,7 +401,7 @@ fn read_as_a_client<'db, S: NodeStore<'db>>(
     let cost_fn = VALUE_DEFINED_COST;
     for (n, key) in keys.iter().enumerate() {
         let cached = n.is_multiple_of(2);
-        reads.extend([
+        let of_the_key: [_; KEY_READS] = [
             told(merk.get(key, cached, cost_fn, grove_version)),
             told(merk.exists(key, cost_fn, grove_version)),
             told(merk.exists_by_traversing_tree(key, cost_fn, grove_version)),
@@ -410,7 +411,8 @@ fn read_as_a_client<'db, S: NodeStore<'db>>(
             told(merk.get_kv_hash(key, cached, cost_fn, grove_version)),
             told(merk.get_value_and_value_hash(key, !cached, cost_fn, grove_version)),
             told(merk.branch_query(key, 2, grove_version)),
-        ]);
+        ];
+        reads.extend(of_the_key);
     }
     reads
 }
