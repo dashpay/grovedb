@@ -21,7 +21,7 @@ use super::{
     record_len, refused, LigninHost, LigninSubtree, LigninWriter, MODEL,
 };
 use crate::{
-    cost_model::{BatchCharge, ImmediateBatchCharge, Keyspace},
+    cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
     merk::defaults::ROOT_KEY_KEY,
     store::{NodeChange, NodeChangeSet, NodeWriteCost},
     tree::TreeNode,
@@ -33,7 +33,9 @@ use crate::{
 #[derive(Debug)]
 pub struct PreparedNode {
     node: NodeWrite,
-    record_len: usize,
+    /// The record length the node's put is charged by (`cost-model.md` N1),
+    /// or why the node has none.
+    record_len: Result<usize, Error>,
 }
 
 fn link_write(link: &Link) -> LinkWrite {
@@ -67,7 +69,7 @@ fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
             hint: None,
             hosted: None,
         },
-        record_len: node.encoding_length(),
+        record_len: cost_model::node_record_len(MODEL, node),
     }
 }
 
@@ -134,18 +136,22 @@ impl LigninChangeSet {
 
     /// A change set of one node, written outside a commit of its Merk. The
     /// root of the Merk is the node it was.
-    pub(super) fn of_node(subtree: LigninSubtree, node: &TreeNode, change: NodeChange) -> Self {
+    pub(super) fn of_node(
+        subtree: LigninSubtree,
+        node: &TreeNode,
+        change: NodeChange,
+    ) -> Result<Self, Error> {
         let mut change_set = Self::new(subtree, false);
         let PreparedNode { node, record_len } = prepare(node, change);
         change_set.nodes.push((
             node,
             PutSizes {
-                record_len,
+                record_len: record_len?,
                 children: None,
                 cost: None,
             },
         ));
-        change_set
+        Ok(change_set)
     }
 
     /// A change set of one record that is no node, written or removed with
@@ -272,6 +278,7 @@ impl NodeChangeSet for LigninChangeSet {
             mut node,
             record_len,
         } = prepared;
+        let record_len = record_len?;
         // The record key of the write is the key Merk puts the node under.
         node.key = key.to_vec();
         let (children, cost) = match cost {

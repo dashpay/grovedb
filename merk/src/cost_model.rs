@@ -22,15 +22,28 @@ pub use grovedb_costs::cost_model::{
 };
 use grovedb_version::version::GroveVersion;
 
-use crate::{tree::TreeNode, Error};
+use crate::{
+    tree::{AggregateData, TreeNode},
+    Error, Link, TreeFeatureType,
+};
+
+/// The version of the storage layer's cost rules that a subtree handle
+/// charges by.
+///
+/// A handle is opened with no grove version, on every engine: neither the
+/// storage contexts of `grovedb-storage` nor the handles of
+/// [`store::lignin`](crate::store) are given one, and most operations of a
+/// [`NodeStore`](crate::store::NodeStore) take none. So a handle charges by
+/// one version, this one, and that is right while
+/// [`storage_cost_model`] gives it for every grove version. A grove version
+/// that charges by other storage rules has to reach the handles first.
+pub const HANDLE_COST_MODEL: StorageCostModel = StorageCostModel::V0;
 
 /// The version of the storage layer's cost rules that `grove_version`
 /// charges by.
 ///
-/// Grove versions 1 to 5 charge by the first. The storage contexts of
-/// `grovedb-storage` are opened with no grove version and charge by the
-/// first as well, so a grove version that is given another has to reach
-/// them too.
+/// Grove versions 1 to 5 charge by the first, which is the one a handle
+/// charges by ([`HANDLE_COST_MODEL`]).
 pub fn storage_cost_model(_grove_version: &GroveVersion) -> StorageCostModel {
     StorageCostModel::V0
 }
@@ -61,6 +74,52 @@ pub fn node_record_len(model: StorageCostModel, node: &TreeNode) -> Result<usize
         feature_len,
         link_len(true)?,
         link_len(false)?,
+    ))
+}
+
+/// The record length of a node that a store holds as its parts and not as
+/// a record: the number of bytes Merk's record of the node takes, with
+/// nothing encoded (`cost-model.md` N1).
+///
+/// `value_len` is the length of the node's value. `left_child` and
+/// `right_child` are, for each child, the length of its key and the
+/// aggregate of the subtree under it, which is all of a link that its
+/// length depends on.
+///
+/// The feature and the aggregates are measured by Merk's own encoders, as
+/// in [`node_record_len`], so a kind Merk gains is measured as Merk encodes
+/// it. A link encodes the key of its child after one length byte, so its
+/// length is that of a link to a child with an empty key and the length of
+/// the key.
+pub fn node_record_len_from_sizes(
+    model: StorageCostModel,
+    value_len: usize,
+    feature: &TreeFeatureType,
+    left_child: Option<(u8, AggregateData)>,
+    right_child: Option<(u8, AggregateData)>,
+) -> Result<usize, Error> {
+    let feature_len = feature.encoding_length().map_err(Error::EdError)?;
+    let link_len = |child: Option<(u8, AggregateData)>| {
+        child
+            .map(|(key_len, aggregate_data)| {
+                let keyless = Link::Reference {
+                    hash: [0; 32],
+                    child_heights: (0, 0),
+                    key: Vec::new(),
+                    aggregate_data,
+                };
+                keyless
+                    .encoding_length()
+                    .map(|keyless_len| usize::from(key_len) + keyless_len)
+                    .map_err(Error::EdError)
+            })
+            .transpose()
+    };
+    Ok(model.node_record_len(
+        value_len,
+        feature_len,
+        link_len(left_child)?,
+        link_len(right_child)?,
     ))
 }
 
@@ -185,6 +244,69 @@ mod tests {
     fn every_grove_version_charges_by_the_first_storage_rules() {
         for grove_version in GROVE_VERSIONS {
             assert_eq!(storage_cost_model(grove_version), StorageCostModel::V0);
+        }
+    }
+
+    #[test]
+    fn a_handle_charges_by_the_rules_of_every_grove_version() {
+        for grove_version in GROVE_VERSIONS {
+            assert_eq!(storage_cost_model(grove_version), HANDLE_COST_MODEL);
+        }
+    }
+
+    fn sizes_of(link: &Option<Link>) -> Option<(u8, AggregateData)> {
+        link.as_ref()
+            .map(|link| (link.key().len() as u8, link.aggregate_data()))
+    }
+
+    #[test]
+    fn the_record_length_from_sizes_is_the_length_of_the_record_merk_writes() {
+        let all = features();
+        for (index, feature) in all.iter().enumerate() {
+            let other = all[(index * 7 + 3) % all.len()];
+            for (left, right) in [
+                (None, None),
+                (Some(link(0, other)), None),
+                (None, Some(link(255, *feature))),
+                (Some(link(32, *feature)), Some(link(1, other))),
+            ] {
+                for value_len in [0, 1, 200, 70_000] {
+                    let node = node(value_len, *feature, left.clone(), right.clone());
+                    let from_sizes = node_record_len_from_sizes(
+                        MODEL,
+                        value_len,
+                        feature,
+                        sizes_of(&left),
+                        sizes_of(&right),
+                    )
+                    .expect("sizes Merk encodes");
+                    assert_eq!(from_sizes, node.encode().len(), "{feature:?}");
+                    assert_eq!(
+                        from_sizes,
+                        node_record_len(MODEL, &node).expect("a node Merk encodes"),
+                        "{feature:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_link_is_as_long_as_its_childs_key_whatever_the_key_holds() {
+        for feature in features() {
+            for key_len in 0..=u8::MAX {
+                let child = link(usize::from(key_len), feature);
+                let from_sizes = node_record_len_from_sizes(
+                    MODEL,
+                    3,
+                    &BasicMerkNode,
+                    sizes_of(&Some(child.clone())),
+                    None,
+                )
+                .expect("sizes Merk encodes");
+                let node = node(3, BasicMerkNode, Some(child), None);
+                assert_eq!(from_sizes, node.encode().len(), "{feature:?}, {key_len}");
+            }
         }
     }
 

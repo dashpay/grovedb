@@ -1,3 +1,5 @@
+mod cost;
+
 use std::{
     collections::BTreeMap,
     sync::{
