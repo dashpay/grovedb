@@ -36,6 +36,28 @@ fn cost_of(lines: &[String]) -> &str {
         .expect("a step has a cost")
 }
 
+/// The fields in which two cost lines differ: the name of each, and by how
+/// much the candidate's number is above the reference's.
+fn fields_apart(reference: &str, candidate: &str) -> Vec<(String, i128)> {
+    let fields = |line: &str| -> Vec<(String, String)> {
+        line.split_whitespace()
+            .filter_map(|field| field.split_once('='))
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    };
+    let (reference, candidate) = (fields(reference), fields(candidate));
+    assert_eq!(reference.len(), candidate.len());
+    reference
+        .into_iter()
+        .zip(candidate)
+        .filter(|(was, is)| was != is)
+        .map(|((name, was), (_, is))| {
+            let number = |value: &str| value.parse::<i128>().unwrap_or(i128::MIN / 2);
+            (name, number(&is) - number(&was))
+        })
+        .collect()
+}
+
 #[test]
 fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
     // Two defects, each in about one write of 4,500: of the 185,138 writes
@@ -43,10 +65,10 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
     // for the records they delete without a cost, which are read to learn
     // what the deletes free.
     let faults = [
-        (SEEDED_FAULT, "added=71 ", "added=72 "),
-        (Fault::LoadedByte { when_loaded: 413 }, "loaded=", "loaded="),
+        (SEEDED_FAULT, "added"),
+        (Fault::LoadedByte { when_loaded: 413 }, "loaded"),
     ];
-    for (fault, was, is) in faults {
+    for (fault, field) in faults {
         let scratch = tempfile::tempdir().expect("a directory");
         let started = Instant::now();
         let summary = fuzz(
@@ -62,7 +84,8 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
         let finding = summary
             .finding
             .unwrap_or_else(|| panic!("{fault} was not found within a minute"));
-        let (shrunk, shrinking) = finding.shrunk.as_ref().expect("the stream is shrunk");
+        assert_eq!(finding.not_shrunk, None);
+        let shrunk = finding.shrunk.as_ref().expect("the stream is shrunk");
         println!(
             "{fault}: found after {:.1} s in case {} at step {} of {}; {} steps were compared \
              before it; shrunk to {} operations in {} runs and {:.1} s; {:.1} s in all",
@@ -73,52 +96,25 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
             summary.progress.tally.steps,
             shrunk.case.ops.len(),
             shrunk.runs,
-            shrinking.as_secs_f64(),
+            shrunk.took.as_secs_f64(),
             started.elapsed().as_secs_f64(),
         );
         assert!(finding.after < A_MINUTE, "found after {:?}", finding.after);
-        // A cost, and nothing else: the root hash, the result and the
-        // proofs of the step are the same.
-        assert_eq!(finding.divergence.parts, [Part::Cost]);
-        let (reference, candidate) = (
-            cost_of(&finding.divergence.reference),
-            cost_of(&finding.divergence.candidate),
-        );
-        assert!(reference.contains(was), "{reference}");
-        assert!(candidate.contains(is), "{candidate}");
-        assert_eq!(
-            one_field_one_apart(reference, candidate),
-            Some(1),
-            "{reference} | {candidate}"
-        );
+        // A cost and nothing else: the root hash, the result and the proofs
+        // of the step are the same. And of the cost one field, by one byte.
+        for divergence in [&finding.divergence, &shrunk.divergence] {
+            assert_eq!(divergence.parts, [Part::Cost]);
+            let apart = fields_apart(
+                cost_of(&divergence.reference),
+                cost_of(&divergence.candidate),
+            );
+            assert_eq!(apart, [(field.to_string(), 1)]);
+        }
         // And the stream is shrunk to the few operations that show it.
         assert!(shrunk.reproduced && shrunk.minimal);
-        assert_eq!(shrunk.divergence.parts, [Part::Cost]);
         assert!(shrunk.case.ops.len() <= 16, "{:?}", shrunk.case.ops);
         assert!(shrunk.case.ops.len() <= finding.divergence.step + 1);
     }
-}
-
-/// By how much the one number differs in which two cost lines differ.
-/// None when they differ in more than one number, or in none.
-fn one_field_one_apart(reference: &str, candidate: &str) -> Option<u64> {
-    let numbers = |line: &str| -> Vec<u64> {
-        line.split(|character: char| !character.is_ascii_digit())
-            .filter(|digits| !digits.is_empty())
-            .filter_map(|digits| digits.parse().ok())
-            .collect()
-    };
-    let (reference, candidate) = (numbers(reference), numbers(candidate));
-    if reference.len() != candidate.len() {
-        return None;
-    }
-    let mut apart = reference
-        .iter()
-        .zip(&candidate)
-        .filter(|(was, is)| was != is)
-        .map(|(was, is)| is.abs_diff(*was));
-    let first = apart.next()?;
-    apart.next().is_none().then_some(first)
 }
 
 #[test]
@@ -166,13 +162,18 @@ fn the_candidate_answers_as_the_reference_does() {
 }
 
 #[test]
-fn the_numbers_of_two_cost_lines_are_compared() {
+fn the_fields_of_two_cost_lines_are_compared() {
     let cost = "cost seeks=3 loaded=120 added=185 replaced=40 removed=- hashes=7 sinsemilla=0";
     let more = "cost seeks=3 loaded=120 added=186 replaced=40 removed=- hashes=7 sinsemilla=0";
-    let two = "cost seeks=3 loaded=121 added=186 replaced=40 removed=- hashes=7 sinsemilla=0";
-    assert_eq!(one_field_one_apart(cost, more), Some(1));
-    assert_eq!(one_field_one_apart(cost, cost), None);
-    assert_eq!(one_field_one_apart(cost, two), None);
-    assert_eq!(one_field_one_apart(cost, "cost seeks=3"), None);
+    let two = "cost seeks=3 loaded=119 added=186 replaced=40 removed=9 hashes=7 sinsemilla=0";
+    assert_eq!(fields_apart(cost, more), [("added".to_string(), 1)]);
+    assert_eq!(fields_apart(cost, cost), []);
+    let apart = fields_apart(cost, two);
+    assert_eq!(apart.len(), 3);
+    assert_eq!(
+        apart[..2],
+        [("loaded".to_string(), -1), ("added".to_string(), 1)]
+    );
+    assert_eq!(apart[2].0, "removed");
     assert_eq!(cost_of(&["root 00".to_string(), cost.to_string()]), cost);
 }

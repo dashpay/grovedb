@@ -260,8 +260,12 @@ impl Case {
     /// This case with other operations: what a shrinking step tries.
     pub fn with_ops(&self, ops: Vec<Op>) -> Case {
         Case {
+            seed: self.seed,
+            grove_version: self.grove_version,
             ops,
-            ..self.clone()
+            sources: self.sources.clone(),
+            arrangement: self.arrangement,
+            mutations: self.mutations.clone(),
         }
     }
 
@@ -306,7 +310,14 @@ impl Case {
 }
 
 /// The length of the path of the deepest subtree `op` writes into or could
-/// create: a write at a path can put a tree there, one level further down.
+/// create, or reads from: a write at a path can put a tree there, one level
+/// further down.
+///
+/// For a read it is an upper bound and not the length itself. A read names
+/// its paths in a query of GroveDB's whole grammar, and its encoding gives
+/// every segment of every path at least the four bytes of a length. So a
+/// read has at most a quarter as many segments as its encoding has bytes,
+/// in all its paths together.
 fn depth(op: &Op) -> usize {
     let below = |path: &Path| path.len() + 1;
     match op {
@@ -316,7 +327,22 @@ fn depth(op: &Op) -> usize {
         | Op::FlagsBatch(_)
         | Op::FlagsPartialBatch(_)
         | Op::FlagsHandoverBatch(_) => op.batch_ops().map(|op| below(op.path())).max().unwrap_or(0),
-        Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => 0,
+        Op::Read(_)
+        | Op::Transaction(TransactionOp::SnapshotRead(_) | TransactionOp::BlockRead(_)) => {
+            let mut encoded = Vec::new();
+            op.encode(&mut encoded);
+            encoded.len() / 4
+        }
+        Op::Commit
+        | Op::FlushPendingDrops
+        | Op::Transaction(
+            TransactionOp::Rollback
+            | TransactionOp::Abandon
+            | TransactionOp::SetSavepoint
+            | TransactionOp::RollbackToSavepoint
+            | TransactionOp::OpenSnapshot
+            | TransactionOp::CloseSnapshot,
+        ) => 0,
     }
 }
 
@@ -345,8 +371,9 @@ fn write_path(write: &Write) -> Option<&Path> {
 }
 
 /// Deals the blocks of `streams` into one sequence. A block ends with the
-/// operation that ends its transaction, so no stream's transaction holds
-/// another stream's writes when it is committed, rolled back or dropped.
+/// operation that ends its transaction, so a stream commits, rolls back or
+/// drops what it wrote itself. Only what follows the last such operation of
+/// a stream is left to the transaction of whichever block is dealt next.
 fn interleave(streams: Vec<Vec<Op>>, rng: &mut Rng) -> Vec<Op> {
     let mut blocks: Vec<std::collections::VecDeque<Vec<Op>>> = streams
         .into_iter()
@@ -439,9 +466,9 @@ fn mutate(ops: &mut Vec<Op>, rng: &mut Rng) -> Option<Mutation> {
             Some(Mutation::Stepped(at, name))
         }
         4 => {
-            let at = from(at, ops.len()).find(|at| read_of(&ops[*at]).is_some())?;
-            let (read, committed) = read_of(&ops[at])?;
-            let read = read.clone();
+            let (at, read, committed) = from(at, ops.len()).find_map(|at| {
+                read_of(&ops[at]).map(|(read, committed)| (at, read.clone(), committed))
+            })?;
             let (op, to) = if !committed {
                 (Op::Read(read), "committed state")
             } else if rng.chance(1, 2) {
@@ -497,17 +524,25 @@ fn read_of(op: &Op) -> Option<(&crate::workload::Read, bool)> {
     }
 }
 
+/// The lists of operations a batch is made of: one, or the two segments of
+/// a batch applied in two. None for an operation that is no batch.
+pub(super) fn batch_segments(op: &mut Op) -> Vec<&mut Vec<BatchOp>> {
+    match op {
+        Op::Batch(ops) | Op::FlagsBatch(ops) => vec![ops],
+        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => {
+            vec![&mut batch.ops, &mut batch.add_on]
+        }
+        Op::FlagsHandoverBatch(batch) => vec![&mut batch.ops],
+        Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => {
+            Vec::new()
+        }
+    }
+}
+
 /// The operations of an operation that is a batch: those of its first
 /// segment for a batch applied in two.
 fn batch_of(op: &mut Op) -> Option<&mut Vec<BatchOp>> {
-    match op {
-        Op::Batch(ops) | Op::FlagsBatch(ops) => Some(ops),
-        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => Some(&mut batch.ops),
-        Op::FlagsHandoverBatch(batch) => Some(&mut batch.ops),
-        Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => {
-            None
-        }
-    }
+    batch_segments(op).into_iter().next()
 }
 
 #[cfg(test)]
@@ -672,7 +707,7 @@ mod tests {
             );
             assert_eq!(case.arrangement, plan.arrangement);
             assert!(case.mutations.len() as u64 <= plan.mutations);
-            assert!(case.depth() <= MAX_DEPTH && case.depth() < 100);
+            assert!(case.depth() <= MAX_DEPTH);
             for name in names {
                 missing.remove(name);
             }
@@ -688,6 +723,35 @@ mod tests {
         assert_eq!(coverage.missing_elements(), Vec::<&str>::new());
         assert_eq!(coverage.missing_tree_types(), Vec::<&str>::new());
         assert_eq!(coverage.missing_operations(), Vec::<Operation>::new());
+    }
+
+    /// How deep the generators go, at their default sizes, on every grove
+    /// version: the bound cuts nothing out of what they produce today, and
+    /// a read that were dropped for its size would be noticed here.
+    #[test]
+    fn the_generators_stay_far_below_the_deepest_subtree_allowed() {
+        let (mut deepest_write, mut longest_read) = (0, 0);
+        for grove_version in GROVE_VERSIONS.iter() {
+            for workload in Workload::suite(Features::for_grove_version(grove_version)) {
+                for op in workload.stream(1) {
+                    let reads = matches!(
+                        op,
+                        Op::Read(_)
+                            | Op::Transaction(
+                                TransactionOp::SnapshotRead(_) | TransactionOp::BlockRead(_)
+                            )
+                    );
+                    if reads {
+                        longest_read = longest_read.max(depth(&op));
+                    } else {
+                        deepest_write = deepest_write.max(depth(&op));
+                    }
+                }
+            }
+        }
+        println!("deepest write {deepest_write}, longest read {longest_read}");
+        assert!((8..200).contains(&deepest_write), "{deepest_write}");
+        assert!(longest_read < MAX_DEPTH / 8, "{longest_read}");
     }
 
     #[test]
@@ -774,6 +838,20 @@ mod tests {
         assert!(depth(&batch) > MAX_DEPTH);
         assert_eq!(depth(&Op::Batch(Vec::new())), 0);
         assert_eq!(depth(&Op::Commit), 0);
+        assert_eq!(depth(&Op::Transaction(TransactionOp::Rollback)), 0);
+        // A read is bounded by its encoding, whatever names its paths.
+        let read = |segments: usize| Read::HasRaw {
+            path: vec![vec![0]; segments],
+            key: Vec::new(),
+        };
+        for shallow in [
+            Op::Read(read(3)),
+            Op::Transaction(TransactionOp::BlockRead(read(3))),
+            Op::Transaction(TransactionOp::SnapshotRead(read(3))),
+        ] {
+            assert!((3..12).contains(&depth(&shallow)), "{}", depth(&shallow));
+        }
+        assert!(depth(&Op::Read(read(MAX_DEPTH))) > MAX_DEPTH);
         let aux = Op::Write(Write::PutAux {
             key: vec![1],
             value: vec![2],
@@ -886,38 +964,45 @@ mod tests {
     }
 
     #[test]
-    fn the_batches_of_every_kind_can_be_edited() {
+    fn the_segments_of_every_kind_of_batch_are_found() {
         use crate::workload::{HandoverBatch, PartialBatch};
         let delete = || BatchOp::Delete {
             path: Vec::new(),
             key: vec![1],
         };
         let partial = || PartialBatch {
-            ops: vec![delete()],
-            add_on: Vec::new(),
+            ops: vec![delete(), delete()],
+            add_on: vec![delete()],
             pause_height: None,
         };
-        let mut batches = [
-            Op::Batch(vec![delete()]),
-            Op::FlagsBatch(vec![delete()]),
-            Op::PartialBatch(partial()),
-            Op::FlagsPartialBatch(partial()),
-            Op::FlagsHandoverBatch(HandoverBatch {
-                ops: vec![delete()],
-                full_handover_owners: Default::default(),
-            }),
-        ];
-        for batch in &mut batches {
-            assert_eq!(batch_of(batch).map(|ops| ops.len()), Some(1));
-        }
-        for mut other in [
+        let lens = |mut op: Op| -> (Vec<usize>, Option<usize>) {
+            let first = batch_of(&mut op).map(|ops| ops.len());
+            let segments = batch_segments(&mut op);
+            (segments.iter().map(|ops| ops.len()).collect(), first)
+        };
+        assert_eq!(lens(Op::Batch(vec![delete()])), (vec![1], Some(1)));
+        assert_eq!(
+            lens(Op::FlagsBatch(vec![delete(), delete()])),
+            (vec![2], Some(2))
+        );
+        assert_eq!(lens(Op::PartialBatch(partial())), (vec![2, 1], Some(2)));
+        assert_eq!(
+            lens(Op::FlagsPartialBatch(partial())),
+            (vec![2, 1], Some(2))
+        );
+        let handover = HandoverBatch {
+            ops: vec![delete()],
+            full_handover_owners: Default::default(),
+        };
+        assert_eq!(lens(Op::FlagsHandoverBatch(handover)), (vec![1], Some(1)));
+        for other in [
             Op::Commit,
             Op::FlushPendingDrops,
             insert(Vec::new()),
             Op::Read(Read::GetAux { key: Vec::new() }),
             Op::Transaction(TransactionOp::Rollback),
         ] {
-            assert!(batch_of(&mut other).is_none());
+            assert_eq!(lens(other), (Vec::new(), None));
         }
     }
 

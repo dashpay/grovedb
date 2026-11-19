@@ -2,15 +2,16 @@
 //!
 //! A case that diverges has hundreds of operations and the divergence
 //! needs a few of them. [`shrink`] looks for those few: it runs shorter
-//! streams on fresh databases and keeps a shorter one whenever the engines
-//! still differ in a part they differed in before.
+//! streams on fresh databases and keeps a shorter one whenever it shows
+//! the divergence again ([`Divergence::shows_again_as`]): the engines
+//! differ in no part they did not differ in before.
 //!
 //! 1. Everything after the diverging step goes.
 //! 2. Runs of operations are taken out, first half the stream at a time,
 //!    then a quarter, down to single operations, until no single operation
 //!    can be taken out.
 //! 3. Single operations are taken out of the batches that are left.
-//! 4. Steps 2 and 3 repeat until neither shortens the stream.
+//! 4. Steps 2 and 3 repeat until step 3 takes nothing out.
 //!
 //! What is left is minimal in that sense: every operation, and every
 //! operation of every batch, is needed for the engines to differ. It is
@@ -23,15 +24,16 @@ use std::{
 };
 
 use super::{
-    case::Case,
+    case::{batch_segments, Case},
     pair::{run, Divergence, Part, Side, Stored},
 };
 use crate::{
     golden::Error,
-    workload::{BatchOp, Op, StreamEngine},
+    workload::{Op, StreamEngine},
 };
 
-/// How much work a shrinking may do.
+/// How much work a shrinking may do, beyond the one run that shows the
+/// divergence again, which is always made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Budget {
     /// The most streams it runs.
@@ -58,6 +60,8 @@ pub struct Shrunk {
     pub divergence: Divergence,
     /// How many streams were run.
     pub runs: u64,
+    /// How long it took.
+    pub took: Duration,
     /// Whether the divergence showed again when the case was run a second
     /// time. If not, the engines do not answer the same stream the same
     /// way twice, and nothing was shrunk.
@@ -69,7 +73,7 @@ pub struct Shrunk {
 
 struct Shrinker<'a, A: StreamEngine, B: StreamEngine> {
     template: &'a Case,
-    target: &'a [Part],
+    target: &'a Divergence,
     reference: &'a Side<A>,
     candidate: &'a Side<B>,
     scratch: &'a Path,
@@ -84,12 +88,17 @@ impl<A: StreamEngine, B: StreamEngine> Shrinker<'_, A, B> {
         self.runs >= self.budget.runs || self.started.elapsed() >= self.budget.time
     }
 
-    /// Runs `ops` and returns how the engines differ on them, if they
-    /// differ in a part they are meant to.
-    fn diverges(&mut self, ops: &[Op]) -> Result<Option<Divergence>, Error> {
+    /// Runs `shorter` in place of `ops`. If it shows the divergence again,
+    /// it takes their place, cut after the step the engines differ at.
+    fn keep_if_it_diverges(
+        &mut self,
+        shorter: Vec<Op>,
+        ops: &mut Vec<Op>,
+        divergence: &mut Divergence,
+    ) -> Result<bool, Error> {
         self.runs += 1;
-        let case = self.template.with_ops(ops.to_vec());
-        let run = run(
+        let case = self.template.with_ops(shorter);
+        let ran = run(
             &case,
             self.reference,
             self.candidate,
@@ -97,39 +106,26 @@ impl<A: StreamEngine, B: StreamEngine> Shrinker<'_, A, B> {
             self.stored,
             &|| false,
         )?;
-        Ok(run.divergence.filter(|divergence| {
-            divergence
-                .parts
-                .iter()
-                .any(|part| self.target.contains(part))
-        }))
-    }
-
-    /// Tries `shorter` in place of `ops`. If the engines still differ, it
-    /// takes its place, cut after the step they differ at.
-    fn keep_if_it_diverges(
-        &mut self,
-        shorter: Vec<Op>,
-        ops: &mut Vec<Op>,
-        divergence: &mut Divergence,
-    ) -> Result<bool, Error> {
-        let Some(found) = self.diverges(&shorter)? else {
+        let Some(found) = ran
+            .divergence
+            .filter(|found| self.target.shows_again_as(found))
+        else {
             return Ok(false);
         };
-        *ops = shorter;
+        *ops = case.ops;
         ops.truncate(found.step + 1);
         *divergence = found;
         Ok(true)
     }
 
     /// Takes runs of operations out, from half the stream down to single
-    /// operations. Returns whether the stream got shorter.
+    /// operations, until no single operation can be taken out or the
+    /// budget is spent.
     fn take_out_operations(
         &mut self,
         ops: &mut Vec<Op>,
         divergence: &mut Divergence,
-    ) -> Result<bool, Error> {
-        let mut shortened = false;
+    ) -> Result<(), Error> {
         let mut run_len = (ops.len() / 2).max(1);
         loop {
             let mut taken_out = false;
@@ -144,9 +140,8 @@ impl<A: StreamEngine, B: StreamEngine> Shrinker<'_, A, B> {
                     start = end;
                 }
             }
-            shortened |= taken_out;
             if self.spent() || (run_len == 1 && !taken_out) {
-                return Ok(shortened);
+                return Ok(());
             }
             run_len = (run_len / 2).max(1);
         }
@@ -162,37 +157,24 @@ impl<A: StreamEngine, B: StreamEngine> Shrinker<'_, A, B> {
         let mut shortened = false;
         let mut at = 0;
         while at < ops.len() {
-            for segment in 0..segments(&mut ops[at]).len() {
-                let mut op = segments(&mut ops[at])[segment].len();
-                while op > 0 && !self.spent() {
-                    op -= 1;
+            for segment in 0..batch_segments(&mut ops[at]).len() {
+                for op in (0..batch_segments(&mut ops[at])[segment].len()).rev() {
+                    if self.spent() {
+                        return Ok(shortened);
+                    }
                     let mut shorter = ops.clone();
-                    segments(&mut shorter[at])[segment].remove(op);
+                    batch_segments(&mut shorter[at])[segment].remove(op);
                     shortened |= self.keep_if_it_diverges(shorter, ops, divergence)?;
+                    // The stream is cut after the step the engines differ
+                    // at, which may now be before this batch.
                     if at >= ops.len() {
                         return Ok(shortened);
                     }
-                    op = op.min(segments(&mut ops[at])[segment].len());
                 }
             }
             at += 1;
         }
         Ok(shortened)
-    }
-}
-
-/// The lists of operations a batch is made of: one, or the two segments of
-/// a batch applied in two. None for an operation that is no batch.
-fn segments(op: &mut Op) -> Vec<&mut Vec<BatchOp>> {
-    match op {
-        Op::Batch(ops) | Op::FlagsBatch(ops) => vec![ops],
-        Op::PartialBatch(batch) | Op::FlagsPartialBatch(batch) => {
-            vec![&mut batch.ops, &mut batch.add_on]
-        }
-        Op::FlagsHandoverBatch(batch) => vec![&mut batch.ops],
-        Op::Write(_) | Op::Read(_) | Op::Commit | Op::FlushPendingDrops | Op::Transaction(_) => {
-            Vec::new()
-        }
     }
 }
 
@@ -210,7 +192,7 @@ pub fn shrink<A: StreamEngine, B: StreamEngine>(
 ) -> Result<Shrunk, Error> {
     let mut shrinker = Shrinker {
         template: case,
-        target: &divergence.parts,
+        target: divergence,
         reference,
         candidate,
         scratch,
@@ -228,47 +210,47 @@ pub fn shrink<A: StreamEngine, B: StreamEngine>(
     let mut ops = case.ops.clone();
     ops.truncate(divergence.step + 1);
     let mut found = divergence.clone();
-    if !shrinker.keep_if_it_diverges(ops.clone(), &mut ops, &mut found)? {
-        return Ok(Shrunk {
-            case: case.clone(),
-            divergence: divergence.clone(),
-            runs: shrinker.runs,
-            reproduced: false,
-            minimal: false,
-        });
-    }
-    loop {
-        shrinker.take_out_operations(&mut ops, &mut found)?;
-        let shorter_batches = shrinker.take_out_of_batches(&mut ops, &mut found)?;
-        // A pass over the batches that took nothing out leaves the stream
-        // the pass over the operations left, from which no operation can
-        // be taken.
-        if shrinker.spent() || !shorter_batches {
-            break;
+    let reproduced = shrinker.keep_if_it_diverges(ops.clone(), &mut ops, &mut found)?;
+    if reproduced {
+        loop {
+            shrinker.take_out_operations(&mut ops, &mut found)?;
+            // A pass over the batches that takes nothing out leaves the
+            // stream the pass over the operations left, from which no
+            // operation can be taken.
+            if !shrinker.take_out_of_batches(&mut ops, &mut found)? || shrinker.spent() {
+                break;
+            }
         }
     }
     Ok(Shrunk {
-        case: case.with_ops(ops),
+        case: if reproduced {
+            case.with_ops(ops)
+        } else {
+            case.clone()
+        },
         divergence: found,
         runs: shrinker.runs,
-        reproduced: true,
-        minimal: !shrinker.spent(),
+        took: shrinker.started.elapsed(),
+        reproduced,
+        minimal: reproduced && !shrinker.spent(),
     })
 }
 
 #[cfg(test)]
 mod tests {
-    use grovedb::{Element, GroveDb, RocksDbEngine};
+    use grovedb::Element;
     use grovedb_version::version::GroveVersion;
 
     use super::*;
     use crate::{
         diff::{
             engines::{Fault, StandIn},
-            pair::stand_in_with_a_stray_record,
+            pair::testing::{
+                added_by_the_last_of, rocksdb, stand_in, stand_in_with_a_stray_record,
+            },
         },
-        golden::{record::on_a_deep_stack, run::Runner},
-        workload::{HandoverBatch, PartialBatch, Read, TransactionOp, Write},
+        golden::record::on_a_deep_stack,
+        workload::{BatchOp, PartialBatch, Write},
     };
 
     fn item(len: usize) -> Element {
@@ -291,28 +273,20 @@ mod tests {
         }
     }
 
-    /// What the last of `ops` adds, on a fresh database.
-    fn added_by_the_last_of(ops: &[Op]) -> u32 {
-        let dir = tempfile::tempdir().expect("a directory");
-        let db = GroveDb::open(dir.path()).expect("a database");
-        let mut runner = Runner::new(&db, GroveVersion::latest()).expect("a runner");
-        let mut added = 0;
-        for op in ops {
-            let observed = runner.step(op).expect("a step");
-            assert!(!observed.step.failed(), "{op:?}: {:?}", observed.remarks);
-            added = observed.step.cost.storage_cost.added_bytes;
-        }
-        added
-    }
-
-    fn shrunk(case: &Case, fault: Fault, budget: Budget) -> (Divergence, Shrunk) {
-        let (reference, candidate) = (Side::<RocksDbEngine>::of("rocksdb"), StandIn::side(fault));
+    /// The divergence of `case` on RocksDB against `candidate`, and what
+    /// shrinking it comes to.
+    fn shrunk<B: StreamEngine>(
+        case: &Case,
+        candidate: &Side<B>,
+        budget: Budget,
+    ) -> (Divergence, Shrunk) {
+        let reference = rocksdb();
         let scratch = tempfile::tempdir().expect("a directory");
         on_a_deep_stack(|| {
             let divergence = run(
                 case,
                 &reference,
-                &candidate,
+                candidate,
                 scratch.path(),
                 Stored::AtTheEnd,
                 &|| false,
@@ -324,7 +298,7 @@ mod tests {
                 case,
                 &divergence,
                 &reference,
-                &candidate,
+                candidate,
                 scratch.path(),
                 budget,
             )
@@ -356,8 +330,8 @@ mod tests {
         ops.extend((45..55).map(|key| insert(key, item(key as usize))));
         let case = Case::of(9, GroveVersion::latest(), ops);
 
-        let (divergence, shrunk) =
-            shrunk(&case, Fault::AddedByte { when_added }, Budget::default());
+        let candidate = StandIn::side(Fault::AddedByte { when_added });
+        let (divergence, shrunk) = shrunk(&case, &candidate, Budget::default());
         assert_eq!(
             (divergence.step, &divergence.parts),
             (47, &vec![Part::Cost])
@@ -368,6 +342,7 @@ mod tests {
         assert_eq!(shrunk.divergence.parts, [Part::Cost]);
         assert_eq!(shrunk.case.seed, 9);
         assert!(shrunk.runs < 100, "{} runs", shrunk.runs);
+        assert!(shrunk.took > Duration::ZERO);
     }
 
     #[test]
@@ -377,7 +352,7 @@ mod tests {
         let mut ops: Vec<Op> = (0..40).map(|key| insert(key, item(key as usize))).collect();
         ops.push(insert(200, item(300)));
         let case = Case::of(0, GroveVersion::latest(), ops);
-        let fault = Fault::AddedByte { when_added };
+        let candidate = StandIn::side(Fault::AddedByte { when_added });
 
         // One run shows the divergence again and one takes half the
         // stream out.
@@ -385,20 +360,28 @@ mod tests {
             runs: 2,
             ..Budget::default()
         };
-        let (_, cut) = shrunk(&case, fault, few_runs);
+        let (_, cut) = shrunk(&case, &candidate, few_runs);
         assert!(cut.reproduced && !cut.minimal);
         assert_eq!((cut.runs, cut.case.ops.len()), (2, 21));
         assert_eq!(cut.divergence.step + 1, cut.case.ops.len());
 
-        let no_time = Budget {
-            time: Duration::ZERO,
-            ..Budget::default()
-        };
-        let (_, cut) = shrunk(&case, fault, no_time);
-        assert!(cut.reproduced && !cut.minimal);
-        assert_eq!((cut.runs, cut.case.ops.len()), (1, 41));
+        // The run that shows it again is made whatever the budget.
+        for nothing in [
+            Budget {
+                time: Duration::ZERO,
+                ..Budget::default()
+            },
+            Budget {
+                runs: 0,
+                ..Budget::default()
+            },
+        ] {
+            let (_, cut) = shrunk(&case, &candidate, nothing);
+            assert!(cut.reproduced && !cut.minimal);
+            assert_eq!((cut.runs, cut.case.ops.len()), (1, 41));
+        }
 
-        let (_, whole) = shrunk(&case, fault, Budget::default());
+        let (_, whole) = shrunk(&case, &candidate, Budget::default());
         assert!(whole.minimal);
         assert_eq!(whole.case.ops, needed);
     }
@@ -407,34 +390,10 @@ mod tests {
     /// not returned: the records are compared after every step.
     #[test]
     fn a_divergence_in_what_is_stored_shrinks_to_its_first_step() {
-        let seeded = stand_in_with_a_stray_record();
-        let reference = Side::<RocksDbEngine>::of("rocksdb");
         let ops: Vec<Op> = (0..12).map(|key| insert(key, item(4))).collect();
         let case = Case::of(0, GroveVersion::latest(), ops);
-        let scratch = tempfile::tempdir().expect("a directory");
-        let (divergence, shrunk) = on_a_deep_stack(|| {
-            let divergence = run(
-                &case,
-                &reference,
-                &seeded,
-                scratch.path(),
-                Stored::AtTheEnd,
-                &|| false,
-            )
-            .expect("the case runs")
-            .divergence
-            .expect("the engines differ");
-            let shrunk = shrink(
-                &case,
-                &divergence,
-                &reference,
-                &seeded,
-                scratch.path(),
-                Budget::default(),
-            )
-            .expect("the case shrinks");
-            (divergence, shrunk)
-        });
+        let (divergence, shrunk) =
+            shrunk(&case, &stand_in_with_a_stray_record(), Budget::default());
         assert_eq!(
             (divergence.step, &divergence.parts),
             (11, &vec![Part::Stored])
@@ -448,10 +407,6 @@ mod tests {
     #[test]
     fn a_divergence_that_does_not_show_again_is_not_shrunk() {
         let case = Case::of(0, GroveVersion::latest(), vec![insert(1, item(4))]);
-        let (reference, candidate) = (
-            Side::<RocksDbEngine>::of("rocksdb"),
-            Side::<StandIn>::of("stand-in"),
-        );
         let claimed = Divergence {
             step: 0,
             parts: vec![Part::Cost],
@@ -463,8 +418,8 @@ mod tests {
             shrink(
                 &case,
                 &claimed,
-                &reference,
-                &candidate,
+                &rocksdb(),
+                &stand_in(),
                 scratch.path(),
                 Budget::default(),
             )
@@ -475,37 +430,35 @@ mod tests {
         assert_eq!(shrunk.divergence, claimed);
     }
 
+    /// A shorter stream on which the engines differ in another way is not
+    /// taken for the divergence: here the candidate panics on one size of
+    /// write and is charged wrongly for none, so a stream that only shows
+    /// the panic does not show a divergence in a cost.
     #[test]
-    fn the_segments_of_every_kind_of_batch_are_shrunk() {
-        let delete = || BatchOp::Delete {
-            path: Vec::new(),
-            key: vec![1],
+    fn a_stream_that_differs_in_another_part_is_not_kept() {
+        let ops = vec![insert(1, item(4)), insert(200, item(300))];
+        let when_added = added_by_the_last_of(&ops);
+        let case = Case::of(0, GroveVersion::latest(), ops);
+        let claimed = Divergence {
+            step: 1,
+            parts: vec![Part::Cost],
+            reference: Vec::new(),
+            candidate: Vec::new(),
         };
-        let partial = || PartialBatch {
-            ops: vec![delete(), delete()],
-            add_on: vec![delete()],
-            pause_height: None,
-        };
-        let lens =
-            |mut op: Op| -> Vec<usize> { segments(&mut op).iter().map(|ops| ops.len()).collect() };
-        assert_eq!(lens(Op::Batch(vec![delete()])), [1]);
-        assert_eq!(lens(Op::FlagsBatch(vec![delete(), delete()])), [2]);
-        assert_eq!(lens(Op::PartialBatch(partial())), [2, 1]);
-        assert_eq!(lens(Op::FlagsPartialBatch(partial())), [2, 1]);
-        let handover = HandoverBatch {
-            ops: vec![delete()],
-            full_handover_owners: Default::default(),
-        };
-        assert_eq!(lens(Op::FlagsHandoverBatch(handover)), [1]);
-        for other in [
-            Op::Commit,
-            Op::FlushPendingDrops,
-            insert(1, item(1)),
-            Op::Read(Read::GetAux { key: Vec::new() }),
-            Op::Transaction(TransactionOp::Abandon),
-        ] {
-            assert_eq!(lens(other), Vec::<usize>::new());
-        }
+        let scratch = tempfile::tempdir().expect("a directory");
+        let shrunk = on_a_deep_stack(|| {
+            shrink(
+                &case,
+                &claimed,
+                &rocksdb(),
+                &StandIn::side(Fault::Panic { when_added }),
+                scratch.path(),
+                Budget::default(),
+            )
+        })
+        .expect("the case runs");
+        assert!(!shrunk.reproduced);
+        assert_eq!(shrunk.case.ops.len(), 2);
     }
 
     /// A batch applied in two segments loses what is not needed from both.
@@ -539,8 +492,8 @@ mod tests {
                 ),
             ],
         );
-        let (divergence, shrunk) =
-            shrunk(&case, Fault::AddedByte { when_added }, Budget::default());
+        let candidate = StandIn::side(Fault::AddedByte { when_added });
+        let (divergence, shrunk) = shrunk(&case, &candidate, Budget::default());
         assert_eq!(divergence.step, 3);
         assert!(shrunk.minimal);
         assert_eq!(shrunk.case.ops, needed);

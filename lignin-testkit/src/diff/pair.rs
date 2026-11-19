@@ -2,17 +2,14 @@
 //!
 //! [`run`] opens a fresh database of each engine, applies the operations of
 //! a case to both through the corpus's own [`Runner`], and stops at the
-//! first step the two answer differently. What a step is, and so what is
-//! compared, is what the golden corpus records: the `OperationCost`, the
-//! result or the name of the error, the root hash inside the open
-//! transaction, and for a read GroveDB proves the proof bytes, the cost of
-//! proving and what the verifier makes of the proof. Besides that,
-//! [`Stored`] says how often the records the two databases hold are
-//! compared ([`super::state`]).
+//! first step the two answer differently. What is compared is listed in
+//! the [module above](super). [`Stored`] says how often the records the two
+//! databases hold are compared ([`super::state`]).
 //!
-//! An engine that panics where the other answers has diverged. Where both
-//! panic, or neither can be observed, they did the same and the case ends
-//! there.
+//! An engine that panics, or cannot be observed, where the other answers
+//! has diverged, and so have two that panic with different messages. Where
+//! both panic with one message, or neither can be observed, they did the
+//! same and the case ends there.
 
 #![expect(
     clippy::result_large_err,
@@ -21,6 +18,7 @@
 
 use std::{
     cell::{Cell, RefCell},
+    collections::BTreeSet,
     panic::{self, AssertUnwindSafe},
     path::Path,
     sync::Once,
@@ -30,16 +28,16 @@ use grovedb::GroveDb;
 
 use super::{
     case::Case,
-    state::{first_difference, stored, Record},
+    state::{first_difference, stored, Listing, Place, Record},
 };
 use crate::{
     golden::{
         run::{Observed, Runner},
-        step::{Outcome, Step},
+        step::{Outcome, Proof, Step},
         trace::{one_line, shortened},
         Error,
     },
-    workload::{Op, StreamEngine},
+    workload::{BatchOp, Op, Path as SubtreePath, StreamEngine, TransactionOp, Write},
 };
 
 /// The longest line of a report. A proof of a hundred documents is a
@@ -78,9 +76,15 @@ impl<E: StreamEngine> Side<E> {
         &self.name
     }
 
+    /// Opens a database in `dir`. An engine that panics here has not
+    /// answered differently at any step: the run cannot start.
     fn open(&self, dir: &Path) -> Result<GroveDb<E>, Error> {
-        (self.open)(dir)
-            .map_err(|error| Error::engine(&format!("opening a database of {}", self.name), &error))
+        let what = format!("opening a database of {}", self.name);
+        match catching(|| (self.open)(dir)) {
+            Ok(Ok(db)) => Ok(db),
+            Ok(Err(error)) => Err(Error::engine(&what, &error)),
+            Err(panic) => Err(Error::engine(&what, &format!("{PANICKED}{panic}"))),
+        }
     }
 }
 
@@ -92,7 +96,8 @@ pub enum Stored {
     /// Once, after the last operation.
     AtTheEnd,
     /// After every this many operations that are not reads, and after the
-    /// last operation.
+    /// last operation. A read is a read of committed state, of the block or
+    /// of the snapshot.
     Every(u64),
 }
 
@@ -151,7 +156,32 @@ pub struct Divergence {
     pub candidate: Vec<String>,
 }
 
+/// How the line begins that stands for an engine that panicked.
+const PANICKED: &str = "panicked: ";
+
+/// How the line begins that stands for an engine that could not be
+/// observed.
+const NOT_OBSERVED: &str = "not observed: ";
+
+/// How an engine ended a step it did not answer, by the line that stands
+/// for it. None for an engine that answered.
+fn ended(lines: &[String]) -> Option<&'static str> {
+    let first = lines.first()?;
+    [PANICKED, NOT_OBSERVED]
+        .into_iter()
+        .find(|marker| first.starts_with(marker))
+}
+
 impl Divergence {
+    /// Whether `other`, found on another stream, is this divergence again:
+    /// it differs in no part this one does not differ in, and where an
+    /// engine panicked or could not be observed, the same engine did.
+    pub fn shows_again_as(&self, other: &Divergence) -> bool {
+        other.parts.iter().all(|part| self.parts.contains(part))
+            && ended(&self.reference) == ended(&other.reference)
+            && ended(&self.candidate) == ended(&other.candidate)
+    }
+
     /// The divergence for a reader: the operation, what differs, and the
     /// lines of the two engines that are not the same.
     pub fn report(&self, case: &Case, reference: &str, candidate: &str) -> Vec<String> {
@@ -259,16 +289,79 @@ pub struct Run {
     /// The first step the engines answered differently, if there is one.
     pub divergence: Option<Divergence>,
     /// Why the case ended before its last operation without a divergence:
-    /// both engines panicked, neither could be observed, or the caller
-    /// interrupted the run.
+    /// both engines panicked, or neither could be observed.
     pub cut_short: Option<String>,
+    /// Whether the caller interrupted the run before the last operation.
+    pub interrupted: bool,
 }
 
-/// What an engine did with one operation.
-enum Seen {
-    Step(Box<Observed>),
-    Unobserved(String),
+/// What an engine did when it was asked for something: to apply an
+/// operation, or to list what it stores.
+enum Seen<T> {
+    Answered(T),
+    Unobserved {
+        /// What could not be done.
+        what: String,
+        /// The engine's message.
+        message: String,
+    },
     Panicked(String),
+}
+
+impl<T> Seen<T> {
+    /// The lines that stand for this in a report.
+    fn lines(self, answered: impl FnOnce(T) -> Vec<String>) -> Vec<String> {
+        match self {
+            Seen::Answered(answer) => answered(answer),
+            Seen::Unobserved { what, message } => {
+                vec![format!("{NOT_OBSERVED}{what}: {message}")]
+            }
+            Seen::Panicked(panic) => vec![format!("{PANICKED}{panic}")],
+        }
+    }
+}
+
+/// What two engines did with the same request.
+enum Both<T> {
+    /// Both answered.
+    Answered(T, T),
+    /// Neither answered, and they failed alike: why.
+    Alike(String),
+    /// One answered and the other did not, or they failed differently: the
+    /// part they differ in and the lines that stand for each.
+    Differ(Part, Vec<String>, Vec<String>),
+}
+
+/// Sets what the reference did next to what the candidate did.
+///
+/// Two panics are the same when their messages are, which name the place
+/// that panicked. Two failures to observe are the same when the same thing
+/// could not be done: the message is an engine's own text.
+fn both<T>(was: Seen<T>, is: Seen<T>, answered: impl Fn(T) -> Vec<String>) -> Both<T> {
+    match (was, is) {
+        (Seen::Answered(was), Seen::Answered(is)) => Both::Answered(was, is),
+        (Seen::Panicked(was), Seen::Panicked(is)) if was == is => {
+            Both::Alike(format!("both engines panicked: {was}"))
+        }
+        (
+            Seen::Unobserved { what, message },
+            Seen::Unobserved {
+                what: candidate_what,
+                ..
+            },
+        ) if what == candidate_what => Both::Alike(format!(
+            "neither engine could be observed {what}: {message}"
+        )),
+        (was, is) => {
+            let panicked = matches!(was, Seen::Panicked(_)) || matches!(is, Seen::Panicked(_));
+            let part = if panicked {
+                Part::Panic
+            } else {
+                Part::Observation
+            };
+            Both::Differ(part, was.lines(&answered), is.lines(&answered))
+        }
+    }
 }
 
 thread_local! {
@@ -279,7 +372,7 @@ thread_local! {
 /// Runs `body` and returns the message of its panic if it panics. The
 /// panic is not printed: a mutated stream may ask for what an engine
 /// panics on, and the report says so where it matters.
-fn catching<T>(body: impl FnOnce() -> T) -> Result<T, String> {
+pub(super) fn catching<T>(body: impl FnOnce() -> T) -> Result<T, String> {
     static HOOK: Once = Once::new();
     HOOK.call_once(|| {
         let printing = panic::take_hook();
@@ -291,9 +384,9 @@ fn catching<T>(body: impl FnOnce() -> T) -> Result<T, String> {
             }
         }));
     });
-    CATCHING.set(true);
+    let nested = CATCHING.replace(true);
     let result = panic::catch_unwind(AssertUnwindSafe(body));
-    CATCHING.set(false);
+    CATCHING.set(nested);
     result.map_err(|_| {
         PANIC
             .take()
@@ -301,35 +394,74 @@ fn catching<T>(body: impl FnOnce() -> T) -> Result<T, String> {
     })
 }
 
-fn observe<E: StreamEngine>(runner: &mut Runner<'_, E>, op: &Op) -> Seen {
+/// Applies `op` and observes the step.
+fn observe<E: StreamEngine>(runner: &mut Runner<'_, E>, op: &Op) -> Seen<Box<Observed>> {
     match catching(|| runner.step(op)) {
-        Ok(Ok(observed)) => Seen::Step(Box::new(observed)),
-        Ok(Err(error)) => Seen::Unobserved(error.to_string()),
+        Ok(Ok(observed)) => Seen::Answered(Box::new(observed)),
+        Ok(Err(Error::Engine { what, message })) => Seen::Unobserved { what, message },
+        Ok(Err(error)) => Seen::Unobserved {
+            what: "at this step".to_string(),
+            message: error.to_string(),
+        },
+        Err(panic) => Seen::Panicked(panic),
+    }
+}
+
+/// Lists the records a database stores, as the open transaction of its
+/// runner sees them.
+fn walk<'db, E: StreamEngine>(
+    db: &'db GroveDb<E>,
+    runner: &Runner<'db, E>,
+    case: &Case,
+    before: &BTreeSet<Place>,
+) -> Seen<Listing> {
+    let listed = catching(|| {
+        stored(
+            db,
+            runner.transactions().block(),
+            case.grove_version,
+            before,
+        )
+    });
+    match listed {
+        Ok(Ok(listing)) => Seen::Answered(listing),
+        Ok(Err(message)) => Seen::Unobserved {
+            what: "listing what is stored".to_string(),
+            message,
+        },
         Err(panic) => Seen::Panicked(panic),
     }
 }
 
 /// The parts in which two steps differ.
 pub fn differences(reference: &Step, candidate: &Step) -> Vec<Part> {
+    // Every field by name, so that a field a step gains is compared or
+    // does not compile.
+    let Step {
+        cost,
+        outcome,
+        root_hash,
+        proof,
+    } = reference;
     let mut parts = Vec::new();
-    if reference.cost != candidate.cost {
+    if *cost != candidate.cost {
         parts.push(Part::Cost);
     }
-    match (&reference.outcome, &candidate.outcome) {
+    match (outcome, &candidate.outcome) {
         (Outcome::Returned(was), Outcome::Returned(is)) if was == is => {}
         (Outcome::Returned(_), Outcome::Returned(_)) => parts.push(Part::Result),
         (Outcome::Failed(was), Outcome::Failed(is)) if was == is => {}
         _ => parts.push(Part::Error),
     }
-    if reference.root_hash != candidate.root_hash {
+    if *root_hash != candidate.root_hash {
         parts.push(Part::RootHash);
     }
-    match (&reference.proof, &candidate.proof) {
-        (Some(was), Some(is)) => {
-            if was.cost != is.cost {
+    match (proof, &candidate.proof) {
+        (Some(Proof { cost, proved }), Some(is)) => {
+            if *cost != is.cost {
                 parts.push(Part::ProofCost);
             }
-            if was.proved != is.proved {
+            if *proved != is.proved {
                 parts.push(Part::Proof);
             }
         }
@@ -346,16 +478,31 @@ fn lines(observed: &Observed) -> Vec<String> {
     lines
 }
 
-/// The records a database stores, as the open transaction of its runner
-/// sees them.
-fn listing<'db, E: StreamEngine>(
-    db: &'db GroveDb<E>,
-    runner: &Runner<'db, E>,
-    side: &Side<E>,
-    case: &Case,
-) -> Result<Vec<Record>, Error> {
-    stored(db, runner.transactions().block(), case.grove_version)
-        .map_err(|error| Error::engine(&format!("walking {}", side.name()), &error))
+/// Whether an operation only reads, whatever it reads through: what is
+/// stored is what it was before.
+fn reads(op: &Op) -> bool {
+    matches!(
+        op,
+        Op::Read(_) | Op::Transaction(TransactionOp::SnapshotRead(_) | TransactionOp::BlockRead(_))
+    )
+}
+
+/// The subtrees `op` asks to drop flat, whether or not it succeeds.
+fn dropped_flat(op: &Op) -> impl Iterator<Item = SubtreePath> + '_ {
+    let at = |path: &SubtreePath, key: &Vec<u8>| {
+        let mut path = path.clone();
+        path.push(key.clone());
+        path
+    };
+    let written = match op {
+        Op::Write(Write::DropFlat { path, key }) => Some(at(path, key)),
+        _ => None,
+    };
+    let batched = op.batch_ops().filter_map(move |op| match op {
+        BatchOp::DropFlat { path, key, .. } => Some(at(path, key)),
+        _ => None,
+    });
+    written.into_iter().chain(batched)
 }
 
 /// Runs `case` on a fresh database of each engine, under `scratch`, and
@@ -383,142 +530,164 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
 
     let mut tally = Tally::default();
     let mut writes = 0u64;
-    let diverged = |tally, divergence| Run {
-        tally,
-        divergence: Some(divergence),
-        cut_short: None,
-    };
-    let cut_short = |mut tally: Tally, why: String| {
-        tally.cut_short = 1;
-        Run {
+    // The subtrees the last walk reached, and the ones the stream asked to
+    // drop flat, whose records an engine may keep until the drop is flushed
+    // (`super::state`).
+    let mut places: BTreeSet<Place> = BTreeSet::new();
+    let mut flat_drops: BTreeSet<SubtreePath> = BTreeSet::new();
+    let ended = |tally, divergence, cut_short, interrupted| {
+        Ok(Run {
             tally,
-            divergence: None,
-            cut_short: Some(why),
-        }
+            divergence,
+            cut_short,
+            interrupted,
+        })
+    };
+    let diverged = |tally, step, parts, reference, candidate| {
+        let divergence = Divergence {
+            step,
+            parts,
+            reference,
+            candidate,
+        };
+        ended(tally, Some(divergence), None, false)
+    };
+    let cut_short = |mut tally: Tally, step: usize, why: String| {
+        tally.cut_short = 1;
+        ended(tally, None, Some(format!("at step {step}, {why}")), false)
     };
     for (step, op) in case.ops.iter().enumerate() {
         if interrupted() {
-            return Ok(cut_short(tally, "interrupted".to_string()));
+            return ended(tally, None, None, true);
         }
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
-        let (was, is) = match (was, is) {
-            (Seen::Step(was), Seen::Step(is)) => (was, is),
-            (Seen::Panicked(was), Seen::Panicked(_)) => {
-                return Ok(cut_short(
-                    tally,
-                    format!("both engines panicked at step {step}: {was}"),
-                ));
-            }
-            (Seen::Unobserved(was), Seen::Unobserved(_)) => {
-                return Ok(cut_short(
-                    tally,
-                    format!("neither engine could be observed at step {step}: {was}"),
-                ));
-            }
-            (was, is) => {
-                let panicked = matches!(was, Seen::Panicked(_)) || matches!(is, Seen::Panicked(_));
-                let said = |seen: Seen| match seen {
-                    Seen::Step(observed) => lines(&observed),
-                    Seen::Unobserved(error) => vec![format!("not observed: {error}")],
-                    Seen::Panicked(panic) => vec![format!("panicked: {panic}")],
-                };
-                return Ok(diverged(
-                    tally,
-                    Divergence {
-                        step,
-                        parts: vec![if panicked {
-                            Part::Panic
-                        } else {
-                            Part::Observation
-                        }],
-                        reference: said(was),
-                        candidate: said(is),
-                    },
-                ));
-            }
+        flat_drops.extend(dropped_flat(op));
+        let (was, is) = match both(was, is, |observed| lines(&observed)) {
+            Both::Answered(was, is) => (was, is),
+            Both::Alike(why) => return cut_short(tally, step, why),
+            Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
         };
         let parts = differences(&was.step, &is.step);
         if !parts.is_empty() {
-            return Ok(diverged(
-                tally,
-                Divergence {
-                    step,
-                    parts,
-                    reference: lines(&was),
-                    candidate: lines(&is),
-                },
-            ));
+            return diverged(tally, step, parts, lines(&was), lines(&is));
         }
         tally.failed += u64::from(was.step.failed());
         tally.proofs += u64::from(was.step.proof.is_some());
 
         let last = step + 1 == case.ops.len();
-        if !matches!(op, Op::Read(_)) {
-            writes += 1;
-        }
+        let write = !reads(op);
+        writes += u64::from(write);
         let due = match stored_check {
             Stored::Never => false,
             Stored::AtTheEnd => last,
-            Stored::Every(every) => {
-                last || (!matches!(op, Op::Read(_)) && writes.is_multiple_of(every.max(1)))
-            }
+            Stored::Every(every) => last || (write && writes.is_multiple_of(every.max(1))),
         };
-        if due {
-            let was = listing(&reference_db, &reference_runner, reference, case)?;
-            let is = listing(&candidate_db, &candidate_runner, candidate, case)?;
-            tally.walks += 1;
-            tally.records += was.len() as u64;
-            if let Some((was, is)) = first_difference(&was, &is) {
-                let text = |record: Option<&Record>| {
-                    vec![record.map_or("no further record".to_string(), Record::text)]
-                };
-                return Ok(diverged(
-                    tally,
-                    Divergence {
-                        step,
-                        parts: vec![Part::Stored],
-                        reference: text(was),
-                        candidate: text(is),
-                    },
-                ));
-            }
+        if !due {
+            continue;
         }
+        let before: BTreeSet<Place> = std::mem::take(&mut places)
+            .into_iter()
+            .filter(|place| !flat_drops.contains(&place.path))
+            .collect();
+        let was = walk(&reference_db, &reference_runner, case, &before);
+        let is = walk(&candidate_db, &candidate_runner, case, &before);
+        let listed = |listing: Listing| vec![format!("{} records", listing.records.len())];
+        let (was, is) = match both(was, is, listed) {
+            Both::Answered(was, is) => (was, is),
+            Both::Alike(why) => return cut_short(tally, step, why),
+            Both::Differ(part, was, is) => return diverged(tally, step, vec![part], was, is),
+        };
+        tally.walks += 1;
+        tally.records += was.records.len() as u64;
+        if let Some((was, is)) = first_difference(&was.records, &is.records) {
+            let text = |record: Option<&Record>| {
+                vec![record.map_or("no further record".to_string(), Record::text)]
+            };
+            return diverged(tally, step, vec![Part::Stored], text(was), text(is));
+        }
+        places = was.places;
     }
-    Ok(Run {
-        tally,
-        divergence: None,
-        cut_short: None,
-    })
+    ended(tally, None, None, false)
 }
 
-/// A stand-in whose database holds, from the start, a record of the
-/// auxiliary keyspace that no stream writes: an engine that stores what no
-/// hash covers differently.
+/// What the tests of the fuzzer share.
 #[cfg(test)]
-pub(crate) fn stand_in_with_a_stray_record() -> Side<super::engines::StandIn> {
-    Side::opened_by("seeded", |dir| {
-        let db = GroveDb::<super::engines::StandIn>::open_with_engine(dir)?;
-        db.put_aux(b"left", b"behind", None, None).unwrap()?;
-        Ok(db)
-    })
+pub(crate) mod testing {
+    use grovedb::{GroveDb, RocksDbEngine};
+    use grovedb_version::version::GroveVersion;
+
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::Side;
+    use crate::{
+        diff::engines::{Fault, StandIn},
+        golden::run::Runner,
+        workload::Op,
+    };
+
+    /// The reference.
+    pub(crate) fn rocksdb() -> Side<RocksDbEngine> {
+        Side::of("rocksdb")
+    }
+
+    /// The stand-in as it is.
+    pub(crate) fn stand_in() -> Side<StandIn> {
+        Side::of("stand-in")
+    }
+
+    /// A stand-in whose database holds, from the start, a record of the
+    /// auxiliary keyspace that no stream writes: an engine that stores
+    /// what no hash covers differently.
+    pub(crate) fn stand_in_with_a_stray_record() -> Side<StandIn> {
+        Side::opened_by("seeded", |dir| {
+            let db = GroveDb::<StandIn>::open_with_engine(dir)?;
+            db.put_aux(b"left", b"behind", None, None).unwrap()?;
+            Ok(db)
+        })
+    }
+
+    /// A stand-in with `fault` that opens so many databases and no more.
+    pub(crate) fn stand_in_that_opens(times: u64, fault: Fault) -> Side<StandIn> {
+        let opened = AtomicU64::new(0);
+        Side::opened_by("worn out", move |dir| {
+            if opened.fetch_add(1, Ordering::Relaxed) >= times {
+                return Err(grovedb::Error::InvalidInput("no database any more"));
+            }
+            Ok(GroveDb::from_engine(StandIn::open_with_fault(dir, fault)?))
+        })
+    }
+
+    /// The bytes the last of `ops` adds, on a fresh database.
+    pub(crate) fn added_by_the_last_of(ops: &[Op]) -> u32 {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = GroveDb::open(dir.path()).expect("a database");
+        let mut runner = Runner::new(&db, GroveVersion::latest()).expect("a runner");
+        let mut added = 0;
+        for op in ops {
+            let observed = runner.step(op).expect("a step");
+            assert!(!observed.step.failed(), "{op:?}: {:?}", observed.remarks);
+            added = observed.step.cost.storage_cost.added_bytes;
+        }
+        added
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use grovedb::{Element, RocksDbEngine};
+    use grovedb::Element;
     use grovedb_costs::OperationCost;
     use grovedb_version::version::GroveVersion;
 
-    use super::*;
+    use super::{testing::*, *};
     use crate::{
         diff::engines::{Fault, StandIn},
         golden::{
             record::on_a_deep_stack,
-            step::{Proof, Proved, Value, Verification},
+            step::{Proved, Value, Verification},
         },
-        workload::{Query, QueryItem, Read, TransactionOp, Write},
+        workload::{AppendEntry, Query, QueryItem, Read},
     };
 
     fn insert(key: &[u8], value: Vec<u8>) -> Op {
@@ -565,16 +734,13 @@ mod tests {
         .expect("the case runs")
     }
 
-    /// The size of the write of an item of `len` bytes into the root tree,
-    /// under a key of one byte, on a database that holds one item already.
-    fn added_by_an_item_of(len: usize) -> u32 {
-        let dir = tempfile::tempdir().expect("a directory");
-        let db = GroveDb::open(dir.path()).expect("a database");
-        let grove_version = GroveVersion::latest();
-        let mut runner = Runner::new(&db, grove_version).expect("a runner");
-        runner.step(&insert(b"a", vec![0; 8])).expect("an insert");
-        let observed = runner.step(&insert(b"b", vec![0; len])).expect("an insert");
-        observed.step.cost.storage_cost.added_bytes
+    /// The two inserts every test of a planted fault makes, and what the
+    /// second adds.
+    fn two_inserts() -> (Vec<Op>, u32) {
+        let ops = vec![insert(b"a", vec![1; 8]), insert(b"b", vec![2; 60])];
+        let added = added_by_the_last_of(&ops);
+        assert_ne!(added, added_by_the_last_of(&ops[..1]));
+        (ops, added)
     }
 
     #[test]
@@ -584,24 +750,24 @@ mod tests {
             insert(b"b", vec![2; 60]),
             Op::Commit,
             all(),
+            Op::Transaction(TransactionOp::BlockRead(Read::GetAux { key: vec![1] })),
             Op::Write(Write::Delete {
                 path: Vec::new(),
                 key: b"missing".to_vec(),
             }),
             Op::Transaction(TransactionOp::Rollback),
         ]);
-        let run = compared(
-            &case,
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
-            Stored::Every(2),
-        );
+        let with = |stored_check| compared(&case, &rocksdb(), &stand_in(), stored_check);
+        // A walk after the second, the fourth and the last operation that
+        // is not a read, of the root key and the two nodes each time.
+        let run = with(Stored::Every(2));
         assert_eq!(run.divergence, None);
         assert_eq!(run.cut_short, None);
+        assert!(!run.interrupted);
         assert_eq!(
             run.tally,
             Tally {
-                steps: 6,
+                steps: 7,
                 failed: 1,
                 proofs: 1,
                 walks: 3,
@@ -609,32 +775,17 @@ mod tests {
                 cut_short: 0,
             }
         );
-        let once = compared(
-            &case,
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
-            Stored::AtTheEnd,
-        );
+        let once = with(Stored::AtTheEnd);
         assert_eq!((once.tally.walks, once.tally.records), (1, 3));
-        let never = compared(
-            &case,
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
-            Stored::Never,
-        );
-        assert_eq!(never.tally.walks, 0);
+        assert_eq!(with(Stored::Never).tally.walks, 0);
     }
 
     #[test]
     fn a_byte_too_many_in_a_cost_is_a_divergence_at_its_step() {
-        let when_added = added_by_an_item_of(60);
-        assert_ne!(when_added, added_by_an_item_of(8));
-        let case = case(vec![
-            insert(b"a", vec![1; 8]),
-            insert(b"b", vec![2; 60]),
-            Op::Commit,
-        ]);
-        let reference = Side::<RocksDbEngine>::of("rocksdb");
+        let (mut ops, when_added) = two_inserts();
+        ops.push(Op::Commit);
+        let case = case(ops);
+        let reference = rocksdb();
         let candidate = StandIn::side(Fault::AddedByte { when_added });
         let run = compared(&case, &reference, &candidate, Stored::AtTheEnd);
         let divergence = run.divergence.expect("the planted byte");
@@ -658,21 +809,16 @@ mod tests {
 
     #[test]
     fn a_panic_of_one_engine_is_a_divergence_and_of_both_ends_the_case() {
-        let when_added = added_by_an_item_of(60);
-        let case = case(vec![
-            insert(b"a", vec![1; 8]),
-            insert(b"b", vec![2; 60]),
-            Op::Commit,
-        ]);
+        let (mut ops, when_added) = two_inserts();
+        ops.push(Op::Commit);
+        let case = case(ops);
         let fault = Fault::Panic { when_added };
-        let run = compared(
-            &case,
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &StandIn::side(fault),
-            Stored::Never,
-        );
+        let run = compared(&case, &rocksdb(), &StandIn::side(fault), Stored::Never);
         let divergence = run.divergence.expect("one engine panicked");
-        assert_eq!((divergence.step, divergence.parts), (1, vec![Part::Panic]));
+        assert_eq!(
+            (divergence.step, &divergence.parts),
+            (1, &vec![Part::Panic])
+        );
         assert!(divergence.reference[0].starts_with("cost "));
         assert!(
             divergence.candidate[0].starts_with("panicked: ")
@@ -688,9 +834,10 @@ mod tests {
             Stored::Never,
         );
         assert_eq!(both.divergence, None);
+        assert!(!both.interrupted);
         let why = both.cut_short.expect("both engines panicked");
         assert!(
-            why.starts_with("both engines panicked at step 1: "),
+            why.starts_with("at step 1, both engines panicked: "),
             "{why}"
         );
         assert_eq!((both.tally.steps, both.tally.cut_short), (2, 1));
@@ -703,8 +850,8 @@ mod tests {
         let asked = Cell::new(0);
         let run = run(
             &case,
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+            &rocksdb(),
+            &stand_in(),
             scratch.path(),
             Stored::AtTheEnd,
             &|| {
@@ -713,23 +860,27 @@ mod tests {
             },
         )
         .expect("the case runs");
-        assert_eq!(run.cut_short.as_deref(), Some("interrupted"));
-        assert_eq!((run.tally.steps, run.tally.walks), (1, 0));
+        assert!(run.interrupted);
+        assert_eq!((run.divergence, run.cut_short), (None, None));
+        assert_eq!(
+            run.tally,
+            Tally {
+                steps: 1,
+                ..Tally::default()
+            }
+        );
     }
 
     #[test]
     fn records_one_engine_holds_differently_are_a_divergence() {
-        // The same engine opened twice, the second with a record of the
-        // auxiliary keyspace the stream never wrote: no hash holds it.
         let seeded = stand_in_with_a_stray_record();
         let case = case(vec![
             insert(b"a", vec![1]),
             insert(b"b", vec![2]),
             Op::Commit,
         ]);
-        let reference = Side::<RocksDbEngine>::of("rocksdb");
         for (stored_check, step) in [(Stored::Every(1), 0), (Stored::AtTheEnd, 2)] {
-            let run = compared(&case, &reference, &seeded, stored_check);
+            let run = compared(&case, &rocksdb(), &seeded, stored_check);
             let divergence = run.divergence.expect("the record");
             assert_eq!(
                 (divergence.step, &divergence.parts),
@@ -741,8 +892,79 @@ mod tests {
                 ["aux / key 6c656674 = 6 bytes 626568696e64"]
             );
         }
-        let unseen = compared(&case, &reference, &seeded, Stored::Never);
+        let unseen = compared(&case, &rocksdb(), &seeded, Stored::Never);
         assert_eq!(unseen.divergence, None);
+    }
+
+    /// A subtree that is dropped flat keeps its records until the drop is
+    /// flushed, on the engines of today. They are not listed as left
+    /// behind: an engine may hide them at the drop. A subtree that is
+    /// deleted is looked into once more, and holds nothing.
+    #[test]
+    fn what_a_flat_drop_leaves_until_it_is_flushed_is_not_compared() {
+        let log = || {
+            vec![
+                Op::Write(Write::Insert {
+                    path: Vec::new(),
+                    key: b"log".to_vec(),
+                    element: Element::empty_mmr_tree(),
+                }),
+                Op::Write(Write::Append {
+                    path: vec![b"log".to_vec()],
+                    entry: AppendEntry::Mmr(vec![9; 40]),
+                }),
+            ]
+        };
+        let records = |ops: Vec<Op>| {
+            let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::Every(1));
+            assert_eq!((run.divergence, run.cut_short), (None, None));
+            run.tally.records
+        };
+        let empty_log = records(log()[..1].to_vec());
+        assert_eq!(empty_log, 2, "the root key and the node of the tree");
+        let filled = records(log()) - empty_log;
+        assert!(filled > empty_log, "the tree holds its leaf");
+
+        let mut dropped = log();
+        dropped.extend([
+            Op::Commit,
+            Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"log".to_vec(),
+            }),
+            Op::Commit,
+            Op::FlushPendingDrops,
+        ]);
+        // The walks after the drop and after the flush list nothing: the
+        // root tree is empty. The one after the commit of the drop lists
+        // the drop, which is pending then.
+        assert_eq!(records(dropped), empty_log + filled + filled + 1);
+
+        let mut deleted = log();
+        deleted.extend([
+            Op::Commit,
+            Op::Write(Write::Delete {
+                path: Vec::new(),
+                key: b"log".to_vec(),
+            }),
+            Op::Commit,
+        ]);
+        assert_eq!(records(deleted), empty_log + filled + filled);
+
+        let paths = |op: &Op| dropped_flat(op).collect::<Vec<_>>();
+        let batch = Op::Batch(vec![
+            BatchOp::DropFlat {
+                path: vec![vec![1]],
+                key: vec![2],
+                tree_type: grovedb::TreeType::NormalTree,
+            },
+            BatchOp::Delete {
+                path: vec![vec![3]],
+                key: vec![4],
+            },
+        ]);
+        assert_eq!(paths(&batch), [vec![vec![1], vec![2]]]);
+        assert_eq!(paths(&Op::Commit), Vec::<SubtreePath>::new());
     }
 
     #[test]
@@ -751,23 +973,33 @@ mod tests {
             Err(grovedb::Error::InvalidInput("no database here"))
         });
         let scratch = tempfile::tempdir().expect("a directory");
-        let refused = run(
-            &case(Vec::new()),
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &closed,
-            scratch.path(),
-            Stored::Never,
-            &|| false,
-        )
-        .expect_err("the candidate does not open");
+        let refused = |candidate: &Side<StandIn>| {
+            run(
+                &case(Vec::new()),
+                &rocksdb(),
+                candidate,
+                scratch.path(),
+                Stored::Never,
+                &|| false,
+            )
+            .expect_err("the candidate does not open")
+            .to_string()
+        };
         assert_eq!(
-            refused.to_string(),
+            refused(&closed),
             "the engine failed opening a database of closed: invalid input: no database here"
+        );
+        let panics = Side::<StandIn>::opened_by("broken", |_| panic!("no database at all"));
+        let refused = refused(&panics);
+        assert!(
+            refused.starts_with("the engine failed opening a database of broken: panicked: ")
+                && refused.ends_with("no database at all"),
+            "{refused}"
         );
         let nowhere = run(
             &case(Vec::new()),
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+            &rocksdb(),
+            &stand_in(),
             &scratch.path().join("missing"),
             Stored::Never,
             &|| false,
@@ -776,8 +1008,89 @@ mod tests {
         assert!(matches!(nowhere, Error::Io { .. }), "{nowhere}");
     }
 
+    /// Two engines that did not both answer: alike, or not.
+    #[test]
+    fn engines_that_do_not_answer_are_compared_by_how_they_fail() {
+        let answered = || Seen::Answered(7);
+        let panicked = |message: &str| Seen::<i32>::Panicked(message.to_string());
+        let unobserved = |what: &str, message: &str| Seen::<i32>::Unobserved {
+            what: what.to_string(),
+            message: message.to_string(),
+        };
+        let said = |answer: i32| vec![format!("answer {answer}")];
+        let settled = |was, is| match both(was, is, said) {
+            Both::Answered(was, is) => format!("answered {was} {is}"),
+            Both::Alike(why) => format!("alike: {why}"),
+            Both::Differ(part, was, is) => format!("{}: {was:?} {is:?}", part.name()),
+        };
+        assert_eq!(settled(answered(), answered()), "answered 7 7");
+        assert_eq!(
+            settled(panicked("at a"), panicked("at a")),
+            "alike: both engines panicked: at a"
+        );
+        assert_eq!(
+            settled(panicked("at a"), panicked("at b")),
+            r#"panic: ["panicked: at a"] ["panicked: at b"]"#
+        );
+        assert_eq!(
+            settled(answered(), panicked("at b")),
+            r#"panic: ["answer 7"] ["panicked: at b"]"#
+        );
+        assert_eq!(
+            settled(unobserved("reading", "x"), panicked("at b")),
+            r#"panic: ["not observed: reading: x"] ["panicked: at b"]"#
+        );
+        // The message is an engine's own text. What could not be done is
+        // the same thing on both.
+        assert_eq!(
+            settled(unobserved("reading", "x"), unobserved("reading", "y")),
+            "alike: neither engine could be observed reading: x"
+        );
+        assert_eq!(
+            settled(unobserved("reading", "x"), unobserved("walking", "x")),
+            r#"observation: ["not observed: reading: x"] ["not observed: walking: x"]"#
+        );
+        assert_eq!(
+            settled(unobserved("reading", "x"), answered()),
+            r#"observation: ["not observed: reading: x"] ["answer 7"]"#
+        );
+    }
+
+    /// A divergence shows again on a shorter stream when the engines differ
+    /// there in nothing new and the same engine failed.
+    #[test]
+    fn a_divergence_is_told_from_another() {
+        let divergence = |parts: &[Part], reference: &str, candidate: &str| Divergence {
+            step: 0,
+            parts: parts.to_vec(),
+            reference: vec![reference.to_string()],
+            candidate: vec![candidate.to_string()],
+        };
+        let cost = divergence(&[Part::Cost, Part::RootHash], "cost 1", "cost 2");
+        assert!(cost.shows_again_as(&cost));
+        assert!(cost.shows_again_as(&divergence(&[Part::Cost], "cost 3", "cost 4")));
+        assert!(!cost.shows_again_as(&divergence(&[Part::Cost, Part::Error], "a", "b")));
+        assert!(!cost.shows_again_as(&divergence(&[Part::Stored], "a", "b")));
+        let panic = divergence(&[Part::Panic], "cost 1", "panicked: at a");
+        assert!(panic.shows_again_as(&divergence(&[Part::Panic], "cost 9", "panicked: at b")));
+        assert!(!panic.shows_again_as(&divergence(&[Part::Panic], "panicked: at a", "cost 1")));
+        assert!(!panic.shows_again_as(&divergence(
+            &[Part::Panic],
+            "cost 1",
+            "not observed: reading: x"
+        )));
+        let nothing = Divergence {
+            reference: Vec::new(),
+            ..panic.clone()
+        };
+        assert!(nothing.shows_again_as(&panic));
+    }
+
     #[test]
     fn every_part_of_a_step_is_told_apart() {
+        fn proof(step: &mut Step) -> &mut Proof {
+            step.proof.as_mut().expect("a proof")
+        }
         let step = || Step {
             cost: OperationCost::default(),
             outcome: Outcome::Returned(Value::Element(vec![1])),
@@ -811,9 +1124,6 @@ mod tests {
         );
         assert_eq!(differ(|step| step.root_hash = None), [Part::RootHash]);
         assert_eq!(differ(|step| step.proof = None), [Part::Proof]);
-        fn proof(step: &mut Step) -> &mut Proof {
-            step.proof.as_mut().expect("a proof")
-        }
         assert_eq!(
             differ(|step| proof(step).cost.seek_count = 1),
             [Part::ProofCost]
@@ -919,10 +1229,17 @@ mod tests {
     }
 
     #[test]
-    fn a_panic_outside_a_step_is_printed_as_ever() {
+    fn a_panic_is_caught_where_it_is_asked_for_and_printed_elsewhere() {
         assert_eq!(catching(|| 7), Ok(7));
         let caught: Result<(), String> = catching(|| panic!("caught {}", 1));
         assert!(caught.expect_err("a panic").contains("caught 1"));
+        // Inside another catch, and after it the outer one still catches.
+        let outer: Result<(), String> = catching(|| {
+            let inner: Result<(), String> = catching(|| panic!("inner"));
+            assert!(inner.expect_err("a panic").contains("inner"));
+            panic!("outer")
+        });
+        assert!(outer.expect_err("a panic").contains("outer"));
         // The hook hands a panic nobody catches to the hook that was there.
         let outside = std::thread::spawn(|| panic!("not caught")).join();
         assert!(outside.is_err());

@@ -14,13 +14,43 @@
 //! list included, with the hashes and links of its node; the records of an
 //! append-only tree (the cursor of `FlatStore`); and the aux and meta
 //! records of each subtree. The secondary trees of an indexed tree, which
-//! are not under a path, are reached by their prefixes.
+//! are not under a path, are reached by their prefixes. The drops that are
+//! pending are listed as the engine reports them.
 //!
 //! The listing is engine-neutral by the contract of the two seams: a node
 //! is shown in Merk's encoding whatever an engine keeps of it, and a flat
 //! record is the bytes that were put.
+//!
+//! # What a subtree leaves behind
+//!
+//! A subtree that is deleted, moved away, or rolled back with the
+//! transaction that created it is no longer under a path the walk follows.
+//! What an engine left of it would show only if a tree were created at
+//! that path again. So a walk is told the subtrees the walk before it
+//! listed ([`Listing::places`]), and lists the keyspaces of each one it no
+//! longer reaches, as records that were left behind. Two engines have to
+//! leave the same, which is nothing wherever GroveDB cleared the subtree.
+//!
+//! # What the walk does not reach
+//!
+//! A subtree that was dropped flat is left out of that: its records stay
+//! until the drop is flushed on an engine that reclaims then, and are gone
+//! at once on one that hides them at the drop, and both are right. The
+//! caller leaves such a subtree out of the places it hands on. Storage
+//! under a prefix that never was a place of a walk is not looked at
+//! either: the walk reads what GroveDB can address, not what a file holds.
+//!
+//! A cost that a handle or a cursor reports is dropped (`unwrap` on a
+//! `CostContext` returns the value and cannot fail): the walk is no
+//! operation of the stream.
 
-use grovedb::{engine::SubtreeHandle, Element};
+use std::collections::BTreeSet;
+
+use grovedb::{
+    element::indexed::IndexAxis,
+    engine::{Engine, SubtreeHandle},
+    Element,
+};
 use grovedb_merk::{element::decode::ElementDecodeExtensions, store::NodeStore};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
@@ -31,12 +61,38 @@ use grovedb_version::version::GroveVersion;
 
 use crate::workload::{Db, StreamEngine, Tx};
 
-/// The tags an indexed tree keeps its secondary trees under: one for each
-/// axis it can be ranked on. A tag no tree uses names an empty keyspace.
-const SECONDARY_TAGS: std::ops::RangeInclusive<u8> = 0..=7;
+/// The axes an indexed tree can be ranked on. A secondary tree is kept
+/// under the tag of its axis, so these are the keyspaces the walk looks
+/// into for every indexed tree. One that no tree uses is empty: the big
+/// sum axis keeps its rows under the tag of the sum axis.
+const AXES: [IndexAxis; 4] = [
+    IndexAxis::Count,
+    IndexAxis::Sum,
+    IndexAxis::Avg,
+    IndexAxis::BigSum,
+];
+
+/// Where `axis` is in [`AXES`]. An axis added to GroveDB does not compile
+/// here until it is listed.
+const fn listed(axis: IndexAxis) -> usize {
+    match axis {
+        IndexAxis::Count => 0,
+        IndexAxis::Sum => 1,
+        IndexAxis::Avg => 2,
+        IndexAxis::BigSum => 3,
+    }
+}
+
+const _: () = {
+    let mut index = 0;
+    while index < AXES.len() {
+        assert!(listed(AXES[index]) == index);
+        index += 1;
+    }
+};
 
 /// The keyspace of a subtree a record is in.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Keyspace {
     /// The key of the root node, which the root tree records itself.
     RootKey,
@@ -48,6 +104,10 @@ pub enum Keyspace {
     Aux,
     /// The meta records.
     Meta,
+    /// The drops of subtrees that wait to be flushed, as the engine
+    /// reports them: the prefixes each one frees, under the prefix of the
+    /// subtree.
+    PendingDrop,
 }
 
 impl Keyspace {
@@ -58,8 +118,22 @@ impl Keyspace {
             Keyspace::Flat => "flat",
             Keyspace::Aux => "aux",
             Keyspace::Meta => "meta",
+            Keyspace::PendingDrop => "pending-drop",
         }
     }
+}
+
+/// A subtree a walk listed.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct Place {
+    /// The path of the subtree. For a secondary tree of an indexed tree it
+    /// is the path of the indexed tree.
+    pub path: Vec<Vec<u8>>,
+    /// The tag of the secondary tree, for one.
+    pub secondary: Option<u8>,
+    /// What its data keyspace holds: [`Keyspace::Nodes`] or
+    /// [`Keyspace::Flat`].
+    pub data: Keyspace,
 }
 
 /// One stored record.
@@ -76,6 +150,9 @@ pub struct Record {
     pub key: Vec<u8>,
     /// The bytes stored.
     pub value: Vec<u8>,
+    /// Whether the subtree is one the walk no longer reaches: the record
+    /// was left behind.
+    pub left_behind: bool,
 }
 
 impl Record {
@@ -91,7 +168,12 @@ impl Record {
             value.push('…');
         }
         format!(
-            "{} /{}{secondary} key {} = {} bytes {value}",
+            "{}{} /{}{secondary} key {} = {} bytes {value}",
+            if self.left_behind {
+                "left behind: "
+            } else {
+                ""
+            },
             self.keyspace.name(),
             path.join("/"),
             hex::encode(&self.key),
@@ -100,36 +182,57 @@ impl Record {
     }
 }
 
-/// Every record `db` stores, as `transaction` sees it, in the order of the
-/// walk: a subtree before the subtrees under it.
+/// What a walk listed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Listing {
+    /// The records, in the order of the walk: a subtree before the
+    /// subtrees under it, then the pending drops, then what was left
+    /// behind.
+    pub records: Vec<Record>,
+    /// The subtrees the walk reached from the root tree.
+    pub places: BTreeSet<Place>,
+}
+
+/// Every record `db` stores, as `transaction` sees it.
+///
+/// `before` are the subtrees an earlier walk reached. The keyspaces of each
+/// one this walk does not reach are listed as well, as records left behind.
 pub fn stored<'db, E: StreamEngine>(
     db: &'db Db<E>,
     transaction: &Tx<'db, E>,
     grove_version: &GroveVersion,
-) -> Result<Vec<Record>, String> {
+    before: &BTreeSet<Place>,
+) -> Result<Listing, String> {
     let engine = db.engine();
     let mut records = Vec::new();
+    let mut places = BTreeSet::new();
     let mut merks = vec![Vec::new()];
     while let Some(path) = merks.pop() {
+        let place = Place {
+            path,
+            secondary: None,
+            data: Keyspace::Nodes,
+        };
         let handle = engine
-            .subtree(SubtreePath::from(path.as_slice()), None, transaction)
+            .subtree(SubtreePath::from(place.path.as_slice()), None, transaction)
             .unwrap();
-        if path.is_empty() {
+        if place.path.is_empty() {
             let root_key = NodeStore::root_key(&handle)
                 .unwrap()
                 .map_err(|error| format!("reading the root key: {error}"))?;
             if let Some(root_key) = root_key {
                 records.push(Record {
-                    path: path.clone(),
+                    path: Vec::new(),
                     secondary: None,
                     keyspace: Keyspace::RootKey,
                     key: Vec::new(),
                     value: root_key,
+                    left_behind: false,
                 });
             }
         }
         let from = records.len();
-        subtree(&handle, &path, None, Keyspace::Nodes, &mut records)?;
+        subtree(&handle, &place, false, &mut records)?;
         let nodes: Vec<(Vec<u8>, Vec<u8>)> = records[from..]
             .iter()
             .filter(|record| record.keyspace == Keyspace::Nodes)
@@ -147,53 +250,97 @@ pub fn stored<'db, E: StreamEngine>(
             if !element.is_any_tree() {
                 continue;
             }
-            let mut below = path.clone();
+            let mut below = place.path.clone();
             below.push(key);
             if element.uses_non_merk_data_storage() {
-                let handle = engine
-                    .subtree(SubtreePath::from(below.as_slice()), None, transaction)
-                    .unwrap();
-                subtree(&handle, &below, None, Keyspace::Flat, &mut records)?;
+                let flat = Place {
+                    path: below,
+                    secondary: None,
+                    data: Keyspace::Flat,
+                };
+                list(engine, transaction, &flat, false, &mut records)?;
+                places.insert(flat);
                 continue;
             }
             if element.is_indexed_tree() {
-                let primary = build_prefix(SubtreePath::from(below.as_slice())).unwrap();
-                for tag in SECONDARY_TAGS {
-                    let prefix = secondary_prefix_for(&primary, tag).unwrap();
-                    let handle = engine.subtree_by_prefix(prefix, None, transaction).unwrap();
-                    subtree(&handle, &below, Some(tag), Keyspace::Nodes, &mut records)?;
+                for axis in AXES {
+                    let secondary = Place {
+                        path: below.clone(),
+                        secondary: Some(axis.tag()),
+                        data: Keyspace::Nodes,
+                    };
+                    list(engine, transaction, &secondary, false, &mut records)?;
+                    places.insert(secondary);
                 }
             }
             merks.push(below);
         }
+        places.insert(place);
     }
-    Ok(records)
+
+    let pending = engine
+        .pending_prefix_drop_records()
+        .map_err(|error| format!("reading the pending drops: {error}"))?;
+    for drop in pending {
+        records.push(Record {
+            path: drop.path,
+            secondary: None,
+            keyspace: Keyspace::PendingDrop,
+            key: drop.primary_prefix.to_vec(),
+            value: drop.doomed_prefixes.concat(),
+            left_behind: false,
+        });
+    }
+
+    for gone in before.difference(&places) {
+        list(engine, transaction, gone, true, &mut records)?;
+    }
+    Ok(Listing { records, places })
+}
+
+/// Opens the subtree at `place` and lists its keyspaces.
+fn list<'db, E: Engine>(
+    engine: &'db E,
+    transaction: &E::Transaction<'db>,
+    place: &Place,
+    left_behind: bool,
+    records: &mut Vec<Record>,
+) -> Result<(), String> {
+    let path = SubtreePath::from(place.path.as_slice());
+    let handle = match place.secondary {
+        None => engine.subtree(path, None, transaction).unwrap(),
+        Some(tag) => {
+            let prefix = secondary_prefix_for(&build_prefix(path).unwrap(), tag).unwrap();
+            engine.subtree_by_prefix(prefix, None, transaction).unwrap()
+        }
+    };
+    subtree(&handle, place, left_behind, records)
 }
 
 /// Lists the three keyspaces of one subtree: its data, as nodes or as flat
 /// records, its aux records and its meta records.
 fn subtree<'db, S: SubtreeHandle<'db>>(
     handle: &S,
-    path: &[Vec<u8>],
-    secondary: Option<u8>,
-    data: Keyspace,
+    place: &Place,
+    left_behind: bool,
     records: &mut Vec<Record>,
 ) -> Result<(), String> {
     let mut list = |keyspace, key: &[u8], value: &[u8]| {
         records.push(Record {
-            path: path.to_vec(),
-            secondary,
+            path: place.path.clone(),
+            secondary: place.secondary,
             keyspace,
             key: key.to_vec(),
             value: value.to_vec(),
+            left_behind,
         });
     };
-    match data {
+    match place.data {
         Keyspace::Flat => walk(FlatStore::cursor(handle), |key, value| {
-            list(data, key, value)
+            list(Keyspace::Flat, key, value)
         })?,
         _ => walk(NodeStore::cursor(handle), |key, value| {
-            list(data, key, value)
+            list(Keyspace::Nodes, key, value)
         })?,
     }
     walk(FlatStore::cursor(&handle.aux()), |key, value| {
@@ -237,7 +384,9 @@ pub fn first_difference<'a>(
 
 #[cfg(test)]
 mod tests {
-    use grovedb::{element::reference_path::ReferencePathType, Element, GroveDb, RocksDbEngine};
+    use grovedb::{
+        element::reference_path::ReferencePathType, Element, GroveDb, RocksDbEngine, TreeType,
+    };
 
     use super::*;
     use crate::{
@@ -303,19 +452,26 @@ mod tests {
     }
 
     fn filled<E: StreamEngine>(db: &GroveDb<E>) {
-        let grove_version = GroveVersion::latest();
-        let mut transactions = Transactions::new(db);
-        for op in grove().iter().chain([&Op::Commit]) {
-            transactions
-                .apply(op, grove_version)
-                .unwrap()
-                .unwrap_or_else(|error| panic!("{op:?}: {error}"));
-        }
+        applied(db, &grove());
+    }
+
+    fn listed_after<E: StreamEngine>(db: &GroveDb<E>, before: &BTreeSet<Place>) -> Listing {
+        let transaction = db.start_transaction();
+        stored(db, &transaction, GroveVersion::latest(), before).expect("a listing")
     }
 
     fn listing<E: StreamEngine>(db: &GroveDb<E>) -> Vec<Record> {
-        let transaction = db.start_transaction();
-        stored(db, &transaction, GroveVersion::latest()).expect("a listing")
+        listed_after(db, &BTreeSet::new()).records
+    }
+
+    fn applied<E: StreamEngine>(db: &GroveDb<E>, ops: &[Op]) {
+        let mut transactions = Transactions::new(db);
+        for op in ops.iter().chain([&Op::Commit]) {
+            transactions
+                .apply(op, GroveVersion::latest())
+                .unwrap()
+                .unwrap_or_else(|error| panic!("{op:?}: {error}"));
+        }
     }
 
     #[test]
@@ -489,8 +645,10 @@ mod tests {
         )
         .unwrap()
         .expect("an insert");
-        let inside = stored(&db, &transaction, grove_version).expect("a listing");
-        assert_eq!(inside.len(), 2, "the root key and the node");
+        let inside = stored(&db, &transaction, grove_version, &BTreeSet::new()).expect("a listing");
+        assert_eq!(inside.records.len(), 2, "the root key and the node");
+        let paths: Vec<&[Vec<u8>]> = inside.places.iter().map(|place| &place.path[..]).collect();
+        assert_eq!(paths, [&[][..], &[b"tree".to_vec()]]);
         assert_eq!(listing(&db), Vec::new(), "nothing is committed");
     }
 
@@ -502,6 +660,7 @@ mod tests {
             keyspace: Keyspace::Nodes,
             key: vec![key],
             value: vec![0xab; 300],
+            left_behind: key == 2,
         };
         let (one, two) = (vec![record(1)], vec![record(1), record(2)]);
         assert_eq!(first_difference(&one, &one), None);
@@ -510,35 +669,153 @@ mod tests {
         let text = record(1).text();
         assert!(text.starts_with("node /0102/03 secondary 1 key 01 = 300 bytes abab"));
         assert!(text.ends_with('…'));
+        assert!(record(2).text().starts_with("left behind: node /0102/03 "));
         for (keyspace, name) in [
             (Keyspace::RootKey, "root-key"),
             (Keyspace::Flat, "flat"),
             (Keyspace::Meta, "meta"),
+            (Keyspace::PendingDrop, "pending-drop"),
         ] {
             assert_eq!(keyspace.name(), name);
         }
     }
 
+    /// The subtrees an earlier walk listed and this one does not reach are
+    /// looked into again: what a delete left behind is listed, and a
+    /// delete that cleared its subtree leaves nothing.
     #[test]
-    fn a_batch_that_deletes_a_tree_leaves_none_of_its_records() {
+    fn what_is_left_under_a_path_that_is_gone_is_listed() {
+        let (_dir, db) = open::<RocksDbEngine>();
+        filled(&db);
+        let before = listed_after(&db, &BTreeSet::new());
+        let gone = |path: &[&[u8]], secondary: Option<u8>, data| Place {
+            path: path.iter().map(|segment| segment.to_vec()).collect(),
+            secondary,
+            data,
+        };
+        for place in [
+            gone(&[], None, Keyspace::Nodes),
+            gone(&[b"tree"], None, Keyspace::Nodes),
+            gone(&[b"tree", b"inner"], None, Keyspace::Nodes),
+            gone(&[b"log"], None, Keyspace::Flat),
+            gone(&[b"ranks"], None, Keyspace::Nodes),
+            gone(&[b"ranks"], Some(IndexAxis::Count.tag()), Keyspace::Nodes),
+            gone(&[b"ranks"], Some(IndexAxis::BigSum.tag()), Keyspace::Nodes),
+            gone(&[b"ranks", b"entry"], None, Keyspace::Nodes),
+        ] {
+            assert!(before.places.contains(&place), "{place:?}");
+        }
+        assert_eq!(before.places.len(), 4 + 1 + AXES.len() + 1);
+        assert!(before.records.iter().all(|record| !record.left_behind));
+
+        // The append-only tree, the indexed tree and the nested tree are
+        // deleted with what they hold.
+        let delete_tree = |key: &[u8], tree_type| BatchOp::DeleteTree {
+            path: Vec::new(),
+            key: key.to_vec(),
+            tree_type,
+        };
+        applied(
+            &db,
+            &[
+                Op::Batch(vec![
+                    delete_tree(b"log", TreeType::MmrTree),
+                    delete_tree(b"ranks", TreeType::ProvableCountIndexedTree),
+                ]),
+                Op::Write(Write::Delete {
+                    path: vec![b"tree".to_vec()],
+                    key: b"inner".to_vec(),
+                }),
+            ],
+        );
+        let after = listed_after(&db, &before.places);
+        let paths: Vec<&[Vec<u8>]> = after.places.iter().map(|place| &place.path[..]).collect();
+        assert_eq!(paths, [&[][..], &[b"tree".to_vec()]]);
+        let left: Vec<String> = after
+            .records
+            .iter()
+            .filter(|record| record.left_behind)
+            .map(Record::text)
+            .collect();
+        assert_eq!(left, Vec::<String>::new(), "GroveDB cleared every subtree");
+
+        // A record put under a path that is gone, as an engine that did
+        // not clear it would have left one.
+        let transaction = db.start_transaction();
+        {
+            let handle = db
+                .engine()
+                .immediate_subtree(
+                    SubtreePath::from([b"log".as_slice()].as_slice()),
+                    &transaction,
+                )
+                .unwrap();
+            FlatStore::put(&handle, b"stale", b"leaf", None)
+                .unwrap()
+                .expect("a record");
+            FlatStore::put(&handle.aux(), b"stale", b"aux", None)
+                .unwrap()
+                .expect("a record");
+        }
+        let listed =
+            stored(&db, &transaction, GroveVersion::latest(), &before.places).expect("a listing");
+        let left: Vec<String> = listed
+            .records
+            .iter()
+            .filter(|record| record.left_behind)
+            .map(Record::text)
+            .collect();
+        assert_eq!(
+            left,
+            [
+                "left behind: flat /6c6f67 key 7374616c65 = 4 bytes 6c656166",
+                "left behind: aux /6c6f67 key 7374616c65 = 3 bytes 617578",
+            ]
+        );
+        // A walk that was told of no earlier place does not look there.
+        let unaware =
+            stored(&db, &transaction, GroveVersion::latest(), &BTreeSet::new()).expect("a listing");
+        assert!(unaware.records.iter().all(|record| !record.left_behind));
+        assert_eq!(unaware.records.len() + 2, listed.records.len());
+    }
+
+    /// A subtree dropped flat is listed as a pending drop until the drop is
+    /// flushed, by the report every engine gives.
+    #[test]
+    fn the_drops_that_are_pending_are_listed() {
         let grove_version = GroveVersion::latest();
         let (_dir, db) = open::<RocksDbEngine>();
         filled(&db);
-        let mut transactions = Transactions::new(&db);
-        let delete = Op::Batch(vec![BatchOp::DeleteTree {
-            path: Vec::new(),
-            key: b"log".to_vec(),
-            tree_type: grovedb::TreeType::MmrTree,
-        }]);
-        for op in [&delete, &Op::Commit] {
-            transactions
-                .apply(op, grove_version)
-                .unwrap()
-                .expect("the tree is deleted");
-        }
-        drop(transactions);
+        applied(
+            &db,
+            &[Op::Write(Write::DropFlat {
+                path: Vec::new(),
+                key: b"log".to_vec(),
+            })],
+        );
+        let pending: Vec<Record> = listing(&db)
+            .into_iter()
+            .filter(|record| record.keyspace == Keyspace::PendingDrop)
+            .collect();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].path, [b"log".to_vec()]);
+        let prefix = build_prefix(SubtreePath::from([b"log".as_slice()].as_slice())).unwrap();
+        assert_eq!(pending[0].key, prefix);
+        assert_eq!(pending[0].value, prefix, "the one prefix the drop frees");
+
+        let report = db
+            .flush_pending_prefix_drops(grove_version)
+            .expect("the drop is flushed");
+        assert_eq!(report.reclaimed_records, 1);
         assert!(listing(&db)
             .iter()
-            .all(|record| record.keyspace != Keyspace::Flat));
+            .all(|record| record.keyspace != Keyspace::PendingDrop));
+    }
+
+    #[test]
+    fn every_axis_of_an_indexed_tree_has_a_keyspace_of_its_own_tag() {
+        let tags: BTreeSet<u8> = AXES.iter().map(|axis| axis.tag()).collect();
+        assert_eq!(tags.len(), AXES.len());
+        assert_eq!(listed(IndexAxis::BigSum), AXES.len() - 1);
     }
 }

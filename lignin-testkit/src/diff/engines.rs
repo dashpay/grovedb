@@ -141,11 +141,6 @@ impl StandIn {
         RocksDbEngine::open(path).map(|engine| Self::over(engine, fault))
     }
 
-    /// The defect this engine has.
-    pub fn fault(&self) -> Fault {
-        self.fault
-    }
-
     /// This engine with `fault` planted, as one of the two engines of a
     /// comparison.
     pub fn side(fault: Fault) -> Side<Self> {

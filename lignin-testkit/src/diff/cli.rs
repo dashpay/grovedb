@@ -1,11 +1,7 @@
 //! The `lignin-diff` command: fuzz two engines, plant a defect and require
 //! the fuzzer to find it, or run one case again.
 
-use std::{
-    io::Write,
-    path::PathBuf,
-    time::{Duration, Instant},
-};
+use std::{io::Write, path::PathBuf, time::Duration};
 
 use super::{
     case::Case,
@@ -197,13 +193,7 @@ fn progress_line(progress: &Progress) -> String {
 
 /// Writes out a stream that was shrunk: every operation it is left with,
 /// and how the engines differ on it.
-fn write_shrunk(
-    out: &mut dyn Write,
-    shrunk: &Shrunk,
-    took: Duration,
-    reference: &str,
-    candidate: &str,
-) {
+fn write_shrunk(out: &mut dyn Write, shrunk: &Shrunk, reference: &str, candidate: &str) {
     if !shrunk.reproduced {
         let _ = writeln!(
             out,
@@ -217,7 +207,7 @@ fn write_shrunk(
         "shrunk to {} operations in {} runs and {}{}:",
         shrunk.case.ops.len(),
         shrunk.runs,
-        seconds(took),
+        seconds(shrunk.took),
         if shrunk.minimal {
             "; none of them can be left out"
         } else {
@@ -248,13 +238,16 @@ fn write_finding(out: &mut dyn Write, finding: &Finding, reference: &str, candid
     {
         let _ = writeln!(out, "{line}");
     }
-    if let Some((shrunk, took)) = &finding.shrunk {
-        write_shrunk(out, shrunk, *took, reference, candidate);
+    if let Some(shrunk) = &finding.shrunk {
+        write_shrunk(out, shrunk, reference, candidate);
+    }
+    if let Some(why) = &finding.not_shrunk {
+        let _ = writeln!(out, "the stream was not shrunk: {why}");
     }
     let _ = writeln!(
         out,
         "to run the case again: lignin-diff case --seed {:#x} (with the --grove-version, \
-         --max-ops and --fault of this run)",
+         --max-ops, --stored-every and --fault of this run)",
         finding.case.seed
     );
 }
@@ -329,6 +322,7 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
     for line in case.recipe() {
         let _ = writeln!(out, "  {line}");
     }
+    // A stream that cannot be shrunk is still one the engines differ on.
     let (ran, shrunk) = on_a_deep_stack(|| {
         let ran = run(
             &case,
@@ -339,18 +333,14 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
             &|| false,
         )?;
         let shrunk = match (&ran.divergence, settings.shrink) {
-            (Some(divergence), Some(budget)) => {
-                let shrinking = Instant::now();
-                let shrunk = shrink(
-                    &case,
-                    divergence,
-                    reference,
-                    candidate,
-                    &settings.scratch,
-                    budget,
-                )?;
-                Some((shrunk, shrinking.elapsed()))
-            }
+            (Some(divergence), Some(budget)) => Some(shrink(
+                &case,
+                divergence,
+                reference,
+                candidate,
+                &settings.scratch,
+                budget,
+            )),
             _ => None,
         };
         Ok::<_, Error>((ran, shrunk))
@@ -362,7 +352,7 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
         tally.steps, tally.failed, tally.proofs, tally.walks, tally.records
     );
     if let Some(why) = ran.cut_short {
-        let _ = writeln!(out, "  cut short: {why}");
+        let _ = writeln!(out, "  cut short {why}");
     }
     let Some(divergence) = ran.divergence else {
         let _ = writeln!(out, "the engines answered the same");
@@ -371,8 +361,12 @@ fn case_and_report<A: StreamEngine, B: StreamEngine>(
     for line in divergence.report(&case, reference.name(), candidate.name()) {
         let _ = writeln!(out, "{line}");
     }
-    if let Some((shrunk, took)) = shrunk {
-        write_shrunk(out, &shrunk, took, reference.name(), candidate.name());
+    match shrunk {
+        Some(Ok(shrunk)) => write_shrunk(out, &shrunk, reference.name(), candidate.name()),
+        Some(Err(error)) => {
+            let _ = writeln!(out, "the stream was not shrunk: {error}");
+        }
+        None => {}
     }
     Ok(true)
 }
@@ -442,8 +436,18 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
 
 #[cfg(test)]
 mod tests {
+    use grovedb_version::version::GroveVersion;
+
     use super::*;
-    use crate::diff::{fuzz::STORED_EVERY, shrink::Budget};
+    use crate::{
+        diff::{
+            fuzz::STORED_EVERY,
+            pair::testing::{rocksdb, stand_in_that_opens},
+            shrink::Budget,
+            Divergence, Part, Tally,
+        },
+        workload::Op,
+    };
 
     fn arguments(line: &str) -> Vec<String> {
         line.split_whitespace().map(str::to_string).collect()
@@ -546,10 +550,13 @@ mod tests {
             lines[0],
             "RocksDbEngine against StandIn: seed 0x1, 2 at once, grove versions 1 2 3 4 5, 3 cases"
         );
-        assert!(lines[1].contains(": 3 cases, ") && lines[1].contains(" steps ("));
-        assert!(lines[2].starts_with("  the databases held at most "));
-        assert_eq!(lines[3], "the engines answered the same");
-        assert_eq!(lines.len(), 4);
+        let [.., run, held, verdict] = lines[..] else {
+            panic!("{text}")
+        };
+        assert!(run.contains(": 3 cases, ") && run.contains(" steps ("));
+        assert!(run.ends_with(", 0 cases cut short"));
+        assert!(held.starts_with("  the databases held at most "));
+        assert_eq!(verdict, "the engines answered the same");
     }
 
     #[test]
@@ -620,7 +627,7 @@ mod tests {
     }
 
     #[test]
-    fn a_case_both_engines_panic_on_says_so() {
+    fn a_case_the_candidate_panics_on_says_so() {
         let scratch = tempfile::tempdir().expect("a directory");
         let (code, text) = ran(
             "case --seed 3 --fault panic:0 --max-ops 60 --stored-every 0",
@@ -631,29 +638,28 @@ mod tests {
         assert!(text.contains("  StandIn with panic:0: panicked: "));
     }
 
-    #[test]
-    fn a_shrinking_that_does_not_reproduce_or_runs_out_says_so() {
-        let case = Case::of(
-            0,
-            grovedb_version::version::GroveVersion::latest(),
-            Vec::new(),
-        );
-        let divergence = super::super::pair::Divergence {
+    fn cost_divergence() -> Divergence {
+        Divergence {
             step: 0,
-            parts: vec![super::super::pair::Part::Cost],
+            parts: vec![Part::Cost],
             reference: vec!["cost 1".to_string()],
             candidate: vec!["cost 2".to_string()],
-        };
+        }
+    }
+
+    #[test]
+    fn a_shrinking_that_does_not_reproduce_or_runs_out_says_so() {
         let mut shrunk = Shrunk {
-            case,
-            divergence,
+            case: Case::of(0, GroveVersion::latest(), Vec::new()),
+            divergence: cost_divergence(),
             runs: 1,
+            took: Duration::from_millis(1500),
             reproduced: false,
             minimal: false,
         };
         let written = |shrunk: &Shrunk| {
             let mut out = Vec::new();
-            write_shrunk(&mut out, shrunk, Duration::from_millis(1500), "one", "two");
+            write_shrunk(&mut out, shrunk, "one", "two");
             String::from_utf8(out).expect("text")
         };
         assert!(written(&shrunk).starts_with("the divergence did not show when the case was run"));
@@ -663,6 +669,47 @@ mod tests {
             "shrunk to 0 operations in 1 runs and 1.5 s; the budget ran out before every \
              operation was tried:\nstep 0 of 0: the engines differ in cost\n  one: cost 1\n  \
              two: cost 2\n"
+        );
+    }
+
+    /// The engines differ on a stream whether or not it can be shrunk.
+    #[test]
+    fn a_stream_that_cannot_be_shrunk_is_reported_all_the_same() {
+        let finding = Finding {
+            index: 4,
+            case: Case::of(9, GroveVersion::latest(), vec![Op::Commit]),
+            divergence: cost_divergence(),
+            after: Duration::from_secs(2),
+            shrunk: None,
+            not_shrunk: Some("no database any more".to_string()),
+        };
+        let mut out = Vec::new();
+        write_finding(&mut out, &finding, "one", "two");
+        let text = String::from_utf8(out).expect("text");
+        assert!(text.starts_with("DIVERGENCE after 2.0 s, in case 4 of the run:\n  seed 0x9, "));
+        assert!(text.contains("\nthe stream was not shrunk: no database any more\n"));
+        assert!(text.ends_with(
+            "to run the case again: lignin-diff case --seed 0x9 (with the --grove-version, \
+             --max-ops, --stored-every and --fault of this run)\n"
+        ));
+
+        // The case command: a candidate that opens once, for the run that
+        // shows the divergence, and not again for the shrinking.
+        let scratch = tempfile::tempdir().expect("a directory");
+        let settings = Settings {
+            seed: 3,
+            scratch: scratch.path().to_path_buf(),
+            ..Settings::default()
+        };
+        let once = stand_in_that_opens(1, Fault::AddedByte { when_added: 0 });
+        let mut out = Vec::new();
+        let differed = case_and_report(&rocksdb(), &once, &settings, &mut out).expect("the case");
+        let text = String::from_utf8(out).expect("text");
+        assert!(differed, "{text}");
+        assert!(text.contains(": the engines differ in cost\n"), "{text}");
+        assert!(
+            text.ends_with("the stream was not shrunk: the engine failed opening a database of worn out: invalid input: no database any more\n"),
+            "{text}"
         );
     }
 
@@ -679,7 +726,7 @@ mod tests {
         let line = progress_line(&Progress {
             elapsed: Duration::from_secs(2),
             cases: 3,
-            tally: super::super::pair::Tally {
+            tally: Tally {
                 steps: 400,
                 failed: 5,
                 proofs: 6,

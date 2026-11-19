@@ -7,8 +7,11 @@
 //! covers the same cases sooner and a divergence is reproduced from the
 //! seed of its case alone ([`Case::generate`]).
 //!
-//! A run ends at the first divergence. The stream is then shrunk
-//! ([`super::shrink`]).
+//! A run ends at the divergence of the case with the lowest number. When a
+//! case diverges, the cases with higher numbers are abandoned and the ones
+//! with lower numbers run to their end, since one of them may diverge too.
+//! So a run of a given number of cases reports the same case whatever the
+//! number of workers. The stream is then shrunk ([`super::shrink`]).
 
 use std::{
     path::{Path, PathBuf},
@@ -21,7 +24,7 @@ use std::{
 
 use super::{
     case::{Case, Shape},
-    pair::{run, Divergence, Side, Stored, Tally},
+    pair::{catching, run, Divergence, Side, Stored, Tally},
     shrink::{shrink, Budget, Shrunk},
 };
 use crate::{
@@ -89,10 +92,10 @@ impl Default for Settings {
 pub struct Progress {
     /// How long it has run.
     pub elapsed: Duration,
-    /// The cases run to their end.
+    /// The cases run to their end, or to the step both engines failed at.
     pub cases: u64,
-    /// What was compared in the cases that have ended, the ones that
-    /// were cut short or abandoned included.
+    /// What was compared in the cases that have ended, the ones that were
+    /// abandoned included.
     pub tally: Tally,
     /// The most bytes the databases of the run held on disk at once, as
     /// far as it was looked at.
@@ -110,9 +113,11 @@ pub struct Finding {
     pub divergence: Divergence,
     /// How long the run had lasted when the divergence showed.
     pub after: Duration,
-    /// The stream shrunk, and how long that took, when the run was asked
-    /// to shrink.
-    pub shrunk: Option<(Shrunk, Duration)>,
+    /// The stream shrunk, when the run was asked to shrink.
+    pub shrunk: Option<Shrunk>,
+    /// Why the stream was not shrunk although the run was asked to: what
+    /// stopped the shrinking.
+    pub not_shrunk: Option<String>,
 }
 
 /// What a run came to.
@@ -143,6 +148,16 @@ fn bytes_under(dir: &Path) -> u64 {
         .sum()
 }
 
+/// Counts a worker out when it ends, however it ends: a worker that
+/// panicked would otherwise be waited for.
+struct Working<'a>(&'a AtomicUsize);
+
+impl Drop for Working<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 /// Runs cases on `reference` and `candidate` as `settings` say, and hands
 /// the progress of the run to `report` as it goes.
 pub fn fuzz<A: StreamEngine, B: StreamEngine>(
@@ -158,65 +173,69 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
         .tempdir_in(&settings.scratch)
         .map_err(|error| Error::io(&settings.scratch, &error))?;
     let started = Instant::now();
-    let stop = AtomicBool::new(false);
+    // Set when the time is up or a worker failed: every case is abandoned.
+    let halt = AtomicBool::new(false);
+    // The lowest number of a case that diverged. The cases above it are
+    // abandoned, and no case is started any more.
+    let lowest = AtomicU64::new(u64::MAX);
     let next = AtomicU64::new(0);
     let cases = AtomicU64::new(0);
     let working = AtomicUsize::new(settings.jobs.max(1));
     let tally = Mutex::new(Tally::default());
-    let findings = Mutex::new(Vec::new());
+    let found = Mutex::new(None::<(u64, Case, Divergence, Duration)>);
     let failure = Mutex::new(None);
     let first_cut_short = Mutex::new(None::<(u64, String)>);
 
-    let worker = || {
-        let work = || -> Result<(), Error> {
-            loop {
-                let index = next.fetch_add(1, Ordering::Relaxed);
-                let over = settings.cases.is_some_and(|cases| index >= cases);
-                if over || stop.load(Ordering::Relaxed) {
-                    return Ok(());
-                }
-                let case = Case::generate(case_seed(settings.seed, index), &settings.shape);
-                let run = run(
-                    &case,
-                    reference,
-                    candidate,
-                    scratch.path(),
-                    settings.stored,
-                    &|| stop.load(Ordering::Relaxed),
-                )?;
-                tally.lock().expect("no worker panics").add(&run.tally);
-                if let Some(divergence) = run.divergence {
-                    stop.store(true, Ordering::Relaxed);
-                    findings.lock().expect("no worker panics").push((
-                        index,
-                        case,
-                        divergence,
-                        started.elapsed(),
-                    ));
-                    return Ok(());
-                }
-                match run.cut_short {
-                    // Interrupted: the run is over.
-                    Some(_) if stop.load(Ordering::Relaxed) => return Ok(()),
-                    Some(why) => {
-                        let mut first = first_cut_short.lock().expect("no worker panics");
-                        if first.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
-                            *first = Some((index, why));
-                        }
-                    }
-                    None => {}
-                }
-                cases.fetch_add(1, Ordering::Relaxed);
+    let work = || -> Result<(), Error> {
+        loop {
+            let index = next.fetch_add(1, Ordering::Relaxed);
+            let abandoned =
+                || halt.load(Ordering::Relaxed) || lowest.load(Ordering::Relaxed) < index;
+            if abandoned() || settings.cases.is_some_and(|cases| index >= cases) {
+                return Ok(());
             }
-        };
-        if let Err(error) = work() {
-            stop.store(true, Ordering::Relaxed);
-            failure
-                .lock()
-                .expect("no worker panics")
-                .get_or_insert(error);
+            let case = Case::generate(case_seed(settings.seed, index), &settings.shape);
+            let run = run(
+                &case,
+                reference,
+                candidate,
+                scratch.path(),
+                settings.stored,
+                &abandoned,
+            )?;
+            tally.lock().expect("no worker panics").add(&run.tally);
+            if run.interrupted {
+                return Ok(());
+            }
+            if let Some(divergence) = run.divergence {
+                lowest.fetch_min(index, Ordering::Relaxed);
+                let mut found = found.lock().expect("no worker panics");
+                if found.as_ref().is_none_or(|(earlier, ..)| index < *earlier) {
+                    *found = Some((index, case, divergence, started.elapsed()));
+                }
+                return Ok(());
+            }
+            if let Some(why) = run.cut_short {
+                let mut first = first_cut_short.lock().expect("no worker panics");
+                if first.as_ref().is_none_or(|(earlier, _)| index < *earlier) {
+                    *first = Some((index, why));
+                }
+            }
+            cases.fetch_add(1, Ordering::Relaxed);
         }
-        working.fetch_sub(1, Ordering::Relaxed);
+    };
+    let worker = || {
+        let _working = Working(&working);
+        let failed = match catching(work) {
+            Ok(Ok(())) => return,
+            Ok(Err(error)) => error,
+            Err(panic) => Error::engine("running a case", &format!("it panicked: {panic}")),
+        };
+        halt.store(true, Ordering::Relaxed);
+        failure
+            .lock()
+            .expect("no worker panics")
+            .get_or_insert(failed);
     };
 
     let mut scratch_bytes = 0;
@@ -241,7 +260,7 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
                 .duration
                 .is_some_and(|duration| started.elapsed() >= duration)
             {
-                stop.store(true, Ordering::Relaxed);
+                halt.store(true, Ordering::Relaxed);
             }
             if measured.elapsed() >= Duration::from_secs(1) {
                 scratch_bytes = scratch_bytes.max(bytes_under(scratch.path()));
@@ -258,40 +277,43 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
     }
     let progress = progress(scratch_bytes);
 
-    // Several workers can find a divergence before they see the others
-    // stop. The case with the lowest number is the one a run with one
-    // worker would have found.
-    let mut findings = findings.into_inner().expect("no worker panics");
-    findings.sort_by_key(|(index, ..)| *index);
-    let finding = match findings.into_iter().next() {
-        None => None,
-        Some((index, case, divergence, after)) => {
-            let shrunk = match settings.shrink {
-                None => None,
-                Some(budget) => {
-                    let shrinking = Instant::now();
-                    let shrunk = on_a_deep_stack(|| {
-                        shrink(
-                            &case,
-                            &divergence,
-                            reference,
-                            candidate,
-                            scratch.path(),
-                            budget,
-                        )
-                    })?;
-                    Some((shrunk, shrinking.elapsed()))
+    let finding =
+        found
+            .into_inner()
+            .expect("no worker panics")
+            .map(|(index, case, divergence, after)| {
+                // A stream that cannot be shrunk is still the finding.
+                let (shrunk, not_shrunk) = match settings.shrink {
+                    None => (None, None),
+                    Some(budget) => {
+                        let shrunk = on_a_deep_stack(|| {
+                            catching(|| {
+                                shrink(
+                                    &case,
+                                    &divergence,
+                                    reference,
+                                    candidate,
+                                    scratch.path(),
+                                    budget,
+                                )
+                            })
+                        });
+                        match shrunk {
+                            Ok(Ok(shrunk)) => (Some(shrunk), None),
+                            Ok(Err(error)) => (None, Some(error.to_string())),
+                            Err(panic) => (None, Some(format!("the shrinking panicked: {panic}"))),
+                        }
+                    }
+                };
+                Finding {
+                    index,
+                    case,
+                    divergence,
+                    after,
+                    shrunk,
+                    not_shrunk,
                 }
-            };
-            Some(Finding {
-                index,
-                case,
-                divergence,
-                after,
-                shrunk,
-            })
-        }
-    };
+            });
     Ok(Summary {
         progress,
         finding,
@@ -308,12 +330,13 @@ pub fn fuzz<A: StreamEngine, B: StreamEngine>(
     reason = "a database is opened with GroveDB's own error, whatever its size"
 )]
 mod tests {
-    use grovedb::RocksDbEngine;
-
     use super::*;
     use crate::diff::{
         engines::{Fault, StandIn},
-        pair::Part,
+        pair::{
+            testing::{rocksdb, stand_in, stand_in_that_opens},
+            Part,
+        },
     };
 
     fn settings(scratch: &Path) -> Settings {
@@ -325,6 +348,10 @@ mod tests {
             },
             ..Settings::default()
         }
+    }
+
+    fn fuzzed<B: StreamEngine>(candidate: &Side<B>, settings: &Settings) -> Summary {
+        fuzz(&rocksdb(), candidate, settings, &mut |_| {}).expect("the run")
     }
 
     #[test]
@@ -339,10 +366,10 @@ mod tests {
     #[test]
     fn a_run_of_so_many_cases_compares_them_all_and_ends_clean() {
         let scratch = tempfile::tempdir().expect("a directory");
-        let reports = AtomicU64::new(0);
+        let mut reports = 0;
         let summary = fuzz(
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+            &rocksdb(),
+            &stand_in(),
             &Settings {
                 cases: Some(12),
                 jobs: 3,
@@ -351,7 +378,7 @@ mod tests {
             },
             &mut |progress| {
                 assert!(progress.cases <= 12);
-                reports.fetch_add(1, Ordering::Relaxed);
+                reports += 1;
             },
         )
         .expect("the run");
@@ -364,7 +391,9 @@ mod tests {
             summary.progress.tally.failed > 0,
             "a mutated stream fails somewhere"
         );
-        assert!(reports.load(Ordering::Relaxed) > 0);
+        assert_eq!(summary.progress.tally.cut_short, 0);
+        assert_eq!(summary.first_cut_short, None);
+        assert!(reports > 0);
         assert_eq!(
             std::fs::read_dir(scratch.path())
                 .expect("the directory")
@@ -374,79 +403,76 @@ mod tests {
         );
 
         // The same cases whatever the number of workers.
-        let alone = fuzz(
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+        let alone = fuzzed(
+            &stand_in(),
             &Settings {
                 cases: Some(12),
                 jobs: 1,
                 ..settings(scratch.path())
             },
-            &mut |_| {},
-        )
-        .expect("the run");
+        );
         assert_eq!(alone.progress.tally, summary.progress.tally);
     }
 
     #[test]
     fn a_run_ends_when_its_time_is_up() {
         let scratch = tempfile::tempdir().expect("a directory");
-        let started = Instant::now();
-        let summary = fuzz(
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+        let duration = Duration::from_millis(1500);
+        let summary = fuzzed(
+            &stand_in(),
             &Settings {
-                duration: Some(Duration::from_millis(1500)),
+                duration: Some(duration),
                 jobs: 2,
                 ..settings(scratch.path())
             },
-            &mut |_| {},
-        )
-        .expect("the run");
+        );
         assert!(summary.finding.is_none());
-        assert!(summary.progress.tally.steps > 0);
-        assert!(started.elapsed() < Duration::from_secs(60));
-        assert!(summary.progress.elapsed >= Duration::from_millis(1500));
+        assert!(summary.progress.elapsed >= duration);
+        // A case abandoned at the end is no case that was cut short.
+        assert_eq!(summary.progress.tally.cut_short, 0);
+        assert_eq!(summary.first_cut_short, None);
     }
 
+    /// The fault is one most cases meet, at steps of their own, so with
+    /// several workers a case with a higher number diverges first. The
+    /// one with the lowest number is reported all the same.
     #[test]
-    fn a_run_ends_at_the_first_case_the_engines_differ_on_and_shrinks_it() {
+    fn a_run_ends_at_the_lowest_case_the_engines_differ_on_and_shrinks_it() {
         let scratch = tempfile::tempdir().expect("a directory");
-        // Every batch that adds no byte: a fault most cases meet.
-        let fault = Fault::AddedByte { when_added: 0 };
+        let candidate = StandIn::side(Fault::AddedByte { when_added: 0 });
         let run = |jobs, shrink| {
-            fuzz(
-                &Side::<RocksDbEngine>::of("rocksdb"),
-                &StandIn::side(fault),
+            fuzzed(
+                &candidate,
                 &Settings {
                     cases: Some(400),
                     jobs,
                     shrink,
                     ..settings(scratch.path())
                 },
-                &mut |_| {},
             )
-            .expect("the run")
         };
         let summary = run(1, Some(Budget::default()));
         let finding = summary.finding.expect("the planted fault");
         assert_eq!(finding.divergence.parts, [Part::Cost]);
         assert_eq!(finding.case.seed, case_seed(1, finding.index));
         assert!(finding.after <= summary.progress.elapsed);
-        let (shrunk, _) = finding.shrunk.expect("the stream is shrunk");
+        assert_eq!(finding.not_shrunk, None);
+        let shrunk = finding.shrunk.expect("the stream is shrunk");
         assert!(shrunk.reproduced && shrunk.minimal);
         assert!(shrunk.case.ops.len() <= finding.divergence.step + 1);
         assert!(shrunk.case.ops.len() < 12, "{:?}", shrunk.case.ops);
         assert_eq!(shrunk.divergence.parts, [Part::Cost]);
 
         // The case is the same one from its seed alone, and with more
-        // workers the lowest of the cases that differ is reported.
+        // workers it is the one reported.
         let again = Case::generate(finding.case.seed, &settings(scratch.path()).shape);
         assert_eq!(again.ops, finding.case.ops);
-        let several = run(4, None).finding.expect("the planted fault");
-        assert!(several.shrunk.is_none());
-        assert_eq!(several.index, finding.index);
-        assert_eq!(several.divergence, finding.divergence);
+        for jobs in [4, 8] {
+            let several = run(jobs, None).finding.expect("the planted fault");
+            assert!(several.shrunk.is_none() && several.not_shrunk.is_none());
+            assert_eq!(several.index, finding.index);
+            assert_eq!(several.divergence, finding.divergence);
+        }
     }
 
     #[test]
@@ -468,7 +494,10 @@ mod tests {
         assert_eq!(summary.progress.cases, 30);
         assert!(summary.progress.tally.cut_short > 0);
         let why = summary.first_cut_short.expect("a case was cut short");
-        assert!(why.starts_with("both engines panicked at step "), "{why}");
+        assert!(
+            why.starts_with("at step ") && why.contains(", both engines panicked: "),
+            "{why}"
+        );
     }
 
     #[test]
@@ -477,20 +506,16 @@ mod tests {
         let closed = Side::<StandIn>::opened_by("closed", |_| {
             Err(grovedb::Error::InvalidInput("no database here"))
         });
-        let refused = fuzz(
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &closed,
-            &Settings {
-                cases: Some(8),
-                ..settings(scratch.path())
-            },
-            &mut |_| {},
-        )
-        .expect_err("the candidate does not open");
+        let few = Settings {
+            cases: Some(8),
+            ..settings(scratch.path())
+        };
+        let refused =
+            fuzz(&rocksdb(), &closed, &few, &mut |_| {}).expect_err("the candidate does not open");
         assert!(refused.to_string().contains("opening a database of closed"));
         let nowhere = fuzz(
-            &Side::<RocksDbEngine>::of("rocksdb"),
-            &Side::<StandIn>::of("stand-in"),
+            &rocksdb(),
+            &stand_in(),
             &Settings {
                 cases: Some(1),
                 ..settings(&scratch.path().join("missing"))
@@ -499,6 +524,56 @@ mod tests {
         )
         .expect_err("there is no scratch directory");
         assert!(matches!(nowhere, Error::Io { .. }));
+    }
+
+    /// A worker that panics where no engine is asked anything ends the run
+    /// with what it said. It is not waited for.
+    #[test]
+    fn a_worker_that_panics_fails_the_run() {
+        let scratch = tempfile::tempdir().expect("a directory");
+        // No grove version to draw a case for.
+        let no_version = Settings {
+            cases: Some(8),
+            jobs: 3,
+            shape: Shape {
+                grove_versions: Vec::new(),
+                ..Shape::default()
+            },
+            ..settings(scratch.path())
+        };
+        let failed = fuzz(&rocksdb(), &stand_in(), &no_version, &mut |_| {})
+            .expect_err("no case can be generated")
+            .to_string();
+        assert!(
+            failed.starts_with("the engine failed running a case: it panicked: "),
+            "{failed}"
+        );
+    }
+
+    /// A stream that cannot be shrunk is reported as it was found.
+    #[test]
+    fn a_finding_is_kept_when_its_stream_cannot_be_shrunk() {
+        let scratch = tempfile::tempdir().expect("a directory");
+        let fault = Fault::AddedByte { when_added: 0 };
+        let one_worker = Settings {
+            cases: Some(400),
+            jobs: 1,
+            ..settings(scratch.path())
+        };
+        let found = fuzzed(&StandIn::side(fault), &one_worker)
+            .finding
+            .expect("the planted fault");
+        // One worker opens one candidate for each case up to the one that
+        // diverges. An engine that opens no more often cannot be shrunk on.
+        let worn_out = stand_in_that_opens(found.index + 1, fault);
+        let finding = fuzzed(&worn_out, &one_worker)
+            .finding
+            .expect("the planted fault");
+        assert_eq!(finding.index, found.index);
+        assert_eq!(finding.divergence, found.divergence);
+        assert!(finding.shrunk.is_none());
+        let why = finding.not_shrunk.expect("the shrinking failed");
+        assert!(why.ends_with("no database any more"), "{why}");
     }
 
     #[test]
