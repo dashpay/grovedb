@@ -38,6 +38,7 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
                     let batch = Batch {
                         records: &records,
                         merks: &[],
+                        ..Batch::default()
                     };
                     // One scope is open at a time, and a thread that finds
                     // one open is refused at once: it never waits (SC3).
@@ -80,6 +81,7 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
             let batch = Batch {
                 records: &records,
                 merks: &[],
+                ..Batch::default()
             };
             scope.apply(&batch).expect("a write");
             scope.merge();
@@ -152,6 +154,7 @@ fn transactions_on_several_threads_commit_past_each_other() {
                         let batch = OwnedBatch {
                             merks: vec![merk],
                             records,
+                            ..OwnedBatch::default()
                         };
                         // The Merk first and the counter second, in two
                         // operations, with other commits in between.
@@ -159,10 +162,12 @@ fn transactions_on_several_threads_commit_past_each_other() {
                             OwnedBatch {
                                 merks: batch.merks.clone(),
                                 records: batch.records[1..].to_vec(),
+                                ..OwnedBatch::default()
                             },
                             OwnedBatch {
                                 merks: Vec::new(),
                                 records: batch.records[..1].to_vec(),
+                                ..OwnedBatch::default()
                             },
                         );
                         first.with(|batch| scope.apply(batch)).expect("a write");

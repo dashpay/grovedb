@@ -194,7 +194,13 @@ fn a_handle_is_followed_while_it_is_good_and_not_after_its_lease_ended() {
     });
     let records = World::root_record(&merk).into_iter().collect();
     let merks = vec![merk];
-    (OwnedBatch { merks, records }.with(|batch| scope.apply(batch))).expect("a write");
+    (OwnedBatch {
+        merks,
+        records,
+        ..OwnedBatch::default()
+    }
+    .with(|batch| scope.apply(batch)))
+    .expect("a write");
     let handle = |view: Option<NodeView<'_>>| view.and_then(|view| view.handle());
     let inside = (scope.node(model::subtree(1), &key(3000), handle)).expect("a read");
     let inside = inside.expect("the scope reads its own write");

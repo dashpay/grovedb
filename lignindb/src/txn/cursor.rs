@@ -345,13 +345,13 @@ impl<'t, 's> MerkCursor<'t, 's> {
     ) -> Result<Self, TxnError> {
         let path = *txn.path();
         // The root is the one the pinned version has, read under a guard
-        // (PN5). The lease is the cursor's own (PN1).
+        // (PN5): none if the Merk is below one that the transaction has
+        // dropped or cleared by now (CV9). The lease is the cursor's own
+        // (PN1).
         let guard = path.versions().guard();
         let pin = path.versions().pin();
         let at = pin.version();
-        let committed = path.committed(&guard, at);
-        let root =
-            (path.directory.committed_root(&committed, &subtree)).map_err(TxnError::Directory)?;
+        let root = txn.cursor_root(&guard, at, &subtree)?;
         let lease = Lease::take();
         let reader = NodeReader::new(path.loader, &guard, lease, at);
         let side = MerkSide {

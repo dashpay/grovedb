@@ -86,6 +86,7 @@ fn stale_hashes_follow_their_cells_and_are_made_by_the_commit() {
     let batch = OwnedBatch {
         records: World::root_record(&merk).into_iter().collect(),
         merks: vec![merk],
+        ..OwnedBatch::default()
     };
     world.apply(&tx, &batch).expect("nodes with stale hashes");
     for key in &new {
@@ -110,6 +111,7 @@ fn stale_hashes_follow_their_cells_and_are_made_by_the_commit() {
     let batch = OwnedBatch {
         records: World::root_record(&later).into_iter().collect(),
         merks: vec![later],
+        ..OwnedBatch::default()
     };
     world.apply(&tx, &batch).expect("more nodes");
     let still: Vec<&Vec<u8>> = new.iter().filter(|key| !made.contains(*key)).collect();
@@ -174,6 +176,7 @@ fn stale_hashes_follow_their_cells_and_are_made_by_the_commit() {
     let batch = OwnedBatch {
         records: World::root_record(&merk).into_iter().collect(),
         merks: vec![merk],
+        ..OwnedBatch::default()
     };
     world.apply(&tx, &batch).expect("a node with stale hashes");
     world.edit_outside(1, |items| drop(items.remove(&vec![b'a', 0])), &[&tx]);

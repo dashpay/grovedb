@@ -64,7 +64,11 @@ fn hosted_batch<'s>(
     }
     let records = World::root_record(&parent).into_iter().collect();
     merks.push(parent);
-    OwnedBatch { merks, records }
+    OwnedBatch {
+        merks,
+        records,
+        ..OwnedBatch::default()
+    }
 }
 
 #[test]
@@ -97,7 +101,7 @@ fn a_host_points_at_the_root_of_the_merk_it_hosts() {
     // The parent grows, and its pages are cut: hosts are carried, and the
     // small Merks under them go along. Their directory entries follow.
     let tx = world.begin();
-    let moves = db.roots.moves.load(Ordering::Relaxed);
+    let roots = db.roots(&versions, versions.latest());
     for round in 0..6 {
         let batch = hosted_batch(&world, &tx, &[], &mut |_, _| {}, &mut |items| {
             for index in 0..40 {
@@ -108,12 +112,15 @@ fn a_host_points_at_the_root_of_the_merk_it_hosts() {
         world.apply(&tx, &batch).expect("the parent grows");
         world.check(&tx);
     }
-    assert!(
-        db.roots.moves.load(Ordering::Relaxed) > moves,
-        "roots went along with their hosts"
-    );
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
+    // No batch named a child, and the directory has other roots for some:
+    // what the write's report said of the cells it carried.
+    let now = db.roots(&versions, versions.latest());
+    let carried = (roots.iter()).filter(|(subtree, root)| {
+        **subtree != model::subtree(PARENT) && now.get(*subtree) != Some(*root)
+    });
+    assert!(carried.count() > 0, "roots went along with their hosts");
     assert_eq!(hosted(), 30);
 
     // Children get other roots, become empty and are filled again, each
@@ -173,7 +180,14 @@ fn a_host_points_at_the_root_of_the_merk_it_hosts() {
     let merks = vec![merk];
     let records = Vec::new();
     world
-        .apply(&tx, &OwnedBatch { merks, records })
+        .apply(
+            &tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        )
         .expect("a write below the host");
     world.check(&tx);
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
@@ -275,7 +289,11 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         });
         let records = World::root_record(&merk).into_iter().collect();
         let merks = vec![merk];
-        OwnedBatch { merks, records }
+        OwnedBatch {
+            merks,
+            records,
+            ..OwnedBatch::default()
+        }
     }
     let subtree = model::subtree(1);
     let pages_with_values = |tx: &Tx<'_>| tx.txn.stats().value_pages;

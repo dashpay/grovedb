@@ -7,7 +7,9 @@ mod handles;
 mod hashes;
 mod random;
 mod reads;
+
 mod rebase;
+mod subtrees;
 mod threads;
 mod trees;
 
@@ -120,15 +122,29 @@ impl<'s> World<'s> {
     ) -> Applied {
         let merks = vec![self.merk(tx, name, edit)];
         let records = merks.iter().filter_map(Self::root_record).collect();
-        self.apply(tx, &OwnedBatch { merks, records })
-            .expect("the change is applied")
+        self.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        )
+        .expect("the change is applied")
     }
 
     /// Applies writes of flat records.
     fn write(&self, tx: &Tx<'s>, records: Vec<Write>) {
         let merks = Vec::new();
-        self.apply(tx, &OwnedBatch { merks, records })
-            .expect("the records are written");
+        self.apply(
+            tx,
+            &OwnedBatch {
+                merks,
+                records,
+                ..OwnedBatch::default()
+            },
+        )
+        .expect("the records are written");
     }
 
     /// Commits `tx` in the store and in the model, and tells the models of

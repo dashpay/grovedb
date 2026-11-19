@@ -16,8 +16,8 @@ use lignin_tree::hash::Stale;
 
 use super::store::Rng;
 use crate::txn::{
-    Batch, Column, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite, RootPut, Subtree,
-    Unit, ValuePut,
+    Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite, RootPut,
+    Subtree, SubtreeWrite, Unit, ValuePut,
 };
 
 pub fn subtree(name: u8) -> Subtree {
@@ -169,12 +169,23 @@ pub enum Write {
     Put(Unit, Vec<u8>, Val),
     Delete(Unit, Vec<u8>),
     Range(Unit, Vec<u8>, Option<Vec<u8>>),
+    /// A drop of a subtree: every key of every column under it (CV9).
+    Drop(Subtree),
 }
 
 impl Write {
     pub fn unit(&self) -> Unit {
         match self {
             Self::Put(unit, ..) | Self::Delete(unit, _) | Self::Range(unit, ..) => *unit,
+            Self::Drop(subtree) => Unit::data(*subtree),
+        }
+    }
+
+    /// Whether the write is one of `unit`.
+    pub fn touches(&self, unit: Unit) -> bool {
+        match self {
+            Self::Drop(subtree) => *subtree == unit.subtree,
+            _ => self.unit() == unit,
         }
     }
 
@@ -184,11 +195,15 @@ impl Write {
             Self::Range(own, start, end) => {
                 *own == unit && key >= &start[..] && end.as_ref().is_none_or(|end| key < &end[..])
             }
+            Self::Drop(subtree) => *subtree == unit.subtree,
         }
     }
 
     fn meets(&self, other: &Self) -> bool {
         match (self, other) {
+            (Self::Drop(subtree), other) | (other, Self::Drop(subtree)) => {
+                other.unit().subtree == *subtree
+            }
             (Self::Range(unit, start, end), Self::Range(other, from, to)) => {
                 let below = |low: &Vec<u8>, high: &Option<Vec<u8>>| {
                     high.as_ref().is_none_or(|high| low < high)
@@ -218,7 +233,9 @@ fn apply(records: &mut Records, write: &Write) {
         Write::Delete(unit, key) => {
             records.remove(&(*unit, key.clone()));
         }
-        Write::Range(..) => records.retain(|(unit, key), _| !write.covers(*unit, key)),
+        Write::Range(..) | Write::Drop(_) => {
+            records.retain(|(unit, key), _| !write.covers(*unit, key));
+        }
     }
 }
 
@@ -240,7 +257,7 @@ impl TxnModel {
             .find(|(write, ..)| write.covers(unit, key))?;
         Some(match &newest.0 {
             Write::Put(_, _, value) => Some(value),
-            Write::Delete(..) | Write::Range(..) => None,
+            Write::Delete(..) | Write::Range(..) | Write::Drop(_) => None,
         })
     }
 
@@ -260,7 +277,7 @@ impl TxnModel {
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         for (write, ..) in &self.writes {
-            if write.unit() == unit {
+            if write.touches(unit) {
                 apply(&mut records, write);
             }
         }
@@ -324,6 +341,17 @@ impl Committed {
 pub struct OwnedBatch {
     pub merks: Vec<OwnedMerk>,
     pub records: Vec<Write>,
+    pub subtrees: Vec<OwnedSubtree>,
+}
+
+/// What a batch does to a subtree as a whole.
+#[derive(Debug, Clone)]
+pub enum OwnedSubtree {
+    /// Enters the subtree, with the host's subtree, its key and the
+    /// position.
+    Enter(Subtree, Option<(Subtree, Vec<u8>, u8)>),
+    Drop(Subtree),
+    Clear(Subtree),
 }
 
 #[derive(Debug, Clone)]
@@ -388,10 +416,21 @@ impl OwnedMerk {
 }
 
 impl OwnedBatch {
-    /// Every write of the batch, in the order the write set takes them.
+    /// Every write of the batch, in the order the write set takes them: a
+    /// drop is one write, a clear is one of the data column, and a subtree
+    /// that is entered is none.
     pub fn writes(&self) -> Vec<Write> {
+        let leaving = self.subtrees.iter().filter_map(|subtree| match subtree {
+            OwnedSubtree::Enter(..) => None,
+            OwnedSubtree::Drop(subtree) => Some(Write::Drop(*subtree)),
+            OwnedSubtree::Clear(subtree) => {
+                Some(Write::Range(Unit::data(*subtree), Vec::new(), None))
+            }
+        });
         let merks = self.merks.iter().flat_map(OwnedMerk::writes);
-        merks.chain(self.records.iter().cloned()).collect()
+        (leaving.chain(merks))
+            .chain(self.records.iter().cloned())
+            .collect()
     }
 
     /// Calls `run` with the batch.
@@ -457,6 +496,7 @@ impl OwnedBatch {
                     value,
                 },
                 Write::Put(..) => panic!("a node is written in a change set"),
+                Write::Drop(_) => panic!("a subtree is dropped as a whole"),
                 Write::Delete(unit, key) => RecordWrite::Delete { unit: *unit, key },
                 Write::Range(unit, start, end) => RecordWrite::DeleteRange {
                     unit: *unit,
@@ -465,9 +505,25 @@ impl OwnedBatch {
                 },
             })
             .collect();
+        let subtrees: Vec<SubtreeWrite<'_>> = (self.subtrees.iter())
+            .map(|subtree| match subtree {
+                OwnedSubtree::Enter(subtree, host) => SubtreeWrite::Enter {
+                    subtree: *subtree,
+                    tree_type: super::store::TREE_TYPE,
+                    host: host.as_ref().map(|(subtree, key, position)| HostPut {
+                        subtree: *subtree,
+                        key,
+                        position: *position,
+                    }),
+                },
+                OwnedSubtree::Drop(subtree) => SubtreeWrite::Drop { subtree: *subtree },
+                OwnedSubtree::Clear(subtree) => SubtreeWrite::Clear { subtree: *subtree },
+            })
+            .collect();
         run(&Batch {
             records: &records,
             merks: &merks,
+            subtrees: &subtrees,
         })
     }
 }
