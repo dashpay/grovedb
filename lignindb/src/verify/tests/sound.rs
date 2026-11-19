@@ -5,12 +5,13 @@ use std::sync::atomic::AtomicU64;
 use lignin_format::{tree_page::Side, CommitVersion, PageId};
 use lignin_store::table::{Link, LinkKind};
 use lignin_tree::{
-    drop::{FlatDrops, Progress},
+    drop::{Column as FlatColumn, FlatDrops, FlatReclaimed, Progress},
+    flat::FlatTree,
     hash::{HashRules, Refusal},
     node::NodeRef,
 };
 
-use super::{key, plant, write_back, Planted, BIG, FLAT, GONE, INNER, OUTER};
+use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, OUTER};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -401,6 +402,155 @@ fn the_pages_a_range_delete_left_are_walked_from_its_record() {
     store.db.unchecked();
 }
 
+/// A commit that changes nothing of what a test looks at: a page that the
+/// latest commit wrote is not freed before the next one.
+fn commit_later(store: &Planted) {
+    let mut world = World::new(&store.db, &store.versions);
+    let tx = world.begin();
+    world.write(
+        &tx,
+        vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
+    );
+    world.commit(tx, &[]);
+}
+
+/// A reclaiming of unlinked flat pages that stops part of the way keeps
+/// its record, and the id of a page it freed is given out again, to a tree
+/// page as well. The record then names a page that is another page: the
+/// reclaimer passes it by its birth, and so does the checker.
+#[test]
+fn a_page_under_the_id_of_a_freed_one_is_not_what_a_range_delete_left() {
+    let store = plant();
+    {
+        let mut world = World::new(&store.db, &store.versions);
+        let tx = world.begin();
+        // More records of the subtree, and records of the subtrees beside
+        // it in the column: its range then lies between two leaves that
+        // stay, and the leaves between them are unlinked one by one.
+        let meta = |name| model::unit(Column::Meta, name);
+        let more = (300..900).map(|index| put(meta(FLAT), &key(index), &[index as u8; 60]));
+        let beside = [FLAT - 1, FLAT + 1].into_iter().flat_map(|name| {
+            (0..40).map(move |index| put(meta(name), &key(index), &[index as u8; 60]))
+        });
+        world.write(&tx, more.chain(beside).collect());
+        world.commit(tx, &[]);
+    }
+    drop_subtree(&store, FLAT);
+    commit_later(&store);
+    let (_, flat_drops, mut wait) = store.db.left(&store.versions);
+    assert!(wait.poll(&store.versions));
+    // The drop left a record for each column it unlinked pages of: the
+    // one of the many records names the leaves between the two ends.
+    let record = flat_drops.iter().max_by_key(|record| record.pages.len());
+    let record = record.expect("the drop left pages").clone();
+    assert!(record.pages.len() > 2, "{flat_drops:?}");
+
+    // One page step: the first of the pages is freed, and the record stays.
+    {
+        let reclaimer = store.db.reclaimer(&store.versions);
+        let guard = store.versions.guard();
+        let mut done = FlatReclaimed::default();
+        let step = reclaimer.reclaim_flat(&store.db.flat_drops(), &record, &guard, 1, &mut done);
+        assert_eq!(step.expect("a step"), Progress::More);
+    }
+    let stopped = store.check();
+    assert!(stopped.is_sound(), "{stopped}");
+    assert!(stopped.census.left_flat_pages > 0, "{stopped}");
+
+    // The freed id comes back, and a Merk that grows takes it for a tree
+    // page: the lowest free id is given out first.
+    store.versions.reclaim();
+    store.versions.reclaim();
+    {
+        let mut world = World::new(&store.db, &store.versions);
+        let tx = world.begin();
+        world.edit(&tx, 2, |items| {
+            for index in 0..300 {
+                items.insert(key(index), vec![index as u8; 40]);
+            }
+        });
+        world.commit(tx, &[]);
+    }
+    let trees = store.tree_pages();
+    let reused = record
+        .pages
+        .iter()
+        .filter(|left| trees.contains(&left.page));
+    assert_eq!(
+        reused.count(),
+        1,
+        "the id of the freed page names a tree page"
+    );
+    let report = store.check();
+    assert!(report.is_sound(), "{report}");
+    assert_eq!(
+        report.census.left_flat_pages,
+        stopped.census.left_flat_pages
+    );
+
+    let swept = store.db.sweep(&store.versions);
+    assert!(
+        swept.blocked.is_none() && !swept.flat_drops.is_empty(),
+        "{swept:?}"
+    );
+    let after = store.check();
+    assert!(after.is_sound(), "{after}");
+    assert_eq!(after.census.left_flat_pages, 0);
+}
+
+/// Several columns may be kept in one keyspace, each under a lead of its
+/// own. The keyspace is walked once, and a record is of the column whose
+/// lead it begins with.
+#[test]
+fn columns_that_share_a_keyspace_are_walked_once() {
+    let store = plant();
+    store.db.unchecked();
+    let mut made = None;
+    store.write_flat(|pages| {
+        let tree = FlatTree::create(pages, store.db.config()).expect("a keyspace");
+        for (lead, name) in [(&b"a"[..], BIG), (b"m", OUTER), (b"ma", INNER)] {
+            let key = [lead, &prefix(name)[..], b"record"].concat();
+            tree.put(pages, &key, b"a value").expect("a put");
+        }
+        made = Some(tree);
+    });
+    let shared = made.expect("the keyspace was made");
+    let check = |leads: &[&'static [u8]]| {
+        let mut columns = store.db.keyspaces().columns().to_vec();
+        columns.extend(leads.iter().map(|lead| FlatColumn { tree: shared, lead }));
+        let parts = Store {
+            loader: store.db.loader(),
+            table: &store.db.table,
+            segments: &store.db.segments,
+            values: &store.db.values,
+            page_size: SIZE,
+            ids: Some(&store.db.ids),
+            grove: Grove::Directory {
+                tree: store.db.directory(),
+                columns: &columns,
+            },
+            flat_drops: Some(store.db.flat_drops()),
+            flat: &[],
+            values_counted: true,
+        };
+        let calls = AtomicU64::new(0);
+        let options = Options::new(store.latest(), Scope::Still);
+        verify::check(&parts, &Guard, options, Some(&mut rules(&calls)))
+    };
+    // One lead is the beginning of another: the record is of the column
+    // under which the directory has its prefix.
+    let all = check(&[b"a", b"m", b"ma"]);
+    assert!(all.is_sound(), "{all}");
+    // A record under a lead that no column of the keyspace has.
+    let fewer = check(&[b"a", b"m"]);
+    assert_eq!(fewer.rules(), [Rule::FlatRecordWithoutEntry], "{fewer}");
+    assert_eq!(fewer.findings.len(), 1);
+    assert_eq!(check(&[b"a"]).findings.len(), 2);
+    // The keyspace named as that of no column holds no record of a subtree.
+    let unnamed = check(&[]);
+    assert_eq!(unnamed.rules(), [Rule::FlatPageUnreached], "{unnamed}");
+}
+
 /// With no rules no hash is recomputed, and a rule that refuses is a
 /// finding: the caller's rules answer for every node.
 #[test]
@@ -686,15 +836,13 @@ fn a_chain_that_breaks_a_rule_of_chains_is_told() {
 #[should_panic(expected = "the store of a test is left unsound")]
 fn a_store_that_is_left_unsound_fails_its_test() {
     let Planted { db, versions } = plant();
-    let page = (db.ids.scan(PageId::MIN, &mut Vec::new())).map_or(PageId::MIN, |_| PageId::MIN);
-    (db.ids.free(page, versions.latest())).expect("it is live");
+    (db.ids.free(PageId::MIN, versions.latest())).expect("it is live");
 }
 
 #[test]
 fn a_host_of_a_merk_that_stands_alone_is_the_fixtures_own() {
     let store = plant();
     let host = store.cell(|_, cell| cell.hosted_root_count() > 0 && cell.key() == b"host");
-    let _ = (GONE, INNER);
     let inner = store.root(INNER);
     // The host is given a second Merk: one that every store of the tests
     // has, and then one that the test entered.

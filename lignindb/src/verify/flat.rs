@@ -26,10 +26,11 @@ use super::{
 enum Records<'a> {
     /// Nothing: the keyspace holds no record of a subtree.
     Any,
-    /// The records are of subtrees: each stands under `lead`, then a
-    /// prefix that the directory has an entry for.
-    Column {
-        lead: &'a [u8],
+    /// The records are of subtrees: each stands under one of `leads`,
+    /// then a prefix that the directory has an entry for. The leads are
+    /// those of every column that is kept in the keyspace.
+    Columns {
+        leads: &'a [&'a [u8]],
         prefixes: &'a HashMap<Prefix, usize>,
     },
 }
@@ -77,10 +78,23 @@ impl Run<'_, '_, '_> {
             }
             let none = HashMap::new();
             let prefixes = (entries.as_ref()).map_or(&none, |entries| &entries.by_prefix);
+            // Several columns may share one keyspace, each under a lead of
+            // its own (`lignin_tree::drop::Column`): a keyspace is walked
+            // once, with the leads of all its columns.
+            let mut walked: Vec<PageId> = Vec::new();
             for column in columns {
+                let root = column.tree.root();
+                if walked.contains(&root) {
+                    continue;
+                }
+                walked.push(root);
+                let shares = |other: &&lignin_tree::drop::Column<'_>| other.tree.root() == root;
+                let leads: Vec<&[u8]> = (columns.iter().filter(shares))
+                    .map(|column| column.lead)
+                    .collect();
                 let records = match &entries {
-                    Some(_) => Records::Column {
-                        lead: column.lead,
+                    Some(_) => Records::Columns {
+                        leads: &leads,
                         prefixes,
                     },
                     None => Records::Any,
@@ -228,32 +242,37 @@ impl Run<'_, '_, '_> {
             let page = visit.page;
             let named_by = visit.parent.map_or(Place::Page(page), Place::Page);
             let left = matches!(from, From::Left { .. });
-            match self.see(page) {
-                Kind::Flat => {}
+            let kind = match self.see(page) {
                 Kind::None if left => continue,
                 Kind::Bad => continue,
-                kind => {
-                    let rule = match from {
-                        From::Tree => Rule::FlatDanglingPage,
-                        From::Left { .. } => Rule::FlatDropRecord,
-                    };
-                    self.add(rule, named_by, || match kind {
-                        Kind::Tree => {
-                            format!("page {page} is named as a flat page and is a tree page")
-                        }
-                        _ => format!("page {page} is named as a flat page and is no page"),
-                    });
-                    continue;
-                }
-            }
-            let Ok(frame) = self.frame(page) else {
-                continue;
+                kind => kind,
             };
-            if let From::Left { newest_birth } = from
+            // A page that a range delete left and that was born after the
+            // range delete can have committed is another page: the one
+            // that was left was freed, and its id was given out again, to a
+            // page of either kind. The reclaimer passes it
+            // (`lignin_tree::drop`), and so does this walk, before it asks
+            // what the page is.
+            let frame = self.frame(page).ok();
+            if let (From::Left { newest_birth }, Some(frame)) = (from, &frame)
                 && frame.born() > newest_birth
             {
                 continue;
             }
+            if kind != Kind::Flat {
+                let rule = match from {
+                    From::Tree => Rule::FlatDanglingPage,
+                    From::Left { .. } => Rule::FlatDropRecord,
+                };
+                self.add(rule, named_by, || match kind {
+                    Kind::Tree => format!("page {page} is named as a flat page and is a tree page"),
+                    _ => format!("page {page} is named as a flat page and is no page"),
+                });
+                continue;
+            }
+            let Some(frame) = frame else {
+                continue;
+            };
             let reach = match from {
                 From::Tree => FlatReach::Tree,
                 From::Left { .. } => FlatReach::Left,
@@ -358,9 +377,9 @@ impl Run<'_, '_, '_> {
                         }
                         if !left {
                             self.census.flat_records += 1;
-                            if let Records::Column { lead, prefixes } = records {
+                            if let Records::Columns { leads, prefixes } = records {
                                 let full = [&visit.outer[..], &key[..]].concat();
-                                let prefix = record_prefix(&full, lead);
+                                let prefix = record_prefix(&full, leads, prefixes);
                                 let known = match prefix {
                                     Some(prefix) if entered == Some(prefix) => true,
                                     Some(prefix) => prefixes.contains_key(&prefix),
@@ -444,8 +463,19 @@ fn bucket_root(key: &[u8], key_limit: usize, value: FlatValue<'_>) -> Option<Pag
 }
 
 /// The prefix of the subtree that the record under `key` is of, in a
-/// column whose keys begin with `lead`.
-fn record_prefix(key: &[u8], lead: &[u8]) -> Option<Prefix> {
-    let rest = key.strip_prefix(lead)?;
-    rest.first_chunk::<PREFIX_LEN>().copied()
+/// keyspace whose columns begin their keys with `leads`: the one that
+/// `prefixes` has, where one lead is the beginning of another.
+fn record_prefix(key: &[u8], leads: &[&[u8]], prefixes: &HashMap<Prefix, usize>) -> Option<Prefix> {
+    let under = |lead: &&[u8]| {
+        let rest = key.strip_prefix(*lead)?;
+        rest.first_chunk::<PREFIX_LEN>().copied()
+    };
+    let mut found = leads.iter().filter_map(under);
+    let first = found.next()?;
+    match prefixes.contains_key(&first) {
+        true => Some(first),
+        false => found
+            .find(|prefix| prefixes.contains_key(prefix))
+            .or(Some(first)),
+    }
 }

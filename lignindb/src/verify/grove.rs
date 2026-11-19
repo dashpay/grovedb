@@ -189,11 +189,6 @@ impl Run<'_, '_, '_> {
                 self.add(dangling, holder, what);
                 continue;
             };
-            if !self.reach(at, reach) {
-                let what = || format!("the address {at} names a cell that was reached before");
-                self.add(Rule::CellNamedTwice, holder, what);
-                continue;
-            }
             let key = node.key();
             let above = step.low.as_ref().is_none_or(|low| low[..] < *key);
             let below = step.high.as_ref().is_none_or(|high| *key < high[..]);
@@ -226,6 +221,13 @@ impl Run<'_, '_, '_> {
                     ),
                     None => format!("the links of the child at {at} give no height"),
                 });
+            }
+            // What the link states of the cell was compared for every link
+            // that names it. The cell itself is entered once.
+            if !self.reach(at, reach) {
+                let what = || format!("the address {at} names a cell that was reached before");
+                self.add(Rule::CellNamedTwice, holder, what);
+                continue;
             }
             if reach == Reach::Live {
                 self.check_cell(&node, rules);

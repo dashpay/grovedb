@@ -328,16 +328,10 @@ const CELLS: &[Injection] = &[
         "the hash in a link is changed",
         Rule::Hash(HashField::Child(Side::Left)),
         |store| {
-            let (at, _) = store.link(BIG, |_, _| true);
-            let side = store.read(at, |cell| match cell.has_link(Side::Left) {
-                true => Side::Left,
-                false => Side::Right,
-            });
-            if side == Side::Right {
-                // The rule that is asked for names the left side.
-                let (at, _) = store.link(BIG, |_, _| false);
-                unreachable!("{at}");
-            }
+            let side = Side::Left;
+            let at = (store.merk(BIG).into_iter())
+                .find(|at| store.read(*at, |cell| cell.has_link(side)))
+                .expect("a node with a left child");
             store.step_tree(at, |page| {
                 (page.set_hash(at.slot(), HashField::Child(side), &OTHER_HASH)).expect("a hash");
             });

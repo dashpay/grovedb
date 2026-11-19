@@ -48,14 +48,22 @@ impl Run<'_, '_, '_> {
             states.clear();
             from = ids.scan(page, &mut states);
             for (page, state) in &states {
-                // An id that an open transaction holds was not read with
-                // the others.
-                if self.see(*page) == Kind::None && *state == PageState::Live {
-                    let what = || "the id is live and no page of the version has it".to_owned();
-                    self.add(Rule::IdWithoutPage, Place::Page(*page), what);
-                }
-                if *state == PageState::Live {
-                    live.insert(*page);
+                match state {
+                    PageState::Live => {
+                        live.insert(*page);
+                        if self.see(*page) == Kind::None {
+                            let what =
+                                || "the id is live and no page of the version has it".to_owned();
+                            self.add(Rule::IdWithoutPage, Place::Page(*page), what);
+                        }
+                    }
+                    // An id that an open transaction holds was not read
+                    // with the others: a page of the version under it is
+                    // found here.
+                    PageState::Private => {
+                        self.see(*page);
+                    }
+                    PageState::Retired | PageState::Free => {}
                 }
             }
         }
