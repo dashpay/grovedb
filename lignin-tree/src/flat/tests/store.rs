@@ -14,7 +14,7 @@ use lignin_format::{
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
     alloc::{PageAllocator, PageState},
-    cache::{BufferPool, OwnerId, PageRef, PoolConfig},
+    cache::{BufferPool, CacheError, OwnerId, PageRef, PoolConfig},
     load::{LoadError, PageLoader, FRAME_FORMAT},
     segment::{ManifestStore, SegmentStore, SegmentWriter},
     table::{Link, PageTable},
@@ -214,6 +214,9 @@ impl Db {
             self.pool.free(page, version).expect("freed");
             self.ids.free(page, version).expect("freed");
         }
+        for page in parts.unused {
+            self.ids.release(page).expect("released");
+        }
         let mut change = ValueChange::new();
         parts
             .released
@@ -227,16 +230,7 @@ impl Db {
     /// Gives up `writer`: its copies are discarded, and the ids of the
     /// pages it made go back.
     fn roll_back(&self, writer: Writer<'_>) {
-        let parts = writer.into_parts();
-        for (copy, created) in parts.written {
-            self.pool.discard(&copy).expect("discarded");
-            if created {
-                self.ids.release(copy.page()).expect("released");
-            }
-        }
-        for copy in parts.freed {
-            self.pool.discard(&copy).expect("discarded");
-        }
+        writer.roll_back().expect("rolled back");
     }
 
     /// Write-back: every pending value of a current page is appended to
@@ -879,27 +873,38 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
         (3, 0, 2, 0)
     );
 
-    // A commit frees the page between the look and the rewrite: the owner
-    // is gone.
-    let last = db.state.borrow().value_writer.file_id();
+    // The values are moved twice from one look: the second move finds
+    // every page as it was looked at, with another pointer in the entry.
     let moved = to.file_id();
-    let copies = {
+    let mut next = {
         let mut manifest = db.manifest.borrow_mut();
         to.finish().expect("closed");
         db.values
             .commit(&mut manifest)
             .expect("closed in the manifest");
-        let mut next = db.values.create().expect("a value-log file");
+        let next = db.values.create().expect("a value-log file");
         db.values.commit(&mut manifest).expect("named");
-        let copies = db
-            .values
-            .copy_live(moved, &mut next, &owners)
-            .expect("copied");
-        next.sync().expect("synced");
-        db.values.commit(&mut manifest).expect("covered");
-        copies
+        next
     };
-    assert_eq!(copies.len(), 3);
+    let mut copy = |file| {
+        let copies = db.values.copy_live(file, &mut next, &owners);
+        next.sync().expect("synced");
+        db.values
+            .commit(&mut db.manifest.borrow_mut())
+            .expect("covered");
+        copies.expect("copied")
+    };
+    let (first, second) = (copy(moved), copy(moved));
+    assert_eq!((first.len(), second.len()), (3, 3));
+    let cleaned = db.values.install(first, &owners).expect("a pass");
+    assert_eq!((cleaned.moved, cleaned.busy, cleaned.gone), (3, 0, 0));
+    let cleaned = db.values.install(second, &owners).expect("a pass");
+    assert_eq!((cleaned.moved, cleaned.busy, cleaned.gone), (0, 0, 3));
+    assert_eq!(db.values.count(moved).map(|count| count.values), Some(0));
+
+    // A commit frees the page between the look and the rewrite: the owner
+    // is gone. The values are in a leaf below the root by then, carried
+    // there by a split.
     let mut writer = db.writer();
     for n in 0..40u8 {
         tree.put(
@@ -911,20 +916,20 @@ fn a_rewrite_is_refused_for_a_page_that_is_no_longer_as_it_was_looked_at() {
     }
     db.commit(writer);
     db.write_back();
+    let (leaf, place) = home(&db.reader(), &tree, &key(0));
+    assert_ne!(leaf, tree.root());
+    let carried = place.pointer().expect("placed").file();
+    drop(db.close_value_file());
+    let copies = copy(carried);
+    assert_eq!(copies.len(), 4);
     let mut writer = db.writer();
-    tree.delete_range(&mut writer, &key(0), Some(&key(5)))
+    tree.delete_range(&mut writer, b"", Some(&[120]))
         .expect("a range delete");
+    assert!(writer.freed().any(|page| page == leaf));
     db.commit(writer);
-    let cleaned = db.values.install(copies, &owners);
-    let cleaned = match cleaned {
-        Ok(cleaned) => cleaned,
-        Err(ValueStoreError::OwnersNotFound { cleaned, .. }) => cleaned,
-        Err(other) => panic!("{other}"),
-    };
-    assert_eq!(cleaned.moved, 0);
-    assert_eq!(cleaned.gone + cleaned.busy, 3);
-    assert_eq!(db.values.count(moved).map(|count| count.values), Some(0));
-    assert_eq!(db.values.count(last).map(|count| count.values), Some(0));
+    let cleaned = db.values.install(copies, &owners).expect("a pass");
+    assert_eq!((cleaned.moved, cleaned.busy, cleaned.gone), (0, 0, 4));
+    assert_eq!(db.values.count(carried).map(|count| count.values), Some(0));
     assert_eq!(get(&db.reader(), &tree, &key(1)), None);
 }
 
@@ -968,17 +973,9 @@ fn a_writer_copies_a_page_that_the_pool_does_not_hold() {
     let released = writer.released().to_vec();
     assert!(released.len() >= 31, "{} pointers", released.len());
     assert!(released.is_sorted_by(|a, b| (a.file(), a.offset()) < (b.file(), b.offset())));
-    let parts = writer.into_parts();
-    for (copy, created) in parts.written.iter().map(|(copy, created)| (copy, *created)) {
-        pool.discard(copy).expect("discarded");
-        if created {
-            db.ids.release(copy.page()).expect("released");
-        }
-    }
-    parts
-        .freed
-        .iter()
-        .for_each(|copy| pool.discard(copy).expect("discarded"));
+    assert!(pool.census().private > 0);
+    writer.roll_back().expect("rolled back");
+    assert_eq!(pool.census().private, 0);
     assert_eq!(scan_all(&db.reader(), &tree).len(), 60);
 }
 
@@ -1014,13 +1011,17 @@ fn a_writer_keeps_the_pages_it_frees_and_refuses_them() {
     assert_eq!(db.pool.page_step(first).private_copies(), 1);
     assert_eq!(scan_all(&writer, &tree).len(), 30);
 
-    // A page the writer made and freed again is gone at once, and its id
-    // with it.
+    // A page the writer made and freed again is gone at once. Its id is
+    // the writer's until the writer ends, so that nobody else is given it
+    // while a rollback could still bring the page back.
     let made = writer.allocate().expect("a page");
     assert_eq!(db.ids.state(made), PageState::Private);
     writer.free(made).expect("freed");
-    assert_eq!(db.ids.state(made), PageState::Free);
+    assert_eq!(db.ids.state(made), PageState::Private);
     assert_eq!(db.pool.page_step(made).private_copies(), 0);
+    assert!(matches!(writer.page(made), Err(FlatError::Freed { page }) if page == made));
+    assert!(!writer.written().any(|page| page == made));
+    assert!(!writer.freed().any(|page| page == made));
 
     // An image that is longer than a frame, and a pending value whose
     // bytes nobody gave, are refused.
@@ -1039,16 +1040,111 @@ fn a_writer_keeps_the_pages_it_frees_and_refuses_them() {
     let orphaned = writer.write(root, &leaf.finish());
     assert!(matches!(orphaned, Err(FlatError::NoValue { page }) if page == root));
     let mut out = Vec::new();
-    let unread = writer.read_value(root, 0, ValuePlace::Pending(orphan), &mut out);
+    let unread = {
+        let held = writer.page(root).expect("the root");
+        writer.read_value(&held, root, 0, ValuePlace::Pending(orphan), &mut out)
+    };
     assert!(matches!(unread, Err(FlatError::NoValue { .. })));
     let uncarried = writer.carry_value(root, 0, made, ValuePlace::Pending(orphan));
     assert!(matches!(uncarried, Err(FlatError::NoValue { .. })));
     db.roll_back(writer);
     assert_eq!(db.pool.page_step(first).private_copies(), 0);
+    assert_eq!(db.ids.state(made), PageState::Free);
 
     // A reader asks for a pending value of a page that has none attached.
     let reader = db.reader();
-    let unread = reader.read_value(first, 0, ValuePlace::Pending(orphan), &mut out);
+    let held = reader.page(first).expect("a page");
+    let unread = reader.read_value(&held, first, 0, ValuePlace::Pending(orphan), &mut out);
     assert!(matches!(unread, Err(FlatError::NoValue { .. })));
     assert_eq!(scan_all(&reader, &tree).len(), 60);
+}
+
+/// A reader that holds a leaf reads the pending values of its entries
+/// from what it holds: write-back gives the page another frame, with the
+/// pointer in the entry and the bytes no longer attached, and takes
+/// nothing from the frame the reader holds (`transactions.md` FL7).
+#[test]
+fn a_reader_reads_a_pending_value_from_the_page_it_holds() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1 + n as usize];
+    let key = |n: u8| vec![b'k', n];
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    for n in 0..6 {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    db.commit(writer);
+
+    let reader = db.reader();
+    let root = tree.root();
+    let held = reader.page(root).expect("the root");
+    let places: Vec<(usize, ValuePlace)> = pending_of(&held)
+        .into_iter()
+        .map(|(slot, pending)| (slot, ValuePlace::Pending(pending)))
+        .collect();
+    assert_eq!(places.len(), 6);
+    db.write_back();
+    let now = reader.page(root).expect("the root");
+    assert!(pending_of(&now).is_empty() && pending_of(&held).len() == 6);
+    for &(slot, place) in &places {
+        let mut out = Vec::new();
+        reader
+            .read_value(&held, root, slot, place, &mut out)
+            .expect("the value of the page that is held");
+        assert_eq!(out, big(slot as u8));
+        // The page as it is now has no such value.
+        let gone = reader.read_value(&now, root, slot, place, &mut out);
+        assert!(matches!(gone, Err(FlatError::NoValue { page }) if page == root));
+    }
+    for n in 0..6 {
+        assert_eq!(get(&reader, &tree, &key(n)), Some(big(n)));
+    }
+}
+
+/// A writer changes the copies it made, and no others: a copy that the
+/// pool has under the writer's name from elsewhere is refused, and a copy
+/// that cannot be made whole is not left behind.
+#[test]
+fn a_writer_owns_the_copies_it_made_and_no_others() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1];
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    tree.put(&mut writer, b"a", &big(1)).expect("a put");
+    db.commit(writer);
+    let root = tree.root();
+
+    let mut first = db.writer();
+    tree.put(&mut first, b"b", b"first").expect("a put");
+    let owner = OwnerId::new(db.state.borrow().owners);
+    let mut second = Private::new(db.reader(), &db.pool, owner, &db.ids);
+    let refused = tree.put(&mut second, b"c", b"second");
+    assert!(matches!(
+        refused,
+        Err(FlatError::Cache(CacheError::AlreadyPrivate { page, .. })) if page == root
+    ));
+    // The writer that was refused is given up, and takes nothing along.
+    second.roll_back().expect("rolled back");
+    assert_eq!(db.pool.page_step(root).private_copies(), 1);
+    assert_eq!(get(&first, &tree, b"b"), Some(b"first".to_vec()));
+    db.commit(first);
+    assert_eq!(get(&db.reader(), &tree, b"b"), Some(b"first".to_vec()));
+
+    // A page whose pending value has lost its bytes: the copy is of no
+    // use, and does not stay in the way of page steps.
+    {
+        let step = db.pool.page_step(root);
+        let old = step.current().expect("the page");
+        let (slot, _) = pending_of(&old)[0];
+        let mut blank = db.pool.blank();
+        blank.copy_from(&old);
+        blank.detach(slot as u32).expect("attached");
+        step.replace(&old, blank).expect("replaced");
+    }
+    let mut writer = db.writer();
+    let lost = tree.put(&mut writer, b"d", b"more");
+    assert!(matches!(lost, Err(FlatError::NoValue { page }) if page == root));
+    assert_eq!(db.pool.page_step(root).private_copies(), 0);
+    writer.roll_back().expect("rolled back");
+    assert_eq!(db.pool.census().private, 0);
 }

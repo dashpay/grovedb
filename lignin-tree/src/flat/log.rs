@@ -32,6 +32,9 @@ struct Records<'a> {
     removes: Vec<Record<'a>>,
     puts: Vec<Record<'a>>,
     len: usize,
+    /// Whether the last entry of the old page that was passed left it: an
+    /// entry that leaves after it is one more of the same range.
+    follows: bool,
 }
 
 impl<'a> Records<'a> {
@@ -41,10 +44,9 @@ impl<'a> Records<'a> {
         (start, self.keys.len())
     }
 
-    /// The entry under `key` leaves. An entry that leaves right after the
-    /// one before it, with none between them that stays, is one more of
-    /// the same range.
-    fn remove(&mut self, key: FlatKey<'_>, follows: bool) {
+    /// The entry under `key` leaves.
+    fn remove(&mut self, key: FlatKey<'_>) {
+        let follows = std::mem::replace(&mut self.follows, true);
         if follows
             && let Some(Record::Remove(_, _, count)) = self.removes.last_mut()
             && *count < u16::MAX
@@ -57,6 +59,13 @@ impl<'a> Records<'a> {
         let (start, end) = self.key(key);
         self.len += 3 + key.len();
         self.removes.push(Record::Remove(start, end, 1));
+    }
+
+    /// An entry of the old page stays. It ends a range of removes. An
+    /// entry that arrives does not: it is not there yet when the range is
+    /// removed.
+    fn keep(&mut self) {
+        self.follows = false;
     }
 
     fn put(&mut self, key: FlatKey<'_>, value: FlatValue<'a>, replace: bool) {
@@ -134,30 +143,23 @@ fn pair<'a>(
 
 fn leaf_records<'a>(base: &FlatLeaf<'a>, page: &FlatLeaf<'a>) -> Records<'a> {
     let mut records = Records::default();
-    let mut follows = false;
     pair(
         |slot| base.key(slot),
         |slot| page.key(slot),
         |old, new| {
-            let (old, new) = (
-                old.and_then(|slot| base.entry(slot)),
-                new.and_then(|slot| page.entry(slot)),
-            );
+            let old = old.and_then(|slot| base.entry(slot));
+            let new = new.and_then(|slot| page.entry(slot));
             match (old, new) {
-                (Some((key, _)), None) => records.remove(key, follows),
+                (Some((key, _)), None) => records.remove(key),
                 (None, Some((key, value))) => records.put(key, value, false),
-                (Some((_, old)), Some((key, value))) if old != value => {
-                    records.put(key, value, true);
+                (Some((_, old)), Some((key, value))) => {
+                    records.keep();
+                    if old != value {
+                        records.put(key, value, true);
+                    }
                 }
-                _ => {}
+                (None, None) => {}
             }
-            // An entry that stays ends a range. One that arrives does not:
-            // it is not there yet when the range is removed.
-            follows = match (old, new) {
-                (Some(_), None) => true,
-                (Some(_), Some(_)) => false,
-                _ => follows,
-            };
         },
     );
     records
@@ -165,34 +167,26 @@ fn leaf_records<'a>(base: &FlatLeaf<'a>, page: &FlatLeaf<'a>) -> Records<'a> {
 
 fn branch_records<'a>(base: &FlatBranch<'a>, page: &FlatBranch<'a>) -> Records<'a> {
     let mut records = Records::default();
-    let mut follows = false;
+    let entry = |branch: &FlatBranch<'a>, slot: usize| {
+        Some((branch.separator(slot)?, branch.child(slot + 1)?))
+    };
     pair(
         |slot| base.separator(slot),
         |slot| page.separator(slot),
         |old, new| {
-            let entry = |branch: &FlatBranch<'a>, slot: usize| {
-                Some((branch.separator(slot)?, branch.child(slot + 1)?))
-            };
-            let (old, new) = (
-                old.and_then(|slot| entry(base, slot)),
-                new.and_then(|slot| entry(page, slot)),
-            );
+            let old = old.and_then(|slot| entry(base, slot));
+            let new = new.and_then(|slot| entry(page, slot));
+            if matches!((old, new), (Some((_, old)), Some((_, new))) if old == new) {
+                return records.keep();
+            }
             // A separator that stays with another child leaves and comes
             // again: no record gives a separator another child.
-            let stays = matches!((old, new), (Some((_, old)), Some((_, new))) if old == new);
-            if !stays {
-                if let Some((key, _)) = old {
-                    records.remove(key, follows);
-                }
-                if let Some((key, child)) = new {
-                    records.child(key, child);
-                }
+            if let Some((key, _)) = old {
+                records.remove(key);
             }
-            follows = match (old, stays) {
-                (Some(_), false) => true,
-                (Some(_), true) => false,
-                (None, _) => follows,
-            };
+            if let Some((key, child)) = new {
+                records.child(key, child);
+            }
         },
     );
     records
@@ -250,34 +244,35 @@ pub fn push_changes(
     records.push(prefix, run)
 }
 
-/// Gives the entry of the leaf `image` that holds the pending value `from`
-/// the pending value `to` instead, where it stands: a commit puts the
-/// place its group has for a new value into the page (`log-format.md`
-/// LG21, LG22). Returns whether an entry held `from`.
+/// Gives the entry in position `slot` of the leaf `image`, whose value is
+/// pending, the pending value `to` instead, where it stands: a commit puts
+/// the place its group has for a new value into the page (`log-format.md`
+/// LG21, LG22). Returns whether the entry holds a pending value of the
+/// length of `to`.
 ///
-/// The two are of one length, so nothing else in the image moves.
-pub fn stamp_pending(
-    image: &mut [u8],
-    from: PendingValue,
-    to: PendingValue,
-) -> Result<bool, FormatError> {
-    let (from, to) = (
-        ValuePlace::Pending(from).encode(),
-        ValuePlace::Pending(to).encode(),
-    );
+/// Nothing else in the image moves.
+pub fn stamp_pending(image: &mut [u8], slot: usize, to: PendingValue) -> Result<bool, FormatError> {
     let at = {
         let Some(leaf) = view(image)?.leaf() else {
             return Ok(false);
         };
+        let pending = |value: FlatValue<'_>| match value {
+            FlatValue::OutOfLine(place) => place.try_into().ok().map(ValuePlace::decode),
+            FlatValue::Inline(_) => None,
+        };
+        match leaf.value(slot).and_then(pending) {
+            Some(Ok(ValuePlace::Pending(held))) if held.value_len() == to.value_len() => {}
+            _ => return Ok(false),
+        }
         let cells =
             FlatLeaf::HEADER_LEN + leaf.prefix().len() + leaf.len() * FlatLeaf::ENTRY_OVERHEAD;
-        let mut end = cells;
-        leaf.iter().find_map(|(key, value)| {
-            end += key.suffix().len() + value.bytes().len();
-            (value == FlatValue::OutOfLine(&from)).then_some(end - from.len())
-        })
+        let cell =
+            |(key, value): (FlatKey<'_>, FlatValue<'_>)| key.suffix().len() + value.bytes().len();
+        // The place is the end of the entry's cell.
+        cells + leaf.iter().take(slot + 1).map(cell).sum::<usize>() - ValuePlace::ENCODED_LEN
     };
-    let Some(place) = at.and_then(|at| image.get_mut(at..at + to.len())) else {
+    let to = ValuePlace::Pending(to).encode();
+    let Some(place) = image.get_mut(at..at + to.len()) else {
         return Ok(false);
     };
     place.copy_from_slice(&to);

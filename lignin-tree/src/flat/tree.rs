@@ -4,17 +4,17 @@
 use std::cmp::Ordering;
 
 use lignin_format::{
-    flat_page::{shortest_separator, FlatBranch, FlatPage, FlatPageKind, FlatValue},
+    flat_page::{shortest_separator, FlatLeaf, FlatPage, FlatPageKind, FlatValue},
     PageId,
 };
 
 use super::{
     cursor::{prefix_end, Cursor},
     error::FlatError,
-    long_key::{Bucket, Stored},
+    long_key::{bucket_root, Stored},
     node::{
-        branch, branch_entries, child, leaf, leaf_entries, place, read_value, view, write_branch,
-        write_leaf, BranchEntry, KeyRef, Layout, LeafEntry, ValueRef,
+        branch, branch_entries, child, drop_held, leaf, leaf_entries, place, read_value, view,
+        write_branch, write_leaf, BranchEntry, KeyRef, Layout, LeafEntry, ValueRef,
     },
     pages::{value_len, FlatConfig, FlatPages, FlatPagesMut},
 };
@@ -36,17 +36,21 @@ enum Merge {
     TooLong,
 }
 
-/// What a range delete finds to do in a page.
-enum Plan {
-    Nothing,
-    /// The entries in these positions leave the leaf.
-    Entries(usize, usize),
-    /// The range reaches the children in these positions, each with the
-    /// bounds of its key range.
-    Children(usize, Vec<Reached>),
+/// A child that a range delete reaches, with the bounds of its key range.
+type Reached = (PageId, Option<Vec<u8>>, Option<Vec<u8>>);
+
+/// What a range delete did to the pages of one tree.
+#[derive(Debug, Default)]
+struct Pruned {
+    /// The leaves that lost entries and are still there.
+    leaves: Vec<PageId>,
+    /// Whether a page was freed.
+    freed: bool,
 }
 
-type Reached = (PageId, Option<Vec<u8>>, Option<Vec<u8>>);
+/// A bucket that a write went through: the tree that holds it, its stored
+/// key, and its own tree.
+type Passed = (FlatTree, Vec<u8>, FlatTree);
 
 /// A flat keyspace: one B+tree of flat pages, named by its root page.
 ///
@@ -106,12 +110,17 @@ impl FlatTree {
         key: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<bool, FlatError> {
-        match self.config.stored(key) {
-            Stored::Short(key) => self.get_stored(pages, key, out),
-            Stored::Long { bucket, rest } => Ok(self
-                .bucket(pages, &bucket)?
-                .and_then(|bucket| bucket.get(rest).map(|value| out.extend_from_slice(value)))
-                .is_some()),
+        let (mut tree, mut key) = (*self, key);
+        loop {
+            match self.config.stored(key) {
+                Stored::Short(key) => return tree.get_stored(pages, key, out),
+                Stored::Long { bucket, rest } => {
+                    let Some(next) = tree.bucket(pages, &bucket)? else {
+                        return Ok(false);
+                    };
+                    (tree, key) = (next, rest);
+                }
+            }
         }
     }
 
@@ -123,12 +132,21 @@ impl FlatTree {
         value: &[u8],
     ) -> Result<(), FlatError> {
         value_len(value)?;
-        match self.config.stored(key) {
-            Stored::Short(key) => self.put_stored(pages, key, value),
-            Stored::Long { bucket, rest } => {
-                let mut records = self.bucket(pages, &bucket)?.unwrap_or_default();
-                records.put(rest, value);
-                self.put_stored(pages, &bucket, &records.encode()?)
+        let (mut tree, mut key) = (*self, key);
+        loop {
+            match self.config.stored(key) {
+                Stored::Short(key) => return tree.put_stored(pages, key, value),
+                Stored::Long { bucket, rest } => {
+                    let next = match tree.bucket(pages, &bucket)? {
+                        Some(next) => next,
+                        None => {
+                            let next = Self::create(pages, self.config)?;
+                            tree.put_stored(pages, &bucket, &next.root.encode())?;
+                            next
+                        }
+                    };
+                    (tree, key) = (next, rest);
+                }
             }
         }
     }
@@ -139,19 +157,27 @@ impl FlatTree {
         pages: &mut P,
         key: &[u8],
     ) -> Result<bool, FlatError> {
-        match self.config.stored(key) {
-            Stored::Short(key) => self.delete_stored(pages, key),
-            Stored::Long { bucket, rest } => {
-                let Some(mut records) = self.bucket(pages, &bucket)? else {
-                    return Ok(false);
-                };
-                if !records.remove(rest) {
-                    return Ok(false);
+        let (mut tree, mut key) = (*self, key);
+        let mut passed = Vec::new();
+        loop {
+            match self.config.stored(key) {
+                Stored::Short(key) => {
+                    if !tree.delete_stored(pages, key)? {
+                        return Ok(false);
+                    }
+                    break;
                 }
-                self.put_bucket(pages, &bucket, &records)?;
-                Ok(true)
+                Stored::Long { bucket, rest } => {
+                    let Some(next) = tree.bucket(pages, &bucket)? else {
+                        return Ok(false);
+                    };
+                    passed.push((tree, bucket, next));
+                    (tree, key) = (next, rest);
+                }
             }
         }
+        Self::close_empty(pages, passed)?;
+        Ok(true)
     }
 
     /// Removes every record whose key is at or after `start` and before
@@ -165,41 +191,52 @@ impl FlatTree {
         start: &[u8],
         end: Option<&[u8]>,
     ) -> Result<(), FlatError> {
-        if end.is_some_and(|end| end <= start) {
-            return Ok(());
-        }
-        // A bucket that an end of the range lies in loses the keys on the
-        // range's side. Between the two ends whole entries leave.
-        let (start, end) = (
-            self.config.stored(start),
-            end.map(|end| self.config.stored(end)),
-        );
-        let to = match end {
-            None => None,
-            Some(Stored::Short(key)) => Some(key.to_vec()),
-            Some(Stored::Long { bucket, rest: to }) => match &start {
-                Stored::Long {
-                    bucket: first,
-                    rest,
-                } if *first == bucket => {
-                    return self.trim_bucket(pages, &bucket, Some(rest), Some(to));
+        let mut ranges = vec![(*self, start, end)];
+        let mut passed = Vec::new();
+        while let Some((tree, start, end)) = ranges.pop() {
+            if end.is_some_and(|end| end <= start) {
+                continue;
+            }
+            // A bucket that an end of the range lies in loses the keys on
+            // the range's side, as a range of its own tree. Between the
+            // two ends whole entries leave.
+            let mut inside = |pages: &mut P, bucket: &[u8], start, end| {
+                if let Some(next) = tree.bucket(pages, bucket)? {
+                    ranges.push((next, start, end));
+                    passed.push((tree, bucket.to_vec(), next));
                 }
-                _ => {
-                    self.trim_bucket(pages, &bucket, None, Some(to))?;
+                Ok::<_, FlatError>(())
+            };
+            let first = self.config.stored(start);
+            let to = match end.map(|end| self.config.stored(end)) {
+                None => None,
+                Some(Stored::Short(key)) => Some(key.to_vec()),
+                Some(Stored::Long { bucket, rest }) => {
+                    match &first {
+                        Stored::Long {
+                            bucket: same,
+                            rest: from,
+                        } if *same == bucket => {
+                            inside(pages, &bucket, from, Some(rest))?;
+                            continue;
+                        }
+                        _ => inside(pages, &bucket, &[], Some(rest))?,
+                    }
                     Some(bucket)
                 }
-            },
-        };
-        let from = match start {
-            Stored::Short(key) => key.to_vec(),
-            Stored::Long { mut bucket, rest } => {
-                self.trim_bucket(pages, &bucket, Some(rest), None)?;
-                // No stored key lies between a bucket and this.
-                bucket.push(0);
-                bucket
-            }
-        };
-        self.delete_range_stored(pages, &from, to.as_deref())
+            };
+            let from = match first {
+                Stored::Short(key) => key.to_vec(),
+                Stored::Long { mut bucket, rest } => {
+                    inside(pages, &bucket, rest, None)?;
+                    // No stored key lies between a bucket and this.
+                    bucket.push(0);
+                    bucket
+                }
+            };
+            tree.delete_range_stored(pages, &from, to.as_deref())?;
+        }
+        Self::close_empty(pages, passed)
     }
 
     /// Removes every record whose key starts with `prefix`: the range
@@ -288,61 +325,54 @@ impl FlatTree {
         else {
             return Ok(false);
         };
-        read_value(pages, page, slot, value, out)?;
+        read_value(pages, &frame, page, slot, value, out)?;
         Ok(true)
     }
 
-    /// The bucket stored under `key`, if there is one.
+    /// The tree of the bucket stored under `key`, if there is one.
     fn bucket<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         key: &[u8],
-    ) -> Result<Option<Bucket>, FlatError> {
-        let mut bytes = Vec::new();
-        if !self.get_stored(pages, key, &mut bytes)? {
-            return Ok(None);
-        }
-        self.read_bucket(&bytes).map(Some)
+    ) -> Result<Option<Self>, FlatError> {
+        let (page, frame) = self.walk(pages, key, None)?;
+        let root = match leaf(&frame, page)?.get(key) {
+            Some(value) => Some(bucket_root(page, value)?),
+            None => None,
+        };
+        Ok(root.map(|root| Self::open(root, self.config)))
     }
 
-    /// The bucket that the value `bytes` of an entry is.
-    pub(super) fn read_bucket(&self, bytes: &[u8]) -> Result<Bucket, FlatError> {
-        Bucket::decode(bytes).ok_or(FlatError::Damaged {
-            page: self.root,
-            what: "a bucket of long keys that does not read",
-        })
+    /// Whether the keyspace has no record.
+    fn is_empty<P: FlatPages + ?Sized>(&self, pages: &P) -> Result<bool, FlatError> {
+        let frame = pages.page(self.root)?;
+        let root = Self::checked(&frame, self.root, None)?;
+        Ok(root.leaf().is_some_and(|leaf| leaf.is_empty()))
+    }
+
+    /// The image of `page`, copied, for a look that is to hold no page.
+    fn image<P: FlatPages + ?Sized>(pages: &P, page: PageId) -> Result<Vec<u8>, FlatError> {
+        let frame = pages.page(page)?;
+        Ok(view(&frame)?.as_bytes().to_vec())
     }
 }
 
 /// Writing one key.
 impl FlatTree {
-    fn put_bucket<P: FlatPagesMut + ?Sized>(
-        &self,
+    /// Frees the trees of the buckets in `passed` that have no record left,
+    /// the innermost first, and takes each such bucket out of its tree.
+    ///
+    /// A tree that is seen empty stays empty: only its writer adds to it.
+    fn close_empty<P: FlatPagesMut + ?Sized>(
         pages: &mut P,
-        key: &[u8],
-        bucket: &Bucket,
+        passed: Vec<Passed>,
     ) -> Result<(), FlatError> {
-        if bucket.is_empty() {
-            self.delete_stored(pages, key).map(|_| ())
-        } else {
-            self.put_stored(pages, key, &bucket.encode()?)
-        }
-    }
-
-    /// Takes the rests from `from` up to `to` out of the bucket stored
-    /// under `key`.
-    fn trim_bucket<P: FlatPagesMut + ?Sized>(
-        &self,
-        pages: &mut P,
-        key: &[u8],
-        from: Option<&[u8]>,
-        to: Option<&[u8]>,
-    ) -> Result<(), FlatError> {
-        let Some(mut bucket) = self.bucket(pages, key)? else {
-            return Ok(());
-        };
-        if bucket.remove_range(from, to) {
-            self.put_bucket(pages, key, &bucket)?;
+        for (tree, bucket, inner) in passed.into_iter().rev() {
+            if inner.is_empty(pages)? {
+                pages.take(inner.root)?;
+                pages.free(inner.root)?;
+                tree.delete_stored(pages, &bucket)?;
+            }
         }
         Ok(())
     }
@@ -365,9 +395,7 @@ impl FlatTree {
         };
         let added = match leaf.search(key) {
             Ok(slot) => {
-                if let ValueRef::Held { place: old, .. } = entries[slot].value {
-                    pages.drop_value(page, place(old)?)?;
-                }
+                drop_held(pages, page, entries[slot].value)?;
                 entries[slot].value = value;
                 None
             }
@@ -521,30 +549,59 @@ impl FlatTree {
             return Ok(false);
         };
         let mut entries = leaf_entries(&leaf);
-        if let ValueRef::Held { place: old, .. } = entries.remove(slot).value {
-            pages.drop_value(page, place(old)?)?;
-        }
+        drop_held(pages, page, entries.remove(slot).value)?;
         write_leaf(pages, self.config.capacity(), page, &entries)?;
         self.rebalance(pages, steps, page)?;
         Ok(true)
     }
 }
 
-/// The separators of two neighbouring branches as one branch has them:
-/// those of `left`, the separator `between` that the branch above had
-/// between the two, with the first child of `right`, and those of `right`.
-fn joined<'a>(
-    left: &FlatBranch<'a>,
-    between: &'a [u8],
-    right: &FlatBranch<'a>,
-) -> Result<Vec<BranchEntry<'a>>, FlatError> {
-    let mut entries = branch_entries(left)?;
-    entries.push(BranchEntry {
-        key: KeyRef::Whole(between),
-        child: child(right, 0)?,
-    });
-    entries.extend(branch_entries(right)?);
-    Ok(entries)
+/// What two neighbouring pages hold together, as one page has it.
+enum Joined<'a> {
+    Leaves(Vec<LeafEntry<'a>>),
+    /// The level, the first child, and the separators: those of the left
+    /// branch, the separator that the branch above had between the two,
+    /// with the first child of the right branch, and those of the right
+    /// branch.
+    Branches(u8, PageId, Vec<BranchEntry<'a>>),
+}
+
+impl<'a> Joined<'a> {
+    /// The two children `left` and `right` of the branch `parent`, which
+    /// has `between` between them, as one page.
+    fn of(
+        parent: PageId,
+        left: FlatPage<'a>,
+        between: &'a [u8],
+        right: FlatPage<'a>,
+    ) -> Result<Self, FlatError> {
+        match (left, right) {
+            (FlatPage::Leaf(left), FlatPage::Leaf(right)) => Ok(Self::Leaves(
+                [leaf_entries(&left), leaf_entries(&right)].concat(),
+            )),
+            (FlatPage::Branch(left), FlatPage::Branch(right)) => {
+                let mut entries = branch_entries(&left)?;
+                entries.push(BranchEntry {
+                    key: KeyRef::Whole(between),
+                    child: child(&right, 0)?,
+                });
+                entries.extend(branch_entries(&right)?);
+                Ok(Self::Branches(left.level(), child(&left, 0)?, entries))
+            }
+            _ => Err(FlatError::Damaged {
+                page: parent,
+                what: "a branch over a leaf and a branch",
+            }),
+        }
+    }
+
+    /// The length of the page that holds them.
+    fn len(&self) -> usize {
+        match self {
+            Self::Leaves(entries) => Layout::of(entries).len(),
+            Self::Branches(_, _, entries) => Layout::of(entries).len(),
+        }
+    }
 }
 
 /// Pages that shrink: merging, removing, and the root.
@@ -604,7 +661,7 @@ impl FlatTree {
         index: usize,
     ) -> Result<Merge, FlatError> {
         let capacity = self.config.capacity();
-        let (slot, left, right, separator) = {
+        let (slot, level, left, right, separator) = {
             let frame = pages.page(parent)?;
             let branch = branch(&frame, parent)?;
             let Some(slot) = branch.len().checked_sub(1).map(|last| index.min(last)) else {
@@ -612,44 +669,34 @@ impl FlatTree {
             };
             let separator = branch.separator(slot).map(|key| key.to_vec());
             let (left, right) = (child(&branch, slot)?, child(&branch, slot + 1)?);
-            (slot, left, right, separator.unwrap_or_default())
+            (
+                slot,
+                branch.level(),
+                left,
+                right,
+                separator.unwrap_or_default(),
+            )
         };
-        let mismatch = FlatError::Damaged {
-            page: parent,
-            what: "a branch over a leaf and a branch",
+        // What the two make together, read from their images.
+        let join = |first, second| {
+            let first = Self::checked(first, left, Some(level))?;
+            let second = Self::checked(second, right, Some(level))?;
+            Joined::of(parent, first, &separator, second)
         };
 
-        // The two are looked at before they are taken: a page that stays
-        // as it is costs no copy.
-        let fits = {
-            let (first, second) = (pages.page(left)?, pages.page(right)?);
-            let merged = match (view(&first)?, view(&second)?) {
-                (FlatPage::Leaf(first), FlatPage::Leaf(second)) => {
-                    Layout::of(&[leaf_entries(&first), leaf_entries(&second)].concat()).len()
-                }
-                (FlatPage::Branch(first), FlatPage::Branch(second)) => {
-                    Layout::of(&joined(&first, &separator, &second)?).len()
-                }
-                _ => return Err(mismatch),
-            };
-            merged <= self.config.merge_limit()
-        };
-        if !fits {
+        // The two are looked at before they are taken, one after the
+        // other: a page that stays as it is costs no copy of its own.
+        let (first, second) = (Self::image(pages, left)?, Self::image(pages, right)?);
+        if join(&first, &second)?.len() > self.config.merge_limit() {
             return Ok(Merge::TooLong);
         }
 
         let (first, second) = (pages.take(left)?, pages.take(right)?);
-        match (view(&first)?, view(&second)?) {
-            (FlatPage::Leaf(first), FlatPage::Leaf(second)) => {
-                let entries = [leaf_entries(&first), leaf_entries(&second)].concat();
-                write_leaf(pages, capacity, left, &entries)?;
-            }
-            (FlatPage::Branch(first), FlatPage::Branch(second)) => {
-                let entries = joined(&first, &separator, &second)?;
-                let (level, head) = (first.level(), child(&first, 0)?);
+        match join(&first, &second)? {
+            Joined::Leaves(entries) => write_leaf(pages, capacity, left, &entries)?,
+            Joined::Branches(level, head, entries) => {
                 write_branch(pages, capacity, left, level, head, &entries)?;
             }
-            _ => return Err(mismatch),
         }
         pages.free(right)?;
 
@@ -706,16 +753,18 @@ impl FlatTree {
     fn collapse_root<P: FlatPagesMut + ?Sized>(&self, pages: &mut P) -> Result<(), FlatError> {
         let capacity = self.config.capacity();
         loop {
-            let only = {
+            let (only, level) = {
                 let frame = pages.page(self.root)?;
                 match view(&frame)? {
-                    FlatPage::Branch(branch) if branch.is_empty() => child(&branch, 0)?,
+                    FlatPage::Branch(branch) if branch.is_empty() => {
+                        (child(&branch, 0)?, branch.level())
+                    }
                     _ => return Ok(()),
                 }
             };
             pages.take(self.root)?;
             let old = pages.take(only)?;
-            match view(&old)? {
+            match Self::checked(&old, only, Some(level))? {
                 FlatPage::Leaf(leaf) => {
                     let entries = leaf_entries(&leaf);
                     write_leaf(pages, capacity, self.root, &entries)?;
@@ -742,48 +791,74 @@ impl FlatTree {
         if end.is_some_and(|end| end <= start) {
             return Ok(());
         }
-        self.prune(pages, self.root, (None, None), start, end)?;
+        let mut pruned = Pruned::default();
+        self.prune(
+            pages,
+            self.root,
+            None,
+            (None, None),
+            (start, end),
+            &mut pruned,
+        )?;
+        if pruned.leaves.is_empty() && !pruned.freed {
+            return Ok(());
+        }
         self.collapse_root(pages)?;
-        // The leaf at each end of the range lost entries without leaving.
+        // A leaf at an end of the range that lost entries without leaving
+        // is looked at, and where pages left, the leaf at each end, which
+        // took over their key range.
         for edge in [Some(start), end].into_iter().flatten() {
             let (steps, page) = self.descend(pages, edge)?;
-            self.rebalance(pages, steps, page)?;
+            if pruned.freed || pruned.leaves.contains(&page) {
+                self.rebalance(pages, steps, page)?;
+            }
         }
         Ok(())
     }
 
-    /// Removes the keys from `start` up to `end` from the page `page` and
-    /// the pages below it, whose keys lie between `bounds`. Returns whether
-    /// the page is gone: its whole key range was in the range, and it was
-    /// freed with everything below it.
+    /// The positions of the entries of `leaf` whose keys are from `start`
+    /// up to `end`.
+    fn span(leaf: &FlatLeaf<'_>, start: &[u8], end: Option<&[u8]>) -> (usize, usize) {
+        let at = |key| leaf.search(key).unwrap_or_else(|at| at);
+        let from = at(start);
+        (from, end.map_or(leaf.len(), at).max(from))
+    }
+
+    /// Removes the keys of `range` from the page `page`, which is below a
+    /// branch of the level `above`, and from the pages below it, whose keys
+    /// lie between `bounds`. Returns whether the page is gone: its whole
+    /// key range was in the range, and it was freed with everything below
+    /// it.
     fn prune<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         page: PageId,
+        above: Option<u8>,
         bounds: (Option<&[u8]>, Option<&[u8]>),
-        start: &[u8],
-        end: Option<&[u8]>,
+        range: (&[u8], Option<&[u8]>),
+        pruned: &mut Pruned,
     ) -> Result<bool, FlatError> {
         let capacity = self.config.capacity();
-        let (lower, upper) = bounds;
+        let ((lower, upper), (start, end)) = (bounds, range);
         let covered = lower.map_or(start.is_empty(), |lower| lower >= start)
             && end.is_none_or(|end| upper.is_some_and(|upper| upper <= end));
         if covered && page != self.root {
-            self.free_all(pages, page)?;
+            self.free_all(pages, page, above)?;
+            pruned.freed = true;
             return Ok(true);
         }
 
-        let plan = {
+        // The children the range reaches, as the page is read. A leaf is
+        // taken only if the range reaches an entry of it.
+        let reached = {
             let frame = pages.page(page)?;
-            match view(&frame)? {
+            match Self::checked(&frame, page, above)? {
                 FlatPage::Leaf(leaf) => {
-                    let at = |key| leaf.search(key).unwrap_or_else(|at| at);
-                    let (from, to) = (at(start), end.map_or(leaf.len(), at));
-                    if from < to {
-                        Plan::Entries(from, to)
-                    } else {
-                        Plan::Nothing
+                    let (from, to) = Self::span(&leaf, start, end);
+                    if from == to {
+                        return Ok(false);
                     }
+                    None
                 }
                 FlatPage::Branch(branch) => {
                     let first = branch.child_index(start);
@@ -797,86 +872,120 @@ impl FlatTree {
                         index - usize::from(begins)
                     });
                     let separator = |slot: usize| branch.separator(slot).map(|key| key.to_vec());
-                    let reached = (first..=last)
+                    let children = (first..=last)
                         .map(|index| {
                             let lower = index.checked_sub(1).and_then(separator);
                             Ok((child(&branch, index)?, lower, separator(index)))
                         })
                         .collect::<Result<Vec<Reached>, FlatError>>()?;
-                    Plan::Children(first, reached)
+                    Some((first, branch.level(), children))
                 }
             }
         };
-        match plan {
-            Plan::Nothing => {}
-            Plan::Entries(from, to) => {
-                let old = pages.take(page)?;
-                let leaf = leaf(&old, page)?;
-                let mut entries = leaf_entries(&leaf);
-                for entry in entries.drain(from.min(leaf.len())..to.min(leaf.len())) {
-                    if let ValueRef::Held { place: old, .. } = entry.value {
-                        pages.drop_value(page, place(old)?)?;
-                    }
-                }
+        let Some((first, level, children)) = reached else {
+            // Which entries leave is read from the leaf as it was taken: a
+            // step of background work can have taken entries out since.
+            let old = pages.take(page)?;
+            let leaf = leaf(&old, page)?;
+            let (from, to) = Self::span(&leaf, start, end);
+            let mut entries = leaf_entries(&leaf);
+            for entry in entries.drain(from..to) {
+                self.release(pages, page, &entry)?;
+            }
+            if from < to {
                 write_leaf(pages, capacity, page, &entries)?;
+                pruned.leaves.push(page);
             }
-            Plan::Children(first, reached) => {
-                let mut gone = Vec::with_capacity(reached.len());
-                for (child, below, above) in &reached {
-                    let bounds = (below.as_deref().or(lower), above.as_deref().or(upper));
-                    gone.push(self.prune(pages, *child, bounds, start, end)?);
-                }
-                if !gone.contains(&true) {
-                    return Ok(false);
-                }
-                let old = pages.take(page)?;
-                let branch = branch(&old, page)?;
-                // A child that stays keeps the separator to its left,
-                // unless it is the first that stays.
-                let mut kept = (0..=branch.len()).filter(|index| {
-                    index.checked_sub(first).and_then(|at| gone.get(at)) != Some(&true)
-                });
-                let Some(head) = kept.next() else {
-                    if page != self.root {
-                        pages.free(page)?;
-                        return Ok(true);
-                    }
-                    write_leaf(pages, capacity, page, &[])?;
-                    return Ok(false);
-                };
-                let all = branch_entries(&branch)?;
-                let entries: Vec<_> = kept
-                    .filter_map(|index| all.get(index - 1).copied())
-                    .collect();
-                let (level, head) = (branch.level(), child(&branch, head)?);
-                write_branch(pages, capacity, page, level, head, &entries)?;
-            }
+            return Ok(false);
+        };
+
+        let mut gone = Vec::with_capacity(children.len());
+        for (child, below, over) in &children {
+            let bounds = (below.as_deref().or(lower), over.as_deref().or(upper));
+            gone.push(self.prune(pages, *child, Some(level), bounds, range, pruned)?);
         }
+        if !gone.contains(&true) {
+            return Ok(false);
+        }
+        let old = pages.take(page)?;
+        let branch = branch(&old, page)?;
+        let same = children
+            .iter()
+            .enumerate()
+            .all(|(at, (child, ..))| branch.child(first + at) == Some(*child));
+        if !same {
+            return Err(FlatError::Damaged {
+                page,
+                what: "a branch that is not as it was read",
+            });
+        }
+        // A child that stays keeps the separator to its left, unless it is
+        // the first that stays.
+        let mut kept = (0..=branch.len())
+            .filter(|index| index.checked_sub(first).and_then(|at| gone.get(at)) != Some(&true));
+        let Some(head) = kept.next() else {
+            if page != self.root {
+                pages.free(page)?;
+                return Ok(true);
+            }
+            write_leaf(pages, capacity, page, &[])?;
+            return Ok(false);
+        };
+        let all = branch_entries(&branch)?;
+        let entries: Vec<_> = kept
+            .filter_map(|index| all.get(index - 1).copied())
+            .collect();
+        let (level, head) = (branch.level(), child(&branch, head)?);
+        write_branch(pages, capacity, page, level, head, &entries)?;
         Ok(false)
     }
 
-    /// Frees `page` and every page below it, and drops the values their
-    /// entries hold out of line.
+    /// An entry of the leaf `page` leaves the tree: its value out of line
+    /// is dropped, and the tree of a bucket is freed.
+    fn release<P: FlatPagesMut + ?Sized>(
+        &self,
+        pages: &mut P,
+        page: PageId,
+        entry: &LeafEntry<'_>,
+    ) -> Result<(), FlatError> {
+        match entry.value {
+            ValueRef::Inline(root) if self.config.is_bucket(entry.key.len()) => {
+                self.free_all(pages, bucket_root(page, FlatValue::Inline(root))?, None)
+            }
+            value => drop_held(pages, page, value),
+        }
+    }
+
+    /// Frees `page`, which is below a branch of the level `above`, and
+    /// every page below it, with the trees of the buckets among their
+    /// entries, and drops the values the entries hold out of line.
     fn free_all<P: FlatPagesMut + ?Sized>(
         &self,
         pages: &mut P,
         page: PageId,
+        above: Option<u8>,
     ) -> Result<(), FlatError> {
-        let old = pages.take(page)?;
-        match view(&old)? {
-            FlatPage::Leaf(leaf) => {
-                for (_, value) in leaf {
-                    if let FlatValue::OutOfLine(old) = value {
-                        pages.drop_value(page, place(old)?)?;
+        let mut left = vec![(page, above)];
+        while let Some((page, above)) = left.pop() {
+            let old = pages.take(page)?;
+            match Self::checked(&old, page, above)? {
+                FlatPage::Leaf(leaf) => {
+                    for (key, value) in leaf {
+                        if self.config.is_bucket(key.len()) {
+                            left.push((bucket_root(page, value)?, None));
+                        } else if let FlatValue::OutOfLine(held) = value {
+                            pages.drop_value(page, place(held)?)?;
+                        }
+                    }
+                }
+                FlatPage::Branch(branch) => {
+                    for index in 0..=branch.len() {
+                        left.push((child(&branch, index)?, Some(branch.level())));
                     }
                 }
             }
-            FlatPage::Branch(branch) => {
-                for index in 0..=branch.len() {
-                    self.free_all(pages, child(&branch, index)?)?;
-                }
-            }
+            pages.free(page)?;
         }
-        pages.free(page)
+        Ok(())
     }
 }

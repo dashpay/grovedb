@@ -91,19 +91,28 @@ pub trait FlatPages {
 
     /// Appends to `out` the bytes of the value out of line that the entry
     /// in position `slot` of the leaf `page` holds at `place`.
+    ///
+    /// `held` is the page as the caller read the entry from it, and still
+    /// holds. A pending value is found with that page, not with the page
+    /// as it is stored now: write-back can have placed the value since,
+    /// and taken its bytes off the frame that replaced this one.
     fn read_value(
         &self,
+        held: &Self::Page<'_>,
         page: PageId,
         slot: usize,
         place: ValuePlace,
         out: &mut Vec<u8>,
     ) -> Result<(), FlatError>;
 
-    /// A number that is another one after every change to a page of this
-    /// reader. A reader whose pages never change keeps the default.
-    fn revision(&self) -> u64 {
-        0
-    }
+    /// A number that names these pages as they are: another one after every
+    /// change to a page of a writer, and another one for every reader and
+    /// writer that does not read the same pages. A [`Cursor`](super::Cursor)
+    /// that is given pages of another number goes on from its key.
+    ///
+    /// A background step that takes an entry out of a leaf of a reader's
+    /// version changes no number: a cursor finds that by itself.
+    fn revision(&self) -> u64;
 }
 
 /// The pages of a flat keyspace, as the one writer of a write transaction
@@ -113,18 +122,23 @@ pub trait FlatPages {
 ///
 /// - a page is taken ([`Self::take`]) or allocated before it is written,
 ///   freed, or has a value held, dropped or carried for it
+/// - what the tree does to a leaf it decides from the image it took, never
+///   from the page as it read it before
 /// - a page that entries are carried out of is written or freed after the
 ///   pages they are carried to
 /// - a page is freed after every value of its entries was dropped or
 ///   carried
+/// - the tree holds one page of [`FlatPages::page`] at a time, and none
+///   across a call of this trait
 pub trait FlatPagesMut: FlatPages {
     /// The id of a new page, which only this writer sees until it commits.
     fn allocate(&mut self) -> Result<PageId, FlatError>;
 
     /// The image of `page`, for a change. From this call until the writer
     /// commits or gives up, nothing else changes how the page is stored: a
-    /// value pointer of it is not rewritten and no pending value of it is
-    /// placed (`transactions.md` PV7).
+    /// value pointer of it is not rewritten, no pending value of it is
+    /// placed, and no entry that a dropped subtree left is taken out of it
+    /// (`transactions.md` PV7).
     fn take(&mut self, page: PageId) -> Result<Vec<u8>, FlatError>;
 
     /// The page `page` becomes `image`.
@@ -156,7 +170,9 @@ pub trait FlatPagesMut: FlatPages {
         place: ValuePlace,
     ) -> Result<PendingValue, FlatError> {
         let mut value = Vec::new();
-        self.read_value(from, slot, place, &mut value)?;
+        let held = self.page(from)?;
+        self.read_value(&held, from, slot, place, &mut value)?;
+        drop(held);
         let held = self.hold_value(to, &value)?;
         self.drop_value(from, place)?;
         Ok(held)

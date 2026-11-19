@@ -149,7 +149,7 @@ fn pages_that_are_not_a_tree_are_refused() {
     assert_eq!(damaged(tree.cursor().seek(&pages, b"n")), (three, level));
 
     // A branch whose children are a branch and a leaf: found when the two
-    // are to be merged.
+    // are to be merged, at the one that is at the wrong level.
     let mut pages = with(vec![
         branch_image(one, 2, two, &[(b"m", three)]),
         branch_image(two, 1, four, &[(b"c", five)]),
@@ -158,14 +158,14 @@ fn pages_that_are_not_a_tree_are_refused() {
         leaf_image(five, &[b"d"]),
     ]);
     let found = damaged(tree.delete(&mut pages, b"a"));
-    assert_eq!(found, (one, "a branch over a leaf and a branch"));
+    assert_eq!(found, (three, level));
 
     // A stored key of a bucket's length whose value is no bucket.
     let head = vec![b'h'; config.key_limit()];
     let stored = [head.as_slice(), &[0]].concat();
     let mut pages = with(vec![leaf_image(one, &[&stored])]);
     let long = [head.as_slice(), b"rest"].concat();
-    let bucket = "a bucket of long keys that does not read";
+    let bucket = "a bucket of long keys that names no page";
     assert_eq!(
         damaged(tree.get(&pages, &long, &mut Vec::new())),
         (one, bucket)
@@ -186,46 +186,6 @@ fn pages_that_are_not_a_tree_are_refused() {
     let pages = with(Vec::new());
     let refused = tree.get(&pages, b"a", &mut Vec::new());
     assert!(matches!(refused, Err(FlatError::Freed { page }) if page == one));
-}
-
-#[test]
-fn a_bucket_reads_only_from_the_bytes_it_writes() {
-    let mut bucket = Bucket::default();
-    assert!(bucket.is_empty() && bucket.encode().expect("bytes").is_empty());
-    bucket.put(b"b", b"second");
-    bucket.put(b"a", b"");
-    bucket.put(b"b", b"again");
-    assert_eq!(
-        (bucket.len(), bucket.get(b"b"), bucket.get(b"c")),
-        (2, Some(&b"again"[..]), None)
-    );
-    assert_eq!(
-        (bucket.rest(0), bucket.value(0), bucket.rest(2)),
-        (Some(&b"a"[..]), Some(&b""[..]), None)
-    );
-    let bytes = bucket.encode().expect("bytes");
-    assert_eq!(Bucket::decode(&bytes), Some(bucket.clone()));
-
-    // No bucket is empty, cut short, out of order, or has an empty rest.
-    // Cut where its first key ends, it is the bucket of that key.
-    assert_eq!(Bucket::decode(&[]), None);
-    for len in 1..bytes.len() {
-        let whole = len == 4 + 1 + 4;
-        assert_eq!(
-            Bucket::decode(&bytes[..len]).is_some(),
-            whole,
-            "{len} bytes"
-        );
-    }
-    let record = |rest: &[u8]| [&(rest.len() as u32).to_le_bytes()[..], rest, &[0; 4]].concat();
-    assert_eq!(Bucket::decode(&[record(b"b"), record(b"a")].concat()), None);
-    assert_eq!(Bucket::decode(&[record(b"a"), record(b"a")].concat()), None);
-    assert_eq!(Bucket::decode(&record(b"")), None);
-    assert!(Bucket::decode(&[record(b"a"), record(b"b")].concat()).is_some());
-
-    assert!(bucket.remove(b"a") && !bucket.remove(b"a"));
-    assert!(!bucket.remove_range(Some(b"c"), None) && bucket.remove_range(None, Some(b"c")));
-    assert!(bucket.is_empty());
 }
 
 #[test]

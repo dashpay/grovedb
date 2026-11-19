@@ -277,12 +277,17 @@ impl FlatPages for Plain {
 
     fn read_value(
         &self,
+        held: &&[u8],
         page: PageId,
         slot: usize,
         place: ValuePlace,
         out: &mut Vec<u8>,
     ) -> Result<(), FlatError> {
-        self.0.read_value(page, slot, place, out)
+        self.0.read_value(held, page, slot, place, out)
+    }
+
+    fn revision(&self) -> u64 {
+        self.0.revision()
     }
 }
 
@@ -317,11 +322,6 @@ fn a_value_is_carried_by_reading_holding_and_dropping_it() {
     let config = small();
     let (pages, tree) = Mem::tree(config);
     let mut pages = Plain(pages);
-    assert_eq!(
-        pages.revision(),
-        0,
-        "pages that say nothing of their changes"
-    );
     let key = |n: u8| [vec![n], vec![b'k'; 400]].concat();
     let big = |n: u8| vec![n; config.max_inline() + 1];
     for n in 0..10 {

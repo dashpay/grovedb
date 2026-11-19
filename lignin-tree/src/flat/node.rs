@@ -59,9 +59,10 @@ pub(super) fn place(bytes: &[u8]) -> Result<ValuePlace, FlatError> {
 }
 
 /// Appends the value of `value`, an entry in position `slot` of the leaf
-/// `page`, to `out`.
+/// `page`, to `out`. `held` is the page the entry was read from.
 pub(super) fn read_value<P: FlatPages + ?Sized>(
     pages: &P,
+    held: &P::Page<'_>,
     page: PageId,
     slot: usize,
     value: FlatValue<'_>,
@@ -72,7 +73,20 @@ pub(super) fn read_value<P: FlatPages + ?Sized>(
             out.extend_from_slice(bytes);
             Ok(())
         }
-        FlatValue::OutOfLine(bytes) => pages.read_value(page, slot, place(bytes)?, out),
+        FlatValue::OutOfLine(bytes) => pages.read_value(held, page, slot, place(bytes)?, out),
+    }
+}
+
+/// Drops the value out of line that `value`, of an entry of the leaf
+/// `page`, holds.
+pub(super) fn drop_held<P: FlatPagesMut + ?Sized>(
+    pages: &mut P,
+    page: PageId,
+    value: ValueRef<'_>,
+) -> Result<(), FlatError> {
+    match value {
+        ValueRef::Held { place: held, .. } => pages.drop_value(page, place(held)?),
+        ValueRef::Inline(_) | ValueRef::New(_) => Ok(()),
     }
 }
 
@@ -288,13 +302,10 @@ impl Layout {
     /// The length of the page that holds the entries from `start` up to
     /// `end`, which is not before `start`.
     fn run_len(&self, start: usize, end: usize) -> usize {
-        let shared = self.shared[start..end.max(start + 1) - 1]
-            .iter()
-            .copied()
-            .min();
         let prefix = if start == end {
             0
         } else {
+            let shared = self.shared[start..end - 1].iter().copied().min();
             shared.unwrap_or(self.keys[start])
         };
         self.len_under(start, end, prefix)
@@ -383,8 +394,28 @@ impl Layout {
     /// The one cut that leaves two runs nearest in length.
     fn middle(&self, capacity: usize, skip: usize) -> Option<usize> {
         let count = self.entries();
+        // What the keys before each position share, and those from it on.
+        let mut before = vec![0; count + 1];
+        let mut from = vec![0; count + 1];
+        for end in 1..=count {
+            before[end] = match end {
+                1 => self.keys[0],
+                _ => before[end - 1].min(self.shared[end - 2]),
+            };
+        }
+        for start in (0..count).rev() {
+            from[start] = match count - start {
+                1 => self.keys[start],
+                _ => from[start + 1].min(self.shared[start]),
+            };
+        }
         (1..count - skip)
-            .map(|cut| (cut, self.run_len(0, cut), self.run_len(cut + skip, count)))
+            .map(|cut| {
+                let start = cut + skip;
+                let first = self.len_under(0, cut, before[cut]);
+                let second = self.len_under(start, count, from[start]);
+                (cut, first, second)
+            })
             .filter(|&(_, first, second)| first <= capacity && second <= capacity)
             .min_by_key(|&(_, first, second)| first.abs_diff(second))
             .map(|(cut, ..)| cut)

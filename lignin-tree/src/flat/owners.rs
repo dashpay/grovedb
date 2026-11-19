@@ -19,7 +19,7 @@ use super::pages::FlatConfig;
 
 /// What a pointer rewrite needs of whoever keeps the log and the versions.
 pub trait StepLog {
-    /// The latest commit version.
+    /// The latest commit version, read as it is at the call.
     fn latest(&self) -> CommitVersion;
 
     /// Appends the record of a page step to the log. The step is made only
@@ -144,6 +144,8 @@ impl<L: StepLog> ValueOwners for FlatOwners<'_, L> {
             .copy_from_slice(&image);
         self.log.append(&record)?;
         guard.replace(&frame, blank)?;
-        Ok(Rewrite::Installed(step.install(latest)))
+        // The step is dated by the latest version as it is now, which a
+        // commit to another page can have moved since the page was read.
+        Ok(Rewrite::Installed(step.install(self.log.latest())))
     }
 }

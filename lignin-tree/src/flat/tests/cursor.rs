@@ -307,3 +307,69 @@ fn the_steps_of_a_drain_are_in_the_log_in_the_order_they_were_made() {
     states.dedup();
     assert_eq!(states.len(), 10, "nine steps, each of which is seen alone");
 }
+
+/// A step of background work takes an entry out of a leaf under a reader,
+/// whose pages are of the same version before and after
+/// (`transactions.md` PV7). The cursor shows no other record under the
+/// key it stands on, and goes on from that key.
+#[test]
+fn a_cursor_reads_by_its_key_where_an_entry_left_its_leaf() {
+    use lignin_format::flat_page::FlatLeafBuilder;
+
+    let key = |n: u8| vec![b'k', n];
+    let value = |n: u8| vec![n; 3 + n as usize];
+    let (mut pages, tree) = Mem::tree(small());
+    for n in 0..10 {
+        tree.put(&mut pages, &key(n), &value(n)).expect("a put");
+    }
+    pages.commit();
+    let root = tree.root();
+    let revision = pages.revision();
+    let take_out = |pages: &mut Mem, gone: u8| {
+        let leaf = pages.image(root).leaf().expect("a leaf");
+        let mut built = FlatLeafBuilder::new(root, leaf.prefix(), 4_096).expect("a leaf");
+        for (found, value) in leaf.iter().filter(|(found, _)| found.to_vec() != key(gone)) {
+            built.push_key(found, value).expect("an entry");
+        }
+        let image = built.finish();
+        pages.pages.insert(root, image.clone());
+        pages.base.insert(root, image);
+        assert_eq!(pages.revision(), revision);
+    };
+    let read = |cursor: &Cursor, pages: &Mem| {
+        let mut out = Vec::new();
+        let found = cursor.value(pages, &mut out).expect("a value");
+        (cursor.key().map(<[u8]>::to_vec), found.then_some(out))
+    };
+
+    // An entry before the cursor's leaves: every entry behind it stands
+    // one position earlier, and the cursor's record is read all the same.
+    let mut cursor = tree.cursor();
+    cursor.seek(&pages, &key(5)).expect("a seek");
+    take_out(&mut pages, 1);
+    assert_eq!(read(&cursor, &pages), (Some(key(5)), Some(value(5))));
+    cursor.next(&pages).expect("a step");
+    assert_eq!(read(&cursor, &pages), (Some(key(6)), Some(value(6))));
+    take_out(&mut pages, 2);
+    cursor.prev(&pages).expect("a step");
+    assert_eq!(read(&cursor, &pages), (Some(key(5)), Some(value(5))));
+
+    // The cursor's own entry leaves: it has no value any more, and the
+    // cursor goes on to the records beside its key.
+    take_out(&mut pages, 5);
+    assert_eq!(read(&cursor, &pages), (Some(key(5)), None));
+    let mut back = cursor.clone();
+    cursor.next(&pages).expect("a step");
+    assert_eq!(read(&cursor, &pages), (Some(key(6)), Some(value(6))));
+    back.prev(&pages).expect("a step");
+    assert_eq!(read(&back, &pages), (Some(key(4)), Some(value(4))));
+
+    // The last entry leaves under a cursor that stands on it.
+    cursor.seek_to_last(&pages).expect("a seek");
+    take_out(&mut pages, 9);
+    let mut back = cursor.clone();
+    cursor.next(&pages).expect("a step");
+    assert_eq!(read(&cursor, &pages), (None, None));
+    back.prev(&pages).expect("a step");
+    assert_eq!(read(&back, &pages), (Some(key(8)), Some(value(8))));
+}

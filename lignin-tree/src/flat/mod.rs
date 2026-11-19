@@ -58,7 +58,7 @@
 //!
 //! tree.put(&mut pages, b"aux/state", b"a value")?;
 //! // A value that is too long for a page goes out of line, and a key that
-//! // is too long for one goes into a bucket.
+//! // is too long for one goes into the tree of a bucket.
 //! tree.put(&mut pages, b"meta/root", &[7; 100_000])?;
 //! tree.put(&mut pages, &[b'k'; 100_000], b"under a long key")?;
 //!
@@ -97,16 +97,22 @@
 //! key longer than [`FlatConfig::key_limit`], an eighth of a page. A longer
 //! key is kept in the **bucket** of its first `key_limit` bytes: one entry
 //! of the tree, whose key is those bytes followed by one zero byte, and
-//! whose value lists the keys that begin with them, each as the rest of the
-//! key and its value, in order. An entry whose key is longer than the limit
-//! is therefore a bucket, and it stands where its keys belong: behind the
-//! key that is exactly its first bytes, and before every other key that is
-//! greater. Get, put, delete, range delete and the cursor take a long key
-//! as any other, and a cursor shows it whole.
+//! whose value is the root page of a tree of its own. That tree holds the
+//! keys that begin with those bytes, each under the rest of the key, and a
+//! rest that is still too long has a bucket in that tree in turn. An entry
+//! whose key is longer than the limit is therefore a bucket, and it stands
+//! where its keys belong: behind the key that is exactly its first bytes,
+//! and before every other key that is greater. Get, put, delete, range
+//! delete and the cursor take a long key as any other, and a cursor shows
+//! it whole.
 //!
-//! A put or a delete of a long key writes its bucket again, so its cost
-//! grows with the keys that share their first eighth of a page. Keys that
-//! long are for what RocksDB accepts and nobody writes, not for a workload.
+//! The tree of a bucket is a tree like any other: it grows and shrinks by
+//! pages, there is no limit to the keys that share their first bytes or to
+//! their values, and a write to one of them changes the pages on its way
+//! and no others. It is never empty: the last key that leaves it takes the
+//! bucket along. A key is as many trees deep as it has eighths of a page,
+//! and a write of it reads one leaf for each: keys that long are for what
+//! RocksDB accepts and nobody writes, not for a workload.
 //!
 //! # The tree
 //!
@@ -150,9 +156,13 @@
 //!
 //! **A range delete** goes down from the root. A page whose key range lies
 //! inside the range is freed with every page below it, and every leaf among
-//! them is read first, for the values its entries hold out of line. A leaf
-//! at an end of the range loses the entries inside it. Unlinking a range
-//! without reading it is the subtree drop's (TREE-09).
+//! them is read first, for the values its entries hold out of line and for
+//! the trees of its buckets. A leaf at an end of the range loses the
+//! entries inside it. Afterwards the leaf at each end of the range is
+//! looked at as above, if it lost an entry or pages beside it left, and no
+//! other page is. A range delete that finds nothing to remove copies no
+//! page and writes none. Unlinking a range without reading it is the
+//! subtree drop's (TREE-09).
 //!
 //! # Values
 //!
@@ -188,15 +198,35 @@
 //! pool or is loaded into it (`lignin_store::load`), and a value in the
 //! value log is read through its pointer with the page as its owner.
 //!
+//! **A value is read for the page that is held.** A page step can give a
+//! page another frame at any time: write-back puts a pointer where a
+//! pending value was, the cleaner puts another pointer, and a reclaim
+//! takes out the entries that a dropped subtree left (`transactions.md`
+//! PV7). So [`FlatPages::read_value`] is given the page that the entry was
+//! read from, still held, and a pending value is read from that frame and
+//! not from the page as it is by then.
+//!
 //! [`Private`] is the flat side of a write transaction. It reads its own
 //! copies, and for every other page what [`Committed`] reads.
 //!
 //! - **A page is copied before it is changed, and before anything is
 //!   concluded from it** ([`FlatPagesMut::take`]). From the copy on, no
-//!   page step changes the page (`transactions.md` PV7): a pointer that the
-//!   writer reads from its copy and releases is the pointer the page holds
-//!   at the commit. A committed page that the writer frees keeps its copy
-//!   until the commit, for the same reason.
+//!   page step changes the page: a pointer that the writer reads from its
+//!   copy and releases is the pointer the page holds at the commit, and
+//!   the entries that a write removes or keeps are those of the copy, not
+//!   of the page as it was when the write went down to it. A committed
+//!   page that the writer frees keeps its copy until the commit, for the
+//!   same reason. A page step changes one leaf and never a branch, so the
+//!   way down to a leaf is as it was read.
+//! - **A copy is the writer's or nobody's.** A copy that the pool holds
+//!   under the writer's name and the writer did not make is refused, and
+//!   a copy that cannot be made whole is discarded at once.
+//! - **A writer ends as a whole.** [`Private::into_parts`] is its commit,
+//!   and [`Private::roll_back`] gives it up. After a call that failed the
+//!   writer's pages are in no state to go on from, and giving the writer
+//!   up is what is left. The id of a page that the writer made and freed
+//!   again stays the writer's until one of the two, so that nobody is
+//!   given it while a rollback could bring the page back (ID1).
 //! - **A flat page is written whole.** An image is immutable and exactly
 //!   as long as its content (`flat-page.md` P11), so every change builds
 //!   the image again and puts it at the start of the copy's frame.
@@ -227,7 +257,8 @@
 //! 3. **The pointers released** ([`Private::released`]).
 //!
 //! Then it installs the copies ([`Private::into_parts`]). A copy that is as
-//! the page was has no run, and is discarded instead.
+//! the page was has no run, and is discarded instead. The ids of the pages
+//! that the writer made and freed again go back with the commit.
 //!
 //! # The value log's cleaner
 //!
@@ -235,7 +266,8 @@
 //! that holds a pointer in the current version of the page a value's
 //! record names, and gives it another pointer in a page step, which builds
 //! the leaf's image again in a frame of its own and is refused under the
-//! three checks of PV7.
+//! three checks of PV7. The step is dated by the latest version at the
+//! moment it is installed.
 //!
 //! # The cursor
 //!
@@ -245,7 +277,16 @@
 //! the branches above them, which it remembers. Under a writer whose pages
 //! have changed since the cursor moved, a step goes on from the cursor's
 //! key: every write under a cursor is defined, the delete of the record it
-//! stands on among them (rule 7).
+//! stands on among them (rule 7). The pages say that they have changed
+//! with a number ([`FlatPages::revision`]) that no two states of any
+//! reader or writer share.
+//!
+//! Under a reader the cursor knows where it stands by the key of the entry
+//! there, not by the entry's position alone: a page step can take an entry
+//! out of a leaf under it. It then reads its record by the key and steps
+//! on from the key, and a record that is gone has no value. Under a long
+//! key the cursor is in the tree of each bucket on the way to it, and goes
+//! from the last key of one to what follows the bucket.
 //!
 //! # What the callers do
 //!
@@ -253,8 +294,8 @@
 //!   read, and reads at a version it has pinned or at the latest version it
 //!   read under the guard (`transactions.md` PN5).
 //! - **A write transaction** has one writer of a keyspace at a time. Its
-//!   write set is the truth (WT3): after an error it gives up the pages
-//!   the failed call may have changed, and makes them again from its write
+//!   write set is the truth (WT3): after an error it gives the writer up
+//!   ([`Private::roll_back`]) and makes its pages again from its write
 //!   set, as it does for a rebase (WT7, WT10).
 //! - **A commit** takes the three parts above in that order, releases the
 //!   pointers under the counts lock, and frees a page only after it has
@@ -278,8 +319,11 @@
 //!    that arrive in order, against 91%. A put can now change the prefix
 //!    of its page, which costs nothing while a page is built again for
 //!    every change, and one record of the prefix in the log.
-//! 2. **Long keys are kept in buckets**, above the page format, which is
-//!    unchanged. The limit is an eighth of a page.
+//! 2. **Long keys are kept in the trees of buckets**, above the page
+//!    format, which is unchanged. The limit is an eighth of a page. A
+//!    bucket's value is the four bytes of its tree's root page, in the
+//!    entry: the invariant checker and the subtree drop follow it as the
+//!    tree does, and tell a bucket by the length of its key.
 //! 3. **The root keeps its page id.** Whoever names a keyspace stores one
 //!    id for good. A root that is cut carries every entry it holds, with
 //!    its values, to new pages.
@@ -300,7 +344,16 @@
 //! 9. **A range delete reads every leaf it frees.** The lazy form is
 //!    TREE-09's.
 //! 10. **The pages are behind two traits.** [`Private`] is one way to hold
-//!     a writer's pages, and TXN-03 may hold them another way.
+//!     a writer's pages, and TXN-03 may hold them another way. [`Committed`]
+//!     takes no proof of the reader's operation guard, as the node reader
+//!     of the tree pages does (TREE-02): the caller holds it.
+//! 11. **A failed call ends its writer.** The tree does not undo half a
+//!     split. TXN-03 makes the pages again from the write set.
+//! 12. **Page steps change leaves only**, and take entries out or change
+//!     the place of a value, without moving an entry to another page. The
+//!     tree relies on it between its way down and its copy of the leaf. A
+//!     step that changed a branch would need the tree to copy every page
+//!     on its way.
 
 mod cursor;
 mod error;

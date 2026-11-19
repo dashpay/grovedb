@@ -5,6 +5,7 @@ mod log;
 mod model;
 mod moves;
 mod shape;
+mod steps;
 mod store;
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
@@ -19,7 +20,6 @@ use lignin_io::sim::SimRng;
 
 use super::{
     log::{is_changed, push_changes},
-    long_key::Bucket,
     Cursor, FlatConfig, FlatError, FlatPages, FlatPagesMut, FlatTree,
 };
 
@@ -80,6 +80,9 @@ struct Mem {
     next_value: u64,
     next_offset: u64,
     revision: u64,
+    /// A step of background work that is made just before the page is
+    /// taken: it gives the image the page has from then on.
+    step_before_take: Option<(PageId, Vec<u8>)>,
 }
 
 impl Mem {
@@ -101,6 +104,7 @@ impl Mem {
             next_value: 0,
             next_offset: 20,
             revision: 0,
+            step_before_take: None,
         }
     }
 
@@ -116,7 +120,11 @@ impl Mem {
 
     /// The out-of-line values of the entries of `page`, by position.
     fn places(&self, page: PageId) -> Vec<(usize, ValuePlace)> {
-        let Some(leaf) = self.image(page).leaf() else {
+        Self::places_of(&self.pages[&page])
+    }
+
+    fn places_of(image: &[u8]) -> Vec<(usize, ValuePlace)> {
+        let Some(leaf) = FlatPage::decode(image, V1).expect("a page").leaf() else {
             return Vec::new();
         };
         leaf.iter()
@@ -251,14 +259,15 @@ impl FlatPages for Mem {
 
     fn read_value(
         &self,
+        held: &&[u8],
         page: PageId,
         slot: usize,
         place: ValuePlace,
         out: &mut Vec<u8>,
     ) -> Result<(), FlatError> {
         assert!(
-            self.places(page).contains(&(slot, place)),
-            "entry {slot} of page {page} does not hold {place:?}"
+            Self::places_of(held).contains(&(slot, place)),
+            "entry {slot} of the page that is held does not hold {place:?}"
         );
         match place {
             ValuePlace::Pending(pending) => {
@@ -288,6 +297,15 @@ impl FlatPagesMut for Mem {
     }
 
     fn take(&mut self, page: PageId) -> Result<Vec<u8>, FlatError> {
+        if self
+            .step_before_take
+            .as_ref()
+            .is_some_and(|(of, _)| *of == page)
+        {
+            let (_, image) = self.step_before_take.take().expect("a step");
+            self.pages.insert(page, image.clone());
+            self.base.insert(page, image);
+        }
         self.taken.insert(page);
         Ok(self.page(page)?.to_vec())
     }
@@ -364,7 +382,8 @@ impl FlatPagesMut for Mem {
     ) -> Result<PendingValue, FlatError> {
         assert_ne!(from, to);
         let mut value = Vec::new();
-        self.read_value(from, slot, place, &mut value)?;
+        let held = self.page(from)?;
+        self.read_value(&held, from, slot, place, &mut value)?;
         let held = self.hold_value(to, &value)?;
         self.held.pop();
         self.drop_value(from, place)?;
@@ -383,20 +402,29 @@ impl FlatPagesMut for Mem {
 fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
     struct Walk<'a> {
         pages: &'a Mem,
-        tree: &'a FlatTree,
+        config: FlatConfig,
         seen: BTreeSet<PageId>,
         places: HashSet<ValuePlace>,
-        out: Vec<(Vec<u8>, Vec<u8>)>,
+        /// What the tree that is walked holds, in order.
+        found: Vec<Found>,
+    }
+
+    /// An entry of a tree: a record, or the bucket of the long keys with
+    /// one head, which is the tree with this root.
+    enum Found {
+        Record(Vec<u8>, Vec<u8>),
+        Bucket(Vec<u8>, PageId),
     }
 
     impl Walk<'_> {
         fn visit(
             &mut self,
+            root: PageId,
             page: PageId,
             above: Option<u8>,
             bounds: (Option<&[u8]>, Option<&[u8]>),
         ) {
-            let config = self.tree.config();
+            let config = self.config;
             let (lower, upper) = bounds;
             assert!(self.seen.insert(page), "page {page} is reached twice");
             let read = self.pages.image(page);
@@ -420,14 +448,24 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
             };
             match read {
                 FlatPage::Leaf(leaf) => {
-                    assert!(
-                        page == self.tree.root() || !leaf.is_empty(),
-                        "leaf {page} is empty"
-                    );
+                    assert!(page == root || !leaf.is_empty(), "leaf {page} is empty");
                     for (slot, (key, value)) in leaf.iter().enumerate() {
                         let key = key.to_vec();
                         assert!(inside(&key), "a key of page {page} is outside its bounds");
                         assert!(key.len() <= config.key_limit() + 1);
+                        if config.is_bucket(key.len()) {
+                            // A bucket: the keys that begin with its head
+                            // are in a tree of their own, which is not
+                            // empty.
+                            assert_eq!(key.last(), Some(&0));
+                            let FlatValue::Inline(inner) = value else {
+                                panic!("a bucket with a value out of line");
+                            };
+                            let inner = PageId::decode(inner.try_into().expect("a page id"));
+                            let head = key[..config.key_limit()].to_vec();
+                            self.found.push(Found::Bucket(head, inner.expect("a page")));
+                            continue;
+                        }
                         let mut bytes = Vec::new();
                         match value {
                             FlatValue::Inline(value) => {
@@ -438,24 +476,14 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
                                 let place = place_of(place);
                                 assert!(place.value_len() as usize > config.max_inline());
                                 assert!(self.places.insert(place), "two entries hold {place:?}");
+                                let held = self.pages.page(page).expect("the page");
                                 self.pages
-                                    .read_value(page, slot, place, &mut bytes)
+                                    .read_value(&held, page, slot, place, &mut bytes)
                                     .expect("the value");
                                 assert_eq!(bytes.len(), place.value_len() as usize);
                             }
                         }
-                        if config.is_bucket(&key) {
-                            assert_eq!(key.last(), Some(&0));
-                            let bucket = Bucket::decode(&bytes).expect("a bucket");
-                            for at in 0..bucket.len() {
-                                let mut long = key[..config.key_limit()].to_vec();
-                                long.extend_from_slice(bucket.rest(at).expect("a rest"));
-                                self.out
-                                    .push((long, bucket.value(at).expect("a value").to_vec()));
-                            }
-                        } else {
-                            self.out.push((key, bytes));
-                        }
+                        self.found.push(Found::Record(key, bytes));
                     }
                 }
                 FlatPage::Branch(branch) => {
@@ -467,13 +495,10 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
                     }
                     for index in 0..=branch.len() {
                         let below = index.checked_sub(1).map(|slot| separators[slot].as_slice());
-                        let above = separators.get(index).map(Vec::as_slice);
+                        let over = separators.get(index).map(Vec::as_slice);
                         let child = branch.child(index).expect("a child");
-                        self.visit(
-                            child,
-                            Some(branch.level()),
-                            (below.or(lower), above.or(upper)),
-                        );
+                        let bounds = (below.or(lower), over.or(upper));
+                        self.visit(root, child, Some(branch.level()), bounds);
                     }
                 }
             }
@@ -482,12 +507,33 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
 
     let mut walk = Walk {
         pages,
-        tree,
+        config: tree.config(),
         seen: BTreeSet::new(),
         places: HashSet::new(),
-        out: Vec::new(),
+        found: Vec::new(),
     };
-    walk.visit(tree.root(), None, (None, None));
+    // A long key is as many trees deep as it has heads, so the trees are
+    // walked one after the other and not one inside the other.
+    walk.visit(tree.root(), tree.root(), None, (None, None));
+    let mut out = Vec::new();
+    let mut heads = Vec::new();
+    let mut inside = vec![(0, std::mem::take(&mut walk.found).into_iter())];
+    while let Some((_, found)) = inside.last_mut() {
+        match found.next() {
+            Some(Found::Record(key, value)) => out.push(([heads.as_slice(), &key].concat(), value)),
+            Some(Found::Bucket(head, root)) => {
+                walk.visit(root, root, None, (None, None));
+                let found = std::mem::take(&mut walk.found);
+                assert!(!found.is_empty(), "an empty bucket");
+                inside.push((heads.len(), found.into_iter()));
+                heads.extend_from_slice(&head);
+            }
+            None => {
+                let (len, _) = inside.pop().expect("a tree");
+                heads.truncate(len);
+            }
+        }
+    }
     let all: BTreeSet<PageId> = pages.pages.keys().copied().collect();
     assert_eq!(walk.seen, all, "a page is lost, or a freed one is reached");
     let pointers: HashSet<ValuePointer> =
@@ -502,8 +548,8 @@ fn records(pages: &Mem, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
         .filter(|place| place.is_pending())
         .count();
     assert_eq!(pending, pages.pending.len(), "a pending value has no entry");
-    assert!(walk.out.is_sorted_by(|a, b| a.0 < b.0), "keys out of order");
-    walk.out
+    assert!(out.is_sorted_by(|a, b| a.0 < b.0), "keys out of order");
+    out
 }
 
 fn get(pages: &impl FlatPages, tree: &FlatTree, key: &[u8]) -> Option<Vec<u8>> {

@@ -253,7 +253,7 @@ fn a_commit_puts_the_place_of_a_new_value_into_its_entry() {
 
     let logged = pending(45, 300);
     let mut stamped = [image.clone(), vec![0; 50]].concat();
-    assert!(stamp_pending(&mut stamped, pending(1 << 63 | 2, 300), logged).expect("a leaf"));
+    assert!(stamp_pending(&mut stamped, 3, logged).expect("a leaf"));
     let read = FlatPage::decode(&stamped, V1)
         .expect("a page")
         .leaf()
@@ -267,13 +267,18 @@ fn a_commit_puts_the_place_of_a_new_value_into_its_entry() {
     let differ = image.iter().zip(&stamped).filter(|(a, b)| a != b).count();
     assert!(differ <= 8 && stamped[image.len()..] == [0; 50]);
 
-    // Nothing holds it twice, a pointer is no pending value, and a branch
-    // has no entry.
-    assert!(!stamp_pending(&mut stamped, pending(1 << 63 | 2, 300), logged).expect("a leaf"));
-    assert!(!stamp_pending(&mut stamped, pending(20, 300), logged).expect("a leaf"));
+    // An entry with a value in the page, one with a pointer, one that is
+    // not there and one whose pending value has another length are left
+    // alone, and a branch has no entry.
+    let before = stamped.clone();
+    for slot in [0, 2, 4, 5] {
+        assert!(!stamp_pending(&mut stamped, slot, logged).expect("a leaf"));
+    }
+    assert!(!stamp_pending(&mut stamped, 1, pending(46, 301)).expect("a leaf"));
+    assert_eq!(stamped, before);
     let mut branch = FlatBranchBuilder::new(page_id(4), b"", 8_192, 1, page_id(5))
         .expect("a branch")
         .finish();
-    assert!(!stamp_pending(&mut branch, logged, logged).expect("a page"));
-    assert!(stamp_pending(&mut [0; 12], logged, logged).is_err());
+    assert!(!stamp_pending(&mut branch, 0, logged).expect("a page"));
+    assert!(stamp_pending(&mut [0; 12], 0, logged).is_err());
 }

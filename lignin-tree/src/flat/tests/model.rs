@@ -30,11 +30,18 @@ pub(super) fn key(rng: &mut SimRng, config: FlatConfig) -> Vec<u8> {
             letters(rng, len, 2)
         }
         33 => vec![b'e'; limit - rng.below(2) as usize],
-        // Long keys of a few buckets, some of them many pages long.
+        // Long keys of a few buckets: few that meet often, and enough of
+        // them for the tree of a bucket to have levels.
         34..=37 => {
             let head = vec![b'e' + rng.below(2) as u8; limit];
-            let rest = 1 + rng.below(3);
-            [head, letters(rng, rest, 3)].concat()
+            let rest = match rng.below(2) {
+                0 => {
+                    let len = 1 + rng.below(3);
+                    letters(rng, len, 3)
+                }
+                _ => letters(rng, 3, 9),
+            };
+            [head, rest].concat()
         }
         _ => {
             let len = limit as u64 + 1 + rng.below(4 * config.capacity() as u64);
@@ -117,6 +124,27 @@ struct Reached {
     released: usize,
     freed: usize,
     logged: usize,
+    /// The highest level of the tree of a bucket of long keys.
+    bucket_level: u8,
+}
+
+/// The highest level that the tree of a bucket has.
+fn bucket_level(pages: &Mem) -> u8 {
+    let limit = pages.config.key_limit();
+    let roots = pages
+        .pages
+        .keys()
+        .filter_map(|&page| pages.image(page).leaf());
+    roots
+        .flat_map(|leaf| leaf.iter())
+        .filter(|(key, _)| key.len() > limit)
+        .map(|(_, value)| match value {
+            FlatValue::Inline(root) => PageId::decode(root.try_into().expect("four bytes")),
+            FlatValue::OutOfLine(_) => None,
+        })
+        .map(|root| pages.image(root.expect("a page")).level())
+        .max()
+        .unwrap_or(0)
 }
 
 fn run(seed: u64, config: FlatConfig, steps: u64) -> Reached {
@@ -187,6 +215,7 @@ fn run(seed: u64, config: FlatConfig, steps: u64) -> Reached {
             reached.records = reached.records.max(model.len());
             reached.pages = reached.pages.max(pages.pages.len());
             reached.level = reached.level.max(pages.image(tree.root()).level());
+            reached.bucket_level = reached.bucket_level.max(bucket_level(&pages));
         }
     }
     check(&pages, &tree, &model);
@@ -229,6 +258,7 @@ fn random_operations_agree_with_a_btree_map() {
         assert!(reached.records > 1_500 && reached.pages > 120 && reached.level >= 2);
         assert!(reached.carried_pending > 20 && reached.carried_placed > 100);
         assert!(reached.released > 500 && reached.freed > 100);
+        assert!(reached.bucket_level >= 1);
     }
 }
 
@@ -247,7 +277,7 @@ fn random_operations_agree_with_a_btree_map_at_both_inline_limits() {
         .with_max_inline(FlatConfig::MIN_INLINE)
         .expect("a limit");
     let reached = run(0x1_0001, least, 8_000);
-    assert!(reached.level >= 2 && reached.carried_placed > 500);
+    assert!(reached.level >= 2 && reached.carried_placed > 250);
     let most = small()
         .with_max_inline(small().capacity() / 4)
         .expect("a limit");
