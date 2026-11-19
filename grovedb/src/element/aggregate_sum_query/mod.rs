@@ -1,44 +1,44 @@
 //! Query
 //! Implements functions in Element for querying
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::store::NodeStore;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::collections::HashSet;
 use std::fmt;
 
 use crate::element::SumValue;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::operations::proof::util::hex_to_ascii;
 use crate::operations::proof::util::path_as_slices_hex_to_ascii;
 use crate::query_result_type::KeySumValuePair;
 use crate::{AggregateSumPathQuery, Element};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{Error, TransactionArg};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_into_no_add, cost_return_on_error_no_add,
     CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::element::decode::ElementDecodeExtensions;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::element::get::ElementFetchFromStorageExtensions;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::error::MerkErrorExt;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::AggregateSumQuery;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::RawIterator;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_version::{check_grovedb_v0, check_grovedb_v0_with_cost, version::GroveVersion};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 const MAX_AGGREGATE_REFERENCE_HOPS: usize = 3;
 
 /// Result of an aggregate sum query, including metadata about whether the
@@ -107,7 +107,7 @@ impl Default for AggregateSumQueryOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Aggregate Sum Path query push arguments
 #[allow(dead_code)]
 pub struct AggregateSumPathQueryPushArgs<'db, 'ctx, 'a, E: Engine>
@@ -140,7 +140,7 @@ where
     pub max_elements_scanned: u16,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<'db, 'ctx, E: Engine> fmt::Display for AggregateSumPathQueryPushArgs<'db, 'ctx, '_, E>
 where
     'db: 'ctx,
@@ -181,7 +181,7 @@ where
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Extension trait providing aggregate sum query operations on `Element`.
 pub trait ElementAggregateSumQueryExtensions {
     /// Executes an aggregate sum path query and returns matching key-sum pairs.
@@ -236,7 +236,7 @@ pub trait ElementAggregateSumQueryExtensions {
     ) -> Result<(), Error>;
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl ElementAggregateSumQueryExtensions for Element {
     /// Returns a vector of result elements based on given query
     fn get_aggregate_sum_query<'db, E: Engine>(
@@ -860,6 +860,6 @@ impl ElementAggregateSumQueryExtensions for Element {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;

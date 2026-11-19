@@ -473,6 +473,8 @@ fn savepoints_form_a_stack() {
 #[cfg(not(lignin_cost_model))]
 #[test]
 fn a_commit_that_loses_is_the_error_rocksdb_returned_and_is_classed_as_a_conflict() {
+    use grovedb_storage::rocksdb_storage::ErrorKind;
+
     let (_dir, engine) = open_engine();
     let write =
         |transaction: &<RocksDbEngine as Engine>::Transaction<'_>, path: &[&[u8]], value: &[u8]| {
@@ -494,7 +496,7 @@ fn a_commit_that_loses_is_the_error_rocksdb_returned_and_is_classed_as_a_conflic
         .unwrap()
         .expect_err("the commit loses");
     assert!(
-        matches!(&error, Error::RocksDBError(e) if e.kind() == rocksdb::ErrorKind::Busy),
+        matches!(&error, Error::RocksDBError(e) if e.kind() == ErrorKind::Busy),
         "the RocksDB engine returns what it returned before the seam: {error:?}"
     );
     assert_eq!(error.commit_error(), Some(CommitError::Conflict));
@@ -503,7 +505,7 @@ fn a_commit_that_loses_is_the_error_rocksdb_returned_and_is_classed_as_a_conflic
     let error = crate::Error::from(error);
     assert!(matches!(
         &error,
-        crate::Error::StorageError(Error::RocksDBError(e)) if e.kind() == rocksdb::ErrorKind::Busy
+        crate::Error::StorageError(Error::RocksDBError(e)) if e.kind() == ErrorKind::Busy
     ));
     assert_eq!(error.commit_error(), Some(CommitError::Conflict));
     assert!(error.is_commit_conflict());

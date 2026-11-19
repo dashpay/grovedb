@@ -13,7 +13,6 @@ use grovedb_merk::{
     },
     tree_type::{TreeType, COUNT_BIG_SUM_TREE_COST_SIZE},
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
 use crate::{
@@ -434,7 +433,7 @@ fn test_add_average_case_get_merk_at_path_non_empty() {
     ]);
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+    GroveDb::add_average_case_get_merk_at_path_engine_free(
         &mut cost,
         &path,
         false,
@@ -459,7 +458,7 @@ fn test_add_average_case_get_merk_at_path_empty() {
     let path = KeyInfoPath::from_vec(vec![KnownKey(b"root".to_vec())]);
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+    GroveDb::add_average_case_get_merk_at_path_engine_free(
         &mut cost,
         &path,
         true,
@@ -486,7 +485,7 @@ fn test_add_average_case_has_raw_tree_cost() {
     let key = KnownKey(b"subtree_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_has_raw_tree_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_has_raw_tree_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -515,7 +514,7 @@ fn test_add_average_case_get_raw_cost() {
     let key = KnownKey(b"raw_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_raw_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_get_raw_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -543,7 +542,7 @@ fn test_add_average_case_get_raw_tree_cost() {
     let key = KnownKey(b"tree_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_raw_tree_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_get_raw_tree_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -572,7 +571,7 @@ fn test_add_average_case_get_cost_no_references() {
     let key = KnownKey(b"get_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_get_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -600,7 +599,7 @@ fn test_add_average_case_get_cost_with_references() {
     let key = KnownKey(b"ref_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_average_case_get_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_get_cost_engine_free(
         &mut cost,
         &path,
         &key,

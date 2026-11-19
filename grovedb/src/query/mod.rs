@@ -18,11 +18,11 @@ use std::{
 };
 
 use bincode::{Decode, DecodeUntrusted, Encode};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grove_branch_query_result::GroveBranchQueryResult;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grove_trunk_query_result::{GroveTrunkQueryResult, LeafInfo};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 use grovedb_merk::proofs::query::query_item::QueryItem;
 use grovedb_merk::proofs::query::{
     AggregateFold, AxisQuery, IndexAxis, Key, ReadMode, SubqueryBranch, SumBudgetRead,
@@ -31,11 +31,11 @@ use grovedb_merk::proofs::query::{
 use grovedb_merk::proofs::Query;
 use grovedb_version::{check_grovedb_v0, version::GroveVersion};
 use indexmap::IndexMap;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use path_branch_chunk_query::PathBranchChunkQuery;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use path_trunk_chunk_query::PathTrunkChunkQuery;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use shape::{AggregateKind, PathQueryShape};
 
 use crate::operations::proof::util::hex_to_ascii;
@@ -1851,8 +1851,8 @@ impl<'a> SinglePathSubquery<'a> {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
 
     use std::{borrow::Cow, ops::RangeFull};

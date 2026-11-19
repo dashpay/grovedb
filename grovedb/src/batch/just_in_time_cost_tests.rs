@@ -1,7 +1,7 @@
 //! This tests just in time costs
 //! Just in time costs modify the tree in the same batch
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use std::{collections::BTreeMap, option::Option::None};
 

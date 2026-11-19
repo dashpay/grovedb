@@ -1,21 +1,21 @@
 //! Average case costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::average_case_costs::{
     add_average_case_get_merk_node, add_average_case_merk_has_value, average_case_merk_propagate,
     EstimatedLayerInformation,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
@@ -23,17 +23,15 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use integer_encoding::VarInt;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use itertools::Itertools;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -43,7 +41,7 @@ use crate::{
 };
 use crate::{BackwardsReferences, Element};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveOp {
     /// Get the estimated average case cost of the op. Calls a lower level
     /// function to calculate the estimate based on the type of op. Returns
@@ -806,7 +804,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Charge the derived backward-references fan-out (see the model in
 /// `super`): each rewrite is a node load plus a same-size node rewrite
 /// with the family's hash calls, each resolution a node load, and each
@@ -875,7 +873,7 @@ fn add_average_case_backward_references_fan_out(
     Ok(())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Axes whose secondary Merks an indexed primary maintains.
 ///
 /// A PCPSIT's configured axes are a 1..=3 subset carried by the element, which
@@ -896,7 +894,7 @@ fn indexed_axes_for_tree_type(tree_type: TreeType) -> Vec<grovedb_element::index
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Primary node fetches reserved for the mirror's pre- and post-state reads
 /// of one touched entry in a primary of `levels` estimated levels.
 ///
@@ -925,7 +923,7 @@ fn indexed_mirror_entry_read_node_fetches(
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Version 0 (V1..V4): each read fetches the key directly, a `Merk::get`
 /// and a `Merk::get_value_hash`, before and after the primary's apply. Four
 /// fetches, whatever the tree's height. Frozen: shipped estimates come from
@@ -934,7 +932,7 @@ fn indexed_mirror_entry_read_node_fetches_v0() -> u32 {
     4
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Version 1 (V5+): each read walks the tree from its root. The pre-state
 /// walk loads the path to the key. The post-state walk of a removed key runs
 /// on to a missing edge, through nodes the removal did not load, so a
@@ -948,7 +946,7 @@ fn indexed_mirror_entry_read_node_fetches_v1(levels: u32) -> u32 {
         .max(indexed_mirror_entry_read_node_fetches_v0())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Cache for subtree paths for average case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
@@ -962,7 +960,7 @@ pub(in crate::batch) struct AverageCaseTreeCacheKnownPaths {
     pending_cidx_axes: HashMap<Vec<Vec<u8>>, Vec<grovedb_element::indexed::IndexAxis>>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl AverageCaseTreeCacheKnownPaths {
     /// Updates the cache to the default setting with the given subtree paths
     pub(in crate::batch) fn new_with_estimated_layer_information(
@@ -977,14 +975,14 @@ impl AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl fmt::Debug for AverageCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     /// Report a secondary mirror for layers that are indexed primaries, so the
     /// bubble-up emits `ReplaceAggregateIndexedTreeRootKeys` — the op a real
@@ -1084,7 +1082,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             );
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     layer_should_be_empty,
@@ -1351,7 +1349,7 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
             // Then we have to get the tree
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     &base_path,
                     estimated_layer_info
@@ -1368,8 +1366,8 @@ impl<G, SR> TreeCache<G, SR> for AverageCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `Check`; these plain-write pins declare none.

@@ -325,7 +325,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use crate::BackwardsReferences;
     use grovedb_costs::{

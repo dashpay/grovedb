@@ -7,7 +7,7 @@
 //!
 //! [`GroveOp::RefreshReference`]: super::GroveOp::RefreshReference
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::element::SumValue;
 
 /// Fully specifies a [`GroveOp::RefreshReference`] op: which on-disk
@@ -49,7 +49,7 @@ use crate::element::SumValue;
 /// [`Element::Reference`]: crate::Element::Reference
 /// [`Element::ReferenceWithSumItem`]: crate::Element::ReferenceWithSumItem
 /// [`GroveOp::RefreshReference`]: super::GroveOp::RefreshReference
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Debug, PartialEq, Eq, Hash, Clone)]
 pub enum RefreshReferenceMode {
     /// Trusted refresh of a plain [`Element::Reference`].
@@ -77,7 +77,7 @@ pub enum RefreshReferenceMode {
     SumItemReferenceUntrustedNoValueUpdate,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl RefreshReferenceMode {
     /// True for the variants where the apply path uses the op's
     /// declared shape verbatim (no on-disk read for the writeable

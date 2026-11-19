@@ -42,16 +42,18 @@ colored = { version = "3.0.0", optional = true }
 default = ["full"]
 proof_debug = []
 serde = ["dep:serde", "indexmap/serde"]
+# Merk on any `NodeStore`. It compiles no storage engine: `rocksdb_storage`
+# does, for the RocksDB contexts a Merk is opened on.
 minimal = [
         "num_cpus",
         "ed",
         "blake3",
         "grovedb-storage",
-        "grovedb-storage/rocksdb_storage",
         "grovedb-element/visualize",
         "grovedb-query/blockchain",
 ]
-full = ["minimal", "test_utils", "colored_debug"]
+rocksdb_storage = ["minimal", "grovedb-storage/rocksdb_storage"]
+full = ["minimal", "rocksdb_storage", "test_utils", "colored_debug"]
 test_utils = ["rand"]
 colored_debug = ["colored"]
 verify = ["ed", "blake3"]

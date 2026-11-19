@@ -26,18 +26,18 @@
 //! returned. Those are why it cannot apply to the released versions; see the
 //! module docs in [`super`][`mod@super`].
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::Op;
 use grovedb_merk::{
     proofs::Node,
     tree::{combine_hash, value_hash},
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Transaction;
 use crate::{Element, Error, GroveDb, PathQuery, Query};
 
@@ -148,10 +148,10 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// `bind_chunk_proof_rows` v1 — see the module documentation.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn bind_chunk_proof_rows_v1<'db>(
         &'db self,
         ops: &mut [Op],

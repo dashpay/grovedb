@@ -2,7 +2,7 @@
 
 LigninDB task SEAM-04 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)).
 
-`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it, and the one implementation today is `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait. GROVE-01 adds `LigninEngine` in `grovedb::engine::lignin`.
+`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it, and the one implementation today is `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait. GROVE-01 adds `LigninEngine` in `grovedb::engine::lignin`. GroveDB builds with no engine at all: [Features and engines](#features-and-engines) (SEAM-07).
 
 This document states the contract of the trait, how the RocksDB engine meets it, what `GroveDb<E>` looks like to its callers, and the choices the plan left to this task. It builds on the two seams below it, [`NodeStore`](node-store.md) and [`FlatStore`](flat-store.md), and on the transaction rules of [`transactions.md`](transactions.md).
 
@@ -51,7 +51,7 @@ An engine is `Send + Sync + 'static`: it is a database handle that every thread 
 | `move_subtree(from, to, batch, &tx)` | Starts to move the records of one subtree's data keyspace to another prefix. See [Moving a subtree](#moving-a-subtree). | two contexts by prefix, `raw_iter`, `seek_to_first` | `I-move` |
 | `pending_prefix_drop_records()`, `delete_prefix_ranges(prefixes)`, `remove_pending_prefix_drop_record(prefix)` | The supertrait [`PendingPrefixDrops`](flat-store.md#pending-prefix-drops). | the `RocksDbStorage` methods of the same names | `DB` |
 
-Prefix derivation is not an operation of the engine. A subtree's prefix is the Blake3 hash of its path on every engine, because state sync chunk ids carry it, and what the derivation charges is a fee rule (`P-path`, `P-sec`). GroveDB still calls `RocksDbStorage::build_prefix` and `secondary_prefix_for` for it, by name. SEAM-07 and SEAM-05 give the two functions a home that names no engine.
+Prefix derivation is not an operation of the engine. A subtree's prefix is the Blake3 hash of its path on every engine, because state sync chunk ids carry it, and what the derivation charges is a fee rule (`P-path`, `P-sec`). The two functions are `grovedb_storage::prefix::build_prefix` and `secondary_prefix_for`, which name no engine and are compiled with none (SEAM-07). GroveDB calls them there. `RocksDbStorage::build_prefix` and `RocksDbStorage::secondary_prefix_for` are the same functions under their old names, for the RocksDB contexts and for callers outside GroveDB.
 
 ## Contract
 
@@ -192,7 +192,7 @@ On RocksDB a move is a copy, and `RocksDbSubtreeMove` makes the storage calls `m
 
 `wipe`, `flush`, the checkpoints and the three operations of `PendingPrefixDrops` take no transaction. Their contracts are in [flat-store.md](flat-store.md#other-paths-that-bypass-the-transaction) and [platform-requirements.md](platform-requirements.md) (P-05, P-14, P-23, P-24). `PendingPrefixDrops` is a supertrait of `Engine`, so the drain of `flush_pending_prefix_drops` is written for any engine.
 
-Three things stay with the RocksDB engine and exist on `GroveDb<RocksDbEngine>` only: the hatches `GroveDb::raw_storage` and `GroveDb::ingest_subtree_sst` (feature `unsafe-dump-load`), which GROVE-09 replaces, and `GroveDb::start_visualizer` (feature `grovedbg`), because the debugger holds a `GroveDb` with no engine named.
+Three things stay with the RocksDB engine and exist on `GroveDb<RocksDbEngine>` only: the hatches `GroveDb::raw_storage` and `GroveDb::ingest_subtree_sst` (feature `unsafe-dump-load`), which GROVE-09 replaces, and `GroveDb::start_visualizer` (feature `grovedbg`), because the debugger holds a `GroveDb` with no engine named. All three are compiled with the `rocksdb_storage` feature only.
 
 ### Threads
 
@@ -216,7 +216,35 @@ Three rules decide where a function of `GroveDb` lives:
 2. **An associated function with no `self` and no engine type in its signature is on the default engine**: `impl GroveDb`. `GroveDb::verify_query(..)`, `GroveDb::open(path)` or `GroveDb::estimated_case_operations_for_batch(..)` name no engine, and Rust does not use the default of a type parameter to infer one, so such a call resolves only if exactly one `impl` has the function. This is how `HashMap::new()` works. It covers the proof verifiers, the estimated-cost helpers, and the constructors `open`, `open_checkpoint` and `delete_checkpoint`.
 3. **The constructors have a generic twin**: `GroveDb::<E>::open_with_engine(path)`, `open_checkpoint_with_engine(path)`, `delete_checkpoint_with_engine(path)`, and `GroveDb::from_engine(engine)` for an engine opened with options of its own. `GroveDb::engine()` gives the engine back. `open_with_cidx_integrity_check` has none: it is `open`, then `verify_grovedb`, and an error if that reports an issue, which a caller with another engine writes out.
 
-Without the `minimal` feature there is no engine, and `GroveDb` is a plain struct that names the proof verifiers, as before.
+Without the `engine_generic` feature there is no `GroveDb<E>`, and `GroveDb` is a plain struct that names the proof verifiers, as before.
+
+### Features and engines
+
+GroveDB's Cargo features separate what is written for any engine from the engine that is compiled in (SEAM-07):
+
+| Feature | What it compiles | RocksDB |
+| --- | --- | --- |
+| `engine_generic` | `Engine`, `GroveDb<E>` and every operation on it, batches, proofs, references, state sync, the proof verifiers | no |
+| `estimated_costs` | `engine_generic` and the estimated costs | no |
+| `rocksdb_storage` | `engine_generic` and `RocksDbEngine`: the default engine, `GroveDb::open`, `open_checkpoint`, `delete_checkpoint`, `open_with_cidx_integrity_check`, the hatches of `unsafe-dump-load` and the debugger | yes |
+| `minimal` | `engine_generic` and `rocksdb_storage`, which is what it compiled before | yes |
+| `full`, the default | `minimal` and Merk's test helpers | yes |
+
+- In the sources of `grovedb`, code is under `#[cfg(feature = "engine_generic")]` where it was under `minimal`, and what needs RocksDB is under `rocksdb_storage`. Nothing in `grovedb/src` is gated on `minimal` any more. Upstream writes `minimal`: after a merge of `develop`, a gate it added has to be renamed, or the item is missing from the build with no engine. `sed -i 's/feature = "minimal"/feature = "engine_generic"/g'` over `grovedb/src` is the whole change this task made to those gates. The benches and the integration tests under `grovedb/tests` keep `minimal`: they open a database.
+- Merk's `minimal` compiles no engine either. Its code under that feature never named one. The feature only switched `grovedb-storage/rocksdb_storage` on, which Merk's own `rocksdb_storage` does now, and `full` with it for the RocksDB test harness (`test_utils::TempMerk`).
+- `grovedb-storage` without `rocksdb_storage` is the seams: `FlatStore`, the storage traits, the multi-context batch, the errors, `prefix` and `worst_case_costs`.
+
+With no engine compiled in, `GroveDb` with no engine named is `GroveDb<NoEngine>`. `NoEngine` (`grovedb::engine::NoEngine`) is not an `Engine` and has no value, so there is no database of it. It is where the associated functions of rule 2 live in such a build: the proof verifiers and the estimated costs resolve as `GroveDb::verify_query(..)` and `GroveDb::average_case_for_get(..)` there too. `Transaction<'db, E>`, `TransactionArg<'db, 'a, E>` and `MultiStateSyncSession<'db, E>` have no default for `E` in that build. With `rocksdb_storage`, all four are what they were, and `NoEngine` does not exist.
+
+The fifteen estimated-cost helpers that take a storage type parameter (`GroveDb::add_worst_case_get_merk_at_path::<S>` and the others, `S: Storage`) never used it. Each is now a call of a function of the same name with `_engine_free` appended and no type parameter, which holds the estimate. GroveDB's own code calls the engine-free one. A caller that writes `::<RocksDbStorage>`, as Platform does in two places, compiles as before, and OPS-03 moves it to the engine-free name.
+
+The tests of `grovedb` that open no database run with no engine compiled in: `cargo test -p grovedb --no-default-features --features estimated_costs --lib`. CI runs that command, after it has checked that no RocksDB crate is among the crates of the build. What decides whether a test is in it:
+
+- `grovedb/src/tests` is compiled with `rocksdb_storage`: its fixtures open a database on the default engine. Without the feature, `tests` is `grovedb/src/tests_without_engine.rs`, which takes four files of that directory by path: the tests of the estimated costs, which call functions of sizes only, and `faultable_reads`, the store the library reads a parent element through in every test build.
+- A test module inside a source file that opens a database, or takes a fixture of `tests`, is under `#[cfg(all(test, feature = "rocksdb_storage"))]`. One that does neither stays under `#[cfg(test)]` and runs in both builds.
+- The doc tests and the integration tests under `grovedb/tests` open a database, so the command has `--lib`.
+
+Until a second engine exists, a test that needs a database needs RocksDB. SEAM-06 makes the suites generic over the engine, and what is `rocksdb_storage` in these gates becomes "an engine is compiled in" with GROVE-01.
 
 `MultiStateSyncSession<'db, E = RocksDbEngine>` is generic in the same way.
 
@@ -268,7 +296,7 @@ Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, a
 | --- | --- |
 | SEAM-05 | Every storage charge GroveDB sees comes back from a call on `Engine`, on a handle or on a cursor. The fee rules that sit in the RocksDB engine today are listed under [Choices](#choices-this-task-made), item 9. |
 | SEAM-06 | Every operation of `GroveDb` is on `GroveDb<E>`. A suite written for `E: Engine` opens its database with `GroveDb::<E>::open_with_engine(path)`. The tests still name `GroveDb`, which is the RocksDB engine. A test that reaches under GroveDB to read or damage stored records says so: it calls `RocksDbEngine::storage()` and works on the storage contexts. `merk/src/test_utils` is unchanged and still opens RocksDB contexts. |
-| SEAM-07 | What still names RocksDB in `grovedb`, outside `grovedb::engine`: `RocksDbStorage::build_prefix` and `secondary_prefix_for`, the estimated-cost helpers with their `S: Storage` parameter, the debugger, `raw_storage` and `ingest_subtree_sst`, and the `impl GroveDb` blocks of rule 2, which exist for the default engine. With the RocksDB feature off there is no default engine, so those blocks need another home. |
+| SEAM-07 | Done: see [Features and engines](#features-and-engines). What named RocksDB in `grovedb` outside `grovedb::engine` was `RocksDbStorage::build_prefix` and `secondary_prefix_for`, the estimated-cost helpers with their `S: Storage` parameter, the debugger, `raw_storage` and `ingest_subtree_sst`, and the `impl GroveDb` blocks of rule 2, which exist for the default engine. |
 | GROVE-01 | The trait to implement. `Transaction<'db>` has to stand for a write transaction, a snapshot, the transaction of one read and a scope's view. `start_read_transaction` is where RD2 goes: a snapshot held for the operation. `Subtree<'a>` has to be a type of Merk that is a `NodeStore` (see [the RocksDB adapter](node-store.md#the-rocksdb-adapter)) and a `FlatStore`. The conflict maps to `Error::Commit(CommitError::Conflict)`. |
 | GROVE-03 | `SubtreeMove`: the re-hosting move behind the stepper, with the charges of the copy. |
 | GROVE-05 | `PendingPrefixDrops` on the engine. `FlatStore::clear` on a handle is today's clear of a subtree's data keyspace, Merk nodes included. |

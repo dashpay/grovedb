@@ -6,7 +6,7 @@
 //! H2: Batch DeleteTree must consult `allow_deleting_non_empty_trees` before
 //! deleting a non-empty tree.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_merk::tree_type::TreeType;
     use grovedb_version::version::GroveVersion;

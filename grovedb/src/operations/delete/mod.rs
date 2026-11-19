@@ -25,56 +25,56 @@
 mod average_case;
 /// Versioned dispatch for `clear_subtree`. Consensus-critical — see the
 /// module docs (issue #893).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod clear_subtree;
 /// Versioned dispatch for `delete_internal_on_transaction` (the shared
 /// delete path). Consensus-critical — see the module docs.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_internal_on_transaction;
 /// Versioned dispatch for `delete_operation_for_delete_internal` (building
 /// a delete into a batch). Consensus-critical — see the module docs.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_operation_for_delete_internal;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod delete_up_tree;
 /// Flat-subtree drop (issue #848): O(1) removal of a populated subtree
 /// declared to contain no child subtrees, with storage reclaimed outside
 /// consensus via range tombstones driven from durable redo records.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod flat_drop;
 /// The operations pending in a batch that delete operations are built into.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod pending_operations;
 #[cfg(feature = "estimated_costs")]
 mod worst_case;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::BackwardsReferences;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use delete_up_tree::DeleteUpTreeOptions;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use flat_drop::PendingPrefixDropsReport;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error,
     storage_cost::removal::{StorageRemovedBytes, StorageRemovedBytes::BasicStorageRemoval},
     CostResult, CostsExt,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{Error as MerkError, MerkOptions};
 use grovedb_path::SubtreePath;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use pending_operations::PendingOperations;
 
 use crate::util::TxRef;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{Element, ElementFlags, Error, GroveDb, Transaction, TransactionArg};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone)]
 /// Clear options
 pub struct ClearOptions {
@@ -92,7 +92,7 @@ pub struct ClearOptions {
     pub backwards_references: BackwardsReferences,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for ClearOptions {
     fn default() -> Self {
         ClearOptions {
@@ -104,7 +104,7 @@ impl Default for ClearOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone)]
 /// Delete options
 pub struct DeleteOptions {
@@ -127,7 +127,7 @@ pub struct DeleteOptions {
     pub backwards_references: BackwardsReferences,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl DeleteOptions {
     /// Replace the declaration about the displaced value.
     pub fn with_backwards_references(mut self, backwards_references: BackwardsReferences) -> Self {
@@ -136,7 +136,7 @@ impl DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for DeleteOptions {
     fn default() -> Self {
         DeleteOptions {
@@ -149,7 +149,7 @@ impl Default for DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl DeleteOptions {
     fn as_merk_options(&self) -> MerkOptions {
         MerkOptions {
@@ -158,7 +158,7 @@ impl DeleteOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Delete an element at a specified subtree path and key.
     ///
@@ -444,8 +444,8 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use crate::BackwardsReferences;
     use grovedb_costs::{

@@ -1,21 +1,21 @@
 //! Worst case costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fmt,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::worst_case_costs::{
     add_worst_case_get_merk_node, add_worst_case_merk_has_value, worst_case_merk_propagate,
     WorstCaseLayerInformation, MERK_BIGGEST_KEY_SIZE, MERK_BIGGEST_VALUE_SIZE,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::{
     add_cost_case_merk_replace_layered, add_cost_case_merk_replace_same_size,
 };
@@ -23,15 +23,13 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions, tree::AggregateData, tree_type::TreeType,
     RootHashKeyAndAggregateData,
 };
-#[cfg(feature = "minimal")]
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_storage::worst_case_costs::WorstKeyLength;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use itertools::Itertools;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::{
     batch::{
         key_info::KeyInfo, mode::BatchRunMode, BatchApplyOptions, GroveOp, KeyInfoPath,
@@ -41,7 +39,7 @@ use crate::{
 };
 use crate::{BackwardsReferences, Element};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveOp {
     fn worst_case_cost(
         &self,
@@ -702,7 +700,7 @@ impl GroveOp {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Charge the derived backward-references fan-out at its worst (see the
 /// model in `super`): each rewrite is a biggest-node load plus a same-size
 /// biggest-node rewrite with the family's hash calls, each resolution a
@@ -799,7 +797,7 @@ fn add_worst_case_backward_references_fan_out(
     Ok(())
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Cache for subtree paths for worst case scenario costs.
 #[derive(Default)]
 pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
@@ -807,7 +805,7 @@ pub(in crate::batch) struct WorstCaseTreeCacheKnownPaths {
     cached_merks: HashSet<KeyInfoPath>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl WorstCaseTreeCacheKnownPaths {
     /// Updates the cache with the default settings and the given paths
     pub(in crate::batch) fn new_with_worst_case_layer_information(
@@ -820,14 +818,14 @@ impl WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl fmt::Debug for WorstCaseTreeCacheKnownPaths {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TreeCacheKnownPaths").finish()
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     fn insert(
         &mut self,
@@ -876,7 +874,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
         if !self.cached_merks.contains(path) {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     TreeType::NormalTree,
@@ -938,7 +936,7 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
             // Then we have to get the tree
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
                     &mut cost,
                     &base_path,
                     TreeType::NormalTree,
@@ -951,8 +949,8 @@ impl<G, SR> TreeCache<G, SR> for WorstCaseTreeCacheKnownPaths {
     }
 }
 
-#[cfg(feature = "minimal")]
-#[cfg(test)]
+#[cfg(feature = "engine_generic")]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     /// The estimator charges the displaced-participant fan-out only for ops
     /// that declare `Check`; these plain-write pins declare none.

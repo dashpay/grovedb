@@ -45,7 +45,7 @@ use grovedb_merk::{
     CryptoHash, Merk, Op,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::prefix::{build_prefix, secondary_prefix_for};
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
 
@@ -803,17 +803,13 @@ impl<E: Engine> GroveDb<E> {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let from_prefix =
-            RocksDbStorage::build_prefix(SubtreePath::from(from)).unwrap_add_cost(&mut cost);
-        let to_prefix =
-            RocksDbStorage::build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
+        let from_prefix = build_prefix(SubtreePath::from(from)).unwrap_add_cost(&mut cost);
+        let to_prefix = build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
         for axis in secondary_axes {
-            let from_secondary =
-                RocksDbStorage::secondary_prefix_for(&from_prefix, axis_storage_tag(axis))
-                    .unwrap_add_cost(&mut cost);
+            let from_secondary = secondary_prefix_for(&from_prefix, axis_storage_tag(axis))
+                .unwrap_add_cost(&mut cost);
             let to_secondary =
-                RocksDbStorage::secondary_prefix_for(&to_prefix, axis_storage_tag(axis))
-                    .unwrap_add_cost(&mut cost);
+                secondary_prefix_for(&to_prefix, axis_storage_tag(axis)).unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 self.move_namespace(from_secondary, to_secondary, transaction, batch)
@@ -857,7 +853,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},

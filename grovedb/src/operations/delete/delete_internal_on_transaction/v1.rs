@@ -36,7 +36,10 @@ use grovedb_merk::{
     Error as MerkError, Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, FlatStore};
+use grovedb_storage::{
+    prefix::{build_prefix, secondary_prefix_for},
+    FlatStore,
+};
 use grovedb_version::version::GroveVersion;
 
 use super::super::DeleteOptions;
@@ -195,16 +198,15 @@ impl<E: Engine> GroveDb<E> {
             // also clears these same namespaces for the target prefix,
             // but both clears are idempotent so the redundancy is fine.
             if tree_type.is_indexed_primary() {
-                let primary_prefix = RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
-                    .unwrap_add_cost(&mut cost);
+                let primary_prefix =
+                    build_prefix(subtree_merk_path_ref.clone()).unwrap_add_cost(&mut cost);
                 for axis in [
                     grovedb_element::indexed::IndexAxis::Count,
                     grovedb_element::indexed::IndexAxis::Sum,
                     grovedb_element::indexed::IndexAxis::Avg,
                 ] {
-                    let secondary_prefix =
-                        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                            .unwrap_add_cost(&mut cost);
+                    let secondary_prefix = secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
                     let secondary_storage = self
                         .db
                         .subtree_by_prefix(secondary_prefix, Some(batch), transaction)

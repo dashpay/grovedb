@@ -3,7 +3,7 @@
 //! These tests exercise uncovered code paths in `grovedb/src/batch/mod.rs`
 //! and `just_in_time_reference_update.rs`.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_merk::tree::AggregateData;
     use grovedb_merk::tree_type::TreeType;

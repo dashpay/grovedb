@@ -26,9 +26,32 @@ use crate::{
 type EstimatedKeyAndElementSize = (u32, u32);
 
 impl GroveDb {
+    /// The estimate of [`Self::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn average_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        stop_path_height: Option<u16>,
+        validate: bool,
+        estimated_layer_info: IntMap<u16, EstimatedLayerInformation>,
+        backwards_references: BackwardsReferences,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
+        Self::average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+            path,
+            key,
+            stop_path_height,
+            validate,
+            estimated_layer_info,
+            backwards_references,
+            grove_version,
+        )
+    }
+
     /// Average case delete operations for delete up tree while empty
     // todo finish this
-    pub fn average_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
+    pub fn average_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
@@ -120,7 +143,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::average_case_delete_operation_for_delete::<S>(
+                    Self::average_case_delete_operation_for_delete_engine_free(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         tree_type,
@@ -138,12 +161,39 @@ impl GroveDb {
         }
     }
 
+    /// The estimate of [`Self::average_case_delete_operation_for_delete_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        validate: bool,
+        check_if_tree: bool,
+        except_keys_count: u16,
+        estimated_key_element_size: EstimatedKeyAndElementSize,
+        backwards_references: BackwardsReferences,
+        grove_version: &GroveVersion,
+    ) -> CostResult<QualifiedGroveDbOp, Error> {
+        Self::average_case_delete_operation_for_delete_engine_free(
+            path,
+            key,
+            in_parent_tree_type,
+            validate,
+            check_if_tree,
+            except_keys_count,
+            estimated_key_element_size,
+            backwards_references,
+            grove_version,
+        )
+    }
+
     /// Average case delete operation for delete
     ///
     /// `backwards_references` picks the checked op or its `DontCheckForBackwardsReferences` twin, which
     /// decides whether the batch estimator charges the displaced-participant
     /// fan-out for it.
-    pub fn average_case_delete_operation_for_delete<'db, S: Storage<'db>>(
+    pub fn average_case_delete_operation_for_delete_engine_free(
         path: &KeyInfoPath,
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
@@ -167,7 +217,7 @@ impl GroveDb {
         if validate {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_merk_at_path::<S>(
+                GroveDb::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     false,
@@ -179,7 +229,7 @@ impl GroveDb {
         if check_if_tree {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_average_case_get_raw_cost::<S>(
+                GroveDb::add_average_case_get_raw_cost_engine_free(
                     &mut cost,
                     path,
                     key,

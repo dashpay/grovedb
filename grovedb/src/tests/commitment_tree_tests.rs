@@ -25,9 +25,10 @@ use grovedb_commitment_tree::CommitmentTree;
 #[cfg(feature = "unsafe-dump-load")]
 use grovedb_path::SubtreePath;
 #[cfg(feature = "unsafe-dump-load")]
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageContext};
-#[cfg(feature = "unsafe-dump-load")]
-use rocksdb::{Options, SstFileWriter};
+use grovedb_storage::{
+    rocksdb_storage::{Options, RocksDbStorage, SstFileWriter},
+    RawIterator, Storage, StorageContext,
+};
 #[cfg(feature = "unsafe-dump-load")]
 use tempfile::TempDir;
 

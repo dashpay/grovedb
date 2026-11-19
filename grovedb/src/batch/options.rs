@@ -1,14 +1,14 @@
 //! Options
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::BackwardsReferences;
 use grovedb_merk::MerkOptions;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::operations::{delete::DeleteOptions, insert::InsertOptions};
 
 /// Batch apply options
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Debug, Clone)]
 pub struct BatchApplyOptions {
     /// Validate insertion does not override
@@ -88,7 +88,7 @@ pub struct BatchApplyOptions {
     pub batch_pause_height: Option<u8>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for BatchApplyOptions {
     fn default() -> Self {
         BatchApplyOptions {
@@ -101,7 +101,7 @@ impl Default for BatchApplyOptions {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl BatchApplyOptions {
     /// As insert options
     pub(crate) fn as_insert_options(&self) -> InsertOptions {

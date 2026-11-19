@@ -98,7 +98,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-impl Visualize for GroveDb {
+impl<E: Engine> Visualize for GroveDb<E> {
     fn visualize<W: Write>(&self, drawer: Drawer<W>) -> Result<Drawer<W>> {
         self.visualize_start(drawer, None, GroveVersion::latest())
     }

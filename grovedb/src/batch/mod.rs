@@ -24,29 +24,29 @@ mod conditional_insert_target;
 mod filled_tree_insert_checks;
 mod mode;
 mod move_element;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod multi_insert_cost_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod just_in_time_cost_tests;
 /// Just-in-time reference update handling for batch operations.
 pub mod just_in_time_reference_update;
 mod just_in_time_value_update;
 mod options;
 mod refresh_reference_mode;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod replacement_accounting_cost_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 pub(crate) mod replacement_test_support;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod same_batch_reference_prediction_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod single_deletion_cost_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod single_insert_cost_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod single_sum_item_deletion_cost_tests;
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod single_sum_item_insert_cost_tests;
 
 use crate::{bidirectional_references::batch_maintains_backward_references, BackwardsReferences};
@@ -5431,7 +5431,7 @@ where
 /// The Merk tree element an [`GroveOp::InsertTreeWithRootHash`] writes: its
 /// type is the one `aggregate_data` names, since the op carries no element.
 /// The wrappers the op records are applied by the caller.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn merk_tree_from_aggregate(
     root_key: Option<Vec<u8>>,
     flags: Option<ElementFlags>,
@@ -5519,7 +5519,7 @@ pub(in crate::batch) fn merk_tree_from_aggregate(
 /// propagation resolves a level that reports none through
 /// [`aggregate_above_level`], and the continuation refuses an add-on whose
 /// type the pending aggregate does not name.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn insert_op_with_propagated_root(
     element: &Element,
     root_hash: CryptoHash,
@@ -5662,7 +5662,7 @@ pub(in crate::batch) fn insert_op_with_propagated_root(
 ///
 /// Not called for `GroveOp::InsertIfNotExists`, whose level's aggregate is
 /// used as reported on every version (see the propagation's own arm for it).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn aggregate_above_level(
     element: &Element,
     aggregate_data: AggregateData,
@@ -5686,7 +5686,7 @@ fn aggregate_above_level(
 
 /// The reported aggregate, as it is (V1..V4): a batch that inserts a sum tree
 /// and leaves it empty stores a plain `Tree`. Frozen.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn aggregate_above_level_v0(aggregate_data: AggregateData) -> AggregateData {
     aggregate_data
 }
@@ -5694,7 +5694,7 @@ fn aggregate_above_level_v0(aggregate_data: AggregateData) -> AggregateData {
 /// For a sum or count tree (wrapped or not) above a level that reports no
 /// aggregate, the zero aggregate of that tree's own type, so the tree the
 /// caller sent is stored (V5). Anything else as reported.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn aggregate_above_level_v1(element: &Element, aggregate_data: AggregateData) -> AggregateData {
     match (aggregate_data, element.underlying()) {
         (
@@ -7896,19 +7896,15 @@ impl<E: Engine> GroveDb<E> {
         for primary_path in &cidx_primary_delete_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
             let primary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
-                    .unwrap_add_cost(&mut cost);
+                grovedb_storage::prefix::build_prefix(cidx_subtree_path).unwrap_add_cost(&mut cost);
             for axis in [
                 grovedb_element::indexed::IndexAxis::Count,
                 grovedb_element::indexed::IndexAxis::Sum,
                 grovedb_element::indexed::IndexAxis::Avg,
             ] {
                 let secondary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                        &primary_prefix,
-                        axis.tag(),
-                    )
-                    .unwrap_add_cost(&mut cost);
+                    grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
                 let secondary_storage = self
                     .db
                     .subtree_by_prefix(secondary_prefix, Some(&storage_batch), tx.as_ref())
@@ -8734,19 +8730,15 @@ impl<E: Engine> GroveDb<E> {
         for primary_path in &cidx_primary_delete_paths {
             let cidx_subtree_path: SubtreePath<Vec<u8>> = primary_path.as_slice().into();
             let primary_prefix =
-                grovedb_storage::rocksdb_storage::RocksDbStorage::build_prefix(cidx_subtree_path)
-                    .unwrap_add_cost(&mut cost);
+                grovedb_storage::prefix::build_prefix(cidx_subtree_path).unwrap_add_cost(&mut cost);
             for axis in [
                 grovedb_element::indexed::IndexAxis::Count,
                 grovedb_element::indexed::IndexAxis::Sum,
                 grovedb_element::indexed::IndexAxis::Avg,
             ] {
                 let secondary_prefix =
-                    grovedb_storage::rocksdb_storage::RocksDbStorage::secondary_prefix_for(
-                        &primary_prefix,
-                        axis.tag(),
-                    )
-                    .unwrap_add_cost(&mut cost);
+                    grovedb_storage::prefix::secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
                 let secondary_storage = self
                     .db
                     .subtree_by_prefix(secondary_prefix, Some(&storage_batch), tx.as_ref())
@@ -8829,7 +8821,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests {
 
     use grovedb_costs::storage_cost::removal::StorageRemovedBytes::NoStorageRemoval;

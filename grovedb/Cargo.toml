@@ -68,10 +68,6 @@ rand = { workspace = true }
 rand_distr = "0.6"
 assert_matches = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
-# For the `unsafe-dump-load` dump+ingest roundtrip test: writing the SST and
-# ingesting it both need direct rocksdb types. Use the same version
-# as `grovedb-storage`'s optional dep.
-rocksdb = "0.25.0"
 
 [[bench]]
 name = "insertion_benchmark"
@@ -98,7 +94,19 @@ default = ["full", "estimated_costs"]
 proof_debug = ["grovedb-merk/proof_debug"]
 serde = ["dep:serde", "grovedb-merk/serde", "grovedb-query/serde", "indexmap/serde"]
 full = ["grovedb-merk/full", "minimal"]
-minimal = [
+# GroveDB on RocksDB, its default engine.
+minimal = ["engine_generic", "rocksdb_storage"]
+# The RocksDB engine: `RocksDbEngine`, which `GroveDb` with no engine named
+# is on, and with it `GroveDb::open`.
+rocksdb_storage = [
+    "engine_generic",
+    "grovedb-storage/rocksdb_storage",
+    "grovedb-merk/rocksdb_storage",
+]
+# Everything of GroveDB that is written for any storage engine: `GroveDb<E>`
+# and its operations, batches, proofs and state sync, and the estimated
+# costs. It compiles no engine. See `docs/lignindb/engine.md`.
+engine_generic = [
     "grovedb-merk/minimal",
     "grovedb-commitment-tree",
     "grovedb-commitment-tree/server",
@@ -112,7 +120,7 @@ minimal = [
     "grovedb-dense-fixed-sized-merkle-tree/storage",
     "thiserror",
     "tempfile",
-    "grovedb-storage/rocksdb_storage",
+    "grovedb-storage",
     "visualize",
     "itertools",
     "integer-encoding",
@@ -130,7 +138,9 @@ verify = [
     "grovedb-dense-fixed-sized-merkle-tree",
     "grovedb-private-document-store",
 ]
-estimated_costs = ["full"]
+# The estimates are functions of sizes and of the cost model, so they need no
+# engine.
+estimated_costs = ["engine_generic"]
 zk_client = ["grovedb-commitment-tree", "grovedb-commitment-tree/client"]
 grovedbg = [
     "dep:hex-literal",

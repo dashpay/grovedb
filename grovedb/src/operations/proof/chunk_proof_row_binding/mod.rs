@@ -43,16 +43,16 @@
 mod v0;
 mod v1;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::Node;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::Op;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Transaction;
 use crate::{Element, Error, GroveDb};
 
@@ -90,7 +90,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Bind every composite row of a trunk / branch chunk proof to the
     /// `value_hash` its Merk commits to, if the grove version calls for it.
@@ -99,7 +99,7 @@ impl<E: Engine> GroveDb<E> {
     /// emitted them; `target_path` is the path of the Merk they were taken
     /// from, so a tree row's own data lives one level below under the row's
     /// key.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn bind_chunk_proof_rows<'db>(
         &'db self,
         ops: &mut [Op],

@@ -20,7 +20,6 @@ use grovedb_merk::{
     HASH_LENGTH,
 };
 use grovedb_storage::{
-    rocksdb_storage::RocksDbStorage,
     worst_case_costs::{get_storage_context_cost, WorstKeyLength},
     Storage,
 };
@@ -38,8 +37,27 @@ mod merk_insert_element;
 mod merk_replace_element;
 
 impl GroveDb {
-    /// Add average case for getting a merk tree
+    /// The estimate of [`Self::add_average_case_get_merk_at_path_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_get_merk_at_path<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        merk_should_be_empty: bool,
+        in_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_merk_at_path_engine_free(
+            cost,
+            path,
+            merk_should_be_empty,
+            in_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Add average case for getting a merk tree
+    pub fn add_average_case_get_merk_at_path_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         merk_should_be_empty: bool,
@@ -444,7 +462,7 @@ impl GroveDb {
             // Opening the secondary Merk.
             cost_return_on_error_no_add!(
                 cost,
-                Self::add_average_case_get_merk_at_path::<RocksDbStorage>(
+                Self::add_average_case_get_merk_at_path_engine_free(
                     &mut cost,
                     primary_path,
                     secondary_should_be_empty,
@@ -536,8 +554,29 @@ impl GroveDb {
         .wrap_with_cost(cost)
     }
 
-    /// Adds the average case of checking to see if a raw value exists
+    /// The estimate of [`Self::add_average_case_has_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_has_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Adds the average case of checking to see if a raw value exists
+    pub fn add_average_case_has_raw_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -565,8 +604,31 @@ impl GroveDb {
         Ok(())
     }
 
-    /// Adds the average case of checking to see if a tree exists
+    /// The estimate of [`Self::add_average_case_has_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_has_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_has_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_flags_size,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// Adds the average case of checking to see if a tree exists
+    pub fn add_average_case_has_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -585,7 +647,28 @@ impl GroveDb {
         );
 
         let estimated_element_size = tree_type.cost_size() + estimated_flags_size;
-        Self::add_average_case_has_raw_cost::<S>(
+        Self::add_average_case_has_raw_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_element_size,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// The estimate of [`Self::add_average_case_get_raw_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_element_size: u32,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_raw_cost_engine_free(
             cost,
             path,
             key,
@@ -596,7 +679,7 @@ impl GroveDb {
     }
 
     /// Add average case to get raw cost into merk
-    pub fn add_average_case_get_raw_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_raw_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -623,8 +706,31 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
-    /// adds the average cost of getting a tree
+    /// The estimate of [`Self::add_average_case_get_raw_tree_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn add_average_case_get_raw_tree_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        estimated_flags_size: u32,
+        tree_type: TreeType,
+        in_parent_tree_type: TreeType,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_raw_tree_cost_engine_free(
+            cost,
+            path,
+            key,
+            estimated_flags_size,
+            tree_type,
+            in_parent_tree_type,
+            grove_version,
+        )
+    }
+
+    /// adds the average cost of getting a tree
+    pub fn add_average_case_get_raw_tree_cost_engine_free(
         cost: &mut OperationCost,
         _path: &KeyInfoPath,
         key: &KeyInfo,
@@ -653,9 +759,32 @@ impl GroveDb {
         .map_err(Error::MerkError)
     }
 
+    /// The estimate of [`Self::add_average_case_get_cost_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
+        cost: &mut OperationCost,
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        estimated_element_size: u32,
+        estimated_references_sizes: Vec<u32>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        Self::add_average_case_get_cost_engine_free(
+            cost,
+            path,
+            key,
+            in_parent_tree_type,
+            estimated_element_size,
+            estimated_references_sizes,
+            grove_version,
+        )
+    }
+
     /// adds the average cost of getting an element knowing there can be
     /// intermediate references
-    pub fn add_average_case_get_cost<'db, S: Storage<'db>>(
+    pub fn add_average_case_get_cost_engine_free(
         cost: &mut OperationCost,
         path: &KeyInfoPath,
         key: &KeyInfo,
@@ -690,7 +819,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod test {
     use std::option::Option::None;
 

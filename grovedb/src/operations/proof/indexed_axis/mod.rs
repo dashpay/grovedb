@@ -83,7 +83,7 @@
 mod axis_api;
 pub(crate) mod canonical_row;
 mod envelope;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod generate;
 pub(crate) mod target_chain;
 pub(crate) mod verify;

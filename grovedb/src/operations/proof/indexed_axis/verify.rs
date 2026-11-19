@@ -940,7 +940,7 @@ fn authenticate_axis_row(
     use grovedb_merk::tree::{combine_hash, value_hash};
 
     // From the verify-available canonical-row module, NOT the
-    // `minimal`-gated write path: a light client rebuilds the row a proof
+    // `engine_generic`-gated write path: a light client rebuilds the row a proof
     // claims without ever opening a Merk.
     use super::canonical_row::{
         axis_payload_sum, axis_row_reference, axis_sort_key_len, entry_count_and_sum,

@@ -20,23 +20,23 @@
 //! the global budget ran out keeps the shape v0 gives it, which the global
 //! limit already bounds.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{
     proofs::{query::QueryItem, Op},
     store::NodeStore,
     Merk, ProofWithoutEncodingResult,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Engine;
 use crate::{Error, GroveDb, PathQuery};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// `truncate_instance_capped_layer` v1: see the module documentation.
     ///

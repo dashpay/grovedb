@@ -14,7 +14,7 @@ use bincode::{Decode, DecodeUntrusted, Encode};
 /// # Requirements
 /// The tree at the specified path must support count operations (CountTree,
 /// CountSumTree, or ProvableCountTree).
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, Clone, PartialEq, Encode, Decode, DecodeUntrusted)]
 pub struct PathTrunkChunkQuery {
     /// Path to the tree to query
@@ -25,7 +25,7 @@ pub struct PathTrunkChunkQuery {
     pub min_depth: Option<u8>,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 impl PathTrunkChunkQuery {
     /// Create a new path trunk chunk query
     ///

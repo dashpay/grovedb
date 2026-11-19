@@ -7,7 +7,7 @@ use grovedb_costs::CostResult;
 use crate::PathQuery;
 
 /// GroveDB Errors
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("infallible")]
@@ -84,7 +84,7 @@ pub enum Error {
     /// Invalid parameter
     InvalidParameter(&'static str),
 
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
@@ -217,7 +217,7 @@ impl Error {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Error {
     /// How a commit that returned this error ended, in terms that name no
     /// engine, or `None` when the error has no such class: the transaction

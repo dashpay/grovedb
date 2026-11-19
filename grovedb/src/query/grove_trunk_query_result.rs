@@ -13,7 +13,7 @@ use grovedb_merk::{
 use crate::Element;
 
 /// Information about a leaf node for branch queries.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LeafInfo {
     /// The hash of the node, used to verify branch proofs.
@@ -29,7 +29,7 @@ pub struct LeafInfo {
 /// Unlike `TrunkQueryResult` which contains raw proof ops, this struct
 /// contains deserialized GroveDB Elements and provides the leaf keys
 /// needed for subsequent branch queries.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct GroveTrunkQueryResult {
     /// The elements from the trunk proof, keyed by their key.

@@ -131,68 +131,79 @@
 #![allow(clippy::too_many_arguments)]
 #![allow(clippy::type_complexity)]
 #![allow(clippy::result_large_err)]
-#![allow(clippy::drop_non_drop)] // Intentional drops to release borrows before re-borrowing
+#![allow(clippy::drop_non_drop)]
+// Intentional drops to release borrows before re-borrowing
+// A test build with no storage engine compiles the tests that open no
+// database. What only the other tests call is unused there.
+#![cfg_attr(all(test, not(feature = "rocksdb_storage")), allow(dead_code))]
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod batch;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod bidirectional_references;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod checkpoints;
 #[cfg(feature = "grovedbg")]
 pub mod debugger;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub mod element;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod engine;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub mod error;
 #[cfg(feature = "estimated_costs")]
 mod estimated_costs;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[allow(dead_code)] // WIP module, will be used in future batch rework
 mod merk_cache;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub mod operations;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub mod query_result_type;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[allow(dead_code)] // WIP module, will be used in future batch rework
 pub mod reference_path;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// State replication and synchronization support.
 pub mod replication;
-#[cfg(all(test, feature = "minimal"))]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
-#[cfg(feature = "minimal")]
+#[cfg(all(test, feature = "engine_generic", not(feature = "rocksdb_storage")))]
+#[path = "tests_without_engine.rs"]
+mod tests;
+#[cfg(feature = "engine_generic")]
 mod util;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod visualize;
 
 #[cfg(feature = "grovedbg")]
 use std::sync::Arc;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::{collections::HashMap, option::Option::None, path::Path};
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use bidirectional_references::{BackwardsReferences, BidirectionalReference};
 #[cfg(feature = "grovedbg")]
 use debugger::start_visualizer;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQueryResult};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::Element;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::ElementFlags;
-#[cfg(feature = "minimal")]
-pub use engine::{Engine, RocksDbEngine};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(feature = "engine_generic")]
+pub use engine::Engine;
+#[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
+pub use engine::NoEngine;
+#[cfg(feature = "rocksdb_storage")]
+pub use engine::RocksDbEngine;
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_bulk_append_tree::RangePage;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::cost_return_on_error_into;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
@@ -202,9 +213,9 @@ use grovedb_costs::{
 pub use grovedb_element::{
     BackwardReferences, DEFAULT_BACKWARD_REFERENCES_CAPACITY, MAX_BACKWARD_REFERENCES,
 };
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::calculate_max_tree_depth_from_count;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::element::{
     costs::ElementCostExtensions, decode::ElementDecodeExtensions,
     get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
@@ -217,86 +228,86 @@ pub use grovedb_merk::estimated_costs::{
     },
     worst_case_costs::WorstCaseLayerInformation,
 };
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::query::query_item::QueryItem;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::query::SubqueryBranch;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::query::VerifyOptions;
 /// The axis-read vocabulary: callers build an [`AxisQuery`] (or use
 /// `PathQuery`'s typed axis constructors) and run/prove/verify it
 /// through the unified surface.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::query::{AxisProjection, AxisQuery, AxisTraversal};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::Query;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::proofs::{
     encoding::Decoder as MerkProofDecoder, Node as MerkProofNode, Op as MerkProofOp,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::store::NodeStore;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::tree::kv::ValueDefinedCostType;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use grovedb_merk::tree::AggregateData;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use grovedb_merk::tree::TreeFeatureType;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use grovedb_merk::tree_type::{MaybeTree, TreeType};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{
     self,
     merk::NodeType,
     tree::{combine_hash, combine_hash_three, value_hash},
     BatchEntry, CryptoHash, KVIterator, Merk,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_path::SubtreePath;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_version::version::GroveVersion;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_visualize::DebugByteVectors;
 /// Telemetry counts from one `flush_pending_prefix_drops` pass — re-exported
 /// so hosts can name the flat-drop reclamation report without reaching into
 /// `operations::delete`.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use operations::delete::PendingPrefixDropsReport;
 /// The unified read dispatch's result types. `operations::get` is
 /// crate-private, so without this re-export `run_path_query` would be
 /// callable from outside the crate but its return type unnameable.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use operations::get::{AxisAggregateValue, PathQueryRun};
-// Gated on `minimal` alone, matching `operations::indexed_tree` itself: the
+// Gated on `engine_generic` alone, matching `operations::indexed_tree` itself: the
 // only APIs that produce an `IndexedTopKPage` are the paginated indexed-axis
 // reads, which need storage. A verify-only build consumes proofs and can
-// never name this type, so widening the gate here to `any(minimal, verify)`
+// never name this type, so widening the gate here to `any(engine_generic, verify)`
 // only breaks that cut on an unresolved import.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub use operations::indexed_tree::{IndexedTopKKeysPage, IndexedTopKPage};
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use query::{
     aggregate_sum_path_query::AggregateSumPathQuery, AggregateKind, GroveBranchQueryResult,
     GroveTrunkQueryResult, LeafInfo, PathBranchChunkQuery, PathQuery, PathQueryShape,
     PathTrunkChunkQuery, SizedQuery,
 };
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use query_result_type::{AxisKeys, IndexedAxisEntry, IndexedAxisEntrySliceExt};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use reference_path::path_from_reference_path_type;
 #[cfg(feature = "grovedbg")]
 use tokio::net::ToSocketAddrs;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use util::{compat, TxRef};
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use crate::error::Error;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::operations::proof::util::hex_to_ascii;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Error::MerkError;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 type Hash = [u8; 32];
 
 /// GroveDb is a hierarchical authenticated data structure database.
@@ -326,33 +337,50 @@ type Hash = [u8; 32];
 ///
 /// `GroveDb` is generic over the storage [`Engine`] underneath it, and
 /// `GroveDb` with no parameter is `GroveDb<RocksDbEngine>`.
-#[cfg(feature = "minimal")]
-pub struct GroveDb<E: Engine = RocksDbEngine> {
+///
+/// `RocksDbEngine` is compiled with the `rocksdb_storage` feature. Without
+/// it, `GroveDb` with no parameter is `GroveDb<NoEngine>`: there is no
+/// database of it, and it has the functions that take none, the proof
+/// verifiers and the estimated costs.
+#[cfg(feature = "engine_generic")]
+pub struct GroveDb<
+    #[cfg(feature = "rocksdb_storage")] E: Engine = RocksDbEngine,
+    #[cfg(not(feature = "rocksdb_storage"))] E = NoEngine,
+> {
     db: E,
 }
 
-/// The proof verifier of GroveDB. Without the `minimal` feature there is no
-/// storage engine, and `GroveDb` only names the functions that verify
-/// proofs.
-#[cfg(not(feature = "minimal"))]
+/// The proof verifier of GroveDB. Without the `engine_generic` feature
+/// there is no `GroveDb<E>`, and `GroveDb` only names the functions that
+/// verify proofs.
+#[cfg(not(feature = "engine_generic"))]
 pub struct GroveDb {}
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 
 /// A transaction of a `GroveDb` on engine `E`.
-#[cfg(feature = "minimal")]
-pub type Transaction<'db, E = RocksDbEngine> = <E as Engine>::Transaction<'db>;
+#[cfg(feature = "engine_generic")]
+pub type Transaction<
+    'db,
+    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(not(feature = "rocksdb_storage"))] E,
+> = <E as Engine>::Transaction<'db>;
 /// An optional transaction: `None` runs the operation in a transaction of
 /// its own.
-#[cfg(feature = "minimal")]
-pub type TransactionArg<'db, 'a, E = RocksDbEngine> = Option<&'a Transaction<'db, E>>;
+#[cfg(feature = "engine_generic")]
+pub type TransactionArg<
+    'db,
+    'a,
+    #[cfg(feature = "rocksdb_storage")] E = RocksDbEngine,
+    #[cfg(not(feature = "rocksdb_storage"))] E,
+> = Option<&'a Transaction<'db, E>>;
 
 /// Type alias for the return type of the `verify_merk_and_submerks` and
 /// `verify_grovedb` functions. It represents a mapping of paths (as vectors of
 /// vectors of bytes) to a tuple of three cryptographic hashes: the root hash,
 /// the combined value hash, and the expected value hash.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoHash)>;
 
 /// Type alias for the return type of the `open_merk_for_replication` function.
@@ -365,7 +393,7 @@ type VerificationIssues = HashMap<Vec<Vec<u8>>, (CryptoHash, CryptoHash, CryptoH
 ///   the root subtree (which has no parent element). Replication needs the
 ///   full element for non-Merk append-only trees, whose entry counts and
 ///   parameters drive the raw-replay restore path.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 type OpenedMerkForReplication<'tx, E> = (
     Merk<<E as Engine>::ImmediateSubtree<'tx>>,
     Option<Vec<u8>>,
@@ -373,7 +401,7 @@ type OpenedMerkForReplication<'tx, E> = (
     Option<Element>,
 );
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Opens the database at `path` on engine `E`, and creates it if there
     /// is none. [`GroveDb::open`] does this on the default engine.
@@ -392,11 +420,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-/// Verify that an indexed tree's secondary projection is exactly derivable
-/// from its primary entries. Root-hash binding alone only proves that both
-/// Merks are internally authenticated; it does not prove their relationship.
-#[cfg(feature = "minimal")]
-#[cfg(feature = "minimal")]
+#[cfg(feature = "rocksdb_storage")]
 impl GroveDb {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
@@ -505,7 +529,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Uses raw iter to delete GroveDB key values pairs from rocksdb
     pub fn wipe(&self) -> Result<(), Error> {
@@ -814,7 +838,7 @@ impl<E: Engine> GroveDb<E> {
     /// manages it, so a new caller is a one-line change and cannot forget.
     ///
     /// `old_state` must be captured with
-    /// [`Self::capture_indexed_entry_state`] BEFORE the rewrite. It is what
+    /// [`capture_indexed_entry_state`] BEFORE the rewrite. It is what
     /// lets this handle a rewrite that MOVES the row: `replace_subtree_root`
     /// takes a caller-supplied element, so its aggregates — and therefore
     /// the row's sort key — can differ from what was there. Refreshing in
@@ -1737,7 +1761,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Method to visualize hash mismatch after verification
     pub fn visualize_verify_grovedb<'db>(
@@ -2958,7 +2982,7 @@ impl<E: Engine> GroveDb<E> {
 }
 
 /// Short axis name used to build per-axis verification sentinels.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) fn axis_label(axis: grovedb_element::indexed::IndexAxis) -> &'static str {
     match axis {
         grovedb_element::indexed::IndexAxis::Count => "count",
@@ -2987,7 +3011,7 @@ pub(crate) fn axis_label(axis: grovedb_element::indexed::IndexAxis) -> &'static 
 /// the existing `VerificationIssues` shape is unchanged. `label_prefix`
 /// identifies the variant and axis (`__cidx_` keeps the PCIT sentinels
 /// byte-identical to what they have always been).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn verify_indexed_axis_content<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
@@ -3316,7 +3340,7 @@ pub(crate) fn verify_indexed_axis_content<'db, S: NodeStore<'db>>(
 
 /// The element under `key` in an opened Merk, for
 /// [`GroveDb::stored_element_for_reciprocity_audit`].
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) fn element_for_reciprocity_audit<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     key: &[u8],
@@ -3330,7 +3354,7 @@ pub(crate) fn element_for_reciprocity_audit<'db, S: NodeStore<'db>>(
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Compute the child hash for a non-Merk tree element by reconstructing
     /// its tree from storage and computing the state root.
@@ -3602,7 +3626,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Updates a tree item and preserves flags. Returns CostResult.
 pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
     parent_tree: &mut Merk<S>,
@@ -3627,7 +3651,7 @@ pub(crate) fn update_tree_item_preserve_flag<'db, K: AsRef<[u8]>, S: NodeStore<'
     })
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Pushes to batch an operation which updates a tree item and preserves
 /// flags. Returns CostResult.
 pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
@@ -3670,7 +3694,7 @@ pub(crate) fn update_tree_item_preserve_flag_into_batch_operations<
     })
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Rebuild an existing indexed-tree element in `parent_tree` with new
 /// primary/secondary root state and emit the parent-merk write with its
 /// H1-A value hash. The element is read from the parent merk, so this is
@@ -3715,7 +3739,7 @@ pub(crate) fn update_indexed_tree_item_preserve_flag_into_batch_operations<
     })
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Insert-side counterpart of the above, used by
 /// `GroveOp::InsertAggregateIndexedTreeRootKeys`: the indexed element was
 /// CREATED in this same batch, so it cannot be read from the parent merk
@@ -3752,7 +3776,7 @@ pub(crate) fn insert_indexed_tree_item_into_batch_operations<K: AsRef<[u8]>>(
     )
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Shared core of the replace / insert indexed bubble-up: rebuild the
 /// element with the computed root state and emit the parent-merk write
 /// with its H1-A value hash (`combine_hash_three` over the primary root
@@ -3826,7 +3850,7 @@ pub(crate) fn indexed_tree_item_with_root_state_into_batch_operations<K: AsRef<[
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Get element from subtree. Return CostResult.
 pub(crate) fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
     subtree: &Merk<S>,
@@ -3871,7 +3895,7 @@ pub(crate) fn get_element_from_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         .flatten()
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(crate) fn capture_indexed_entry_state<'db, S: NodeStore<'db>>(
     primary_merk: &Merk<S>,
     key: &[u8],
@@ -3921,7 +3945,7 @@ pub(crate) fn capture_indexed_entry_state<'db, S: NodeStore<'db>>(
 /// report is the child Merk's own, where the parent records a hash-chain or
 /// recorded-aggregate mismatch and the child a recomputed-aggregate one; the
 /// parent's is the more specific and stays.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn merge_child_issues(issues: &mut VerificationIssues, child_issues: VerificationIssues) {
     for (path, issue) in child_issues {
         issues.entry(path).or_insert(issue);
@@ -3935,14 +3959,14 @@ fn merge_child_issues(issues: &mut VerificationIssues, child_issues: Verificatio
 /// reported as an issue instead of wrapping or panicking. The sum is kept as
 /// an `i128` for every tree type: a total outside `i64` in a tree whose
 /// aggregate is an `i64` then simply fails to equal the stored value.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ElementsAggregate {
     count: Option<u64>,
     sum: Option<i128>,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl Default for ElementsAggregate {
     fn default() -> Self {
         Self {
@@ -3952,7 +3976,7 @@ impl Default for ElementsAggregate {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl ElementsAggregate {
     /// Add one element's contribution, given as the feature type the write
     /// path derives for it (`Element::get_feature_type`).
@@ -3978,7 +4002,7 @@ impl ElementsAggregate {
 /// sides, as does an empty Merk or one without an aggregate. The labels are
 /// meant to be hashed into placeholder `CryptoHash` values for
 /// `VerificationIssues`, like those of [`aggregate_consistency_labels`].
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn elements_aggregate_labels(
     contributed: &ElementsAggregate,
     stored: &Result<AggregateData, String>,
@@ -4011,7 +4035,7 @@ fn elements_aggregate_labels(
 /// `NotSummed` / `NotCountedOrSummed` wrappers decide it, so it is taken
 /// before the caller looks through them. `get_feature_type` is the rule every
 /// write uses to derive a node's own aggregate from its element.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn decode_element_adding_its_contribution(
     value: &[u8],
     tree_type: TreeType,
@@ -4037,7 +4061,7 @@ fn decode_element_adding_its_contribution(
 /// A hash is `None` when it cannot be computed (see
 /// [`root_hash_if_computable`]); the Merk it belongs to is reported by its
 /// own check, and the comparisons that need the hash are left out.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[allow(clippy::too_many_arguments)]
 fn record_indexed_tree_binding_issues<'db, S: NodeStore<'db>>(
     element: &Element,
@@ -4079,7 +4103,7 @@ fn record_indexed_tree_binding_issues<'db, S: NodeStore<'db>>(
 ///
 /// An issue already recorded at that path is kept: a hash-chain mismatch
 /// found for the same tree is more diagnostic than the aggregate placeholder.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn record_recorded_aggregate_issue<'db, S: NodeStore<'db>>(
     element: &Element,
     inner_merk: &Merk<S>,
@@ -4115,7 +4139,7 @@ fn record_recorded_aggregate_issue<'db, S: NodeStore<'db>>(
 /// root hash for locality, or zeroes when the stored aggregate cannot be
 /// read, since the root hash cannot be computed then (see
 /// [`root_hash_if_computable`]).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn record_elements_aggregate_issue<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     contributed: &ElementsAggregate,
@@ -4144,7 +4168,7 @@ fn record_elements_aggregate_issue<'db, S: NodeStore<'db>>(
 /// such a tree as an issue instead, so it asks here before it hashes. The
 /// other tree types hash without their aggregate: their root hash is always
 /// there to compute, whatever the aggregate reads as.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn root_hash_if_computable<'db, S: NodeStore<'db>>(merk: &Merk<S>) -> Option<CryptoHash> {
     if root_hash_commits_to_aggregate(merk.tree_type) && usable_stored_aggregate(merk).is_err() {
         return None;
@@ -4164,7 +4188,7 @@ fn root_hash_if_computable<'db, S: NodeStore<'db>>(merk: &Merk<S>) -> Option<Cry
 ///
 /// The reason completes the sentence "stored aggregate ...", which is how
 /// [`elements_aggregate_labels`] reports it.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn usable_stored_aggregate<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
 ) -> Result<AggregateData, String> {
@@ -4193,7 +4217,7 @@ fn usable_stored_aggregate<'db, S: NodeStore<'db>>(
 /// another kind than the tree type's own. The other tree types hash their
 /// nodes without it. The match is over every node type on purpose: a new one
 /// has to be placed here.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn root_hash_commits_to_aggregate(tree_type: TreeType) -> bool {
     match tree_type.inner_node_type() {
         NodeType::ProvableCountNode
@@ -4247,7 +4271,7 @@ fn root_hash_commits_to_aggregate(tree_type: TreeType) -> bool {
 /// Merk reports `AggregateData::Count(_)` instead of `ProvableSum(_)`) is
 /// also reported, because the inner Merk's tree-type has drifted from what
 /// the parent element claims.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 fn aggregate_consistency_labels(
     element: &Element,
     actual: &AggregateData,
@@ -4519,7 +4543,7 @@ fn aggregate_consistency_labels(
     }
 }
 
-#[cfg(all(test, feature = "minimal"))]
+#[cfg(all(test, feature = "engine_generic"))]
 mod aggregate_consistency_labels_tests {
     //! Unit tests for the `aggregate_consistency_labels` helper. Each
     //! aggregate-bearing tree variant has a match arm; covering each arm
@@ -4857,7 +4881,7 @@ mod aggregate_consistency_labels_tests {
 }
 
 /// Test-only helpers for verifying internal storage state.
-#[cfg(all(test, feature = "minimal"))]
+#[cfg(all(test, feature = "rocksdb_storage"))]
 impl GroveDb {
     /// Read a raw key from a subtree's transactional storage context.
     ///

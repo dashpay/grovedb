@@ -196,7 +196,7 @@ impl RestoreCommitMode {
     }
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl<E: Engine> GroveDb<E> {
     /// Starts a new state synchronization session with the given app hash,
     /// batch size and state sync protocol version, ready to apply the root

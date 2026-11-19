@@ -10,7 +10,7 @@
 //! of `hi`. When `hi` is already the axis maximum there is no
 //! successor, and the range is open-ended instead.
 //!
-//! Compiled under both `minimal` (prover) and `verify` (light-client
+//! Compiled under both `engine_generic` (prover) and `verify` (light-client
 //! verifier).
 
 use grovedb_element::indexed::{
