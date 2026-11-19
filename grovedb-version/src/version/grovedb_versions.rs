@@ -106,6 +106,19 @@ pub struct GroveDBOperationsIndexedAxisVersions {
     pub prove_single_path: FeatureVersion,
     /// The matching standalone verifiers.
     pub verify_single_path: FeatureVersion,
+    /// Whether the big sum axis (`IndexAxis::BigSum`) is served.
+    ///
+    /// - `0` (GROVE_V1..=V4): a `PathQuery` whose axis read names the big
+    ///   sum axis is refused with `NotSupported` at every read, prove and
+    ///   verify entry point. The axis tag still encodes and decodes; the
+    ///   gate is about serving, as with
+    ///   `GroveDBPathQueryMethodVersions::unified_read_mode`. No tree has
+    ///   the axis at these versions, and a query naming it had no encoding
+    ///   before it was added, so an absent path must not answer it with an
+    ///   empty result.
+    /// - `1` (GROVE_V5+): the axis is served on the indexed trees with a
+    ///   128-bit sum.
+    pub big_sum_axis: FeatureVersion,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -356,6 +369,41 @@ pub struct GroveDBApplyBatchVersions {
     /// The slot gates the stored element, so the root hash and the cost, and
     /// an accepted/rejected outcome for the two wrapped forms.
     pub tree_insert_above_emptied_level: FeatureVersion,
+
+    /// Which checks hold for a tree a batch both creates and writes into.
+    ///
+    /// Upward propagation replaces the insert of such a tree with the root
+    /// state the level below it computed, so the insert is never applied as
+    /// an insert, and the checks made there on the caller's element are not
+    /// reached.
+    ///
+    /// - `0` (V1..V4): those checks are made only for a tree the batch
+    ///   leaves untouched. A tree it also fills is written with axes that
+    ///   are not canonical, with root keys or aggregates claimed for an
+    ///   indexed tree, wrapped in `NonCounted`, `NotSummed` or
+    ///   `NotCountedOrSummed` under a parent that does not take the wrapper,
+    ///   or as an entry its indexed parent's child rule refuses. Frozen: it
+    ///   is what GroveDB 6.1.1 does.
+    /// - `1` (V5+): every element a batch is handed is checked where it
+    ///   enters the batch (an indexed tree is empty and has canonical axes,
+    ///   a `PrivateDocumentStore` is empty with a valid config), and a tree
+    ///   written from propagated root state is checked against its parent
+    ///   where it is applied (the wrapper rules, and the child rule of an
+    ///   indexed parent). For these checks the batch is refused with the
+    ///   error the same insert gives without operations under it.
+    ///
+    /// Two rules of an insert are left out on every value, so the slot does
+    /// not promise that a filled tree is refused wherever the insert alone
+    /// is. An entry of an indexed tree that has no root key may not claim an
+    /// aggregate when it is inserted alone; filled, it is taken and stores
+    /// the aggregate its contents give. And the checks on what the key
+    /// already holds (`validate_insertion_does_not_override`,
+    /// `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are
+    /// not made for a filled tree, which is written without reading its key.
+    ///
+    /// The slot gates an accepted/rejected outcome. No tracked cost changes
+    /// for a batch both values accept.
+    pub filled_tree_insert_checks: FeatureVersion,
 
     /// How the indexed-tree mirror reads an entry of the primary, before
     /// the level's apply (the old state) and after it (the new state).
@@ -655,6 +703,33 @@ pub struct GroveDBOperationsProofVersions {
     /// so such a page is refused. 1: resolved references are exempt. Gated
     /// because it turns a rejected proof into an accepted one.
     pub count_offset_reference_empty_tree_rows: FeatureVersion,
+    /// How much of a layer a V1 proof carries when the layer has subquery
+    /// branches and a per-instance cap (`Query::limit`) is in force there.
+    ///
+    /// The cap budgets the rows found below the layer's keys, not the keys:
+    /// a key whose subtree is empty spends none of it, so the number of keys
+    /// the walk needs is known only once the descents have run.
+    ///
+    /// - `0` (V4, as 6.1.1 shipped; V1..V3 carry `0` as well but refuse a
+    ///   per-instance cap before any proof code runs, so only V4 reaches
+    ///   this): the layer is proven under the global budget only, so with no global limit it carries every key the layer
+    ///   query selects, and the proof grows with the range rather than with
+    ///   the page (issue #962). The verifier refuses a layer that hides a
+    ///   selected key before the global budget is used up.
+    /// - `1` (V5): the prover runs the descents, and once the instance budget
+    ///   is spent it proves the layer truncated after the key that spent it,
+    ///   hiding the later rows and the range bounds of later queried keys. The verifier reads the layer as a gap-free
+    ///   prefix of its query (Merk's upper-bound limit mode) and accepts one
+    ///   that stops early only after it has itself seen the budget spent by
+    ///   the rows below the keys the layer reveals. A layer that stops with
+    ///   budget left is refused, so no owed row can be dropped. Which rows
+    ///   are returned does not change, and an empty subtree still spends no
+    ///   instance budget.
+    ///
+    /// Gated because it changes the bytes a prover emits and turns a
+    /// rejected proof into an accepted one: a `0` verifier refuses the
+    /// truncated layer. Prover and verifier read the same slot.
+    pub instance_cap_layer_truncation: FeatureVersion,
     /// Whether a V1 verifier that leaves empty trees out of its results
     /// (`VerifyOptions::include_empty_trees_in_result` false, the default of
     /// `verify_query` and `verify_subset_query`) charges an empty plain

@@ -169,10 +169,11 @@ pub enum Element {
     ///   a `NotCountedOrSummed`, or any non-tree element.
     NotSummed(Box<Element>),
     /// Not-counted-or-summed wrapper: contains a sum-bearing tree variant
-    /// (`SumTree`, `BigSumTree`, `CountSumTree`, `ProvableCountSumTree`,
-    /// `ProvableSumTree`, `ProvableCountProvableSumTree`) and behaves
-    /// identically to it for storage, hashing, and its own internal
-    /// aggregates, but contributes 0 to BOTH its parent's running sum AND
+    /// (`SumTree`, `BigSumTree`, `CountSumTree`, `CountBigSumTree`,
+    /// `ProvableCountSumTree`, `ProvableSumTree`, `ProvableBigSumTree`,
+    /// `ProvableCountProvableSumTree`, `ProvableCountProvableBigSumTree`)
+    /// and behaves identically to it for storage, hashing, and its own
+    /// internal aggregates, but contributes 0 to BOTH its parent's running sum AND
     /// the parent's count when inserted.
     ///
     /// May only be inserted into `CountSumTree` or `CountBigSumTree`, the
@@ -221,7 +222,7 @@ pub enum Element {
     /// Wrapper compatibility:
     /// - **May** be wrapped in `NonCounted` to opt out of count propagation.
     /// - **May NOT** be wrapped in `NotSummed` or `NotCountedOrSummed` —
-    ///   those whitelists accept only the four sum-tree variants, not
+    ///   those whitelists accept only the sum-bearing tree variants, not
     ///   item-like or reference-like base variants.
     ReferenceWithSumItem(
         ReferencePathType,
@@ -453,6 +454,37 @@ pub enum Element {
     ///
     /// Discriminant 31.
     ProvableBigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+    /// Provable big-sum-indexed tree: the wide counterpart of
+    /// `ProvableSumIndexedTree`. The primary Merk uses
+    /// `ProvableBigSummedMerkNode` (a 128-bit sum baked into the node hash)
+    /// and the secondary Merk is keyed by the 16-byte order-preserving
+    /// encoding of each entry's 128-bit sum, followed by the entry's key.
+    ///
+    /// Fields: `(primary_root_key, secondary_root_key, big_sum_value, flags)`
+    ///
+    /// Discriminant 32.
+    ProvableBigSumIndexedTree(
+        Option<Vec<u8>>,
+        Option<Vec<u8>>,
+        BigSumValue,
+        Option<ElementFlags>,
+    ),
+    /// Provable count + provable big sum indexed tree: the wide counterpart
+    /// of `ProvableCountProvableSumIndexedTree`. The primary Merk uses
+    /// `ProvableCountedAndProvableBigSummedMerkNode` (the count and a
+    /// 128-bit sum baked into the node hash) and carries the same TLV list
+    /// of 1..=3 secondary Merks, one per selected axis (count, avg, big sum).
+    ///
+    /// Fields: `(primary_root_key, count_value, big_sum_value, axes, flags)`
+    ///
+    /// Discriminant 33.
+    ProvableCountProvableBigSumIndexedTree(
+        Option<Vec<u8>>,
+        CountValue,
+        BigSumValue,
+        Vec<(u8, Option<Vec<u8>>)>,
+        Option<ElementFlags>,
+    ),
 }
 
 pub fn hex_to_ascii(hex_value: &[u8]) -> String {
@@ -662,6 +694,27 @@ impl fmt::Display for Element {
                         .map_or(String::new(), |f| format!(", flags: {:?}", f))
                 )
             }
+            Element::ProvableBigSumIndexedTree(
+                primary_root_key,
+                secondary_root_key,
+                sum_value,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableBigSumIndexedTree(primary={}, secondary={}, sum={}{})",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    secondary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    sum_value,
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
             Element::ProvableCountIndexedTree(
                 primary_root_key,
                 secondary_root_key,
@@ -693,6 +746,43 @@ impl fmt::Display for Element {
                 write!(
                     f,
                     "ProvableCountProvableSumIndexedTree(primary={}, count={}, sum={}, axes=[",
+                    primary_root_key
+                        .as_ref()
+                        .map_or("None".to_string(), hex::encode),
+                    count_value,
+                    sum_value,
+                )?;
+                let mut first = true;
+                for (tag, sk) in axes {
+                    if !first {
+                        write!(f, ", ")?;
+                    }
+                    first = false;
+                    write!(
+                        f,
+                        "({}, {})",
+                        tag,
+                        sk.as_ref().map_or("None".to_string(), hex::encode)
+                    )?;
+                }
+                write!(
+                    f,
+                    "]{})",
+                    flags
+                        .as_ref()
+                        .map_or(String::new(), |f| format!(", flags: {:?}", f))
+                )
+            }
+            Element::ProvableCountProvableBigSumIndexedTree(
+                primary_root_key,
+                count_value,
+                sum_value,
+                axes,
+                flags,
+            ) => {
+                write!(
+                    f,
+                    "ProvableCountProvableBigSumIndexedTree(primary={}, count={}, sum={}, axes=[",
                     primary_root_key
                         .as_ref()
                         .map_or("None".to_string(), hex::encode),
@@ -896,6 +986,10 @@ impl Element {
             Element::ProvableBigSumTree(..) => ElementType::ProvableBigSumTree,
             Element::ReferenceWithSumItem(..) => ElementType::ReferenceWithSumItem,
             Element::ProvableSumIndexedTree(..) => ElementType::ProvableSumIndexedTree,
+            Element::ProvableBigSumIndexedTree(..) => ElementType::ProvableBigSumIndexedTree,
+            Element::ProvableCountProvableBigSumIndexedTree(..) => {
+                ElementType::ProvableCountProvableBigSumIndexedTree
+            }
             Element::ProvableCountIndexedTree(..) => ElementType::ProvableCountIndexedTree,
             Element::ProvableCountProvableSumIndexedTree(..) => {
                 ElementType::ProvableCountProvableSumIndexedTree
@@ -934,6 +1028,12 @@ impl Element {
                 ElementType::ReferenceWithSumItem => ElementType::NonCountedReferenceWithSumItem,
                 ElementType::ProvableSumIndexedTree => {
                     ElementType::NonCountedProvableSumIndexedTree
+                }
+                ElementType::ProvableBigSumIndexedTree => {
+                    ElementType::NonCountedProvableBigSumIndexedTree
+                }
+                ElementType::ProvableCountProvableBigSumIndexedTree => {
+                    ElementType::NonCountedProvableCountProvableBigSumIndexedTree
                 }
                 ElementType::ProvableCountIndexedTree => {
                     ElementType::NonCountedProvableCountIndexedTree
@@ -1237,6 +1337,19 @@ mod serde_impl {
             Option<ElementFlags>,
         ),
         ProvableBigSumTree(Option<Vec<u8>>, BigSumValue, Option<ElementFlags>),
+        ProvableBigSumIndexedTree(
+            Option<Vec<u8>>,
+            Option<Vec<u8>>,
+            BigSumValue,
+            Option<ElementFlags>,
+        ),
+        ProvableCountProvableBigSumIndexedTree(
+            Option<Vec<u8>>,
+            CountValue,
+            BigSumValue,
+            Vec<(u8, Option<Vec<u8>>)>,
+            Option<ElementFlags>,
+        ),
     }
 
     // An uninhabited wrapper payload makes a second wrapper impossible to
@@ -1333,6 +1446,12 @@ mod serde_impl {
                 }
                 ElementShadow::CountBigSumTree(k, c, s, f) => Element::CountBigSumTree(k, c, s, f),
                 ElementShadow::ProvableBigSumTree(k, s, f) => Element::ProvableBigSumTree(k, s, f),
+                ElementShadow::ProvableBigSumIndexedTree(pk, sk, s, f) => {
+                    Element::ProvableBigSumIndexedTree(pk, sk, s, f)
+                }
+                ElementShadow::ProvableCountProvableBigSumIndexedTree(pk, c, s, axes, f) => {
+                    Element::ProvableCountProvableBigSumIndexedTree(pk, c, s, axes, f)
+                }
             }
         }
     }

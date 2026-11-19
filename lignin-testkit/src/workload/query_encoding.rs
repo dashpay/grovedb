@@ -148,6 +148,7 @@ fn put_axis_query(out: &mut Vec<u8>, axis_query: &AxisQuery) {
         IndexAxis::Count => 0,
         IndexAxis::Sum => 1,
         IndexAxis::Avg => 2,
+        IndexAxis::BigSum => 3,
     });
     match traversal {
         AxisTraversal::RankedPage { k, offset } => {

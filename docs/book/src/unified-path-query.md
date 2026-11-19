@@ -46,7 +46,7 @@ the queries it cannot execute, and on nothing else.
 
 ```rust,ignore
 pub struct AxisQuery {
-    pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2
+    pub axis: IndexAxis,          // Count = 0 | Sum = 1 | Avg = 2 | BigSum = 3
     pub traversal: AxisTraversal,
     pub descending: bool,
     pub projection: AxisProjection, // Entries = 0 (default) | Keys = 1
@@ -56,7 +56,7 @@ pub enum AxisTraversal {
     RankedPage { k: u16, offset: u64 },         // tag 0 (top-k / bottom-k)
     Bounded { lo: i128, hi: i128, limit: u16 }, // tag 1
     RankOfKey { key: Vec<u8> },                 // tag 2
-    AggregateOverValueRange {                   // tag 3 (Count/Sum only)
+    AggregateOverValueRange {                   // tag 3 (Count/Sum; BigSum: Population only)
         lo: i128,
         hi: i128,
         fold: AggregateFold,                    // Population = 0 | Total = 1
@@ -81,8 +81,8 @@ the prover and verifier treat a `Keys` query exactly as `Entries`.
 read.
 
 `AggregateOverValueRange` makes the caller SAY which scalar they mean,
-because both readings are meaningful on both axes and the "obvious"
-one flips per axis. `[lo, hi]` selects entries by their own axis
+because both readings are meaningful on the Count and Sum axes and the
+"obvious" one flips per axis. `[lo, hi]` selects entries by their own axis
 value; the fold picks the aggregate over exactly those entries:
 
 | over counts `[3, 1, 5]`, band `[2, 10]` | answer |
@@ -90,11 +90,20 @@ value; the fold picks the aggregate over exactly those entries:
 | `Population` — how many entries fall in the band | **2** |
 | `Total` — the selected values summed | **8** |
 
+`BigSum` is the sum axis of an indexed tree whose sum is 128 bits wide
+(`ProvableBigSumIndexedTree`, `ProvableCountProvableBigSumIndexedTree`): a
+tree has `Sum` or `BigSum`, never both, and a query names the one the tree
+has. Its bounds range over the whole `i128`, its entries come back as
+`AxisEntries::BigSum` with an `i128` ordering value, and it answers
+`Population` but not `Total`: a secondary row carries an `i64`, so the
+rows of this axis carry 0 and the entry's sum lives in the row's key.
+
 Population counts *entries*, not distinct values (two entries sharing
 a value are two secondary nodes). Every axis secondary is a
 dual-aggregate `ProvableCountProvableSumTree` — the count axis mirrors
 each entry's `count_value` into its sum half — which is what makes all
-four (axis, fold) cells one committed `O(log n)` scalar, and is also a
+four (axis, fold) cells of the Count and Sum axes, and the population
+on the BigSum axis, one committed `O(log n)` scalar, and is also a
 **security requirement**: the single-aggregate node hashes share a
 preimage layout, so dual-aggregate commitments are what keep a
 population proof and a total proof from being confused for one

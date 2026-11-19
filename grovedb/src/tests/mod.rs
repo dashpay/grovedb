@@ -44,6 +44,7 @@ mod non_merk_completeness_budget_tests;
 mod non_merk_subtree_discovery_tests;
 // Tampers with raw storage via `GroveDb::raw_storage`, which is only
 // compiled under the `unsafe-dump-load` feature.
+mod instance_cap_layer_truncation_tests;
 #[cfg(feature = "unsafe-dump-load")]
 mod non_merk_integrity_audit_tests;
 mod non_merk_limited_page_tests;
@@ -75,6 +76,9 @@ mod wrapped_terminal_reference_tests;
 // `generic_writes_against_pcit_primary_are_rejected`.
 mod axis_descent_proof_tests;
 mod axis_read_projection_tests;
+mod batch_filled_tree_insert_checks_tests;
+mod big_sum_indexed_guard_tests;
+mod big_sum_indexed_tree_tests;
 mod big_sum_tree_twins_tests;
 mod count_offset_backward_ref_forgery_tests;
 mod count_offset_paginated_tests;

@@ -6,6 +6,7 @@
 
 use grovedb_costs::OperationCost;
 use grovedb_merk::{
+    element::tree_type::ElementTreeTypeExtensions,
     estimated_costs::{
         add_cost_case_merk_replace_layered,
         average_case_costs::{EstimatedLayerCount, EstimatedLayerInformation, EstimatedLayerSizes},
@@ -13,7 +14,7 @@ use grovedb_merk::{
     tree_type::{TreeType, COUNT_BIG_SUM_TREE_COST_SIZE},
 };
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
 use crate::{
     batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
@@ -883,4 +884,189 @@ fn test_element_estimates_treat_a_provable_count_provable_big_sum_tree_as_layere
         .as_ref()
         .expect("the estimate should succeed");
     assert_eq!(worst_replace.cost, layered_replace);
+}
+
+/// A tree in each wrapper, next to the same tree without it. `NotSummed` and
+/// `NotCountedOrSummed` only wrap sum-bearing trees.
+fn wrapped_trees() -> Vec<(Element, Element)> {
+    let flags = Some(vec![1, 2, 3]);
+    let non_counted = |tree: Element| {
+        let wrapped = Element::new_non_counted(tree.clone()).expect("a tree wraps as non-counted");
+        (wrapped, tree)
+    };
+    let not_summed = |tree: Element| {
+        let wrapped =
+            Element::new_not_summed(tree.clone()).expect("a sum tree wraps as not-summed");
+        (wrapped, tree)
+    };
+    let not_counted_or_summed = |tree: Element| {
+        let wrapped = Element::new_not_counted_or_summed(tree.clone())
+            .expect("a sum tree wraps as not-counted-or-summed");
+        (wrapped, tree)
+    };
+    vec![
+        non_counted(Element::empty_tree()),
+        non_counted(Element::empty_tree_with_flags(flags.clone())),
+        non_counted(Element::empty_count_tree()),
+        non_counted(Element::empty_provable_count_sum_tree()),
+        not_summed(Element::empty_sum_tree()),
+        not_summed(Element::empty_big_sum_tree_with_flags(flags.clone())),
+        not_summed(Element::empty_count_sum_tree()),
+        not_counted_or_summed(Element::empty_sum_tree()),
+        not_counted_or_summed(Element::empty_provable_count_provable_sum_tree_with_flags(
+            flags,
+        )),
+    ]
+}
+
+/// The average-case cost of inserting `element` under a count and sum tree,
+/// which accepts all three wrappers, propagating through `level` if given.
+fn average_insert_element_cost(
+    element: &Element,
+    level: Option<&EstimatedLayerInformation>,
+    grove_version: &GroveVersion,
+) -> OperationCost {
+    let result = GroveDb::average_case_merk_insert_element(
+        &KnownKey(b"tree".to_vec()),
+        element,
+        TreeType::CountSumTree,
+        level,
+        grove_version,
+    );
+    result.value.as_ref().expect("the estimate should succeed");
+    result.cost
+}
+
+/// The average-case cost the dedicated tree helper gives the tree `element`
+/// holds, with `wrapper_overhead` bytes for a wrapper.
+fn average_insert_tree_cost(
+    element: &Element,
+    wrapper_overhead: u32,
+    level: Option<&EstimatedLayerInformation>,
+    grove_version: &GroveVersion,
+) -> OperationCost {
+    let (flags, tree_type) = element
+        .tree_flags_and_type()
+        .expect("the element should be a tree");
+    let result = GroveDb::average_case_merk_insert_tree(
+        &KnownKey(b"tree".to_vec()),
+        flags,
+        tree_type,
+        TreeType::CountSumTree,
+        wrapper_overhead,
+        level,
+        grove_version,
+    );
+    result.value.as_ref().expect("the estimate should succeed");
+    result.cost
+}
+
+/// From `GROVE_V5` the element estimate sizes a wrapped tree as the dedicated
+/// tree helper does with one byte of wrapper overhead: exactly one byte above
+/// the same tree without its wrapper, for each of the three wrappers, and
+/// nothing for a tree that is not wrapped (issue #911).
+#[test]
+fn test_average_case_merk_insert_element_sizes_a_wrapped_tree_with_its_wrapper_byte() {
+    let grove_version = GroveVersion::latest();
+    let layer_info = normal_layer_info();
+    for (wrapped, bare) in wrapped_trees() {
+        for level in [None, Some(&layer_info)] {
+            let wrapped_cost = average_insert_element_cost(&wrapped, level, grove_version);
+            let bare_cost = average_insert_element_cost(&bare, level, grove_version);
+            assert_eq!(
+                wrapped_cost,
+                average_insert_tree_cost(&wrapped, 1, level, grove_version),
+                "{wrapped}: must be estimated as the tree helper estimates a wrapped tree",
+            );
+            assert_eq!(
+                bare_cost,
+                average_insert_tree_cost(&bare, 0, level, grove_version),
+                "{bare}: must be estimated as the tree helper estimates an unwrapped tree",
+            );
+            assert_eq!(
+                wrapped_cost.storage_cost.added_bytes,
+                bare_cost.storage_cost.added_bytes + 1,
+                "{wrapped}: the wrapper must add exactly one byte",
+            );
+        }
+    }
+}
+
+/// Replay guarantee: `GROVE_V4` is live and sizes a wrapped tree as the tree
+/// alone, without its wrapper's byte. Pinned to the figures from before
+/// `GROVE_V5` added the byte.
+#[test]
+fn test_average_case_merk_insert_element_wrapped_tree_is_unchanged_on_grove_v4() {
+    let latest = GroveVersion::latest();
+    // `added_bytes` of each wrapped tree of `wrapped_trees`, under a 4-byte
+    // key in a count and sum tree.
+    let pinned = [147, 151, 156, 165, 156, 167, 165, 156, 169];
+    let cases = wrapped_trees();
+    assert_eq!(
+        cases.len(),
+        pinned.len(),
+        "every wrapped tree needs a pinned V4 figure",
+    );
+    for ((wrapped, bare), added_bytes) in cases.into_iter().zip(pinned) {
+        let wrapped_cost = average_insert_element_cost(&wrapped, None, &GROVE_V4);
+        assert_eq!(
+            wrapped_cost.storage_cost.added_bytes, added_bytes,
+            "{wrapped}: V4 estimate must not move",
+        );
+        assert_eq!(
+            wrapped_cost,
+            average_insert_element_cost(&bare, None, &GROVE_V4),
+            "{wrapped}: V4 estimates the tree as it does without its wrapper",
+        );
+        assert_eq!(
+            average_insert_element_cost(&bare, None, &GROVE_V4),
+            average_insert_element_cost(&bare, None, latest),
+            "{bare}: an unwrapped tree is estimated the same in V4 and V5",
+        );
+    }
+}
+
+/// The value hash is estimated at one call per 64-byte block of the sized
+/// value. A plain tree with 60 flag bytes is sized at exactly 64 bytes (3 for
+/// the tree, 60 flag bytes and 1 for their length), so from `GROVE_V5` the
+/// byte of its wrapper takes it into a second block and adds one hash call.
+/// One flag byte fewer leaves room for the wrapper's byte in the first block.
+#[test]
+fn test_average_case_merk_insert_element_wrapper_byte_can_add_a_value_hash_block() {
+    let grove_version = GroveVersion::latest();
+    let wrapped_and_bare = |flags_len: usize| {
+        let bare = Element::empty_tree_with_flags(Some(vec![7; flags_len]));
+        let wrapped = Element::new_non_counted(bare.clone()).expect("a tree wraps as non-counted");
+        (wrapped, bare)
+    };
+
+    let (wrapped, bare) = wrapped_and_bare(60);
+    let wrapped_cost = average_insert_element_cost(&wrapped, None, grove_version);
+    let bare_cost = average_insert_element_cost(&bare, None, grove_version);
+    assert_eq!(
+        wrapped_cost.hash_node_calls,
+        bare_cost.hash_node_calls + 1,
+        "a 65-byte wrapped tree must be estimated one hash call above the 64-byte tree",
+    );
+    assert_eq!(
+        wrapped_cost.storage_cost.added_bytes,
+        bare_cost.storage_cost.added_bytes + 1,
+    );
+    assert_eq!(
+        wrapped_cost,
+        average_insert_tree_cost(&wrapped, 1, None, grove_version),
+    );
+    // `GROVE_V4` sizes the wrapped tree as the tree alone, hash calls
+    // included.
+    assert_eq!(
+        average_insert_element_cost(&wrapped, None, &GROVE_V4),
+        average_insert_element_cost(&bare, None, &GROVE_V4),
+    );
+
+    let (wrapped, bare) = wrapped_and_bare(59);
+    assert_eq!(
+        average_insert_element_cost(&wrapped, None, grove_version).hash_node_calls,
+        average_insert_element_cost(&bare, None, grove_version).hash_node_calls,
+        "a 64-byte wrapped tree still fits the first block",
+    );
 }

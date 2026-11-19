@@ -26,7 +26,7 @@ use super::{
 use crate::{
     element::elements_iterator::ElementIteratorExtensions,
     engine::SubtreeHandle,
-    operations::indexed_tree::{axis_secondary_tree_type, indexed_element_axes},
+    operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag, indexed_element_axes},
     replication,
     replication::utils::{pack_nested_bytes, unpack_nested_bytes},
     Element, Engine, Error, GroveDb, Transaction,
@@ -985,7 +985,8 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
         let mut request_axes = Vec::with_capacity(axes_pairs.len());
         for (axis, secondary_root_key) in axes_pairs {
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis.tag()).unwrap();
+                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
+                    .unwrap();
             axes.push((axis.tag(), secondary_prefix, secondary_root_key.clone()));
             request_axes.push((axis.tag(), secondary_root_key));
         }

@@ -384,6 +384,7 @@ impl<'db> Runner<'db> {
             AxisEntries::Count(entries) => (Field::Word("count"), items(self, entries)?),
             AxisEntries::Sum(entries) => (Field::Word("sum"), items(self, entries)?),
             AxisEntries::Avg(entries) => (Field::Word("avg"), items(self, entries)?),
+            AxisEntries::BigSum(entries) => (Field::Word("big_sum"), items(self, entries)?),
         })
     }
 
@@ -612,6 +613,7 @@ fn axis_keys(keys: AxisKeys) -> (Field, Field) {
         AxisKeys::Count(keys) => (Field::Word("count"), items(keys)),
         AxisKeys::Sum(keys) => (Field::Word("sum"), items(keys)),
         AxisKeys::Avg(keys) => (Field::Word("avg"), items(keys)),
+        AxisKeys::BigSum(keys) => (Field::Word("big_sum"), items(keys)),
     }
 }
 

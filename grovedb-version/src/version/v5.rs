@@ -23,9 +23,13 @@
 //!   estimators price creating a `PrivateDocumentStore` as the apply does,
 //!   adding the existence check a write-once store makes and the two hashes
 //!   deriving its empty root, and in the worst case pricing the store as the
-//!   layered tree the apply writes rather than as an item. V4 keeps the
-//!   6.1.1 estimates, which price a store's creation below its apply. Gated
-//!   because the estimate is the admission bound.
+//!   layered tree the apply writes rather than as an item. The average-case
+//!   estimator also sizes a tree wrapped in `NonCounted`, `NotSummed` or
+//!   `NotCountedOrSummed` with the byte of its wrapper, which the apply
+//!   charges; the worst-case one always has. V4 keeps the 6.1.1 estimates,
+//!   which price a store's creation below its apply and a wrapped tree's
+//!   insert 1 byte below its apply. Gated because the estimate is the
+//!   admission bound.
 //!
 //! - `operations.proof.count_offset_reference_empty_tree_rows: 1`: the
 //!   global count-offset verifier exempts rows resolved through a reference
@@ -34,6 +38,19 @@
 //!   refuse such a page, as 6.1.1 did. Gated because it turns a rejected
 //!   proof into an accepted one.
 //!
+//! - `operations.proof.instance_cap_layer_truncation: 1`: a V1 proof layer
+//!   that has subquery branches under a per-instance cap (`Query::limit`)
+//!   stops after the key whose rows spent the instance budget, so the proof
+//!   is proportional to the page. The verifier reads such a layer as a gap-free
+//!   prefix of its query and accepts an early stop only once it has itself
+//!   seen the instance budget (or the global one) spent by the rows below the
+//!   keys the layer reveals. V4, the first version to serve per-instance
+//!   caps, proves the layer under the global budget only, as 6.1.1 did: with
+//!   no global limit it carries every key of the range, and its verifier
+//!   refuses a truncated one (issue #962). V1..V3 refuse a per-instance cap
+//!   before any proof code runs. The rows a query returns are the same in V4
+//!   and V5. Gated because it
+//!   changes proof bytes and turns a rejected proof into an accepted one.
 //! - `operations.proof.unreported_empty_tree_row_charge: 1`: a V1 verifier
 //!   that leaves empty trees out of its results (the default of
 //!   `verify_query` and `verify_subset_query`) charges an empty plain `Tree`
@@ -93,6 +110,23 @@
 //!   cost, and flips that refusal. A conditional insert (`InsertIfNotExists`)
 //!   keeps the V4 outcome.
 //!
+//! - `apply_batch.filled_tree_insert_checks: 1`: a tree a batch both creates
+//!   and writes into is held to the checks the same insert meets without
+//!   operations under it. An indexed tree must be empty and have canonical
+//!   axes, a `PrivateDocumentStore` must be empty with a valid config, a
+//!   wrapped tree must sit under a parent that takes its wrapper, and an
+//!   entry of an indexed tree must satisfy that tree's child rule. V1..V4
+//!   make these checks only where an insert is applied, and propagation
+//!   replaces the insert of a filled tree with its computed root state
+//!   before that, so they accept such a batch, as 6.1.1 did. Gated because
+//!   it flips an accepted/rejected outcome. The checks on what the key
+//!   already holds (`validate_insertion_does_not_override`,
+//!   `validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are
+//!   not part of it: a filled tree is written without reading the key on
+//!   every version. Nor is the rule that an entry of an indexed tree
+//!   without a root key claims no aggregate: a filled entry stores the
+//!   aggregate its contents give.
+//!
 //! - `merk_versions.tree.just_in_time_value_update: 2`: Merk accepts that
 //!   answer and records the removal plus the insertion. Versions 0 and 1
 //!   refuse it, so grove v1..v4 cannot account an update as a replacement at
@@ -119,10 +153,19 @@
 //!
 //! - `operations.insert.big_sum_tree_twins_creation: 1`: an
 //!   `Element::CountBigSumTree` (a count and a 128-bit sum kept in the
-//!   element) and an `Element::ProvableBigSumTree` (a 128-bit sum in every
-//!   node hash) can be created, by a direct or a batch insert. V1..V4 refuse
-//!   the creation, as 6.1.1 does not know the elements. Gated because it
-//!   flips an accepted/rejected outcome.
+//!   element), an `Element::ProvableBigSumTree` (a 128-bit sum in every
+//!   node hash) and the two indexed trees with a 128-bit sum
+//!   (`Element::ProvableBigSumIndexedTree`,
+//!   `Element::ProvableCountProvableBigSumIndexedTree`) can be created, by a
+//!   direct or a batch insert. V1..V4 refuse the creation, as 6.1.1 does not
+//!   know the elements. Gated because it flips an accepted/rejected outcome.
+//!
+//! - `operations.indexed_axis.big_sum_axis: 1`: a `PathQuery` axis read can
+//!   name the big sum axis (`IndexAxis::BigSum`), the axis those two indexed
+//!   trees rank their 128-bit sums on. V1..V4 refuse such a query at every
+//!   read, prove and verify entry point: no tree has the axis there, and
+//!   6.1.1 cannot decode the query. Gated because it flips an
+//!   accepted/rejected outcome.
 //!
 //! It exists so that changes made after GroveDB 6.1.1 have somewhere to
 //! land. GROVE_V4 as 6.1.1 shipped it is what Dash Platform 5.0 (protocol
@@ -141,10 +184,10 @@
 use super::{
     grovedb_versions::{
         GroveDBApplyBatchVersions, GroveDBElementMethodVersions,
-        GroveDBOperationsAverageCaseVersions, GroveDBOperationsInsertVersions,
-        GroveDBOperationsPrivateDocumentStoreVersions, GroveDBOperationsProofVersions,
-        GroveDBOperationsVersions, GroveDBOperationsWorstCaseVersions,
-        GroveDBPathQueryMethodVersions, GroveDBVersions,
+        GroveDBOperationsAverageCaseVersions, GroveDBOperationsIndexedAxisVersions,
+        GroveDBOperationsInsertVersions, GroveDBOperationsPrivateDocumentStoreVersions,
+        GroveDBOperationsProofVersions, GroveDBOperationsVersions,
+        GroveDBOperationsWorstCaseVersions, GroveDBPathQueryMethodVersions, GroveDBVersions,
     },
     merk_versions::{MerkTreeVersions, MerkVersions},
     v4::GROVE_V4,
@@ -160,6 +203,7 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             keyless_append_repeats: 1, // changed: a batch may repeat a keyless append
             same_key_tree_type_conflict: 1, // changed: two tree types at one key are refused
             tree_insert_above_emptied_level: 1, // changed: the inserted tree keeps its type
+            filled_tree_insert_checks: 1, // changed: a tree the batch fills is checked too
             indexed_mirror_entry_read: 1, // changed: entries are read by walking the tree
             ..GROVE_V4.grovedb_versions.apply_batch
         },
@@ -173,7 +217,8 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
         },
         operations: GroveDBOperationsVersions {
             average_case: GroveDBOperationsAverageCaseVersions {
-                average_case_merk_insert_element: 1, // changed: prices a store's creation
+                // changed: prices a store's creation and a tree's wrapper byte
+                average_case_merk_insert_element: 1,
                 ..GROVE_V4.grovedb_versions.operations.average_case
             },
             worst_case: GroveDBOperationsWorstCaseVersions {
@@ -187,6 +232,10 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
                 big_sum_tree_twins_creation: 1,
                 ..GROVE_V4.grovedb_versions.operations.insert
             },
+            indexed_axis: GroveDBOperationsIndexedAxisVersions {
+                big_sum_axis: 1, // changed: the big sum axis is served
+                ..GROVE_V4.grovedb_versions.operations.indexed_axis
+            },
             private_document_store: GroveDBOperationsPrivateDocumentStoreVersions {
                 get_range: 1,   // changed: a store's position-range read
                 range_proof: 1, // changed: proving a store's entries
@@ -194,7 +243,9 @@ pub const GROVE_V5: GroveVersion = GroveVersion {
             },
             proof: GroveDBOperationsProofVersions {
                 count_offset_reference_empty_tree_rows: 1, // changed: exempt resolved references
-                unreported_empty_tree_row_charge: 1,       // changed: the verifier charges the row
+                // changed: a capped layer with subqueries stops where its budget is spent
+                instance_cap_layer_truncation: 1,
+                unreported_empty_tree_row_charge: 1, // changed: the verifier charges the row
                 subquery_descent_on_key: 1, // changed: a branch without a subquery is a row
                 ..GROVE_V4.grovedb_versions.operations.proof
             },

@@ -34,7 +34,10 @@ use crate::{
         util::hex_to_ascii, GroveDBProof, GroveDBProofV0, GroveDBProofV1, LayerProof,
         MerkOnlyLayerProof, ProofBytes, ProveOptions,
     },
-    query::{validated::ValidatedPathQuery, AggregateKind, PathQueryShape, PathTrunkChunkQuery},
+    query::{
+        validated::ValidatedPathQuery, AggregateKind, HasSubquery, PathQueryShape,
+        PathTrunkChunkQuery,
+    },
     reference_path::path_from_reference_path_type,
     Element, Engine, Error, GroveDb, PathQuery, Transaction, TransactionArg,
 };
@@ -1642,10 +1645,15 @@ impl<E: Engine> GroveDb<E> {
                             // `PathQuery`'s axis constructors) for cidx
                             // queries.
                             Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
-                                if !done_with_results
-                                    && query.has_subquery_or_matching_in_path_on_key(key) =>
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            ) if !done_with_results
+                                && query.has_subquery_or_matching_in_path_on_key(key) =>
                             {
                                 return Err(Error::NotSupported(
                                     "V0 proofs do not support subqueries into \
@@ -1750,9 +1758,15 @@ impl<E: Engine> GroveDb<E> {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::PrivateDocumentStore(..))
                                 if !done_with_results =>
                             {
@@ -1811,9 +1825,15 @@ impl<E: Engine> GroveDb<E> {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableSumIndexedTree(..)
+                                | Element::ProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(
+                                Element::ProvableCountProvableSumIndexedTree(..)
+                                | Element::ProvableCountProvableBigSumIndexedTree(..),
+                            )
                             | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
@@ -1865,7 +1885,7 @@ impl<E: Engine> GroveDb<E> {
 
     /// Generates query proof given a subtree and appends the result to a proof
     /// list
-    fn generate_merk_proof<'a, S>(
+    pub(super) fn generate_merk_proof<'a, S>(
         &self,
         subtree: &Merk<S>,
         query_items: &[QueryItem],
@@ -2442,6 +2462,10 @@ impl<E: Engine> GroveDb<E> {
             Element::ProvableSumIndexedTree(_, secondary, ..) => {
                 Some((grovedb_element::indexed::IndexAxis::Sum, secondary.clone()))
             }
+            Element::ProvableBigSumIndexedTree(_, secondary, ..) => Some((
+                grovedb_element::indexed::IndexAxis::BigSum,
+                secondary.clone(),
+            )),
             _ => None,
         };
 
@@ -2466,7 +2490,9 @@ impl<E: Engine> GroveDb<E> {
             return Ok(secondary_root).wrap_with_cost(cost);
         }
 
-        let Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) = element else {
+        let (Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
+        | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _)) = element
+        else {
             return Err(Error::CorruptedCodeExecution(
                 "indexed_secondary_attestation called with a non-indexed element",
             ))
@@ -2571,7 +2597,7 @@ impl<E: Engine> GroveDb<E> {
 
         let limit = if path.len() < path_query.path.len() {
             None
-        } else if matches!(query.has_subquery, crate::query::HasSubquery::NoSubquery) {
+        } else if matches!(query.has_subquery, HasSubquery::NoSubquery) {
             // Pure terminal layer: its merk rows ARE the result rows,
             // so the tighter of the global and instance budgets bounds
             // what the merk walk needs to emit.
@@ -2585,8 +2611,16 @@ impl<E: Engine> GroveDb<E> {
             // empty-layer charge keeps it aligned with truncation)
             // bounds this walk; instance caps bound each descent's own
             // layers and stop further descents via `done_with_results`.
+            // Which keys the instance budget needed is known once the
+            // descents have run: `truncate_instance_capped_layer` then
+            // hides the rest (from GROVE_V5).
             limit_state.global
         };
+        // Read before the walk: the budget's value changes as rows are
+        // charged, whether the frame has one does not. The verifier
+        // derives the same flag.
+        let capped_subquery_layer =
+            frame_instance.is_some() && !matches!(query.has_subquery, HasSubquery::NoSubquery);
 
         if let Some(offset) = query.instance_offset {
             return self
@@ -2774,9 +2808,17 @@ impl<E: Engine> GroveDb<E> {
         let mut lower_layers = BTreeMap::new();
         let mut has_a_result_at_level = false;
         let mut done_with_results = false;
+        // The first op the walk reaches with a spent INSTANCE budget: every
+        // row before it was processed (the budget is spent by a row, so the
+        // global budget had not ended the walk earlier), and nothing from it
+        // on is owed to this frame.
+        let mut first_op_past_the_instance_budget = None;
 
-        for op in merk_proof.proof.iter_mut() {
+        for (op_index, op) in merk_proof.proof.iter_mut().enumerate() {
             done_with_results |= limit_state.is_exhausted(frame_instance);
+            if frame_instance == Some(0) && first_op_past_the_instance_budget.is_none() {
+                first_op_past_the_instance_budget = Some(op_index);
+            }
             // Mirror generate.rs's first ref-rewriting loop — preserve
             // ProvableSumTree special nodes too, plus the dual-axis
             // KVCountSum used by ProvableCountProvableSumTree (PCPS)
@@ -3251,8 +3293,8 @@ impl<E: Engine> GroveDb<E> {
                             // empty primaries too (the payload commits
                             // NULL_HASH roots naturally).
                             Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..) | Element::ProvableBigSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..) | Element::ProvableCountProvableBigSumIndexedTree(..))
                                 if !done_with_results && {
                                     let mut lower_path = path.clone();
                                     lower_path.push(key.as_slice());
@@ -3455,7 +3497,7 @@ impl<E: Engine> GroveDb<E> {
                             // by the empty-tree arm below (decrement limit, no
                             // recursion, matching the empty-cidx terminal path in
                             // the verifier).
-                            Ok(ref sidx_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                            Ok(ref sidx_elem @ (Element::ProvableSumIndexedTree(Some(_), ..) | Element::ProvableBigSumIndexedTree(Some(_), ..)))
                                 if !done_with_results
                                     && descends =>
                             {
@@ -3505,8 +3547,13 @@ impl<E: Engine> GroveDb<E> {
                                 // Capture the PSIT's current Sum-axis secondary
                                 // root hash for the verifier's combine_hash_three
                                 // attestation.
-                                let secondary_root_key = match sidx_elem {
-                                    Element::ProvableSumIndexedTree(_, s, ..) => s.clone(),
+                                let (sum_axis, secondary_root_key) = match sidx_elem {
+                                    Element::ProvableSumIndexedTree(_, s, ..) => {
+                                        (grovedb_element::indexed::IndexAxis::Sum, s.clone())
+                                    }
+                                    Element::ProvableBigSumIndexedTree(_, s, ..) => {
+                                        (grovedb_element::indexed::IndexAxis::BigSum, s.clone())
+                                    }
                                     _ => unreachable!(),
                                 };
                                 let lower_path_owned: Vec<Vec<u8>> =
@@ -3519,7 +3566,7 @@ impl<E: Engine> GroveDb<E> {
                                     &mut cost,
                                     self.open_indexed_secondary_at_path(
                                         sidx_subtree_path,
-                                        grovedb_element::indexed::IndexAxis::Sum,
+                                        sum_axis,
                                         secondary_root_key,
                                         transaction,
                                         None,
@@ -3570,10 +3617,14 @@ impl<E: Engine> GroveDb<E> {
                             // axes_digest), mirroring the insert commit path.
                             // Only NON-EMPTY primaries (Some(_)) descend.
                             Ok(
-                                ref pcpsit_elem @ Element::ProvableCountProvableSumIndexedTree(
+                                ref pcpsit_elem @ (Element::ProvableCountProvableSumIndexedTree(
                                     Some(_),
                                     ..,
-                                ),
+                                )
+                                | Element::ProvableCountProvableBigSumIndexedTree(
+                                    Some(_),
+                                    ..,
+                                )),
                             ) if !done_with_results
                                 && descends =>
                             {
@@ -3617,7 +3668,7 @@ impl<E: Engine> GroveDb<E> {
                                 // secondary root hash (NULL_HASH when empty),
                                 // exactly as the insert commit path does.
                                 let axes = match pcpsit_elem {
-                                    Element::ProvableCountProvableSumIndexedTree(_, _, _, a, _) => {
+                                    Element::ProvableCountProvableSumIndexedTree(_, _, _, a, _) | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, a, _) => {
                                         a.clone()
                                     }
                                     _ => unreachable!(),
@@ -3847,11 +3898,16 @@ impl<E: Engine> GroveDb<E> {
                             // populated indexed tree was rejected.
                             Ok(ref indexed_elem @ Element::ProvableCountIndexedTree(Some(_), ..))
                             | Ok(ref indexed_elem @ Element::ProvableSumIndexedTree(Some(_), ..))
+                            | Ok(ref indexed_elem @ Element::ProvableBigSumIndexedTree(Some(_), ..))
                             | Ok(
                                 ref indexed_elem @ Element::ProvableCountProvableSumIndexedTree(
                                     Some(_),
                                     ..,
                                 ),
+                            )
+                            | Ok(
+                                ref indexed_elem
+                                @ Element::ProvableCountProvableBigSumIndexedTree(Some(_), ..),
                             ) if !done_with_results => {
                                 let mut indexed_path = path.clone();
                                 indexed_path.push(key.as_slice());
@@ -4050,13 +4106,13 @@ impl<E: Engine> GroveDb<E> {
                             | Ok(Element::ProvableSumTree(None, ..) | Element::ProvableBigSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableSumTree(None, ..))
                             | Ok(Element::ProvableCountProvableBigSumTree(None, ..))
-                            | Ok(Element::ProvableSumIndexedTree(None, ..))
+                            | Ok(Element::ProvableSumIndexedTree(None, ..) | Element::ProvableBigSumIndexedTree(None, ..))
                             | Ok(Element::ProvableCountIndexedTree(None, ..))
                             // PCPSIT empty form: primary root key is None AND the axes TLV is
                             // empty of secondary keys. We still treat any None-primary PCPSIT
                             // as "empty" for the purposes of the limit decrement — even if
                             // some axes have populated secondaries, we don't recurse here.
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(None, ..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(None, ..) | Element::ProvableCountProvableBigSumIndexedTree(None, ..))
                             | Ok(Element::CommitmentTree(..))
                                 if !done_with_results =>
                             {
@@ -4110,9 +4166,9 @@ impl<E: Engine> GroveDb<E> {
                             | Ok(Element::MmrTree(..))
                             | Ok(Element::BulkAppendTree(..))
                             | Ok(Element::DenseAppendOnlyFixedSizeTree(..))
-                            | Ok(Element::ProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableSumIndexedTree(..) | Element::ProvableBigSumIndexedTree(..))
                             | Ok(Element::ProvableCountIndexedTree(..))
-                            | Ok(Element::ProvableCountProvableSumIndexedTree(..))
+                            | Ok(Element::ProvableCountProvableSumIndexedTree(..) | Element::ProvableCountProvableBigSumIndexedTree(..))
                             | Ok(Element::PrivateDocumentStore(..)) => continue,
                             // NonCounted is unwrapped above via into_underlying().
                             Ok(Element::NonCounted(_))
@@ -4142,6 +4198,20 @@ impl<E: Engine> GroveDb<E> {
             // bound traversal work across many empty subtrees, while
             // per-instance budgets bound result rows.
             limit_state.charge_empty_layer();
+        }
+
+        if capped_subquery_layer {
+            cost_return_on_error!(
+                &mut cost,
+                self.truncate_instance_capped_layer(
+                    &subtree,
+                    &query.items,
+                    query.left_to_right,
+                    &mut merk_proof,
+                    first_op_past_the_instance_budget,
+                    grove_version,
+                )
+            );
         }
 
         let mut serialized_merk_proof = Vec::with_capacity(1024);
