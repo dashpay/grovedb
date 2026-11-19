@@ -1,0 +1,72 @@
+lignin-golden-trace 1
+name legacy-filled-tree-claims-a-sum
+seed 0x0
+grove-version 1
+engine 2a79d035167b1e484ba66d53186396057658be9f
+workload legacy-filled-tree-claims-a-sum
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c8c12re483
+  step 1
+  # Batch([InsertOnly { path: [[116, 111, 112]], key: [102, 105, 108, 108, 101, 100], element: tree: None }])
+  cost seeks=6 loaded=150 added=119 replaced=77 removed=- hashes=12 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 2
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+caea6e844are483
+  step 3
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [97, 108, 111, 110, 101], element: provable_sum_indexed_tree: primary=None, secondary=None, sum: 7 }])
+  # failed: invalid batch operation error: a ProvableSumIndexedTree must be empty at the moment of batch insertion (both primary_root_key and secondary_root_key must be None and sum = 0); item-level mutations require the dedicated insert_into_indexed_tree API
+  cost seeks=1 loaded=80 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidBatchOperation
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+cb7ddre483
+  step 4
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 5daee5a7959574f3247c262e5fd0cfa0bbec4da4dff1eed2885a3728e8eeb4af
+c95dbvbb7c
+  step 5
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+c0eebrb88b
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], key: [116, 114, 101, 101], element: provable_sum_indexed_tree: primary=None, secondary=None, sum: 7 }, InsertOnly { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], key: [101, 110, 116, 114, 121], element: sum_item: 5 }])
+  cost seeks=14 loaded=387 added=502 replaced=157 removed=- hashes=33 sinsemilla=0
+  root fcc48d58f760e6fb56f9d5b0f6003c907e71548d4a81d22fc869262243fc4e74
+cb7ddrb88b
+  step 7
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root fcc48d58f760e6fb56f9d5b0f6003c907e71548d4a81d22fc869262243fc4e74
+ccd4fvec15
+  step 8
+  # Read(Rows { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, r… (411 characters)
+  cost seeks=3 loaded=524 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564 74726565 150105656e747279010d8000000000000005656e7472790a00
+  skipped 0
+cf524vf1afqde47p24bc
+  step 9
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [102, 105, 108, 108, 101, 100], [116, 114, 101, 101]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit… (441 characters)
+  # prove failed: not supported: V0 proofs do not support subqueries into CountIndexedTree / ProvableCountIndexedTree; use a V1 proof (axis-ordered reads go through PathQuery::new_axis_top_k)
+  cost seeks=3 loaded=507 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 1
+  row 746f70/66696c6c6564/74726565 656e747279 030a00
+  skipped 0
+  prove-cost seeks=6 loaded=404 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  prove-failed NotSupported
+stream 10 e89d74d4eadbbce13e306d37a4ec899dbea641f6e54134b543c9a65559262b46
+tally failed=1 unproved=1 unverified=0
+end 10 b0709f50aef6a2d46a265b544b81e8d5a4fcb2f6691841964960397a40166b7f

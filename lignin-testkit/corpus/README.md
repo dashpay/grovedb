@@ -38,21 +38,24 @@ included, came out as it was but for its `engine` line. The other commits of
 that range (#1056, #1055, #1061) changed no trace.
 
 When `develop` was merged up to `2a79d035`, every trace of both scales came
-out as it was but for its `engine` line. The four commits of that range reach
-nothing the corpus holds:
+out as it was but for its `engine` line: the four commits of that range
+reached nothing the corpus held then. Two workloads and eight hand-written
+cases were added for them afterwards, recorded from the same pin:
 
 - #1058 can end the proof of a layer early, on grove version 5, when the
   layer has subqueries below it and the limit of a query node is in force
   there: the limit of its own node, or one it inherits from a node above. It
   does so when the rows below the layer's keys spend the limit before the
-  layer's last key. The workloads and the hand-written cases put such a limit
-  only on a node with no subquery below it (`pages`, `identity-keys`,
-  `subquery-limit`), so no layer with subqueries is under one.
+  layer's last key. The earlier workloads and cases put such a limit only on
+  a node with no subquery below it (`pages`, `identity-keys`,
+  `subquery-limit`). `capped-layers` and `legacy-limit-over-subqueries` put
+  it on a layer with subqueries.
 - #1057 changes an estimate. The corpus records no estimate.
 - #1060 refuses, on grove version 5, a tree that one batch creates and fills
-  and that the insert alone would refuse. No stream makes such a batch.
+  and that the insert alone would refuse. The `legacy-filled-tree-…` cases
+  make such batches.
 - #1062 adds two indexed trees with a 128-bit sum and the axis they are
-  ranked on. No workload produces them yet.
+  ranked on. `wide-ranks` produces them.
 
 ## Using it
 
@@ -199,6 +202,40 @@ step on grove version 5 and an aggregate `PathQuery` before. No other
 workload holds the two trees: the streams of `element-zoo` were pinned
 before GroveDB had them.
 
+`wide-ranks` keeps two indexed trees that rank their entries by a sum,
+with a 128-bit sum where the grove version has them: a
+`ProvableBigSumIndexedTree`, and a `ProvableCountProvableBigSumIndexedTree`
+that also ranks by count and by average. An entry is a sum item or a tree
+that keeps the sum of what is put into it, so an entry can rank at a value
+no `i64` holds. The entries are written through the four methods GroveDB
+has for the two trees (`IndexedInsert` and `IndexedDelete` steps) and
+through batches, and the rankings are read as `PathQuery` steps on the big
+sum axis: pages, the entries in a band of values, the rank of a key, how
+many entries a band holds, and one page for each of several trees. Grove
+versions 1 to 4 refuse to create the two trees, so there the same shapes
+are a `ProvableSumIndexedTree` and a `ProvableCountProvableSumIndexedTree`
+with small sums, ranked on the sum axis, which grove version 4 reads and
+grove versions 1 to 3 do not. On those four versions a batch that writes
+entries of an indexed tree can leave its rankings out of step with them:
+it reads an entry from storage while its own writes are pending
+(`apply_batch.indexed_mirror_entry_read`). So there every entry is written
+through the methods of its tree and the rankings are rebuilt
+(`ReconcileIndexed`) before they are read.
+
+`capped-layers` reads pages of an index whose keys each hold a few
+documents, with the limit of the page on the query node that walks the
+keys (`Query::limit`): a limit in force on a layer that has subqueries,
+alone, next to a limit of the whole query, inherited by the layer below,
+and on one branch of a merged query. Grove version 4 proves the layer of
+the index with every key in range, and grove version 5 ends it after the
+key whose documents filled the page, so the same steps have other proofs
+on the two versions and the same rows. Grove versions 1 to 3 have no limit
+of a query node. There the same layers are read under a limit of the whole
+query, which those versions charge for a key without documents in a way of
+their own: the walk below a key starts with what is left of the limit, and
+the layer above is then charged for the rows that came back, or for one
+row if none did.
+
 A stream marks a path query as proven when GroveDB proves it on the grove
 version the stream was generated for. Such a proof is verified with
 `GroveDb::verify_path_query`, the proof of a `Query` with
@@ -207,8 +244,8 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 310 traces and 224,531 steps in 5.1 MB: for each
-grove version the 29 workloads of the suite, `suite` and 32 hand-written
+The standard scale is 375 traces and 229,226 steps in 5.7 MB: for each
+grove version the 31 workloads of the suite, `suite` and 43 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
 in a debug build, eight traces at a time.
@@ -272,7 +309,7 @@ digest` checkpoints in their place.
 
 ## Older grove versions: the hand-written cases
 
-BASE-01's generators steer around nine behaviours of older grove versions
+BASE-01's generators steer around twelve behaviours of older grove versions
 so that every stream applies and every read marked as proven proves. A node
 on such a version may have done exactly these things, so the corpus records
 them, as the engine returns them, on every grove version. Each case is a
@@ -381,6 +418,75 @@ of three after an offset of two, over groups of two, three and four rows,
 grove versions 1 to 3 return two rows and grove versions 4 and 5 three.
 A count for each key is refused when the keys are given as the full range
 (`InvalidQuery`).
+
+**10. A limit of a query node on a layer that has subqueries** (GroveDB
+#1058), and what the pages of `capped-layers` steer around.
+
+| Case | What it asks for | v1, v2 | v3 | v4 | v5 |
+| --- | --- | --- | --- | --- | --- |
+| `limit-over-subqueries` | five pages of an index: from either end, next to a limit of the whole query, under a node above that has the limit, and merged with a query for another tree | 5 / 5 / 0 | 5 / 5 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `capped-tree-rows` | trees as the rows of a page, the first of them empty, without a limit and with one | 1 / 1 / 0 | 1 / 1 / 0 | 0 / 0 / 1 | 0 / 0 / 0 |
+| `limit-over-empty-subtrees` | two layers of keys above the documents under a limit of the whole query, of four rows and of six | 0 / 0 / 2 | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `branch-without-subquery` | a node with a subquery for its keys and a branch without one for some | 0 / 1 / 0 | 0 / 1 / 0 | 0 / 1 / 0 | 0 / 0 / 0 |
+
+- Grove versions 1 to 3 refuse a limit of a query node (`NotSupported`).
+  Grove version 4 answers the five pages and proves the layer of the index
+  with every key in range: 500, 500, 389, 500 and 587 bytes. Grove version 5
+  returns the same rows and ends the layer after the key whose documents
+  filled the page: 431, 389, 389, 431 and 518 bytes. The third page is
+  ended by the limit of the whole query on both versions.
+  `the_layer_a_limit_ends_early_is_in_the_corpus` checks the files for
+  this.
+- A tree that holds nothing and is a row of a page is counted by the
+  prover of grove version 4 and not by its verifier, so the proof of the
+  page does not verify (`InvalidProof`). Grove version 5 counts it on both
+  sides.
+- Grove versions 1 to 3 charge a key without documents to a limit of the
+  whole query in one way when they read and in another when they prove. On
+  grove versions 1 and 2 the two proofs of `limit-over-empty-subtrees` do
+  not verify. On grove version 3 they verify, the one for six rows to
+  other rows than the read returns. The trace does not show that: it
+  records that a proof verifies, not what it proves.
+  `a_limit_over_keys_without_documents_is_proven_as_it_is_read_from_grove_version_4`
+  in `tests/upstream.rs` compares the two.
+- A branch with neither a path nor a subquery, under a node that has a
+  subquery, makes the tree at its keys a row. `GroveDb::run_path_query`
+  answers it on every grove version, and the prover refuses it up to grove
+  version 4 (`CorruptedPath`).
+
+**11. A tree that one batch creates and fills** (GroveDB #1060). Each case
+makes the insert alone in a batch, then the insert at another key together
+with a write into the new tree.
+
+| Case | The tree and where it is inserted | v1, v2 | v3, v4 | v5 |
+| --- | --- | --- | --- | --- |
+| `filled-tree` | a sum tree under a tree | 0 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `filled-tree-claims-a-sum` | an indexed tree that claims a sum of 7 | 1 / 1 / 0 | 1 / 0 / 0 | 2 / 0 / 0 |
+| `filled-tree-axes-out-of-order` | an indexed tree whose axes are sum, then count | 1 / 1 / 0 | 1 / 0 / 0 | 2 / 0 / 0 |
+| `filled-tree-wrapped` | a sum tree wrapped as not counted, under a sum tree | 1 / 0 / 0 | 1 / 0 / 0 | 2 / 0 / 0 |
+| `filled-tree-entry-of-indexed-tree` | a plain tree as an entry of an indexed tree that ranks by sum | 1 / 1 / 0 | 1 / 0 / 0 | 2 / 0 / 0 |
+
+Every grove version refuses the insert alone in the last four
+(`InvalidBatchOperation`, and `InvalidInput` for the entry of an indexed
+tree). Grove versions 1 to 4 take the same insert when the batch also
+writes into the tree: the insert is replaced by the state the level below
+computed, and the element is never checked. They store what the batch
+computed, so the claimed sum is gone and the axes stay in the order given.
+Grove version 5 refuses the batch with the error of the insert alone. Each
+case ends on a proven read of the filled tree, which grove versions 1 and 2
+refuse to prove where the tree or its parent is an indexed tree (group 2).
+
+**12. Two behaviours of the storage-flag callbacks.**
+
+| Case | What it does | v1, v2, v3 | v4 | v5 |
+| --- | --- | --- | --- | --- |
+| `flags-of-another-length` | stores flags of another length than the stored ones without the callback changing them: no flags over flags of two epochs in a batch, and flags of one epoch over flags of two in a partial batch that keeps the size | 2 / 0 / 0 | 0 / 0 / 0 | 0 / 0 / 0 |
+| `full-handover` | hands what a gas sponsor paid for to its owner, which the callback answers by accounting the update as a replacement | 1 / 0 / 0 | 1 / 0 / 0 | 0 / 0 / 0 |
+
+Grove versions 1 to 3 charge the first kind of update for the length of
+the stored flags, and the batch fails with a storage cost mismatch
+(`StorageError::CostError`). Grove versions 1 to 4 do not take the answer of
+the second from a callback and refuse the batch (`CorruptedData`).
 
 `golden::legacy`'s tests run every case on every grove version and check
 these numbers, and `tests/golden.rs` checks that no other trace of the

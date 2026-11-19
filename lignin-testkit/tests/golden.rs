@@ -238,6 +238,16 @@ fn only_the_hand_written_cases_record_a_failure() {
         case("subquery-offset", &[1, 2, 3, 4]),
         case("offset-without-count", &[1, 2, 3, 4, 5]),
         case("aggregate-per-key-over-every-key", &[1, 2, 3, 4, 5]),
+        case("limit-over-subqueries", &[1, 2, 3]),
+        case("capped-tree-rows", &[1, 2, 3, 4]),
+        case("limit-over-empty-subtrees", &[1, 2]),
+        case("branch-without-subquery", &[1, 2, 3, 4]),
+        case("filled-tree-claims-a-sum", &[1, 2, 3, 4, 5]),
+        case("filled-tree-axes-out-of-order", &[1, 2, 3, 4, 5]),
+        case("filled-tree-wrapped", &[1, 2, 3, 4, 5]),
+        case("filled-tree-entry-of-indexed-tree", &[1, 2, 3, 4, 5]),
+        case("flags-of-another-length", &[1, 2, 3]),
+        case("full-handover", &[1, 2, 3, 4]),
     ]
     .into_iter()
     .flatten()
@@ -461,6 +471,56 @@ fn the_charge_for_a_deleted_tree_is_in_the_corpus() {
 fn split_way(rest: &str) -> (String, String) {
     let (way, round) = rest.rsplit_once('-').expect("a way and a round");
     (way.to_string(), round.to_string())
+}
+
+/// The steps of `trace` that are written out in full and hold a proof, each
+/// with the rows it returned.
+fn proven_pages(trace: &Trace) -> Vec<(Vec<String>, Vec<u8>)> {
+    trace
+        .details()
+        .filter(|detail| detail.lines.iter().any(|line| line.starts_with("proof ")))
+        .map(|detail| {
+            let rows = detail
+                .lines
+                .iter()
+                .filter(|line| line.starts_with("row "))
+                .cloned()
+                .collect();
+            (rows, proof(detail))
+        })
+        .collect()
+}
+
+/// The corpus holds the same pages of an index proven by grove version 4
+/// and by grove version 5: the rows are the same and, where the limit of a
+/// query node ends the layer before its last key, the proof of grove
+/// version 5 is the shorter one. A limit of the whole query that is spent
+/// first leaves the two proofs the same. `tests/upstream.rs` shows the same
+/// for the pages of `capped-layers` on the engine.
+#[test]
+fn the_layer_a_limit_ends_early_is_in_the_corpus() {
+    let pages =
+        |version: u32, name: &str| proven_pages(&recorded(&format!("v{version}/{name}.trace")));
+    let (full, cut) = (
+        pages(4, "legacy-limit-over-subqueries"),
+        pages(5, "legacy-limit-over-subqueries"),
+    );
+    let lengths = |pages: &[(Vec<String>, Vec<u8>)]| -> Vec<usize> {
+        pages.iter().map(|(_, proof)| proof.len()).collect()
+    };
+    assert_eq!(full.len(), 5, "five pages");
+    for ((rows, _), (rows_now, _)) in full.iter().zip(&cut) {
+        assert_eq!(rows, rows_now);
+        assert!(!rows.is_empty());
+    }
+    let (full, cut) = (lengths(&full), lengths(&cut));
+    for page in [0, 1, 3, 4] {
+        assert!(cut[page] < full[page], "page {page}: {cut:?} and {full:?}");
+    }
+    assert_eq!(
+        cut[2], full[2],
+        "the limit of the whole query ends the layer"
+    );
 }
 
 /// The sizes of the reference workload's two named proofs, by the protocol
