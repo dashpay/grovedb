@@ -2,6 +2,7 @@ mod model;
 mod store;
 
 mod acceptance;
+mod handles;
 mod random;
 mod reads;
 mod rebase;
