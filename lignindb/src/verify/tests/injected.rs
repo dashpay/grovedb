@@ -10,7 +10,7 @@
 
 use lignin_format::{
     delta::{Delta, DeltaRunWriter},
-    flat_page::{FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
+    flat_page::{common_prefix_len, FlatBranchBuilder, FlatLeafBuilder, FlatPage, FlatValue},
     segment::{BlockContent, Compression},
     tree_page::{CellValue, HashField, Side, TreeCell, TreeLink, TreePage, TreePageMut},
     value_log::{PendingValue, ValuePointer},
@@ -27,9 +27,17 @@ use lignin_tree::{
     flat::FlatTree,
 };
 
-use super::{plant, prefix, Planted, BIG, INNER, NEVER, OUTER};
+use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, NEVER, OUTER};
 use crate::{
-    txn::tests::store::{SIZE, TREE_TYPE},
+    txn::{
+        tests::{
+            model::{self, OwnedBatch, OwnedSubtree},
+            put,
+            store::{SIZE, TREE_TYPE},
+            World,
+        },
+        Column,
+    },
     verify::Rule,
 };
 
@@ -215,7 +223,14 @@ impl Planted {
                 .map(|(key, value)| (key.to_vec(), value.bytes().to_vec(), !value.is_inline()))
                 .collect();
             change(&mut entries);
-            let mut built = FlatLeafBuilder::new(page, &[], SIZE.image_capacity()).expect("a leaf");
+            // What the keys share, as the page had it, where they still do.
+            let shared = match (entries.first(), entries.last()) {
+                (Some(first), Some(last)) => &first.0[..common_prefix_len(&first.0, &last.0)],
+                _ => &[][..],
+            };
+            let mut built =
+                FlatLeafBuilder::new(page, shared, SIZE.image_capacity()).expect("a leaf");
+
             for (key, value, out_of_line) in &entries {
                 let value = match out_of_line {
                     true => FlatValue::OutOfLine(value),
@@ -961,6 +976,105 @@ const BESIDE_THE_PAGES: &[Injection] = &[
     ),
 ];
 
+/// A pointer of the same length a few bytes on, where no value begins.
+fn moved(pointer: ValuePointer) -> ValuePointer {
+    ValuePointer::new(pointer.file(), pointer.offset() + 3, pointer.value_len()).expect("a pointer")
+}
+
+/// What is no state is read too: the reclaimer releases the pointer it
+/// finds in a cell or a record that it takes out, and a pointer that
+/// nothing reaches stays counted.
+const WHAT_IS_LEFT: &[Injection] = &[
+    injection(
+        "a cell that a dropped Merk left holds a pointer to no value",
+        Rule::ValueUnreadable,
+        |store| {
+            let in_use: Vec<CellAddress> = [BIG, OUTER, INNER]
+                .into_iter()
+                .flat_map(|name| store.merk(name))
+                .collect();
+            let left =
+                store.cell(|at, cell| cell.value_pointer().is_some() && !in_use.contains(&at));
+            let pointer = store
+                .read(left, |cell| cell.value_pointer())
+                .expect("a pointer");
+            store.step_tree(left, |page| {
+                let value = CellValue::OutOfLine(moved(pointer));
+                page.set_value(left.slot(), value).expect("a value");
+            });
+        },
+    ),
+    injection(
+        "a cell that nothing reaches holds a pointer to no value",
+        Rule::ValueUnreadable,
+        |store| {
+            // The left child of the root is cut off with all below it.
+            let root = store.root(BIG);
+            let cut = store.owned_link(root, Side::Left).child;
+            store.step_tree(root, |page| {
+                page.set_link(root.slot(), Side::Left, None)
+                    .expect("no link");
+            });
+            let (mut below, mut next) = (Vec::new(), vec![cut]);
+            while let Some(at) = next.pop() {
+                below.push(at);
+                next.extend(store.read(at, |cell| {
+                    let links = Side::BOTH.into_iter().filter_map(|side| cell.link(side));
+                    links.map(|link| link.child).collect::<Vec<_>>()
+                }));
+            }
+            let (at, pointer) = (below.into_iter())
+                .find_map(|at| Some((at, store.read(at, |cell| cell.value_pointer())?)))
+                .expect("a value out of line below the cut");
+            store.step_tree(at, |page| {
+                let value = CellValue::OutOfLine(moved(pointer));
+                page.set_value(at.slot(), value).expect("a value");
+            });
+        },
+    ),
+    injection(
+        "a record of a flat page that a range delete left holds a pointer to no value",
+        Rule::ValueUnreadable,
+        |store| {
+            // Many records with values out of line, between the records of
+            // the subtrees beside theirs, so that whole leaves of them are
+            // unlinked when their subtree is dropped.
+            let aux = |name| model::unit(Column::Aux, name);
+            {
+                let mut world = World::new(&store.db, &store.versions);
+                let tx = world.begin();
+                let many = (0..600).map(|index| put(aux(FLAT), &key(index), &[index as u8; 1100]));
+                let beside = [FLAT - 1, FLAT + 1].into_iter().flat_map(|name| {
+                    (0..40).map(move |index| put(aux(name), &key(index), &[index as u8; 60]))
+                });
+                world.write(&tx, many.chain(beside).collect());
+                world.commit(tx, &[]);
+            }
+            write_back(&store.db, &store.versions);
+            {
+                let mut world = World::new(&store.db, &store.versions);
+                let tx = world.begin();
+                let batch = OwnedBatch {
+                    subtrees: vec![OwnedSubtree::Drop(model::subtree(FLAT))],
+                    ..OwnedBatch::default()
+                };
+                world.apply(&tx, &batch).expect("the subtree is dropped");
+                world.commit(tx, &[]);
+            }
+            // No keyspace reaches a record of the dropped subtree any more:
+            // a leaf that holds one was left by the range delete.
+            let of_dropped = prefix(FLAT);
+            let left =
+                store.leaf_with(|key, value| !value.is_inline() && key.starts_with(&of_dropped));
+            store.rebuild_leaf(left, |entries| {
+                let place = entries.iter_mut().find(|entry| entry.2).expect("a place");
+                let pointer = ValuePointer::decode(place.1[..].try_into().expect("16 bytes"));
+                place.1 = moved(pointer.expect("a pointer")).encode().to_vec();
+            });
+        },
+    ),
+];
+
 #[test]
 fn every_corruption_of_the_cells_is_found() {
     each_is_found(CELLS);
@@ -986,11 +1100,23 @@ fn every_corruption_beside_the_pages_is_found() {
     each_is_found(BESIDE_THE_PAGES);
 }
 
+#[test]
+fn every_corruption_of_what_is_left_is_found() {
+    each_is_found(WHAT_IS_LEFT);
+}
+
 /// The lists name every rule but those that need a store of another kind,
 /// which `sound.rs` and the tests below have.
 #[test]
 fn the_lists_cover_the_rules() {
-    let lists = [CELLS, VALUES, DIRECTORY, FLAT_TREES, BESIDE_THE_PAGES];
+    let lists = [
+        CELLS,
+        VALUES,
+        DIRECTORY,
+        FLAT_TREES,
+        BESIDE_THE_PAGES,
+        WHAT_IS_LEFT,
+    ];
     let covered: Vec<Rule> = (lists.iter())
         .flat_map(|list| list.iter().map(|injection| injection.rule))
         .collect();
@@ -1038,5 +1164,5 @@ fn the_lists_cover_the_rules() {
         );
     }
     let total: usize = lists.iter().map(|list| list.len()).sum();
-    assert_eq!(total, 55, "the list in the report names each");
+    assert_eq!(total, 58, "the list in the report names each");
 }

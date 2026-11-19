@@ -35,7 +35,7 @@
 //! | The fragment-root table equals what the links imply. | F1, F3 | [`Rule::Fragments`] |
 //! | No cell has two stored addresses besides the directory. | C5 | [`Rule::CellNamedTwice`], [`Rule::Fragments`] |
 //! | Every stored hash equals its recomputation, the value hash among them. | `lignin_tree::hash::check` | [`Rule::Hash`], [`Rule::HashUnchecked`] |
-//! | Every value pointer leads to a record of its length that names the page of its cell as the owner, and no two cells hold one pointer. A pending value has its bytes. | `value-log-format.md` O2, O5; X1 | [`Rule::ValueUnreadable`], [`Rule::ValueOwner`], [`Rule::ValueShared`], [`Rule::PendingBytes`] |
+//! | Every value pointer leads to a record of its length that names the page of its cell as the owner, and no two cells hold one pointer. A pending value has its bytes. This holds for every cell and every flat record of the version: in use, left by a dropped Merk or a range delete, or reached by nothing. | `value-log-format.md` O2, O5; X1 | [`Rule::ValueUnreadable`], [`Rule::ValueOwner`], [`Rule::ValueShared`], [`Rule::PendingBytes`] |
 //! | The directory's records agree with each other. | `lignin_tree::directory` | [`Rule::Directory`] |
 //! | Every Merk in use has an entry that agrees with the cells: the entry names the root's cell and key, the host is a node of the Merk it is said to be in, and the host's pointer is the entry's root. No pointer of a host in use is without its entry. | plan, draft 17 | [`Rule::EntryRoot`], [`Rule::EntryHost`], [`Rule::HostPointer`], [`Rule::HostedUnentered`], [`Rule::HostUnnamed`] |
 //! | The flat trees are trees: every page is reached once, by one tree, a child is one level below its branch, and the keys are in order between the separators above them. A bucket of long keys is followed into its tree. | `flat-page.md` P6, P8; TREE-07 | [`Rule::FlatDanglingPage`], [`Rule::FlatPageNamedTwice`], [`Rule::FlatLevel`], [`Rule::FlatKeyOrder`], [`Rule::FlatBucket`], [`Rule::FlatPageUnreached`] |
@@ -69,8 +69,11 @@
 //! ([`Rule::CellNamedTwice`]).
 //!
 //! The cells that a dropped Merk left and that its record still leads to
-//! are walked as a tree of their own. Their addresses, keys and fragments
-//! are checked, and their hashes are not: they are no state.
+//! are walked as a tree of their own. Their addresses, keys, fragments and
+//! values are checked, and their hashes are not: they are no state. The
+//! values are, because the reclaimer releases the pointer it finds in a
+//! cell it takes out, and so are those of the cells that nothing reaches
+//! and of the flat pages that a range delete left.
 //!
 //! # What is not checked
 //!

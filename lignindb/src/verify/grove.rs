@@ -224,8 +224,13 @@ impl Run<'_, '_, '_> {
                 self.add(Rule::CellNamedTwice, holder, what);
                 continue;
             }
+            // The value of a cell that a dropped Merk left is read as well:
+            // the reclaimer releases the pointer it finds there.
+            if let Some(value) = node.cell().value_place() {
+                self.check_value(value, at.page(), Place::Cell(at));
+            }
             if reach == Reach::Live {
-                self.check_cell(&node, rules);
+                self.check_hashes(&node, rules);
             }
             for (position, pointer) in node.hosted_roots().enumerate() {
                 let Some(pointer) = pointer else {
@@ -265,14 +270,10 @@ impl Run<'_, '_, '_> {
         }
     }
 
-    /// Reads the value of a cell in use, if it is out of line, and
-    /// recomputes its hashes.
-    fn check_cell(&mut self, node: &NodeRef<'_>, rules: &mut Option<&mut dyn HashRules>) {
+    /// Recomputes the hashes that a cell in use stores.
+    fn check_hashes(&mut self, node: &NodeRef<'_>, rules: &mut Option<&mut dyn HashRules>) {
         let at = node.address();
         let place = Place::Cell(at);
-        if let Some(value) = node.cell().value_place() {
-            self.check_value(value, at.page(), place);
-        }
         let Some(rules) = rules.as_deref_mut() else {
             return;
         };
@@ -440,7 +441,10 @@ impl Run<'_, '_, '_> {
                 any = true;
                 self.unreached.cells += 1;
                 self.unreached.bytes += (cell.encoded_len() + TreePage::SLOT_LEN) as u64;
-                self.unreached.values += u64::from(cell.value_place().is_some());
+                if let Some(value) = cell.value_place() {
+                    self.unreached.values += 1;
+                    self.check_value(value, id, Place::Cell(at));
+                }
                 if self.unreached.first.len() < Unreached::SAMPLE {
                     self.unreached.first.push(at);
                 }

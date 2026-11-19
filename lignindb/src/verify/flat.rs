@@ -368,33 +368,38 @@ impl Run<'_, '_, '_> {
                                     )
                                 }),
                             }
-                        } else if !left {
-                            self.census.flat_records += 1;
-                            if let Records::Columns { leads, prefixes } = records {
-                                let full = [&visit.outer[..], &key[..]].concat();
-                                let prefix = record_prefix(&full, leads, prefixes);
-                                let known = match prefix {
-                                    Some(prefix) if entered == Some(prefix) => true,
-                                    Some(prefix) => prefixes.contains_key(&prefix),
-                                    None => false,
-                                };
-                                if known {
-                                    entered = prefix;
-                                } else {
-                                    self.add(
-                                        Rule::FlatRecordWithoutEntry,
-                                        place,
-                                        || match prefix {
-                                            Some(prefix) => format!(
-                                                "the record is under the prefix {}, which the \
+                        } else {
+                            if !left {
+                                self.census.flat_records += 1;
+                                if let Records::Columns { leads, prefixes } = records {
+                                    let full = [&visit.outer[..], &key[..]].concat();
+                                    let prefix = record_prefix(&full, leads, prefixes);
+                                    let known = match prefix {
+                                        Some(prefix) if entered == Some(prefix) => true,
+                                        Some(prefix) => prefixes.contains_key(&prefix),
+                                        None => false,
+                                    };
+                                    if known {
+                                        entered = prefix;
+                                    } else {
+                                        self.add(Rule::FlatRecordWithoutEntry, place, || {
+                                            match prefix {
+                                                Some(prefix) => format!(
+                                                    "the record is under the prefix {}, which the \
                                              directory has no entry for",
-                                                Place::Merk(prefix)
-                                            ),
-                                            None => "the record's key holds no prefix".to_owned(),
-                                        },
-                                    );
+                                                    Place::Merk(prefix)
+                                                ),
+                                                None => {
+                                                    "the record's key holds no prefix".to_owned()
+                                                }
+                                            }
+                                        });
+                                    }
                                 }
                             }
+                            // The value of a record in a page that a range
+                            // delete left is read as well: the reclaimer
+                            // releases the pointer it finds there.
                             if let Some(value) = out_of_line(value) {
                                 self.check_value(value, page, place);
                             }
