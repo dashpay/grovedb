@@ -140,7 +140,7 @@ pub fn each_step(
 
 /// Runs `body` on a thread with the stack a trace needs and returns what it
 /// returned.
-fn on_a_deep_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
+pub(crate) fn on_a_deep_stack<T: Send>(body: impl FnOnce() -> T + Send) -> T {
     std::thread::scope(|scope| {
         std::thread::Builder::new()
             .stack_size(super::run::STACK_BYTES)

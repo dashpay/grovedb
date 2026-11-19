@@ -22,7 +22,7 @@ use grovedb::{
     operations::{proof::indexed_axis::AxisEntries, QueryItemOrSumReturnType},
     query_result_type::QueryResultElements,
     AggregateSumQueryResult, AxisAggregateValue, AxisKeys, Element, GroveDb, IndexedAxisEntry,
-    PathQuery, PathQueryRun, Transaction,
+    PathQuery, PathQueryRun,
 };
 use grovedb_costs::CostContext;
 use grovedb_version::version::GroveVersion;
@@ -31,7 +31,13 @@ use super::{
     step::{Field, Outcome, Proof, Proved, Row, Step, Value, Verification},
     Error,
 };
-use crate::workload::{Op, Outcome as Applied, Query, Read, Transactions};
+// The one engine there is where `GroveDb` is not generic over its engine
+// (`workload::pinned`).
+#[cfg(not(grovedb_engine_seam))]
+use crate::workload::DefaultEngine as E;
+use crate::workload::{
+    Db, DefaultEngine, Op, Outcome as Applied, Query, Read, StreamEngine, Transactions, TxArg,
+};
 
 /// The stack a thread needs to run a trace. GroveDB recurses once per level
 /// of nesting when it queries and proves, about 5 MiB at depth 64 in an
@@ -50,16 +56,16 @@ pub struct Observed {
 
 /// Applies the operations of a trace to one database, one transaction per
 /// block.
-pub struct Runner<'db> {
-    db: &'db GroveDb,
+pub struct Runner<'db, E: StreamEngine = DefaultEngine> {
+    db: &'db Db<E>,
     grove_version: &'db GroveVersion,
-    transactions: Transactions<'db>,
+    transactions: Transactions<'db, E>,
     committed_root: [u8; 32],
 }
 
-impl<'db> Runner<'db> {
+impl<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine> Runner<'db, E> {
     /// A runner on `db`, which stays open for further traces afterwards.
-    pub fn new(db: &'db GroveDb, grove_version: &'db GroveVersion) -> Result<Self, Error> {
+    pub fn new(db: &'db Db<E>, grove_version: &'db GroveVersion) -> Result<Self, Error> {
         let committed_root = root_hash(db, None, grove_version)?;
         Ok(Self {
             db,
@@ -67,6 +73,12 @@ impl<'db> Runner<'db> {
             transactions: Transactions::new(db),
             committed_root,
         })
+    }
+
+    /// The transactions the trace runs in: what a caller reads through to
+    /// see the state the last step left.
+    pub fn transactions(&self) -> &Transactions<'db, E> {
+        &self.transactions
     }
 
     /// Applies one operation and reads back everything the corpus compares.
@@ -366,8 +378,8 @@ impl<'db> Runner<'db> {
     /// The entries of an axis read: the axis, and for each entry the value
     /// it is ordered by, its key and its element.
     fn axis_entries(&self, entries: AxisEntries) -> Result<(Field, Field), Error> {
-        fn items<T: Into<i128>>(
-            runner: &Runner,
+        fn items<T: Into<i128>, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+            runner: &Runner<'_, E>,
             entries: Vec<IndexedAxisEntry<T>>,
         ) -> Result<Field, Error> {
             let mut items = Vec::new();
@@ -656,9 +668,9 @@ fn failed(error: &grovedb::Error, what: &str, remarks: &mut Vec<String>) -> Outc
     Outcome::Failed(error_name(error))
 }
 
-fn root_hash(
-    db: &GroveDb,
-    transaction: Option<&Transaction>,
+fn root_hash<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> Result<[u8; 32], Error> {
     db.root_hash(transaction, grove_version)

@@ -77,6 +77,7 @@ pub use self::{
         AppendEntry, BatchOp, ChunkIds, Fetch, HandoverBatch, IndexedTree, Op, PartialBatch, Path,
         Prove, Query, QueryItem, Read, StreamDigest, TransactionOp, TreeRead, Write,
     },
+    pinned::{Db, DefaultEngine, StreamEngine, Tx, TxArg},
     rng::Rng,
 };
 

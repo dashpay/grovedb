@@ -89,8 +89,8 @@ use grovedb::{
     query_result_type::{PathKeyOptionalElementTrio, QueryResultElements, QueryResultType},
     replication::CURRENT_STATE_SYNC_VERSION,
     AggregateSumQueryOptions, AggregateSumQueryResult, BackwardsReferences, Element, ElementFlags,
-    Error, GroveDb, PathBranchChunkQuery, PathQuery, PathQueryRun, PathTrunkChunkQuery,
-    PendingPrefixDropsReport, RangePage, SizedQuery, Transaction, TransactionArg, TreeType,
+    Error, PathBranchChunkQuery, PathQuery, PathQueryRun, PathTrunkChunkQuery,
+    PendingPrefixDropsReport, RangePage, SizedQuery, TreeType,
 };
 use grovedb_commitment_tree::{deserialize_ciphertext, DashMemo};
 use grovedb_costs::{
@@ -117,6 +117,18 @@ use super::op::{
 // corpus is pinned to.
 #[allow(unused_imports)]
 use super::pinned::Savepoints as _;
+// The one engine there is where `GroveDb` is not generic over its engine.
+#[cfg(not(grovedb_engine_seam))]
+use super::pinned::Upstream as E;
+use super::pinned::{Db, DefaultEngine, StreamEngine, Tx, TxArg};
+
+// The RocksDB engine's transactions say what they are themselves.
+#[cfg(grovedb_engine_seam)]
+impl StreamEngine for grovedb::RocksDbEngine {
+    fn is_snapshot_read(transaction: &Tx<'_, Self>) -> bool {
+        transaction.is_snapshot_read()
+    }
+}
 
 /// What applying an [`Op`] produced.
 #[derive(Debug)]
@@ -322,10 +334,10 @@ const RESULT_TYPE: QueryResultType = QueryResultType::QueryPathKeyElementTrioRes
 ///
 /// Every option GroveDB takes is spelled out in the constants above, so a
 /// change to one of GroveDB's defaults cannot change how a stream replays.
-pub fn apply(
-    db: &GroveDb,
+pub fn apply<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     op: &Op,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     match op {
@@ -387,16 +399,16 @@ fn refused<T>(reason: &'static str) -> CostResult<T, Error> {
     free(Err(Error::InvalidInput(reason)))
 }
 
-fn apply_transaction_op(
-    db: &GroveDb,
+fn apply_transaction_op<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     step: &TransactionOp,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     // A snapshot read transaction is no block's transaction: it holds no
     // write to roll back and reads an older state.
     let open = transaction
-        .filter(|transaction| !transaction.is_snapshot_read())
+        .filter(|transaction| !E::is_snapshot_read(transaction))
         .ok_or(Error::InvalidInput(
             "a step on the block's transaction needs that transaction",
         ));
@@ -417,7 +429,7 @@ fn apply_transaction_op(
         TransactionOp::OpenSnapshot => free(Ok(Outcome::SnapshotOpens)),
         TransactionOp::CloseSnapshot => free(Ok(Outcome::SnapshotCloses)),
         TransactionOp::SnapshotRead(read) => {
-            if transaction.is_some_and(|transaction| transaction.is_snapshot_read()) {
+            if transaction.is_some_and(|transaction| E::is_snapshot_read(transaction)) {
                 apply_read(db, read, transaction, grove_version)
             } else {
                 refused("a snapshot read runs in a snapshot read transaction")
@@ -437,15 +449,15 @@ fn apply_transaction_op(
 /// belongs to and then does what its outcome asks of the caller of
 /// [`apply`], so a consumer that keeps its transactions here cannot handle
 /// one of them differently from another consumer.
-pub struct Transactions<'db> {
-    db: &'db GroveDb,
-    block: Option<Transaction<'db>>,
-    snapshot: Option<Transaction<'db>>,
+pub struct Transactions<'db, E: StreamEngine = DefaultEngine> {
+    db: &'db Db<E>,
+    block: Option<Tx<'db, E>>,
+    snapshot: Option<Tx<'db, E>>,
 }
 
-impl<'db> Transactions<'db> {
+impl<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine> Transactions<'db, E> {
     /// A first block's transaction on `db`, and no snapshot.
-    pub fn new(db: &'db GroveDb) -> Self {
+    pub fn new(db: &'db Db<E>) -> Self {
         Self {
             db,
             block: Some(db.start_transaction()),
@@ -454,14 +466,14 @@ impl<'db> Transactions<'db> {
     }
 
     /// The transaction of the open block.
-    pub fn block(&self) -> &Transaction<'db> {
+    pub fn block(&self) -> &Tx<'db, E> {
         self.block
             .as_ref()
             .expect("a block's transaction is open between two operations")
     }
 
     /// The snapshot read transaction, while one is open.
-    pub fn snapshot(&self) -> Option<&Transaction<'db>> {
+    pub fn snapshot(&self) -> Option<&Tx<'db, E>> {
         self.snapshot.as_ref()
     }
 
@@ -656,11 +668,11 @@ enum Callbacks {
     Drive,
 }
 
-fn apply_partial_batch(
-    db: &GroveDb,
+fn apply_partial_batch<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     batch: &PartialBatch,
     callbacks: Callbacks,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     let mut first_segment = OperationCost::default();
@@ -697,11 +709,11 @@ fn apply_partial_batch(
 /// Runs `path_query` with `GroveDb::query_raw` when `raw` is set, otherwise
 /// with `GroveDb::query`, and returns the rows with how many the offset
 /// skipped.
-fn query_rows(
-    db: &GroveDb,
+fn query_rows<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     path_query: &PathQuery,
     raw: bool,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(QueryResultElements, u16), Error> {
     if raw {
@@ -727,10 +739,10 @@ fn query_rows(
     }
 }
 
-fn apply_read(
-    db: &GroveDb,
+fn apply_read<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     read: &Read,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     match read {
@@ -924,11 +936,11 @@ fn tree_at(path: &[Vec<u8>]) -> Result<(&[Vec<u8>], &Vec<u8>), Error> {
     Ok((parent, key))
 }
 
-fn apply_tree_read(
-    db: &GroveDb,
+fn apply_tree_read<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     path: &[Vec<u8>],
     read: TreeRead,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     let (parent, key) = match tree_at(path) {
@@ -996,10 +1008,10 @@ fn apply_tree_read(
     }
 }
 
-fn apply_prove(
-    db: &GroveDb,
+fn apply_prove<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     prove: &Prove,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<u8>, Error> {
     match prove {
@@ -1072,11 +1084,11 @@ fn apply_prove(
 /// GroveDB charges nothing for serving a chunk. The cost returned is that
 /// of the reads that name it: the root hash, or the root key, or the
 /// element of the tree.
-fn chunk_request(
-    db: &GroveDb,
+fn chunk_request<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     path: &[Vec<u8>],
     ids: &ChunkIds,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Vec<u8>, Error> {
     let mut cost = OperationCost::default();
@@ -1151,10 +1163,10 @@ fn pack_nested_bytes(out: &mut Vec<u8>, nested: &[Vec<u8>]) {
     }
 }
 
-fn apply_write(
-    db: &GroveDb,
+fn apply_write<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     write: &Write,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<Outcome, Error> {
     let written = |()| Outcome::Written;
@@ -1478,10 +1490,10 @@ fn apply_write(
 const NOTHING_PENDING: &[QualifiedGroveDbOp] = &[];
 
 /// Applies the deletes GroveDB built, as one batch. No delete is no batch.
-fn apply_built(
-    db: &GroveDb,
+fn apply_built<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
+    db: &'db Db<E>,
     deletes: Vec<QualifiedGroveDbOp>,
-    transaction: TransactionArg,
+    transaction: TxArg<'db, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     if deletes.is_empty() {
