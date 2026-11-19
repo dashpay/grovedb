@@ -115,6 +115,17 @@ fn passes_checkpoints_and_commits_at_once_leave_states_that_recover() {
                 freeze();
             }
 
+            // Now and then a flat leaf is written whole, with a value
+            // that write-back places by the place its entry holds.
+            if held.is_none() && round % 16 == 5 {
+                let value = long(round as u8, 300 + rng.below(300) as usize);
+                let entries: [(&[u8], Val); 2] = [(b"flat", inline(b"leaf")), (b"long", value)];
+                db.commit_flat(page(20), &entries, &BTreeMap::new());
+                wb.place_ready().expect("placed");
+                wb.wait_for_room().expect("room");
+                continue;
+            }
+
             let id = 1 + rng.below(PAGES);
             let used = cells[id as usize];
             let any = |rng: &mut Rng| slot(1 + rng.below(u64::from(used)) as u16);

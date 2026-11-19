@@ -105,6 +105,13 @@ fn a_flat_leaf_is_written_as_images_with_its_values_placed() {
     assert_eq!(entries[1].2, placed.get(&b"b"[..]).copied());
     assert_eq!(db.live_values(), 3);
     installed(db.wb().checkpoint().expect("a checkpoint"));
+    db.check_cold();
+
+    // A leaf that is written anew releases the values it held.
+    db.commit_flat(id, &[(b"e", long(4, 400))], &BTreeMap::new());
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.live_values(), 1);
+    db.check_cold();
 }
 
 /// A value of a flat leaf waits for a write transaction that holds a

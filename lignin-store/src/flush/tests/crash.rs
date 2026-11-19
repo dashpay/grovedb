@@ -31,6 +31,9 @@ pub(super) enum Step {
     HeldCommit(Vec<Op>),
     /// The transaction that holds a copy rolls back.
     Release,
+    /// A commit writes a flat leaf whole: its entries, in key order. The
+    /// values it had in the value log are released.
+    Flat(u32, Vec<(Vec<u8>, Val)>),
 }
 
 pub(super) fn config() -> FlushConfig {
@@ -147,6 +150,13 @@ impl<'d> Session<'d> {
                 self.held = Some(txn);
             }
             Step::HeldCommit(ops) => drop(self.take_held().commit(ops)),
+            Step::Flat(page_id, entries) => {
+                let entries: Vec<(&[u8], Val)> = entries
+                    .iter()
+                    .map(|(key, value)| (key.as_slice(), value.clone()))
+                    .collect();
+                db.commit_flat(page(*page_id), &entries, &BTreeMap::new());
+            }
             Step::Release => self.take_held().roll_back(),
             Step::Pass | Step::Checkpoint | Step::SyncLog => {}
         }
@@ -160,7 +170,7 @@ impl<'d> Session<'d> {
             Step::Checkpoint => wb.checkpoint().map(drop),
             Step::SyncLog => wb.sync_log().map(drop),
             Step::HeldCommit(_) | Step::Release => wb.place_ready().map(drop),
-            Step::Commit(_) | Step::Move(..) | Step::Hold(_) => Ok(()),
+            Step::Commit(_) | Step::Move(..) | Step::Hold(_) | Step::Flat(..) => Ok(()),
         }
     }
 
@@ -254,6 +264,13 @@ fn free(id: u32) -> Op {
     Op::Free { page: page(id) }
 }
 
+fn flat(id: u32, entries: &[(&[u8], Val)]) -> Step {
+    let entries = entries
+        .iter()
+        .map(|(key, value)| (key.to_vec(), value.clone()));
+    Step::Flat(id, entries.collect())
+}
+
 fn set(at: (u32, u16), value: Val) -> Op {
     Op::Value {
         page: page(at.0),
@@ -262,8 +279,9 @@ fn set(at: (u32, u16), value: Val) -> Op {
     }
 }
 
-/// The life of a store with write-back: pages with values in and out of
-/// their cells, runs and base images, a consolidation, a value that waits
+/// The life of a store with write-back: tree pages and a flat leaf with
+/// values in and out of their cells, runs and base images, a
+/// consolidation, a value that waits
 /// for a private copy and is placed after the commit that carried it on,
 /// values moved under a checkpoint, a checkpoint that is put off because
 /// a page that a move changed cannot be written, a page freed with a
@@ -277,6 +295,8 @@ pub(super) fn life() -> Vec<Step> {
         ]),
         Step::Pass,
         Step::Checkpoint,
+        // A flat leaf, with a value that is placed by an entry's place.
+        flat(20, &[(b"a", inline(b"flat")), (b"b", long(11, 600))]),
         commit(&[hash((1, 1), 1)]),
         commit(&[insert((1, 2), b"c", long(2, 700))]),
         Step::Checkpoint,
@@ -290,6 +310,13 @@ pub(super) fn life() -> Vec<Step> {
         Step::Move(2, 1),
         Step::Pass,
         commit(&[hash((1, 1), 4)]),
+        // The leaf is written again: the value it had is released, the new
+        // one waits for a transaction that holds a copy of the leaf, and a
+        // checkpoint is put off for it.
+        flat(20, &[(b"a", inline(b"flat again")), (b"c", long(12, 500))]),
+        Step::Hold(20),
+        Step::Checkpoint,
+        Step::Release,
         Step::SyncLog,
         commit(&[hash((1, 1), 5), free(3)]),
         commit(&[insert((3, 2), b"e", long(4, 600))]),
@@ -319,14 +346,14 @@ pub(super) fn life() -> Vec<Step> {
 fn the_script_takes_checkpoints_drops_log_files_and_puts_a_checkpoint_off() {
     let ran = run(&life(), None);
     assert!(!ran.fs.is_powered_off());
-    assert_eq!(ran.latest, version(12));
+    assert_eq!(ran.latest, version(14));
     assert!(ran.checkpoints >= 5, "{} checkpoints", ran.checkpoints);
     assert!(
         ran.log_files_dropped >= 3,
         "{} log files dropped",
         ran.log_files_dropped
     );
-    assert_eq!(ran.put_off, 3);
+    assert_eq!(ran.put_off, 4);
     let mut tally = Tally::default();
     check(&ran, &PLANS, &mut tally);
     assert!(tally.states > 0);

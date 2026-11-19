@@ -99,12 +99,41 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                                     None => drop(dropped.insert(id)),
                                 }
                             }
+                            Entry::Flat(run) if committed > covers => {
+                                let id = run.page();
+                                let has = table
+                                    .newest(id)
+                                    .is_some_and(|link| link.version >= committed);
+                                if has {
+                                    continue;
+                                }
+                                let known = frames.remove(&id).flatten();
+                                let before = match (known, run.image()) {
+                                    // An image needs no page before it.
+                                    (_, Some(_)) => Some(None),
+                                    (Some(frame), None) => Some(Some(frame)),
+                                    (None, None) => image_of(id).map(Some),
+                                };
+                                match before {
+                                    Some(before) => {
+                                        let mut image = Vec::new();
+                                        let capacity = size.image_capacity();
+                                        run.apply(before.as_deref(), V1, capacity, &mut image)
+                                            .expect("a flat run applies");
+                                        image.resize(size.get(), 0);
+                                        frames.insert(id, Some(image));
+                                        dropped.remove(&id);
+                                    }
+                                    None => drop(dropped.insert(id)),
+                                }
+                            }
                             Entry::Freed(id) if committed > covers => {
                                 frames.insert(id, None);
                                 dropped.remove(&id);
                             }
                             Entry::Released(pointer) => change.release(pointer),
                             Entry::Acquired(pointer) => change.acquire(pointer),
+                            // A commit that the checkpoint covers.
                             Entry::Tree(_) | Entry::Flat(_) | Entry::Freed(_) => {}
                         }
                     }
@@ -121,16 +150,39 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                         None => image_of(id),
                     };
                     if let Some(mut frame) = frame {
-                        let due = {
-                            let tree = TreePage::from_validated(&frame, FRAME_FORMAT);
-                            step.is_due_in_tree(&tree.expect("a tree page"))
-                        };
-                        if due {
-                            let delta = step.delta().expect("a tree step");
-                            let mut tree = TreePageMut::open(&mut frame, size, FRAME_FORMAT);
-                            delta
-                                .apply(tree.as_mut().expect("a tree page"))
-                                .expect("placed");
+                        match step.slot() {
+                            Some(_) => {
+                                let due = {
+                                    let tree = TreePage::from_validated(&frame, FRAME_FORMAT);
+                                    step.is_due_in_tree(&tree.expect("a tree page"))
+                                };
+                                if due {
+                                    let delta = step.delta().expect("a tree step");
+                                    let mut tree =
+                                        TreePageMut::open(&mut frame, size, FRAME_FORMAT);
+                                    delta
+                                        .apply(tree.as_mut().expect("a tree page"))
+                                        .expect("placed");
+                                }
+                            }
+                            // An entry of a flat leaf, found by the place
+                            // it holds.
+                            None => {
+                                let due = step.is_due_in_flat_leaf(&frame, FRAME_FORMAT);
+                                if due.expect("a flat leaf") {
+                                    let mut image = Vec::new();
+                                    let capacity = size.image_capacity();
+                                    step.apply_to_flat_leaf(
+                                        &frame,
+                                        FRAME_FORMAT,
+                                        capacity,
+                                        &mut image,
+                                    )
+                                    .expect("placed");
+                                    image.resize(size.get(), 0);
+                                    frame = image;
+                                }
+                            }
                         }
                         frames.insert(id, Some(frame));
                     } else if table.newest(id).is_none() {

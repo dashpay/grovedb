@@ -26,7 +26,7 @@ use std::{
 
 use lignin_format::{
     delta::Delta,
-    flat_page::{FlatLeafBuilder, FlatPage, FlatValue},
+    flat_page::{FlatLeafBuilder, FlatPage, FlatPageKind, FlatValue},
     manifest::Manifest,
     tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut},
     value_log::{PendingValue, ValuePlace, ValuePointer},
@@ -362,9 +362,75 @@ pub(super) fn same(found: &[Cell], expected: &[Cell]) -> bool {
         .eq(expected.iter().map(Cell::said))
 }
 
-/// What the cells of the tree page in `frame` say, with each value read
-/// from where it is: the cell, the frame the page is in, the log, or the
-/// value log.
+/// Whether `frame` holds a flat page, as a loader tells.
+pub(super) fn is_flat(frame: &[u8]) -> bool {
+    FlatPageKind::from_code(frame[0], FRAME_FORMAT).is_ok()
+}
+
+/// Whether the page in `frame`, of either kind, has a pending value.
+pub(super) fn has_pending(frame: &[u8]) -> bool {
+    match is_flat(frame) {
+        true => FlatPage::from_validated(frame, FRAME_FORMAT)
+            .expect("a flat page")
+            .has_pending_value(),
+        false => TreePage::from_validated(frame, FRAME_FORMAT)
+            .expect("a tree page")
+            .has_pending_value(),
+    }
+}
+
+/// Where the value of a cell or of an entry of a flat leaf is.
+enum Stored {
+    Inline(Vec<u8>),
+    Placed(ValuePointer),
+    Pending(PendingValue),
+}
+
+/// What the page in `frame` holds, cell by cell: the slot, the key, the
+/// value hash, and where the value is. An entry of a flat leaf has its
+/// position, from 1, for a slot, and no hash.
+fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
+    if is_flat(frame) {
+        let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
+        assert_eq!(page.id(), id);
+        let leaf = page.leaf().expect("a leaf");
+        return leaf
+            .iter()
+            .enumerate()
+            .map(|(at, (key, value))| {
+                let mut whole = Vec::new();
+                key.append_to(&mut whole);
+                let value = match value {
+                    FlatValue::Inline(bytes) => Stored::Inline(bytes.to_vec()),
+                    FlatValue::OutOfLine(place) => {
+                        let place: [u8; 16] = place.try_into().expect("a place");
+                        match ValuePlace::decode(place).expect("a place") {
+                            ValuePlace::Placed(pointer) => Stored::Placed(pointer),
+                            ValuePlace::Pending(pending) => Stored::Pending(pending),
+                        }
+                    }
+                };
+                (at as u16 + 1, whole, [0; 32], value)
+            })
+            .collect();
+    }
+    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+    assert_eq!(tree.id(), id);
+    tree.cells()
+        .map(|(slot, cell)| {
+            let value = match cell.value() {
+                CellValue::Inline(bytes) => Stored::Inline(bytes.to_vec()),
+                CellValue::OutOfLine(pointer) => Stored::Placed(pointer),
+                CellValue::Pending(pending) => Stored::Pending(pending),
+            };
+            (slot.get(), cell.key().to_vec(), *cell.value_hash(), value)
+        })
+        .collect()
+}
+
+/// What the cells of the page in `frame` say, with each value read from
+/// where it is: the cell, the frame the page is in, the log, or the value
+/// log. The entries of a flat leaf are its cells.
 pub(super) fn cells_of(
     id: PageId,
     frame: &[u8],
@@ -372,35 +438,37 @@ pub(super) fn cells_of(
     values: &ValueStore,
     log: &LogStore,
 ) -> Vec<Cell> {
-    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
-    assert_eq!(tree.id(), id);
     let mut buf = Vec::new();
-    tree.cells()
-        .map(|(slot, cell)| {
-            let value = match cell.value() {
-                CellValue::Inline(bytes) => bytes.to_vec(),
-                CellValue::OutOfLine(pointer) => {
+    stored(id, frame)
+        .into_iter()
+        .map(|(slot, key, value_hash, stored)| {
+            let (value, pointer) = match stored {
+                Stored::Inline(bytes) => (bytes, None),
+                Stored::Placed(pointer) => {
                     let value = values.read(pointer, id, &mut buf);
-                    value.expect("the value is in the value log").to_vec()
+                    let value = value.expect("the value is in the value log").to_vec();
+                    assert_eq!(value.len(), pointer.value_len() as usize);
+                    (value, Some(pointer))
                 }
-                CellValue::Pending(pending) => {
-                    match attached.and_then(|frame| frame.attached(pending.id())) {
+                Stored::Pending(pending) => {
+                    let value = match attached.and_then(|frame| frame.attached(pending.id())) {
                         Some(bytes) => bytes.to_vec(),
                         None => {
                             let logged = log.read_pending(&pending, id, &mut buf);
                             let bytes = logged.expect("the value is in the log").bytes();
                             bytes.expect("the value's bytes").to_vec()
                         }
-                    }
+                    };
+                    assert_eq!(value.len(), pending.value_len() as usize);
+                    (value, None)
                 }
             };
-            assert_eq!(value.len(), cell.value_len() as usize);
             Cell {
-                slot: slot.get(),
-                key: cell.key().to_vec(),
-                value_hash: *cell.value_hash(),
+                slot,
+                key,
+                value_hash,
                 value,
-                pointer: cell.value_pointer(),
+                pointer,
             }
         })
         .collect()
@@ -416,29 +484,27 @@ fn committed_cells(
     before: &BTreeMap<u16, Vec<u8>>,
     written: &BTreeMap<[u8; 8], Vec<u8>>,
 ) -> Vec<Cell> {
-    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
-    tree.cells()
-        .map(|(slot, cell)| {
-            let earlier = || {
-                before
-                    .get(&slot.get())
-                    .expect("the cell had its value")
-                    .clone()
-            };
-            let value = match cell.value() {
-                CellValue::Inline(bytes) => bytes.to_vec(),
-                CellValue::OutOfLine(_) => earlier(),
-                CellValue::Pending(pending) => match frame.attached(pending.id()) {
-                    Some(bytes) => bytes.to_vec(),
-                    None => written.get(&pending.id()).cloned().unwrap_or_else(earlier),
-                },
+    stored(frame.page(), frame)
+        .into_iter()
+        .map(|(slot, key, value_hash, stored)| {
+            let earlier = || before.get(&slot).expect("the cell had its value").clone();
+            let (value, pointer) = match stored {
+                Stored::Inline(bytes) => (bytes, None),
+                Stored::Placed(pointer) => (earlier(), Some(pointer)),
+                Stored::Pending(pending) => {
+                    let value = match frame.attached(pending.id()) {
+                        Some(bytes) => bytes.to_vec(),
+                        None => written.get(&pending.id()).cloned().unwrap_or_else(earlier),
+                    };
+                    (value, None)
+                }
             };
             Cell {
-                slot: slot.get(),
-                key: cell.key().to_vec(),
-                value_hash: *cell.value_hash(),
+                slot,
+                key,
+                value_hash,
                 value,
-                pointer: cell.value_pointer(),
+                pointer,
             }
         })
         .collect()
@@ -805,8 +871,8 @@ impl Db {
 
     /// Commits the flat leaf `id`, written whole: `entries` in key order.
     /// A value that is out of line is carried by the group and pending in
-    /// its entry, or stays where `placed` says it is. The page is not in
-    /// the model: [`Self::flat_entries`] reads it.
+    /// its entry, or stays where `placed` says it is. The pointers that
+    /// the leaf held and holds no more are released.
     pub(super) fn commit_flat(
         &self,
         id: PageId,
@@ -815,17 +881,38 @@ impl Db {
     ) -> CommitVersion {
         let latest = self.latest();
         let owner = OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1);
-        let copy = match self.frame(id, latest) {
+        let (copy, held) = match self.frame(id, latest) {
             Ok(frame) => {
+                let held: Vec<ValuePointer> = stored(id, &frame)
+                    .into_iter()
+                    .filter_map(|(.., stored)| match stored {
+                        Stored::Placed(pointer) => Some(pointer),
+                        _ => None,
+                    })
+                    .collect();
                 let copy = self.pool.make_private(owner, id, latest);
                 drop(frame);
-                copy.expect("the page was just loaded")
+                (copy.expect("the page was just loaded"), held)
             }
-            Err(LoadError::NoPage { .. }) => self.pool.new_private(owner, id).expect("a new page"),
+            Err(LoadError::NoPage { .. }) => {
+                let copy = self.pool.new_private(owner, id).expect("a new page");
+                (copy, Vec::new())
+            }
             Err(error) => panic!("page {id}: {error}"),
         };
 
         let counts = self.values.step().expect("the counts");
+        // A step may have placed a value since the page was looked at.
+        let held: Vec<ValuePointer> = match self.pool.get(id, CommitVersion::MAX) {
+            Ok(frame) => stored(id, &frame)
+                .into_iter()
+                .filter_map(|(.., stored)| match stored {
+                    Stored::Placed(pointer) => Some(pointer),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => held,
+        };
         let at = self.log.next_group().expect("a place for the group");
         let mut bytes = Vec::new();
         let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
@@ -861,6 +948,18 @@ impl Db {
         group
             .flat_run_with(id, |run| run.push(&FlatChange::Image(&image)))
             .expect("a run");
+        let kept: Vec<ValuePointer> = places
+            .iter()
+            .filter_map(|place| place.and_then(|(place, _)| place.pointer()))
+            .collect();
+        let mut released: Vec<ValuePointer> = held
+            .into_iter()
+            .filter(|pointer| !kept.contains(pointer))
+            .collect();
+        released.sort_by_key(|pointer| (pointer.file(), pointer.offset()));
+        for pointer in &released {
+            group.released(pointer).expect("a released pointer");
+        }
         group.finish();
         let appended = self.log.append_group(&at, &bytes).expect("appended");
         let committed = at.version();
@@ -878,8 +977,27 @@ impl Db {
                 }
             }
         }
+        let cells = entries
+            .iter()
+            .enumerate()
+            .map(|(at, (key, value))| Cell {
+                slot: at as u16 + 1,
+                key: key.to_vec(),
+                value_hash: [0; 32],
+                value: match value {
+                    Val::Inline(bytes) | Val::Out(bytes) => bytes.clone(),
+                },
+                pointer: None,
+            })
+            .collect();
+        let mut model = self.model.lock().expect("the model");
         self.pool.install(&copy, committed).expect("installed");
-        drop(counts);
+        let versions = model.pages.entry(id).or_default();
+        versions.push((committed.get(), Some(cells)));
+        drop(model);
+        let mut change = ValueChange::new();
+        released.iter().for_each(|&pointer| change.release(pointer));
+        counts.apply(&change, committed).expect("counted");
         self.versions
             .latest
             .store(committed.get(), Ordering::SeqCst);
@@ -890,26 +1008,15 @@ impl Db {
     /// read through its pointer if it is out of line, and that pointer.
     /// A value that is still pending has no bytes here.
     pub(super) fn flat_entries(&self, id: PageId, frame: &[u8]) -> Vec<FlatEntry> {
-        let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
-        let leaf = page.leaf().expect("a leaf");
-        leaf.iter()
-            .map(|(key, value)| {
-                let mut whole = Vec::new();
-                key.append_to(&mut whole);
-                match value {
-                    FlatValue::Inline(bytes) => (whole, Some(bytes.to_vec()), None),
-                    FlatValue::OutOfLine(place) => {
-                        let place: [u8; 16] = place.try_into().expect("a place");
-                        match ValuePlace::decode(place).expect("a place") {
-                            ValuePlace::Pending(_) => (whole, None, None),
-                            ValuePlace::Placed(pointer) => {
-                                let mut buf = Vec::new();
-                                let read = self.values.read(pointer, id, &mut buf);
-                                let bytes = read.expect("the value").to_vec();
-                                (whole, Some(bytes), Some(pointer))
-                            }
-                        }
-                    }
+        let mut buf = Vec::new();
+        stored(id, frame)
+            .into_iter()
+            .map(|(_, key, _, stored)| match stored {
+                Stored::Inline(bytes) => (key, Some(bytes), None),
+                Stored::Pending(_) => (key, None, None),
+                Stored::Placed(pointer) => {
+                    let read = self.values.read(pointer, id, &mut buf);
+                    (key, Some(read.expect("the value").to_vec()), Some(pointer))
                 }
             })
             .collect()
@@ -962,8 +1069,7 @@ impl Db {
                             "page {id} at version {at}: {found:?}, not {cells:?}"
                         );
                         if cold {
-                            let tree = TreePage::from_validated(&frame, FRAME_FORMAT);
-                            assert!(!tree.expect("a tree page").has_pending_value());
+                            assert!(!has_pending(&frame), "page {id} at version {at}");
                         }
                     }
                     Err(LoadError::NoPage { .. }) => {
