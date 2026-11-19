@@ -31,8 +31,8 @@
 //!
 //! Every thread of a run waits for one signal, which is given after the
 //! clock was read, so the reads and the commits that are counted are
-//! those between that reading and the signal that stops them. A run with a
-//! writer that made no commit is made again.
+//! those that began between that reading and the signal that stops them.
+//! A run with a writer that made no commit is made again.
 //!
 //! The store has one page for all readers and four for each reader, of
 //! 8 KiB, in a pool of twice as many frames. It keeps the pages of the

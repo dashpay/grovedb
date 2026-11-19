@@ -33,10 +33,7 @@ impl<'s> ReadPath<'s> {
     /// one store: a pin on other versions keeps nothing of these pages.
     #[cfg_attr(
         any(not(test), loom),
-        expect(
-            dead_code,
-            reason = "the engine's open (TXN-07) and the write transaction (TXN-03) call it"
-        )
+        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
     pub(crate) fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
         Self { versions, pages }
