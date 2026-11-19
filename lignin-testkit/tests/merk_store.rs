@@ -160,10 +160,9 @@ struct Tally {
     values_kept: u64,
     /// The nodes compared with RocksDB's records.
     compared: u64,
-    /// The batches whose cost was compared with the cost of the same
-    /// batch on RocksDB, and the seeks and the stored bytes they were
-    /// charged.
-    batches_charged: u64,
+    /// The seeks and the stored bytes the batches were charged. The cost
+    /// of every batch is compared with the cost of the same batch on
+    /// RocksDB.
     seeks_charged: u64,
     bytes_charged: u64,
     /// The removals handed over with no cost, and the bytes they loaded
@@ -186,7 +185,6 @@ impl Tally {
         self.values_written += other.values_written;
         self.values_kept += other.values_kept;
         self.compared += other.compared;
-        self.batches_charged += other.batches_charged;
         self.seeks_charged += other.seeks_charged;
         self.bytes_charged += other.bytes_charged;
         self.uncosted_removals += other.uncosted_removals;
@@ -423,28 +421,26 @@ fn subtree(grove: &Grove, id: MerkId) -> LigninSubtree {
     }
 }
 
-/// The nodes of a tree, as `(key, record)` in key order.
-type Records = Vec<(Vec<u8>, Vec<u8>)>;
+/// The nodes of a tree, as `(key, record, cost)` in key order: each record
+/// with what the read of it cost.
+type Records = Vec<(Vec<u8>, Vec<u8>, OperationCost)>;
 
-/// Every node of the tree under `root`, with what the reads of all of them
-/// cost.
-fn records<'db, S: NodeStore<'db>>(store: &S, root: Option<Vec<u8>>) -> (Records, OperationCost) {
+/// Every node of the tree under `root`, each with what its read cost.
+fn records<'db, S: NodeStore<'db>>(store: &S, root: Option<Vec<u8>>) -> Records {
     let mut found = Vec::new();
-    let mut cost = OperationCost::default();
     let mut ahead: Vec<Vec<u8>> = root.into_iter().collect();
     while let Some(key) = ahead.pop() {
-        let node = store
-            .get_node(&key, NO_VALUE_DEFINED_COST, GroveVersion::latest())
-            .unwrap_add_cost(&mut cost)
+        let read = store.get_node(&key, NO_VALUE_DEFINED_COST, GroveVersion::latest());
+        let node = (read.value)
             .expect("the node is read")
             .expect("a node that is linked is stored");
         for left in [true, false] {
             ahead.extend(node.link(left).map(|link| link.key().to_vec()));
         }
-        found.push((key, node.encode()));
+        found.push((key, node.encode(), read.cost));
     }
-    found.sort();
-    (found, cost)
+    found.sort_by(|(a, ..), (b, ..)| a.cmp(b));
+    found
 }
 
 /// What one operation did to the nodes under one storage prefix.
@@ -704,7 +700,6 @@ impl Replay<'_> {
             self.tally.writes + 1
         );
         let charged = &applied.cost;
-        self.tally.batches_charged += 1;
         self.tally.seeks_charged += u64::from(charged.seek_count);
         self.tally.bytes_charged += u64::from(charged.storage_cost.added_bytes)
             + u64::from(charged.storage_cost.replaced_bytes);
@@ -758,14 +753,16 @@ impl Replay<'_> {
                     mirror_transaction,
                 )
                 .unwrap();
+            let lookup = |held: CostResult<bool, Error>| {
+                (held.value.expect("the node is looked up"), held.cost)
+            };
             for key in &change.removed {
-                let held = store.has_node(key);
+                let (held, cost) = lookup(store.has_node(key));
                 assert_eq!(
-                    held.cost,
-                    mirrored.has_node(key).cost,
-                    "what the lookup of the removed node under {key:?} is charged"
+                    (held, cost),
+                    lookup(mirrored.has_node(key)),
+                    "the lookup of the removed node under {key:?} and what it is charged"
                 );
-                let held = held.value.expect("the node is read");
                 assert!(!held, "the node under {key:?} of the Merk {path:?} is gone");
                 self.tally.reads_charged += 1;
             }
@@ -791,27 +788,30 @@ impl Replay<'_> {
             let stored = storage
                 .get_transactional_storage_context_by_subtree_prefix(merk.prefix, None, transaction)
                 .unwrap();
-            let (expected, expected_cost) = records(&stored, root.clone());
-            let (found, cost) = records(&store, root);
+            let expected = records(&stored, root.clone());
+            let found = records(&store, root);
             let path = &merk.path;
-            assert_eq!(
-                cost, expected_cost,
-                "what the reads of the nodes of the Merk {path:?} are charged"
-            );
-            self.tally.reads_charged += expected.len() as u64;
-            self.tally.bytes_loaded += cost.storage_loaded_bytes;
             assert_eq!(
                 found.len(),
                 expected.len(),
                 "the nodes of the Merk {path:?}"
             );
-            for ((key, found), (_, expected)) in found.iter().zip(&expected) {
+            for ((key, found, cost), (_, expected, expected_cost)) in found.iter().zip(&expected) {
                 assert_eq!(
                     found, expected,
                     "the node under {key:?} of the Merk {path:?}"
                 );
+                // Each read costs what the read of the same node costs on
+                // RocksDB: a sum over the tree would let two charges trade
+                // bytes.
+                assert_eq!(
+                    cost, expected_cost,
+                    "what the read of the node under {key:?} of the Merk {path:?} is charged"
+                );
+                self.tally.reads_charged += 1;
+                self.tally.bytes_loaded += cost.storage_loaded_bytes;
             }
-            let keys: Vec<&[u8]> = expected.iter().map(|(key, _)| key.as_slice()).collect();
+            let keys: Vec<&[u8]> = expected.iter().map(|(key, ..)| key.as_slice()).collect();
             let subtree = Subtree::new(merk.prefix);
             let from_root = committed.reached.get(&subtree);
             assert_eq!(
@@ -960,7 +960,6 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     assert_eq!(tally.values_written, tally.values_changed, "{}", spec.name);
     assert_eq!(tally.values_kept, tally.stated - tally.values_changed);
     assert!(kinds == Kinds::Narrowest || tally.stated == tally.nodes);
-    assert_eq!(tally.batches_charged, tally.writes, "{}", spec.name);
     tally
 }
 
