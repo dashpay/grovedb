@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod cursor;
+pub mod directory;
 pub mod flat;
 pub mod fragment;
 mod guard;
