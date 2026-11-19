@@ -9,6 +9,7 @@ mod random;
 mod reads;
 
 mod rebase;
+mod savepoints;
 mod subtrees;
 mod threads;
 mod trees;

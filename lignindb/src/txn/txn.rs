@@ -97,6 +97,9 @@ struct State<'s> {
     stuck: Option<(CommitVersion, usize)>,
     /// Whether a scope is open.
     scope: bool,
+    /// The savepoints that are set, oldest first, each the place of the
+    /// write set at which it was set (WT8, `crate::savepoint`).
+    savepoints: Vec<Mark>,
     buffers: LoadBuffers,
     key: Vec<u8>,
     rebuilds: u64,
@@ -121,10 +124,11 @@ impl State<'_> {
         self.lease_at = None;
     }
 
-    /// Ends the transaction's writes: the write set, and everything that
-    /// is held for it (WT9).
+    /// Ends the transaction's writes: the write set, the savepoints, and
+    /// everything that is held for them (WT9).
     fn end(&mut self) {
         self.set.clear();
+        self.savepoints.clear();
         self.release();
         self.renew_lease();
     }
@@ -218,6 +222,7 @@ impl<'s> WriteTxn<'s> {
                 directory: None,
                 stuck: None,
                 scope: false,
+                savepoints: Vec::new(),
                 buffers: LoadBuffers::new(),
                 key: Vec::new(),
                 rebuilds: 0,
@@ -308,11 +313,17 @@ impl<'s> WriteTxn<'s> {
         Ok(())
     }
 
+    /// Holds the transaction for one call on its marks and its savepoints
+    /// (`crate::savepoint`).
+    pub(crate) fn hold(&self) -> Held<'_, 's> {
+        Held(self.lock())
+    }
+
     /// The place after the transaction's last write: what a savepoint and a
     /// scope remember (WT8, SC6).
     #[cfg_attr(
         any(not(test), loom),
-        expect(dead_code, reason = "savepoints (TXN-04) are its callers")
+        expect(dead_code, reason = "a savepoint takes its mark through `Held`")
     )]
     pub(crate) fn mark(&self) -> Mark {
         self.lock().set.mark()
@@ -329,7 +340,7 @@ impl<'s> WriteTxn<'s> {
     /// changed and `false` is returned.
     #[cfg_attr(
         any(not(test), loom),
-        expect(dead_code, reason = "savepoints (TXN-04) are its callers")
+        expect(dead_code, reason = "a savepoint goes back to its mark through `Held`")
     )]
     pub(crate) fn rewind(&self, mark: Mark) -> bool {
         self.lock().rewind(mark)
@@ -969,6 +980,9 @@ impl<'s> WriteTxn<'s> {
         let mut state = self.enter(false)?;
         let state = &mut *state;
         if state.set.is_empty() {
+            // The savepoints of a transaction that commits are ignored
+            // (WT8), also where it commits nothing.
+            state.savepoints.clear();
             return Ok(Sealed::Empty);
         }
         // The conflict is decided before anything else is read, so that no
@@ -1021,6 +1035,33 @@ impl<'s> WriteTxn<'s> {
             dropped,
             keys,
         })))
+    }
+}
+
+/// A transaction that is held for one call on its marks and its savepoints
+/// (`crate::savepoint`): the call has the transaction's own lock, so the
+/// write set and the scope are what it reads them to be until it returns.
+pub(crate) struct Held<'t, 's>(MutexGuard<'t, State<'s>>);
+
+impl Held<'_, '_> {
+    /// Whether a scope is open.
+    pub(crate) fn scope_open(&self) -> bool {
+        self.0.scope
+    }
+
+    /// The savepoints that are set, oldest first.
+    pub(crate) fn savepoints(&mut self) -> &mut Vec<Mark> {
+        &mut self.0.savepoints
+    }
+
+    /// [`WriteTxn::mark`].
+    pub(crate) fn mark(&self) -> Mark {
+        self.0.set.mark()
+    }
+
+    /// [`WriteTxn::rewind`].
+    pub(crate) fn rewind(&mut self, mark: Mark) -> bool {
+        self.0.rewind(mark)
     }
 }
 
