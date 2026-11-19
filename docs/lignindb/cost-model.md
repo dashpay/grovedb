@@ -8,7 +8,7 @@ It builds on the [storage surface inventory](storage-surface.md) (BASE-04), the 
 
 **Pinned commit:** the engine sources of `feat/LigninDB` at `54e36fb4` ("Merge BASE-01: the remaining cost-bearing operations"), which are those of `develop` `22f163c2`. Functions are cited by name, with the line at the pinned commit. Since then `develop` has been merged three times, up to `f1016919`, up to `2a79d035` and up to `2cfc1ce1`, and the golden corpus recorded again from each (`lignin-testkit/corpus/README.md`). The rules below predict every cost of the corpus recorded from `2cfc1ce1` as they did of the first, and the citations have not been moved.
 
-**Since SEAM-05** the storage rules of section 5 are the functions of `grovedb_costs::cost_model`, and the RocksDB engine charges only through them. Section 14 says which function is which rule. The citations of section 5 are of the code at the pinned commit, where the rules were written out in the storage contexts.
+**Since SEAM-05** the storage rules of section 5 are the functions of `grovedb_costs::cost_model`, and the RocksDB engine charges only through them. Section 14 says which function is which rule. Section 15 says how the LigninDB store, which keeps no node record, charges through the same functions (MERK-03). The citations of section 5 are of the code at the pinned commit, where the rules were written out in the storage contexts.
 
 **Result:** the storage rules of section 5, applied to a logical state that holds no node record, reproduce every `OperationCost` of the golden corpus: 380 traces and 229,526 steps on grove versions 1 to 5 at the standard scale, and the five reference traces of 1,050,008 operations each. Section 12 says how that is run, what it shows and what it does not. One thing it does not show: the corpus cannot tell whether a delete with no writer's cost is charged from the committed state or from the transaction's view (rule D2), because the two differ only for a record the same transaction wrote, and the corpus deletes such records only in an operation whose cost GroveDB drops. The storage crate's tests pin that instead.
 
@@ -785,7 +785,7 @@ The last three rows guard one property from three sides, and none of them is eno
 ### 14.6 For later tasks
 
 - **SEAM-08.** Done: section 14.7.
-- **MERK-03.** `grovedb_merk::cost_model` is the module to extend. Every storage charge of the LigninDB path is a call of a function above: `read` with `node_record_len` for a fetch, `BatchCharge` for a commit, the cursor functions with `node_record_len` for a record under a cursor. A store that holds a `TreeNode` has its record length from `grovedb_merk::cost_model::node_record_len`. One that holds the fields only gives N1 the encoded lengths of the feature and of each link, measured by Merk's encoders and not by a table of kinds. The ledger is the test that such a store reports only what the model hands out: the same comparison as `storage/tests/model_ledger.rs`, on the store's operations.
+- **MERK-03.** Done: section 15. `grovedb_merk::cost_model` is the module to extend. Every storage charge of the LigninDB path is a call of a function above: `read` with `node_record_len` for a fetch, `BatchCharge` for a commit, the cursor functions with `node_record_len` for a record under a cursor. A store that holds a `TreeNode` has its record length from `grovedb_merk::cost_model::node_record_len`. One that holds the fields only gives N1 the encoded lengths of the feature and of each link, measured by Merk's encoders and not by a table of kinds. The ledger is the test that such a store reports only what the model hands out: the same comparison as `storage/tests/model_ledger.rs`, on the store's operations.
 - **GROVE-04, MERK-05, TXN-08.** A `FlatStore` on LigninDB is an adapter that takes each cost from these functions. A batch has to be charged in the order of `batch_order()` and by stored key, which is prefix first. A range delete reports `clear_walk` and stages its deletes for D2.
 - **GROVE-13.** New storage rules are a new variant of `StorageCostModel`, and `storage_cost_model` maps the new grove version to it (section 14.3).
 
@@ -818,3 +818,81 @@ How it was checked:
 | GroveDB's estimates with no engine | GroveDB's library tests in the workspace `lignin-testkit/cost-model-storage/check.sh` lays out, where the storage crate is the model | Every estimate test passes with no RocksDB crate among the crates that are built (`cargo tree -e normal,build,dev`). The stand-in for the storage crate has no estimate of its own any more, and a handle is charged by the second implementation of the rules, so the tests that compare an estimate with an operation compare the two implementations of P1. Two things in GroveDB's tests name the `rocksdb` crate. The dev-dependency one test uses under `unsafe-dump-load` was left out for the run. The test of the `Engine` seam that looks at the error RocksDB itself returns for a lost commit is not built in that workspace: `check.sh` sets the cfg `lignin_cost_model`, and the test is compiled only without it. For the run the stand-in was given the error types SEAM-04 added to the storage crate; it has had them itself since the sync with `develop` `2a79d035` |
 | GroveDB's estimates with no engine, in this workspace (SEAM-07) | `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests`, which CI runs | The estimate tests that open no database pass with the real storage crate and its `rocksdb_storage` feature off, so with no RocksDB crate among the crates that are built (`cargo tree -e normal,build,dev`) and nothing left out: GroveDB's dev-dependency on the `rocksdb` crate is gone, and its `estimated_costs` feature turns no engine on. The tests that compare an estimate with an operation need a database and run with `rocksdb_storage`, or on the model as in the row above. [engine.md](engine.md#features-and-engines) has the features |
 | That no number moved | a sweep run before and after the change | The fifteen helpers and the batch estimator, for 119 paths of every block boundary, seven tree types and the five grove versions: 86,460 results, the same bytes before and after. With one byte added to each segment in the new function, 7,075 of them differ |
+
+## 15. The LigninDB store (MERK-03)
+
+LigninDB task MERK-03 ([task register 2](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583128)). `merk::store::lignin` is the first store that keeps no node record: a node is a cell of a tree page. Every charge it makes is a call of a function of section 14 with sizes it holds. This section says which call is made for which event, how a size is come by where there is no record, and how the store is held to it.
+
+### 15.1 Where each rule is charged
+
+| Rule | Event on the store | What the store hands the model |
+| --- | --- | --- |
+| R1 | `get_node`, `get_node_for_read`, `has_node` and `fetch_node` through a deferred or a read-only handle | `read(found)`, once for the operation, with N1 of the cell it found (section 15.2). A read the transaction did not perform is charged as one that found nothing. |
+| R1 | `root_key`, `get_aux_record`, `get_meta_record` | `read(found)` with the record's length |
+| R2 | every read through an immediate handle | `read_immediate()` |
+| `W-tx`, `B-part` | a commit, `write_node`, `set_root_key` and the meta writes on a deferred handle that has a batch | `staged_write()`. The writes are charged when `LigninBatch::apply` charges the batch. |
+| a refused write | the same on a deferred handle with no batch and on a read-only handle | `refused_write()` |
+| W1 | `put_node` with a writer's cost, on both kinds of handle, as the node joins the change set | `complete_new_key_cost(cost, stored_key_len)` |
+| W2, W3, W4, with K | each put of a batch that is applied | `BatchCharge::put` with the keyspace, the stored key's length, the record length, and the sizes and the cost Merk gave. For a node the record length is N1 of the node Merk wrote, taken in `prepare_node`. |
+| D1 | each removal with a writer's cost | `BatchCharge::delete(cost)` |
+| D2 | each removal with none | `BatchCharge::delete_uncosted(stored_key_len, committed)`. `committed` is the committed read of the transaction (RD10): for a node, N1 of the cell the committed state holds under the key, and for any other record its length. |
+| B1 | `LigninBatch::apply` | The keyspaces in the order of `batch_order()`, and within one by subtree and then by key, which is the order of stored keys. `finish(written)` once: `written` is whether the transaction took the batch. |
+| M1 | `write_node`, `set_root_key` and the meta writes on an immediate handle | `write_immediate()` |
+| M2 | a commit on an immediate handle | An `ImmediateBatchCharge` that each change is added to as it joins the change set, and `finish()` when the change set is committed, whether or not the transaction takes the writes. |
+| C1 to C3 | the cursor | Not built (MERK-05). A cursor on a node is charged `cursor_value` with N1 of the cell, as a read is. |
+
+The store adds nothing to a cost the model returns and drops none. It states no number of its own: a length is measured, and the model turns it into a charge.
+
+### 15.2 Sizes without a record
+
+- **A node that is read.** N1 is `grovedb_merk::cost_model::node_record_len_from_sizes`: the length of the value, the feature, and for each child the length of its key and the aggregate of the subtree under it. A cell holds all of them: the length of a value that is kept out of line, the feature and each aggregate as Merk's tag and numbers, and in each link the length of the child's key ([tree-page.md](tree-page.md) TP10, TP12). Nothing is encoded and the child's cell is not read for it. The feature and the aggregates are measured by Merk's own encoders, so a kind Merk gains is measured as Merk encodes it. A link encodes its child's key after one length byte, so the function measures a link with an empty key and adds the key's length; a test holds that to Merk's encoder for every kind of aggregate and every key length a link can hold.
+- **A node that is written.** Merk holds the node, and N1 is `grovedb_merk::cost_model::node_record_len`. A node that has no record length, which is one Merk could not encode, is refused by `put_node` and `write_node`.
+- **A node that is removed with no cost.** N1 of the committed cell, by the first function. The transaction's own version of the node is not looked at.
+- **The record length is never kept.** It moves when a descendant changes (section 9), so it is measured at each charge.
+- **One seek for one fetch.** A cell names a child by its address, and Merk's `Link` needs the child's key, so the store reads the cell of each child with its parent: up to three reads of the transaction for one node, and more when a commit lands between two of them and the node is read again. The charge is one R1 for the operation Merk made. A link is followed to where its node was last seen, and that fetch costs what a lookup by the key costs.
+
+### 15.3 One version
+
+A handle is opened with no grove version on every engine: `Engine::subtree` takes none, and of the operations of a `NodeStore` only two are given one. So the store charges by one version of the rules, `grovedb_merk::cost_model::HANDLE_COST_MODEL`, as the RocksDB engine charges by `rocksdb_storage::storage::COST_MODEL`. A test holds that `storage_cost_model` gives that version for every grove version. A grove version that charges by other storage rules (GROVE-13) fails the test, and has to reach the handles of both engines before it can pass.
+
+### 15.4 What the store does not charge, and where it is not RocksDB
+
+1. **The nodes of a dropped subtree** are not charged. On RocksDB a tree is removed node by node, each a D2. `LigninBatch::drop_subtree` takes the subtree out of the directory and charges nothing. GROVE-05 has to charge the removal as RocksDB does, from the committed sizes of the nodes: the same `delete_uncosted` for each.
+2. **A batch holds one change set for a Merk** and refuses a second. A storage batch keeps one final operation for a key and charges only that one (B1). Until the batch across subtrees says which of two stands (TXN-08), a history that writes one Merk twice in one batch cannot be charged on the store at all.
+3. **A cell whose feature or aggregate is no kind of Merk's** is `CorruptedData`, charged as a read that found nothing. RocksDB charges a record that does not decode at its length. No history of the engine's own writes leads to either.
+4. **A node written with `write_node` into a Merk that has no root** is taken by the transaction and cannot be read: a read by key walks from the root, and `write_node` states none. RocksDB finds the record by its key. Chunk restore writes this way (MERK-07).
+
+### 15.5 How the store is checked
+
+| What | Where | Holds |
+| --- | --- | --- |
+| A Merk on both engines | `merk/src/store/lignin/tests/cost.rs`, `a_merk_on_lignindb_costs_what_it_costs_on_rocksdb_on_every_grove_version` | On each of the five grove versions and for twelve tree types, a Merk on the store and a Merk on RocksDB are opened (as a base Merk, a layered one and one that stands alone), written by the same random batches, read, proved and asked for their root hash, on deferred handles with a batch and on immediate handles. The batches put ordinary values, values with a cost of their own (as sum items and trees have) and values with flags, and remove them; a client's two callbacks keep the epoch of a replaced value and section the bytes it frees. Every call, the application of every batch and every read of a meta record cost the same on both, with the removal arithmetic of the grove version. |
+| Each operation of the seam | the same file, `every_operation_of_the_store_costs_what_it_costs_on_rocksdb` | One history is played on handles of both engines, and each step and each applied batch must cost and end the same: every read, found and not; puts with no cost, with a cost that is checked, with one that is taken as given and with a prepaid one; removals with a cost, plain and sectioned, and with none; the root key, aux and meta records in the same ways; a record a batch writes twice; a put whose cost does not match, with writes before and after it in the order of a batch; a batch the transaction does not take; a handle with no batch; and an immediate handle. It is played under both removal arithmetics, so the order in which a batch is charged shows. |
+| D2 | `a_delete_with_no_cost_is_charged_from_the_committed_record`, `the_nodes_of_a_merk_removed_with_no_cost_are_charged_as_committed` | A node the transaction rewrote is removed at the length of the committed record, and one it created as an empty record, with the numbers of rule D2 and equal to RocksDB. Every node of a Merk whose shape the transaction changed is removed with no cost, as `Merk::clear` and the removal of a whole subtree do: the bytes loaded are those of the committed records. |
+| One seek for one fetch | `a_fetch_is_one_seek_and_the_record_length_however_it_is_served` | A fetch that reads three cells, one that is read again five times, one that follows a link and a lookup that reads one cell each cost one seek and the record length. |
+| The ledger | `the_store_reports_what_the_model_hands_out_and_nothing_else` | The same history on the store alone: after each part, the costs the store reported add up to what the model handed out (section 14.2). |
+| N1 from sizes | `merk/src/cost_model.rs` | The length is that of the record Merk encodes, for every kind of feature and of aggregate and every key length of a link. |
+| The corpus | `lignin-testkit/tests/merk_store.rs` | See below. |
+
+**The corpus.** GroveDB does not run on LigninDB before GROVE-01, so the corpus is replayed on RocksDB and what each operation did to the nodes of every Merk is handed to the store (node-store.md, "How it is checked"). Since MERK-03 the same change sets also go, call for call, to a second RocksDB storage that holds nothing else, and the replay compares:
+
+- **Every batch.** The application of the store's batch costs what the application of the second storage's batch costs. Each written node comes with one of the costs a writer gives, by turns: none, a new node or an update whose value cost the storage layer checks against the record (K3), and a cost that is taken as given, with bytes freed as plain numbers and by owner and epoch. Each removed node comes with a cost or with none. The second storage is committed whenever the LigninDB transaction is, so a removal with no cost meets the same committed state on both.
+- **Every read.** Each node that is read back, after the write that changed it and after each commit, is read on both engines at the same cost: a seek and the length of RocksDB's record, which the store works out from the cell.
+
+On the standard corpus, 375 traces on grove versions 1 to 5, replayed 563 times: 269,896 batches of 4,166,015 written and 106,617 removed nodes were charged the same on both (4,326,014 seeks, 2.2 GB of stored bytes), 53,382 of the removals with no cost (8.0 MB loaded from the committed state), and 7,284,656 reads (5.3 GB loaded).
+
+What this shows and what it does not:
+
+- The costs a writer gives are made up by the replay, so it shows that the store charges a node of the corpus as RocksDB does for the same sizes and the same cost, and not what GroveDB's Merks gave with each node. What Merk gives is the same on both engines, because Merk's rules run above the seam; the first row of the table runs them on both.
+- It compares each operation of the store with RocksDB, and not the `OperationCost` of a GroveDB operation with the recorded one. That comparison needs GroveDB on LigninDB, and is GROVE-10's and VER-02's.
+
+### 15.6 For later tasks
+
+- **MERK-04.** Opening a Merk charges the reads it makes: the root key record of a base Merk and the fetch of the root node. A root that comes from the subtree directory is still one R1 for the node.
+- **MERK-05.** The cursor charges C1 to C3: `cursor_move`, `cursor_key` with the stored key's length, and `cursor_value` with that and `node_record_len_from_sizes` of the cell. `Merk::clear` then removes each node with no cost, which the store charges by D2 already.
+- **MERK-07.** Chunk restore writes through immediate handles (M1, M2), which the history above covers, and with `write_node` (item 4 of section 15.4).
+- **MERK-08.** Merk's own tests assert costs in many places; they are the check of the cursor's charges.
+- **GROVE-02.** Propagation writes the parent's element with the cost Merk gives, through `put_node`; nothing in the store depends on which Merk a write belongs to.
+- **GROVE-03.** A node that is copied to another subtree is a put with no link sizes, charged by its record length: `node_record_len_from_sizes` of the cell it is copied from.
+- **GROVE-05.** Item 1 of section 15.4.
+- **GROVE-13.** Section 15.3.

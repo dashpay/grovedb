@@ -4,15 +4,16 @@
 //! [`grovedb_costs::cost_model`], which are re-exported here. Each takes
 //! logical sizes and returns an `OperationCost`. A store that keeps Merk's
 //! nodes for an engine charges through them and works out no charge of its
-//! own. The storage contexts under [`store::kv`](crate::store::kv) do so
-//! today, and the [`NodeStore`](crate::store::NodeStore) of another engine
-//! has to.
+//! own. The storage contexts under [`store::kv`](crate::store::kv) do so,
+//! and so does the store of LigninDB (`store::lignin`), which keeps no
+//! record of a node.
 //!
 //! This module adds what only Merk knows: which version of those rules a
-//! grove version charges by, and the sizes of a node as the rules take
-//! them. Merk's own cost rules, which decide what a node's key and value
-//! cost and which nodes are fetched, stay where they are, in
-//! [`tree`](crate::tree).
+//! grove version and a handle charge by, and the sizes of a node as the
+//! rules take them, for a node Merk holds ([`node_record_len`]) and for one
+//! a store holds as its parts ([`node_record_len_from_sizes`]). Merk's own
+//! cost rules, which decide what a node's key and value cost and which
+//! nodes are fetched, stay where they are, in [`tree`](crate::tree).
 //!
 //! The rules are specified in `docs/lignindb/cost-model.md`.
 

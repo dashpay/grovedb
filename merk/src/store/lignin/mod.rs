@@ -66,11 +66,15 @@
 //!
 //! # Costs
 //!
-//! Every charge comes from the functions of
-//! [`cost_model`](crate::cost_model), with the sizes Merk's own record has:
-//! a read is charged the record length of the node it found, a staged write
-//! nothing until its batch is applied, and a batch as a storage batch is.
-//! MERK-03 holds the store to the corpus on this.
+//! Every charge comes from the functions of [`cost_model`], with the sizes
+//! Merk's own record has: a read is charged the record length of the node
+//! it found, once for the read however many cells served it, a staged
+//! write nothing until its batch is applied, and a batch as a storage
+//! batch is. The record length of a cell is measured from its sizes
+//! ([`cost_model::node_record_len_from_sizes`]), and that of a node Merk
+//! writes from the node ([`cost_model::node_record_len`]): no record is
+//! encoded for a charge. `docs/lignindb/cost-model.md`, section 15, has the
+//! call for each event and how the store is held to it.
 //!
 //! # What is not here
 //!
