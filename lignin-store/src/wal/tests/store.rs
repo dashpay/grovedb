@@ -795,3 +795,78 @@ fn the_end_of_another_log_does_not_open_this_one() {
     ));
     assert_eq!(std.db.log.dir(), std.db.dir);
 }
+
+/// The group of a block of 20 transitions on the reference workload, as
+/// `log-format.md` sizes it: about 146 pages with a handful of changed
+/// hashes each, 20 values of 400 bytes, and the pointers 16 carried cells
+/// stop holding.
+fn block_group(at: &GroupPlace, out: &mut Vec<u8>) {
+    let mut group = GroupWriter::new(at.version(), at.address(), out).unwrap();
+    for value in 0..20u8 {
+        group.value(page(9), &[value; 400]).unwrap();
+    }
+    for raw in 1..=146u32 {
+        group
+            .tree_run_with(page(raw), None, |run| {
+                for slot in 1..=5u16 {
+                    run.push(&Delta::Hash {
+                        slot: SlotId::new(slot).unwrap(),
+                        field: HashField::KeyValue,
+                        hash: &[raw as u8; 32],
+                    })?;
+                }
+                Ok(())
+            })
+            .unwrap();
+    }
+    for released in 0..16 {
+        group
+            .released(&pointer(3, 20 + 500 * released, 400))
+            .unwrap();
+    }
+    group.finish();
+}
+
+/// What it costs to read a group as recovery will before it is appended,
+/// against what it costs to write the group.
+///
+/// `cargo test --release -p lignin-store --lib -- --ignored --nocapture reading_a_group`
+#[test]
+#[ignore = "a measurement, for a release build"]
+fn reading_a_group_before_it_is_appended_costs_what_writing_its_bytes_costs() {
+    use std::time::Instant;
+
+    use super::super::store::{check_item, ItemKind};
+
+    let std = StdDb::new(LogOptions::default());
+    let at = std.db.log.next_group().unwrap();
+    let mut bytes = Vec::new();
+    block_group(&at, &mut bytes);
+    let len = bytes.len();
+    assert!(check_item(at.cursor(), &bytes, ItemKind::Group).is_ok());
+
+    const ROUNDS: u32 = 2_000;
+    let (mut writing, mut reading) = (u128::MAX, u128::MAX);
+    for _ in 0..7 {
+        let start = Instant::now();
+        for _ in 0..ROUNDS {
+            bytes.clear();
+            block_group(&at, &mut bytes);
+            std::hint::black_box(&bytes);
+        }
+        writing = writing.min(start.elapsed().as_nanos());
+        let start = Instant::now();
+        for _ in 0..ROUNDS {
+            std::hint::black_box(check_item(at.cursor(), &bytes, ItemKind::Group).is_ok());
+        }
+        reading = reading.min(start.elapsed().as_nanos());
+    }
+    let per_group = |total: u128| total as f64 / f64::from(ROUNDS) / 1000.0;
+    println!(
+        "a group of {len} bytes: {:.1} µs to write, {:.1} µs to read before the append ({:.0}%)",
+        per_group(writing),
+        per_group(reading),
+        100.0 * reading as f64 / writing as f64
+    );
+    assert!(reading < writing * 3, "{reading} ns against {writing} ns");
+}

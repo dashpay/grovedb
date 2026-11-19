@@ -122,6 +122,11 @@ pub struct GroupPlace {
 }
 
 impl GroupPlace {
+    #[cfg(test)]
+    pub(super) fn cursor(&self) -> &LogCursor {
+        &self.cursor
+    }
+
     /// The file and the offset the group's first byte will have.
     pub fn place(&self) -> LogPlace {
         self.place
@@ -163,7 +168,7 @@ impl Sticky {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ItemKind {
+pub(super) enum ItemKind {
     Group,
     Change,
     Mark,
@@ -182,7 +187,11 @@ impl ItemKind {
 /// Reads `bytes` as recovery will: as records that follow what `before` has
 /// read. They must be exactly one item, of the kind `kind`. Returns the
 /// cursor behind the item.
-fn check_item(before: &LogCursor, bytes: &[u8], kind: ItemKind) -> Result<LogCursor, LogError> {
+pub(super) fn check_item(
+    before: &LogCursor,
+    bytes: &[u8],
+    kind: ItemKind,
+) -> Result<LogCursor, LogError> {
     let mut cursor = before.clone();
     let mut at = 0;
     loop {
