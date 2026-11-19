@@ -23,7 +23,7 @@ fn policies() -> [SyncPolicy; 3] {
 fn every_state_a_crash_can_leave_reads_as_the_items_that_were_appended() {
     let total = crash_states_of_drawn_sessions(1..=4, 100);
     assert!(total.states > 100_000, "{total:?}");
-    assert!(total.appended > 250 && total.turns > 15 && total.dropped > 5);
+    assert!(total.appended > 250 && total.turns > 15 && total.dropped > 0);
 }
 
 /// The same with more seeds and longer sessions: over a million states.

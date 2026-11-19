@@ -1,3 +1,4 @@
+mod checkpoint;
 mod crash;
 mod errors;
 mod faults;
@@ -662,6 +663,11 @@ impl Run {
         let Some(end) = db.log.end() else {
             return self.roll();
         };
+        if matches!(db.log.next_group(), Err(LogError::NoActiveFile)) {
+            // The session has no file yet, or an append to its file
+            // failed: the log is turned first.
+            return self.roll();
+        }
         let (bytes, version, appended) = match self.rng.below(6) {
             0 => {
                 let covers = version(self.rng.below(db.log.latest().get() + 1));

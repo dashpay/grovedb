@@ -634,7 +634,11 @@ fn the_next_session_goes_on_in_a_file_of_its_own() {
     // The session ends: the process is gone and nothing is lost.
     let mut std = std.reopen(small_files(3000));
     assert_eq!(std.db.log.latest(), latest);
-    assert_eq!(std.db.log.end(), None);
+    assert_eq!(
+        std.db.log.end(),
+        Some(end),
+        "where the last session's log ends"
+    );
     assert!(std.db.log.is_due());
     assert!(matches!(
         std.db.log.next_group(),
@@ -869,4 +873,138 @@ fn reading_a_group_before_it_is_appended_costs_what_writing_its_bytes_costs() {
         100.0 * reading as f64 / writing as f64
     );
     assert!(reading < writing * 3, "{reading} ns against {writing} ns");
+}
+
+#[test]
+fn the_end_of_the_log_never_goes_back() {
+    // A log with no record has no end.
+    let dir = tempfile::tempdir().unwrap();
+    let faulty = FaultyVfs::without_syncs(Arc::new(StdVfs));
+    let vfs: Arc<dyn Vfs> = Arc::new(faulty.clone());
+    ManifestStore::create(vfs.clone(), dir.path(), empty_manifest()).unwrap();
+    let mut db = Db::open(vfs.clone(), dir.path(), small_files(1500)).unwrap();
+    assert_eq!(db.log.end(), None);
+    assert_eq!(db.log.latest(), CommitVersion::EMPTY);
+
+    let mut rng = Rng(14);
+    let mut ends = vec![db.log.end()];
+    let note = |db: &Db, ends: &mut Vec<Option<LogPlace>>| {
+        let end = db.log.end();
+        assert!(end >= *ends.last().unwrap(), "{end:?} after {ends:?}");
+        ends.push(end);
+        end
+    };
+    db.roll().unwrap();
+    assert_eq!(note(&db, &mut ends), Some(place(1, FIRST)));
+    for round in 0..60 {
+        // It is the place behind the last item whose append returned.
+        let item = db.item(&mut rng).unwrap();
+        assert_eq!(note(&db, &mut ends), Some(item.end));
+        // What is refused moves nothing.
+        assert!(db.log.append_change(b"no record").is_err());
+        assert_eq!(note(&db, &mut ends), Some(item.end));
+        match round % 6 {
+            // A turn puts it behind the start record of the next file.
+            0 if db.log.is_due() => {
+                assert!(db.roll().unwrap());
+                let file = item.end.file().get() + 1;
+                assert_eq!(note(&db, &mut ends), Some(place(file, FIRST)));
+            }
+            // An append that fails leaves it where it was, and the turn
+            // that follows moves it on.
+            3 => {
+                let file = item.end.file().get();
+                faulty.fail(Op::Append, &log_name(file));
+                let error = db.change(&mut rng).unwrap_err();
+                assert!(matches!(error, LogError::NotAppended { .. }), "{error}");
+                assert_eq!(note(&db, &mut ends), Some(item.end));
+                assert!(db.roll().unwrap());
+                assert_eq!(note(&db, &mut ends), Some(place(file + 1, FIRST)));
+            }
+            // Syncs and manifests move nothing.
+            _ => {
+                db.log.sync().unwrap();
+                db.log.commit(&mut db.manifest).unwrap();
+                assert_eq!(note(&db, &mut ends), Some(item.end));
+            }
+        }
+    }
+    // The next session begins where this one ended, before it has a file
+    // of its own, and goes on from there.
+    let last = db.log.end();
+    drop(db);
+    let mut db = Db::open(vfs, dir.path(), LogOptions::default()).unwrap();
+    assert_eq!(note(&db, &mut ends), last);
+    db.roll().unwrap();
+    assert!(note(&db, &mut ends) > last);
+    let item = db.item(&mut rng).unwrap();
+    assert_eq!(note(&db, &mut ends), Some(item.end));
+    assert!(ends.len() > 150 && ends.is_sorted());
+}
+
+#[test]
+fn the_log_is_kept_from_the_place_of_every_hold() {
+    let mut std = StdDb::new(small_files(1500));
+    let mut rng = Rng(15);
+    let mut written = Vec::new();
+    while std.db.log.end().unwrap().file() < file_id(6) {
+        written.push(std.db.item(&mut rng).unwrap());
+        std.db.roll().unwrap();
+    }
+    std.db.log.sync().unwrap();
+    let end = std.db.log.end().unwrap();
+    let in_file = |file: u32| {
+        let item = written.iter().find(|item| item.at.file() == file_id(file));
+        item.unwrap().end
+    };
+    let last_of = |file: u32| {
+        let item = written.iter().rfind(|item| item.at.file() == file_id(file));
+        item.unwrap().end
+    };
+
+    // The whole log is kept, as while no checkpoint is in force.
+    let whole = std.db.log.hold_from(None).unwrap();
+    assert_eq!(whole.place(), None);
+    assert_eq!(std.db.log.drop_before(end).unwrap(), []);
+
+    // A hold on a place keeps its file and every later one, whatever the
+    // caller says it needs: also when the place is the end of its file.
+    let third = std.db.log.hold_from(Some(last_of(3))).unwrap();
+    assert_eq!(third.place(), Some(last_of(3)));
+    assert_eq!(std.db.log.drop_before(end).unwrap(), [], "the whole log");
+    drop(whole);
+    assert_eq!(
+        std.db.log.drop_before(end).unwrap(),
+        [file_id(1), file_id(2)]
+    );
+    assert_eq!(std.db.log.drop_before(end).unwrap(), []);
+    // The caller's own place holds as well: the earlier of the two counts.
+    let fifth = std.db.log.hold_from(Some(in_file(5))).unwrap();
+    drop(third);
+    assert_eq!(std.db.log.drop_before(in_file(4)).unwrap(), [file_id(3)]);
+    assert_eq!(std.db.log.drop_before(end).unwrap(), [file_id(4)]);
+    // Two holds: the earlier one counts, until it is dropped.
+    let sixth = std.db.log.hold_from(Some(end)).unwrap();
+    assert_eq!(std.db.log.drop_before(end).unwrap(), []);
+    drop(fifth);
+    assert_eq!(std.db.log.drop_before(end).unwrap(), [file_id(5)]);
+    drop(sixth);
+    assert_eq!(std.db.log.drop_before(end).unwrap(), []);
+
+    // A hold cannot bring back a file that is gone, or keep one that is no
+    // part of the log.
+    for gone in [in_file(1), place(7, FIRST), place(40, FIRST)] {
+        let error = std.db.log.hold_from(Some(gone)).unwrap_err();
+        assert!(
+            matches!(error, LogError::UnknownFile { file } if file == gone.file()),
+            "{error}"
+        );
+    }
+    std.db.log.commit(&mut std.db.manifest).unwrap();
+    let kept: Vec<_> = written
+        .iter()
+        .filter(|item| item.at.file() == file_id(6))
+        .cloned()
+        .collect();
+    assert_eq!(std.db.read().0, kept);
 }

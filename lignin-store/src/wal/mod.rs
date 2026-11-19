@@ -10,6 +10,8 @@
 //!   not whole.
 //! - [`SyncPolicy`] says when a commit makes the log durable: never, when
 //!   the last sync is an interval ago, or every time.
+//! - [`LogHold`] keeps the log from the place of a page-table checkpoint's
+//!   sample on.
 //!
 //! The bytes are `lignin-format`'s: `docs/lignindb/log-format.md` specifies
 //! them (rules LG1 to LG32), and its section 11 says what this module takes
@@ -266,17 +268,49 @@
 //! that synced before it ended. The next open removes a `.tmp` file that a
 //! crash left.
 //!
+//! # What a table checkpoint asks of the log
+//!
+//! `docs/lignindb/page-table.md` has the rules (K14), and
+//! [`TableCheckpoints`](crate::table::TableCheckpoints) checks what a
+//! table can check. The log gives it three things.
+//!
+//! **Where the log ends.** [`LogStore::end`] is the place after the last
+//! record of the log, and it never goes back: not over a turn, not over an
+//! append that failed, and not from one session to the next, which begins
+//! where the log of the last one ends. Every item whose append has
+//! returned is before it. A page step appends its record before its change
+//! reaches a block, so the record of every change that has reached a block
+//! is before it too. `TableCheckpoints::write` is given `|| log.end()`,
+//! and asks before it copies its first chain and after its last.
+//!
+//! **How far the log is durable**, as the version of the last group and as
+//! a place: what [`LogStore::sync`] returns. The sync that is begun after
+//! `write` has returned covers the end of its copy, and what it returns is
+//! passed to `TableCheckpoints::install`.
+//!
+//! **The files from the sample's place on.** The mark of a sample is
+//! appended with [`LogStore::append_mark`], and the end of the mark is the
+//! sample's place. [`LogStore::hold_from`] keeps the log from that place
+//! on for as long as the [`LogHold`] it returns lives: no file from the
+//! file of the place on is dropped, also not when the mark is the last
+//! item of its file and every commit in the file is covered. Whoever
+//! writes checkpoints has one hold for each checkpoint that the manifest
+//! names or may come to name: the one in force, one that is written and
+//! not discarded, and both after `ManifestInDoubt`. With no checkpoint in
+//! force it holds the whole log. The log knows no checkpoint: it keeps
+//! what it is told to keep.
+//!
 //! # Dropping files
 //!
 //! [`LogStore::drop_before`] is given the earliest place of the log that
-//! anything still needs, and takes out every file before the file of that
-//! place. What needs a place is the caller's to know (FL6): the commits the
-//! table checkpoint in force does not cover, the place of that checkpoint's
-//! sample, whose file is kept also when the mark is the last item in it
-//! (LG29), and every pending value. The log checks one thing: that it is
-//! durable up to the place. Then the first file that is left has a start
-//! record that no crash takes away, and what is left never reads as a log
-//! with no file.
+//! the caller still needs, and takes out every file before the file of
+//! that place and before the file of every [`LogHold`]. What needs a place
+//! is the caller's to know (FL6): the commits the table checkpoint in
+//! force does not cover, and every pending value. The place of a
+//! checkpoint's sample is kept by its hold. The log checks one more thing:
+//! that it is durable up to the place it is given. Then the first file
+//! that is left has a start record that no crash takes away, and what is
+//! left never reads as a log with no file.
 //!
 //! # What holds after a crash
 //!
@@ -295,10 +329,15 @@
 //! of that run or is not in it. After the first manifest of the next
 //! session it stays one or the other.
 //!
+//! With a table checkpoint in force, the log file of its sample's place is
+//! among the files that are read, from its first item, and the item that
+//! ends at the place is the checkpoint's mark.
+//!
 //! The tests check this on the simulated file system for every state a
 //! crash can leave after each step of drawn sessions, with faults at every
-//! operation and as they fall, and across sessions that go on after a
-//! crash.
+//! operation and as they fall, across sessions that go on after a crash,
+//! and with table checkpoints that are written, installed, discarded and
+//! left in doubt while log files are deleted.
 //!
 //! # Locks
 //!
@@ -358,19 +397,27 @@
 //!   change only when the append returned `Ok`.
 //! - It takes the sample of the counts for a table checkpoint together
 //!   with [`LogStore::append_mark`], under the lock on the counts: the
-//!   sample's place is the end of the mark.
-//! - It syncs the log after a table checkpoint has copied its last chain
-//!   and before the checkpoint is named, and passes what the sync returned
-//!   to the checkpoint's installation (LG29, K14).
-//! - It calls [`LogStore::drop_before`] only with a place before which
-//!   nothing is needed, and never with a place after the sample of the
-//!   table checkpoint in force.
+//!   sample's place is the end of the mark. It takes a [`LogHold`] from
+//!   that place before it gives the lock back.
+//! - It gives `TableCheckpoints::write` the end of the log as
+//!   `|| log.end()`. It syncs the log after `write` has returned and
+//!   before the checkpoint is named, and passes what the sync returned to
+//!   `TableCheckpoints::install` (LG29, K14).
+//! - It keeps a [`LogHold`] for the checkpoint the manifest names, from
+//!   [`CheckpointInfo::log_kept_from`], taken when the session opens the
+//!   log: the whole log if the manifest names none. It drops the hold of
+//!   a checkpoint when another one has been installed, or when the
+//!   checkpoint has been discarded, and not while the manifest is in
+//!   doubt.
+//! - It calls [`LogStore::drop_before`] only with a place before which it
+//!   needs nothing.
 //! - After [`LogError::SyncFailed`] it ends the session when it can and
 //!   opens the directory again: no commit of that session becomes durable
 //!   before.
 //!
 //! [`ManifestStore`]: crate::segment::ManifestStore
 //! [`ManifestStore::update`]: crate::segment::ManifestStore::update
+//! [`CheckpointInfo::log_kept_from`]: crate::table::CheckpointInfo::log_kept_from
 
 mod error;
 mod file;
@@ -382,4 +429,6 @@ mod tests;
 
 pub use error::LogError;
 pub use reader::{FileEnd, LogEnd, LogRead, LogReader, DEFAULT_READ_WINDOW_LEN};
-pub use store::{Appended, GroupPlace, LogOptions, LogStore, SyncPolicy, DEFAULT_TARGET_FILE_LEN};
+pub use store::{
+    Appended, GroupPlace, LogHold, LogOptions, LogStore, SyncPolicy, DEFAULT_TARGET_FILE_LEN,
+};

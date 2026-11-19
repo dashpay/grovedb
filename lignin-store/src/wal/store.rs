@@ -145,6 +145,57 @@ impl GroupPlace {
     }
 }
 
+/// The places the log is kept from, each for one checkpoint.
+#[derive(Debug, Default)]
+struct Holds {
+    kept: Mutex<BTreeMap<u64, Option<LogPlace>>>,
+    taken: AtomicU64,
+}
+
+/// Keeps the log from a place on, for a page-table checkpoint: from
+/// [`LogStore::hold_from`].
+///
+/// While it lives, [`LogStore::drop_before`] takes out no log file from the
+/// file of the place on, whatever place it is called with. Dropping the
+/// hold lets them go again.
+///
+/// Whoever writes and installs table checkpoints has one hold for each
+/// checkpoint that the manifest names or may come to name (K14 of
+/// `page-table.md`):
+///
+/// - for the checkpoint in force, from the session's start, until another
+///   one has been installed
+/// - for a checkpoint that was written, from the moment its sample is
+///   taken, until it is discarded or the manifest is known to name another
+/// - after `ManifestInDoubt`, for both, until the manifest has been opened
+///   again
+///
+/// Its place is [`CheckpointInfo::log_kept_from`]: the end of the mark the
+/// sample was taken at. With no checkpoint in force the whole log is kept,
+/// which is the hold from `None`.
+///
+/// [`CheckpointInfo::log_kept_from`]: crate::table::CheckpointInfo::log_kept_from
+#[derive(Debug)]
+pub struct LogHold {
+    holds: Arc<Holds>,
+    id: u64,
+    place: Option<LogPlace>,
+}
+
+impl LogHold {
+    /// The place the log is kept from. `None` is the place before every
+    /// record: the whole log is kept.
+    pub fn place(&self) -> Option<LogPlace> {
+        self.place
+    }
+}
+
+impl Drop for LogHold {
+    fn drop(&mut self) {
+        lock(&self.holds.kept).remove(&self.id);
+    }
+}
+
 /// An error of the file layer that the log goes on reporting.
 #[derive(Debug)]
 struct Sticky {
@@ -355,6 +406,8 @@ struct Tail {
     active: Option<(Arc<LogFile>, LogCursor)>,
     /// The start record of the session's first file.
     first_start: LogStart,
+    /// Where the log of the earlier sessions ends.
+    adopted_end: Option<LogPlace>,
     /// The version of the last commit group of the log.
     latest: CommitVersion,
     /// The file the log turns to next, and whether a durable manifest
@@ -384,9 +437,12 @@ impl Tail {
         }
     }
 
+    /// The place after the last record of the log.
     fn end(&self) -> Option<LogPlace> {
-        let (file, cursor) = self.active.as_ref()?;
-        LogPlace::new(file.id(), cursor.offset()).ok()
+        match &self.active {
+            Some((file, cursor)) => LogPlace::new(file.id(), cursor.offset()).ok(),
+            None => self.adopted_end,
+        }
     }
 
     /// The start record of the file the log turns to.
@@ -494,6 +550,7 @@ pub struct LogStore {
     syncing: Mutex<()>,
     files: RwLock<Files>,
     tail: Mutex<Tail>,
+    holds: Arc<Holds>,
     /// Whether the log would turn to another file now.
     due: AtomicBool,
 }
@@ -587,10 +644,12 @@ impl LogStore {
                 unsettled: None,
                 active: None,
                 first_start,
+                adopted_end: end.place(),
                 latest: end.latest(),
                 spare: None,
                 turn: 0,
             }),
+            holds: Arc::default(),
             due: AtomicBool::new(true),
         })
     }
@@ -628,8 +687,17 @@ impl LogStore {
         self.options
     }
 
-    /// Where the log ends now, in the file this session writes. `None`
-    /// until the session has turned to its first file.
+    /// Where the log ends now: the place after its last record, or `None`
+    /// while it has none. Before the session has turned to its first file
+    /// it is where the log of the earlier sessions ends.
+    ///
+    /// The place never goes back. Every item whose append has returned is
+    /// before it, so the record of every change that has reached a block is:
+    /// a page step appends its record before its change is written back.
+    /// This is what [`TableCheckpoints::write`] asks for, before it copies
+    /// its first chain and after its last (K14 of `page-table.md`).
+    ///
+    /// [`TableCheckpoints::write`]: crate::table::TableCheckpoints::write
     pub fn end(&self) -> Option<LogPlace> {
         self.tail().end()
     }
@@ -1120,17 +1188,10 @@ impl LogStore {
         }
 
         let mut files = self.files_mut();
-        let place = end.or_else(|| {
-            let last = files
-                .live
-                .values()
-                .rfind(|entry| entry.file.start().is_some())?;
-            LogPlace::new(last.file.id(), last.file.end()).ok()
-        });
-        if place >= files.durable.place {
+        if end >= files.durable.place {
             files.durable = LogDurable {
                 version: latest,
-                place,
+                place: end,
             };
         }
         files.last_sync = Instant::now();
@@ -1269,6 +1330,37 @@ impl LogStore {
             .map_err(LogError::format(file.path(), offset))
     }
 
+    /// Keeps the log from `place` on, for as long as the hold lives: for a
+    /// page-table checkpoint whose sample was taken there. `None` keeps the
+    /// whole log, as it is kept while no checkpoint is in force.
+    ///
+    /// [`Self::drop_before`] then takes out no file from the file of the
+    /// place on: also not when the place is that file's end and every
+    /// commit in the file is covered. A recovery from the checkpoint reads
+    /// that file from its start to find the mark, and takes the background
+    /// changes and the count changes from the place on (LG29). See
+    /// [`LogHold`] for who takes a hold, and when.
+    ///
+    /// The file of the place must be in the log
+    /// ([`LogError::UnknownFile`]): a hold cannot bring back what was
+    /// dropped.
+    pub fn hold_from(&self, place: Option<LogPlace>) -> Result<LogHold, LogError> {
+        let files = self.files();
+        if let Some(place) = place {
+            let held = files.live.get(&place.file());
+            if !held.is_some_and(|entry| entry.file.start().is_some()) {
+                return Err(LogError::UnknownFile { file: place.file() });
+            }
+        }
+        let id = self.holds.taken.fetch_add(1, Ordering::Relaxed);
+        lock(&self.holds.kept).insert(id, place);
+        Ok(LogHold {
+            holds: self.holds.clone(),
+            id,
+            place,
+        })
+    }
+
     /// Takes out of the log every file that lies wholly before the file of
     /// `keep_from`, and returns their ids. Such a file is no longer read,
     /// and [`Self::describe`] no longer lists it. Its file is deleted by
@@ -1281,6 +1373,9 @@ impl LogStore {
     /// sample, whose file is kept also when the mark is the last item in
     /// it (LG29), and every pending value. The caller vouches for it. The
     /// file of `keep_from` and every later one stay.
+    ///
+    /// So does every file from the file of a [`LogHold`] on, whatever
+    /// `keep_from` is: with a hold on the whole log, nothing is taken out.
     ///
     /// The log must be durable up to `keep_from` ([`LogError::NotDurable`]):
     /// sync it first. What is kept then begins with a file whose start
@@ -1302,6 +1397,14 @@ impl LogStore {
                 durable: files.durable.place,
             });
         }
+        // Read under the lock on the files, so that a hold that was taken
+        // on a file which is still in the log keeps it.
+        let held = lock(&self.holds.kept).values().copied().min();
+        let keep = match held {
+            Some(None) => return Ok(Vec::new()),
+            Some(Some(held)) => keep.min(held.file()),
+            None => keep,
+        };
         let mut taken = Vec::new();
         let before: Vec<FileId> = files.live.range(..keep).map(|(&id, _)| id).collect();
         for id in before {
