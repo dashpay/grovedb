@@ -276,6 +276,31 @@ impl Db {
         }
         group.finish();
 
+        // What a replay of the group makes of the pages as they were is
+        // what the commit installs: the cells, with the names of their
+        // values, are in the log as they are in the frames.
+        let logged = scan(&state.log).expect("a log").last();
+        let Some(LogItem::Commit(logged)) = logged else {
+            panic!("the log ends with the group");
+        };
+        for entry in logged.entries() {
+            let Entry::Tree(run) = entry else {
+                continue;
+            };
+            let copy = &pages.copies[&run.page()];
+            let mut frame = match copy.created {
+                true => vec![0; SIZE.get()],
+                false => self.at(run.page(), pages.at).to_vec(),
+            };
+            run.apply(&mut frame, SIZE, FRAME_FORMAT)
+                .expect("the run applies");
+            let image = |frame: &[u8]| {
+                let page = TreePage::from_validated(frame, FRAME_FORMAT);
+                page.expect("a tree page").to_image()
+            };
+            assert_eq!(image(&frame), image(&copy.frame.read()), "{}", run.page());
+        }
+
         for (page, copy) in std::mem::take(&mut pages.copies) {
             if !pages.sink.runs.contains_key(&page) {
                 self.pool.discard(&copy.frame).expect("discarded");

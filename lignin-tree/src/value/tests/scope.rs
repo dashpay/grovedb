@@ -524,10 +524,22 @@ fn a_pending_value_without_its_bytes_is_not_read() {
             refused.to_string(),
             format!("the bytes of a pending value of page {page} are missing")
         );
-        // The commit does not install such a page either.
+        // A commit does not install a page with a value of a scope's own
+        // that the scope does not hold. What an earlier commit left in the
+        // page is not the scope's to judge: it stays as it is.
         let mut latch = scope.pages.copies[&page].frame.write().expect("the latch");
-        let refused = scope.values.attach(&mut latch).expect_err("no such bytes");
-        assert!(matches!(refused, ValueError::NoValue { .. }), "{refused}");
+        let attached = scope.values.attach(&mut latch);
+        match bad == own {
+            true => {
+                let refused = attached.expect_err("no such value");
+                assert!(matches!(refused, ValueError::NoValue { .. }), "{refused}");
+            }
+            false => attached.expect("left as it is"),
+        }
+        // The bytes that no cell names any more are taken off, and no
+        // others: under `longer` the cell still names them.
+        let left = if bad == unknown { 1 } else { 2 };
+        assert_eq!(latch.attachments().count(), left);
         drop(latch);
         // The value of the other cell, which the scope did not touch, is
         // read from the frame of the committed page.

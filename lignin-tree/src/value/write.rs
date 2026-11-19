@@ -20,7 +20,7 @@ use lignin_store::{
 use super::{
     error::ValueError,
     policy::InlinePolicy,
-    read::{pending_bytes, ValueBuf, ValueSource},
+    read::{ValueBuf, ValueSource},
 };
 use crate::{
     fragment::{Pages, ValueWrite, Values},
@@ -307,9 +307,15 @@ impl TreeValues {
     /// [`Self::log_values`]: from the commit on, a reader finds a pending
     /// value with the frame of its page (`transactions.md` FL7). The bytes
     /// of a value that an earlier commit left pending in the page came
-    /// with the copy and stay.
+    /// with the copy and stay, as they are.
     ///
-    /// On an error the frame is as it was.
+    /// For a page of [`Self::pages`] it fails only for what
+    /// [`Self::log_values`] fails for as well, so a commit that has logged
+    /// its values, and has changed no page since, installs those pages
+    /// without an error from here. For any other page it fails only if a
+    /// cell holds a pending value under a name of a scope's own, which no
+    /// write that this was told of gave it. On an error the frame is as it
+    /// was.
     pub fn attach(&self, latch: &mut ExclusiveLatch<'_>) -> Result<(), ValueError> {
         let view = TreePage::from_validated(latch, FRAME_FORMAT)?;
         let page = view.id();
@@ -323,7 +329,7 @@ impl TreeValues {
             match held.get(&name) {
                 Some(Source::Bytes(bytes)) => own.push((name, Arc::clone(bytes))),
                 Some(_) => return Err(ValueError::NoValue { page }),
-                None => drop(pending_bytes(latch.attached(name), *pending, page)?),
+                None => {}
             }
         }
         let named = |name: &ValueId| cells.iter().any(|(_, pending)| pending.id() == *name);
