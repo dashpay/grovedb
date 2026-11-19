@@ -135,12 +135,7 @@ impl<'r, G: OperationGuard + ?Sized> NodeReader<'r, G> {
         if is_flat {
             return Ok(None);
         }
-        let page = PinnedPage::new(frame, self.lease)?;
-        let followed = page.view().resolve(handle).is_some();
-        Ok(followed.then_some(PinnedNode {
-            page,
-            slot: handle.slot(),
-        }))
+        Ok(PinnedPage::new(frame, self.lease)?.into_node(handle))
     }
 }
 
@@ -199,6 +194,18 @@ impl<'r> PinnedPage<'r> {
     /// The pinned frame.
     pub const fn frame(&self) -> &PageRef<'r> {
         &self.frame
+    }
+
+    /// The node `handle` names, which keeps this pin, or `None` if the
+    /// handle is no longer good here ([`NodePage::resolve`]): for a reader
+    /// that went from node to node inside the page and hands on the one it
+    /// ended at, without asking the pool again.
+    pub fn into_node(self, handle: NodeHandle) -> Option<PinnedNode<'r>> {
+        self.view().resolve(handle)?;
+        Some(PinnedNode {
+            page: self,
+            slot: handle.slot(),
+        })
     }
 }
 

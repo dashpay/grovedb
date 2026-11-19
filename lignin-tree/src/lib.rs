@@ -2,6 +2,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cursor;
 pub mod flat;
 pub mod fragment;
 mod guard;
