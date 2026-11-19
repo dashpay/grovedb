@@ -15,6 +15,7 @@ use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
     recovery::recover,
     segment::{read_manifest, FileNames, ManifestStore, SegmentStoreError},
+    wal::SyncPolicy,
 };
 use lignin_tree::{
     directory::Directory,
@@ -262,6 +263,7 @@ pub(super) fn open_store(
         refusing: Default::default(),
         dropped: Default::default(),
         reclaiming: Default::default(),
+        reclaimed: Default::default(),
         signal: Default::default(),
         troubles,
         ids_released: Default::default(),
@@ -380,6 +382,14 @@ fn create_keyspaces(shared: &Shared) -> Result<Directory, OpenError> {
     }
     drop(counts);
     drop(guard);
+    // The sync that the policy asks of a commit, before the publication.
+    let write_back = shared.write_back();
+    let synced = match store.log.options().sync {
+        SyncPolicy::Never => Ok(()),
+        SyncPolicy::EveryCommit => write_back.sync_log().map(drop),
+        SyncPolicy::Interval(_) => write_back.sync_log_if_due().map(drop),
+    };
+    synced.map_err(OpenError::create("the sync of the log"))?;
     store.commits.record(version, KeySet::default());
     store.directories.set(version, directory.clone());
     (versions.publish(version)).map_err(OpenError::create("the version"))?;

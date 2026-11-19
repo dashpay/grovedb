@@ -200,12 +200,19 @@
 //! (CF5). In every column the records of a subtree are those of its entry
 //! in the directory (`tree-layout.md` D6), so with the entries gone no
 //! record is left to read: no node, and no record of the data, roots, aux
-//! and meta columns. A snapshot from before the wipe keeps reading its
-//! version, a crash leaves the database as it was or empty, and an open
-//! write transaction that wrote a record before the wipe fails its commit
-//! with a conflict. Entering a subtree writes no record: a transaction
-//! that did nothing else commits after the wipe, and its subtree is in
-//! use and empty.
+//! and meta columns.
+//!
+//! **No commit comes between the wipe's look at the database and its
+//! publication.** The wipe holds the commit lock from the walk that finds
+//! the subtrees to drop until its version is published
+//! ([`Committer::commit_alone`](crate::commit::Committer)), so every
+//! other commit has a version before the wipe's, and is wiped, or after
+//! it. At the wipe's own version no subtree is entered. A snapshot from
+//! before the wipe keeps reading its version, a crash leaves the database
+//! as it was or empty, and an open write transaction that wrote a record
+//! before the wipe fails its commit with a conflict. Entering a subtree
+//! writes no record: a transaction that did nothing else commits after
+//! the wipe, and its subtree is in use and empty.
 //!
 //! What the wipe removed is storage until the reclaimer has taken it out,
 //! like what any drop leaves. No file is deleted by a wipe, and no entry
@@ -222,13 +229,15 @@
 //!    read with another, and nothing records which it was written with.
 //!    They become options when they are recorded (PERF-08).
 //! 3. **A wipe finds the subtrees to drop by a walk of the directory's
-//!    entries**, which reads every entry. A wipe of a database in which no
-//!    subtree is entered writes nothing and takes no version (CV2).
-//! 4. **A commit that lands while a wipe runs is before it or after it.**
-//!    The wipe is a transaction like any other: a commit that wrote into a
-//!    subtree the wipe drops makes it fail with a conflict, and it is made
-//!    again. A commit that only entered a subtree that no other hosts is
-//!    after the wipe, and its subtree stays.
+//!    entries**, which reads every entry, under the commit lock. A wipe of
+//!    a database in which no subtree is entered writes nothing and takes
+//!    no version (CV2).
+//! 4. **A wipe is made under one hold of the commit lock**, and not as a
+//!    transaction that is made again when a commit lands beside it: a
+//!    commit that entered a subtree between the walk and the wipe's commit
+//!    would meet none of the wipe's writes, and its records would be in
+//!    the wipe's own version. Commits wait for as long as the walk and the
+//!    drops take.
 //! 5. **Every error of `flush` ends the session for writes**, also one
 //!    that is not the sync's own: the caller asked for its commits to be
 //!    durable and was not given that.
@@ -285,12 +294,8 @@ use crate::{
     commit::{CommitError, CommitStats, Committed, NoStaleHashes, Published},
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
-    txn::{Batch, BatchError, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
+    txn::{Batch, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
 };
-
-/// How many times a wipe is made again after a commit beside it met one of
-/// its drops, before it gives up with the conflict.
-const WIPE_TRIES: usize = 64;
 
 /// What a [`Db::flush`] made durable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -475,7 +480,9 @@ impl Db {
         };
         let writer = shared.clone();
         let write_back = spawn("lignindb-write-back", Box::new(move || write_back(&writer)))?;
-        let (reclaimer, idle) = (shared.clone(), options.idle);
+        // A thread that is never to sleep would spin.
+        let idle = options.idle.max(Duration::from_millis(1));
+        let reclaimer = shared.clone();
         let reclaim = spawn(
             "lignindb-reclaim",
             Box::new(move || reclaimer.reclaim_loop(idle)),
@@ -666,6 +673,11 @@ impl Db {
     /// It is one commit (CV3), so no reader sees a database that is wiped
     /// in part, and a crash leaves it as it was or empty.
     ///
+    /// The commit lock is held from the walk that finds what there is to
+    /// drop until the wipe is published, so no commit comes between the
+    /// two: every commit is before the wipe, and wiped, or after it. At the
+    /// wipe's own version no subtree is entered.
+    ///
     /// Its key set is every key (CF5): an open write transaction that
     /// wrote a record before the wipe was published fails its commit with
     /// a conflict. A snapshot from before keeps reading its version.
@@ -674,54 +686,31 @@ impl Db {
     /// wipe writes nothing and takes no version ([`Committed::Empty`]).
     pub fn wipe(&self) -> Result<Committed, WriteError> {
         self.refused()?;
-        let committer = self.shared.committer();
         let mut everything = KeySet::new();
         everything.everything();
-        let refused = |error: TxnError| WriteError::Commit(CommitError::Refused(error));
-        // A subtree that a commit beside the wipe dropped first.
-        let gone =
-            |error: &TxnError| matches!(error, TxnError::Batch(BatchError::NotEntered { .. }));
-        for _ in 0..WIPE_TRIES {
-            let outermost = self.outermost().map_err(refused)?;
+        let committer = self.shared.committer();
+        let committed = committer.commit_alone(&mut NoStaleHashes, Some(&everything), |txn| {
+            let outermost = self.outermost()?;
             if outermost.is_empty() {
-                return Ok(Committed::Empty);
+                return Ok(());
             }
             let drops: Vec<SubtreeWrite<'_>> = (outermost.iter())
                 .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
                 .collect();
-            let batch = Batch {
+            let scope = txn.scope()?;
+            scope.apply(&Batch {
                 subtrees: &drops,
                 ..Batch::default()
-            };
-            let txn = committer.path().begin();
-            let applied = txn.scope().and_then(|scope| {
-                scope.apply(&batch)?;
-                scope.merge();
-                Ok(())
-            });
-            match applied {
-                Ok(()) => {}
-                Err(error) if gone(&error) => continue,
-                Err(error) => return Err(refused(error)),
-            }
-            let committed = committer.commit_covering(&txn, &mut NoStaleHashes, Some(&everything));
-            match self.settle(committed) {
-                Err(WriteError::Commit(CommitError::Conflict)) => {}
-                Err(WriteError::Commit(CommitError::Refused(error))) if gone(&error) => {
-                    let _ = committer.rollback(&txn);
-                }
-                Err(error) if error.leaves_transaction_open() => {
-                    let _ = committer.rollback(&txn);
-                    return Err(error);
-                }
-                ended => return ended,
-            }
-        }
-        Err(WriteError::Commit(CommitError::Conflict))
+            })?;
+            scope.merge();
+            Ok(())
+        });
+        self.settle(committed)
     }
 
     /// The subtrees in use that no other subtree hosts, as the latest
-    /// version has them: dropping them drops every subtree.
+    /// version has them: dropping them drops every subtree. The caller
+    /// holds the commit lock, so the latest version stays the latest.
     fn outermost(&self) -> Result<Vec<Subtree>, TxnError> {
         let shared = &*self.shared;
         let guard = shared.versions.guard();
@@ -748,7 +737,7 @@ impl Db {
             store: store.stats.read(&shared.write_back()),
             commits: store.committing.stats(),
             recovery: store.recovery.clone(),
-            reclaimed: lock(&store.reclaiming).stats(),
+            reclaimed: *lock(&store.reclaimed),
             ids_released: shared.count_released(),
             pins: shared.versions.pins_held(),
             guards: shared.versions.guards_held(),

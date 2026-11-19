@@ -11,7 +11,7 @@ use lignin_format::{CommitVersion, PageSize};
 use lignin_store::{flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError};
 
 use crate::{
-    commit::{CommitError, Published, Stopped},
+    commit::{CommitError, Failure, Published, Stopped},
     txn::TxnError,
 };
 
@@ -322,6 +322,26 @@ impl WriteError {
                 })
             }
             Self::Commit(CommitError::Stopped(stopped)) => Some(Reopen::Stopped(stopped.clone())),
+            Self::Commit(CommitError::Unsettled { version, source }) => {
+                Some(Reopen::Stopped(Stopped::Unsettled {
+                    version: *version,
+                    reason: source.to_string(),
+                }))
+            }
+            Self::Commit(CommitError::Halted { version, source }) => {
+                Some(Reopen::Stopped(Stopped::Halted {
+                    version: *version,
+                    reason: source.to_string(),
+                }))
+            }
+            // A commit that found a group in the log which the session
+            // never published has stopped the session as well.
+            Self::Commit(CommitError::Failed(gap @ Failure::VersionGap { latest, .. })) => {
+                Some(Reopen::Stopped(Stopped::Halted {
+                    version: latest.next().unwrap_or(*latest),
+                    reason: gap.to_string(),
+                }))
+            }
             Self::Commit(_) => None,
         }
     }

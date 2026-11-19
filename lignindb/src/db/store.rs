@@ -31,7 +31,10 @@ use lignin_tree::{
     value::InlinePolicy,
 };
 
-use super::{error::Reopen, reclaim::Reclaiming};
+use super::{
+    error::Reopen,
+    reclaim::{ReclaimStats, Reclaiming},
+};
 use crate::{
     commit::{CommitState, Committer},
     snapshot::{Directories, OperationGuard, ReadPath, Reclaim, Versions},
@@ -148,6 +151,9 @@ pub(super) struct Store {
     pub(super) dropped: Mutex<Vec<(CommitVersion, Dropped)>>,
     /// The reclaiming of what drops left: one round at a time.
     pub(super) reclaiming: Mutex<Reclaiming>,
+    /// What the reclaiming has done, as of its last finished piece of
+    /// work: whoever reads the counts waits for no round.
+    pub(super) reclaimed: Mutex<ReclaimStats>,
     /// Wakes the thread that reclaims.
     pub(super) signal: Signal,
     pub(super) troubles: Arc<Troubles>,

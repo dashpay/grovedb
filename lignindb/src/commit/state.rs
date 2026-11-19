@@ -81,7 +81,15 @@ pub struct CommitState {
     counters: Counters,
     /// Whom an error of write-back in a committer's own turn is told.
     report: Option<Report>,
+    /// What a test runs between the last step before a publication and
+    /// the publication, with the commit lock held.
+    #[cfg(test)]
+    before_publication: Mutex<Option<Hook>>,
 }
+
+/// What a test runs before a version is published.
+#[cfg(test)]
+type Hook = Box<dyn Fn(CommitVersion) + Send + Sync>;
 
 /// Whom an error of write-back is told.
 type Report = Box<dyn Fn(&FlushError) + Send + Sync>;
@@ -153,6 +161,24 @@ impl CommitState {
             rollbacks: read(&counters.rollbacks),
             stalls: read(&counters.stalls),
             write_back_errors: read(&counters.write_back_errors),
+        }
+    }
+
+    /// Has `hook` run before each version is published from here on, on
+    /// the committing thread, which holds the commit lock: everything of
+    /// the commit is done but the publication.
+    #[cfg(test)]
+    pub(crate) fn run_before_publication(
+        &self,
+        hook: impl Fn(CommitVersion) + Send + Sync + 'static,
+    ) {
+        *lock(&self.before_publication) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_publication(&self, version: CommitVersion) {
+        if let Some(hook) = &*lock(&self.before_publication) {
+            hook(version);
         }
     }
 

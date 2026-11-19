@@ -104,9 +104,12 @@
 //!   unreclaimed until the next open, and goes on writing to a log that
 //!   makes nothing durable any more.
 //! - **[`WritePath`](txn::WritePath).** A write transaction is begun with
-//!   [`Db::begin`]. [`WriteTxn::path`](txn::WriteTxn::path) shows the path
-//!   a transaction was begun from, for its counts and its keyspaces;
-//!   nothing is begun or committed through it.
+//!   [`Db::begin`], and the facade hands out no write path: a transaction
+//!   does not show the one it was begun from. What the layer above needs
+//!   of it is on the transaction: its own counts
+//!   ([`WriteTxn::stats`](txn::WriteTxn::stats)) and the store's, for the
+//!   hashes that layer computes itself
+//!   ([`WriteTxn::counts`](txn::WriteTxn::counts)).
 //!   [`WriteTxn::rollback`](txn::WriteTxn::rollback) is the transaction's
 //!   own half of [`Db::rollback`], which also lets write-back place what
 //!   waited for the transaction's copies.
@@ -114,8 +117,14 @@
 //!   [`Versions`](snapshot::Versions) and
 //!   [`Directories`](snapshot::Directories).** A snapshot is
 //!   [`Db::snapshot`] and an operation [`Db::read`]. Nothing outside this
-//!   crate can pair a read path with the pages of a store, and a version
-//!   is published by a commit alone.
+//!   crate can pair a read path with the pages of a store, and no call of
+//!   the facade gives out the versions of a database: a version of one is
+//!   published by a commit alone.
+//!
+//! One way around is left, and goes with the second unit of this task:
+//! the feature `testing` (`txn::testing`), which only tests switch on,
+//! gives the store of this crate's own tests with its write path, for the
+//! tests of crates that were written before the facade.
 //!
 //! What a caller does hold, for as long as it likes, borrows the
 //! database: a [`WriteTxn`](txn::WriteTxn) with its scopes and cursors, a

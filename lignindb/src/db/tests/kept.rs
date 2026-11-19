@@ -224,3 +224,60 @@ fn readers_beside_commits_that_drop_have_the_handle_of_their_version() {
     });
     assert_eq!(db.stats().background.reclaim_errors, 0);
 }
+
+/// The same order, in the commit itself: with everything of a commit done
+/// but the publication, a snapshot and an operation that begin are of the
+/// version before and have that version's handle, and the handle of the
+/// version that is about to be published is kept already. A commit that
+/// kept the handle after the publication would leave a reader of the new
+/// version with none.
+#[test]
+fn a_commit_keeps_the_handle_of_its_version_before_it_publishes_the_version() {
+    use std::sync::{Arc, Mutex};
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    let before = plant(&db, subtree(1), Merk::sized(b'k', 20, 20)).version;
+    let found = Arc::new(Mutex::new(Vec::new()));
+    let (shared, told) = (db.shared.clone(), found.clone());
+    (db.shared.store.committing).run_before_publication(move |version| {
+        let reads = shared.reads();
+        let snapshot = reads.snapshot();
+        let opens = |operation: &Operation<'_>| {
+            let opened = operation.open(subtree(1)).expect("a lookup");
+            opened.is_some()
+        };
+        let pinned = opens(&snapshot.operation());
+        let mut lease = LatestLease::new();
+        let unpinned = reads.operation(&mut lease);
+        let kept = shared.store.directories.at(version).is_some();
+        let row = (
+            version,
+            snapshot.version(),
+            pinned,
+            unpinned.at(),
+            opens(&unpinned),
+            kept,
+        );
+        told.lock().expect("the rows").push(row);
+    });
+    // The commit drops the subtree.
+    let writes = Writes {
+        drop: vec![subtree(1)],
+        ..Writes::default()
+    };
+    let after = writes.commit(&db).version;
+    // The hook holds the database's own parts: it goes before they do.
+    (db.shared.store.committing).run_before_publication(|_| {});
+    assert_eq!(Some(after), before.next());
+    let found = found.lock().expect("the rows").clone();
+    assert_eq!(found, [(after, before, true, before, true, true)]);
+    // From the publication on a reader is of the new version, with its
+    // handle: the subtree is not opened.
+    let snapshot = db.snapshot();
+    assert_eq!(snapshot.version(), after);
+    assert!(snapshot
+        .operation()
+        .open(subtree(1))
+        .expect("a lookup")
+        .is_none());
+}

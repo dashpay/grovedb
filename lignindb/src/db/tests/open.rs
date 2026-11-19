@@ -372,13 +372,7 @@ fn entries_that_are_not_the_engines_are_left_alone() {
     // A session that is not closed, so that the next one recovers.
     let db = Db::open(path, &options()).expect("the database is opened again");
     plant(&db, subtree(9), Merk::sized(b'k', 50, 300));
-    let threads = crate::db::store::lock(&db.threads)
-        .take()
-        .expect("the threads");
-    db.shared.store.signal.stop();
-    db.shared.write_back().stop();
-    threads.reclaim.join().expect("the reclaimer ends");
-    threads.write_back.join().expect("write-back ends");
+    halt_background(&db);
     drop(db);
     let db = Db::open(path, &options()).expect("the database is recovered");
     assert!(db.stats().recovery.commits > 0);
@@ -399,7 +393,11 @@ fn a_handle_whose_directory_was_removed_closes() {
         let path = dir.path().join("db");
         let db = Db::open(&path, &options()).expect("a new database");
         plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-        fs::remove_dir_all(&path).expect("the directory is removed");
+        // The database writes while its directory is taken away, so the
+        // removal is made until nothing is left.
+        while path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
         match explicit {
             true => {
                 let closed = db.close();
@@ -476,11 +474,7 @@ fn an_open_that_fails_at_any_file_operation_is_made_again() {
                 db.flush().expect("the log is synced");
                 // The session ends without a close, so the next one has a
                 // log to replay.
-                let threads = crate::db::store::lock(&db.threads).take().expect("threads");
-                db.shared.store.signal.stop();
-                db.shared.write_back().stop();
-                threads.reclaim.join().expect("the reclaimer ends");
-                threads.write_back.join().expect("write-back ends");
+                halt_background(&db);
                 drop(db);
             }
             fs.add_rule(FaultRule::new(Fault::Eio).skip(skip));

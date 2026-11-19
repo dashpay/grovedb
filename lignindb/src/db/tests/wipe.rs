@@ -328,7 +328,7 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
         });
         // A wipe every few milliseconds for as long as a writer writes,
         // and one when they are done.
-        let mut wipes = 0;
+        let (mut wipes, mut at_the_wipe) = (0, 0);
         loop {
             let writing = writers.iter().any(|writer| !writer.is_finished());
             let at = db.version();
@@ -337,6 +337,21 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
                 Committed::Published(wiped) => {
                     assert!(wiped.version > at);
                     wipes += 1;
+                    // At the wipe's own version nothing is entered,
+                    // whatever was committed while it ran: a reader that
+                    // gets that version finds no subtree of any writer.
+                    let snapshot = db.snapshot();
+                    if snapshot.version() == wiped.version {
+                        let operation = snapshot.operation();
+                        for writer in 0..WRITERS {
+                            for round in 0..ROUNDS {
+                                let subtree = numbered(writer * 1000 + round);
+                                let found = operation.open(subtree).expect("a lookup");
+                                assert!(found.is_none(), "{writer}/{round} outlived a wipe");
+                            }
+                        }
+                        at_the_wipe += 1;
+                    }
                 }
             }
             if !writing {
@@ -348,6 +363,7 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
             writer.join().expect("a writer ends");
         }
         assert!(wipes > 0, "no wipe found a subtree");
+        println!("{wipes} wipes, {at_the_wipe} of them read at their own version");
         done.store(true, Ordering::Release);
         assert!(reader.join().expect("the reader ends") > 0);
     });

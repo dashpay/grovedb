@@ -7,7 +7,10 @@ use std::{
 };
 
 use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
-use lignin_store::{load::LoadBuffers, stats::OpenWrite};
+use lignin_store::{
+    load::LoadBuffers,
+    stats::{OpenWrite, Stats},
+};
 use lignin_tree::{
     directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
@@ -284,8 +287,15 @@ impl<'s> WriteTxn<'s> {
     }
 
     /// The write path the transaction was begun from.
-    pub fn path(&self) -> &WritePath<'s> {
+    pub(crate) fn path(&self) -> &WritePath<'s> {
         &self.path
+    }
+
+    /// The counts of the store the transaction is of, for the layer above
+    /// to tell what the engine cannot see: the hashes it computes itself
+    /// ([`Stats::count_hashes`]).
+    pub fn counts(&self) -> &'s Stats {
+        self.path.stats
     }
 
     fn lock(&self) -> MutexGuard<'_, State<'s>> {

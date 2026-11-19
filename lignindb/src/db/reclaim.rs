@@ -170,6 +170,7 @@ impl Shared {
                 wait: Wait::new(latest),
             });
         }
+        *lock(&self.store.reclaimed) = work.stats();
         Ok(())
     }
 
@@ -199,6 +200,7 @@ impl Shared {
                 wait: Wait::new(version),
             });
         }
+        *lock(&store.reclaimed) = work.stats();
         let reclaimer = self.reclaimer();
         let catalog = *store.catalog();
         if !ending {
@@ -321,6 +323,7 @@ impl Shared {
         }
         round.waiting = (work.merks.len() + work.flats.len()) as u64;
         round.holds_cells = work.holds_cells();
+        *lock(&store.reclaimed) = work.stats();
         round
     }
 

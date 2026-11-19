@@ -1,6 +1,6 @@
 //! Tests of the facade, through its public calls: databases in a temporary
-//! directory, in memory where there is such a place, and on the simulated
-//! file system where a test cuts the power or fails a file operation.
+//! directory, and on the simulated file system where a test cuts the power
+//! or fails a file operation.
 
 mod kept;
 mod open;
@@ -59,16 +59,10 @@ pub(super) fn options() -> Options {
     }
 }
 
-/// A directory for a database, in memory where there is such a place: the
-/// syncs of a store's first files are most of what its tests would wait
-/// for.
+/// A directory for a database, in the temporary directory: `TMPDIR` says
+/// where that is.
 pub(super) fn temp() -> tempfile::TempDir {
-    let memory = Path::new("/dev/shm");
-    let dir = match memory.is_dir() {
-        true => tempfile::tempdir_in(memory),
-        false => tempfile::tempdir(),
-    };
-    dir.expect("a directory")
+    tempfile::tempdir().expect("a directory")
 }
 
 /// Every file below `dir` with its bytes, and every directory, by its path
@@ -354,4 +348,17 @@ impl Drop for Ending<'_> {
     fn drop(&mut self) {
         self.0.store(true, std::sync::atomic::Ordering::Release);
     }
+}
+
+/// Ends the two background threads of `db` and leaves the handle open: a
+/// session in which nothing is written back and nothing is reclaimed but
+/// what the test asks for, and one that ends, when the handle is dropped,
+/// as a process that is killed ends.
+pub(super) fn halt_background(db: &Db) {
+    let threads = crate::db::store::lock(&db.threads).take();
+    let threads = threads.expect("the threads of the database");
+    db.shared.store.signal.stop();
+    db.shared.write_back().stop();
+    threads.reclaim.join().expect("the reclaimer ends");
+    threads.write_back.join().expect("write-back ends");
 }

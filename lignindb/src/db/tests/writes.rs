@@ -403,13 +403,14 @@ fn a_flush_that_fails_ends_the_session_for_writes() {
 /// the commit path, and the facade says to open the database again.
 #[test]
 fn a_session_that_the_commit_path_stopped_takes_no_write() {
-    let mut stopped = 0;
-    for seed in 0..6 {
+    for seed in 0..4 {
         let (fs, options) = sim(40 + seed, SyncPolicy::Never);
         let db = Db::open("/db", &options).expect("a new database");
         enter(&db, &[1]);
-        // The background work may take the one failed append: then the
-        // commit is made, and the seed shows nothing.
+        // The background work is at rest, so the append that fails is the
+        // commit's: it is taken back, and the sync that would settle it
+        // fails too.
+        halt_background(&db);
         fs.add_rule(
             FaultRule::new(Fault::Eio)
                 .on(lignin_io::sim::OpKind::Append)
@@ -424,9 +425,10 @@ fn a_session_that_the_commit_path_stopped_takes_no_write() {
         let ended = writes.with(|batch| db.write(batch, &mut NoStaleHashes));
         fs.clear_rules();
         let Err(WriteError::Commit(CommitError::Unsettled { .. })) = &ended else {
-            continue;
+            panic!("seed {seed}: {ended:?}");
         };
-        stopped += 1;
+        let said = ended.expect_err("unsettled").reopen();
+        assert!(matches!(said, Some(Reopen::Stopped(_))), "{said:?}");
         assert_eq!(db.version(), before, "nothing is published");
         let reason = db.reopen().expect("the session is stopped");
         assert!(matches!(&reason, Reopen::Stopped(_)));
@@ -436,14 +438,16 @@ fn a_session_that_the_commit_path_stopped_takes_no_write() {
         assert!(matches!(&error, WriteError::Reopen(why) if *why == reason));
         assert_eq!(read_aux(&db.snapshot().operation(), 1, b"k"), Some(vec![1]));
     }
-    assert!(stopped > 0, "no seed left a commit unsettled");
 }
 
-/// A commit that found the session stopped says to open again by itself.
+/// A commit that ended the session, or found it ended, says to open again
+/// by itself.
 #[test]
-fn a_stopped_commit_names_its_reason() {
-    let stopped = crate::commit::Stopped::Halted {
-        version: CommitVersion::new(4).expect("a version"),
+fn a_commit_that_ends_the_session_names_its_reason() {
+    use crate::commit::{Failure, Stopped};
+    let version = |raw| CommitVersion::new(raw).expect("a version");
+    let stopped = Stopped::Halted {
+        version: version(4),
         reason: "refused".into(),
     };
     let error = WriteError::from(CommitError::Stopped(stopped.clone()));
@@ -451,4 +455,25 @@ fn a_stopped_commit_names_its_reason() {
     assert!(error.to_string().contains("the session takes no commit"));
     let reopen = error.reopen().expect("a reason");
     assert!(reopen.to_string().contains("could not be installed"));
+
+    let halted = WriteError::from(CommitError::Halted {
+        version: version(7),
+        source: Failure::PlaceLost,
+    });
+    let said = halted.reopen().expect("the commit halted the session");
+    assert!(
+        matches!(&said, Reopen::Stopped(Stopped::Halted { version: at, .. }) if *at == version(7))
+    );
+    assert!(!halted.leaves_transaction_open());
+    let gap = WriteError::from(CommitError::Failed(Failure::VersionGap {
+        log: version(9),
+        latest: version(5),
+    }));
+    let said = gap.reopen().expect("the commit stopped the session");
+    assert!(
+        matches!(&said, Reopen::Stopped(Stopped::Halted { version: at, .. }) if *at == version(6))
+    );
+    // A commit that only failed leaves the session as it was.
+    let failed = WriteError::from(CommitError::Failed(Failure::PlaceLost));
+    assert!(failed.reopen().is_none() && failed.published().is_none());
 }

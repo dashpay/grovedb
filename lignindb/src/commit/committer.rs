@@ -395,6 +395,80 @@ impl<'s> Committer<'s> {
         committed
     }
 
+    /// A commit that no other commit comes between: `write` is given a
+    /// write transaction of its own while the commit lock is held, and
+    /// what it writes is committed under that same hold of the lock. So
+    /// what `write` reads of the latest version is what the commit is made
+    /// over, and the version it publishes is the one after it. The key set
+    /// of the commit holds `also` beside the keys of the writes
+    /// ([`Self::commit_covering`]).
+    ///
+    /// It is for the one write that has to see everything it replaces: a
+    /// wipe, which drops every subtree the latest version has and must
+    /// leave none that a commit beside it entered. `write` runs under the
+    /// commit lock, so it calls the transaction it is given and reads
+    /// committed pages, and commits nothing itself.
+    ///
+    /// The transaction is the commit's own, so whatever the error nothing
+    /// of it is left: a write that `write` refuses is
+    /// [`CommitError::Refused`], and nothing was written.
+    pub(crate) fn commit_alone<R: HashRules>(
+        &self,
+        rules: &mut R,
+        also: Option<&KeySet>,
+        write: impl FnOnce(&WriteTxn<'s>) -> Result<(), TxnError>,
+    ) -> Result<Committed, CommitError> {
+        if let Some(stopped) = self.state.stopped() {
+            return Err(CommitError::Stopped(stopped));
+        }
+        self.look_at_log(true)?;
+        let path = self.path;
+        let txn = path.begin();
+        let mut untold = None;
+        let committed = self.write_locked(&txn, &path, rules, also, write, &mut untold);
+        if let Some(error) = untold {
+            self.state.write_back_failed(&error);
+        }
+        // The transaction goes with what it copied, whatever the outcome.
+        drop(txn);
+        self.after();
+        committed
+    }
+
+    /// [`Self::commit_alone`] from the commit lock on: the lock is taken
+    /// here, held while `write` writes `txn`, and given back by the commit
+    /// or on the way out.
+    fn write_locked<R: HashRules>(
+        &self,
+        txn: &WriteTxn<'s>,
+        path: &WritePath<'s>,
+        rules: &mut R,
+        also: Option<&KeySet>,
+        write: impl FnOnce(&WriteTxn<'s>) -> Result<(), TxnError>,
+        untold: &mut Option<FlushError>,
+    ) -> Result<Committed, CommitError> {
+        let lock = self.state.lock();
+        if let Some(stopped) = self.state.stopped() {
+            return Err(CommitError::Stopped(stopped));
+        }
+        self.look_at_log(false)?;
+        write(txn).map_err(CommitError::Refused)?;
+        let parts = match txn.seal() {
+            Ok(Sealed::Ready(parts)) => *parts,
+            Ok(Sealed::Empty) => return Ok(self.empty()),
+            // No commit was published since the transaction first wrote:
+            // the lock was held. A conflict is reported all the same.
+            Ok(Sealed::Conflict) => {
+                self.state.count(Counted::Conflict);
+                return Err(CommitError::Conflict);
+            }
+            Err(TxnError::ScopeOpen) => return Err(CommitError::ScopesOpen),
+            Err(TxnError::NotFinalized) => return Err(CommitError::NotFinalized),
+            Err(error) => return Err(CommitError::Refused(error)),
+        };
+        self.make(lock, path, parts, rules, also, untold)
+    }
+
     /// Rolls `txn` back (`transactions.md` WT9): its write set, its
     /// private copies and its version pin go, and the page ids it took
     /// return to the allocator. Nothing is written to a file and no
@@ -565,6 +639,8 @@ impl<'s> Committer<'s> {
         // before the version is published: whoever reads the version
         // finds its handle, and loads none.
         path.directories().set(version, directory.clone());
+        #[cfg(test)]
+        self.state.before_publication(version);
         if let Err(error) = path.versions.publish(version) {
             return Err(self.halted(version, error.into()));
         }

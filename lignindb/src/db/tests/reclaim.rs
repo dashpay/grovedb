@@ -364,11 +364,7 @@ fn a_page_that_is_freed_before_it_was_written_back_is_reclaimed_and_recovered() 
         ..options()
     };
     let db = Db::open("/db", &options).expect("a new database");
-    let threads = (crate::db::store::lock(&db.threads).take()).expect("the threads");
-    db.shared.store.signal.stop();
-    db.shared.write_back().stop();
-    threads.reclaim.join().expect("the reclaimer ends");
-    threads.write_back.join().expect("write-back ends");
+    halt_background(&db);
 
     let settle = |merks: u64| {
         for _ in 0..1_000 {

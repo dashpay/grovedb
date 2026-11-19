@@ -9,8 +9,10 @@
 //! cargo test --release -p lignindb --lib -- --ignored --nocapture the_reopen_of_a_store
 //! ```
 //!
-//! `LIGNINDB_REOPEN_DIR` names a directory on a disk for the store (about
-//! 1 GiB); without it the store is in memory, where a sync costs nothing.
+//! `LIGNINDB_REOPEN_DIR` names a directory for the store (about 1 GiB);
+//! without it the store is in the temporary directory. On a file system in
+//! memory a sync costs nothing, and on a disk the syncs are most of the
+//! time: the test says how many there were and how long they took.
 
 use std::{
     fmt, io,
