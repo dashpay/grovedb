@@ -49,7 +49,7 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
             if matches!(node.hosted, Hosted::Set(hosted) if hosted.len() > MAX_HOSTED) {
                 return Err(BatchError::TooManyHosted { subtree });
             }
-            if let ValuePut::Inline(value) | ValuePut::OutOfLine(value) = node.value {
+            if let ValuePut::Value(value) = node.value {
                 value_len(value.len())?;
             }
             once(&mut keys, unit, node.key)?;

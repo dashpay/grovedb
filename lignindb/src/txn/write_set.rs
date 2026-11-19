@@ -34,13 +34,11 @@ pub(crate) enum ValueEntry {
     /// The value of the entry before this one for the same key, or with
     /// none before it, the committed value.
     Keep,
-    /// A value in the node's cell.
-    Inline(Span),
-    /// A value out of line.
-    OutOfLine(Span),
+    /// The value the write stated.
+    Value(Span),
     /// The transaction's own copy of the committed value the entry kept, in
     /// the arena of kept values (WT3, WT7).
-    Kept { span: Span, out_of_line: bool },
+    Kept(Span),
 }
 
 /// The Merks a written node hosts.
@@ -418,8 +416,7 @@ impl WriteSet {
                 };
                 let value = match node.value {
                     ValuePut::Keep => ValueEntry::Keep,
-                    ValuePut::Inline(value) => ValueEntry::Inline(self.arena.put(value)),
-                    ValuePut::OutOfLine(value) => ValueEntry::OutOfLine(self.arena.put(value)),
+                    ValuePut::Value(value) => ValueEntry::Value(self.arena.put(value)),
                 };
                 let entry = NodeEntry {
                     feature: self.arena.put(node.feature),
@@ -549,12 +546,8 @@ impl WriteSet {
                     },
                     value: match node.value {
                         ValueEntry::Keep => ValuePut::Keep,
-                        ValueEntry::Inline(span) => ValuePut::Inline(self.arena.get(span)),
-                        ValueEntry::OutOfLine(span) => ValuePut::OutOfLine(self.arena.get(span)),
-                        ValueEntry::Kept { span, out_of_line } => match out_of_line {
-                            false => ValuePut::Inline(self.kept.get(span)),
-                            true => ValuePut::OutOfLine(self.kept.get(span)),
-                        },
+                        ValueEntry::Value(span) => ValuePut::Value(self.arena.get(span)),
+                        ValueEntry::Kept(span) => ValuePut::Value(self.kept.get(span)),
                     },
                     at: None,
                 }
@@ -710,7 +703,7 @@ impl WriteSet {
     /// one. `None` says that it is the committed value and that no copy was
     /// taken, which is the case only while the transaction's frames hold
     /// it.
-    pub(crate) fn node_value(&self, id: EntryId) -> Option<(&[u8], bool)> {
+    pub(crate) fn node_value(&self, id: EntryId) -> Option<&[u8]> {
         let mut id = id;
         loop {
             let entry = self.entry(id);
@@ -718,11 +711,8 @@ impl WriteSet {
                 return None;
             };
             match node.value {
-                ValueEntry::Inline(span) => return Some((self.arena.get(span), false)),
-                ValueEntry::OutOfLine(span) => return Some((self.arena.get(span), true)),
-                ValueEntry::Kept { span, out_of_line } => {
-                    return Some((self.kept.get(span), out_of_line))
-                }
+                ValueEntry::Value(span) => return Some(self.arena.get(span)),
+                ValueEntry::Kept(span) => return Some(self.kept.get(span)),
                 ValueEntry::Keep => id = entry.prev?,
             }
         }
@@ -751,12 +741,12 @@ impl WriteSet {
 
     /// Gives the written node `id`, which kept its value, the
     /// transaction's own copy of that value.
-    pub(crate) fn keep(&mut self, id: EntryId, value: &[u8], out_of_line: bool) {
+    pub(crate) fn keep(&mut self, id: EntryId, value: &[u8]) {
         let span = self.kept.put(value);
         let Kind::Node(node) = &mut self.entries[id as usize].kind else {
             unreachable!("a node keeps a value");
         };
-        node.value = ValueEntry::Kept { span, out_of_line };
+        node.value = ValueEntry::Kept(span);
     }
 
     fn mark_met(&mut self, id: EntryId, version: CommitVersion) {

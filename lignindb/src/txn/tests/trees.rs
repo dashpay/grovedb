@@ -11,6 +11,9 @@ use super::{
 
 const PARENT: u8 = 10;
 
+/// The shortest value that the store of these tests puts out of line.
+const LONG: usize = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 1;
+
 /// The keys and values of one Merk.
 type Items = BTreeMap<Vec<u8>, Vec<u8>>;
 
@@ -260,7 +263,7 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         format!("v{index:03}").into_bytes()
     }
     /// A batch that gives the Merk `count` nodes from `from` on, two of
-    /// three with a value that is too long for a cell of these tests.
+    /// three with a value that is longer than the store keeps in a cell.
     fn long<'s>(
         world: &World<'s>,
         tx: &Tx<'s>,
@@ -268,23 +271,38 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         from: usize,
         count: usize,
     ) -> OwnedBatch {
-        let mut merk = world.merk(tx, 1, |items| {
+        let merk = world.merk(tx, 1, |items| {
             for index in from..from + count {
                 let len = match index % 3 {
                     0 => 20,
-                    _ => 200 + rng.below(1_500),
+                    _ => LONG + rng.below(1_500),
                 };
                 items.insert(key(index), value(rng, len));
             }
         });
-        merk.out_of_line_above = 64;
         let records = World::root_record(&merk).into_iter().collect();
         let merks = vec![merk];
         OwnedBatch { merks, records }
     }
     let subtree = model::subtree(1);
 
+    // The length alone says where a value goes: one of the threshold's
+    // length is in its cell, and one byte more is out of line.
     let tx = world.begin();
+    assert_eq!(tx.txn.path().inline_policy().threshold(), LONG - 1);
+    world.edit(&tx, 2, |items| {
+        items.insert(b"at".to_vec(), vec![1; LONG - 1]);
+    });
+    assert_eq!(tx.txn.stats().held_values, (0, 0));
+    world.edit(&tx, 2, |items| {
+        items.insert(b"over".to_vec(), vec![2; LONG]);
+        items.insert(b"none".to_vec(), Vec::new());
+    });
+    assert_eq!(tx.txn.stats().held_values, (1, LONG));
+    world.check(&tx);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+
     let batch = long(&world, &tx, &mut rng, 0, 40);
     world.apply(&tx, &batch).expect("values out of line");
     // The transaction reads the bytes it holds (WT4).
@@ -370,7 +388,7 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         };
         let (pending, len, value_len, empty) =
             (reader.txn.node(subtree, at, shown)).expect("a read");
-        assert_eq!(pending, record.value.len() > 64, "{at:?}");
+        assert_eq!(pending, record.value.len() >= LONG, "{at:?}");
         assert_eq!(
             (len, value_len, empty),
             (record.value.len(), record.value.len(), false)
@@ -382,7 +400,7 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         drop(items.insert(key(0), b"changed".to_vec()))
     });
     let kept: Vec<Vec<u8>> = (expected.iter())
-        .filter(|(at, value)| matches!(value, Val::Node(node) if node.value.len() > 64 && **at != key(0)))
+        .filter(|(at, value)| matches!(value, Val::Node(node) if node.value.len() >= LONG && **at != key(0)))
         .map(|(at, _)| at.clone())
         .collect();
     let untouched = kept.iter().filter(|at| {

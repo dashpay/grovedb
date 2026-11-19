@@ -17,6 +17,7 @@ use lignin_tree::{
     flat::{Committed, FlatTree, Private},
     fragment::Layout,
     node::Lease,
+    value::InlinePolicy,
 };
 
 use super::{
@@ -151,6 +152,7 @@ pub struct WritePath<'s> {
     pub(crate) directory: &'s dyn Directory,
     pub(crate) keyspaces: Keyspaces,
     pub(crate) layout: Layout,
+    pub(crate) inline: InlinePolicy,
 }
 
 /// The parts of a store that a [`WritePath`] is made of.
@@ -170,13 +172,19 @@ pub(crate) struct Store<'s> {
 
 impl<'s> WritePath<'s> {
     /// The write path of the database whose structures `store` names, with
-    /// its records in `keyspaces` and its Merk nodes laid out by `layout`.
-    /// The caller vouches that all of them are of one store.
+    /// its records in `keyspaces`, its Merk nodes laid out by `layout`, and
+    /// the values of its nodes in their cells up to the threshold of
+    /// `inline`. The caller vouches that all of them are of one store.
     #[cfg_attr(
         any(not(test), loom),
         expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
     )]
-    pub(crate) fn new(store: Store<'s>, keyspaces: Keyspaces, layout: Layout) -> Self {
+    pub(crate) fn new(
+        store: Store<'s>,
+        keyspaces: Keyspaces,
+        layout: Layout,
+        inline: InlinePolicy,
+    ) -> Self {
         Self {
             versions: store.versions,
             loader: store.loader,
@@ -187,6 +195,7 @@ impl<'s> WritePath<'s> {
             directory: store.directory,
             keyspaces,
             layout,
+            inline,
         }
     }
 
@@ -208,6 +217,11 @@ impl<'s> WritePath<'s> {
     /// The size of the store's pages.
     pub const fn page_size(&self) -> PageSize {
         self.layout.page_size()
+    }
+
+    /// Which values of Merk nodes are stored in their cells.
+    pub const fn inline_policy(&self) -> InlinePolicy {
+        self.inline
     }
 
     /// Begins a write transaction (`transactions.md` WT1). Any number of

@@ -335,8 +335,6 @@ pub struct OwnedMerk {
     pub root: Option<Option<Vec<u8>>>,
     /// The Merks the nodes host, by key.
     pub hosted: BTreeMap<Vec<u8>, Vec<Subtree>>,
-    /// Above which length a stated value goes out of line.
-    pub out_of_line_above: usize,
     /// Whether the Merk has a host that the batch does not write.
     pub anchored: bool,
 }
@@ -372,7 +370,6 @@ impl OwnedMerk {
             removed,
             root: (root != old_root).then_some(root),
             hosted: BTreeMap::new(),
-            out_of_line_above: usize::MAX,
             anchored: false,
         }
     }
@@ -419,10 +416,7 @@ impl OwnedBatch {
                 },
                 value: match stated {
                     false => ValuePut::Keep,
-                    true if node.value.len() > merk.out_of_line_above => {
-                        ValuePut::OutOfLine(&node.value)
-                    }
-                    true => ValuePut::Inline(&node.value),
+                    true => ValuePut::Value(&node.value),
                 },
                 at: None,
             }

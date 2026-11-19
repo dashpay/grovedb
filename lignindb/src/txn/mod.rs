@@ -125,11 +125,13 @@
 //!   node that hosts a Merk of the same batch names it ([`Hosted::Set`],
 //!   [`BatchError::HostKeeps`]).
 //!
-//! A value is kept ([`ValuePut::Keep`]), stated in its cell
-//! ([`ValuePut::Inline`]) or stated out of line ([`ValuePut::OutOfLine`]).
-//! The bytes of a value out of line stay with the transaction until its
-//! commit carries them in the log group (WT4, FL7); where a value goes out
-//! of line is the caller's rule (TREE-08).
+//! A value is kept ([`ValuePut::Keep`]) or stated ([`ValuePut::Value`]).
+//! Whether a stated value is stored in its cell or out of line is the
+//! store's rule, by the value's length alone
+//! ([`InlinePolicy`](lignin_tree::value::InlinePolicy),
+//! [`WritePath::inline_policy`]). The bytes of a value out of line stay
+//! with the transaction until its commit carries them in the log group
+//! (WT4, FL7).
 //!
 //! # Locations that are kept
 //!

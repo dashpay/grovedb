@@ -134,15 +134,15 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             BatchError::KeyTwice { unit: aux() }
         );
         let nodes = [
-            node(b"a", ValuePut::Inline(b"1")),
-            node(b"a", ValuePut::Inline(b"2")),
+            node(b"a", ValuePut::Value(b"1")),
+            node(b"a", ValuePut::Value(b"2")),
         ];
         let unit = Unit::data(one);
         assert_eq!(
             batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
             BatchError::KeyTwice { unit }
         );
-        let nodes = [node(b"a", ValuePut::Inline(b"1"))];
+        let nodes = [node(b"a", ValuePut::Value(b"1"))];
         let removed: [&[u8]; 2] = [b"b", b"a"];
         let write = MerkWrite {
             removed: &removed,
@@ -172,14 +172,14 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             subtree: one,
             len: 256,
         };
-        let nodes = [node(&long, ValuePut::Inline(b"1"))];
+        let nodes = [node(&long, ValuePut::Value(b"1"))];
         assert_eq!(
             batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
             too_long
         );
         let nodes = [NodePut {
             right: link(&long),
-            ..node(b"a", ValuePut::Inline(b"1"))
+            ..node(b"a", ValuePut::Value(b"1"))
         }];
         assert_eq!(
             batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
@@ -191,7 +191,7 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             ..merk(1, &[], RootPut::Keep)
         };
         assert_eq!(batch_error(&tx, &merks(&[write])), too_long);
-        let nodes = [node(b"a", ValuePut::Inline(b"1"))];
+        let nodes = [node(b"a", ValuePut::Value(b"1"))];
         assert_eq!(
             batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Set(Some(&long)))])),
             too_long
@@ -206,7 +206,7 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
         let hosted = [other; 256];
         let nodes = [NodePut {
             hosted: Hosted::Set(&hosted),
-            ..node(b"a", ValuePut::Inline(b"1"))
+            ..node(b"a", ValuePut::Value(b"1"))
         }];
         assert_eq!(
             batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
@@ -254,13 +254,13 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             // that is gone (WT7b).
             let nodes = [NodePut {
                 left: link(b"absent"),
-                ..node(b"z", ValuePut::Inline(b"1"))
+                ..node(b"z", ValuePut::Value(b"1"))
             }];
             assert_eq!(
                 batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
                 BatchError::NoChild { subtree: one }
             );
-            let nodes = [node(b"z", ValuePut::Inline(b"1"))];
+            let nodes = [node(b"z", ValuePut::Value(b"1"))];
             assert_eq!(
                 batch_error(
                     &tx,
@@ -271,7 +271,10 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
             // A cell is smaller than half a page: the tree layer refuses
             // the write before it changes a page.
             let huge = vec![1; 6_000];
-            let nodes = [node(b"huge", ValuePut::Inline(&huge))];
+            let nodes = [NodePut {
+                feature: &huge,
+                ..node(b"huge", ValuePut::Value(b"1"))
+            }];
             let error = refused(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)]));
             assert!(matches!(error, TxnError::Fragment(_)), "{error}");
             assert!(error.source().is_some());
@@ -489,7 +492,7 @@ fn nodes_and_flat_records_do_not_share_a_data_column() {
             }
         }
         // A batch that writes both under one subtree, which had neither.
-        let nodes = [node(b"n", ValuePut::Inline(b"1"))];
+        let nodes = [node(b"n", ValuePut::Value(b"1"))];
         for record in &flat_in(8) {
             let batch = Batch {
                 records: std::slice::from_ref(record),

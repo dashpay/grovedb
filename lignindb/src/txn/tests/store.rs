@@ -30,6 +30,7 @@ use lignin_tree::{
     flat::{Committed, FlatConfig, FlatPages, FlatTree, Private},
     fragment::Layout,
     node::{Lease, NodePage},
+    value::InlinePolicy,
 };
 
 use crate::{
@@ -336,7 +337,12 @@ impl Db {
             commits: &self.commits,
             directory: &self.roots,
         };
-        WritePath::new(store, self.keyspaces(), Layout::proposed(SIZE))
+        WritePath::new(
+            store,
+            self.keyspaces(),
+            Layout::proposed(SIZE),
+            InlinePolicy::DEFAULT,
+        )
     }
 
     /// The read path of this store under its `versions`.

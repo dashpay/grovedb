@@ -382,9 +382,9 @@ impl<'s> WriteTxn<'s> {
             // entry would be met: the node it kept the value of is there.
             let address = find(&mut pages, root, state.set.key(id))?
                 .ok_or(TxnError::Damaged("a node whose value is kept is gone"))?;
-            let (value, out_of_line) = Self::read_value(path, &mut pages, address)?
+            let value = Self::read_value(path, &mut pages, address)?
                 .ok_or(TxnError::PendingValue { subtree })?;
-            state.set.keep(id, &value, out_of_line);
+            state.set.keep(id, &value);
         }
         Ok(())
     }
@@ -533,8 +533,7 @@ impl<'s> WriteTxn<'s> {
                     continue;
                 }
                 let value = match state.set.own(Unit::data(subtree), node.key) {
-                    Own::Node(id) => (state.set.node_value(id))
-                        .map(|(value, out_of_line)| (value.to_vec(), out_of_line)),
+                    Own::Node(id) => state.set.node_value(id).map(<[u8]>::to_vec),
                     Own::Deleted | Own::Put(_) => None,
                     Own::Unwritten => {
                         let root = committed_root(&subtree)?;
@@ -554,20 +553,19 @@ impl<'s> WriteTxn<'s> {
             entry += merk.removed.len() as EntryId;
         }
         let first = state.set.add(batch, op.at, &empty);
-        for (offset, (value, out_of_line)) in kept {
-            state.set.keep(first + offset, &value, out_of_line);
+        for (offset, value) in kept {
+            state.set.keep(first + offset, &value);
         }
         Ok(Applied::default())
     }
 
-    /// The bytes of the value of the committed cell at `address`, and
-    /// whether the value is out of line. `None` for a pending value, whose
-    /// bytes are not the transaction's to read.
+    /// The bytes of the value of the committed cell at `address`. `None`
+    /// for a pending value, whose bytes are not the transaction's to read.
     fn read_value(
         path: &WritePath<'s>,
         pages: &mut CommittedPages<'_, 's>,
         address: CellAddress,
-    ) -> Result<Option<(Vec<u8>, bool)>, TxnError> {
+    ) -> Result<Option<Vec<u8>>, TxnError> {
         let mut value = Vec::new();
         let place = pages.page(address.page(), |page| {
             let node = page.node(address.slot())?;
@@ -578,12 +576,12 @@ impl<'s> WriteTxn<'s> {
             Some(stored.place())
         })?;
         match place.ok_or(NodeError::NoNode { address })? {
-            None => Ok(Some((value, false))),
+            None => Ok(Some(value)),
             Some(ValuePlace::Placed(pointer)) => {
                 let mut buf = Vec::new();
                 let read = path.values.read(pointer, address.page(), &mut buf)?;
                 read.parts().for_each(|part| value.extend_from_slice(part));
-                Ok(Some((value, true)))
+                Ok(Some(value))
             }
             Some(ValuePlace::Pending(_)) => Ok(None),
         }

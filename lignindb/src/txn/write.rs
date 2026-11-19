@@ -90,12 +90,12 @@ pub enum ValuePut<'a> {
     /// applied: the write changes a hash or a link and leaves the value
     /// (`node-store.md`, the kinds `StructureChanged` and `HashOnly`).
     Keep,
-    /// A value that is stored in the node's cell.
-    Inline(&'a [u8]),
-    /// A value that is too long for its cell. It stays with the
+    /// The value. Its length alone says whether it is stored in the node's
+    /// cell or out of line: that is the store's rule
+    /// ([`InlinePolicy`](lignin_tree::value::InlinePolicy)), and not the
+    /// writer's to choose. A value that goes out of line stays with the
     /// transaction until its commit carries it in the log group (WT4, FL7).
-    /// Where a value goes out of line is the caller's rule (TREE-08).
-    OutOfLine(&'a [u8]),
+    Value(&'a [u8]),
 }
 
 /// The Merks a written node hosts.

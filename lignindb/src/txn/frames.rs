@@ -704,10 +704,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                         return Err(BatchError::NoValue { subtree }.into())
                     }
                     ValuePut::Keep => ValueWrite::Keep,
-                    ValuePut::Inline(value) => ValueWrite::Inline(value),
-                    // A value of no bytes is never out of line.
-                    ValuePut::OutOfLine([]) => ValueWrite::Inline(&[]),
-                    ValuePut::OutOfLine(value) => {
+                    // The length alone says where a value goes, and a
+                    // value of no bytes is never out of line.
+                    ValuePut::Value(value) if path.inline.is_inline(value.len()) => {
+                        ValueWrite::Inline(value)
+                    }
+                    ValuePut::Value(value) => {
                         let pending = self.values.hold(Arc::from(value))?;
                         held.push(pending);
                         ValueWrite::Pending(pending)

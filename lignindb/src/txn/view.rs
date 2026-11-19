@@ -147,9 +147,7 @@ impl<'a> NodeView<'a> {
             },
             // A record is shown only once the transaction has its own copy
             // of every value its write set refers to (WT7).
-            Source::Record { set, id } => {
-                NodeValue::Bytes(set.node_value(id).map_or(&[], |(value, _)| value))
-            }
+            Source::Record { set, id } => NodeValue::Bytes(set.node_value(id).unwrap_or_default()),
         }
     }
 
