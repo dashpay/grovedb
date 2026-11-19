@@ -39,7 +39,7 @@ pub(crate) struct ArenaMark {
 /// A piece never moves. A chunk is allocated once, at the size of the
 /// pieces it will hold, so putting a piece in allocates only when a chunk
 /// is full.
-#[derive(Debug, Default)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct Arena {
     chunks: Vec<Vec<u8>>,
     bytes: usize,

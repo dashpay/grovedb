@@ -1,16 +1,15 @@
 //! The write transaction and its scope.
 
 use std::{
-    cell::Cell,
+    collections::HashMap,
     fmt,
-    marker::PhantomData,
-    sync::{Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
 use lignin_store::load::LoadBuffers;
 use lignin_tree::{
-    directory::{Directory, DirectoryError},
+    directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
     node::{Lease, NodeError, NodeHandle},
     value::{read_value, ValueBuf},
@@ -21,7 +20,7 @@ use super::{
     commits::Watch,
     error::{BatchError, TxnError},
     frames::{stored_key, Awake, Frames, Parked, Woken},
-    key::{Column, Subtree, Unit},
+    key::{Column, KeySet, Subtree, Unit},
     opened::Opened,
     pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
@@ -29,7 +28,10 @@ use super::{
     write::{Applied, Batch, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, Own, WriteSet},
 };
-use crate::snapshot::{OperationGuard, VersionPin};
+use crate::{
+    scope::table::{Scopes, Who},
+    snapshot::{OperationGuard, VersionPin},
+};
 
 /// What a write transaction holds at one moment: for whoever bounds its
 /// memory, and for the tests.
@@ -95,8 +97,22 @@ struct State<'s> {
     /// the frames could not be made: the write set names what the
     /// committed state does not hold.
     stuck: Option<(CommitVersion, usize)>,
-    /// Whether a scope is open.
-    scope: bool,
+    /// The scopes that are open, what each has claimed, and the pending
+    /// marks (`crate::scope`).
+    scopes: Scopes,
+    /// For each subtree the transaction has written under: the Merks it
+    /// is below in the committed version the transaction last looked at,
+    /// or none where that version has not entered it (CF5,
+    /// `WriteTxn::meet_below`).
+    under: HashMap<Subtree, Option<Vec<MerkId>>>,
+    /// The commits whose key sets were taken and that were not looked at
+    /// for what their drops cover (`WriteTxn::meet_below`): the look that
+    /// was owed them failed on a read, and the next one makes it.
+    owed: Vec<(CommitVersion, Arc<KeySet>)>,
+    /// The next look at what the drops of commits cover is refused: for a
+    /// test of a read that fails there.
+    #[cfg(test)]
+    refuse_look: bool,
     /// The savepoints that are set, oldest first, each the place of the
     /// write set at which it was set (WT8, `crate::savepoint`).
     savepoints: Vec<Mark>,
@@ -115,6 +131,8 @@ impl State<'_> {
         self.stuck = None;
         if self.set.is_empty() {
             self.watch = None;
+            self.under.clear();
+            self.owed.clear();
         }
     }
 
@@ -129,8 +147,17 @@ impl State<'_> {
     fn end(&mut self) {
         self.set.clear();
         self.savepoints.clear();
+        self.scopes.clear_marks();
         self.release();
         self.renew_lease();
+    }
+
+    /// The place after the transaction's last write, and after the last
+    /// change of its pending marks.
+    fn mark(&self) -> Mark {
+        let mut mark = self.set.mark();
+        mark.pending = self.scopes.marks_len();
+        mark
     }
 
     /// Takes out the writes after `mark`, and says whether `mark` is a
@@ -139,7 +166,11 @@ impl State<'_> {
         if !self.set.holds(mark) {
             return false;
         }
-        if self.set.rewind(mark) {
+        // The pending marks that were set or taken off after the mark go
+        // with the writes after it (WT8). The frames know the cells of the
+        // marked elements, so they are made again with them.
+        let marks = self.scopes.rewind_marks(mark.pending);
+        if self.set.rewind(mark) || marks {
             // The frames are made again from what is left, over the latest
             // version of that moment (WT8). The base stays pinned until
             // then: what is left may keep committed values.
@@ -221,7 +252,11 @@ impl<'s> WriteTxn<'s> {
                 lease_at: None,
                 directory: None,
                 stuck: None,
-                scope: false,
+                scopes: Scopes::default(),
+                under: HashMap::new(),
+                owed: Vec::new(),
+                #[cfg(test)]
+                refuse_look: false,
                 savepoints: Vec::new(),
                 buffers: LoadBuffers::new(),
                 key: Vec::new(),
@@ -258,28 +293,14 @@ impl<'s> WriteTxn<'s> {
         })
     }
 
-    /// The state, for an operation that is made outside any scope, or
-    /// through the one that is open.
-    fn enter(&self, scoped: bool) -> Result<MutexGuard<'_, State<'s>>, TxnError> {
+    /// The state, for a call that needs every scope closed: a rollback of
+    /// the transaction and its commit (SC8, CM1).
+    fn closed(&self) -> Result<MutexGuard<'_, State<'s>>, TxnError> {
         let state = self.lock();
-        if state.scope && !scoped {
+        if state.scopes.any_open() {
             return Err(TxnError::ScopeOpen);
         }
         Ok(state)
-    }
-
-    /// Opens a scope: the handle a thread writes the transaction through
-    /// (SC1). Until parallel scopes exist (TXN-09) a transaction has one at
-    /// a time, and a second is refused with [`TxnError::ScopeOpen`].
-    pub fn scope(&self) -> Result<Scope<'_, 's>, TxnError> {
-        let mut state = self.enter(false)?;
-        state.scope = true;
-        Ok(Scope {
-            txn: self,
-            mark: state.set.mark(),
-            open: true,
-            one_thread: PhantomData,
-        })
     }
 
     /// What the transaction holds now.
@@ -309,7 +330,7 @@ impl<'s> WriteTxn<'s> {
     ///
     /// It is refused while a scope is open.
     pub fn rollback(&self) -> Result<(), TxnError> {
-        self.enter(false)?.end();
+        self.closed()?.end();
         Ok(())
     }
 
@@ -319,14 +340,14 @@ impl<'s> WriteTxn<'s> {
         Held(self.lock())
     }
 
-    /// The place after the transaction's last write: what a savepoint and a
-    /// scope remember (WT8, SC6).
+    /// The place after the transaction's last write: what a savepoint
+    /// remembers (WT8).
     #[cfg_attr(
         any(not(test), loom),
         expect(dead_code, reason = "a savepoint takes its mark through `Held`")
     )]
     pub(crate) fn mark(&self) -> Mark {
-        self.lock().set.mark()
+        self.lock().mark()
     }
 
     /// Takes out every write that was made after `mark`, with its
@@ -343,20 +364,46 @@ impl<'s> WriteTxn<'s> {
         expect(dead_code, reason = "a savepoint goes back to its mark through `Held`")
     )]
     pub(crate) fn rewind(&self, mark: Mark) -> bool {
-        self.lock().rewind(mark)
+        let mut state = self.lock();
+        // A scope's writes are taken out with the scope, and with nothing
+        // else, while it is open (SC8).
+        !state.scopes.any_open() && state.rewind(mark)
     }
 
     /// Takes in the key sets of the commits that were published up to `at`
     /// since the transaction last looked: the entries they meet go into
     /// the overlap set (WT7, CF3).
-    fn take_in(state: &mut State<'s>, at: CommitVersion) {
+    ///
+    /// What a drop covers without naming it is met as well: the subtrees
+    /// below a dropped one (CF5, [`Self::meet_below`]).
+    fn take_in(
+        &self,
+        state: &mut State<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Result<(), TxnError> {
         if let Some(watch) = &mut state.watch {
-            let mut commits = Vec::new();
-            watch.take(at, &mut commits);
-            for (version, keys) in commits {
-                state.set.meet(version, &keys);
+            let taken = state.owed.len();
+            watch.take(at, &mut state.owed);
+            for (version, keys) in &state.owed[taken..] {
+                state.set.meet(*version, keys);
             }
         }
+        // The key sets are taken once. A look that fails on a read leaves
+        // its commits owed, so that no drop goes unmet.
+        let owed: Vec<_> = std::mem::take(&mut state.owed);
+        let looked = self.meet_below(state, guard, at, &owed);
+        if looked.is_err() {
+            state.owed = owed;
+        }
+        looked
+    }
+
+    /// Has the transaction's next look at what the drops of commits cover
+    /// fail, as a page read does.
+    #[cfg(test)]
+    pub(crate) fn refuse_look(&self) {
+        self.lock().refuse_look = true;
     }
 
     /// Brings the transaction to the commits that were published up to
@@ -368,7 +415,7 @@ impl<'s> WriteTxn<'s> {
         guard: &OperationGuard<'s>,
         at: CommitVersion,
     ) -> Result<(), TxnError> {
-        Self::take_in(state, at);
+        self.take_in(state, guard, at)?;
         if state.set.met() > 0 {
             // Before it gives up the version it read them at, the
             // transaction takes its own copy of every committed byte its
@@ -448,7 +495,7 @@ impl<'s> WriteTxn<'s> {
                 at = pin.version();
                 continue;
             }
-            match Frames::build(path, &guard, at, &state.set) {
+            match Self::build(path, &guard, at, &state.set, &state.scopes) {
                 Ok(frames) => {
                     if !state.set.is_empty() {
                         state.rebuilds += 1;
@@ -475,22 +522,6 @@ impl<'s> WriteTxn<'s> {
             state.lease_at = Some(at);
         }
         Ok(Op { guard, at })
-    }
-
-    fn apply_in(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
-        check(batch)?;
-        // A batch that writes nothing adds nothing (GM0).
-        if batch.is_empty() {
-            return Ok(Applied::default());
-        }
-        let mut state = self.enter(true)?;
-        let state = &mut *state;
-        let applied = (self.begin(state, true)).and_then(|op| self.write(state, &op, batch));
-        if state.set.is_empty() {
-            // Nothing was added, so nothing is held (PN1).
-            state.release();
-        }
-        applied
     }
 
     fn write(
@@ -521,7 +552,8 @@ impl<'s> WriteTxn<'s> {
                     // again from the write set, which does not (WT10).
                     frames.discard();
                     state.renew_lease();
-                    if let Ok(frames) = Frames::build(path, &op.guard, op.at, &state.set) {
+                    let frames = Self::build(path, &op.guard, op.at, &state.set, &state.scopes);
+                    if let Ok(frames) = frames {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
                     }
@@ -563,7 +595,12 @@ impl<'s> WriteTxn<'s> {
                     continue;
                 }
                 let value = match state.set.own(Unit::data(subtree), node.key) {
-                    Own::Node(id) => state.set.node_value(id).map(<[u8]>::to_vec),
+                    Own::Node(id) => match state.set.node_value(id).map(<[u8]>::to_vec) {
+                        Some(value) => Some(value),
+                        // The node is one of the frames, which hold its
+                        // value: the batch is one that is not laid out.
+                        None => self.framed_value(state, op, &subtree, node.key)?,
+                    },
                     Own::Deleted | Own::Put(_) => None,
                     Own::Unwritten if left => None,
                     Own::Unwritten => {
@@ -608,14 +645,15 @@ impl<'s> WriteTxn<'s> {
 
     fn get_in(
         &self,
-        scoped: bool,
+        who: Who,
         unit: Unit,
         key: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<bool, TxnError> {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, unit)?;
         match state.set.own(unit, key) {
             Own::Put(value) => {
                 out.extend_from_slice(value);
@@ -648,14 +686,15 @@ impl<'s> WriteTxn<'s> {
 
     fn committed_get_in(
         &self,
-        scoped: bool,
+        who: Who,
         unit: Unit,
         key: &[u8],
         out: &mut Vec<u8>,
     ) -> Result<bool, TxnError> {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, unit)?;
         let opened = Opened::at(&mut state.directory, &self.path, &op.guard, op.at)?;
         match opened.root(&self.path, &op.guard, &unit.subtree)? {
             Some(_) => self.committed_record(state, &op, unit, key, out),
@@ -798,15 +837,20 @@ impl<'s> WriteTxn<'s> {
 
     fn node_in<R>(
         &self,
-        scoped: bool,
+        who: Who,
         subtree: Subtree,
         key: &[u8],
         hint: Option<NodeHandle>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
+            Ok(shown) => return Ok(shown),
+            Err(read) => read,
+        };
         let read = match self.own_node(state, &op, subtree, key, hint, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
@@ -837,7 +881,7 @@ impl<'s> WriteTxn<'s> {
     /// shows the node of its own version (RD6).
     pub(crate) fn own_node_in<R, F>(
         &self,
-        scoped: bool,
+        who: Who,
         subtree: Subtree,
         key: &[u8],
         read: F,
@@ -845,9 +889,14 @@ impl<'s> WriteTxn<'s> {
     where
         F: FnOnce(Option<NodeView<'_>>) -> R,
     {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
+            Ok(shown) => return Ok(Ok(shown)),
+            Err(read) => read,
+        };
         if state.set.own(Unit::data(subtree), key) == Own::Unwritten {
             return Ok(Err(read));
         }
@@ -856,14 +905,15 @@ impl<'s> WriteTxn<'s> {
 
     fn committed_node_in<R>(
         &self,
-        scoped: bool,
+        who: Who,
         subtree: Subtree,
         key: &[u8],
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
         let root = self.committed_root(state, &op.guard, op.at, &subtree)?;
         // The committed node is found by its key, in the committed tree:
         // the transaction may have rebuilt the tree around it (RD10). It is
@@ -878,15 +928,19 @@ impl<'s> WriteTxn<'s> {
 
     fn child_in<R>(
         &self,
-        scoped: bool,
+        who: Who,
         subtree: Subtree,
         parent: NodeHandle,
         side: Side,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<Option<R>, TxnError> {
-        let mut state = self.enter(scoped)?;
+        let mut state = self.lock();
         let state = &mut *state;
         let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        if Self::reads_by_key(state, who, Unit::data(subtree)) {
+            return Ok(None);
+        }
         if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             if parent.lease() != frames.lease() {
                 return Ok(None);
@@ -951,10 +1005,12 @@ impl<'s> WriteTxn<'s> {
     /// replaces the committed record, and with what.
     pub(crate) fn with_set<R>(
         &self,
-        scoped: bool,
+        who: Who,
+        unit: Unit,
         read: impl FnOnce(&WriteSet) -> R,
     ) -> Result<R, TxnError> {
-        let state = self.enter(scoped)?;
+        let mut state = self.lock();
+        self.claim_read_now(&mut state, who, unit)?;
         Ok(read(&state.set))
     }
 
@@ -977,8 +1033,11 @@ impl<'s> WriteTxn<'s> {
         expect(dead_code, reason = "the commit (TXN-05) is its one caller")
     )]
     pub(crate) fn seal(&self) -> Result<Sealed<'s>, TxnError> {
-        let mut state = self.enter(false)?;
+        let mut state = self.closed()?;
         let state = &mut *state;
+        if !state.scopes.finalized() {
+            return Err(TxnError::NotFinalized);
+        }
         if state.set.is_empty() {
             // The savepoints of a transaction that commits are ignored
             // (WT8), also where it commits nothing.
@@ -987,15 +1046,18 @@ impl<'s> WriteTxn<'s> {
         }
         // The conflict is decided before anything else is read, so that no
         // error of a read the transaction has no more use for stands in
-        // its place (CF6).
-        {
+        // its place (CF6). What a drop covers below the subtree it names
+        // is read from the subtree directory: a write that is met without
+        // it is the conflict, whatever that read came to.
+        let taken = {
             let guard = self.path.versions.guard();
-            Self::take_in(state, guard.latest());
-        }
+            self.take_in(state, &guard, guard.latest())
+        };
         if state.set.met() > 0 {
             state.end();
             return Ok(Sealed::Conflict);
         }
+        taken?;
         let op = self.begin(state, false)?;
         let Some(frames) = state.frames.take() else {
             if state.set.met() > 0 {
@@ -1006,7 +1068,7 @@ impl<'s> WriteTxn<'s> {
             }
             // The write set names what the committed state does not hold.
             return Err(
-                match Frames::build(&self.path, &op.guard, op.at, &state.set) {
+                match Self::build(&self.path, &op.guard, op.at, &state.set, &state.scopes) {
                     Err(error) => error,
                     Ok(_) => TxnError::Damaged("frames that could not be made are made"),
                 },
@@ -1046,7 +1108,7 @@ pub(crate) struct Held<'t, 's>(MutexGuard<'t, State<'s>>);
 impl Held<'_, '_> {
     /// Whether a scope is open.
     pub(crate) fn scope_open(&self) -> bool {
-        self.0.scope
+        self.0.scopes.any_open()
     }
 
     /// The savepoints that are set, oldest first.
@@ -1056,7 +1118,7 @@ impl Held<'_, '_> {
 
     /// [`WriteTxn::mark`].
     pub(crate) fn mark(&self) -> Mark {
-        self.0.set.mark()
+        self.0.mark()
     }
 
     /// [`WriteTxn::rewind`].
@@ -1168,13 +1230,13 @@ pub(crate) fn show_committed<R>(
 }
 
 macro_rules! reads {
-    ($scoped:expr) => {
+    () => {
         /// Appends the value of the flat record under `key` in `unit` to
         /// `out`, and says whether there is one: the transaction's own
         /// write if it has one that covers the key, and otherwise the
         /// record of the latest committed state (RD3).
         pub fn get(&self, unit: Unit, key: &[u8], out: &mut Vec<u8>) -> Result<bool, TxnError> {
-            self.txn().get_in($scoped, unit, key, out)
+            self.txn().get_in(self.who(), unit, key, out)
         }
 
         /// The committed read of the flat record under `key` in `unit`
@@ -1187,7 +1249,7 @@ macro_rules! reads {
             key: &[u8],
             out: &mut Vec<u8>,
         ) -> Result<bool, TxnError> {
-            self.txn().committed_get_in($scoped, unit, key, out)
+            self.txn().committed_get_in(self.who(), unit, key, out)
         }
 
         /// Shows `read` the node under `key` in the Merk `subtree`, or
@@ -1203,7 +1265,7 @@ macro_rules! reads {
             key: &[u8],
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
-            self.txn().node_in($scoped, subtree, key, None, read)
+            self.txn().node_in(self.who(), subtree, key, None, read)
         }
 
         /// As [`Self::node`], through `handle` while that is still good
@@ -1222,7 +1284,7 @@ macro_rules! reads {
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
             self.txn()
-                .node_in($scoped, subtree, key, Some(handle), read)
+                .node_in(self.who(), subtree, key, Some(handle), read)
         }
 
         /// Shows `read` the child on `side` of the node `parent` names, as
@@ -1241,7 +1303,7 @@ macro_rules! reads {
             side: Side,
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<Option<R>, TxnError> {
-            self.txn().child_in($scoped, subtree, parent, side, read)
+            self.txn().child_in(self.who(), subtree, parent, side, read)
         }
 
         /// The committed read of the node under `key` in the Merk
@@ -1258,22 +1320,25 @@ macro_rules! reads {
             key: &[u8],
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
-            self.txn().committed_node_in($scoped, subtree, key, read)
+            self.txn().committed_node_in(self.who(), subtree, key, read)
         }
 
         /// A cursor over the flat records of `unit`, not positioned (RD6).
         /// Its committed side is the latest committed state of this
         /// moment, which it keeps pinned.
-        pub fn cursor(&self, unit: Unit) -> super::Cursor<'_, 's> {
-            super::Cursor::flat(self.txn(), $scoped, unit)
+        pub fn cursor(&self, unit: Unit) -> $crate::txn::Cursor<'_, 's> {
+            $crate::txn::Cursor::flat(self.txn(), self.who(), unit)
         }
 
         /// A cursor over the nodes of the Merk `subtree`, in key order, not
         /// positioned (RD6). Its committed side is the Merk as the latest
         /// committed state of this moment has it, which the cursor keeps
         /// pinned, and it reads that under a lease of its own (PN1).
-        pub fn merk_cursor(&self, subtree: Subtree) -> Result<super::MerkCursor<'_, 's>, TxnError> {
-            super::Cursor::merk(self.txn(), $scoped, subtree)
+        pub fn merk_cursor(
+            &self,
+            subtree: Subtree,
+        ) -> Result<$crate::txn::MerkCursor<'_, 's>, TxnError> {
+            $crate::txn::Cursor::merk(self.txn(), self.who(), subtree)
         }
     };
 }
@@ -1283,91 +1348,10 @@ impl<'s> WriteTxn<'s> {
         self
     }
 
-    reads!(false);
+    reads!();
 }
 
-/// The handle one thread writes a transaction through (`transactions.md`
-/// SC1). It reads what the transaction reads, with its own writes (SC4).
-///
-/// It ends by merging, which makes its writes the transaction's, or by
-/// rolling back, which leaves the transaction as if the scope had never
-/// been opened (SC6). A scope that is dropped is rolled back.
-///
-/// A transaction has one scope at a time here. Claims, scopes that run at
-/// the same time and their reconciliation are TXN-09's.
-pub struct Scope<'t, 's> {
-    txn: &'t WriteTxn<'s>,
-    mark: Mark,
-    open: bool,
-    /// A scope is one thread's at a time (SC1): it is sent, not shared.
-    one_thread: PhantomData<Cell<()>>,
-}
+#[path = "../scope/engine.rs"]
+mod scopes;
 
-impl<'t, 's> Scope<'t, 's> {
-    fn txn(&self) -> &'t WriteTxn<'s> {
-        self.txn
-    }
-
-    /// The transaction the scope writes.
-    pub fn transaction(&self) -> &'t WriteTxn<'s> {
-        self.txn
-    }
-
-    reads!(true);
-
-    /// Applies `batch` to the transaction as one operation: all of it or
-    /// nothing (WT10). Every write of the batch gets the latest version
-    /// that this call reads as its first-write version (WT5).
-    ///
-    /// A batch that is refused with [`TxnError::Batch`], and one that the
-    /// tree layer or the subtree directory refuses before a page is
-    /// changed, leave everything as it was. After an error that came with
-    /// a page changed, the private frames are made again from the write
-    /// set, which the batch was never added to, and every node handle read
-    /// through the transaction has ended.
-    ///
-    /// A cursor of the scope may be open: it sees the writes (RD6).
-    pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
-        self.txn.apply_in(batch)
-    }
-
-    /// Ends the scope and makes its writes the transaction's (SC6).
-    pub fn merge(mut self) {
-        self.close();
-    }
-
-    /// Ends the scope and takes its writes out of the transaction, with
-    /// the first-write versions they introduced and the page ids it
-    /// allocated (SC6).
-    pub fn rollback(mut self) {
-        self.undo();
-    }
-
-    fn close(&mut self) {
-        if std::mem::take(&mut self.open) {
-            self.txn.lock().scope = false;
-        }
-    }
-
-    fn undo(&mut self) {
-        if std::mem::take(&mut self.open) {
-            let mut state = self.txn.lock();
-            state.rewind(self.mark);
-            state.scope = false;
-        }
-    }
-}
-
-impl Drop for Scope<'_, '_> {
-    fn drop(&mut self) {
-        self.undo();
-    }
-}
-
-impl fmt::Debug for Scope<'_, '_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Scope")
-            .field("mark", &self.mark)
-            .finish_non_exhaustive()
-    }
-}
+pub use scopes::Scope;

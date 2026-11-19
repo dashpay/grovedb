@@ -699,7 +699,7 @@ fn a_first_write_that_panics_leaves_nothing_held() {
 }
 
 #[test]
-fn a_transaction_has_one_scope_at_a_time() {
+fn a_scope_holds_what_it_wrote_until_it_ends() {
     let (db, versions) = Db::new(32);
     let mut world = World::new(&db, &versions);
     let tx = world.begin();
@@ -724,19 +724,26 @@ fn a_transaction_has_one_scope_at_a_time() {
     assert!(format!("{scope:?}").contains("Scope"));
     assert!(std::ptr::eq(scope.transaction(), &tx.txn));
     scope.apply(&batch).expect("a write");
-    // The scope reads its own write. Nothing else of the transaction is
-    // used while it is open: no second scope, no read outside it, no
-    // rollback and no commit (SC3, SC8).
+    // The scope reads its own write. While it is open nobody else reads
+    // the unit it wrote, by key or under a cursor, and the transaction is
+    // not rolled back and not committed (SC3, SC8).
     let mut out = Vec::new();
     assert!(scope.get(aux(), b"k", &mut out).expect("a read"));
     assert!(!scope.committed_get(aux(), b"k", &mut out).expect("a read"));
-    assert!(matches!(tx.txn.scope(), Err(TxnError::ScopeOpen)));
-    assert!(matches!(get(&tx.txn), Err(TxnError::ScopeOpen)));
+    let held =
+        |error: &TxnError| matches!(error, TxnError::ScopeOverlap { unit } if *unit == aux());
+    assert!(get(&tx.txn).is_err_and(|error| held(&error)));
+    let second = tx.txn.scope().expect("any number of scopes");
+    assert!(second
+        .get(aux(), b"k", &mut out)
+        .is_err_and(|error| held(&error)));
+    assert!((second.apply(&batch)).is_err_and(|error| held(&error)));
+    drop(second);
     assert!(matches!(tx.txn.rollback(), Err(TxnError::ScopeOpen)));
     let commit = db.commit(&versions, &tx.txn);
     assert!(matches!(commit, Err(TxnError::ScopeOpen)), "{commit:?}");
     let mut cursor = tx.txn.cursor(aux());
-    assert!(matches!(cursor.seek_to_first(), Err(TxnError::ScopeOpen)));
+    assert!(cursor.seek_to_first().is_err_and(|error| held(&error)));
     drop(cursor);
     let mut cursor = scope.cursor(aux());
     cursor.seek_to_first().expect("a seek");

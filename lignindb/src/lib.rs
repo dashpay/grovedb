@@ -4,5 +4,6 @@
 
 pub mod batch;
 pub mod savepoint;
+pub mod scope;
 pub mod snapshot;
 pub mod txn;

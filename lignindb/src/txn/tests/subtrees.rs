@@ -609,25 +609,17 @@ fn a_drop_outside_is_seen_by_the_next_read_and_meets_the_writes_under_it() {
     assert_eq!(under.txn.stats().overlapped, 1);
     assert_eq!(world.commit(under, &[]), Outcome::Conflict);
     assert_eq!(world.commit(own, &[]), Outcome::Conflict);
-    // The one that wrote below is not met: the key set of the drop names
-    // the dropped subtree, and nothing below it that its transaction had
-    // not written. It reads its own nodes, with the values they kept, and
-    // nothing committed of the Merk. Its writes cannot be laid out any
-    // more, so its commit is refused, and it is rolled back.
+    // The one that wrote below is met as well, though the key set of the
+    // drop names the dropped subtree alone: the drop deleted every record
+    // below it (CF5, CV9). It reads its own nodes, with the values they
+    // kept, and nothing committed of the Merk, and its commit fails with
+    // the conflict.
     world.check(&below);
-    assert_eq!(below.txn.stats().overlapped, 0);
+    assert!(below.txn.stats().overlapped > 0);
     assert_eq!(node_count(&below, INNER, &[b"one", b"two", b"three"]), 2);
-    let refused = db.commit(&versions, &below.txn);
-    assert!(
-        matches!(
-            refused,
-            Err(TxnError::Batch(BatchError::NotEntered { subtree })) if subtree == model::subtree(INNER)
-        ),
-        "its commit is refused"
-    );
-    below.txn.rollback().expect("a rollback");
     let held = below.txn.stats();
-    assert_eq!((held.writes, held.pinned, held.base), (0, None, None));
+    assert_eq!((held.pinned, held.base), (None, None));
+    assert_eq!(world.commit(below, &[]), Outcome::Conflict);
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }

@@ -3,7 +3,7 @@
 
 use std::{
     cmp::Ordering,
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
 };
 
 use lignin_format::{
@@ -191,6 +191,16 @@ pub(crate) struct TreePages<'s> {
     /// The ids of pages the transaction made and freed again, or could not
     /// start.
     unused: BTreeSet<PageId>,
+    /// The cells of the elements that are marked pending
+    /// (`transactions.md` SC9): hosts whose pointers to the roots they
+    /// host can be behind, and are not followed (`tree-layout.md` T3).
+    /// `lignindb::scope` keeps it.
+    pub(crate) behind: HashSet<CellAddress>,
+    /// While the pages are made again from the write set: the key of
+    /// every element that was marked pending at some point of what is
+    /// applied again. A host with one of these keys is taken to be behind,
+    /// whichever Merk it is in.
+    pub(crate) behind_keys: HashSet<Box<[u8]>>,
     buffers: LoadBuffers,
 }
 
@@ -215,6 +225,8 @@ impl<'s> TreePages<'s> {
             copies: BTreeMap::new(),
             freed: BTreeMap::new(),
             unused: BTreeSet::new(),
+            behind: HashSet::new(),
+            behind_keys: HashSet::new(),
             buffers: LoadBuffers::new(),
         }
     }
@@ -442,6 +454,34 @@ impl Pages for TreePages<'_> {
         let sink: &mut dyn ChangeSink = &mut sink;
         NodePageMut::create(&mut latch, self.size, page, self.lease, sink)?;
         Ok(page)
+    }
+
+    fn host_is_behind(&mut self, host: CellAddress) -> bool {
+        if self.behind.contains(&host) {
+            return true;
+        }
+        if self.behind_keys.is_empty() {
+            return false;
+        }
+        let keys = &self.behind_keys;
+        let copies = &self.copies;
+        // The pages are being made again: what was marked when the write
+        // was first made is not known by its cell. A host that is taken to
+        // be behind and is not keeps its pointers as they are, which is
+        // what a write does for a host it cannot tell
+        // (`lignin_tree::fragment`). So is a host whose page cannot be
+        // read here: this answer cannot fail, and the write that asked
+        // reads the page next.
+        let marked = |page: NodePage<'_>| {
+            (page.node(host.slot())).is_some_and(|node| keys.contains(node.key()))
+        };
+        match copies.get(&host.page()) {
+            Some(copy) => NodePage::open(&copy.frame.read(), self.lease).map_or(true, marked),
+            None => (self.loader.get(host.page(), self.at, &mut self.buffers))
+                .map_or(true, |frame| {
+                    NodePage::open(&frame, self.lease).map_or(true, marked)
+                }),
+        }
     }
 
     fn free(&mut self, page: PageId) -> Result<(), FragmentError> {

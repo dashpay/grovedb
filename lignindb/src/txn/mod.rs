@@ -213,13 +213,12 @@
 //! # Scopes and threads
 //!
 //! A transaction is `Send` and `Sync`. Its writes go through a [`Scope`],
-//! and it has one scope at a time: a second one, and a read outside the
-//! open one, are refused at once with [`TxnError::ScopeOpen`], as a claim
-//! never waits (SC3). A scope merges or is rolled back, and the rollback is
-//! a rollback to the mark the scope took (SC6). Claims, scopes that run at
-//! the same time and their reconciliation are TXN-09's, and savepoints
-//! are marks kept in a stack ([`crate::savepoint`]): [`Mark`] and the
-//! rollback to one are what both build on.
+//! and any number of scopes may be open, each on a thread of its own:
+//! [`crate::scope`] says what a scope claims, how it merges or is rolled
+//! back, and what the transaction keeps for its scopes. This module is
+//! what a scope that is alone writes through, and what every scope reads
+//! through. Savepoints are marks kept in a stack ([`crate::savepoint`]):
+//! [`Mark`] and the rollback to one are what they build on.
 //!
 //! Every call holds the transaction's own lock (LT7 level 2) for its
 //! length, and the function a node is shown to runs under it: it must not
@@ -322,25 +321,15 @@
 //!   column (TREE-09's `drop::enter`). Inside the transaction that enters
 //!   it, they are not read. The subtree that was dropped itself starts
 //!   empty: its prefix is deleted with the drop.
-//! - **The conflict rule for a write below a dropped subtree that writes
-//!   nothing in the dropped subtree itself** (CF5): the key set of a drop
-//!   names the dropped subtree, and those below it that the dropping
-//!   transaction had written. A commit outside that writes another one
-//!   below does not meet the drop. The other way is caught late: a
-//!   transaction that wrote below a subtree which a commit outside dropped
-//!   cannot lay its writes out any more. It serves its own records by key
-//!   from then on, and its commit is refused
-//!   ([`BatchError::NotEntered`]) and not failed as a conflict. On
-//!   existing GroveVersions neither happens: a write below also writes the
-//!   element that hosts its subtree, which is a key of the dropped one.
 //! - **While the transaction serves its records by key**, a batch is not
 //!   checked against the directory: what it says of subtrees is checked
 //!   when the frames are made, and its commit is refused then.
 //! - **A flat write among the nodes of a Merk** is refused
 //!   ([`BatchError::NotFlat`]).
-//! - **Pending marks and a host that is behind** (SC9): no element is
-//!   marked on existing GroveVersions, and the frames answer that no host
-//!   is behind. [`MerkWrite::anchored`] is passed on to the tree layer.
+//! - **Scopes, claims and pending marks**, and the conflict rule for what
+//!   a drop covers below the subtree it names (CF5): [`crate::scope`].
+//!   [`MerkWrite::anchored`] is passed on to the tree layer, and the frames
+//!   answer it which hosts are behind from the marks.
 
 mod arena;
 mod check;
@@ -356,7 +345,7 @@ mod path;
 mod txn;
 mod view;
 mod write;
-mod write_set;
+pub(crate) mod write_set;
 
 /// A page store on disk with the parts of a commit that install a
 /// transaction's frames and publish its version: the store of this module's
