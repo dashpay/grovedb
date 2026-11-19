@@ -1,8 +1,12 @@
 use std::cell::Cell;
 
 use grovedb_costs::CostResult;
+#[cfg(feature = "lignin_storage")]
+use grovedb_costs::{cost_return_on_error_default, CostsExt, OperationCost};
 use grovedb_version::version::GroveVersion;
 
+#[cfg(feature = "lignin_storage")]
+use crate::store::lignin::LigninNodeStore;
 use crate::store::NodeStore;
 use crate::{
     tree::kv::ValueDefinedCostType,
@@ -92,6 +96,57 @@ where
 
         merk.load_root(value_defined_cost_fn, grove_version)
             .map_ok(|_| merk)
+    }
+}
+
+#[cfg(feature = "lignin_storage")]
+impl<'db> Merk<LigninNodeStore<'db>> {
+    /// Opens the Merk of the handle's subtree as the subtree directory of
+    /// LigninDB has it: the open by prefix, with nothing but the prefix
+    /// known. `None` is a subtree that is not entered.
+    ///
+    /// The directory gives the tree type, the key of the root node and
+    /// whether an element hosts the Merk, in one lookup that is charged
+    /// nothing. The open is then the one a caller that knew them would
+    /// make, and costs what that costs:
+    ///
+    /// - a Merk under a parent element is opened with the root key the
+    ///   directory names, which is the one its parent element holds
+    ///   ([`Self::open_layered_with_root_key`]);
+    /// - a Merk with no host is opened as a base Merk
+    ///   ([`Self::open_base`]): it keeps its root key in a record of its
+    ///   own, and that record and the directory have to name the same
+    ///   node.
+    pub fn open_from_directory(
+        storage: LigninNodeStore<'db>,
+        value_defined_cost_fn: Option<
+            impl Fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
+        >,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Option<Self>, Error> {
+        let Some(entry) = cost_return_on_error_default!(storage.entry()) else {
+            return Ok(None).wrap_with_cost(Default::default());
+        };
+        let tree_type = cost_return_on_error_default!(entry.tree_type());
+        if entry.host.is_some() {
+            return Self::open_layered_with_root_key(
+                storage,
+                entry.root_key,
+                tree_type,
+                value_defined_cost_fn,
+                grove_version,
+            )
+            .map_ok(Some);
+        }
+        Self::open_base(storage, tree_type, value_defined_cost_fn, grove_version).map(|opened| {
+            let merk = opened?;
+            if merk.root_key() != entry.root_key {
+                return Err(Error::CorruptedState(
+                    "the root key record of a Merk and the subtree directory name different roots",
+                ));
+            }
+            Ok(Some(merk))
+        })
     }
 }
 

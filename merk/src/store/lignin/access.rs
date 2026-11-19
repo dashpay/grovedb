@@ -9,15 +9,15 @@
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
 use lignin_format::tree_page::Side;
-use lignin_tree::{hash::Stale, node::NodeHandle, value::ValueBuf};
+use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
     Batch, Column, HostPut, Hosted, LinkPut, LinkView, MerkWrite, NodePut, NodeView, RecordWrite,
-    RootPut, Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+    RootPut, Scope, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
 };
 
 use super::{
     feature::{decode_aggregate, decode_feature, Tp12},
-    refused,
+    refused, LigninEntry, LigninHosted,
 };
 use crate::{cost_model::Keyspace, tree::AggregateData, CryptoHash, Error, TreeFeatureType};
 
@@ -211,6 +211,10 @@ pub(super) trait Access: Sync {
     /// The child a link of the node at `parent` leads to.
     fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error>;
 
+    /// What the subtree directory holds of `subtree`, or `None` for a
+    /// subtree that is not entered.
+    fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error>;
+
     /// The record under `key` in a keyspace of `subtree` that holds no
     /// nodes.
     fn record(
@@ -236,9 +240,17 @@ pub(super) trait Access: Sync {
 
 /// A read or a write the transaction did not perform. Every failure of the
 /// engine is reported as a storage error and under no other
-/// (`node-store.md`, "Errors").
-fn fault(error: TxnError) -> Error {
-    refused(&error.to_string())
+/// (`node-store.md`, "Errors"), but for one: a subtree that is entered
+/// more Merks deep than the subtree directory takes. That is a limit of
+/// the engine which the write met and no fault of the store, and a caller
+/// tells it from damage by its error.
+pub(super) fn fault(error: TxnError) -> Error {
+    match error {
+        TxnError::Directory(DirectoryError::TooDeep) => {
+            Error::NotSupported(format!("lignindb: {error}"))
+        }
+        error => refused(&error.to_string()),
+    }
 }
 
 fn column(keyspace: Keyspace) -> Column {
@@ -317,6 +329,12 @@ trait Reads {
         committed: bool,
         out: &mut Vec<u8>,
     ) -> Result<bool, TxnError>;
+
+    fn subtree<R>(
+        &self,
+        subtree: Subtree,
+        read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+    ) -> Result<R, TxnError>;
 }
 
 macro_rules! reads {
@@ -365,6 +383,14 @@ macro_rules! reads {
                     true => self.committed_get(unit, key, out),
                     false => self.get(unit, key, out),
                 }
+            }
+
+            fn subtree<R>(
+                &self,
+                subtree: Subtree,
+                read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+            ) -> Result<R, TxnError> {
+                self.subtree(subtree, read)
             }
         }
     };
@@ -432,6 +458,19 @@ fn read_record(
     let unit = Unit::new(column(keyspace), Subtree::new(*subtree));
     let found = Reads::get(reads, unit, key, committed, &mut value).map_err(fault)?;
     Ok(found.then_some(value))
+}
+
+fn read_subtree(reads: &impl Reads, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
+    let entry = |view: SubtreeView<'_>| LigninEntry {
+        root_key: view.root_key.map(<[u8]>::to_vec),
+        tree_type: view.tree_type.to_vec(),
+        host: (view.host).map(|host| LigninHosted {
+            subtree: *host.subtree.as_bytes(),
+            key: host.key.to_vec(),
+            position: host.position,
+        }),
+    };
+    Reads::subtree(reads, Subtree::new(*subtree), |view| view.map(entry)).map_err(fault)
 }
 
 /// Whether the transaction holds a node under the key of `node` whose value
@@ -684,6 +723,10 @@ impl<A: Reader> Access for A {
 
     fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error> {
         self.reading(|reads| read_child(reads, subtree, parent, left))
+    }
+
+    fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
+        self.reading(|reads| read_subtree(reads, subtree))
     }
 
     fn record(

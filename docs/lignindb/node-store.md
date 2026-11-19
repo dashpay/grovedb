@@ -67,7 +67,7 @@ A Merk that is not layered under a parent element (base and standalone Merks) ke
 
 `state_root` is not that record. `Merk::commit` calls it once in every change set, for every kind of Merk, after the commit walk and before the first `put_node`: with the key of the root node as the commit leaves the tree, whether or not it is another node than before, and with `None` when the commit leaves the Merk with no node. Nothing else calls it: chunk restore, `clear` and `write_node` state no root. It makes no write, is charged nothing and cannot fail. A store that finds every node by its key has no use for it, and the RocksDB adapter keeps the default, which does nothing. A store that keeps the links of the tree has to know where a walk begins: LigninDB keeps the Merk's entry in its subtree directory by it. MERK-01 added it, because the root cannot be worked out below the seam: `put_root_key` is issued only for a Merk with no parent element, and only when the key changed; the written node that no other written node links to is the root in a commit, but not in a chunk of a restore, and not when a record changes with no hash (#1059).
 
-A layered Merk takes its root key from its parent element and does not use the record. On LigninDB the subtree directory names the root as well (MERK-04). Loading the root node is `get_node` with that key: no separate operation exists, because a store that knows where the root is answers that lookup without a search.
+A layered Merk takes its root key from its parent element and does not use the record. On LigninDB the subtree directory names the root as well, and a Merk can be opened by it ([Opening a Merk](#opening-a-merk)). Loading the root node is `get_node` with that key: no separate operation exists, because a store that knows where the root is answers that lookup without a search.
 
 ### Cursor
 
@@ -329,6 +329,30 @@ The transaction reads nothing under a subtree that is not entered, and refuses a
 
 Every `LigninHost` that names one element in one batch gives the same list, which is what the element hosts once the batch is applied. The list has no gap, so an element loses the subtrees it hosts from the last one or all together, as the elements of GroveDB do. Which subtrees an operation enters and drops is GroveDB's to say (MERK-04, GROVE-01, GROVE-05). The transaction also offers the clear of a subtree. The store does not pass one on: what a clear takes is GROVE-05's to state, and until then a Merk loses its nodes by key.
 
+### Opening a Merk
+
+MERK-04. `Merk::open_base`, `open_standalone` and `open_layered_with_root_key` are the same code on every store, and on LigninDB they need no column of RocksDB: the store answers them from the write transaction.
+
+| Open | Where the root key comes from | Where the tree type comes from | Charged |
+| --- | --- | --- | --- |
+| `open_layered_with_root_key` | the caller, who read it in the parent element | the caller | the fetch of the root node (R1), nothing for a Merk with no node |
+| `open_base`, `open_standalone` | the record of the root key, a flat record of the subtree in the keyspace `roots` (`NodeStore::root_key`) | the caller | the read of that record (R1, with the key's length), then the fetch of the root node |
+| `Merk::open_from_directory` (LigninDB only) | the subtree directory | the subtree directory | what the open of the same Merk by one of the two rows above is charged |
+
+**The subtree directory holds the root of every Merk.** `Merk::commit` states the root in every change set (`state_root`), and the transaction keeps the Merk's entry by it: the key of the root node, and where its cell is. A node is read by descending from that cell, so the root node is found with no search, by the key the parent element holds or the key the record holds. The entry also holds the tree type the subtree was entered with and the element that hosts it.
+
+**`LigninNodeStore::entry`** reads the entry of the handle's subtree (`WriteTxn::subtree`, which MERK-04 added to `lignindb::txn`). It is one lookup in the directory: in the directory of the transaction's frames, or for a transaction that has written nothing in the committed one. A transaction that a commit has overlapped has no frames, and answers from its write set over the committed entry, with one more lookup for each subtree it dropped or cleared; so does a scope that was opened beside another, whose writes are in the write set and not yet in the frames (`lignindb::scope`). The entry of a Merk is of the Merk's unit, so the read claims the subtree's data column as a read of a node does: it is refused where another open scope writes that Merk, or has dropped or cleared a subtree above it. It is the transaction's view, as every read of a handle is: its own enters, drops, clears and roots are in it, a staged enter is not, and a subtree that is not entered, or that went with a drop above it, has none. The read has no counterpart in the cost rules and is charged nothing.
+
+**`Merk::open_from_directory`** opens a Merk with nothing but its prefix known, which is the open by prefix of the plan ("root key and tree type come from the parent element through the directory"). A Merk that an element hosts is opened as a layered Merk with the root key the directory names. A Merk with no host is opened as a base Merk, from its record, and the record and the directory have to name the same root, or the open fails with `CorruptedState`. A subtree that is not entered gives no Merk. The open is charged what the open it turns into is charged, so a caller that charges the read of the parent element, as GroveDB does on existing GroveVersions, charges it as before.
+
+**The base root lives in the flat keyspace.** The root key of a Merk with no parent element is one record, `ROOT_KEY_KEY`, among the flat records of its subtree, in the keyspace the transaction calls `roots`: `put_root_key`, `delete_root_key` and `set_root_key` write it, with the charges of `cost-model.md` W3 and D1, and it is a key of the transaction's write set as it is on RocksDB (`transactions.md` 14.1). The directory names the same node after every commit of the Merk. The record alone does not make a root: a node is found from the directory's root, so a record written with no commit of the Merk (`Merk::set_base_root_key` after a chunk of a restore) names a node the store cannot reach until the root is stated. Restore is MERK-07's.
+
+**Entering.** The transaction reads nothing of a subtree that has no entry and refuses every write to one. So a Merk opened where no subtree is entered is empty, at the cost the open has on RocksDB, and its first commit is refused unless the batch enters the subtree. A subtree under a parent element is entered by the batch that writes the element (`LigninBatch::enter`, or `LigninBatch::enter_tree` with a `TreeType`). A Merk with no host, the root Merk of a grove or a Merk that stands alone, has no element to enter it: whoever makes it enters it through its handle, `LigninNodeStore::enter(tree_type)`, staged in the batch of a deferred handle and made at once on an immediate one. The same batch may hold the Merk's first commit, because a batch applies its enters before its change sets and its records. An enter is charged nothing.
+
+**The tree type in the directory** is bytes to the engine. The store writes the tree type's discriminant, followed by the parameter of a tree type that has one (`tree_type_bytes`, `tree_type_from_bytes`). A subtree entered with other bytes can be read and written, and is refused by `open_from_directory` as `UnknownTreeType`.
+
+**A Merk too deep for the directory.** An entry holds the ids of the Merks above it, and the directory refuses a Merk more than 65,535 Merks deep (D-079). Where a write through the store is refused for it, the store reports `Error::NotSupported`: it is the one failure of the engine that is not `Error::StorageError`, so that a caller tells a limit that a write met from a fault of the store. No read returns it, so the rule of [Errors](#errors) for failed reads stands. The store sees the refusal only where the transaction applies the enter to its frames. A transaction that a commit has overlapped takes the enter into its write set unchecked, and the refusal then comes from its commit, as `TxnError::Directory(TooDeep)`: mapping that one is for whoever calls the commit (GROVE-01). No test enters 65,536 Merks one inside the other, which would take entries of 17 GB in all; the test holds the mapping of the engine's error.
+
 ### Choices MERK-01 made
 
 1. **The location of a node is kept in the handle, by key**, and not in `Link` (see [Following a location](#following-a-location)).
@@ -339,7 +363,29 @@ Every `LigninHost` that names one element in one batch gives the same list, whic
 6. **The store charges by the first version of the cost rules**, as the storage contexts do, with no grove version given to a handle.
 7. **`lignindb` has a Cargo feature `testing`**, a test fixture and no API: its own test store with a stand-in commit, for tests outside the crate until the engine can be opened (TXN-07).
 
+### Choices MERK-04 made
+
+1. **"With no `roots` column" is read as: with no column of RocksDB.** The base root key stays a flat record of its subtree, in the flat keyspace that `lignindb::txn` names `roots`, as `transactions.md` ST1 and 14.1 have it and as MERK-01 built it. The directory's root is beside it and is the root a node is found from.
+2. **`lignindb::txn` has one more read, `WriteTxn::subtree` (and `Scope::subtree`)**, which shows what the directory holds of a subtree (`SubtreeView`). The transaction had the entry and showed only where the root's cell is. It answers in each state of a transaction: from the frames' directory, and with no frames from the write set over the committed entry.
+3. **A Merk with no host is entered through its handle**, by whoever makes it, and no open enters anything: an open is a read. GROVE-01 enters the root Merk of a grove when it creates a database.
+4. **The open by the directory takes a Merk with no host for a base Merk.** The directory does not say whether such a Merk is a base Merk or stands alone. The two differ only in what a put of the root key record is charged, and a caller that wants the other opens it with `open_standalone` and the tree type of the entry.
+5. **The tree type is two bytes at most**, the discriminant and a parameter. The directory has a write that changes the tree type of an entered Merk (`Directory::set_tree_type`) and the transaction offers none: what `Merk::convert_to_big_sum_tree` (#1063) needs of it is for the task that runs it on LigninDB.
+
 ### How it is checked
+
+`merk/src/store/lignin/open_tests.rs` holds the opens, on a store on disk and beside RocksDB.
+
+| Test | What it holds |
+| --- | --- |
+| `a_merk_with_no_parent_element_opens_as_it_does_on_rocksdb` | A base Merk and a Merk that stands alone, as a normal and as a sum tree, in one transaction and with a commit after every batch: opened where no subtree is entered, entered with its first batch, grown, given another root, emptied and written again. Every open, every `Merk::apply` and every application of a batch costs what it costs on RocksDB, and the root hash and root key are equal. After each batch the directory, the record of the root key and the open by the directory give the root the Merk has. |
+| `a_merk_under_a_parent_element_opens_with_its_root_key_and_from_the_directory` | A sum tree under an element, written in one batch with the element: `open_layered_with_root_key` costs what it costs on RocksDB and gives the same root. The directory names the root key the element holds, the tree type and the host, and `open_from_directory` opens the same Merk at the same cost from a handle that names no host. A subtree that is not entered gives no Merk, and one entered with other bytes than a tree type's is refused. |
+| `the_root_key_of_a_base_merk_is_a_flat_record_beside_the_directory` | The root key record is read back from the transaction's flat keyspace `roots`. A Merk with no host and no record is refused by the open by the directory. A rollback takes the enter, the directory's root and the record. |
+| `a_merk_in_a_subtree_that_is_not_entered_is_empty_and_takes_no_write` | The open of a Merk where no subtree is entered, and the refusal of its commit. |
+| `a_subtree_is_entered_through_its_handle` | `LigninNodeStore::enter` on each kind of handle, alone and under a host at its position, once, and what another transaction reads before and after the commit. |
+| `every_tree_type_is_kept_in_the_directory_as_bytes_that_give_it_back` | Every tree type and parameter through `tree_type_bytes` and back, and through the directory. |
+| `a_merk_that_is_too_deep_is_not_supported_and_no_storage_error` | The error of a Merk that is too deep. |
+
+`lignindb/src/txn/tests/subtrees.rs`, `a_subtree_is_opened_through_the_directory_as_the_transaction_sees_it`, holds the read of the engine: a transaction with frames and one that serves its records by key make the same writes and are shown the same of every subtree after each. The writes are a root that changes, an enter, a clear with and without a change set, a write after a clear, a drop, a drop and an enter in one batch, a clear above subtrees that were entered and not written, and a drop of the subtree above. It ends with a subtree whose host left and was entered again under another element, and with a subtree that one batch enters with the subtree of its host. `a_transaction_with_no_frames_opens_the_subtrees_one_with_frames_opens` does the same at random: over 60 seeds, three transactions take the same enters under elements, writes, clears, drops, drops with an enter and rollbacks to a mark. One is met by a commit outside, and one writes through a scope that was opened beside another, so that its writes are not laid out. After each step each shows of every subtree what the run's own account of the grove has.
 
 `merk/src/store/lignin/tests.rs` runs on a store on disk.
 
@@ -369,7 +415,8 @@ Every `LigninHost` that names one element in one batch gives the same list, whic
 | MERK-01 | `fetch_node` takes the link and is defined by its key (RD5). `prepare_node` gets the node and the kind, so a value is copied only for `ValueWritten`. Every `put_node` and `delete_node` is one write of its key (ST6). |
 | MERK-02 | The kinds, and what they come from (`known_storage_cost` and the baseline for the value, `NodeMarks` for the children), are the dirty state to map. |
 | MERK-03 | The inputs of every charge are logical: `NodeWriteCost`, the node itself for the record length (`TreeNode::encoding_length`). |
-| MERK-04 | `root_key` and the root key operations of a change set are the whole of root handling. Nothing in Merk names the `roots` column. |
+| MERK-04 | `root_key` and the root key operations of a change set are the whole of root handling. Nothing in Merk names the `roots` column. Done: see [Opening a Merk](#opening-a-merk). |
+| GROVE-01 | A subtree handle by prefix: `LigninNodeStore::entry` gives the host of a subtree, its tree type and its root key, and `Merk::open_from_directory` the Merk. The root Merk of a grove is entered once, through its handle (`LigninNodeStore::enter`). A Merk more than 65,535 Merks deep is `Error::NotSupported`. |
 | MERK-05 | `cursor`, `Merk::clear` (cursor plus `delete_node`), `is_empty_tree`, the aux and meta operations. |
 | MERK-06 | Proofs walk through `fetch_node`. A proof that must not load a value needs a node view, which is PERF-01. |
 | MERK-07 | Chunk restore writes through `prepare_node`, `put_node` and `write_node` with honest kinds: new nodes are `ValueWritten`, a corrected parent link is `StructureChanged`, corrected heights are `HashOnly`, corrected aggregates are `ValueWritten` (the feature type changes). |
