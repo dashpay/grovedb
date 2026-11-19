@@ -256,3 +256,6 @@ pub use committer::{Committer, NoStaleHashes};
 pub use error::{CommitError, Failure, Stopped};
 pub use outcome::{Committed, Published};
 pub use state::{CommitLock, CommitState, CommitStats};
+
+#[cfg(all(test, not(loom)))]
+mod tests;
