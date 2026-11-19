@@ -150,6 +150,16 @@
 //!   carried to the directory afterwards, as after any write. It writes
 //!   the hosts that are behind first. It gives
 //!   [`FlatDrops::unlink_range`] the version it reads at.
+//! - **A write transaction copies a tree page before a write is planned on
+//!   it.** Fragment maintenance reads the pages of a write, plans, and
+//!   then changes them, and asks that nothing changes a page between the
+//!   two ([`fragment`](crate::fragment), "One writer"). A page step can,
+//!   on any page that has no private copy, and a step of this module takes
+//!   cells out: the plan would have counted cells and bytes that are gone,
+//!   and would keep a page that it leaves with no cell. So what a write
+//!   reads for its plan is its own copy, as a flat keyspace takes a leaf
+//!   before it concludes anything from it. The steps here are refused for
+//!   as long as the copy exists.
 //! - **Whoever runs background work** reads the records of the drops at
 //!   the latest version, under an operation guard, and makes a [`Wait`]
 //!   for each with that version. It asks the wait between operations,
@@ -204,7 +214,25 @@
 //! 9. **The walk checks what it removes.** A cell that another page names
 //!    is marked as the root of its fragment, a cell that its own page
 //!    names is not, none is named twice, and what a step leaves passes the
-//!    page's own check. A page in which that fails is not changed.
+//!    page's own check. A page in which that fails is not changed, and the
+//!    other pages go all the same. The Merk's own record goes only once
+//!    the step on its root's page was made ready in full.
+//! 10. **A record of the directory is taken out only as it was read.** A
+//!     Merk can be entered again under the prefix of a left-over entry
+//!     between the reclaimer's look and its step, and that entry is not
+//!     the reclaimer's. The step compares the entry with the one it saw.
+//! 11. **A step that frees a page checks, and then frees.** The pool has
+//!     no page step that frees: its free takes the step's lock itself. So
+//!     the check that no private copy exists and the free are two holds of
+//!     that lock. A copy that is made between them is of a page with no
+//!     cell in use, which no write reads or changes, and the pool refuses
+//!     to install one over a freed page. A free inside the pool's page
+//!     step would make this one step.
+//! 12. **A step that failed before its record changed nothing**, and is
+//!     made again: the log can refuse a record, and the walk goes on from
+//!     where it was. A count of live values that does not take the
+//!     pointers of a step is noted ([`Reclaim::miscount`]) and does not
+//!     stop the walk: the step is made, and the value log keeps the file.
 
 mod error;
 mod flat;
