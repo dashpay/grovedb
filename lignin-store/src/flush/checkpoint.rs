@@ -271,6 +271,14 @@ impl<'s> WriteBack<'s> {
     /// One checkpoint is taken at a time, and a second call waits for the
     /// first.
     pub fn checkpoint(&self) -> Result<Checkpointed, FlushError> {
+        let checkpointed = self.try_checkpoint();
+        if checkpointed.is_err() {
+            count(&self.state.counters.checkpoints_failed, 1);
+        }
+        checkpointed
+    }
+
+    fn try_checkpoint(&self) -> Result<Checkpointed, FlushError> {
         let Stores {
             values,
             log,

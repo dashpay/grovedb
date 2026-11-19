@@ -136,6 +136,7 @@ fn a_reading_prints_as_a_short_report() {
             unwritten: 1,
             pending_value_bytes: 2,
             checkpoints_put_off: 3,
+            checkpoints_failed: 2,
             room_waits: 4,
             room_stalls: 1,
             room_waited: Duration::from_millis(5),
@@ -150,8 +151,8 @@ fn a_reading_prints_as_a_short_report() {
          written back: 70 bytes; cleaned: 8 bytes; pages read: 9, cache hits: 10; hashes: 11; \
          keyed lookups: 12\n\
          log held: 60 bytes by 2 bytes of pending values, 1 page versions to write back\n\
-         checkpoints put off: 3; waits for room: 4 (1 stalled, 5ms in all); segment syncs \
-         failed: 0"
+         checkpoints put off: 3, failed: 2; waits for room: 4 (1 stalled, 5ms in all); \
+         segment syncs failed: 0"
     );
     let idle = StoreStats::default().to_string();
     assert!(idle.contains("log held: 0 bytes\n"), "{idle}");

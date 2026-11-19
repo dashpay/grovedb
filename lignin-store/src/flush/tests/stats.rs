@@ -145,6 +145,13 @@ fn the_log_held_says_what_holds_it() {
     );
     assert!(text.contains("1 open write transactions"), "{text}");
 
+    assert!(matches!(
+        db.wb().checkpoint().expect("an attempt"),
+        Checkpointed::PutOff { .. }
+    ));
+    assert_eq!(read(&db, &stats).watch.checkpoints_put_off, 1);
+    assert!(text.contains("checkpoints put off: 0, failed: 0"), "{text}");
+
     txn.roll_back();
     drop(open);
     db.wb().place_ready().expect("placed");
@@ -178,10 +185,15 @@ fn a_page_that_cannot_be_written_is_counted() {
             .log_held_by()
             .contains(&Holder::FailingPages { pages: 1 }));
     }
-    db.wb()
-        .checkpoint()
-        .expect_err("the page cannot be written");
-    assert!(read(&db, &stats).watch.checkpoints_put_off <= 1);
+    for attempt in 1..=2 {
+        db.wb()
+            .checkpoint()
+            .expect_err("the page cannot be written");
+        let reading = read(&db, &stats);
+        assert_eq!(reading.watch.checkpoints_failed, attempt);
+        assert_eq!(reading.watch.checkpoints_put_off, 0);
+        assert_eq!(reading.flush.checkpoints, 0);
+    }
 }
 
 /// A committer that finds write-back over its bounds waits, and the wait
@@ -232,6 +244,7 @@ fn a_segment_sync_that_fails_is_counted() {
     db.wb().checkpoint().expect_err("the sync fails");
     let reading = read(&db, &stats);
     assert_eq!(reading.watch.segment_syncs_failed, 1);
+    assert_eq!(reading.watch.checkpoints_failed, 1);
     assert!(reading.watch.segments_not_durable);
     assert_eq!(reading.watch.log_held_by()[0], Holder::SegmentsNotDurable);
     assert!(reading.to_string().contains("segment syncs failed: 1"));

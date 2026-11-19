@@ -138,6 +138,10 @@ pub struct FlushStats {
     /// Attempts at a table checkpoint that were given up because a page
     /// that had to be in it could not be written back yet.
     pub checkpoints_put_off: u64,
+    /// Attempts at a table checkpoint that ended with an error: a page that
+    /// cannot be written, a file operation that failed, or segments that
+    /// are not durable.
+    pub checkpoints_failed: u64,
     /// Log files taken out of the log.
     pub log_files_dropped: u64,
     /// Calls of the background loop that ended with an error.
@@ -196,6 +200,7 @@ pub(super) struct Counters {
     pub(super) links_refused: AtomicU64,
     pub(super) checkpoints: AtomicU64,
     pub(super) checkpoints_put_off: AtomicU64,
+    pub(super) checkpoints_failed: AtomicU64,
     pub(super) log_files_dropped: AtomicU64,
     pub(super) errors: AtomicU64,
     pub(super) groups: AtomicU64,
@@ -236,6 +241,7 @@ impl Counters {
             links_refused: read(&self.links_refused),
             checkpoints: read(&self.checkpoints),
             checkpoints_put_off: read(&self.checkpoints_put_off),
+            checkpoints_failed: read(&self.checkpoints_failed),
             log_files_dropped: read(&self.log_files_dropped),
             errors: read(&self.errors),
             groups: read(&self.groups),

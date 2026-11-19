@@ -75,6 +75,8 @@ pub struct Watch {
     pub failing_pages: usize,
     /// Attempts at a table checkpoint that were put off, in all.
     pub checkpoints_put_off: u64,
+    /// Attempts at a table checkpoint that ended with an error, in all.
+    pub checkpoints_failed: u64,
     /// Waits for room: commits that found write-back over its bounds.
     pub room_waits: u64,
     /// Those of them that ended with write-back still over its bounds.
@@ -207,6 +209,7 @@ impl Stats {
             blocked_pages: state.blocked(),
             failing_pages: state.failing(),
             checkpoints_put_off: flush.checkpoints_put_off,
+            checkpoints_failed: flush.checkpoints_failed,
             room_waits: flush.room_waits,
             room_stalls: flush.room_stalls,
             room_waited: flush.room_waited,
@@ -266,9 +269,10 @@ impl fmt::Display for StoreStats {
         writeln!(f)?;
         write!(
             f,
-            "checkpoints put off: {}; waits for room: {} ({} stalled, {:?} in all); \
-             segment syncs failed: {}",
+            "checkpoints put off: {}, failed: {}; waits for room: {} ({} stalled, {:?} in \
+             all); segment syncs failed: {}",
             watch.checkpoints_put_off,
+            watch.checkpoints_failed,
             watch.room_waits,
             watch.room_stalls,
             watch.room_waited,

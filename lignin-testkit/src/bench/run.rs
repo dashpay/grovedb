@@ -1330,6 +1330,7 @@ mod tests {
         };
         for (id, per_transition) in [
             ("node_records_per_transition", 15.0),
+            ("other_records_per_transition", 2.5),
             ("bytes_handed_per_transition", 230.0),
             ("bytes_logged_per_transition", 500.0),
             ("physical_bytes_per_transition", 4_400.0),
