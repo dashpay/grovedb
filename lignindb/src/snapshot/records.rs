@@ -1,10 +1,14 @@
 //! The records of a database as a reader finds them: through the subtree
 //! directory of the version it reads.
 
-use std::{error::Error, fmt, sync::OnceLock};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, OnceLock},
+};
 
 use lignin_format::{CellAddress, CommitVersion};
-use lignin_store::values::ValueStore;
+use lignin_store::{load::PageLoader, values::ValueStore};
 use lignin_tree::{
     directory::{Directory, DirectoryError, Entry},
     flat::{self, Committed, FlatError, FlatTree},
@@ -21,6 +25,20 @@ pub(super) struct Records<'s> {
     pub(super) values: &'s ValueStore,
     pub(super) keyspaces: Keyspaces,
     pub(super) directory: FlatTree,
+}
+
+impl<'s> Records<'s> {
+    /// Loads the subtree directory of the version `at`, read under
+    /// `guard`: one walk of the records of what waits to be reclaimed.
+    pub(super) fn load(
+        &self,
+        pages: PageLoader<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+    ) -> Result<Directory, DirectoryError> {
+        let pages = Committed::new(pages, self.values, guard, at);
+        Directory::load(&pages, self.directory.root(), self.directory.config())
+    }
 }
 
 impl fmt::Debug for Records<'_> {
@@ -42,6 +60,21 @@ pub enum ReadError {
     Directory(DirectoryError),
     /// A flat keyspace could not be read.
     Flat(FlatError),
+    /// The subtree directory of the snapshot's version could not be loaded
+    /// when the snapshot was taken. Every open of the snapshot answers
+    /// this: a handle that is loaded later is not one of its version.
+    Unloaded(Arc<DirectoryError>),
+    /// An operation that pins no version opened its first subtree after
+    /// the latest version had moved on from the one it reads at. A handle
+    /// that is loaded then is not one of its version, so nothing is
+    /// opened: the caller begins another operation, which reads the newer
+    /// version.
+    Moved {
+        /// The version the operation reads at.
+        at: CommitVersion,
+        /// The latest version when it loaded its handle.
+        latest: CommitVersion,
+    },
 }
 
 impl fmt::Display for ReadError {
@@ -50,6 +83,15 @@ impl fmt::Display for ReadError {
             Self::NoRecords => f.write_str("the read path names no records"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
+            Self::Unloaded(error) => {
+                write!(f, "subtree directory, when the snapshot was taken: {error}")
+            }
+            Self::Moved { at, latest } => write!(
+                f,
+                "the operation reads version {} and the latest is {}",
+                at.get(),
+                latest.get()
+            ),
         }
     }
 }
@@ -57,9 +99,10 @@ impl fmt::Display for ReadError {
 impl Error for ReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NoRecords => None,
+            Self::NoRecords | Self::Moved { .. } => None,
             Self::Directory(error) => Some(error),
             Self::Flat(error) => Some(error),
+            Self::Unloaded(error) => Some(&**error),
         }
     }
 }
@@ -76,28 +119,42 @@ impl From<FlatError> for ReadError {
     }
 }
 
-/// The directory handle of one operation: its snapshot's, which is loaded
-/// once for the snapshot's version, or its own.
+/// What a snapshot has of the subtree directory of its version: the
+/// handle that was loaded when the version was chosen, or why there is
+/// none.
+pub(super) type Loaded = Result<Directory, Arc<DirectoryError>>;
+
+/// The directory handle of one operation: its snapshot's, or its own.
+///
+/// **A handle is loaded while the version it is for is the latest one.**
+/// What waits to be reclaimed is taken out of the pages one step at a
+/// time, the record of a dropped Merk after the entries of the Merks that
+/// were below it, and each step is on the page versions that are current
+/// then. A reader of an older version may still have such an entry in a
+/// page version of its own while the record of the drop is gone from a
+/// page it shares with the latest version, so a handle that is loaded for
+/// its version then would take the entry for one in use. A handle that
+/// was loaded while the version was the latest has the id of the drop, or
+/// reads pages from which the entries are gone, and stays right: what is
+/// taken out later, it hides (`lignin_tree::directory`, "A handle is of
+/// the pages it was loaded from").
 pub(super) enum Handle<'o> {
-    Snapshot(&'o OnceLock<Directory>),
+    /// The snapshot's, loaded when it was taken. `None` where the read
+    /// path names no records.
+    Snapshot(Option<&'o Loaded>),
+    /// The handle of an operation that pins no version, loaded when it
+    /// first opens a subtree, and kept only if the latest version is still
+    /// the one it reads at ([`ReadError::Moved`]).
     Own(OnceLock<Directory>),
 }
 
-impl Handle<'_> {
-    fn cell(&self) -> &OnceLock<Directory> {
-        match self {
-            Self::Snapshot(cell) => cell,
-            Self::Own(cell) => cell,
-        }
-    }
-}
-
 /// A subtree that a reader keeps from one operation to the next: its entry
-/// as the version `at` has it.
+/// as the version `at` of one database has it.
 #[derive(Debug, Clone)]
 pub struct Kept {
     subtree: Subtree,
     entry: Entry,
+    database: u64,
     at: CommitVersion,
 }
 
@@ -107,17 +164,24 @@ impl<'o> Operation<'o> {
         Committed::new(self.pages, records.values, self.guard(), self.at())
     }
 
-    /// The subtree directory of the operation's version. A handle is of
-    /// the pages it was loaded from (`lignin_tree::directory`): a snapshot
-    /// loads its own once, and an operation that pins no version loads one
-    /// for the version it reads.
+    /// The subtree directory of the operation's version ([`Handle`]).
     fn directory(&self, records: &Records<'o>) -> Result<&Directory, ReadError> {
-        let cell = self.directory.cell();
+        let cell = match &self.directory {
+            Handle::Snapshot(None) => return Err(ReadError::NoRecords),
+            Handle::Snapshot(Some(Ok(directory))) => return Ok(directory),
+            Handle::Snapshot(Some(Err(error))) => {
+                return Err(ReadError::Unloaded(Arc::clone(error)));
+            }
+            Handle::Own(cell) => cell,
+        };
         if let Some(directory) = cell.get() {
             return Ok(directory);
         }
-        let (root, config) = (records.directory.root(), records.directory.config());
-        let loaded = Directory::load(&self.flat_pages(records), root, config)?;
+        let loaded = records.load(self.pages, self.guard(), self.at())?;
+        let (at, latest) = (self.at(), self.guard().latest());
+        if latest != at {
+            return Err(ReadError::Moved { at, latest });
+        }
         Ok(cell.get_or_init(|| loaded))
     }
 
@@ -145,17 +209,17 @@ impl<'o> Operation<'o> {
         }))
     }
 
-    /// Opens a subtree that an earlier operation of the same reader kept
-    /// ([`Opened::keep`]). At the version it was kept at, the entry is
-    /// good while the directory has it as one in use, which is asked in
-    /// memory and reads no page. At another version it is looked up again.
+    /// Opens a subtree that an earlier operation kept ([`Opened::keep`]).
+    /// At the version of the database it was kept at, the entry is the one
+    /// that version has, and nothing is read: a subtree leaves with a
+    /// commit, which makes another version. At another version, or in
+    /// another database, it is looked up again.
     pub fn resume(&self, kept: &Kept) -> Result<Option<Opened<'_, 'o>>, ReadError> {
-        if kept.at != self.at() {
+        if (kept.database, kept.at) != (self.database, self.at()) {
             return self.open(kept.subtree);
         }
         let records = self.records.ok_or(ReadError::NoRecords)?;
-        let live = self.directory(&records)?.is_live(&kept.entry);
-        Ok(live.then(|| Opened {
+        Ok(Some(Opened {
             operation: self,
             records,
             subtree: kept.subtree,
@@ -215,12 +279,13 @@ impl<'a, 'o> Opened<'a, 'o> {
         }
     }
 
-    /// The subtree, to open again in a later operation of the same reader
-    /// without a lookup ([`Operation::resume`]).
+    /// The subtree, to open again in a later operation without a lookup
+    /// ([`Operation::resume`]).
     pub fn keep(self) -> Kept {
         Kept {
             subtree: self.subtree,
             entry: self.entry,
+            database: self.operation.database,
             at: self.operation.at(),
         }
     }

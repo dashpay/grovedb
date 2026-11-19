@@ -2,17 +2,36 @@
 //! D6, `transactions.md` CV9, T-CL1): a snapshot and an operation that
 //! pins no version read the records of a subtree through its entry in the
 //! directory of the version they read, and read nothing where it has none.
+//! The handle they ask is one that was loaded while their version was the
+//! latest.
+
+use std::sync::Arc;
 
 use lignin_format::CellAddress;
 use lignin_store::load::LoadBuffers;
+use lignin_tree::{directory::DirectoryError, drop::Progress};
 
 use super::{
-    model,
+    model::{self, OwnedBatch, OwnedSubtree},
     store::{Db, Outcome, ENTERED},
     subtrees::{drop_outer, planted, planted_records, INNER, OUTER},
     *,
 };
 use crate::snapshot::{LatestLease, Operation, ReadError, ReadPath};
+
+/// Commits `batch` in a transaction of its own.
+fn commit(world: &mut World<'_>, batch: &OwnedBatch) {
+    let tx = world.begin();
+    world.apply(&tx, batch).expect("the batch is applied");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+}
+
+fn subtrees(subtrees: Vec<OwnedSubtree>) -> OwnedBatch {
+    OwnedBatch {
+        subtrees,
+        ..OwnedBatch::default()
+    }
+}
 
 /// The keys of the nodes of the Merk with the root `root`, in order, as
 /// `operation` reads them.
@@ -170,6 +189,166 @@ fn a_reader_reads_the_records_of_a_subtree_through_its_entry() {
     let error = ReadError::NoRecords;
     assert!(error.to_string().contains("names no records"));
     assert!(std::error::Error::source(&error).is_none());
+    // A snapshot whose directory could not be loaded says so at every
+    // open, with what the load said.
+    let error = ReadError::Unloaded(Arc::new(DirectoryError::IdsExhausted));
+    assert!(error.to_string().contains("when the snapshot was taken"));
+    assert!(std::error::Error::source(&error).is_some());
+}
+
+/// A snapshot has the drops of its version from the moment it is taken,
+/// and does not learn of them when it first opens a subtree. What a drop
+/// left may be reclaimed while a snapshot of the drop's version is held,
+/// and the record of the drop then goes from a page the snapshot reads,
+/// while the entry of a subtree that was below can stay in a page version
+/// that only readers of older versions have: a handle that is loaded then
+/// would open that subtree. An operation that pins no version loads its
+/// handle at its first open, and opens nothing if a commit was published
+/// before.
+#[test]
+fn a_reader_knows_the_drops_of_its_version_however_late_it_opens() {
+    // The entries of these three are in the first leaves of the directory,
+    // far from the records of the drops, which are in its last.
+    const BESIDE: u8 = 4;
+    const BELOW: u8 = 5;
+    const HOST: u8 = 6;
+    let below = model::subtree(BELOW);
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+
+    // Two of the store's subtrees leave, to be entered again in other
+    // places, and what they left is reclaimed.
+    let leave = [BESIDE, BELOW].map(|name| OwnedSubtree::Drop(model::subtree(name)));
+    commit(&mut world, &subtrees(leave.to_vec()));
+    let swept = db.sweep(&versions);
+    assert!(!swept.waiting && swept.blocked.is_none(), "{swept:?}");
+
+    // One is entered below a node of `HOST`, with a node and a record.
+    let tx = world.begin();
+    let mut host = world.merk(&tx, HOST, |items| {
+        items.insert(b"host".to_vec(), b"tree".to_vec());
+    });
+    host.hosted.insert(b"host".to_vec(), vec![below]);
+    let nested = world.merk(&tx, BELOW, |items| {
+        items.insert(b"one".to_vec(), vec![3; 20]);
+    });
+    let batch = OwnedBatch {
+        merks: vec![nested, host],
+        records: vec![put(model::unit(Column::Aux, BELOW), b"ia", b"7")],
+        subtrees: vec![OwnedSubtree::Enter(
+            below,
+            Some((model::subtree(HOST), b"host".to_vec(), 0)),
+        )],
+    };
+    world.apply(&tx, &batch).expect("the subtree is entered");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+
+    // `HOST` is dropped. A snapshot of that version opens nothing yet.
+    commit(
+        &mut world,
+        &subtrees(vec![OwnedSubtree::Drop(model::subtree(HOST))]),
+    );
+    let reads = db.reads(&versions);
+    let snapshot = reads.snapshot();
+    let dropped_at = snapshot.version();
+
+    // The reclaimer reads what the drop left at that version, so it waits
+    // for no reader of it. An operation that pins no version begins.
+    let (mut left, _, mut wait) = db.left(&versions);
+    assert_eq!(left.len(), 1);
+    assert!(wait.poll(&versions), "no reader is of an older version");
+    let mut lease = LatestLease::new();
+    let late = reads.operation(&mut lease);
+    assert_eq!(late.at(), dropped_at);
+
+    // A commit beside: it writes the leaf of the directory that has the
+    // entry of the subtree below, and not the one with the record of the
+    // drop. Then everything the drop left is taken out.
+    let beside = OwnedSubtree::Enter(model::subtree(BESIDE), None);
+    commit(&mut world, &subtrees(vec![beside]));
+    for reclaim in &mut left {
+        loop {
+            match db.reclaim(&versions, reclaim, 64) {
+                Progress::Done => break,
+                Progress::More => {}
+                Progress::Blocked(busy) => panic!("a step was refused: {busy:?}"),
+            }
+        }
+    }
+
+    // What this test is about: a handle that is loaded for the drop's
+    // version only now finds no record of the drop, and the page version
+    // of that version still has the entry of the subtree below.
+    {
+        let guard = versions.guard();
+        let pages = db.committed(&guard, dropped_at);
+        let loaded_late = db.directory_at(&pages);
+        let entry = loaded_late.open(&pages, below.as_bytes());
+        assert!(entry.expect("a lookup").is_some());
+    }
+    // The snapshot's handle was loaded when it was taken, and has the drop.
+    for name in [HOST, BELOW] {
+        let operation = snapshot.operation();
+        let opened = operation.open(model::subtree(name)).expect("a lookup");
+        assert!(opened.is_none(), "{opened:?}");
+    }
+    // The operation that pins no version would load its handle now, with
+    // a commit published since it began: it opens nothing, and says so.
+    match late.open(below) {
+        Err(error @ ReadError::Moved { at, latest }) => {
+            assert_eq!((at, latest), (dropped_at, versions.latest()));
+            assert_ne!(at, latest);
+            assert!(error.to_string().contains("the latest is"));
+            assert!(std::error::Error::source(&error).is_none());
+        }
+        other => panic!("the latest version moved, and not {other:?}"),
+    }
+    drop(late);
+    // Its next operation reads the latest version, with a handle of that.
+    let next = reads.operation(&mut lease);
+    assert!(next.open(below).expect("a lookup").is_none());
+    let beside = next.open(model::subtree(BESIDE)).expect("a lookup");
+    assert!(beside.is_some_and(|beside| beside.root().is_none()));
+}
+
+/// A subtree that a reader kept is of one database: an operation of
+/// another database looks it up again, also at a version of the same
+/// number, and one of the same database and version reads nothing for it.
+#[test]
+fn a_kept_subtree_is_looked_up_again_in_another_database() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let tx = world.begin();
+    planted(&world, &tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    let reads = db.reads(&versions);
+    let snapshot = reads.snapshot();
+    let kept = {
+        let operation = snapshot.operation();
+        let inner = operation.open(model::subtree(INNER)).expect("a lookup");
+        inner.expect("the subtree").keep()
+    };
+
+    // Another database, at a version of the same number, where the prefix
+    // has no subtree.
+    let (other, other_versions) = Db::new(128);
+    let mut other_world = World::new(&other, &other_versions);
+    let tx = other_world.begin();
+    other_world.write(&tx, vec![put(model::unit(Column::Aux, 0), b"k", b"v")]);
+    assert!(matches!(other_world.commit(tx, &[]), Outcome::Committed(_)));
+    let other_snapshot = other.reads(&other_versions).snapshot();
+    assert_eq!(other_snapshot.version(), snapshot.version());
+    let operation = other_snapshot.operation();
+    assert!(operation.resume(&kept).expect("a lookup").is_none());
+
+    // Another snapshot of the database it was kept in, at that version.
+    let again = reads.snapshot();
+    let operation = again.operation();
+    let gets = |db: &Db| db.pool.stats().hits + db.pool.stats().misses;
+    let asked = gets(&db);
+    let inner = operation.resume(&kept).expect("no lookup");
+    assert_eq!(gets(&db), asked, "no page was asked for");
+    assert_eq!(inner.expect("the subtree").subtree(), model::subtree(INNER));
 }
 
 /// A subtree that is entered again under a prefix that a drop left has the

@@ -180,14 +180,33 @@
 //! ([`RecordCursor`]). The root of its Merk is in its entry, and the nodes
 //! are read from there ([`Operation::nodes`]).
 //!
-//! A handle on the directory is of the pages it was loaded from. A
-//! snapshot loads one for its version when it first opens a subtree and
-//! keeps it for its life; an operation that pins no version loads one for
-//! the version it reads. The load is one walk of the records of what
-//! waits to be reclaimed, which finds nothing in a store where nothing
-//! does. An engine that keeps the handle of the latest version, as the
-//! directory expects of it, gives each reader a copy in its place
-//! (TXN-07).
+//! A handle on the directory is of the pages it was loaded from, and
+//! **a reader's handle is loaded while the reader's version is the latest
+//! one.** What a drop left is taken out of the pages one step at a time,
+//! the record of the dropped subtree last, and each step is on the page
+//! versions that are current then. A reader of an older version can
+//! still have the entry of a subtree that was below the dropped one in a
+//! page version of its own, while the record of the drop is gone from a
+//! page it shares with the latest version: a handle that is loaded then
+//! does not know of the drop, and would open that subtree. A handle that
+//! was loaded while the version was the latest either has the drop or
+//! reads pages from which those entries are gone, and whatever is taken
+//! out afterwards it hides.
+//!
+//! - **A snapshot loads its handle when it is taken**
+//!   ([`ReadPath::snapshot`]), and takes its version again if a commit was
+//!   published before the load ended. It keeps the handle for its life.
+//!   That is one walk of the records of what waits to be reclaimed for
+//!   each snapshot of a read path that names its records, which finds
+//!   nothing in a store where nothing waits, and it is made whether or
+//!   not the snapshot opens a subtree. A load that fails is answered by
+//!   every open of the snapshot ([`ReadError::Unloaded`]).
+//! - **An operation that pins no version** loads its handle when it first
+//!   opens a subtree, and opens nothing if the latest version has moved
+//!   by then ([`ReadError::Moved`]): its caller begins another operation.
+//! - An engine that keeps the handle of the latest version, as the
+//!   directory expects of it, gives each reader a copy with its version in
+//!   the place of the load (TXN-07).
 //!
 //! # Models and tests
 //!
