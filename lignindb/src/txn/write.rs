@@ -223,6 +223,9 @@ pub struct HostPut<'a> {
 ///   same batch or in an earlier one: a change set or a flat record, in
 ///   any column, for a subtree that is not entered is refused
 ///   ([`BatchError::NotEntered`](super::BatchError::NotEntered)).
+///   While the transaction serves its records by key (WT7b) a batch is
+///   not checked against the directory: this is checked when its frames
+///   are made, and at the latest its commit is refused.
 /// - **Every subtree that a node hosts is entered**, a Merk with no node
 ///   and a tree that keeps its data in a flat keyspace among them: what is
 ///   not entered is not found below a dropped Merk.

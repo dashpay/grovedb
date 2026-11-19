@@ -618,10 +618,20 @@ impl Db {
             .filter(|(from, to)| from.page() == to.page())
             .map(|(_, to)| *to)
             .collect();
+        // Every tree page the version has, reached or not: a page that was
+        // freed or made later is not loaded at it, and a flat page is no
+        // tree page.
         let visited: BTreeSet<PageId> = reached.keys().map(|address| address.page()).collect();
-        for id in visited {
-            let frame = loader.get(id, at, &mut buffers).expect("it was read");
-            let page = NodePage::open(&frame, lease).expect("a tree page");
+        let pages: Vec<PageId> = locked(&self.used).iter().copied().collect();
+        let mut checked = BTreeSet::new();
+        for id in pages {
+            let Ok(frame) = loader.get(id, at, &mut buffers) else {
+                continue;
+            };
+            let Ok(page) = NodePage::open(&frame, lease) else {
+                continue;
+            };
+            checked.insert(id);
             for node in page.nodes() {
                 let address = node.address();
                 assert!(
@@ -635,6 +645,10 @@ impl Db {
                 );
             }
         }
+        assert!(
+            visited.is_subset(&checked),
+            "a page that a Merk reaches is not among the pages of the store"
+        );
         keys
     }
 

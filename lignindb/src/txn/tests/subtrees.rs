@@ -450,7 +450,8 @@ fn a_subtree_entered_again_below_a_dropped_one_starts_empty() {
     assert!(!tx.txn.get(aux(INNER), b"ia", &mut out).expect("a read"));
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
     world.check_committed();
-    // Here two of them are read again, under the new subtree.
+    // None of them is to be read under the new subtree. Today the two
+    // that were under the nested prefix are, and this fails.
     assert_eq!(planted_read(&world), 0, "none of the records of before");
 }
 
@@ -896,6 +897,43 @@ fn a_cursor_reads_no_committed_record_of_a_subtree_that_went_with_a_drop() {
     );
     drop((flat, nodes));
     world.check(&tx);
+
+    // A clear of the cursor's own subtree, and its rollback: the cursor
+    // goes on over the committed records from the key it stands on.
+    let data = model::unit(Column::Data, 6);
+    world.write(&tx, vec![put(data, b"a", b"1"), put(data, b"c", b"3")]);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    let tx = world.begin();
+    let mut cursor = tx.txn.cursor(data);
+    cursor.seek_to_first().expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"a"[..]));
+    let mark = tx.txn.mark();
+    let cleared = OwnedBatch {
+        records: vec![put(data, b"b", b"2"), put(data, b"d", b"4")],
+        subtrees: vec![OwnedSubtree::Clear(model::subtree(6))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &cleared).expect("the data is cleared");
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), Some(&b"b"[..]));
+    cursor.next().expect("a step");
+    assert_eq!(
+        cursor.key(),
+        Some(&b"d"[..]),
+        "the committed record is gone"
+    );
+    assert!(tx.txn.rewind(mark));
+    tx.forget();
+    cursor.prev().expect("a step");
+    assert_eq!(cursor.key(), Some(&b"c"[..]));
+    cursor.prev().expect("a step");
+    assert_eq!(cursor.key(), Some(&b"a"[..]));
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), Some(&b"c"[..]));
+    cursor.next().expect("a step");
+    assert_eq!(cursor.key(), None);
+    drop(cursor);
+    world.check(&tx);
     assert_eq!(db.private_ids(), 0);
 }
 
@@ -1031,11 +1069,18 @@ fn the_roots_of_one_write_are_told_together() {
         [(&clash, None, Some(third))].into_iter(),
         std::iter::empty(),
     );
+    let copies = pages.written().count();
     let refused = directory.set_roots(&mut pages, &changes);
     assert!(
         matches!(refused, Err(DirectoryError::RootTaken { address }) if address == third),
         "{refused:?}"
     );
+    assert_eq!(pages.written().count(), copies, "no page was copied for it");
+    assert_eq!(root_of(&pages, 2), None);
+    assert_eq!(root_of(&pages, 62), Some((third, b"b".to_vec())));
+    assert_eq!(owner(&pages, third), Some(prefix(62)));
+    let again = directory.check(&pages).expect("the directory is sound");
+    assert_eq!(again, census, "the directory is as it was");
     pages.roll_back().expect("the copies are given up");
 }
 

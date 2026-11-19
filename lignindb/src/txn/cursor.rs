@@ -448,9 +448,11 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             let reads = opened.seen(&path, guard, set, &subtree)?.is_some();
             Ok::<_, TxnError>((set.left(), reads))
         })??;
-        if seen.map(|(_, reads)| reads) != Some(reads) {
-            // The committed side comes into the cursor's view, or leaves
-            // it: it is placed again by the next move.
+        if seen != Some((left, reads)) {
+            // The transaction dropped or cleared a subtree, or took such a
+            // write back: the committed side may have come into the
+            // cursor's view or left it, and is placed again by the next
+            // move.
             self.way = Way::Lost;
         }
         self.seen = Some((left, reads));
