@@ -63,3 +63,31 @@ path = "fuzz_targets/tree_page.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "delta"
+path = "fuzz_targets/delta.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "flat_run"
+path = "fuzz_targets/flat_run.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wal"
+path = "fuzz_targets/wal.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "wal_record"
+path = "fuzz_targets/wal_record.rs"
+test = false
+doc = false
+bench = false

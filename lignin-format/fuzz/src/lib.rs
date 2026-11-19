@@ -126,3 +126,13 @@ pub fn take_up_to<'a>(bytes: &mut &'a [u8], len: usize) -> &'a [u8] {
     *bytes = rest;
     head
 }
+
+/// Cuts `bytes` into pieces, each a `u16` length and that many bytes; the
+/// last may be shorter than its length says.
+pub fn pieces(mut bytes: &[u8]) -> Vec<&[u8]> {
+    let mut pieces = Vec::new();
+    while let Some(len) = take_u16(&mut bytes) {
+        pieces.push(take_up_to(&mut bytes, usize::from(len)));
+    }
+    pieces
+}
