@@ -206,6 +206,79 @@ fn any_sequence_of_reorganisations_leaves_the_logical_tree_unchanged() {
     );
 }
 
+/// Writes that stop below the host of their Merk (`tree-layout.md` T3),
+/// among writes that go up to the root of the grove and carry the hosts
+/// that are behind. Whenever no host is behind, the pages are the grove.
+#[test]
+fn writes_that_stop_below_a_host_are_put_right_when_the_host_is_written() {
+    let (mut stopped, mut finalized, mut checked) = (0, 0, 0);
+    let (mut carried_behind, mut refused) = (0, 0);
+    for seed in 1..=4 {
+        let size = [PageSize::MIN, PageSize::new(16_384).expect("a page size")][seed as usize % 2];
+        let mut run = Run::new(size, 70 + seed);
+        run.grove.restate = seed == 4;
+        for step in 0..2400 {
+            let dice = run.grove.rng.below(100);
+            let merk = Some(run.merk()).filter(|merk| *merk != 0);
+            let key = run.key().filter(|(merk, _)| *merk != 0);
+            match (dice, merk, key) {
+                (0..22, Some(merk), _) => {
+                    run.next_key += 1;
+                    let key = [&[9][..], &run.next_key.to_be_bytes()].concat();
+                    let value = run.value();
+                    run.grove.put_stopped(merk, &key, &value);
+                    run.keys.push((merk, key));
+                    stopped += 1;
+                }
+                (22..30, _, Some((merk, key))) => {
+                    let value = run.value();
+                    run.grove.put_stopped(merk, &key, &value);
+                    stopped += 1;
+                }
+                (30..42, _, Some((merk, key))) => {
+                    run.grove.delete_stopped(merk, &key);
+                    stopped += 1;
+                }
+                (42..44, Some(merk), _) => {
+                    run.grove.clear_stopped(merk);
+                    stopped += 1;
+                }
+                (44..56, ..) => {
+                    let behind = run.grove.behind();
+                    if !behind.is_empty() {
+                        let merk = behind[run.grove.rng.below(behind.len())];
+                        run.grove.finalize(merk);
+                        finalized += 1;
+                    }
+                }
+                _ => run.step(),
+            }
+            for merk in run.grove.behind() {
+                run.grove.check_merk(merk);
+            }
+            if step % 25 == 24 {
+                while let Some(&merk) = run.grove.behind().first() {
+                    run.grove.finalize(merk);
+                    finalized += 1;
+                }
+            }
+            if !run.grove.stale {
+                run.grove.check();
+                checked += 1;
+            }
+        }
+        carried_behind += run.grove.carried_behind;
+        refused += run.grove.refused;
+    }
+    println!(
+        "{stopped} writes stopped below a host, {refused} of them refused for room and made \
+         again with the host, {finalized} hosts written after them, {carried_behind} cells of \
+         hosts that were behind carried, {checked} full checks"
+    );
+    assert!(stopped > 1500 && finalized > 400 && checked > 400);
+    assert!(carried_behind > 20, "hosts that were behind were carried");
+}
+
 #[test]
 fn a_tree_that_only_grows_fills_its_pages_as_the_layout_says() {
     let mut run = Run::new(PageSize::MIN, 11);

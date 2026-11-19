@@ -25,7 +25,7 @@ use super::{
     pages::{used_bytes, Hints, PageMut, Pages, Values},
     plan::{Cell, Plan, Via},
     report::{Carried, Carries, Report},
-    write::{HostedWrite, LinkWrite, NodeWrite, ValueWrite},
+    write::{HostedWrite, LinkWrite, NodeWrite, Target, ValueWrite},
 };
 use crate::node::{ChangeSink, NodeError, NodeMut};
 
@@ -83,15 +83,22 @@ fn cell_value(value: ValueWrite<'_>) -> Option<CellValue<'_>> {
 }
 
 /// The hosted-root pointers of a cell after the write. A root that has no
-/// cell yet is `None`.
+/// cell yet is `None`. A pointer that the write keeps and the plan did not
+/// follow, because its host is behind, has the bytes it had.
 fn hosted_roots(
     cell: &Cell,
     write: Option<&NodeWrite<'_>>,
-    stored: impl Iterator<Item = Option<CellAddress>>,
+    mut stored: impl Iterator<Item = Option<CellAddress>>,
     places: &Places,
 ) -> Vec<Option<CellAddress>> {
-    let mut roots = match write.map(|write| write.hosted) {
-        Some(HostedWrite::Set(roots)) => vec![None; roots.len()],
+    let mut roots: Vec<Option<CellAddress>> = match write.map(|write| write.hosted) {
+        Some(HostedWrite::Set(roots)) => roots
+            .iter()
+            .map(|root| {
+                let stored = stored.next().flatten();
+                stored.filter(|_| *root == Some(Target::Kept))
+            })
+            .collect(),
         Some(HostedWrite::Keep) | None => stored.collect(),
     };
     for kid in &cell.kids {
@@ -155,7 +162,8 @@ fn shrink<V: Values>(
     if let HostedWrite::Set(roots) = write.hosted
         && roots.len() < node.node().hosted_roots().len()
     {
-        let roots = hosted_roots(entry, Some(write), std::iter::empty(), places);
+        let stored: Vec<Option<CellAddress>> = node.node().hosted_roots().collect();
+        let roots = hosted_roots(entry, Some(write), stored.into_iter(), places);
         node.set_hosted_roots(&roots)?;
     }
     if let Some(value) = cell_value(write.value)

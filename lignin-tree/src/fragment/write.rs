@@ -13,6 +13,10 @@ pub enum Target {
     Node(usize),
     /// The node that the cell names there now: the child on the same side,
     /// the hosted root at the same position, the root the pointer named.
+    ///
+    /// The pointer of a host that is behind
+    /// ([`Pages::host_is_behind`](super::Pages::host_is_behind)) keeps its
+    /// bytes and stays behind: it is not followed.
     Kept,
 }
 
@@ -37,6 +41,10 @@ pub enum HostedWrite<'a> {
     /// The pointers the cell has. A node the write creates has none.
     Keep,
     /// The roots by position; `None` is a hosted Merk with no root.
+    ///
+    /// A host that is behind is written with every root named by its
+    /// address or by its place in the write, by the write after which it is
+    /// behind no more (`tree-layout.md` T3).
     Set(&'a [Option<Target>]),
 }
 
@@ -114,6 +122,11 @@ pub struct Write<'a> {
     /// (`tree-layout.md` D1, D4). No link or pointer names them afterwards.
     /// Their cells, and all that hangs below them, stay in their pages for
     /// the reclaimer.
+    ///
+    /// No host inside a dropped Merk is behind
+    /// ([`Pages::host_is_behind`](super::Pages::host_is_behind)): its
+    /// pointer would stay behind for good, in a cell that the reclaimer
+    /// reads. The write that names the roots of such a host comes first.
     pub dropped: &'a [CellAddress],
     /// The root pointers the write's caller holds.
     pub roots: &'a [RootWrite],

@@ -56,10 +56,17 @@ pub trait Pages {
     /// (`transactions.md` SC9), because a write stopped below it and none
     /// has written it since (`tree-layout.md` T3).
     ///
-    /// Such a pointer is not followed. What it names is not taken for a
-    /// part of the host's fragment and is not carried with it, and the
-    /// pointer keeps its bytes until a write states the host's roots
+    /// Such a pointer is not followed: to the plan of a write it names
+    /// nothing. What it names is not taken for a part of the host's
+    /// fragment and is not carried with it, and the pointer keeps its bytes
+    /// until a write names the host's roots again
     /// ([`HostedWrite::Set`](super::HostedWrite::Set)).
+    ///
+    /// The answer is `true` from the write that stopped below the host up
+    /// to and through the write that names the host's roots again, and
+    /// `false` before any write that follows that one: finalize rewrites
+    /// the pointer and then removes the mark (SC9). The write that names
+    /// the roots is the one that puts their marks right.
     ///
     /// No element is marked on existing GroveVersions, so there the answer
     /// is `false`, which is what this gives unless it is replaced.

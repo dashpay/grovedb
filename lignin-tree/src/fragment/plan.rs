@@ -152,34 +152,30 @@ impl PagePlan {
 struct Stored {
     len: usize,
     links: [Option<CellAddress>; 2],
-    hosted: Vec<Option<CellAddress>>,
+    /// How many hosted-root pointers the cell has.
+    hosted: usize,
+    /// The hosted-root pointers that are followed. A host that is behind
+    /// has none (T3): what its pointers name stays in the page, and no
+    /// rule sees it.
+    roots: Vec<Option<CellAddress>>,
+    behind: bool,
     value_len: usize,
     same_key: bool,
-    /// Whether the hosted-root pointers may be behind (T3).
-    behind: bool,
 }
 
 impl Stored {
-    /// The hosted-root pointers to follow: none of a host that is behind.
-    fn roots(&self) -> &[Option<CellAddress>] {
-        match self.behind {
-            true => &[],
-            false => &self.hosted,
-        }
-    }
-
     /// The cells the stored cell points at.
     fn children(&self) -> impl Iterator<Item = CellAddress> + '_ {
         self.links
             .iter()
-            .chain(self.roots())
+            .chain(&self.roots)
             .filter_map(|child| *child)
     }
 
     fn child(&self, via: Via) -> Option<CellAddress> {
         match via {
             Via::Link(side) => self.links[side as usize],
-            Via::Hosted(position) => self.hosted.get(usize::from(position)).copied().flatten(),
+            Via::Hosted(position) => self.roots.get(usize::from(position)).copied().flatten(),
         }
     }
 }
@@ -197,9 +193,9 @@ pub(super) struct Plan<'w> {
     /// The cells that stay where they are and that no cell of their page
     /// points at any more.
     pub unpointed: Vec<CellAddress>,
-    /// The dropped roots whose mark has to be set in a page the write does
-    /// not change otherwise: the cell that pointed at them is not one the
-    /// write holds.
+    /// The cells whose mark has to be set in a page the write may change
+    /// for nothing else: the cell that pointed at them was a host that is
+    /// behind (T3).
     pub unmarked: Vec<CellAddress>,
     known: HashMap<CellAddress, usize>,
     page_of: HashMap<PageId, usize>,
@@ -219,6 +215,8 @@ struct Planner<'p, 'w, P> {
     queue: Vec<usize>,
     /// The fragment roots that no rule can take a cell from.
     stuck: Vec<usize>,
+    /// The roots that a host which was behind names again.
+    stated: Vec<usize>,
 }
 
 /// Plans `write` on the pages as they are.
@@ -248,6 +246,7 @@ pub(super) fn plan<'w, P: Pages>(
         shrunk: Vec::new(),
         queue: Vec::new(),
         stuck: Vec::new(),
+        stated: Vec::new(),
     };
     let (order, lens, takes, let_go) = planner.build()?;
     planner.place(&order, &lens, takes)?;
@@ -256,6 +255,7 @@ pub(super) fn plan<'w, P: Pages>(
     planner.absorb()?;
     planner.merge()?;
     planner.settle()?;
+    planner.restate()?;
     let mut plan = planner.plan;
     let stay = let_go.into_iter().map(|cell| &plan.cells[cell]);
     let stay = stay
@@ -282,7 +282,7 @@ fn node_len(
         ValueWrite::Pending(_) => TreeCell::VALUE_LOCATION_LEN,
     };
     let hosted = match node.hosted {
-        HostedWrite::Keep => old.map_or(0, |old| old.hosted.len()),
+        HostedWrite::Keep => old.map_or(0, |old| old.hosted),
         HostedWrite::Set(roots) => roots.len(),
     };
     let aggregates = [node.left, node.right].map(|link| link.map(|link| link.aggregate.len()));
@@ -378,7 +378,7 @@ impl<P: Pages> Planner<'_, '_, P> {
             }
             match node.hosted {
                 HostedWrite::Keep => {
-                    let roots = old.map_or(&[][..], |old| old.roots());
+                    let roots = old.map_or(&[][..], |old| &old.roots);
                     for (position, root) in roots.iter().enumerate() {
                         if let Some(root) = *root {
                             let kid = self.existing(root)?;
@@ -387,6 +387,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                     }
                 }
                 HostedWrite::Set(roots) => {
+                    let behind = old.is_some_and(|old| old.behind);
                     for (position, root) in roots.iter().enumerate() {
                         let via = Via::Hosted(position as u8);
                         let kept = old.and_then(|old| old.child(via));
@@ -396,6 +397,9 @@ impl<P: Pages> Planner<'_, '_, P> {
                         };
                         if let Some(kid) = kid {
                             self.adopt(cell, kid, via)?;
+                            if behind {
+                                self.stated.push(kid);
+                            }
                         }
                     }
                 }
@@ -502,23 +506,46 @@ impl<P: Pages> Planner<'_, '_, P> {
         }
         // A dropped root that a cell of the write pointed at is in that
         // cell's page, which the write changes, or it has its mark. The mark
-        // of any other is read here: the cell that points at it is one the
-        // write does not hold, and is behind (T3).
+        // of any other is read here: the cell that points at it is a host
+        // that is behind (T3), which the write does not hold or does not
+        // follow.
         for &address in write.dropped {
-            if former.contains(&address) {
-                continue;
-            }
-            let marked = self.pages.read(address.page(), |view| {
-                let node = view.node(address.slot());
-                node.map(|node| node.is_fragment_root())
-            })?;
-            match marked {
-                Some(true) => {}
-                Some(false) => self.plan.unmarked.push(address),
-                None => return Err(WriteError::NoNode { address }.into()),
+            if !former.contains(&address) && !self.marked(address)? {
+                self.plan.unmarked.push(address);
             }
         }
         Ok((order, lens, takes, let_go))
+    }
+
+    /// Reads whether the cell at `address` is marked as the root of its
+    /// fragment.
+    fn marked(&mut self, address: CellAddress) -> Result<bool, FragmentError> {
+        let marked = self.pages.read(address.page(), |view| {
+            let node = view.node(address.slot());
+            node.map(|node| node.is_fragment_root())
+        })?;
+        Ok(marked.ok_or(WriteError::NoNode { address })?)
+    }
+
+    /// The roots that a host which was behind names again (T3). The mark of
+    /// such a root can be behind as the pointer was: the host may have left
+    /// the root's page, or stopped naming the root, in a write that did not
+    /// follow the pointer. A root that the write leaves in another page than
+    /// its host has its mark read here. The mark of any other is the plan's
+    /// to give, in a page the write changes.
+    fn restate(&mut self) -> Result<(), FragmentError> {
+        for cell in std::mem::take(&mut self.stated) {
+            let entry = &self.plan.cells[cell];
+            let host = entry.parent.expect("a root that is named has its host");
+            let apart = self.plan.cells[host].page != entry.page;
+            let unwritten = entry.stays() && entry.node.is_none();
+            if let Some(address) = entry.origin.filter(|_| apart && unwritten)
+                && !self.marked(address)?
+            {
+                self.plan.unmarked.push(address);
+            }
+        }
+        Ok(())
     }
 
     /// Sections 5 and 8: the cells of deleted nodes go, a node that takes
@@ -632,15 +659,18 @@ impl<P: Pages> Planner<'_, '_, P> {
             view.node(address.slot()).map(|node| Stored {
                 len: node.cell().encoded_len(),
                 links: Side::BOTH.map(|side| node.link(side).map(|link| link.child)),
-                hosted: node.hosted_roots().collect(),
+                hosted: node.hosted_roots().len(),
+                roots: node.hosted_roots().collect(),
+                behind: false,
                 value_len: node.value().stored_len(),
                 same_key: key.is_none_or(|key| key == node.key()),
-                behind: false,
             })
         })?;
         let mut stored = stored.ok_or(WriteError::NoNode { address })?;
-        let hosts = stored.hosted.iter().any(Option::is_some);
-        stored.behind = hosts && self.pages.host_is_behind(address);
+        if stored.hosted > 0 && self.pages.host_is_behind(address) {
+            stored.behind = true;
+            stored.roots.clear();
+        }
         Ok(stored)
     }
 
@@ -725,7 +755,7 @@ impl<P: Pages> Planner<'_, '_, P> {
                 self.adopt(cell, kid, Via::Link(side))?;
             }
         }
-        for (position, root) in stored.roots().iter().enumerate() {
+        for (position, root) in stored.roots.iter().enumerate() {
             if let Some(root) = *root {
                 let kid = self.existing(root)?;
                 self.adopt(cell, kid, Via::Hosted(position as u8))?;

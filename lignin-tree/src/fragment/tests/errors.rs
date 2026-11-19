@@ -6,9 +6,9 @@ use lignin_format::tree_page::{Hash, Side};
 
 use super::*;
 
-const HASH: Hash = [7; 32];
+pub(super) const HASH: Hash = [7; 32];
 
-fn node(at: Option<CellAddress>, key: &[u8]) -> NodeWrite<'_> {
+pub(super) fn node(at: Option<CellAddress>, key: &[u8]) -> NodeWrite<'_> {
     NodeWrite {
         at,
         key,
@@ -25,7 +25,7 @@ fn node(at: Option<CellAddress>, key: &[u8]) -> NodeWrite<'_> {
     }
 }
 
-fn link(child: Target) -> Option<LinkWrite<'static>> {
+pub(super) fn link(child: Target) -> Option<LinkWrite<'static>> {
     Some(LinkWrite {
         child,
         hash: &HASH,
@@ -35,7 +35,7 @@ fn link(child: Target) -> Option<LinkWrite<'static>> {
     })
 }
 
-fn root(was: Option<CellAddress>, now: Target) -> RootWrite {
+pub(super) fn root(was: Option<CellAddress>, now: Target) -> RootWrite {
     RootWrite {
         was,
         now: Some(now),
@@ -526,6 +526,79 @@ fn a_write_is_not_refused_for_room_that_it_makes_itself() {
     assert!(report.carried.is_empty() && report.created.is_empty());
     assert_eq!(stored(&bare, m).value().inline(), Some(&[3; 800][..]));
     assert_eq!(stored(&bare, c).value().inline(), Some(&large[..3000]));
+}
+
+/// Pages that mark no element, as on existing GroveVersions.
+struct Unmarked(Mem);
+
+impl Pages for Unmarked {
+    fn read<R>(
+        &mut self,
+        page: PageId,
+        read: impl FnOnce(NodePage<'_>) -> R,
+    ) -> Result<R, FragmentError> {
+        self.0.read(page, read)
+    }
+
+    fn write<R>(
+        &mut self,
+        page: PageId,
+        change: impl FnOnce(&mut PageMut<'_, '_>) -> Result<R, NodeError>,
+    ) -> Result<R, FragmentError> {
+        self.0.write(page, change)
+    }
+
+    fn create(&mut self) -> Result<PageId, FragmentError> {
+        self.0.create()
+    }
+
+    fn free(&mut self, page: PageId) -> Result<(), FragmentError> {
+        self.0.free(page)
+    }
+}
+
+#[test]
+fn pages_that_mark_no_element_have_no_host_that_is_behind() {
+    let (bare, [top, ..]) = Bare::new();
+    let Bare {
+        mem,
+        mut log,
+        mut fragments,
+    } = bare;
+    let mut pages = Unmarked(mem);
+    assert!(!pages.host_is_behind(top));
+
+    // `m` hosts a Merk with the root `r`. The next write keeps the pointer,
+    // and follows it: the root is a part of what the write holds.
+    let kept = NodeWrite {
+        left: link(Target::Kept),
+        right: link(Target::Kept),
+        ..node(Some(top), b"m")
+    };
+    let host = NodeWrite {
+        hosted: HostedWrite::Set(&[Some(Target::Node(1))]),
+        ..kept
+    };
+    let roots = [root(Some(top), Target::Kept)];
+    let write = Write {
+        nodes: &[host, node(None, b"r")],
+        roots: &roots,
+        ..Write::default()
+    };
+    let report = fragments.apply(&mut pages, &mut log, &write);
+    let hosted = report.expect("the write is applied").nodes[1].address();
+    let write = Write {
+        nodes: &[kept],
+        removed: &[hosted],
+        roots: &roots,
+        ..Write::default()
+    };
+    let error = fragments.apply(&mut pages, &mut log, &write);
+    let error = error.expect_err("the pointer is followed to a cell that is removed");
+    assert!(matches!(
+        error,
+        FragmentError::Write(WriteError::Removed { address }) if address == hosted
+    ));
 }
 
 #[test]

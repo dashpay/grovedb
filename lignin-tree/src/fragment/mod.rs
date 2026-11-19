@@ -118,13 +118,27 @@
 //! the pointer in the host's cell does not name it yet. The write that
 //! later holds the host states the root as the host's, as any write does.
 //!
-//! Until then the pointer in the host's cell is behind, and it is not
-//! followed ([`Pages::host_is_behind`], `transactions.md` SC9). A write
-//! that reads the host's page takes nothing for a part of the host's
-//! fragment through that pointer, reads nothing through it and carries
-//! nothing with it, and a host that is carried keeps the pointer's bytes.
-//! A root that is dropped while its host is behind is marked in the write
-//! that drops it, in a page that write may change for nothing else.
+//! Until then the pointers in the host's cell are behind, and they are not
+//! followed ([`Pages::host_is_behind`], `transactions.md` SC9). This is
+//! one rule, kept in one place: to the plan of a write, the pointers of a
+//! host that is behind name nothing.
+//!
+//! - Nothing is read through them, nothing is taken for a part of the
+//!   host's fragment and nothing is carried with the host.
+//! - Nothing is taken to have been pointed at by them: no node takes the
+//!   page of a deleted node that such a pointer named (R2).
+//! - They keep their bytes: in a host that is carried, and in a host that
+//!   is written and keeps them ([`HostedWrite::Keep`], [`Target::Kept`]).
+//!
+//! The fragment-root mark of the root can be behind with the pointer, in
+//! the same bounds: the host may leave the root's page, in a write that
+//! does not follow the pointer. The write that names the roots of the host
+//! again, each by its address or by its place in the write
+//! ([`HostedWrite::Set`]), puts both right. It reads the mark of a root
+//! that stays in another page than the host, and sets it where it is not
+//! set, in a page it may change for nothing else. A root that is dropped
+//! while its host is behind is marked in the same way, by the write that
+//! drops it.
 //!
 //! On existing GroveVersions every write holds the whole path up to the
 //! root of the grove, and the root is named by a root pointer, so no node

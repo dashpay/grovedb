@@ -1,7 +1,13 @@
 //! The rules of `docs/lignindb/tree-layout.md`, sections 5 to 8, one at a
 //! time.
 
-use super::{grove::Grove, *};
+use lignin_format::tree_page::{CellContent, Side, TreeCell, TreeLink};
+
+use super::{
+    errors::{link, node, root, HASH},
+    grove::Grove,
+    *,
+};
 
 fn params(largest: u32, small: u32, seed: u32, merge: u32) -> LayoutParams {
     LayoutParams {
@@ -607,11 +613,23 @@ fn a_root_whose_host_is_not_in_the_write_stays_and_is_not_let_go_of() {
     grove.check();
 }
 
+/// What a write that stops at the root of a Merk did to the Merk.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Stop {
+    /// It deleted the only node: the host points at a free slot.
+    Deleted,
+    /// It cleared the Merk: the host points at a cell for the reclaimer.
+    Cleared,
+    /// It gave the root another value: the host points at the root, whose
+    /// mark is the one it had when the host was in its page.
+    Kept,
+}
+
 #[test]
 fn a_pointer_that_is_behind_is_not_followed() {
     // The root nodes and the cells of a cleared Merk in one page, and a
     // second Merk under `c` with one node, in the same page.
-    for cleared in [false, true] {
+    for stop in [Stop::Deleted, Stop::Cleared, Stop::Kept] {
         let mut grove = crowded();
         let hosted = grove.host(0, b"c", false);
         grove.put(hosted, &[1], b"one");
@@ -620,27 +638,35 @@ fn a_pointer_that_is_behind_is_not_followed() {
         assert_eq!(root.page(), host.page());
         let ghosts = grove.ghosts;
 
-        // A write that stops at the Merk's root empties the Merk: by
-        // deleting its node, which leaves the host pointing at a free slot,
-        // or by clearing it, which leaves the host pointing at a cell for
-        // the reclaimer.
-        let report = match cleared {
-            true => grove.clear_stopped(hosted),
-            false => grove.delete_stopped(hosted, &[1]),
+        let report = match stop {
+            Stop::Deleted => grove.delete_stopped(hosted, &[1]),
+            Stop::Cleared => grove.clear_stopped(hosted),
+            Stop::Kept => grove.put_stopped(hosted, &[1], b"uno"),
         };
-        assert_eq!(report.roots, [None]);
+        let lives = stop == Stop::Kept;
+        assert_eq!(report.roots, [lives.then_some(root)]);
         let stored = |grove: &Grove| {
             let at = grove.node(0, b"c").at.expect("placed");
             let view = grove.mem.view(at.page());
             let cell = view.node(at.slot()).expect("the host");
             cell.hosted_roots().next_back().flatten()
         };
+        let marked = |grove: &Grove| {
+            let view = grove.mem.view(root.page());
+            view.node(root.slot()).map(|cell| cell.is_fragment_root())
+        };
         assert_eq!(stored(&grove), Some(root), "the host is behind");
 
-        // Before the host is written, another write fills the page and
-        // carries the host with the root of the grove. The pointer that is
-        // behind is not followed: nothing is read through it, and what it
-        // names stays where it is.
+        // A write that holds the host and does not rewrite its element
+        // keeps the pointer as it is.
+        grove.touch(0, b"c");
+        assert_eq!(grove.node(0, b"c").at, Some(host));
+        assert_eq!(stored(&grove), Some(root), "the pointer keeps its bytes");
+
+        // Before the host is written with its roots, another write fills
+        // the page and carries the host with the root of the grove. The
+        // pointer that is behind is not followed: nothing is read through
+        // it, and what it names stays where it is.
         let mut len = 400;
         while grove.mem.frames.len() == 1 {
             grove.put(0, b"x", &value(len, 6));
@@ -648,18 +674,85 @@ fn a_pointer_that_is_behind_is_not_followed() {
         }
         assert_eq!(grove.page_of(0, b"c"), page(2));
         assert_eq!(stored(&grove), Some(root), "the pointer keeps its bytes");
-        assert_eq!(grove.mem.view(page(1)).len(), grove.ghosts);
-        assert_eq!(grove.ghosts, ghosts + usize::from(cleared));
-        let left = grove.mem.view(root.page()).node(root.slot()).is_some();
-        assert_eq!(
-            left, cleared,
-            "a cleared root is where the reclaimer looks for it"
-        );
+        let stayed = grove.ghosts + usize::from(lives);
+        assert_eq!(grove.mem.view(page(1)).len(), stayed);
+        assert_eq!(grove.ghosts, ghosts + usize::from(stop == Stop::Cleared));
+        let expected = match stop {
+            Stop::Deleted => None,
+            Stop::Cleared => Some(true),
+            // The mark is behind as the pointer is: the host left the page.
+            Stop::Kept => Some(false),
+        };
+        assert_eq!(marked(&grove), expected);
 
+        // The write that names the root again puts the mark right, in a
+        // page it changes for nothing else.
+        let from = grove.mem.shadow.records.len();
         grove.finalize(hosted);
-        assert_eq!(stored(&grove), None);
+        assert_eq!(stored(&grove), lives.then_some(root));
+        let records = &grove.mem.shadow.records[from..];
+        let first: Vec<Rec> = records
+            .iter()
+            .filter(|(id, _)| *id == page(1))
+            .map(|(_, rec)| *rec)
+            .collect();
+        match stop {
+            Stop::Kept => {
+                assert_eq!(first, [Rec::Mark]);
+                assert_eq!(marked(&grove), Some(true));
+            }
+            _ => assert_eq!(first, []),
+        }
         grove.check();
     }
+}
+
+#[test]
+fn a_pointer_that_is_behind_gives_no_node_the_page_of_a_deleted_one() {
+    // The host `h` and the root `a` of its Merk in the first page, and `b`,
+    // the right child of `a`, in the second. No fragment is small here.
+    let mut grove = grove(params(100, 64, 75, 35));
+    grove.inline_max = 5000;
+    grove.plain_names = true;
+    grove.put(0, b"h", &value(400, 0));
+    let hosted = grove.host(0, b"h", false);
+    grove.put(hosted, b"a", &value(3900, 1));
+    grove.put(hosted, b"b", &value(3900, 2));
+    let at = |grove: &Grove, key: &[u8]| grove.node(hosted, key).at.expect("placed");
+    let (host, a, b) = (
+        grove.node(0, b"h").at.expect("placed"),
+        at(&grove, b"a"),
+        at(&grove, b"b"),
+    );
+    assert_eq!(
+        (host.page(), a.page(), b.page()),
+        (page(1), page(1), page(2))
+    );
+
+    // A write that stops at the root puts `c` in, and `b` rises above `a`.
+    // The host still names `a`.
+    let report = grove.put_stopped(hosted, b"c", b"small");
+    assert_eq!(report.roots, [Some(b)]);
+    assert_eq!(grove.merks[hosted].root, grove.find(hosted, b"b"));
+    assert_eq!((at(&grove, b"a"), at(&grove, b"b")), (a, b));
+    let pointer = |grove: &Grove| {
+        let view = grove.mem.view(host.page());
+        let cell = view.node(host.slot()).expect("the host");
+        cell.hosted_roots().next()
+    };
+    assert_eq!(pointer(&grove), Some(Some(a)));
+
+    // The write that deletes `a` holds the host and names `b` as the root.
+    // The host's pointer named `a`, but it was behind: `b` became the root
+    // in the write before, and takes no page from `a` now (R2).
+    let report = grove.delete(hosted, b"a");
+    assert!(report.carried.is_empty(), "{:?}", report.carried);
+    assert_eq!(at(&grove, b"b"), b);
+    assert_eq!(pointer(&grove), Some(Some(b)));
+    assert!(grove.behind().is_empty());
+    let carries = grove.fragments.counters().carries;
+    assert_eq!(carries[Cause::Delete].cells, 0);
+    grove.check();
 }
 
 /// Two pages: the root `b` in the first and its left child `a` in the
@@ -747,10 +840,17 @@ fn a_fragment_that_a_rotation_leaves_small_joins_its_parent_by_the_merge_rule() 
 }
 
 #[test]
-fn a_write_carries_cells_only_out_of_a_page_that_is_full() {
+fn rotations_across_many_pages_carry_cells_only_out_of_pages_that_are_nearly_full() {
     // No fragment of this grove is small, no fragment is cut for its size,
     // and no page takes a fragment in. So nothing but a full page carries a
     // cell: not a rotation, across pages or not, and not a hash.
+    //
+    // What a rotation does to two known pages is in the two tests above.
+    // This one is the broad guard, and its bound is not exact: a page that
+    // a cell left was within `GROWTH` bytes of its capacity before the
+    // write, which is what one write can add to a page here, a new cell
+    // and a root that a split below sent up.
+    const GROWTH: usize = 700;
     let mut grove = grove(params(100, 64, 0, 0));
     let capacity = grove.fragments.layout().capacity();
     let mut carrying = 0;
@@ -772,11 +872,11 @@ fn a_write_carries_cells_only_out_of_a_page_that_is_full() {
         carrying += 1;
         let full = |id: &PageId| {
             let before = used.iter().find(|(page, _)| page == id);
-            before.is_some_and(|(_, used)| used + 700 > capacity)
+            before.is_some_and(|(_, used)| used + GROWTH > capacity)
         };
         assert!(
             report.left.iter().all(full),
-            "a cell left a page that was not full"
+            "a cell left a page that was not nearly full"
         );
     }
     grove.check();
@@ -792,6 +892,115 @@ fn a_write_carries_cells_only_out_of_a_page_that_is_full() {
         grove.mem.frames.len()
     );
     assert!(grove.rotations > 500 && carrying < 100 && grove.mem.frames.len() > 30);
+}
+
+/// Puts a cell straight into a page, as an earlier write left it.
+fn stored_cell(
+    mem: &mut Mem,
+    page: PageId,
+    key: &[u8],
+    value_len: usize,
+    children: [Option<CellAddress>; 2],
+    fragment_root: bool,
+) -> CellAddress {
+    let child = |child: Option<CellAddress>| {
+        child.map(|child| TreeLink {
+            child,
+            hash: &HASH,
+            heights: (0, 0),
+            child_key_len: 1,
+            aggregate: &[0],
+        })
+    };
+    let value = vec![key[0]; value_len];
+    let content = CellContent {
+        key,
+        feature: &[0],
+        value_hash: &HASH,
+        kv_hash: &HASH,
+        left: child(children[0]),
+        right: child(children[1]),
+        hosted_roots: &[],
+        value: CellValue::Inline(&value),
+        fragment_root,
+    };
+    let handle = mem.write(page, |page| page.insert(&content));
+    handle.expect("the cell fits").address()
+}
+
+#[test]
+fn the_first_page_that_is_read_and_has_the_room_is_taken() {
+    // Four pages. The first holds `t` and its left child `u`. The children
+    // of `u` are `a` and `b`, each in a page of its own. The right child of
+    // `t` is `y`, in the fourth page, which three cells below `a` and `b`
+    // fill up to 300 bytes.
+    let layout = Layout::proposed(SIZE);
+    let (mut mem, mut log) = (Mem::new(SIZE), Log::default());
+    let mut fragments = Fragments::new(layout);
+    let [top, of_a, of_b, full] = [(); 4].map(|()| mem.create().expect("a page"));
+    let x1 = stored_cell(&mut mem, full, b"1", 2600, [None, None], true);
+    let x2 = stored_cell(&mut mem, full, b"2", 2600, [None, None], true);
+    let y = stored_cell(&mut mem, full, b"y", 100, [None, None], true);
+    let bare = TreeCell::len_of(1, 1, None, None, 0, 0) + 2;
+    let rest = layout.capacity() - mem.used(full) - bare - 300;
+    let x3 = stored_cell(&mut mem, full, b"3", rest, [None, None], true);
+    let a = stored_cell(&mut mem, of_a, b"a", 800, [Some(x1), Some(x2)], true);
+    let b = stored_cell(&mut mem, of_b, b"b", 2800, [Some(x3), None], true);
+    let u = stored_cell(&mut mem, top, b"u", 10, [Some(a), Some(b)], false);
+    let t = stored_cell(&mut mem, top, b"t", 10, [Some(u), Some(y)], true);
+    assert_eq!(mem.used(full), layout.capacity() - 300);
+
+    // The hints say that the page of `a` is the fuller one, and it is the
+    // emptier one. Both have room for what leaves.
+    let (used_a, used_b) = (mem.used(of_a), mem.used(of_b));
+    assert!(used_a < 1200 && used_b > 2800 && used_b + 700 < layout.seed_limit());
+    fragments.hints_mut().note(of_a, 4000);
+    fragments.hints_mut().note(of_b, 3000);
+
+    // `y` grows, the fourth page is full, and `y` leaves it. Its fragment
+    // is not small, so it goes to a page beside it: to the one its hint
+    // made the first choice, which is read and has the room. The other is
+    // not read to compare the two.
+    let longer = vec![b'y'; 480];
+    let nodes = [
+        NodeWrite {
+            left: link(Target::Kept),
+            right: link(Target::Kept),
+            ..node(Some(t), b"t")
+        },
+        NodeWrite {
+            value: ValueWrite::Inline(&longer),
+            ..node(Some(y), b"y")
+        },
+    ];
+    mem.touched.clear();
+    let write = Write {
+        nodes: &nodes,
+        roots: &[root(Some(t), Target::Kept)],
+        ..Write::default()
+    };
+    let report = fragments
+        .apply(&mut mem, &mut log, &write)
+        .expect("the write is applied");
+    assert_eq!(report.carried.len(), 1);
+    let carried = report.carried[0];
+    assert_eq!((carried.from, carried.cause), (y, Cause::Split));
+    assert_eq!(carried.to.page(), of_a);
+    assert!(carried.to.address() != y && report.created.is_empty());
+    assert!(!mem.touched.contains(&of_b), "the other page was not read");
+    assert_eq!(fragments.hints().used(of_a), Some(mem.used(of_a)));
+    assert_eq!(fragments.hints().used(of_b), Some(3000));
+    assert_eq!(report.roots, [Some(t)]);
+    for id in [top, of_a, of_b, full] {
+        let view = mem.view(id);
+        view.tree_page().check(SIZE).expect("a valid page");
+        view.tree_page()
+            .check_fragments()
+            .expect("the marks are what the links say");
+    }
+    let view = mem.view(top);
+    let right = view.node(t.slot()).expect("placed").link(Side::Right);
+    assert_eq!(right.map(|link| link.child), Some(carried.to.address()));
 }
 
 #[test]

@@ -76,6 +76,13 @@ pub(super) struct Grove {
     stopped: Option<(usize, Option<CellAddress>)>,
     /// The directory entries of the Merks whose host is behind.
     entries: HashMap<usize, Option<CellAddress>>,
+    /// The hosts whose element the next write rewrites: it names their
+    /// roots, and they are behind no more after it.
+    stating: BTreeSet<usize>,
+    /// How many cells of hosts that were behind the writes carried.
+    pub carried_behind: usize,
+    /// How many writes that stopped below a host were refused for room.
+    pub refused: usize,
     by_address: HashMap<CellAddress, usize>,
     dirty: BTreeSet<usize>,
     removed: Vec<usize>,
@@ -154,6 +161,9 @@ impl Grove {
             stale: false,
             stopped: None,
             entries: HashMap::new(),
+            stating: BTreeSet::new(),
+            carried_behind: 0,
+            refused: 0,
             by_address: HashMap::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
@@ -346,6 +356,10 @@ impl Grove {
             pending.extend(entry.left.into_iter().chain(entry.right));
             for hosted in self.nodes[node].hosted.clone() {
                 self.merks[hosted].alive = false;
+                assert!(
+                    !self.entries.contains_key(&hosted),
+                    "no host inside a dropped Merk is behind"
+                );
                 if let Some(root) = self.merks[hosted].root.take() {
                     pending.push(root);
                 }
@@ -421,6 +435,7 @@ impl Grove {
 
     /// Deletes `key` from `merk`, with every Merk its node hosts.
     pub fn delete(&mut self, merk: usize, key: &[u8]) -> Report {
+        self.settle_below(merk, key);
         self.merks[merk].root = self.delete_at(self.merks[merk].root, key);
         self.flush(merk)
     }
@@ -443,6 +458,7 @@ impl Grove {
         });
         let hosted = self.merks.len() - 1;
         self.nodes[node].hosted.push(hosted);
+        self.stating.insert(node);
         self.touch(merk, key);
         hosted
     }
@@ -450,13 +466,16 @@ impl Grove {
     /// Clears a hosted Merk: its host keeps it, with no root.
     pub fn clear(&mut self, merk: usize) -> Report {
         let host = self.merks[merk].host.expect("a hosted Merk");
+        self.settle_inside(merk);
         self.empty(merk);
+        self.stating.insert(host);
         let (above, key) = (self.nodes[host].merk, self.nodes[host].key.clone());
         self.touch(above, &key)
     }
 
     /// Deletes one key of `merk` and puts another in one write.
     pub fn delete_and_put(&mut self, merk: usize, gone: &[u8], key: &[u8], value: &[u8]) -> Report {
+        self.settle_below(merk, gone);
         self.merks[merk].root = self.delete_at(self.merks[merk].root, gone);
         let root = self.insert_at(self.merks[merk].root, merk, key, value);
         self.merks[merk].root = Some(root);
@@ -499,14 +518,28 @@ impl Grove {
 
     /// Applies what was done to `merk` in a write that holds no node above
     /// the Merk's root, and names that root as one that stays.
+    ///
+    /// A root that stays cannot grow in a page that is full of cells the
+    /// write does not hold. Such a write is refused and has changed no
+    /// page, and the grove makes it again with the host and all above it.
     fn stopped(&mut self, merk: usize) -> Report {
         if let Some(root) = self.merks[merk].root {
             self.rehash(root);
         }
-        let report = self.apply().expect("the write is applied");
+        let report = self.apply();
         self.stopped = None;
-        self.entries.insert(merk, report.roots[0]);
-        report
+        match report {
+            Ok(report) => {
+                self.entries.insert(merk, report.roots[0]);
+                self.stale = true;
+                report
+            }
+            Err(FragmentError::NoRoom { .. }) => {
+                self.refused += 1;
+                self.flush(merk)
+            }
+            Err(error) => panic!("the write is applied: {error}"),
+        }
     }
 
     /// Puts `value` under `key` in the hosted `merk`, in a write that stops
@@ -521,6 +554,7 @@ impl Grove {
     /// Deletes `key` from the hosted `merk` in a write that stops at the
     /// Merk's root.
     pub fn delete_stopped(&mut self, merk: usize, key: &[u8]) -> Report {
+        self.settle_below(merk, key);
         self.stop(merk);
         self.merks[merk].root = self.delete_at(self.merks[merk].root, key);
         self.stopped(merk)
@@ -529,17 +563,52 @@ impl Grove {
     /// Clears the hosted `merk` in a write that holds no node: its root is
     /// let go of, and its directory entry names none.
     pub fn clear_stopped(&mut self, merk: usize) -> Report {
+        self.settle_inside(merk);
         self.stop(merk);
         self.empty(merk);
         self.stopped(merk)
     }
 
     /// Writes the host of `merk`, and all above it, with the root the Merk
-    /// has now.
+    /// has now. The host is behind until that write is applied.
     pub fn finalize(&mut self, merk: usize) -> Report {
-        self.entries.remove(&merk);
-        self.stale = !self.entries.is_empty();
-        self.flush(merk)
+        let said = self.mem.said_behind;
+        let report = self.flush(merk);
+        assert!(self.mem.said_behind > said, "the host was behind");
+        assert!(!self.entries.contains_key(&merk));
+        report
+    }
+
+    /// Writes every host inside `merk` that is behind. A Merk is not
+    /// dropped while a host inside it is behind: the pointer would stay
+    /// behind for good, in a cell that the reclaimer reads.
+    fn settle_inside(&mut self, merk: usize) {
+        for pending in self.behind() {
+            let mut at = pending;
+            while let Some(host) = self.merks[at].host {
+                at = self.nodes[host].merk;
+                if at == merk && self.entries.contains_key(&pending) {
+                    self.finalize(pending);
+                }
+            }
+        }
+    }
+
+    /// The same for every Merk that the node under `key` hosts.
+    fn settle_below(&mut self, merk: usize, key: &[u8]) {
+        let hosted = self
+            .find(merk, key)
+            .map(|node| self.nodes[node].hosted.clone());
+        for hosted in hosted.unwrap_or_default() {
+            self.settle_inside(hosted);
+        }
+    }
+
+    /// The Merks whose host is behind.
+    pub fn behind(&self) -> Vec<usize> {
+        let mut merks: Vec<usize> = self.entries.keys().copied().collect();
+        merks.sort_unstable();
+        merks
     }
 
     /// Reads the nodes of `merk` from the pages, from the root its
@@ -570,6 +639,7 @@ impl Grove {
             let Some(host) = self.merks[at].host else {
                 break;
             };
+            self.stating.insert(host);
             at = self.nodes[host].merk;
             let key = self.nodes[host].key.clone();
             self.mark_path(at, &key);
@@ -582,9 +652,10 @@ impl Grove {
         struct Parts {
             links: [Option<Target>; 2],
             hosted: Option<Vec<Option<Target>>>,
-            roots: Vec<Option<usize>>,
+            roots: Option<Vec<Option<usize>>>,
             pending: Option<PendingValue>,
         }
+        let stating = std::mem::take(&mut self.stating);
         let written: Vec<usize> = self.dirty.iter().copied().collect();
         let index_of: HashMap<usize, usize> = written
             .iter()
@@ -594,6 +665,7 @@ impl Grove {
         let (rng, plain, nodes) = (&mut self.rng, self.plain_names, &self.nodes);
         let height = |node: Option<usize>| node.map_or(0, |node| nodes[node].height);
         let mut parts = Vec::new();
+        let mut fresh_values = Vec::new();
         for &id in &written {
             let node = &nodes[id];
             let mut links = [None; 2];
@@ -606,14 +678,30 @@ impl Grove {
                 .iter()
                 .map(|merk| self.merks[*merk].root)
                 .collect();
-            let keep = node.at.is_some() && roots == node.stored_hosted && !plain && rng.chance(50);
+            // A host that is behind keeps its pointers as they are, unless
+            // the write rewrites its element: then it names every root.
+            let behind = node
+                .hosted
+                .iter()
+                .any(|merk| self.entries.contains_key(merk));
+            let left_behind = behind && !stating.contains(&id);
+            let same = roots == node.stored_hosted && !behind;
+            let keep = node.at.is_some() && same && !plain && rng.chance(50);
             let mut hosted = (!keep).then(Vec::new);
             for (position, root) in roots.iter().enumerate() {
                 let Some(named) = &mut hosted else { break };
-                let kept = root.is_some() && node.stored_hosted.get(position) == Some(root);
+                let stored = node.stored_hosted.get(position) == Some(root);
+                let kept = stored && root.is_some() && !behind;
                 named.push(root.map(|root| name(rng, plain, nodes, &index_of, root, kept)));
             }
+            if left_behind {
+                let kept = node.stored_hosted.iter();
+                let kept = kept.map(|root| root.map(|_| Target::Kept)).collect();
+                hosted = rng.chance(50).then_some(kept);
+            }
             let out_of_line = node.value_dirty && node.value.len() > self.inline_max;
+            let fresh = out_of_line.then(|| self.log.pending(&node.value));
+            fresh_values.extend(fresh);
             let restated = node
                 .at
                 .filter(|_| self.restate && !node.value_dirty)
@@ -624,11 +712,8 @@ impl Grove {
             parts.push(Parts {
                 links,
                 hosted,
-                roots,
-                pending: match out_of_line {
-                    true => Some(self.log.pending(&node.value)),
-                    false => restated,
-                },
+                roots: (!left_behind).then_some(roots),
+                pending: fresh.or(restated),
             });
         }
         let node_writes: Vec<NodeWrite<'_>> = written
@@ -702,7 +787,21 @@ impl Grove {
         self.mem.behind = hosts.filter_map(|host| nodes[host].at).collect();
         let from = self.mem.shadow.records.len();
         let pages_before = self.mem.frames.len();
-        let report = self.fragments.apply(&mut self.mem, &mut self.log, &write)?;
+        let report = match self.fragments.apply(&mut self.mem, &mut self.log, &write) {
+            Ok(report) => report,
+            Err(error) => {
+                // A write that is refused leaves everything as it was.
+                for value in fresh_values {
+                    self.log.pending.remove(&value.id());
+                }
+                self.orphans = dropped;
+                self.stating = stating;
+                return Err(error);
+            }
+        };
+        let behind = &self.mem.behind;
+        let carried = report.carried.iter();
+        self.carried_behind += carried.filter(|cell| behind.contains(&cell.from)).count();
         assert_eq!(
             self.mem.frames.len() + report.freed.len(),
             pages_before + report.created.len(),
@@ -767,8 +866,18 @@ impl Grove {
             let node = &mut self.nodes[*id];
             node.value_dirty = false;
             node.stored = [node.left, node.right];
-            node.stored_hosted = parts.roots;
+            if let Some(roots) = parts.roots {
+                node.stored_hosted = roots;
+            }
+            if stating.contains(id) {
+                for merk in &node.hosted {
+                    self.entries.remove(merk);
+                }
+            }
         }
+        let merks = &self.merks;
+        self.entries.retain(|merk, _| merks[*merk].alive);
+        self.stale = self.stopped.is_some() || !self.entries.is_empty();
         if let Some(named) = report.roots.first().filter(|_| self.stopped.is_none()) {
             self.root_at = *named;
         }
@@ -879,7 +988,10 @@ impl Grove {
             cell.value().is_inline(),
             node.value.len() <= self.inline_max
         );
-        assert_eq!(cell.is_fragment_root(), above != Some(at.page()));
+        // The mark of a root whose host is behind can be behind with it.
+        if self.entries.get(&node.merk) != Some(&Some(at)) {
+            assert_eq!(cell.is_fragment_root(), above != Some(at.page()));
+        }
         *reached += 1;
         for (side, child) in Side::BOTH.into_iter().zip([node.left, node.right]) {
             match (cell.link(side), child) {
@@ -901,6 +1013,10 @@ impl Grove {
         let roots: Vec<Option<CellAddress>> = cell.hosted_roots().collect();
         assert_eq!(roots.len(), node.hosted.len());
         for (root, merk) in roots.into_iter().zip(&node.hosted) {
+            // A pointer that is behind is not followed.
+            if self.entries.contains_key(merk) {
+                continue;
+            }
             match (root, self.merks[*merk].root) {
                 (None, None) => {}
                 (Some(root_at), Some(root)) => self.walk(root, root_at, Some(at.page()), reached),

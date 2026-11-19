@@ -135,6 +135,8 @@ struct Mem {
     writes_left: Option<usize>,
     /// The hosts whose element is marked pending.
     behind: Vec<CellAddress>,
+    /// How many times a host was said to be behind.
+    said_behind: usize,
 }
 
 impl Mem {
@@ -153,6 +155,7 @@ impl Mem {
             touched: Vec::new(),
             writes_left: None,
             behind: Vec::new(),
+            said_behind: 0,
         }
     }
 
@@ -221,7 +224,9 @@ impl Pages for Mem {
     }
 
     fn host_is_behind(&mut self, host: CellAddress) -> bool {
-        self.behind.contains(&host)
+        let behind = self.behind.contains(&host);
+        self.said_behind += usize::from(behind);
+        behind
     }
 
     fn free(&mut self, page: PageId) -> Result<(), FragmentError> {
