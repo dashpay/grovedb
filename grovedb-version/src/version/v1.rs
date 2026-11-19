@@ -134,6 +134,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 validate_indexed_child_for_variant: 0,
                 provable_count_provable_big_sum_tree_creation: 0,
                 big_sum_tree_twins_creation: 0,
+                convert_to_big_sum_tree: 0,
             },
             delete: GroveDBOperationsDeleteVersions {
                 delete: 0,
@@ -177,6 +178,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 prove_single_path: 0,
                 verify_single_path: 0,
                 big_sum_axis: 0,
+                reconcile_secondaries: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,

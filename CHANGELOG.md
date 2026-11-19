@@ -143,6 +143,92 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `AxisKeys` (`BigSum`). `IndexAxis::try_from_tag(3)` now succeeds, and an
   encoded `AxisQuery` may carry tag 3 (decoding is not gated; serving is,
   as above).
+- `GroveDb::convert_to_big_sum_tree(path, key, transaction, grove_version)`:
+  converts a tree that keeps a 64-bit sum into its counterpart with a
+  128-bit sum, in place. `SumTree` becomes `BigSumTree`, `CountSumTree`
+  becomes `CountBigSumTree`, `ProvableSumTree` becomes `ProvableBigSumTree`,
+  `ProvableCountSumTree` and `ProvableCountProvableSumTree` become
+  `ProvableCountProvableBigSumTree`, `ProvableSumIndexedTree` becomes
+  `ProvableBigSumIndexedTree` and `ProvableCountProvableSumIndexedTree`
+  becomes `ProvableCountProvableBigSumIndexedTree`. Six of the seven
+  become the same tree but for the width of the sum. `ProvableCountSumTree`
+  has its count in its node hashes and its sum beside them, which no tree
+  with a 128-bit sum does: it becomes the one tree with a provable count
+  and a 128-bit sum, and its sum enters its node hashes. The tree keeps its
+  path, its children, its flags, its count, its sum and its wrapper, and
+  the result is the tree built with a 128-bit sum from the start: the same
+  element and, for the five trees without a ranking, the same root hash. Every node
+  of the tree is rewritten (a node and the link to it record sums at the
+  tree's width): one visit per child, with the tree in memory until the
+  write, and 16 added bytes per child (one more where a node's length
+  prefix grows) and 7 for the element. An indexed tree's sum rows are
+  replaced by big sum rows and its avg rows rewritten, all the rows of an
+  axis as one change to its secondary, so only the sums of the finished
+  secondary are computed: `O(n log n)` per such axis, with the rows' own
+  storage cost. Refused, leaving the tree as it was:
+  - for any other element;
+  - for a tree that adds its sum to a parent keeping a 64-bit sum (convert
+    the parent first);
+  - for a tree holding a child that would add a different count or sum to
+    it once converted, which is a tree with a 128-bit sum inside it (it
+    adds nothing to a 64-bit sum and its whole sum to a 128-bit one);
+  - for a tree holding a child its counterpart does not accept, or an
+    indexed tree with axes that are not canonical;
+  - for a tree whose element does not record the root key, count and sum
+    its tree has (a tree inserted with a sum and no children);
+  - for an indexed tree whose sum axis becomes the big sum axis, with a key
+    longer than the 239 bytes that axis ranks.
+
+  A sum row that is in storage and in no Merk is removed with the others.
+
+  Only the named tree is converted: a tree inside it keeps its type. Gated
+  by the new `operations.insert.convert_to_big_sum_tree` slot (0 in V1..V4,
+  which refuse the call; 1 in V5; **BREAKING** for code building
+  `GroveDBOperationsInsertVersions` by hand). With it:
+  - `Merk::convert_to_big_sum_tree(self, check_node, old_specialized_cost,
+    value_defined_cost_fn, grove_version) -> Self`: the rewrite of one
+    Merk, under the same slot. It widens the contribution each node records
+    and does not read the values: `check_node` is the caller's say on each
+    node, and the two cost functions are the ones
+    `apply_with_specialized_costs` takes. It takes the Merk by value and
+    returns it once the write is made, so a refused or failed conversion
+    leaves no handle to go on with, and storage as it was.
+  - `TreeType::big_sum_counterpart` and `Element::big_sum_counterpart`.
+  - `Merk::linked_keys`: the keys of every node a tree links, by walking
+    its links. A read by key finds a record in the tree's storage whether
+    or not a link leads to it.
+  - `KVIterator::status`: whether a scan ended on a storage error rather
+    than at the end of its records, which `next_kv` reports alike. A scan
+    that meets an error within one query item now ends there: it used to
+    seek to the next item, which clears the error, and go on as a complete
+    scan that lacked rows. `reconcile_indexed_tree_secondaries` and the
+    conversion check the status after the scans they rebuild from, and
+    return the storage error where they took a scan cut short for a
+    complete one.
+- `reconcile_indexed_tree_secondaries` from `GROVE_V5`
+  (`operations.indexed_axis.reconcile_secondaries: 1`, 0 in V1..V4;
+  **BREAKING** for code building `GroveDBOperationsIndexedAxisVersions` by
+  hand). A repair removes and writes rows one Merk commit at a time, and
+  the ranking reads iterate storage. Three things change:
+  - each row write is its own operation of the storage batch. In one
+    operation the batch keeps a put over a later delete of the same key, so
+    removing a row whose node an earlier removal had rewritten left the row
+    in storage: gone from the secondary's Merk, with the right root hash,
+    and still returned by the ranking reads;
+  - a row that is in storage and in no Merk, which only such a repair
+    leaves, is removed from storage if it should not exist, billed by the
+    record the repair read, and written again if it should exist (a read
+    by key finds its record, so it used to pass for present);
+  - when the repaired tree is an entry of another indexed tree, that
+    tree's row for it is refreshed. The row binds the element's value hash,
+    which a repair that changes a secondary changes, and the enclosing
+    index kept the previous hash.
+
+  V1..V4 keep the released behaviour, pinned by a GROVE_V4 fixture to the
+  root, the stored rows and the cost measured before this change. The
+  repaired secondary has the shape the released repair gives it; the cost a
+  repair reports changes with the removals that now reach storage. A value
+  of the slot the repair does not know is refused before anything is read.
 - `GROVE_V5` (`protocol_version` 5). `GROVE_V4` as 6.1.1 shipped it is what
   Dash Platform 5.0 (protocol version 14) runs, so behaviour changes from
   here on are gated in `GROVE_V5` and leave V1..V4 as they are. V5 is V4

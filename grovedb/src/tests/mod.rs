@@ -83,6 +83,7 @@ mod batch_filled_tree_insert_checks_tests;
 mod big_sum_indexed_guard_tests;
 mod big_sum_indexed_tree_tests;
 mod big_sum_tree_twins_tests;
+mod convert_to_big_sum_tree_tests;
 mod count_offset_backward_ref_forgery_tests;
 mod count_offset_paginated_tests;
 mod count_sum_tree_tests;

@@ -271,6 +271,13 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
         "commitment_tree_insert",
         produced(&[Operation::CommitmentInsert]),
     ),
+    (
+        "convert_to_big_sum_tree",
+        Status::LeftOut(
+            "no workload converts a tree yet: `develop` added the operation in #1063, after \
+             the streams were pinned; a unit of BASE-01 produces it and removes this entry",
+        ),
+    ),
     ("create_checkpoint", CHECKPOINT),
     (
         "delete",
