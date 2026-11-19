@@ -183,11 +183,11 @@ impl Left {
         self.own(unit) || self.below.contains(&unit.subtree)
     }
 
-    /// Whether the write is in the key set of its commit for every key of
-    /// `unit`. For a subtree below that the transaction had not written,
-    /// it is not: CF5 for such a write is open.
+    /// Whether the write meets every write of `unit` (CF5): it deletes
+    /// every key of the unit, also of a subtree below that its transaction
+    /// had not written and that the key set of its commit does not name.
     fn names(&self, unit: Unit) -> bool {
-        self.own(unit) || self.cut.contains(&unit.subtree)
+        self.takes(unit)
     }
 }
 
@@ -222,7 +222,7 @@ impl Write {
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {
                     let own = left.subtree;
-                    let named = std::iter::once(own).chain(left.cut.iter().copied());
+                    let named = std::iter::once(own).chain(left.below.iter().copied());
                     named
                         .flat_map(|subtree| Column::ALL.map(|column| Unit::new(column, subtree)))
                         .collect::<Vec<_>>()

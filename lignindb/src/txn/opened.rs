@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use lignin_format::{CellAddress, CommitVersion};
-use lignin_tree::directory::{Directory, Entry};
+use lignin_tree::directory::{Directory, Entry, MerkId};
 
 use super::{error::TxnError, key::Subtree, path::WritePath, write_set::WriteSet};
 use crate::snapshot::OperationGuard;
@@ -102,6 +102,34 @@ impl Opened {
             let above = above.filter(|above| above.root().is_some());
             above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
         }))
+    }
+
+    /// The ids of the Merks that `subtree` is below at this version, from
+    /// the outermost, if it is entered: what tells the subtree from one
+    /// that is entered under its prefix after a Merk above it was dropped
+    /// or cleared (`lignin_tree::directory`, "Ids").
+    pub(crate) fn lineage<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<Vec<MerkId>>, TxnError> {
+        self.open(path, guard, subtree)?;
+        let entry = self.entries[subtree].as_ref();
+        Ok(entry.map(|entry| entry.lineage().collect()))
+    }
+
+    /// The subtree of the element that hosts `subtree` at this version,
+    /// also where the entry is one that a drop left.
+    pub(crate) fn host<'s>(
+        &self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<Option<Subtree>, TxnError> {
+        let pages = path.committed(guard, self.at);
+        let entry = self.directory.stored(&pages, subtree.as_bytes())?;
+        Ok(entry.and_then(|entry| entry.host().map(|host| Subtree::new(*host.parent))))
     }
 
     /// As [`Self::root`], for the transaction whose write set is `set`:

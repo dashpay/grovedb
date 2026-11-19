@@ -40,42 +40,40 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
                         merks: &[],
                         ..Batch::default()
                     };
-                    // One scope is open at a time, and a thread that finds
-                    // one open is refused at once: it never waits (SC3).
+                    // Every thread writes the one unit. One scope holds it
+                    // at a time, and a scope that finds it held is refused
+                    // at once: it never waits (SC3).
                     loop {
-                        match txn.scope() {
-                            Ok(scope) => {
-                                scope.apply(&batch).expect("a write");
+                        let scope = txn.scope().expect("any number of scopes");
+                        match scope.apply(&batch) {
+                            Ok(_) => {
                                 let mut out = Vec::new();
                                 assert!(scope.get(aux(), &key, &mut out).expect("a read"));
                                 scope.merge();
                                 break;
                             }
-                            Err(TxnError::ScopeOpen) => {
+                            Err(TxnError::ScopeOverlap { unit }) => {
+                                assert_eq!(unit, aux());
                                 refused.fetch_add(1, Ordering::Relaxed);
+                                drop(scope);
                                 thread::yield_now();
                             }
                             Err(error) => panic!("{error}"),
                         }
                     }
-                    // A read outside a scope is refused while one is open,
-                    // and otherwise sees what was merged.
+                    // A read outside a scope is refused while a scope
+                    // holds the unit, and otherwise sees what was merged.
                     let mut out = Vec::new();
                     match txn.get(aux(), &key, &mut out) {
                         Ok(found) => assert!(found && out == value),
-                        Err(TxnError::ScopeOpen) => {}
+                        Err(TxnError::ScopeOverlap { .. }) => {}
                         Err(error) => panic!("{error}"),
                     }
                 }
             });
         }
         // A scope is opened on one thread and used on another.
-        let scope = loop {
-            match txn.scope() {
-                Ok(scope) => break scope,
-                Err(_) => thread::yield_now(),
-            }
-        };
+        let scope = txn.scope().expect("any number of scopes");
         threads.spawn(move || {
             let records = [RecordWrite::put(Column::Aux, aux().subtree, b"moved", b"1")];
             let batch = Batch {
@@ -83,7 +81,10 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
                 merks: &[],
                 ..Batch::default()
             };
-            scope.apply(&batch).expect("a write");
+            while let Err(error) = scope.apply(&batch) {
+                assert!(matches!(error, TxnError::ScopeOverlap { .. }), "{error}");
+                thread::yield_now();
+            }
             scope.merge();
         });
     });

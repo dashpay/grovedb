@@ -13,6 +13,8 @@ mod reads;
 
 mod rebase;
 mod savepoints;
+#[path = "../../scope/tests/engine.rs"]
+mod scopes;
 mod subtrees;
 mod threads;
 mod trees;
@@ -116,6 +118,13 @@ impl<'s> World<'s> {
         let applied = batch.with(|batch| scope.apply(batch));
         scope.merge();
         let applied = applied?;
+        self.note(tx, batch, first_write);
+        Ok(applied)
+    }
+
+    /// Tells the model of `tx` the writes of `batch`, which was applied
+    /// with the first-write version `first_write`.
+    fn note(&self, tx: &Tx<'s>, batch: &OwnedBatch, first_write: u64) {
         let mut model = tx.model.borrow_mut();
         for mut write in batch.writes() {
             if let Write::Leave(left) = &mut write {
@@ -136,7 +145,6 @@ impl<'s> World<'s> {
                 self.hosts.borrow_mut().push((*subtree, *host));
             }
         }
-        Ok(applied)
     }
 
     /// Every subtree that was entered below `subtree`, at any depth.

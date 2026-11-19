@@ -28,7 +28,6 @@ use super::{
     write::{
         Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut,
     },
-    write_set::WriteSet,
 };
 use crate::snapshot::OperationGuard;
 
@@ -506,37 +505,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// The frames as the transaction keeps them until its next operation.
     pub(crate) fn park(self) -> Parked<'s> {
         self.under(&IDLE)
-    }
-
-    /// Frames that show the write set `set` applied, in order, to the
-    /// committed state of the version `at` (WT3): every operation is
-    /// applied again through the tree layer, which finds every cell by its
-    /// key (WT7, LT4).
-    ///
-    /// They are read and written under `guard`, the guard of the operation
-    /// that makes them, and are returned as the transaction keeps them.
-    pub(crate) fn build(
-        path: &WritePath<'s>,
-        guard: &'g OperationGuard<'s>,
-        at: CommitVersion,
-        set: &WriteSet,
-    ) -> Result<Parked<'s>, TxnError> {
-        let mut frames = Self::new(path, guard, at)?;
-        for op in 0..set.ops() {
-            let hosted = set.hosted_lists(op);
-            let batch = set.batch(op, &hosted);
-            let merks = batch.merks();
-            let subtrees = batch.subtrees();
-            let batch = Batch {
-                records: batch.records(),
-                merks: &merks,
-                subtrees: &subtrees,
-            };
-            frames
-                .apply(path, &batch, Some(&set.made(op)))
-                .map_err(|refused| refused.error)?;
-        }
-        Ok(frames.park())
     }
 
     /// For each Merk of the batch that was applied last, whether it had no

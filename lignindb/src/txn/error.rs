@@ -204,10 +204,25 @@ impl Error for BatchError {}
 pub enum TxnError {
     /// The batch was refused.
     Batch(BatchError),
-    /// Another scope of the transaction is open. Until parallel scopes
-    /// exist (TXN-09), a transaction has one scope at a time, and a read
-    /// outside it waits for none: it is refused.
+    /// A scope of the transaction is open, and the call needs every scope
+    /// closed: a rollback of the transaction, a rollback to a mark, or its
+    /// commit (`transactions.md` SC8, CM1; the specification's
+    /// `ScopesOpen`). The transaction is as it was.
     ScopeOpen,
+    /// The operation touches a unit that another open scope of the
+    /// transaction holds: it writes where that scope has read or written,
+    /// or reads where that scope has written (SC3). A claim never waits.
+    /// The operation had no effect, and its scope stays open and usable.
+    ScopeOverlap {
+        /// The unit that the other scope holds: the one the operation
+        /// names, or a subtree above it that the other scope has dropped
+        /// or cleared.
+        unit: Unit,
+    },
+    /// The transaction has a pending mark left: its tree is not finalized
+    /// up to the root, and it is not committed so (SC9, CM1). The
+    /// transaction is as it was.
+    NotFinalized,
     /// The tree layer did not apply a write.
     Fragment(FragmentError),
     /// A tree page was not read.
@@ -246,7 +261,11 @@ impl fmt::Display for TxnError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Batch(error) => write!(f, "batch: {error}"),
-            Self::ScopeOpen => f.write_str("another scope of the transaction is open"),
+            Self::ScopeOpen => f.write_str("a scope of the transaction is open"),
+            Self::ScopeOverlap { unit } => {
+                write!(f, "another open scope of the transaction holds {unit}")
+            }
+            Self::NotFinalized => f.write_str("the transaction has a pending mark left"),
             Self::Fragment(error) => write!(f, "tree pages: {error}"),
             Self::Node(error) => write!(f, "node: {error}"),
             Self::Cursor(error) => write!(f, "cursor: {error}"),
@@ -279,7 +298,11 @@ impl Error for TxnError {
             Self::TreeValue(error) => Some(error),
             Self::Format(error) => Some(error),
             Self::Directory(error) => Some(error),
-            Self::ScopeOpen | Self::PageFreed { .. } | Self::Damaged(_) => None,
+            Self::ScopeOpen
+            | Self::ScopeOverlap { .. }
+            | Self::NotFinalized
+            | Self::PageFreed { .. }
+            | Self::Damaged(_) => None,
         }
     }
 }

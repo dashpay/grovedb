@@ -588,14 +588,18 @@ fn a_merk_cursor_reads_its_version_and_the_transactions_nodes() {
     assert_eq!(cursor.key(), Some(&key(42)[..]), "it is there again");
     drop(cursor);
 
-    // Through a scope, and not beside one.
+    // Through a scope, and beside it: both read the Merk (SC3).
     let scope = tx.txn.scope().expect("no scope is open");
     let mut inside = scope.merk_cursor(subtree).expect("a cursor");
     inside.seek_to_last().expect("a seek");
     assert_eq!(inside.key(), Some(&key(89)[..]));
     let mut outside = tx.txn.merk_cursor(subtree).expect("a cursor");
-    assert!(matches!(outside.seek_to_first(), Err(TxnError::ScopeOpen)));
     assert!(matches!(outside.node(|node| node.is_some()), Ok(false)));
+    outside
+        .seek_to_last()
+        .expect("a scope that reads holds no reader off");
+    assert_eq!(outside.key(), Some(&key(89)[..]));
+    assert!(matches!(outside.node(|node| node.is_some()), Ok(true)));
     drop((inside, outside));
     scope.rollback();
     world.check(&tx);

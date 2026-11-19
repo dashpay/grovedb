@@ -22,7 +22,10 @@ use super::{
     view::NodeView,
     write_set::{Own, WriteSet},
 };
-use crate::snapshot::{OperationGuard, VersionPin};
+use crate::{
+    scope::table::Who,
+    snapshot::{OperationGuard, VersionPin},
+};
 
 /// The committed side of a cursor of a write transaction
 /// (`transactions.md` RD6): an ordered cursor over the records of one unit
@@ -285,7 +288,7 @@ enum Way {
 /// transaction's lock is held only while its write set is looked at.
 pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     txn: &'t WriteTxn<'s>,
-    scoped: bool,
+    scoped: Who,
     unit: Unit,
     pin: VersionPin<'s>,
     side: C,
@@ -301,7 +304,7 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
 }
 
 impl<'t, 's> Cursor<'t, 's> {
-    pub(crate) fn flat(txn: &'t WriteTxn<'s>, scoped: bool, unit: Unit) -> Self {
+    pub(crate) fn flat(txn: &'t WriteTxn<'s>, scoped: Who, unit: Unit) -> Self {
         let path = *txn.path();
         // The version is pinned here, and its pages are read from the
         // cursor's first step on, each under the guard of its operation
@@ -335,7 +338,7 @@ impl<'t, 's> Cursor<'t, 's> {
         let unit = self.unit;
         let own = self
             .txn
-            .with_set(self.scoped, |set| match set.own(unit, key) {
+            .with_set(self.scoped, self.unit, |set| match set.own(unit, key) {
                 Own::Put(value) => {
                     out.extend_from_slice(value);
                     Ok(Some(true))
@@ -355,7 +358,7 @@ impl<'t, 's> Cursor<'t, 's> {
 impl<'t, 's> MerkCursor<'t, 's> {
     pub(crate) fn merk(
         txn: &'t WriteTxn<'s>,
-        scoped: bool,
+        scoped: Who,
         subtree: Subtree,
     ) -> Result<Self, TxnError> {
         let path = *txn.path();
@@ -411,7 +414,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// `pin` holds.
     pub(crate) fn over(
         txn: &'t WriteTxn<'s>,
-        scoped: bool,
+        scoped: Who,
         unit: Unit,
         pin: VersionPin<'s>,
         side: C,
@@ -440,7 +443,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
         let (path, at, subtree) = (*self.txn.path(), self.pin.version(), self.unit.subtree);
         let (opened, seen) = (&mut self.opened, self.seen);
-        let (left, reads) = self.txn.with_set(self.scoped, |set| {
+        let (left, reads) = self.txn.with_set(self.scoped, self.unit, |set| {
             if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
                 return Ok((set.left(), reads));
             }
@@ -571,7 +574,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             let committed = self.side.key().filter(|_| reads);
             // The next key the transaction wrote, and whether it is a
             // record now.
-            let own = self.txn.with_set(self.scoped, |set| {
+            let own = self.txn.with_set(self.scoped, self.unit, |set| {
                 let within = match (&bound, back) {
                     (Bound::Unbounded, _) => (Bound::Unbounded, Bound::Unbounded),
                     (Bound::Included(key), false) => (Bound::Included(&key[..]), Bound::Unbounded),
