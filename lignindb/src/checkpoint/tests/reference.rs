@@ -29,6 +29,7 @@
 //! | `LIGNIN_TXN06_LOG_FILE` | the length in bytes at which the log turns to its next file, the log's own unless set |
 //! | `LIGNIN_TXN06_FRAMES` | how many pages the buffer pool of the store, and of each checkpoint that is opened, has room for: 16,384 unless set, which is 128 MiB. A pool is made empty and whole by an open, so its size is in the time of one. |
 //! | `LIGNIN_TXN06_NO_LIMITS` | the times are printed and not held to the limits: on a disk whose syncs take seconds they measure the disk |
+//! | `LIGNIN_TXN06_OPEN_ONLY` | a checkpoint that is opened is not read: the difference between a run with opens and one without is then what the opens cost, as `perf stat` counts it |
 
 use std::{
     collections::HashMap,
@@ -559,6 +560,7 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let blocks = number("LIGNIN_TXN06_BLOCKS", checkpoints).max(checkpoints);
     let warm = number("LIGNIN_TXN06_WARM", WARM_BLOCKS);
     let limits = std::env::var_os("LIGNIN_TXN06_NO_LIMITS").is_none();
+    let reads = std::env::var_os("LIGNIN_TXN06_OPEN_ONLY").is_none();
     let frames = number("LIGNIN_TXN06_FRAMES", 16_384) as usize;
     let options = LogOptions {
         target_file_len: number(
@@ -695,6 +697,9 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
             report.pages_rebuilt
         );
         assert_eq!(its_versions.latest(), *version);
+        if !reads {
+            continue;
+        }
         assert_eq!(
             root_hash(&checkpoint, &its_versions, *version),
             Some(*hash),
