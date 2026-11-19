@@ -64,7 +64,7 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
     let mut cursor = store.cursor();
     let mut seen = Vec::new();
     let mut valid = false;
-    for _ in 0..160 {
+    for _ in 0..240 {
         let mut target = match random.below(3) {
             0 => vec![random.below(256) as u8],
             _ => key(random.below(320)),
@@ -273,10 +273,10 @@ impl Both<'_, '_, '_> {
     }
 }
 
-/// Runs `test` on a Merk of `tree_type` that both engines hold: `rounds`
-/// random batches committed, with what `before` did, and as many more
-/// written by the transaction that `test` is given, which rewrite some of
-/// the committed nodes, remove some and add others.
+/// Runs `test` on a Merk of `tree_type` that both engines hold: random
+/// batches committed, with what `before` did, and a few more written by
+/// the transaction that `test` is given, which rewrite some of the
+/// committed nodes, remove some and add others.
 fn with_both(
     tree_type: TreeType,
     seed: u64,
@@ -293,7 +293,9 @@ fn with_both(
         let batch = |_| Act::Apply(random_batch(&mut random, tree_type, &mut model, true));
         (0..rounds).map(batch).collect()
     };
-    let (committed, written) = (batches(rounds), batches(rounds));
+    // Many more nodes are committed than the transaction then writes, so
+    // that it leaves some as they were.
+    let (committed, written) = (batches(4 * rounds), batches(rounds.div_ceil(3)));
 
     let rocks_transaction = rocks.start_transaction();
     let transaction = path.begin();
@@ -327,11 +329,55 @@ fn with_both(
     for batch in &written {
         both.deferred(std::slice::from_ref(batch));
     }
+    // Whatever the random batches did, the transaction also removes a
+    // committed node, gives another a new value and makes one.
+    let reader = path.begin();
+    let nodes = |store: &LigninNodeStore<'_>| -> BTreeMap<Vec<u8>, Vec<u8>> {
+        walked(store).into_iter().collect()
+    };
+    let committed = nodes(&LigninNodeStore::read_only(&reader, ROOT));
+    let now = nodes(&LigninNodeStore::deferred(&writer, ROOT, None));
+    let mut still = committed.keys().filter(|key| now.contains_key(*key));
+    let (gone, again) = (still.next(), still.next_back());
+    let (gone, again) = (gone.expect("a node"), again.expect("another"));
+    let sure = [
+        (gone.clone(), Op::Delete),
+        (
+            again.clone(),
+            Op::Put(vec![0xab; 77], feature(tree_type, 9)),
+        ),
+        (
+            vec![0xfe; 9],
+            Op::Put(vec![0xcd; 33], feature(tree_type, 8)),
+        ),
+    ];
+    both.deferred(&[Act::Apply(sure.to_vec())]);
+
+    // So the Merk the test is given has nodes that are as they were
+    // committed, nodes the transaction rewrote, nodes it made and nodes it
+    // removed.
+    let now = nodes(&LigninNodeStore::deferred(&writer, ROOT, None));
+    let (mut kept, mut rewritten, mut made) = (0, 0, 0);
+    for (key, record) in &now {
+        match committed.get(key) {
+            Some(was) if was == record => kept += 1,
+            Some(_) => rewritten += 1,
+            None => made += 1,
+        }
+    }
+    let removed = (committed.keys())
+        .filter(|key| !now.contains_key(*key))
+        .count();
+    assert!(
+        kept > 0 && rewritten > 0 && made > 0 && removed > 0,
+        "{tree_type:?}: {kept} kept, {rewritten} rewritten, {made} made, {removed} removed"
+    );
     test(&both);
 }
 
 #[test]
 fn a_cursor_shows_the_records_rocksdb_shows_and_charges_what_it_charges() {
+    let mut walked = String::new();
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
         with_both(tree_type, 0x05ee_d000 + seed as u64, 5, &[], |both| {
             let walks = [
@@ -345,11 +391,73 @@ fn a_cursor_shows_the_records_rocksdb_shows_and_charges_what_it_charges() {
             let answers = both.deferred(&walks);
             // The walk came to records, and a scan shows them all.
             assert!(answers[1].contains("valid: true"), "{}", answers[1]);
+            walked.push_str(&answers[1]);
             assert!(answers[2].len() > 1_000);
             assert_eq!(answers[6], "false");
             // A handle that writes at once reads the same records.
             both.immediate(&walks);
         });
+    }
+    // The walks came to every edge: a step off either end, a seek beyond
+    // either end, a seek between two keys, and a position whose record was
+    // read, read twice or not read.
+    let after = |to: &str, shows: &str| format!("to: \"{to}\",\n        valid: {shows}");
+    for (edge, shown) in [
+        ("a step off the last record", after("the next", "false")),
+        (
+            "a step off the first record",
+            after("the one before", "false"),
+        ),
+        ("a step to a record", after("the next", "true")),
+        ("a step back to a record", after("the one before", "true")),
+        ("the first record", after("the first", "true")),
+        ("the last record", after("the last", "true")),
+        (
+            "a record whose value was not asked",
+            "value: None".to_owned(),
+        ),
+        (
+            "a record that was read",
+            "value: Some(\n            Some(".to_owned(),
+        ),
+        (
+            "no record to read",
+            "value: Some(\n            None,".to_owned(),
+        ),
+    ] {
+        assert!(walked.contains(&shown), "no walk came to {edge}");
+    }
+    let seeks = |back: bool| {
+        let to = match back {
+            true => "to: \"back from [",
+            false => "to: \"from [",
+        };
+        let all = walked.split("Seen {").filter(move |seen| seen.contains(to));
+        all.map(|seen| (seen.contains("valid: true"), seen.to_owned()))
+    };
+    for back in [false, true] {
+        assert!(
+            seeks(back).any(|(valid, _)| !valid),
+            "a seek beyond the end"
+        );
+        // The target of a seek is in its name: where the key it came to is
+        // another, it came to a record beside the target.
+        let beside = |seen: &String| {
+            let target = seen.split('[').nth(1).and_then(|at| at.split(']').next());
+            let key = seen.split("key: Some(").nth(1).map(|key| {
+                let digits: String = (key.chars())
+                    .take_while(|at| *at != ']')
+                    .filter(|at| !at.is_whitespace() && *at != '[')
+                    .collect();
+                digits.trim_end_matches(',').to_owned()
+            });
+            let target = target.map(|target| target.replace(' ', ""));
+            target.is_some() && key.is_some() && target != key
+        };
+        assert!(
+            seeks(back).any(|(valid, seen)| valid && beside(&seen)),
+            "a seek between two keys"
+        );
     }
 }
 
@@ -1037,6 +1145,20 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         status.to_string().contains("the node was not read"),
         "{status}"
     );
+
+    // The read of one node through a view is refused with the error, and
+    // is no missing node.
+    let mut view = store.cursor();
+    let read = crate::proofs::query::count_offset::read_value_from_view(&mut view, &be(4));
+    assert_eq!(read.cost.seek_count, 1, "the seek is charged");
+    let error = read.value.expect_err("the record was not read");
+    assert!(matches!(&error, Error::StorageError(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("the node was not read"),
+        "{error}"
+    );
+    let absent = crate::proofs::query::count_offset::read_value_from_view(&mut view, b"no key");
+    assert_eq!(absent.value.expect("a key that is not there"), None);
 
     // A link whose child's key was not read with the node is no record.
     let mut unread = StoredNode {
