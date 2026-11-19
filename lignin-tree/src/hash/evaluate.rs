@@ -14,7 +14,7 @@ use super::{
 };
 use crate::{fragment::Pages, node::NodeRef};
 
-/// What a stored hash of a node is made from the hash of.
+/// Which pointer of a node names another node.
 #[derive(Debug, Clone, Copy)]
 enum Role {
     /// The child on a side.
@@ -23,10 +23,25 @@ enum Role {
     Hosted(usize),
 }
 
+/// A node whose hash a stored hash of another node is made from.
 #[derive(Debug, Clone, Copy)]
 struct Dep {
     role: Role,
     at: CellAddress,
+}
+
+/// What the nodes that are open keep, in lists they share: a node's part of
+/// a list lies on top of the parts of the nodes it was reached from, and is
+/// cut off when the node is done. So an evaluation allocates for its lists,
+/// not for each node.
+#[derive(Debug, Default)]
+struct Lists {
+    /// What each open node waits for.
+    deps: Vec<Dep>,
+    /// The hashes of the first of a node's `deps`, in their order.
+    hashes: Vec<Hash>,
+    /// The roots a host's value hash is made from, while it is made.
+    hosted: Vec<Option<Hash>>,
 }
 
 /// One node whose hashes are being made, as its cell was read.
@@ -34,9 +49,10 @@ struct Dep {
 struct Frame {
     at: CellAddress,
     fields: Stale,
-    deps: Vec<Dep>,
-    /// The hashes of the first of `deps`, in their order.
-    hashes: Vec<Hash>,
+    /// Where the node's part of [`Lists::deps`] starts.
+    deps: usize,
+    /// Where the node's part of [`Lists::hashes`] starts.
+    hashes: usize,
     /// The place of the value, if a value hash is made and the value is not
     /// in the cell.
     place: Option<ValuePlace>,
@@ -73,11 +89,13 @@ impl Made {
     }
 }
 
-/// Reads what the hashes `fields` of the cell at `at` are made from. A
-/// field that names the hash of a child the node does not have is an error
-/// if `strict`, and is left out otherwise.
+/// Reads what the hashes `fields` of the cell at `at` are made from, and
+/// puts the nodes it waits for on top of `lists`. A field that names the
+/// hash of a child the node does not have is an error if `strict`, and is
+/// left out otherwise.
 fn gather<P: Pages>(
     pages: &mut P,
+    lists: &mut Lists,
     at: CellAddress,
     fields: Stale,
     strict: bool,
@@ -85,25 +103,25 @@ fn gather<P: Pages>(
     if fields.has(HashField::Value) && pages.host_is_behind(at) {
         return Err(HashError::HostBehind { host: at });
     }
+    let mut frame = Frame {
+        at,
+        fields,
+        deps: lists.deps.len(),
+        hashes: lists.hashes.len(),
+        place: None,
+        hosted: 0,
+    };
     let read = pages.read(at.page(), |page| {
         let node = page
             .node(at.slot())
             .ok_or(HashError::NoNode { address: at })?;
-        let mut frame = Frame {
-            at,
-            fields,
-            deps: Vec::new(),
-            hashes: Vec::new(),
-            place: None,
-            hosted: 0,
-        };
         for side in Side::BOTH {
             let field = HashField::Child(side);
             if !fields.has(field) {
                 continue;
             }
             match node.link(side) {
-                Some(link) => frame.deps.push(Dep {
+                Some(link) => lists.deps.push(Dep {
                     role: Role::Child(side),
                     at: link.child,
                 }),
@@ -115,7 +133,7 @@ fn gather<P: Pages>(
             frame.place = node.value().place();
             for (position, root) in node.hosted_roots().enumerate() {
                 frame.hosted += 1;
-                frame.deps.extend(root.map(|at| Dep {
+                lists.deps.extend(root.map(|at| Dep {
                     role: Role::Hosted(position),
                     at,
                 }));
@@ -166,34 +184,39 @@ fn node_hash_at<P: Pages, R: HashRules>(
 }
 
 /// Makes the hashes of `frame` from the cell `node` shows, which is the
-/// cell the frame was read from, from the hashes of what it points at and
-/// from `value`, the node's value if that is not in the cell.
+/// cell the frame was read from, from the hashes of what it points at, on
+/// top of `lists`, and from `value`, the node's value if that is not in the
+/// cell.
 ///
 /// The key-value hash is made from the value hash that was just made if
 /// `chain`, and otherwise from the one the cell stores.
 fn make<R: HashRules>(
     node: NodeRef<'_>,
     frame: &Frame,
+    lists: &mut Lists,
     value: &[u8],
     chain: bool,
     rules: &mut R,
     counters: &mut Counters,
 ) -> Result<Made, HashError> {
     let changed = HashError::Changed { node: frame.at };
+    let (deps, hashes) = (&lists.deps[frame.deps..], &lists.hashes[frame.hashes..]);
+    let hosted = &mut lists.hosted;
     let mut made = Made::default();
-    let mut hosted = Vec::new();
     let makes_value = frame.fields.has(HashField::Value);
     if makes_value {
         let roots = node.hosted_roots();
-        let named = frame.deps.iter();
-        let named = named.filter(|dep| matches!(dep.role, Role::Hosted(_)));
+        let named = deps
+            .iter()
+            .filter(|dep| matches!(dep.role, Role::Hosted(_)));
         let same_roots = roots.len() == frame.hosted && roots.flatten().count() == named.count();
         if node.value().place() != frame.place || !same_roots {
             return Err(changed);
         }
+        hosted.clear();
         hosted.resize(frame.hosted, None);
     }
-    for (dep, hash) in frame.deps.iter().zip(&frame.hashes) {
+    for (dep, hash) in deps.iter().zip(hashes) {
         let (named, slot) = match dep.role {
             Role::Child(side) => (
                 node.link(side).map(|link| link.child),
@@ -211,7 +234,7 @@ fn make<R: HashRules>(
     }
     if makes_value {
         let value = node.value().inline().unwrap_or(value);
-        let hash = rules.value_hash(node, value, &hosted);
+        let hash = rules.value_hash(node, value, hosted);
         made.value = Some(hash.map_err(HashError::Rule)?);
         counters.value_hashes += 1;
     }
@@ -233,6 +256,7 @@ pub(super) struct Run<'a, P, V, R> {
     values: &'a mut V,
     rules: &'a mut R,
     stack: Vec<Frame>,
+    lists: Lists,
     value: Vec<u8>,
 }
 
@@ -249,6 +273,7 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
             values,
             rules,
             stack: Vec::new(),
+            lists: Lists::default(),
             value: Vec::new(),
         }
     }
@@ -267,6 +292,8 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
                 marks.open = false;
             }
         }
+        self.lists.deps.clear();
+        self.lists.hashes.clear();
         result
     }
 
@@ -279,22 +306,21 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
         }
         loop {
             let top = self.stack.last().expect("a node is open");
-            if let Some(dep) = top.deps.get(top.hashes.len()) {
+            let have = self.lists.hashes.len() - top.hashes;
+            if let Some(dep) = self.lists.deps[top.deps..].get(have) {
                 let below = dep.at;
                 if !self.open(below)? {
                     let hash = self.clean(below)?;
-                    let top = self.stack.last_mut().expect("a node is open");
-                    top.hashes.push(hash);
+                    self.lists.hashes.push(hash);
                 }
                 continue;
             }
             let hash = self.close(want || self.stack.len() > 1)?;
-            match self.stack.last_mut() {
-                Some(above) => above
-                    .hashes
-                    .push(hash.expect("a node that another waits for is hashed")),
-                None => return Ok(hash),
+            if self.stack.is_empty() {
+                return Ok(hash);
             }
+            let hash = hash.expect("a node that another waits for is hashed");
+            self.lists.hashes.push(hash);
         }
     }
 
@@ -307,7 +333,7 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
         if marks.open {
             return Err(HashError::Cycle { node: at });
         }
-        let frame = gather(self.pages, at, marks.stale, true)?;
+        let frame = gather(self.pages, &mut self.lists, at, marks.stale, true)?;
         marks.open = true;
         self.stack.push(frame);
         Ok(true)
@@ -327,13 +353,13 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
         let frame = self.stack.last().expect("a node is open");
         let at = frame.at;
         fetch(self.values, frame, &mut self.value)?;
-        let (rules, value) = (&mut *self.rules, &self.value);
+        let (rules, lists, value) = (&mut *self.rules, &mut self.lists, &self.value);
         let counters = &mut self.hashes.counters;
         let written = self.pages.write(at.page(), |page| {
             let Some(mut cell) = page.node_mut(at.slot()) else {
                 return Ok(Err(HashError::NoNode { address: at }));
             };
-            let made = match make(cell.node(), frame, value, true, rules, counters) {
+            let made = match make(cell.node(), frame, lists, value, true, rules, counters) {
                 Ok(made) => made,
                 Err(error) => return Ok(Err(error)),
             };
@@ -353,6 +379,8 @@ impl<'a, P: Pages, V: ValueReader, R: HashRules> Run<'a, P, V, R> {
             Ok(hash.map(Some).map_err(HashError::Rule))
         });
         let hash = written.map_err(HashError::Pages)??;
+        self.lists.deps.truncate(frame.deps);
+        self.lists.hashes.truncate(frame.hashes);
         self.hashes.marks.remove(&at);
         self.hashes.counters.nodes += 1;
         self.stack.pop();
@@ -368,10 +396,11 @@ pub(super) fn check<P: Pages, V: ValueReader, R: HashRules>(
     rules: &mut R,
     node: CellAddress,
 ) -> Result<Stale, HashError> {
-    let mut frame = gather(pages, node, Stale::ALL, false)?;
-    for index in 0..frame.deps.len() {
-        let hash = node_hash_at(pages, rules, frame.deps[index].at)?;
-        frame.hashes.push(hash);
+    let mut lists = Lists::default();
+    let frame = gather(pages, &mut lists, node, Stale::ALL, false)?;
+    for index in 0..lists.deps.len() {
+        let hash = node_hash_at(pages, rules, lists.deps[index].at)?;
+        lists.hashes.push(hash);
     }
     let mut value = Vec::new();
     fetch(values, &frame, &mut value)?;
@@ -379,7 +408,8 @@ pub(super) fn check<P: Pages, V: ValueReader, R: HashRules>(
         let cell = page
             .node(node.slot())
             .ok_or(HashError::NoNode { address: node })?;
-        let made = make(cell, &frame, &value, false, rules, &mut Counters::default())?;
+        let mut none = Counters::default();
+        let made = make(cell, &frame, &mut lists, &value, false, rules, &mut none)?;
         let differing = made
             .hashes()
             .filter(|(field, hash)| cell.hash(*field) != Some(*hash));

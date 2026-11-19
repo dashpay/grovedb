@@ -97,6 +97,11 @@
 //! marked and whose hash is needed is read once. A value that is not in its
 //! cell is read between two steps, never inside one.
 //!
+//! **No allocation for each node.** What the open nodes of an evaluation
+//! keep is in lists they share, which grow with the depth of what is
+//! marked and are allocated once for an evaluation. A host's value hash
+//! uses one more of them for the roots it hosts.
+//!
 //! **An error loses no mark.** Whatever stops an evaluation
 //! ([`HashError`]), every stale hash is still marked afterwards and every
 //! hash that was written is right, so the evaluation can be asked for
