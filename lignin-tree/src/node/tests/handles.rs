@@ -13,7 +13,11 @@ use super::*;
 /// goes back to the process's counter, and no two leases are one.
 #[test]
 fn a_lease_is_taken_once() {
-    let each = 2 * handle::BLOCK as usize + 500;
+    let each = if cfg!(miri) {
+        handle::BLOCK as usize + 3
+    } else {
+        2 * handle::BLOCK as usize + 500
+    };
     let taken: Vec<Lease> = thread::scope(|scope| {
         let threads: Vec<_> = (0..8)
             .map(|_| scope.spawn(|| (0..each).map(|_| Lease::take()).collect::<Vec<_>>()))

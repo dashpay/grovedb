@@ -38,9 +38,9 @@ pub(super) fn reserve(counter: &AtomicU64, len: u64) -> Option<Range<u64>> {
 }
 
 /// The next lease number of `own`, which takes `len` more from `counter`
-/// when it has none, or `None` once `counter` has fewer than `len` left. No
-/// number is given twice, whatever number of holders take from one
-/// counter.
+/// when it has none, or `None` once it has none and `counter` has fewer
+/// than `len` left. No number is given twice, whatever number of holders
+/// take from one counter.
 pub(super) fn issue(own: &Cell<Range<u64>>, counter: &AtomicU64, len: u64) -> Option<NonZeroU64> {
     let mut block = own.take();
     if block.is_empty() {
@@ -110,8 +110,9 @@ impl Lease {
     ///
     /// # Panics
     ///
-    /// When the threads of the process have taken every block of lease
-    /// numbers: 2^54 of them.
+    /// When this thread has given out the numbers it took, and the threads
+    /// of the process have taken every whole block of lease numbers: 2^54
+    /// less one.
     pub fn take() -> Self {
         let number = OWN.with(|own| issue(own, &NEXT_LEASE, BLOCK));
         Self(number.expect("the process has lease numbers left"))

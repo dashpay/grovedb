@@ -1404,12 +1404,14 @@ fn a_group_that_is_written_again_holds_the_values_of_its_writer_again() {
 
 /// The bytes that are with the frame `frame`, by their names, beside the
 /// names of the pending values its leaf holds.
-fn attached_and_held(frame: &[u8], attached: Vec<(ValueId, usize)>) -> [Vec<(ValueId, usize)>; 2] {
+fn attached_and_held(
+    frame: &[u8],
+    mut attached: Vec<(ValueId, usize)>,
+) -> [Vec<(ValueId, usize)>; 2] {
     let mut held: Vec<(ValueId, usize)> = pending_of(frame)
         .into_iter()
         .map(|(_, pending)| (pending.id(), pending.value_len() as usize))
         .collect();
-    let mut attached = attached;
     held.sort_unstable();
     attached.sort_unstable();
     [attached, held]
@@ -1527,6 +1529,11 @@ fn a_writer_goes_on_under_the_guard_of_its_next_operation() {
     assert_eq!(writer.base().at(), at);
     assert_eq!(writer.revision(), revision);
     assert_eq!(writer.written().collect::<Vec<_>>(), [tree.root()]);
+    let shown = format!("{writer:?}");
+    assert!(
+        shown.starts_with("Private { base: Committed { at: "),
+        "{shown}"
+    );
     assert_eq!(get(&writer, &tree, b"a"), Some(big(1)));
     assert_eq!(get(&writer, &tree, b"b"), Some(big(2)));
     tree.put(&mut writer, b"c", &big(3)).expect("a put");

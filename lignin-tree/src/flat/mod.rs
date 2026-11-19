@@ -354,7 +354,7 @@
 //!   pointers under the counts lock, and frees a page only after it has
 //!   discarded the writer's copy of it under that lock.
 //! - **Write-back** places each pending value of a leaf in a page step,
-//!   takes its bytes off the frame under the position of its entry, and
+//!   takes its bytes off the frame under the 8 bytes its entry held, and
 //!   writes a leaf to a segment only when no value of it is pending
 //!   (`flat-page.md` P15).
 //! - **The drain of the pending prefix drops** (`flat-store.md`) lists its

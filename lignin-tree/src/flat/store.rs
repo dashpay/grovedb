@@ -312,7 +312,6 @@ pub struct Parts<'s> {
 /// operation it works in, through [`Committed`]. Its copies are the pool's
 /// and outlive that guard: [`Self::under`] takes the writer into the
 /// transaction's next operation, and [`Parts`] is bound to no guard.
-#[derive(Debug)]
 pub struct Private<'s, 'r, G: ?Sized, I> {
     base: Committed<'s, 'r, G>,
     pool: &'s BufferPool,
@@ -324,6 +323,20 @@ pub struct Private<'s, 'r, G: ?Sized, I> {
     released: Vec<ValuePointer>,
     values: u64,
     revision: Revision,
+}
+
+impl<G: ?Sized, I> fmt::Debug for Private<'_, '_, G, I> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Private")
+            .field("base", &self.base)
+            .field("owner", &self.owner)
+            .field("copies", &self.copies)
+            .field("freed", &self.freed)
+            .field("unused", &self.unused)
+            .field("released", &self.released)
+            .field("revision", &self.revision)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The bit that the names of a writer's new values begin with: the address
@@ -412,7 +425,10 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
     /// A commit calls this before [`Self::log_page`]. A group is written
     /// for one place (LG22): a commit that writes its group again for
     /// another place calls this again, and then [`Self::log_page`] again.
-    /// Every call writes all of the writer's values and names them anew.
+    /// Every call writes all of the writer's values and names them anew,
+    /// and their bytes are with their frames under the new names when it
+    /// returns. After a call that failed they need not be: the writer is
+    /// given up ([`Self::roll_back`]), as after any call that failed.
     pub fn log_values(&mut self, group: &mut GroupWriter<'_>) -> Result<(), FlatError> {
         for (&page, own) in &mut self.copies {
             let mut latch = own.frame.write()?;
@@ -421,14 +437,11 @@ impl<'s: 'r, 'r, G: OperationGuard + ?Sized, I: PageIds> Private<'s, 'r, G, I> {
             // stands for two values at any time.
             let mut logged = Vec::new();
             for (slot, named) in pending(&latch)? {
-                if own
-                    .values
-                    .get(&named.id())
-                    .is_some_and(|held| held.inherited)
-                {
+                let id = named.id();
+                if own.values.get(&id).is_some_and(|held| held.inherited) {
                     continue;
                 }
-                let held = own.values.remove(&named.id());
+                let held = own.values.remove(&id);
                 let held = held.ok_or(FlatError::NoValue { page })?;
                 logged.push((slot, group.value(page, &held.bytes)?, held.bytes));
             }
@@ -659,9 +672,9 @@ fn attach(
         latch.detach(name);
     }
     for (_, pending) in pending(latch)? {
-        let held = values.get(&pending.id());
-        let held = held.ok_or(FlatError::NoValue { page })?;
-        latch.attach(pending.id(), Arc::clone(&held.bytes));
+        let name = pending.id();
+        let held = values.get(&name).ok_or(FlatError::NoValue { page })?;
+        latch.attach(name, Arc::clone(&held.bytes));
     }
     Ok(())
 }
