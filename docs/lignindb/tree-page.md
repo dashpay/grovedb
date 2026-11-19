@@ -696,7 +696,10 @@ owner can overrule one while version 1 is still open (U10).
    store changes when a page id is reused; or a new page starts at a number
    no earlier page under that id reached, for which the field is wide
    enough to hold, say, a commit version in its high bits; or no handle
-   outlives the write that could free its page.
+   outlives the write that could free its page. TREE-02 took the last, as a
+   lease (`lignin-tree::node`, `Lease`): a handle is followed only under
+   the lease it was issued under, a new page starts its count at 0, and the
+   format is as it was.
 10. **Pages are 8 KiB to 64 KiB** (TP4, TP14). Below 8 KiB a cell with the
     longest of every part would not be smaller than half a page. The
     simulation of `tree-layout.md` also ran 4 KiB; this format does not

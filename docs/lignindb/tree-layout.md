@@ -241,8 +241,10 @@ same key: co-located subtrees often hold the same keys. So:
   write touched, and those are the pages a Merk that is kept open follows
   next. S1 and S2 allow a narrower one: an address into a page is good for
   as long as no cell has left that page since the address was read. One
-  count for each page, of the cells that left it, is enough. TREE-02 chooses
-  the mechanism
+  count for each page, of the cells that left it, is enough. TREE-02 chose
+  that count, and a lease beside it (`lignin-tree::node`, `Lease`): a kept
+  address is good only under the lease it was read under, which is also how
+  the reuse of a page id is settled
 
 A holder that takes in what every write reports (P5) never fails the check
 because of its own transaction.
@@ -1240,10 +1242,17 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     page beside a fragment (V4, M2). The simulation assumes that this is
     known, for example from the page table. If it is not, V4 has to load the
     candidates, or be restricted to pages already in the buffer pool, which
-    would make the layout depend on the cache.
+    would make the layout depend on the cache. As built: the tree layer
+    keeps the used bytes of the pages it has seen as a hint
+    (`lignin-tree::fragment`, `Hints`). A page with no hint is not chosen,
+    and the page that is chosen is read before anything goes to it.
 15. **Reclaiming a dropped subtree is a walk, not a list of pages** (D2),
     because of P2. TREE-09's "all its pages are reclaimed" becomes "all its
-    cells are removed, and a page is freed when it is empty".
+    cells are removed, and a page is freed when it is empty". As built: the
+    walk can follow every pointer it finds only if no host inside a dropped
+    Merk was marked pending when it was dropped (T3). `lignin-tree::fragment`
+    asks the caller to write such hosts first, at least one page each
+    beyond D1 (`Write::dropped`).
 16. **A directory entry holds the address of the root cell** and is counted
     as a page when it is written. It is 0.14 of the 7.04, in peaks: one
     split in the owner index rewrites the entries of every co-located
