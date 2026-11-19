@@ -102,6 +102,14 @@ pub enum ValuePut<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Hosted<'a> {
     /// The Merks the node hosts already. A new node hosts none.
+    ///
+    /// It is for a write that leaves every hosted Merk as it is. A batch
+    /// that holds the change set of a Merk and writes the node that hosts
+    /// it names the Merk in the node ([`Self::Set`]): the pointer in the
+    /// host's cell is written with the root it names. Where the cell shows
+    /// that this was not done, the batch is refused
+    /// ([`BatchError::HostKeeps`](super::BatchError::HostKeeps)). It does
+    /// not show it for a Merk that had no root.
     Keep,
     /// The hosted Merks by position: the node's cell points at the root of
     /// each, as that Merk has it once the whole write is applied
@@ -133,6 +141,11 @@ pub struct NodePut<'a> {
     /// Where the caller last saw the node, if it kept that. It is a hint:
     /// it is followed while it is good, and the node is found by its key
     /// otherwise (PN8).
+    ///
+    /// A handle is good for the cell it names, and a cell does not say
+    /// which Merk it is in. So the handle is one that was read for this
+    /// Merk: a good handle of another Merk whose node has the same key
+    /// would be followed.
     pub at: Option<NodeHandle>,
 }
 
@@ -146,11 +159,21 @@ pub struct NodePut<'a> {
 pub enum RootPut<'a> {
     /// The root is the node it was.
     Keep,
-    /// The node under this key is the root, or the Merk is empty.
+    /// The node under this key is the root, or the Merk is empty. A root
+    /// changes only with a node: a change set that sets it writes or
+    /// deletes one
+    /// ([`BatchError::RootAlone`](super::BatchError::RootAlone)).
     Set(Option<&'a [u8]>),
 }
 
 /// The change set of one Merk in one operation.
+///
+/// The data column of the Merk's subtree holds its nodes and no flat
+/// record (ST1): a batch that writes both there is refused
+/// ([`BatchError::NotFlat`](super::BatchError::NotFlat),
+/// [`BatchError::NotMerk`](super::BatchError::NotMerk)). Whether the
+/// committed state holds flat records under a subtree that had no Merk is
+/// not looked up: which of the two a subtree holds is its writer's to know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct MerkWrite<'a> {
     /// The Merk's subtree.

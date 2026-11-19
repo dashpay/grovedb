@@ -105,6 +105,20 @@
 //! Merk whose root went along with its host ([`Directory`]). [`Applied`]
 //! gives the caller the handles of the nodes it wrote.
 //!
+//! Three things a batch may not say, beside what it names that is not
+//! there:
+//!
+//! - **Nodes and flat records in one data column.** The data column of a
+//!   subtree holds the nodes of a Merk or flat records (ST1). A flat write
+//!   where the batch, the write set or the state the transaction reads
+//!   has nodes is refused ([`BatchError::NotFlat`]), and so is a change
+//!   set where the write set has flat records ([`BatchError::NotMerk`]).
+//! - **A root with no node.** A change set that sets its root writes or
+//!   deletes a node ([`BatchError::RootAlone`]).
+//! - **A host that keeps its pointers beside the Merk it hosts.** The
+//!   node that hosts a Merk of the same batch names it ([`Hosted::Set`],
+//!   [`BatchError::HostKeeps`]).
+//!
 //! A value is kept ([`ValuePut::Keep`]), stated in its cell
 //! ([`ValuePut::Inline`]) or stated out of line ([`ValuePut::OutOfLine`]).
 //! The bytes of a value out of line stay with the transaction until its
@@ -190,9 +204,11 @@
 //!    returns (LT3).
 //! 7. **The cursor stands on a key.** A write under an open cursor is
 //!    defined: the cursor reads what is under its key now, and steps on
-//!    from the key. This tightens RD6, which left it unspecified.
-//! 8. **A transaction that made the first node of a Merk is not laid out
-//!    over a root that a commit outside made since**
+//!    from the key. This tightens RD6, which left it unspecified. A scope
+//!    takes a write through a shared reference, so that its own cursor
+//!    can be open across it, and is one thread's at a time.
+//! 8. **A transaction that gave a root to a Merk that had none is not
+//!    laid out over a root that a commit outside made since**
 //!    ([`BatchError::RootTaken`]). No writer of an existing GroveVersion
 //!    gets there, because both would have written the element that hosts
 //!    the Merk (GM3). The rule for iteration two is GROVE-11's.
@@ -200,7 +216,9 @@
 //!    value-log file holds yet is not read in bytes here**
 //!    ([`NodeValue::Pending`], [`TxnError::PendingValue`]). Where its bytes
 //!    are attached to the frame of its page is the commit's and TREE-08's
-//!    to say.
+//!    to say. Until then a transaction that kept such a value and is then
+//!    overlapped has no copy of it to serve: its operations fail with that
+//!    error until it is rolled back, or its commit reports the conflict.
 //!
 //! # What is not here
 //!
@@ -208,8 +226,8 @@
 //!   ([`CommittedSide`]): the ordered cursor of the tree layer (TREE-06,
 //!   MERK-05). The merge with the transaction's writes is the same.
 //! - **Dropping or clearing a Merk** (CV9): the unlink is TREE-09's. A
-//!   range of flat records is deleted here, and a range of Merk nodes is
-//!   refused.
+//!   range of flat records is deleted here, and a flat write among the
+//!   nodes of a Merk is refused ([`BatchError::NotFlat`]).
 //! - **Pending marks and a host that is behind** (SC9): no element is
 //!   marked on existing GroveVersions, and the frames answer that no host
 //!   is behind. [`MerkWrite::anchored`] is passed on to the tree layer.

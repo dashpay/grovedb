@@ -10,7 +10,8 @@ use lignin_format::{tree_page::Hash, CommitVersion};
 
 use super::{
     arena::{Arena, ArenaMark, Span},
-    key::{in_range, ranges_meet, KeySet, Subtree, Unit},
+    error::BatchError,
+    key::{in_range, ranges_meet, Column, KeySet, Subtree, Unit},
     write::{Batch, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, ValuePut},
 };
 
@@ -99,8 +100,8 @@ struct MerkEntry {
     /// `None` keeps the root.
     root: Option<Option<Span>>,
     anchored: bool,
-    /// Whether the Merk had no root when the operation wrote it, and the
-    /// transaction had not written it before.
+    /// Whether the operation gave a root to a Merk that had none in the
+    /// transaction's view.
     made: bool,
     nodes: u32,
     removed: u32,
@@ -111,6 +112,15 @@ struct MerkEntry {
 struct Op {
     entries: EntryId,
     merks: u32,
+    /// A number no other operation of the set has, or had.
+    serial: u64,
+}
+
+/// What the data column of a subtree holds in a write set (ST1).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Held {
+    Nodes,
+    Flat,
 }
 
 /// The newest write of a transaction that covers a record key (RD3).
@@ -137,12 +147,17 @@ struct UnitIndex {
 
 /// A place in a write set: the writes after it can be taken out again, which
 /// is what a savepoint and a scope are (WT8, SC6).
+///
+/// It is a place of the set for as long as every write before it stays. A
+/// rollback behind it ends it, and it is then refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Mark {
     entries: usize,
     ops: usize,
     merks: usize,
     arena: ArenaMark,
+    /// The serial of the operation before the mark, or zero.
+    last: u64,
 }
 
 /// The write set (WT2): every write the transaction made, in order, with
@@ -162,6 +177,8 @@ pub(crate) struct WriteSet {
     kept: Arena,
     units: HashMap<Unit, UnitIndex>,
     met: usize,
+    /// The serial of the operation that was added last. It never goes back.
+    serial: u64,
 }
 
 /// The Merks that the nodes of one operation host, a list for each node in
@@ -212,7 +229,7 @@ impl WriteSet {
 
     /// Whether the transaction has made no write.
     pub(crate) fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.ops.is_empty()
     }
 
     /// How many writes the set holds.
@@ -256,21 +273,27 @@ impl WriteSet {
             ops: self.ops.len(),
             merks: self.merks.len(),
             arena: self.arena.mark(),
+            last: self.ops.last().map_or(0, |op| op.serial),
         }
     }
 
-    /// Whether writes were made after `mark`.
-    pub(crate) fn is_after(&self, mark: Mark) -> bool {
-        self.entries.len() > mark.entries
+    /// Whether `mark` is a place of the set still: every operation that was
+    /// in the set when the mark was given is in it now.
+    pub(crate) fn holds(&self, mark: Mark) -> bool {
+        match mark.ops.checked_sub(1) {
+            None => true,
+            Some(last) => (self.ops.get(last)).is_some_and(|op| op.serial == mark.last),
+        }
     }
 
     /// Takes out every write that was made after `mark`, newest first, with
-    /// its first-write version and its place in the overlap set (WT8, CF4).
-    ///
-    /// `mark` is one this set gave and that no earlier call has gone back
-    /// behind.
-    pub(crate) fn rewind(&mut self, mark: Mark) {
-        debug_assert!(mark.entries <= self.entries.len(), "a mark of this set");
+    /// its first-write version and its place in the overlap set (WT8, CF4),
+    /// and says whether there was one. A mark that is no place of the set
+    /// any more takes nothing out.
+    pub(crate) fn rewind(&mut self, mark: Mark) -> bool {
+        if !self.holds(mark) || self.ops.len() == mark.ops {
+            return false;
+        }
         while self.entries.len() > mark.entries {
             let id = (self.entries.len() - 1) as EntryId;
             let entry = self.entries.pop().expect("more entries than the mark");
@@ -305,9 +328,10 @@ impl WriteSet {
         self.ops.truncate(mark.ops);
         self.merks.truncate(mark.merks);
         self.arena.rewind(mark.arena);
-        if self.entries.is_empty() {
+        if self.ops.is_empty() {
             self.kept.clear();
         }
+        true
     }
 
     /// Takes out every write (WT9).
@@ -366,8 +390,8 @@ impl WriteSet {
     /// for each Merk its nodes and then its deletes, and the records last.
     /// The batch has passed [`check`](super::check::check).
     ///
-    /// `empty` says of each Merk of the batch whether it had no root before
-    /// the operation.
+    /// `empty` says of each Merk of the batch whether it had no root in the
+    /// transaction's view before the operation.
     pub(crate) fn add(
         &mut self,
         batch: &Batch<'_>,
@@ -375,13 +399,14 @@ impl WriteSet {
         empty: &[bool],
     ) -> EntryId {
         let first = self.entries.len() as EntryId;
+        self.serial += 1;
         self.ops.push(Op {
             entries: first,
             merks: self.merks.len() as u32,
+            serial: self.serial,
         });
         for (merk, empty) in batch.merks.iter().zip(empty) {
             let unit = Unit::data(merk.subtree);
-            let made = *empty && !self.units.contains_key(&unit);
             for node in merk.nodes {
                 let hosted = match node.hosted {
                     Hosted::Keep => HostedEntry::Keep,
@@ -411,13 +436,17 @@ impl WriteSet {
             }
             let root = match merk.root {
                 RootPut::Keep => None,
+                // A Merk that had no root and is left with none is as it
+                // was. Applied again over a root that a commit outside made
+                // since, the operation leaves that root alone (WT7).
+                RootPut::Set(None) if *empty => None,
                 RootPut::Set(root) => Some(root.map(|key| self.arena.put(key))),
             };
             self.merks.push(MerkEntry {
                 subtree: merk.subtree,
                 root,
                 anchored: merk.anchored,
-                made,
+                made: *empty && matches!(merk.root, RootPut::Set(Some(_))),
                 nodes: merk.nodes.len() as u32,
                 removed: merk.removed.len() as u32,
             });
@@ -456,8 +485,8 @@ impl WriteSet {
         )
     }
 
-    /// For each Merk of the operation `op`, whether the transaction made
-    /// its first node with that operation: the Merk had no root then.
+    /// For each Merk of the operation `op`, whether the operation gave it a
+    /// root when it had none.
     pub(crate) fn made(&self, op: usize) -> Vec<bool> {
         let (.., from, to) = self.op_bounds(op);
         self.merks[from..to].iter().map(|merk| merk.made).collect()
@@ -558,6 +587,43 @@ impl WriteSet {
             merks,
             arena: &self.arena,
         }
+    }
+
+    /// What the transaction has written in `unit`: Merk nodes, flat
+    /// records, or nothing. It is never both ([`Self::admits`]).
+    fn held(&self, unit: Unit) -> Option<Held> {
+        let index = self.units.get(&unit)?;
+        let entry = (index.ranges.first()).or_else(|| index.keys.values().next())?;
+        Some(match self.entry(*entry).kind {
+            Kind::Node(_) | Kind::Remove => Held::Nodes,
+            Kind::Put(_) | Kind::Delete | Kind::Range { .. } => Held::Flat,
+        })
+    }
+
+    /// Checks `batch` against what the transaction has written: the data
+    /// column of a subtree holds the nodes of a Merk or flat records, and
+    /// not both (ST1).
+    pub(crate) fn admits(&self, batch: &Batch<'_>) -> Result<(), BatchError> {
+        for merk in batch.merks {
+            let subtree = merk.subtree;
+            if self.held(Unit::data(subtree)) == Some(Held::Flat) {
+                return Err(BatchError::NotMerk { subtree });
+            }
+        }
+        for record in batch.records {
+            let unit = record.unit();
+            if unit.column == Column::Data && self.held(unit) == Some(Held::Nodes) {
+                return Err(BatchError::NotFlat { unit });
+            }
+        }
+        Ok(())
+    }
+
+    /// Whether the Merk `subtree` has a root after the transaction's
+    /// writes, if one of them set its root.
+    pub(crate) fn rooted(&self, subtree: &Subtree) -> Option<bool> {
+        let set = |merk: &MerkEntry| (merk.subtree == *subtree).then_some(merk.root).flatten();
+        (self.merks.iter().rev().find_map(set)).map(|root| root.is_some())
     }
 
     fn range_holds(&self, id: EntryId, key: &[u8]) -> bool {
@@ -802,7 +868,6 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::txn::key::Column;
 
     fn version(raw: u64) -> CommitVersion {
         CommitVersion::new(raw).expect("a version")
@@ -906,10 +971,15 @@ mod tests {
                     7 => {
                         let to = rng.below(marks.len());
                         let (mark, len) = marks[to];
-                        marks.truncate(to + 1);
-                        assert_eq!(set.is_after(mark), model.len() > len);
-                        set.rewind(mark);
+                        let above = marks.split_off(to + 1);
+                        assert!(set.holds(mark));
+                        assert_eq!(set.rewind(mark), model.len() > len);
                         model.truncate(len);
+                        // A mark from after a write that went is no place
+                        // of the set any more, whatever is written next.
+                        for (stale, at) in above {
+                            assert_eq!(set.holds(stale), at == len, "seed {seed}");
+                        }
                     }
                     _ => {
                         // A commit outside, of one write.
@@ -1027,6 +1097,49 @@ mod tests {
             assert!(set.is_empty() && set.met() == 0 && set.bytes() == 0);
             assert_eq!(set.own(unit(0), b"a"), Own::Unwritten);
         }
+    }
+
+    /// A mark is refused once a write from before it went, whatever was
+    /// written since: the place it names is in the middle of other
+    /// operations.
+    #[test]
+    fn a_mark_is_a_place_until_a_write_before_it_goes() {
+        let mut set = WriteSet::new();
+        let add = |set: &mut WriteSet, keys: &[&[u8]]| {
+            let records: Vec<RecordWrite<'_>> = (keys.iter())
+                .map(|key| RecordWrite::Put {
+                    unit: unit(1),
+                    key,
+                    value: b"v",
+                })
+                .collect();
+            let batch = Batch {
+                records: &records,
+                merks: &[],
+            };
+            set.add(&batch, version(1), &[]);
+        };
+        let empty = set.mark();
+        add(&mut set, &[b"a"]);
+        let first = set.mark();
+        add(&mut set, &[b"b", b"c"]);
+        let second = set.mark();
+        add(&mut set, &[b"d"]);
+        assert!(set.holds(empty) && set.holds(first) && set.holds(second));
+        assert!(set.rewind(first));
+        assert!(!set.rewind(first), "nothing is after it");
+        // Two operations of one write each stand where one of two stood.
+        add(&mut set, &[b"e"]);
+        add(&mut set, &[b"f"]);
+        assert!(set.holds(first) && !set.holds(second));
+        assert!(!set.rewind(second));
+        assert_eq!((set.len(), set.ops()), (3, 3));
+        assert_eq!(set.own(unit(1), b"f"), Own::Put(b"v"));
+        set.clear();
+        add(&mut set, &[b"g", b"h"]);
+        assert!(!set.holds(first) && !set.rewind(first));
+        assert!(set.holds(empty) && set.rewind(empty));
+        assert!(set.is_empty() && set.bytes() == 0);
     }
 
     /// A commit that drops a subtree or wipes the database meets every

@@ -178,6 +178,72 @@ fn a_host_points_at_the_root_of_the_merk_it_hosts() {
     assert_eq!(hosted(), filled);
 }
 
+/// A batch that changes a Merk and writes its host says in the host which
+/// Merk that is. A host that keeps its pointers names nothing, and where
+/// its cell shows that it hosts the Merk, the batch is refused.
+#[test]
+fn a_host_that_keeps_its_pointers_beside_its_merk_is_refused() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(53);
+    let tx = world.begin();
+    let batch = hosted_batch(
+        &world,
+        &tx,
+        &[0, 1, 2],
+        &mut |_, items| drop(items.insert(b"n".to_vec(), value(&mut rng, 40))),
+        &mut |_| {},
+    );
+    world.apply(&tx, &batch).expect("the Merks are made");
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+
+    // As the transaction's first write, and after another.
+    for written in [false, true] {
+        let tx = world.begin();
+        if written {
+            world.write(&tx, vec![put(model::unit(Column::Aux, 0), b"k", b"1")]);
+        }
+        // The element changes with its Merk, as it does where it holds the
+        // Merk's root hash.
+        let element_now = value(&mut rng, 45);
+        let mut batch = hosted_batch(
+            &world,
+            &tx,
+            &[1],
+            &mut |_, items| drop(items.insert(b"m".to_vec(), value(&mut rng, 40))),
+            &mut |items| drop(items.insert(element(1), element_now.clone())),
+        );
+        let parent = batch.merks.last_mut().expect("the parent is last");
+        assert!(parent.nodes.iter().any(|(key, ..)| *key == element(1)));
+        parent.hosted.clear();
+        let error = world
+            .apply(&tx, &batch)
+            .expect_err("the host names nothing");
+        assert!(
+            matches!(
+                error,
+                TxnError::Batch(BatchError::HostKeeps { subtree }) if subtree == model::subtree(child(1))
+            ),
+            "{error}"
+        );
+        world.check(&tx);
+        // With the Merk named in its host, the same change goes through.
+        let batch = hosted_batch(
+            &world,
+            &tx,
+            &[1],
+            &mut |_, items| drop(items.insert(b"m".to_vec(), value(&mut rng, 40))),
+            &mut |items| drop(items.insert(element(1), element_now.clone())),
+        );
+        world.apply(&tx, &batch).expect("the host names its Merk");
+        world.check(&tx);
+        assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+        world.check_committed();
+    }
+    assert_eq!(db.private_ids(), 0);
+}
+
 fn bytes_of(view: Option<NodeView<'_>>) -> Option<Vec<u8>> {
     match view?.value() {
         NodeValue::Bytes(bytes) => Some(bytes.to_vec()),
@@ -345,7 +411,13 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         matches!(error, TxnError::PendingValue { subtree: of } if of == subtree),
         "{error}"
     );
-    tx.txn.rollback().expect("no scope is open");
+    // Its commit fails with the conflict, not with that error (CF6), and
+    // ends it.
+    let outcome = db
+        .commit(&versions, &tx.txn)
+        .expect("the conflict is decided first");
+    assert_eq!(outcome, Outcome::Conflict);
+    assert_eq!(tx.txn.stats().writes, 0);
     assert_eq!(
         (tx.txn.node(subtree, &key(0), bytes_of)).expect("a read"),
         None

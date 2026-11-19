@@ -101,7 +101,7 @@ impl<'s> World<'s> {
     /// model.
     fn apply(&self, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<Applied, TxnError> {
         let first_write = self.latest().get();
-        let mut scope = tx.txn.scope()?;
+        let scope = tx.txn.scope()?;
         let applied = batch.with(|batch| scope.apply(batch));
         scope.merge();
         let applied = applied?;

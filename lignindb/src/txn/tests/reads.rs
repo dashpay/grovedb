@@ -346,6 +346,67 @@ fn a_cursor_sees_the_transactions_writes_in_key_order() {
     world.check_committed();
 }
 
+/// A thread that walks a cursor and writes as it goes does both through
+/// its scope: the cursor is the scope's, and stays open across the write
+/// (RD6, SC4).
+#[test]
+fn a_scope_writes_under_its_own_cursor() {
+    let (db, versions) = Db::new(32);
+    let mut world = World::new(&db, &versions);
+    let unit = aux();
+    let committed = [b"a", b"c", b"e", b"g"].map(|key| put(unit, key, b"committed"));
+    let batch = OwnedBatch {
+        merks: Vec::new(),
+        records: committed.to_vec(),
+    };
+    world.write_outside(&batch, &[]);
+
+    let tx = world.begin();
+    let scope = tx.txn.scope().expect("no scope is open");
+    let mut cursor = scope.cursor(unit);
+    cursor.seek_to_first().expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"a"[..]));
+    // Ahead of the cursor: a new record, a delete, and a new value.
+    let writes = [
+        RecordWrite::put(Column::Aux, unit.subtree, b"b", b"mine"),
+        RecordWrite::delete(Column::Aux, unit.subtree, b"c"),
+        RecordWrite::put(Column::Aux, unit.subtree, b"e", b"mine"),
+    ];
+    let batch = Batch {
+        records: &writes,
+        merks: &[],
+    };
+    let first_write = world.latest().get();
+    scope.apply(&batch).expect("a write under the cursor");
+    let mut shown = Vec::new();
+    loop {
+        cursor.next().expect("a step");
+        let Some(key) = cursor.key().map(<[u8]>::to_vec) else {
+            break;
+        };
+        let mut value = Vec::new();
+        assert!(cursor.value(&mut value).expect("a value"));
+        shown.push((key, value));
+    }
+    let expected = [
+        (b"b".to_vec(), b"mine".to_vec()),
+        (b"e".to_vec(), b"mine".to_vec()),
+        (b"g".to_vec(), b"committed".to_vec()),
+    ];
+    assert_eq!(shown, expected);
+    drop(cursor);
+    scope.merge();
+    let writes = [
+        put(unit, b"b", b"mine"),
+        delete(unit, b"c"),
+        put(unit, b"e", b"mine"),
+    ];
+    (tx.model.borrow_mut().writes).extend(writes.map(|write| (write, first_write, false)));
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+}
+
 /// T-RD7: a cursor of a transaction, with an empty write set and with a
 /// non-empty one, keeps reading its opening version while commits outside
 /// free the pages under it and make new ones.

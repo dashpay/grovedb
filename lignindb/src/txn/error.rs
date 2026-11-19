@@ -70,12 +70,35 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
-    /// A range delete names a unit that the transaction cannot remove a
-    /// range from: the Merk nodes of a subtree are dropped, not deleted by
-    /// range (CV9, TREE-09).
-    MerkRange {
+    /// A change set sets the root of a Merk, and writes and deletes no node
+    /// of it. A root changes only with a node, and the root of a Merk that
+    /// is as it was is kept ([`RootPut::Keep`](super::RootPut::Keep)).
+    RootAlone {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
+    /// A flat record is written, or a range deleted, in the data column of
+    /// a subtree that holds Merk nodes there: in the batch, in the
+    /// transaction's write set, or in the state it reads. A node is written
+    /// through the change set of its Merk, and a Merk is dropped, not
+    /// deleted by range (ST1, CV9, TREE-09).
+    NotFlat {
         /// The unit.
         unit: Unit,
+    },
+    /// A change set names a Merk in whose data column the transaction has
+    /// written flat records (ST1).
+    NotMerk {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
+    /// A node is written that keeps the Merks it hosts
+    /// ([`Hosted::Keep`](super::Hosted::Keep)), and the batch holds the
+    /// change set of one of them. The write that holds a Merk and its host
+    /// names the Merk in the host.
+    HostKeeps {
+        /// The subtree of the hosted Merk.
+        subtree: Subtree,
     },
 }
 
@@ -111,8 +134,20 @@ impl fmt::Display for BatchError {
                     "the empty Merk {subtree} was given a root outside the transaction"
                 )
             }
-            Self::MerkRange { unit } => {
-                write!(f, "a range of Merk nodes is deleted in {unit}")
+            Self::RootAlone { subtree } => {
+                write!(f, "the root of the Merk {subtree} is set with no node")
+            }
+            Self::NotFlat { unit } => {
+                write!(f, "a flat record is written among the Merk nodes in {unit}")
+            }
+            Self::NotMerk { subtree } => {
+                write!(f, "the Merk {subtree} is written among flat records")
+            }
+            Self::HostKeeps { subtree } => {
+                write!(
+                    f,
+                    "the host of the Merk {subtree} keeps its pointers in a batch that writes the Merk"
+                )
             }
         }
     }

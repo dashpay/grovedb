@@ -1,7 +1,9 @@
 //! The write transaction and its scope.
 
 use std::{
+    cell::Cell,
     fmt,
+    marker::PhantomData,
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
@@ -25,7 +27,7 @@ use super::{
     pages::{find, CommittedPages, NodePages},
     path::WritePath,
     view::NodeView,
-    write::{Applied, Batch, RecordWrite, ValuePut},
+    write::{Applied, Batch, ValuePut},
     write_set::{EntryId, Mark, Own, WriteSet},
 };
 use crate::snapshot::{OperationGuard, VersionPin};
@@ -80,9 +82,9 @@ struct State<'s> {
     /// no frames, and the version it is for (PN8).
     lease: Lease,
     lease_at: Option<CommitVersion>,
-    /// The version and the length of the write set at which the frames
-    /// could not be made: the write set names what the committed state
-    /// does not hold.
+    /// The version and the number of operations of the write set at which
+    /// the frames could not be made: the write set names what the
+    /// committed state does not hold.
     stuck: Option<(CommitVersion, usize)>,
     /// Whether a scope is open.
     scope: bool,
@@ -110,20 +112,32 @@ impl State<'_> {
         self.lease_at = None;
     }
 
-    fn rewind(&mut self, mark: Mark) {
-        if !self.set.is_after(mark) {
-            return;
-        }
-        self.set.rewind(mark);
-        // The frames are made again from what is left, over the latest
-        // version of that moment (WT8). The base stays pinned until then:
-        // what is left may keep committed values.
-        self.frames = None;
-        self.stuck = None;
+    /// Ends the transaction's writes: the write set, and everything that
+    /// is held for it (WT9).
+    fn end(&mut self) {
+        self.set.clear();
+        self.release();
         self.renew_lease();
-        if self.set.is_empty() {
-            self.release();
+    }
+
+    /// Takes out the writes after `mark`, and says whether `mark` is a
+    /// place of the write set still.
+    fn rewind(&mut self, mark: Mark) -> bool {
+        if !self.set.holds(mark) {
+            return false;
         }
+        if self.set.rewind(mark) {
+            // The frames are made again from what is left, over the latest
+            // version of that moment (WT8). The base stays pinned until
+            // then: what is left may keep committed values.
+            self.frames = None;
+            self.stuck = None;
+            self.renew_lease();
+            if self.set.is_empty() {
+                self.release();
+            }
+        }
+        true
     }
 }
 
@@ -201,7 +215,17 @@ impl<'s> WriteTxn<'s> {
     }
 
     fn lock(&self) -> MutexGuard<'_, State<'s>> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        self.state.lock().unwrap_or_else(|poisoned| {
+            // An operation panicked, and its frames may hold a part of a
+            // batch. The write set does not (WT10): the frames are made
+            // again from it.
+            let mut state = PoisonError::into_inner(poisoned);
+            state.frames = None;
+            state.stuck = None;
+            state.renew_lease();
+            self.state.clear_poison();
+            state
+        })
     }
 
     /// The state, for an operation that is made outside any scope, or
@@ -224,6 +248,7 @@ impl<'s> WriteTxn<'s> {
             txn: self,
             mark: state.set.mark(),
             open: true,
+            one_thread: PhantomData,
         })
     }
 
@@ -255,10 +280,7 @@ impl<'s> WriteTxn<'s> {
     ///
     /// It is refused while a scope is open.
     pub fn rollback(&self) -> Result<(), TxnError> {
-        let mut state = self.enter(false)?;
-        state.set.clear();
-        state.release();
-        state.renew_lease();
+        self.enter(false)?.end();
         Ok(())
     }
 
@@ -276,18 +298,23 @@ impl<'s> WriteTxn<'s> {
     /// first-write version and its place in the overlap set (WT8, CF4). The
     /// frames are made again from what is left, and every node handle read
     /// through the transaction ends (PN8).
+    ///
+    /// A mark is a place of the write set until a write from before it is
+    /// taken out: by a rollback, by the transaction's commit, or by going
+    /// back to an earlier mark. For a mark that is one no more, nothing is
+    /// changed and `false` is returned.
     #[cfg_attr(
         any(not(test), loom),
         expect(dead_code, reason = "savepoints (TXN-04) are its callers")
     )]
-    pub(crate) fn rewind(&self, mark: Mark) {
-        self.lock().rewind(mark);
+    pub(crate) fn rewind(&self, mark: Mark) -> bool {
+        self.lock().rewind(mark)
     }
 
-    /// Takes in the commits that were published up to `at` since the
-    /// transaction last looked (WT7): the entries they meet go into the
-    /// overlap set, and frames that are built over another version go.
-    fn observe(&self, state: &mut State<'s>, at: CommitVersion) -> Result<(), TxnError> {
+    /// Takes in the key sets of the commits that were published up to `at`
+    /// since the transaction last looked: the entries they meet go into
+    /// the overlap set (WT7, CF3).
+    fn take_in(state: &mut State<'s>, at: CommitVersion) {
         if let Some(watch) = &mut state.watch {
             let mut commits = Vec::new();
             watch.take(at, &mut commits);
@@ -295,6 +322,13 @@ impl<'s> WriteTxn<'s> {
                 state.set.meet(version, &keys);
             }
         }
+    }
+
+    /// Brings the transaction to the commits that were published up to
+    /// `at` (WT7): the entries they meet go into the overlap set, and
+    /// frames that are built over another version go.
+    fn observe(&self, state: &mut State<'s>, at: CommitVersion) -> Result<(), TxnError> {
+        Self::take_in(state, at);
         if state.set.met() > 0 {
             // Before it gives up the version it read them at, the
             // transaction takes its own copy of every committed byte its
@@ -333,9 +367,10 @@ impl<'s> WriteTxn<'s> {
                 lease,
                 buffers: &mut state.buffers,
             };
-            let Some(address) = find(&mut pages, root, state.set.key(id))? else {
-                continue;
-            };
+            // No commit wrote the key since the transaction did, or the
+            // entry would be met: the node it kept the value of is there.
+            let address = find(&mut pages, root, state.set.key(id))?
+                .ok_or(TxnError::Damaged("a node whose value is kept is gone"))?;
             let (value, out_of_line) = Self::read_value(path, &mut pages, address)?
                 .ok_or(TxnError::PendingValue { subtree })?;
             state.set.keep(id, &value, out_of_line);
@@ -364,7 +399,7 @@ impl<'s> WriteTxn<'s> {
         loop {
             self.observe(state, at)?;
             let framed = state.frames.is_some();
-            let by_key = state.set.met() > 0 || state.stuck == Some((at, state.set.len()));
+            let by_key = state.set.met() > 0 || state.stuck == Some((at, state.set.ops()));
             if framed || by_key || (state.set.is_empty() && !writing) {
                 break;
             }
@@ -387,7 +422,7 @@ impl<'s> WriteTxn<'s> {
                 Err(error) if is_refusal(&error) => {
                     self.keep_values(state, at)?;
                     state.base = None;
-                    state.stuck = Some((at, state.set.len()));
+                    state.stuck = Some((at, state.set.ops()));
                 }
                 Err(error) => return Err(error),
             }
@@ -423,6 +458,7 @@ impl<'s> WriteTxn<'s> {
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
+        state.set.admits(batch)?;
         let Some(frames) = &mut state.frames else {
             return self.write_by_key(state, op, batch);
         };
@@ -457,14 +493,16 @@ impl<'s> WriteTxn<'s> {
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
         let committed = path.committed(op.at);
+        let committed_root = |subtree: &Subtree| {
+            (path.directory.committed_root(&committed, subtree)).map_err(TxnError::Directory)
+        };
         for record in batch.records {
-            if let RecordWrite::DeleteRange { unit, .. } = *record
-                && unit.column == Column::Data
-                && (path.directory.committed_root(&committed, &unit.subtree))
-                    .map_err(TxnError::Directory)?
-                    .is_some()
-            {
-                return Err(BatchError::MerkRange { unit }.into());
+            // The transaction has written no node of the subtree, or the
+            // write set would not admit the record: what the committed
+            // state holds there is what the transaction sees.
+            let unit = record.unit();
+            if unit.column == Column::Data && committed_root(&unit.subtree)?.is_some() {
+                return Err(BatchError::NotFlat { unit }.into());
             }
         }
         let mut kept = Vec::new();
@@ -472,8 +510,12 @@ impl<'s> WriteTxn<'s> {
         let mut entry: EntryId = 0;
         for merk in batch.merks {
             let subtree = merk.subtree;
-            let root = path.directory.committed_root(&committed, &subtree);
-            empty.push(root.map_err(TxnError::Directory)?.is_none());
+            // The Merk has the root the transaction gave it last, and the
+            // committed one if it gave none.
+            empty.push(match state.set.rooted(&subtree) {
+                Some(rooted) => !rooted,
+                None => committed_root(&subtree)?.is_none(),
+            });
             for node in merk.nodes {
                 entry += 1;
                 if node.value != ValuePut::Keep {
@@ -484,8 +526,7 @@ impl<'s> WriteTxn<'s> {
                         .map(|(value, out_of_line)| (value.to_vec(), out_of_line)),
                     Own::Deleted | Own::Put(_) => None,
                     Own::Unwritten => {
-                        let root = (path.directory.committed_root(&committed, &subtree))
-                            .map_err(TxnError::Directory)?;
+                        let root = committed_root(&subtree)?;
                         let mut pages = CommittedPages {
                             loader: path.loader,
                             at: op.at,
@@ -807,14 +848,25 @@ impl<'s> WriteTxn<'s> {
         if state.set.is_empty() {
             return Ok(Sealed::Empty);
         }
-        let op = self.begin(state, false)?;
+        // The conflict is decided before anything else is read, so that no
+        // error of a read the transaction has no more use for stands in
+        // its place (CF6).
+        {
+            let guard = self.path.versions.guard();
+            Self::take_in(state, guard.latest());
+        }
         if state.set.met() > 0 {
-            state.set.clear();
-            state.release();
-            state.renew_lease();
+            state.end();
             return Ok(Sealed::Conflict);
         }
+        let op = self.begin(state, false)?;
         let Some(frames) = state.frames.take() else {
+            if state.set.met() > 0 {
+                // A commit was published since: the caller does not hold
+                // the commit lock.
+                state.end();
+                return Ok(Sealed::Conflict);
+            }
             // The write set names what the committed state does not hold.
             return Err(match Frames::build(&self.path, op.at, &state.set) {
                 Err(error) => error,
@@ -823,9 +875,7 @@ impl<'s> WriteTxn<'s> {
         };
         let keys = state.set.key_set();
         let pin = state.base.take();
-        state.set.clear();
-        state.release();
-        state.renew_lease();
+        state.end();
         let Frames {
             tree, values, flat, ..
         } = frames;
@@ -834,7 +884,7 @@ impl<'s> WriteTxn<'s> {
             pin,
             tree,
             values,
-            flat: flat.into_writer(),
+            flat,
             keys,
         })))
     }
@@ -865,6 +915,9 @@ pub(crate) enum Sealed<'s> {
 }
 
 /// The frames of a transaction that commits (CM3 steps 6 and 7).
+///
+/// Parts that are dropped and not installed give up their private copies
+/// and the page ids they took, as a rollback does (CM5).
 #[cfg_attr(
     any(not(test), loom),
     expect(dead_code, reason = "the commit (TXN-05) is its one reader")
@@ -879,8 +932,9 @@ pub(crate) struct Parts<'s> {
     /// The values of tree cells that are out of line: those the commit
     /// logs, and the pointers it releases.
     pub(crate) values: super::pages::TreeValues<'s>,
-    /// The flat pages (`lignin_tree::flat`, "What a commit writes").
-    pub(crate) flat: super::path::FlatWriter<'s>,
+    /// The flat pages (`lignin_tree::flat`, "What a commit writes"). The
+    /// commit takes the writer out when it installs them.
+    pub(crate) flat: super::frames::FlatFrames<'s>,
     /// The key set of the commit (CF1).
     pub(crate) keys: super::key::KeySet,
 }
@@ -961,6 +1015,11 @@ macro_rules! reads {
         /// As [`Self::node`], through `handle` while that is still good
         /// (PN8): the same node, found without a keyed lookup. A handle
         /// that has ended is not followed, and the node is found by `key`.
+        ///
+        /// A handle is good for the cell it names, and a cell does not say
+        /// which Merk it is in. So `handle` is one that was read for
+        /// `subtree`: a good handle of another Merk whose node has the same
+        /// key would be followed.
         pub fn follow<R>(
             &self,
             subtree: Subtree,
@@ -1038,6 +1097,8 @@ pub struct Scope<'t, 's> {
     txn: &'t WriteTxn<'s>,
     mark: Mark,
     open: bool,
+    /// A scope is one thread's at a time (SC1): it is sent, not shared.
+    one_thread: PhantomData<Cell<()>>,
 }
 
 impl<'t, 's> Scope<'t, 's> {
@@ -1061,7 +1122,9 @@ impl<'t, 's> Scope<'t, 's> {
     /// After any other error the private frames are made again from the
     /// write set, which the batch was never added to, and every node
     /// handle read through the transaction has ended.
-    pub fn apply(&mut self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
+    ///
+    /// A cursor of the scope may be open: it sees the writes (RD6).
+    pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
         self.txn.apply_in(batch)
     }
 

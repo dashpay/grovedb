@@ -383,7 +383,7 @@ impl Db {
         }
         unused.extend(tree.unused);
 
-        let flat = parts.flat.into_parts();
+        let flat = parts.flat.into_writer().into_parts();
         for (copy, made) in flat.written {
             let page = copy.page();
             drop(self.pool.install(&copy, commit).expect("it installs"));

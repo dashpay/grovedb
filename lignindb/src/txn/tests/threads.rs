@@ -43,7 +43,7 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
                     // one open is refused at once: it never waits (SC3).
                     loop {
                         match txn.scope() {
-                            Ok(mut scope) => {
+                            Ok(scope) => {
                                 scope.apply(&batch).expect("a write");
                                 let mut out = Vec::new();
                                 assert!(scope.get(aux(), &key, &mut out).expect("a read"));
@@ -69,7 +69,7 @@ fn a_transaction_is_written_from_several_threads_through_its_scope() {
             });
         }
         // A scope is opened on one thread and used on another.
-        let mut scope = loop {
+        let scope = loop {
             match txn.scope() {
                 Ok(scope) => break scope,
                 Err(_) => thread::yield_now(),
@@ -141,7 +141,7 @@ fn transactions_on_several_threads_commit_past_each_other() {
                     let mut view = BTreeMap::new();
                     for round in 1..=ROUNDS {
                         let txn = path.begin();
-                        let mut scope = txn.scope().expect("its own transaction");
+                        let scope = txn.scope().expect("its own transaction");
                         let mut items = model::Committed::items(&view);
                         items.insert(round.to_be_bytes().to_vec(), vec![writer; 100]);
                         let merk = OwnedMerk::change(model::subtree(name), &view, &items);

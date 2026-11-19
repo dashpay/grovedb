@@ -12,7 +12,7 @@ use lignin_tree::{
         FragmentError, Fragments, HostedWrite, LinkWrite, NodeWrite, RootWrite, Target, ValueWrite,
         Write,
     },
-    node::{Lease, NodeHandle},
+    node::{Lease, NodeError, NodeHandle},
 };
 
 use super::{
@@ -102,7 +102,12 @@ pub(crate) struct Frames<'s> {
 pub(crate) struct FlatFrames<'s>(Option<FlatWriter<'s>>);
 
 impl<'s> FlatFrames<'s> {
-    /// Ends the flat pages and hands the writer to the commit.
+    /// Ends the flat pages and hands the writer to the commit, which
+    /// installs them.
+    #[cfg_attr(
+        any(not(test), loom),
+        expect(dead_code, reason = "the commit (TXN-05) is its one caller")
+    )]
     pub(crate) fn into_writer(mut self) -> FlatWriter<'s> {
         self.0
             .take()
@@ -308,14 +313,14 @@ impl<'s> Frames<'s> {
     ) -> Result<Applied, Refused> {
         let directory = path.directory;
         for record in batch.records {
-            // A range of Merk nodes is not deleted through a flat tree.
-            if let RecordWrite::DeleteRange { unit, .. } = *record
-                && unit.column == Column::Data
+            // The nodes of a Merk are not written through a flat tree.
+            let unit = record.unit();
+            if unit.column == Column::Data
                 && (directory.root(&self.flat, &unit.subtree))
                     .map_err(|error| Refused::clean(TxnError::Directory(error)))?
                     .is_some()
             {
-                return Err(Refused::clean(BatchError::MerkRange { unit }));
+                return Err(Refused::clean(BatchError::NotFlat { unit }));
             }
         }
         let applied = self.apply_merks(path, batch.merks, made)?;
@@ -485,6 +490,31 @@ impl<'s> Frames<'s> {
         })
     }
 
+    /// Checks that the cell at `host`, which is written and keeps the Merks
+    /// it hosts, hosts none that the batch has a change set for: the root
+    /// of such a Merk is the host's to name, and a host that keeps its
+    /// pointers names nothing.
+    fn keeps_no_root(
+        &mut self,
+        resolver: &Resolver<'_>,
+        host: CellAddress,
+    ) -> Result<(), TxnError> {
+        let roots = &resolver.roots;
+        let hosted = self.tree.page(host.page(), |page| {
+            let pointers = page.node(host.slot())?.hosted_roots();
+            Some(
+                (pointers.flatten()).find_map(|root| roots.iter().position(|at| *at == Some(root))),
+            )
+        })?;
+        match hosted.ok_or(NodeError::NoNode { address: host })? {
+            Some(merk) if !resolver.merks[merk].anchored => {
+                let subtree = resolver.merks[merk].subtree;
+                Err(BatchError::HostKeeps { subtree }.into())
+            }
+            _ => Ok(()),
+        }
+    }
+
     /// Finds what every key of the batch names: the cell of each written
     /// and each deleted node, the child of each link, and the root of each
     /// Merk, by a hint that is still good or by the key (PN8).
@@ -530,7 +560,13 @@ impl<'s> Frames<'s> {
                 let left = link(&mut self.tree, &put.left)?;
                 let right = link(&mut self.tree, &put.right)?;
                 let hosts = match put.hosted {
-                    Hosted::Keep => None,
+                    Hosted::Keep => {
+                        // A host and the Merk it hosts are two Merks.
+                        if let Some(at) = at.filter(|_| merks.len() > 1) {
+                            self.keeps_no_root(resolver, at)?;
+                        }
+                        None
+                    }
                     Hosted::Set(subtrees) => {
                         let mut targets = Vec::with_capacity(subtrees.len());
                         for hosted in subtrees {

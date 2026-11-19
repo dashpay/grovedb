@@ -6,7 +6,7 @@ use lignin_format::value_log::MAX_VALUE_LEN;
 
 use super::{
     error::BatchError,
-    key::Unit,
+    key::{Column, Unit},
     write::{Batch, Hosted, RecordWrite, RootPut, ValuePut},
 };
 
@@ -18,8 +18,9 @@ const MAX_NODE_KEY: usize = u8::MAX as usize;
 const MAX_HOSTED: usize = u8::MAX as usize;
 
 /// Checks what can be checked of `batch` without reading a page: that it
-/// writes each record key once, names each Merk once, and holds no key or
-/// value that is too long.
+/// writes each record key once, names each Merk once, sets no root without
+/// a node, writes no flat record among the nodes of a Merk, and holds no key
+/// or value that is too long.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
@@ -61,11 +62,18 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
                 return Err(BatchError::KeyTwice { unit });
             }
         }
-        if let RootPut::Set(Some(key)) = merk.root {
-            key_len(key)?;
+        if let RootPut::Set(root) = merk.root {
+            if merk.nodes.is_empty() && merk.removed.is_empty() {
+                return Err(BatchError::RootAlone { subtree });
+            }
+            root.map_or(Ok(()), key_len)?;
         }
     }
     for record in batch.records {
+        let unit = record.unit();
+        if unit.column == Column::Data && merks.contains(&unit.subtree) {
+            return Err(BatchError::NotFlat { unit });
+        }
         match *record {
             RecordWrite::Put { unit, key, value } => {
                 value_len(value.len())?;

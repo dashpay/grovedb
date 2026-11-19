@@ -503,3 +503,138 @@ fn a_root_that_two_transactions_made_in_an_empty_merk_is_refused() {
     world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
+
+/// The second transaction of the case above is laid out again once the
+/// root it could not take is gone. What it wrote by key in between is laid
+/// out with it: a Merk it made, emptied and filled again.
+#[test]
+fn a_transaction_is_laid_out_again_when_the_root_it_could_not_take_is_gone() {
+    let (db, versions) = Db::new(48);
+    let mut world = World::new(&db, &versions);
+    fn make<'s>(world: &World<'s>, tx: &Tx<'s>, name: &[u8]) {
+        let merks = vec![world.merk(tx, 5, |items| {
+            items.insert(name.to_vec(), b"a first node".to_vec());
+        })];
+        let records = Vec::new();
+        (world.apply(tx, &OwnedBatch { merks, records })).expect("a first node");
+    }
+    let (first, second) = (world.begin(), world.begin());
+    make(&world, &first, b"one");
+    make(&world, &second, b"two");
+    assert!(committed(world.commit(first, &[&second])));
+    world.check(&second);
+    assert_eq!(second.txn.stats().base, None, "it is served by key");
+
+    // By key it makes another Merk, gives it a second root, empties it and
+    // fills it again.
+    let key = |index: u8| vec![b'n', index];
+    world.edit(&second, 6, |items| {
+        drop(items.insert(key(0), b"first".to_vec()))
+    });
+    world.edit(&second, 6, |items| {
+        for index in 1..12 {
+            items.insert(key(index), vec![index; 30]);
+        }
+    });
+    world.check(&second);
+    world.edit(&second, 6, |items| items.clear());
+    world.edit(&second, 6, |items| {
+        drop(items.insert(key(20), b"again".to_vec()))
+    });
+    world.check(&second);
+    assert_eq!(second.txn.stats().base, None);
+
+    // The root that was in its way goes, in a commit that writes no key of
+    // the transaction.
+    world.edit_outside(5, |items| items.clear(), &[&second]);
+    world.check(&second);
+    let stats = second.txn.stats();
+    assert_eq!((stats.overlapped, stats.base), (0, Some(world.latest())));
+    assert!(committed(world.commit(second, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A delete of a key that has no node, in a Merk that has none, is a write
+/// of that key and of nothing else (ST5). A commit outside that gives the
+/// Merk its first node under another key does not meet it (CF2), and the
+/// transaction is laid out over that node: it took no root.
+#[test]
+fn a_delete_in_a_merk_with_no_node_does_not_take_its_root() {
+    let (db, versions) = Db::new(48);
+    let mut world = World::new(&db, &versions);
+    // The root is kept, or stated as the none it was.
+    for (name, root) in [(6, None), (7, Some(None))] {
+        let tx = world.begin();
+        let gone = OwnedMerk {
+            removed: vec![b"absent".to_vec()],
+            root,
+            ..OwnedMerk::change(model::subtree(name), &BTreeMap::new(), &BTreeMap::new())
+        };
+        let batch = OwnedBatch {
+            merks: vec![gone],
+            records: Vec::new(),
+        };
+        world.apply(&tx, &batch).expect("a delete of no node");
+        world.check(&tx);
+
+        world.edit_outside(
+            name,
+            |items| drop(items.insert(b"first".to_vec(), b"outside".to_vec())),
+            &[&tx],
+        );
+        world.check(&tx);
+        let stats = tx.txn.stats();
+        assert_eq!((stats.overlapped, stats.base), (0, Some(world.latest())));
+        world.edit(&tx, name, |items| {
+            drop(items.insert(b"second".to_vec(), b"mine".to_vec()))
+        });
+        world.check(&tx);
+        assert!(committed(world.commit(tx, &[])));
+        world.check_committed();
+    }
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// A mark is a place of the write set until a write from before it is
+/// taken out. After that it is refused, whatever was written since: it
+/// would cut an operation in two.
+#[test]
+fn a_mark_that_a_rollback_went_behind_is_refused() {
+    let (db, versions) = Db::new(32);
+    let world = World::new(&db, &versions);
+    let tx = world.begin();
+    let empty = tx.txn.mark();
+    world.write(&tx, vec![put(aux(), b"a", b"1")]);
+    let first = tx.txn.mark();
+    world.write(&tx, vec![put(aux(), b"b", b"2"), put(aux(), b"c", b"3")]);
+    let second = tx.txn.mark();
+    world.write(&tx, vec![put(aux(), b"d", b"4")]);
+
+    // Back to the first mark, and on from there.
+    assert!(tx.txn.rewind(first));
+    tx.model.borrow_mut().writes.truncate(1);
+    world.write(&tx, vec![put(aux(), b"e", b"5")]);
+    world.write(&tx, vec![put(aux(), b"f", b"6")]);
+    let before = tx.txn.stats();
+    assert!(!tx.txn.rewind(second), "the writes before it went");
+    assert_eq!(tx.txn.stats(), before);
+    world.check(&tx);
+    // A mark that nothing was written after is one still, and takes nothing
+    // out.
+    let here = tx.txn.mark();
+    assert!(tx.txn.rewind(here));
+    assert_eq!(tx.txn.stats(), before);
+
+    // A rollback ends every mark but the one of the empty write set.
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
+    world.write(&tx, vec![put(aux(), b"g", b"7")]);
+    assert!(!tx.txn.rewind(first) && !tx.txn.rewind(here));
+    world.check(&tx);
+    assert!(tx.txn.rewind(empty));
+    tx.forget();
+    world.check(&tx);
+    assert_eq!(tx.txn.stats().writes, 0);
+    assert_eq!(db.private_ids(), 0);
+}

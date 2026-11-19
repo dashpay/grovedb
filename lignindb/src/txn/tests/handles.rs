@@ -188,7 +188,7 @@ fn a_handle_is_followed_while_it_is_good_and_not_after_its_lease_ended() {
     assert_eq!(follow(&world, &tx, 1, &kept), 0, "the frames went back");
 
     // A scope that is rolled back ends them.
-    let mut scope = tx.txn.scope().expect("no scope is open");
+    let scope = tx.txn.scope().expect("no scope is open");
     let merk = world.merk(&tx, 1, |items| {
         items.insert(key(3000), b"in a scope".to_vec());
     });

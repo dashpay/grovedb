@@ -86,6 +86,10 @@ impl Commits {
     /// that no transaction reads `version` as the latest and finds no key
     /// set for it. Versions are recorded in order, each once.
     ///
+    /// Nothing that can fail comes between this call and the publication:
+    /// a recorded key set is not taken back, and it is given to a
+    /// transaction only once `version` is the latest.
+    ///
     /// # Panics
     ///
     /// When `version` is not after every recorded version.
