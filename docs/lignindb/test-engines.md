@@ -31,7 +31,7 @@ A suite has a registry: a text file with one engine a line, the default first. A
 
 The crate's build script reads the registry and the variable. If the feature of the selected engine is on, it sets the cfg twice: with no value, which says that the suite has an engine, and with the selected name. It declares every registered name as a value of the cfg, so a `#[cfg(grovedb_test_engine = "..")]` with a name that is not registered is a warning, and an error under `-D warnings`.
 
-If the feature is off and the variable is not set, the cfg is not set and the suite has no engine. A registry line whose feature the crate does not have fails the build. That is the build with no engine compiled in ([`engine.md`](engine.md#features-and-engines)): `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests` and `cargo test -p grovedb-merk --no-default-features --features minimal --lib` run the tests that open no database. A test that opens one is under the cfg, not under the feature of an engine:
+If the feature is off and the variable is not set, the cfg is not set and the suite has no engine. A registry line whose feature the crate does not have fails every build of the crate, whichever engine is selected. That is the build with no engine compiled in ([`engine.md`](engine.md#features-and-engines)): `cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests` and `cargo test -p grovedb-merk --no-default-features --features minimal --lib` run the tests that open no database. A test that opens one is under the cfg, not under the feature of an engine:
 
 | Gate | What is under it |
 | --- | --- |

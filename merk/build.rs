@@ -29,6 +29,17 @@ fn select_test_engine() {
             }
         })
         .collect();
+    for (name, feature) in &engines {
+        if !MANIFEST.lines().any(|line| {
+            line.split_once('=')
+                .is_some_and(|(key, _)| key.trim() == *feature)
+        }) {
+            eprintln!(
+                "merk/test-engines.txt: `{name}` names the feature `{feature}`, which merk has not"
+            );
+            exit(1);
+        }
+    }
     let names: Vec<&str> = engines.iter().map(|(name, _)| *name).collect();
     let values: Vec<String> = names.iter().map(|name| format!("\"{name}\"")).collect();
     println!("cargo::rerun-if-changed=build.rs");
@@ -54,15 +65,6 @@ fn select_test_engine() {
         );
         exit(1);
     };
-    if !MANIFEST.lines().any(|line| {
-        line.split_once('=')
-            .is_some_and(|(key, _)| key.trim() == feature)
-    }) {
-        eprintln!(
-            "merk/test-engines.txt: `{name}` names the feature `{feature}`, which merk has not"
-        );
-        exit(1);
-    }
     let feature_variable = format!("CARGO_FEATURE_{}", feature.to_uppercase().replace('-', "_"));
     if env::var_os(feature_variable).is_some() {
         println!("cargo::rustc-cfg=merk_test_engine");
