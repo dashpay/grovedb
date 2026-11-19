@@ -887,7 +887,49 @@ What this shows and what it does not:
 - The costs a writer gives are made up by the replay, so it shows that the store charges a node of the corpus as RocksDB does for the same sizes and the same cost, and not what GroveDB's Merks gave with each node. What Merk gives is the same on both engines, because Merk's rules run above the seam; the first row of the table runs them on both.
 - It compares each operation of the store with RocksDB, and not the `OperationCost` of a GroveDB operation with the recorded one. That comparison needs GroveDB on LigninDB, and is GROVE-10's and VER-02's.
 
-### 15.6 For later tasks
+### 15.6 Sensitivity
+
+A check that cannot fail shows nothing, so 29 faults were put into the store and into `node_record_len_from_sizes`, one at a time, and the checks run on each: the tests of `merk/src/store/lignin/tests/cost.rs` with the N1 tests of `merk/src/cost_model.rs`, and for the faults that reach a node the corpus replay on two traces, `v3/balances` (sum trees, no removal) and `v5/delete-heavy`. Every fault is found. The second column names the tests that fail: **N1** for the tests of the record length, **Merk** for the Merk on both engines, **seam** for the history of seam operations, **D2** and **D2 tree** for the two tests of removals with no cost, **fetch** for the one seek of a fetch, **ledger** for the ledger, and **refused** for the node that has no record length.
+
+| Fault | Tests of the store that fail | Corpus replay |
+| --- | --- | --- |
+| N1 of a cell: one byte more | N1, Merk, seam, D2, D2 tree, fetch | both traces fail |
+| N1 of a cell: the child's aggregate left out | N1, Merk, D2 tree | both fail |
+| N1 of a cell: the child's key length left out | N1, Merk, D2 tree, fetch | both fail |
+| N1 of a cell: the feature measured as a basic node's | N1, Merk, seam, D2 tree | both fail |
+| N1 of a written node: one byte more | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
+| R1: a deferred handle's read charged nothing | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
+| R1: a seek for each cell the transaction read for a fetch | Merk, seam, D2, D2 tree, fetch | both fail |
+| R1 of `has_node`: the value's length left out | seam, fetch | both fail |
+| R2: an immediate handle's read charged as a deferred one's | Merk, seam, fetch | not run |
+| `W-tx`: a staged commit charged a seek | Merk, seam, D2, D2 tree, refused | both fail |
+| W1 left out: the stored key of a new node is not added | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
+| W3: the root key charged as an aux record | Merk, seam | not run |
+| The stored key of a record measured without the prefix | Merk, seam, D2, D2 tree, fetch, ledger | both fail |
+| D1: a removal with a cost charged as one with none | Merk, seam | `delete-heavy` fails |
+| D2 of a node: charged from the transaction's view | seam, D2, D2 tree | `delete-heavy` fails |
+| D2 of a record that is no node: charged from the transaction's view | Merk, seam | not run |
+| D2: a key the committed state lacks charged as a record of one byte | seam, D2, D2 tree | `delete-heavy` fails |
+| B1: the records that are no nodes charged after the nodes | Merk, seam | not run |
+| B1: nodes charged by key and not by subtree first | seam | `balances` fails |
+| B1: nodes charged in the order they were given, puts before removals | Merk, seam | `balances` fails |
+| B1: storage cost charged for a batch the transaction did not take | seam | not run |
+| B1: storage cost charged for a batch with a refused put | seam | not run |
+| A batch: a delete stands against an earlier put of the same record | seam | not run |
+| M1: a write made directly through an immediate handle charged a seek | Merk, seam | not run |
+| M2: the cost of an immediate handle's commit dropped | Merk, seam, ledger | not run |
+| M2: an immediate change set charged without the sizes of a node's links | Merk, seam | not run |
+| A refused node write charged a seek | refused | not run |
+| A charge made beside the model, with the model's number | ledger | not run |
+| A charge of the model that is dropped: a read asks the model twice | ledger | not run |
+
+Three things the run showed:
+
+- The last two faults change no number the store reports, so no comparison with RocksDB sees them. The ledger does.
+- The first run of the faults found two holes in the replay, which then passed with a seek charged for a staged commit and with `has_node` measured without the value. The replay compares both now.
+- Charging from the transaction's view in D2 is found, which the corpus cannot do for the engine as a whole (section 12.3): the replay removes nodes that its own transaction wrote, with no cost, and compares what the removal is charged.
+
+### 15.7 For later tasks
 
 - **MERK-04.** Opening a Merk charges the reads it makes: the root key record of a base Merk and the fetch of the root node. A root that comes from the subtree directory is still one R1 for the node.
 - **MERK-05.** The cursor charges C1 to C3: `cursor_move`, `cursor_key` with the stored key's length, and `cursor_value` with that and `node_record_len_from_sizes` of the cell. `Merk::clear` then removes each node with no cost, which the store charges by D2 already.
