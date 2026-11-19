@@ -891,8 +891,10 @@ impl<'c> Iterator for Entries<'c> {
             Some(pointer) => pointer,
             None => self.beside.take()?,
         };
-        // SAFETY: the pointer is in a chain whose lock is held for `'c`, so
-        // the frame is linked (A1), and a linked frame is not freed (A2).
+        // SAFETY: the pointer is in a chain that is borrowed for `'c` under
+        // its lock, or by the one who alone can reach it
+        // (`Chain::take_all`), so the frame is linked (A1), and a linked
+        // frame is not freed (A2).
         let frame: &'c Frame = unsafe { pointer.frame() };
         self.cursor = frame.next();
         Some(Entry { pointer, frame })
@@ -1153,13 +1155,18 @@ impl Chain {
 
     /// Empties the chain of a pool that is going away. The arena is borrowed
     /// mutably, so no pin on any of its frames is left, and the caller owns
-    /// every frame that was linked.
-    pub(super) fn take_all(&mut self, _arena: &mut Arena) -> Vec<OwnedFrame> {
+    /// every frame that was linked. A chain that holds a frame of another
+    /// arena is refused: a pin on that frame borrows the other arena.
+    pub(super) fn take_all(&mut self, arena: &mut Arena) -> Vec<OwnedFrame> {
         let links = &self.links;
         let mut frames = Vec::new();
+        for entry in links.iter() {
+            assert_eq!(entry.frame.home, arena.id, "a frame of another pool");
+        }
         while let Some(pointer) = links.first().or_else(|| links.beside()) {
             links.unlink(pointer);
-            // By A3: unlinked, and a `Pinned` borrows the arena.
+            // By A3: unlinked, and a frame of `arena`, every pin on which
+            // borrows the arena that is borrowed mutably here.
             frames.push(OwnedFrame(pointer));
         }
         frames
@@ -1523,6 +1530,46 @@ impl Drop for Arena {
         // SAFETY: `memory` was allocated with `layout` in `new`, and the
         // headers that pointed into it are gone.
         unsafe { alloc::dealloc(self.memory.as_ptr(), self.layout) };
+    }
+}
+
+#[cfg(all(test, not(loom)))]
+mod tests {
+    use super::*;
+
+    /// A pool that goes away takes every frame out of its table, the ones
+    /// beside the arena too, and owns them.
+    #[test]
+    fn a_chain_gives_its_frames_up_to_the_arena_they_are_of() {
+        let (mut arena, mut free) = Arena::new(2, 64).expect("a small arena");
+        let mut chain = Chain::new();
+        for frame in [free.pop().expect("a frame"), arena.allocate_overflow()] {
+            frame.set_kind(kind::PUBLISHED);
+            chain.write().link(&arena, frame);
+        }
+        assert_eq!(chain.read().iter().count(), 2);
+        let taken = chain.take_all(&mut arena);
+        assert_eq!(taken.len(), 2);
+        assert_eq!(chain.read().iter().count(), 0);
+        for frame in taken {
+            assert!(arena.owns(&frame));
+            if frame.header().is_overflow() {
+                arena.free_overflow(frame);
+            }
+        }
+    }
+
+    /// The frames of a chain are owned by whoever empties it because their
+    /// pins borrow the arena that is borrowed mutably. That says nothing of
+    /// a frame of another arena, so such a chain is left as it is.
+    #[test]
+    #[should_panic(expected = "a frame of another pool")]
+    fn a_chain_is_not_emptied_for_another_arena() {
+        let (arena, mut free) = Arena::new(1, 64).expect("a small arena");
+        let (mut other, _free) = Arena::new(1, 64).expect("a small arena");
+        let mut chain = Chain::new();
+        chain.write().link(&arena, free.pop().expect("a frame"));
+        let _taken = chain.take_all(&mut other);
     }
 }
 
