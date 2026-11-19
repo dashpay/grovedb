@@ -55,6 +55,13 @@ impl Lignin {
         Self { db, versions }
     }
 
+    /// Takes the store out of the check that the physical invariant
+    /// checker makes when it is dropped (`lignindb::verify`): the test
+    /// leaves pages that the checker does not pass, and says why.
+    pub(super) fn unchecked(&self) {
+        self.db.unchecked();
+    }
+
     pub(super) fn path(&self) -> WritePath<'_> {
         self.db.path(&self.versions)
     }
@@ -839,7 +846,7 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
     // its child's and with a link taken away from a child that stays: the
     // tree they leave is not one the physical invariant checker passes
     // (`lignindb::verify`), and the store is taken out of its check.
-    lignin.db.unchecked();
+    lignin.unchecked();
     let path = lignin.path();
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
