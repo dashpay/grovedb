@@ -288,6 +288,11 @@ impl Db {
     /// such a place: the syncs of a store are most of what these tests
     /// would wait for.
     pub(super) fn with(config: FlushConfig) -> Self {
+        Self::with_log(config, LogOptions::default())
+    }
+
+    /// A new store whose log is written as `log` says.
+    pub(super) fn with_log(config: FlushConfig, log: LogOptions) -> Self {
         let memory = Path::new("/dev/shm");
         let dir = match memory.is_dir() {
             true => tempfile::tempdir_in(memory),
@@ -295,13 +300,18 @@ impl Db {
         }
         .expect("a directory");
         let path = dir.path().to_path_buf();
-        let mut db = Self::create(Arc::new(StdVfs), &path, config);
+        let mut db = Self::create(Arc::new(StdVfs), &path, config, log);
         db._dir = Some(dir);
         db
     }
 
     /// A new store in the directory `path` of `vfs`, which exists.
-    pub(super) fn create(vfs: Arc<dyn Vfs>, path: &Path, config: FlushConfig) -> Self {
+    pub(super) fn create(
+        vfs: Arc<dyn Vfs>,
+        path: &Path,
+        config: FlushConfig,
+        log: LogOptions,
+    ) -> Self {
         let size = Self::SIZE;
         let empty = Manifest::new(size, Default::default(), None, Vec::new()).expect("a manifest");
         let mut manifest = ManifestStore::create(vfs.clone(), path, empty).expect("a store");
@@ -311,7 +321,7 @@ impl Db {
         let end = LogReader::new(vfs.clone(), path, manifest.manifest().expect("a manifest"))
             .into_end()
             .expect("an empty log");
-        let log = LogStore::open(&manifest, &end, LogOptions::default()).expect("a log");
+        let log = LogStore::open(&manifest, &end, log).expect("a log");
         log.roll(&mut manifest).expect("a log file");
         let pool = BufferPool::new(PoolConfig {
             page_size: size,
@@ -440,6 +450,64 @@ impl Db {
         tree.cells()
             .filter_map(|(_, cell)| cell.value_pointer())
             .collect()
+    }
+
+    /// Moves the value of the cell in `slot` of the current version of
+    /// `id` to another place in the value log, as the value log's cleaner
+    /// does: the value is appended again and covered, and a page step
+    /// gives the cell the new pointer. The record of the step goes to the
+    /// log through write-back, or, with `past_write_back`, straight to the
+    /// log, which leaves write-back with records that no longer lead to
+    /// the frame.
+    pub(super) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
+        let from = {
+            let frame = self.frame(id, self.latest()).expect("the page");
+            let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+            let cell = tree.cell(slot).expect("the cell");
+            cell.value_pointer().expect("a placed value")
+        };
+        let mut buf = Vec::new();
+        let bytes = self.values.read(from, id, &mut buf).expect("the value").to_vec();
+        let mut writer = self.values.create().expect("a value-log file");
+        self.values
+            .commit(&mut self.manifest.lock().expect("the manifest"))
+            .expect("named");
+        let mut hold = crate::values::ValueHold::new();
+        let to = writer.append(&mut hold, id, &bytes).expect("appended");
+        writer.finish().expect("synced");
+        self.values
+            .commit(&mut self.manifest.lock().expect("the manifest"))
+            .expect("covered");
+
+        let counts = self.values.step().expect("the counts");
+        let step = self.pool.page_step(id);
+        let old = step.current().expect("the page");
+        assert_eq!(step.private_copies(), 0);
+        let change = lignin_format::wal::ValueMove::in_tree(
+            id,
+            slot,
+            lignin_format::value_log::ValuePlace::Placed(from),
+            to,
+        )
+        .expect("a move");
+        let mut record = Vec::new();
+        change.write(&mut record).expect("a record");
+        if past_write_back {
+            self.log.append_change(&record).expect("appended");
+        } else {
+            self.wb().append_change(old.born(), &record).expect("appended");
+        }
+        let mut blank = self.pool.blank();
+        blank.copy_from(&old);
+        TreePageMut::open(&mut blank, self.size, FRAME_FORMAT)
+            .expect("a tree page")
+            .set_value(slot, CellValue::OutOfLine(to))
+            .expect("repointed");
+        step.replace(&old, blank).expect("replaced");
+        drop(step);
+        counts
+            .apply(&ValueChange::moved(from, to), self.latest())
+            .expect("counted");
     }
 
     pub(super) fn begin(&self) -> Txn<'_> {
