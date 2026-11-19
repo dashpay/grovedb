@@ -726,7 +726,7 @@ impl Grove {
         let (mem, log, rules) = (&mut self.mem, &mut self.log, &mut self.rules);
         let evaluated = self.hashes.evaluate_all(mem, log, rules);
         evaluated.expect("every mark is evaluated");
-        assert!(self.hashes.is_clean());
+        assert!(self.hashes.is_empty());
     }
 
     /// What [`check`] says of the cell at `at`.

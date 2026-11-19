@@ -219,7 +219,7 @@ fn allocations(len: usize) -> u64 {
     let allocations = ALLOCATIONS.with(Cell::get) - before;
 
     root.expect("the path is evaluated");
-    assert!(hashes.is_clean());
+    assert!(hashes.is_empty());
     let counters = *hashes.counters();
     assert_eq!(counters.nodes, len as u64);
     assert_eq!(counters.node_hashes, len as u64);

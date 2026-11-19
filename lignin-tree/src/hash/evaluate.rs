@@ -65,28 +65,36 @@ struct Frame {
 struct Made {
     value: Option<Hash>,
     kv: Option<Hash>,
-    children: [Option<Hash>; 2],
-}
-
-const fn index(side: Side) -> usize {
-    match side {
-        Side::Left => 0,
-        Side::Right => 1,
-    }
+    left: Option<Hash>,
+    right: Option<Hash>,
 }
 
 impl Made {
     fn hashes(&self) -> impl Iterator<Item = (HashField, &Hash)> {
-        let [left, right] = &self.children;
         [
             (HashField::Value, &self.value),
             (HashField::KeyValue, &self.kv),
-            (HashField::Child(Side::Left), left),
-            (HashField::Child(Side::Right), right),
+            (HashField::Child(Side::Left), &self.left),
+            (HashField::Child(Side::Right), &self.right),
         ]
         .into_iter()
         .filter_map(|(field, hash)| Some((field, hash.as_ref()?)))
     }
+}
+
+/// Reads the node at `at` in one step.
+fn read_node<P: Pages, T>(
+    pages: &mut P,
+    at: CellAddress,
+    read: impl FnOnce(NodeRef<'_>) -> Result<T, HashError>,
+) -> Result<T, HashError> {
+    let result = pages.read(at.page(), |page| {
+        read(
+            page.node(at.slot())
+                .ok_or(HashError::NoNode { address: at })?,
+        )
+    });
+    result.map_err(HashError::Pages)?
 }
 
 /// Reads what the hashes `fields` of the cell at `at` are made from, and
@@ -111,10 +119,7 @@ fn gather<P: Pages>(
         place: None,
         hosted: 0,
     };
-    let read = pages.read(at.page(), |page| {
-        let node = page
-            .node(at.slot())
-            .ok_or(HashError::NoNode { address: at })?;
+    read_node(pages, at, |node| {
         for side in Side::BOTH {
             let field = HashField::Child(side);
             if !fields.has(field) {
@@ -131,17 +136,16 @@ fn gather<P: Pages>(
         }
         if fields.has(HashField::Value) {
             frame.place = node.value().place();
-            for (position, root) in node.hosted_roots().enumerate() {
-                frame.hosted += 1;
-                lists.deps.extend(root.map(|at| Dep {
-                    role: Role::Hosted(position),
-                    at,
-                }));
-            }
+            let roots = node.hosted_roots();
+            frame.hosted = roots.len();
+            let named = roots.enumerate().filter_map(|(position, root)| {
+                let role = Role::Hosted(position);
+                Some(Dep { role, at: root? })
+            });
+            lists.deps.extend(named);
         }
         Ok(frame)
-    });
-    read.map_err(HashError::Pages)?
+    })
 }
 
 /// Reads the value of `frame`'s node into `into`, if a value hash is made
@@ -174,13 +178,9 @@ fn node_hash_at<P: Pages, R: HashRules>(
     rules: &mut R,
     at: CellAddress,
 ) -> Result<Hash, HashError> {
-    let read = pages.read(at.page(), |page| {
-        let node = page
-            .node(at.slot())
-            .ok_or(HashError::NoNode { address: at })?;
+    read_node(pages, at, |node| {
         rules.node_hash(node).map_err(HashError::Rule)
-    });
-    read.map_err(HashError::Pages)?
+    })
 }
 
 /// Makes the hashes of `frame` from the cell `node` shows, which is the
@@ -220,7 +220,10 @@ fn make<R: HashRules>(
         let (named, slot) = match dep.role {
             Role::Child(side) => (
                 node.link(side).map(|link| link.child),
-                &mut made.children[index(side)],
+                match side {
+                    Side::Left => &mut made.left,
+                    Side::Right => &mut made.right,
+                },
             ),
             Role::Hosted(position) => (
                 node.hosted_roots().nth(position).flatten(),
@@ -398,22 +401,17 @@ pub(super) fn check<P: Pages, V: ValueReader, R: HashRules>(
 ) -> Result<Stale, HashError> {
     let mut lists = Lists::default();
     let frame = gather(pages, &mut lists, node, Stale::ALL, false)?;
-    for index in 0..lists.deps.len() {
-        let hash = node_hash_at(pages, rules, lists.deps[index].at)?;
-        lists.hashes.push(hash);
+    for dep in &lists.deps {
+        lists.hashes.push(node_hash_at(pages, rules, dep.at)?);
     }
     let mut value = Vec::new();
     fetch(values, &frame, &mut value)?;
-    let read = pages.read(node.page(), |page| {
-        let cell = page
-            .node(node.slot())
-            .ok_or(HashError::NoNode { address: node })?;
+    read_node(pages, node, |cell| {
         let mut none = Counters::default();
         let made = make(cell, &frame, &mut lists, &value, false, rules, &mut none)?;
         let differing = made
             .hashes()
             .filter(|(field, hash)| cell.hash(*field) != Some(*hash));
         Ok(differing.map(|(field, _)| field).collect())
-    });
-    read.map_err(HashError::Pages)?
+    })
 }

@@ -16,8 +16,9 @@
 //! [`NodeRef`](crate::node::NodeRef). Nothing here stands between a reader
 //! and those bytes.
 //!
-//! **Loading a page computes no hash.** A rule is called for a hash that is
-//! marked, and by [`check`]. A mark is made by [`Hashes::mark`], which its
+//! **Loading a page computes no hash.** The rules are called by an
+//! evaluation, which someone asked for, and by [`check`]. An evaluation
+//! makes what is marked, and a mark is made by [`Hashes::mark`], which its
 //! caller calls for a change it made, and by nothing else. A page that is
 //! read, loaded or pinned gets no mark, so nothing is computed for it.
 //!
@@ -125,8 +126,9 @@
 //!
 //! A [`Write`] states each of its nodes whole, hashes included. For a hash
 //! that is marked or is about to be, it states the bytes the cell has, or
-//! any bytes for a node it creates: fragment maintenance then writes no
-//! hash record for it, and evaluation writes the one record.
+//! any bytes where the cell has none yet, in a node it creates or a link
+//! that appears. Fragment maintenance then writes no hash record for a
+//! hash the cell has, and evaluation writes the one record.
 //!
 //! A write moves cells, so the marks follow it: [`Hashes::follow`] is called
 //! with every write and its [`Report`], before anything is marked for that
@@ -205,6 +207,17 @@ pub struct Counters {
     pub unchanged: u64,
 }
 
+impl Counters {
+    fn add(&mut self, other: &Self) {
+        self.nodes += other.nodes;
+        self.value_hashes += other.value_hashes;
+        self.kv_hashes += other.kv_hashes;
+        self.node_hashes += other.node_hashes;
+        self.written += other.written;
+        self.unchanged += other.unchanged;
+    }
+}
+
 /// The stale hashes of one write scope, and their evaluation.
 ///
 /// It holds no page. Between two calls it keeps the marks and its counters.
@@ -258,17 +271,12 @@ impl Hashes {
         self.marks.get(&node).copied().unwrap_or_default().stale
     }
 
-    /// Whether no hash is marked.
-    pub fn is_clean(&self) -> bool {
-        self.marks.is_empty()
-    }
-
     /// How many nodes have a marked hash.
     pub fn len(&self) -> usize {
         self.marks.len()
     }
 
-    /// Whether no node has a marked hash.
+    /// Whether no hash is marked.
     pub fn is_empty(&self) -> bool {
         self.marks.is_empty()
     }
@@ -291,13 +299,7 @@ impl Hashes {
             let own = self.marks.entry(node).or_default();
             own.stale = own.stale.union(marks.stale);
         }
-        let (own, other) = (&mut self.counters, other.counters);
-        own.nodes += other.nodes;
-        own.value_hashes += other.value_hashes;
-        own.kv_hashes += other.kv_hashes;
-        own.node_hashes += other.node_hashes;
-        own.written += other.written;
-        own.unchanged += other.unchanged;
+        self.counters.add(&other.counters);
     }
 
     /// Takes the marks through a write that was applied: `write`, and what

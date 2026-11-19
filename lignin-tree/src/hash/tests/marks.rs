@@ -122,7 +122,7 @@ fn a_set_of_stored_hashes() {
 fn a_mark_is_one_flag_for_one_stored_hash_of_one_node() {
     let (first, second) = (address(3, 1), address(2, 9));
     let mut hashes = Hashes::new();
-    assert!(hashes.is_clean() && hashes.is_empty());
+    assert!(hashes.is_empty());
     assert_eq!(hashes.stale(first), Stale::NONE);
 
     hashes.mark(first, LEFT);
@@ -138,8 +138,7 @@ fn a_mark_is_one_flag_for_one_stored_hash_of_one_node() {
         hashes.stale(second),
         set(&[HashField::Value, HashField::KeyValue])
     );
-    assert_eq!((hashes.len(), hashes.is_clean()), (2, false));
-    assert!(!hashes.is_empty());
+    assert_eq!((hashes.len(), hashes.is_empty()), (2, false));
     // In the order of the addresses.
     assert_eq!(
         marked(&hashes),
@@ -166,7 +165,7 @@ fn a_mark_is_one_flag_for_one_stored_hash_of_one_node() {
     assert_eq!(hashes.forget(second), Stale::NONE);
     assert_eq!(hashes.len(), 1);
     hashes.clear();
-    assert!(hashes.is_clean());
+    assert!(hashes.is_empty());
     assert_eq!(hashes, Hashes::new());
     assert_eq!(*hashes.counters(), Counters::default());
 }
@@ -226,7 +225,7 @@ fn the_marks_follow_a_write() {
     // With no mark there is nothing to take anywhere.
     let mut clean = Hashes::new();
     clean.follow(&write, &report);
-    assert!(clean.is_clean());
+    assert!(clean.is_empty());
 }
 
 #[test]

@@ -42,7 +42,7 @@ fn root_hash(grove: &mut Grove) -> Result<Hash, HashError> {
 fn recovers(grove: &mut Grove) {
     grove.check_marks();
     assert_eq!(grove.root_hash(), grove.expected_root());
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     grove.check_hashes();
 }
 
@@ -533,7 +533,7 @@ fn a_cell_that_changed_during_an_evaluation_is_refused() {
         };
         let evaluated = hashes.evaluate(&mut meddled, &mut (), &mut Plain, first);
         evaluated.expect("nothing changed");
-        assert!(hashes.is_clean());
+        assert!(hashes.is_empty());
         assert_eq!(meddled.create().expect("a page"), page(2));
         meddled.write(page(2), |_| Ok(())).expect("a page");
         meddled.free(page(2)).expect("freed");

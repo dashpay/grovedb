@@ -31,7 +31,7 @@ pub(super) fn nested() -> (Grove, usize, usize) {
         grove.put(b, &key(b, number * 211 % 500), &value(number, 50));
     }
     grove.check_hashes();
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     assert!(grove.mem.frames.len() > 8, "the grove is in several pages");
     (grove, a, b)
 }
@@ -175,7 +175,7 @@ fn changing_one_value_recomputes_exactly_the_nodes_on_its_root_path_once() {
     }
 
     // Nothing is left to do.
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     grove.check_hashes();
     let (calls, records, steps) = (
         grove.rules.calls.len(),

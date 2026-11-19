@@ -32,7 +32,7 @@ fn a_hash_that_is_made_and_equals_the_stored_one_is_not_written() {
     let stored = stored_on(&grove, &[path]).len() as u64;
     assert_eq!(counters.unchanged - before.unchanged, stored);
     assert_eq!(counters.written, before.written);
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     grove.check_hashes();
 }
 
@@ -62,7 +62,7 @@ fn an_evaluation_goes_down_through_marked_hashes_only() {
     assert_eq!(grove.hashes.len(), 1);
 
     grove.evaluate(at);
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     assert_eq!(
         grove.rules.since(calls),
         [(Rule::Value, changed.clone()), (Rule::Kv, changed.clone())]
@@ -232,7 +232,7 @@ fn a_write_that_stops_at_a_stop_point_is_evaluated_up_to_there() {
         let (Step::Read(page) | Step::Write(page)) = step;
         assert!(pages.contains(page), "{step:?} is outside the Merk");
     }
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     assert_eq!(grove.mem.node(host).cell().as_bytes(), host_cell);
 
     // The host is behind: its value hash waits for its element.
@@ -289,7 +289,7 @@ fn the_marks_go_back_with_their_frames() {
     let report = grove.put(b, &key(b, 300), &value(6, old_value.len()));
     assert!(report.carried.is_empty(), "no cell left its place");
     let evaluated = grove.root_hash();
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     assert_ne!(grove.hashes, marks);
 
     // Back to it.
@@ -310,7 +310,7 @@ fn a_writer_that_makes_its_hashes_has_no_mark() {
     // Every write of this grove made its hashes and stated them, as Merk
     // does today: nothing was marked, and no rule was called.
     let (mut grove, _, b) = nested();
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     assert!(grove.rules.calls.is_empty());
     assert_eq!(*grove.hashes.counters(), Counters::default());
 
@@ -346,7 +346,7 @@ fn a_writer_that_makes_its_hashes_has_no_mark() {
             grove.hashes.unmark(at, field);
         }
     }
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     grove.evaluate_all();
     assert!(grove.rules.calls.is_empty());
     grove.check_hashes();
@@ -382,7 +382,7 @@ fn nodes_that_were_never_hashed_are_hashed_once_when_it_is_asked_for() {
     assert_eq!(grove.hashes.len(), grove.cells().len(), "every node");
 
     assert_eq!(grove.root_hash(), grove.expected_root());
-    assert!(grove.hashes.is_clean());
+    assert!(grove.hashes.is_empty());
     grove.check_hashes();
     let counters = *grove.hashes.counters();
     let nodes = grove.cells().len() as u64;

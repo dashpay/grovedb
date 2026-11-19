@@ -41,6 +41,11 @@ pub trait HashRules {
     /// The value hash and the key-value hash that `node` shows are the ones
     /// this call is about to replace. Everything else of the cell is up to
     /// date.
+    ///
+    /// A value whose hash is made from something that is not given here, as
+    /// a reference's is from the value it names, is refused. Its writer
+    /// makes that hash and never marks it, so being asked for it means that
+    /// a mark is on the wrong node, and a hash made here would be wrong.
     fn value_hash(
         &mut self,
         node: NodeRef<'_>,
