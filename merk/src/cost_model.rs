@@ -79,8 +79,8 @@ pub fn node_record_len(model: StorageCostModel, node: &TreeNode) -> Result<usize
 }
 
 /// The record length of a node that a store holds as its parts and not as
-/// a record: the number of bytes Merk's record of the node takes, with
-/// nothing encoded (`cost-model.md` N1).
+/// a record: the number of bytes Merk's record of the node takes, with no
+/// record encoded (`cost-model.md` N1).
 ///
 /// `value_len` is the length of the node's value. `left_child` and
 /// `right_child` are, for each child, the length of its key and the

@@ -29,14 +29,12 @@ use crate::{
 };
 
 /// What the store keeps of a node between `prepare_node` and `put_node`:
-/// every part of it but the key, and the value only where it was written.
+/// every part of it but the key, the value only where it was written, and
+/// the record length its put is charged by (`cost-model.md` N1). A node
+/// that has no record length is not taken apart, and what is kept of it is
+/// why it has none.
 #[derive(Debug)]
-pub struct PreparedNode {
-    node: NodeWrite,
-    /// The record length the node's put is charged by (`cost-model.md` N1),
-    /// or why the node has none.
-    record_len: Result<usize, Error>,
-}
+pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 
 fn link_write(link: &Link) -> LinkWrite {
     let heights = match link {
@@ -54,8 +52,10 @@ fn link_write(link: &Link) -> LinkWrite {
 }
 
 fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
-    PreparedNode {
-        node: NodeWrite {
+    // The length comes first: a link with no length, as one to a child that
+    // is modified and not committed, has no hash to give either.
+    PreparedNode(cost_model::node_record_len(MODEL, node).map(|record_len| {
+        let node = NodeWrite {
             key: node.key().to_vec(),
             feature: encode_feature(&node.feature_type()),
             value_hash: *node.value_hash(),
@@ -68,9 +68,9 @@ fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
             },
             hint: None,
             hosted: None,
-        },
-        record_len: cost_model::node_record_len(MODEL, node),
-    }
+        };
+        (node, record_len)
+    }))
 }
 
 /// The sizes the cost rules take with a put of a node that is charged when
@@ -142,11 +142,11 @@ impl LigninChangeSet {
         change: NodeChange,
     ) -> Result<Self, Error> {
         let mut change_set = Self::new(subtree, false);
-        let PreparedNode { node, record_len } = prepare(node, change);
+        let (node, record_len) = prepare(node, change).0?;
         change_set.nodes.push((
             node,
             PutSizes {
-                record_len: record_len?,
+                record_len,
                 children: None,
                 cost: None,
             },
@@ -274,11 +274,7 @@ impl NodeChangeSet for LigninChangeSet {
         prepared: PreparedNode,
         cost: Option<NodeWriteCost>,
     ) -> Result<(), Error> {
-        let PreparedNode {
-            mut node,
-            record_len,
-        } = prepared;
-        let record_len = record_len?;
+        let (mut node, record_len) = prepared.0?;
         // The record key of the write is the key Merk puts the node under.
         node.key = key.to_vec();
         let (children, cost) = match cost {
