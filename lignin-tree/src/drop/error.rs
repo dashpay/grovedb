@@ -8,7 +8,11 @@ use lignin_store::{
     values::{OwnersError, ValueStoreError},
 };
 
-use crate::{directory::DirectoryError, flat::FlatError, fragment::FragmentError};
+use crate::{
+    directory::{DirectoryError, Prefix},
+    flat::FlatError,
+    fragment::FragmentError,
+};
 
 /// Why a drop, or a step of reclaiming, failed.
 ///
@@ -48,8 +52,15 @@ pub enum DropError {
         /// What is wrong.
         what: &'static str,
     },
-    /// A record of unlinked pages that is not one.
+    /// A record of unlinked pages that is not one, or a key that no record
+    /// of this module is under.
     Record(&'static str),
+    /// A Merk was named to be dropped or cleared together with a Merk that
+    /// it is below. The outer one takes it along.
+    Below {
+        /// The prefix of the inner Merk.
+        prefix: Prefix,
+    },
     /// Every id of a record of unlinked pages was given out.
     IdsExhausted,
     /// Reclaiming was asked to go on after [`Self::Broken`].
@@ -74,6 +85,14 @@ impl fmt::Display for DropError {
                 write!(f, "what a dropped subtree left in page {page}: {what}")
             }
             Self::Record(what) => write!(f, "record of unlinked pages: {what}"),
+            Self::Below { prefix } => {
+                let [a, b, c, d, ..] = prefix;
+                write!(
+                    f,
+                    "the Merk under the prefix {a:02x}{b:02x}{c:02x}{d:02x}.. is dropped with a \
+                     Merk it is below"
+                )
+            }
             Self::IdsExhausted => write!(f, "every id of a record of unlinked pages was given out"),
             Self::GivenUp => write!(f, "reclaiming was given up after a step that broke"),
         }

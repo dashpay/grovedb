@@ -139,6 +139,11 @@ fn every_error_says_what_it_is() {
             false,
         ),
         (
+            DropError::Below { prefix },
+            "the Merk under the prefix 09090909.. is dropped with a Merk it is below",
+            false,
+        ),
+        (
             DropError::IdsExhausted,
             "every id of a record of unlinked pages was given out",
             false,
@@ -198,12 +203,18 @@ fn a_drop_that_is_refused_changes_nothing() {
     let refused = |write: &Write<'_>, leaving: &[Leaving<'_>]| {
         let mut txn = db.begin();
         let mut directory = grove.directory(&db);
+        let at = txn.tree.at;
         let error = unlink(
             &mut Fragments::new(layout),
             &mut txn.tree,
             &mut txn.values,
             &mut directory,
-            &mut txn.flat,
+            &mut Flats {
+                pages: &mut txn.flat,
+                columns: &grove.columns,
+                drops: &grove.drops,
+                at,
+            },
             write,
             leaving,
         )
@@ -231,6 +242,15 @@ fn a_drop_that_is_refused_changes_nothing() {
         error,
         DropError::Directory(DirectoryError::NotEmpty { .. })
     ));
+    // A Merk with the Merk it is below, in either order: the outer one
+    // takes the inner one along.
+    for both in [
+        [Leaving::Cleared(&empty), Leaving::Dropped(&below)],
+        [Leaving::Dropped(&below), Leaving::Cleared(&empty)],
+    ] {
+        let error = refused(&none, &both);
+        assert!(matches!(error, DropError::Below { prefix } if prefix == below));
+    }
 
     // A write that names a node at an address where no cell is.
     let nowhere = NodeWrite {
@@ -255,12 +275,18 @@ fn a_drop_that_is_refused_changes_nothing() {
     // A Merk with no node is cleared, and dropped once nothing is below.
     let mut txn = db.begin();
     let mut directory = grove.directory(&db);
+    let at = txn.tree.at;
     let cleared = unlink(
         &mut Fragments::new(layout),
         &mut txn.tree,
         &mut txn.values,
         &mut directory,
-        &mut txn.flat,
+        &mut Flats {
+            pages: &mut txn.flat,
+            columns: &grove.columns,
+            drops: &grove.drops,
+            at,
+        },
         &none,
         &[Leaving::Cleared(&empty)],
     )
@@ -271,13 +297,14 @@ fn a_drop_that_is_refused_changes_nothing() {
     grove.check(&db);
 }
 
-/// A page with cells as these tests give them, and a dropped Merk whose
-/// root is its first cell.
+/// Pages with cells as these tests give them, and a dropped Merk whose
+/// root is a cell of the first.
 struct Crafted {
     db: Db,
     directory: Directory,
     dropped: Dropped,
     page: PageId,
+    pages: Vec<PageId>,
     cells: usize,
 }
 
@@ -286,6 +313,10 @@ struct Cell {
     right: Option<u16>,
     fragment_root: bool,
     pointer: Option<u64>,
+    /// The cells of other pages that the cell names, by the number of the
+    /// page among those made: its left child, and its right one if there
+    /// are two.
+    far: &'static [(usize, u16)],
 }
 
 const LEAF: Cell = Cell {
@@ -293,9 +324,14 @@ const LEAF: Cell = Cell {
     right: None,
     fragment_root: false,
     pointer: None,
+    far: &[],
 };
 
 fn crafted(cells: &[Cell], root: u16) -> Crafted {
+    crafted_pages(&[cells], root)
+}
+
+fn crafted_pages(pages: &[&[Cell]], root: u16) -> Crafted {
     let db = Db::new();
     let mut txn = db.begin();
     let mut directory = Directory::create(&mut txn.flat, db.config).expect("a directory");
@@ -311,42 +347,50 @@ fn crafted(cells: &[Cell], root: u16) -> Crafted {
     directory
         .add(&mut txn.flat, &merk, b"tree", Some(host))
         .expect("entered");
-    let page = txn.tree.create().expect("a page");
-    let link = |to: Option<u16>| {
-        to.map(|to| TreeLink {
-            child: CellAddress::new(page, slot(to)),
+    let made: Vec<PageId> = pages
+        .iter()
+        .map(|_| txn.tree.create().expect("a page"))
+        .collect();
+    let page = made[0];
+    for (&page, cells) in made.iter().zip(pages) {
+        let link = |child: CellAddress| TreeLink {
+            child,
             hash: &HASH,
             heights: (0, 0),
             child_key_len: 4,
             aggregate: &[],
-        })
-    };
-    txn.tree
-        .write(page, |nodes| {
-            for (n, cell) in cells.iter().enumerate() {
-                let key = format!("c{n:03}");
-                let pointer = cell.pointer.map(|offset| {
-                    ValuePointer::new(FileId::new(900).expect("a file"), offset, 300)
-                        .expect("a pointer")
-                });
-                nodes.insert(&CellContent {
-                    key: key.as_bytes(),
-                    feature: &[0],
-                    value_hash: &HASH,
-                    kv_hash: &HASH,
-                    left: link(cell.left),
-                    right: link(cell.right),
-                    hosted_roots: &[],
-                    value: match pointer {
-                        Some(pointer) => CellValue::OutOfLine(pointer),
-                        None => CellValue::Inline(b"a value"),
-                    },
-                    fragment_root: cell.fragment_root,
-                })?;
-            }
-            Ok(())
-        })
-        .expect("the cells");
+        };
+        let near = |to: Option<u16>| to.map(|to| link(CellAddress::new(page, slot(to))));
+        let far = |to: Option<&(usize, u16)>| {
+            to.map(|&(page, to)| link(CellAddress::new(made[page], slot(to))))
+        };
+        txn.tree
+            .write(page, |nodes| {
+                for (n, cell) in cells.iter().enumerate() {
+                    let key = format!("c{n:03}");
+                    let pointer = cell.pointer.map(|offset| {
+                        ValuePointer::new(FileId::new(900).expect("a file"), offset, 300)
+                            .expect("a pointer")
+                    });
+                    nodes.insert(&CellContent {
+                        key: key.as_bytes(),
+                        feature: &[0],
+                        value_hash: &HASH,
+                        kv_hash: &HASH,
+                        left: far(cell.far.first()).or(near(cell.left)),
+                        right: far(cell.far.get(1)).or(near(cell.right)),
+                        hosted_roots: &[],
+                        value: match pointer {
+                            Some(pointer) => CellValue::OutOfLine(pointer),
+                            None => CellValue::Inline(b"a value"),
+                        },
+                        fragment_root: cell.fragment_root,
+                    })?;
+                }
+                Ok(())
+            })
+            .expect("the cells");
+    }
     let named = RootChange::Named {
         prefix: &merk,
         root: Some(Root {
@@ -366,7 +410,8 @@ fn crafted(cells: &[Cell], root: u16) -> Crafted {
         directory: directory.expect("a directory"),
         dropped,
         page,
-        cells: cells.len(),
+        pages: made,
+        cells: pages.iter().map(|cells| cells.len()).sum(),
     }
 }
 
@@ -378,7 +423,7 @@ fn a_page_that_is_not_what_a_drop_leaves_is_not_changed() {
         left,
         right,
         fragment_root: true,
-        pointer: None,
+        ..LEAF
     };
     let marked = Cell {
         fragment_root: true,
@@ -422,7 +467,13 @@ fn a_page_that_is_not_what_a_drop_leaves_is_not_changed() {
         let reclaimer = made.db.reclaimer();
         let mut reclaim = Reclaim::new(made.dropped);
         for _ in 0..2 {
-            let refused = reclaimer.reclaim(&mut reclaim, &made.directory, &GUARD, usize::MAX);
+            let refused = reclaimer.reclaim(
+                &mut reclaim,
+                &made.directory,
+                &made.db.columns(),
+                &GUARD,
+                usize::MAX,
+            );
             let error = refused.expect_err("a page that is damaged");
             assert!(matches!(error, DropError::Damaged { page, .. } if page == made.page));
             assert!(error.to_string().contains(says), "{error}");
@@ -445,7 +496,13 @@ fn a_page_that_is_not_what_a_drop_leaves_is_not_changed() {
             ..made.dropped
         };
         let mut reclaim = Reclaim::new(moved);
-        let refused = reclaimer.reclaim(&mut reclaim, &made.directory, &GUARD, usize::MAX);
+        let refused = reclaimer.reclaim(
+            &mut reclaim,
+            &made.directory,
+            &made.db.columns(),
+            &GUARD,
+            usize::MAX,
+        );
         let error = refused.expect_err("no such root");
         assert!(error.to_string().contains(says), "{error}");
     }
@@ -455,11 +512,64 @@ fn a_page_that_is_not_what_a_drop_leaves_is_not_changed() {
         id: crate::directory::MerkId::new(77).expect("an id"),
         root: None,
     };
-    let refused = reclaimer.reclaim(&mut Reclaim::new(unknown), &made.directory, &GUARD, 1);
+    let refused = reclaimer.reclaim(
+        &mut Reclaim::new(unknown),
+        &made.directory,
+        &made.db.columns(),
+        &GUARD,
+        1,
+    );
     assert!(matches!(
         refused,
         Err(DropError::Directory(DirectoryError::NotDropped { .. }))
     ));
+}
+
+/// A cell that cells of two pages name is not what a write leaves. It is
+/// taken out once, as the first of them named it, and the second time is
+/// an error and no step: by then its slot could hold another cell.
+#[test]
+fn a_cell_that_two_pages_name_is_taken_out_once() {
+    let marked = |far| Cell {
+        fragment_root: true,
+        far,
+        ..LEAF
+    };
+    let pages: [&[Cell]; 3] = [
+        &[marked(&[(1, 1), (2, 1)])],
+        &[marked(&[(2, 1)])],
+        &[marked(&[])],
+    ];
+    let made = crafted_pages(&pages, 1);
+    assert_eq!(made.db.cells(), made.cells);
+    let reclaimer = made.db.reclaimer();
+    let mut reclaim = Reclaim::new(made.dropped);
+    let columns = made.db.columns();
+    let mut refused = Vec::new();
+    for _ in 0..8 {
+        match reclaimer.reclaim(&mut reclaim, &made.directory, &columns, &GUARD, usize::MAX) {
+            Ok(Progress::Done) => break,
+            Ok(progress) => panic!("{progress:?}"),
+            Err(error) => refused.push(error),
+        }
+    }
+    let [DropError::Damaged { page, what }] = &refused[..] else {
+        panic!("{refused:?}");
+    };
+    assert_eq!(*page, made.pages[2]);
+    assert!(what.contains("two cells of the subtree name"), "{what}");
+    // The three cells went, each once, with their pages.
+    assert!(reclaim.is_done());
+    assert_eq!(reclaim.reclaimed().cells, 3);
+    assert_eq!(reclaim.reclaimed().pages_freed, 3);
+    assert_eq!(made.db.cells(), 0);
+    let steps = made.db.reclaims();
+    let freed = steps.iter().filter(|step| step.1.is_some());
+    let freed: Vec<PageId> = freed.map(|step| step.0).collect();
+    let mut once = freed.clone();
+    once.sort();
+    once.dedup();
+    assert_eq!((freed.len(), once), (3, made.pages.clone()));
 }
 
 /// A page in the middle of the walk that is not what a drop leaves stays
@@ -504,7 +614,7 @@ fn a_damaged_page_does_not_keep_the_other_pages_from_going() {
     let mut reclaim = Reclaim::new(left);
     let mut errors = 0;
     for _ in 0..4 {
-        match reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX) {
+        match reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX) {
             Err(DropError::Damaged { page, .. }) => {
                 assert_eq!(page, spoiled);
                 errors += 1;
@@ -541,7 +651,7 @@ fn a_step_that_the_log_refuses_changes_nothing_and_is_made_again() {
         if fails {
             db.refuse_appends.store(1, Ordering::SeqCst);
         }
-        let progress = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, 1);
+        let progress = reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 1);
         let refused = db.refuse_appends.swap(0, Ordering::SeqCst) == 0 && fails;
         match progress {
             Err(DropError::Store(error)) => {
@@ -584,7 +694,7 @@ fn a_step_that_cannot_be_finished_gives_the_reclaiming_up() {
     let reclaimer = db.reclaimer();
     let mut reclaim = Reclaim::new(left);
     let broke = loop {
-        match reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX) {
+        match reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX) {
             Ok(Progress::Blocked(Busy::Newborn)) => drop(db.tick()),
             Ok(progress) => panic!("{progress:?}"),
             Err(error) => break error,
@@ -596,7 +706,8 @@ fn a_step_that_cannot_be_finished_gives_the_reclaiming_up() {
     );
     assert!(!reclaim.is_done());
     for _ in 0..2 {
-        let refused = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX);
+        let refused =
+            reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
         assert!(matches!(refused, Err(DropError::GivenUp)));
     }
 
@@ -636,9 +747,9 @@ fn a_count_that_does_not_agree_does_not_stop_the_reclaiming() {
     let cells = [
         Cell {
             left: Some(2),
-            right: None,
             fragment_root: true,
             pointer: Some(64),
+            ..LEAF
         },
         LEAF,
     ];

@@ -438,7 +438,7 @@ fn reclaiming_step_by_step_comes_to_the_same_end() {
     assert_eq!(reclaim.dropped(), dropped);
     assert_eq!(
         reclaimer
-            .reclaim(&mut reclaim, &directory, &GUARD, 0)
+            .reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 0)
             .expect("no step"),
         Progress::More
     );
@@ -447,7 +447,7 @@ fn reclaiming_step_by_step_comes_to_the_same_end() {
     loop {
         let cells = db.cells();
         let progress = reclaimer
-            .reclaim(&mut reclaim, &directory, &GUARD, 1)
+            .reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 1)
             .expect("a step");
         calls += 1;
         // Every state between two steps is one of whole pages.
@@ -470,7 +470,7 @@ fn reclaiming_step_by_step_comes_to_the_same_end() {
     assert_eq!(reclaim.reclaimed().cells as usize, grove.left_behind());
     assert_eq!(
         reclaimer
-            .reclaim(&mut reclaim, &directory, &GUARD, 1)
+            .reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 1)
             .expect("done"),
         Progress::Done
     );

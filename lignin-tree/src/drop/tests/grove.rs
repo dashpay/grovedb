@@ -3,7 +3,7 @@
 //! knows which of its nodes a drop left behind.
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     time::{Duration, Instant},
 };
 
@@ -13,10 +13,11 @@ use lignin_format::{
 };
 use lignin_store::load::LoadBuffers;
 
-use super::{Db, Txn, GUARD};
+use super::{flat_records, Db, Txn, GUARD};
 use crate::{
     directory::{Directory, Dropped, Host, Prefix, Root, RootChange},
-    drop::{unlink, Leaving},
+    drop::{enter, unlink, Column, FlatDrops, Flats, Leaving},
+    flat::{FlatPages, FlatTree},
     fragment::{
         Fragments, HostedWrite, Layout, LayoutParams, LinkWrite, NodeWrite, Report, RootWrite,
         Target, ValueWrite, Write,
@@ -63,6 +64,13 @@ pub(in crate::drop) struct Grove {
     /// How long the last drop took in [`unlink`]: the write to the tree
     /// pages and to the directory, without what this model does around it.
     pub unlinked_in: Option<Duration>,
+    /// The flat keyspaces that hold records of the Merks: one of its own,
+    /// and two that share a keyspace.
+    pub columns: Vec<Column<'static>>,
+    pub drops: FlatDrops,
+    /// The flat records of each Merk in use, by Merk and column.
+    pub flat: BTreeMap<(usize, usize), BTreeMap<Vec<u8>, Vec<u8>>>,
+    unwritten: Vec<(usize, usize, Vec<u8>)>,
     dirty: BTreeSet<usize>,
     removed: Vec<CellAddress>,
     by_address: HashMap<CellAddress, usize>,
@@ -75,12 +83,35 @@ impl Grove {
     pub fn new(db: &Db, txn: &mut Txn<'_>) -> Self {
         let layout = Layout::new(db.size, LayoutParams::default()).expect("a layout");
         let directory = Directory::create(&mut txn.flat, db.config).expect("a directory");
+        let own = FlatTree::create(&mut txn.flat, db.config).expect("a keyspace");
+        let shared = FlatTree::create(&mut txn.flat, db.config).expect("a keyspace");
+        let columns = vec![
+            Column {
+                tree: own,
+                lead: b"",
+            },
+            Column {
+                tree: shared,
+                lead: b"a",
+            },
+            Column {
+                tree: shared,
+                lead: b"m",
+            },
+        ];
+        let drops = FlatDrops::create(&mut txn.flat, db.config).expect("a keyspace");
+        db.columns.lock().expect("the columns").clone_from(&columns);
+        *db.flat_drops.lock().expect("the records") = Some(drops);
         let mut grove = Self {
             nodes: Vec::new(),
             merks: Vec::new(),
             fragments: Fragments::new(layout),
             directory,
             unlinked_in: None,
+            columns,
+            drops,
+            flat: BTreeMap::new(),
+            unwritten: Vec::new(),
             dirty: BTreeSet::new(),
             removed: Vec::new(),
             by_address: HashMap::new(),
@@ -160,6 +191,15 @@ impl Grove {
         }
         self.mark(node);
         node
+    }
+
+    /// Puts the flat record `key` of `merk` in the column `column`, with
+    /// the next write.
+    pub fn put_flat(&mut self, merk: usize, column: usize, key: &[u8], value: &[u8]) {
+        assert!(self.merks[merk].alive, "a Merk in use");
+        let records = self.flat.entry((merk, column)).or_default();
+        records.insert(key.to_vec(), value.to_vec());
+        self.unwritten.push((merk, column, key.to_vec()));
     }
 
     /// Makes `node` the host of one more Merk, and returns that Merk.
@@ -285,6 +325,10 @@ impl Grove {
             }
             for nested in self.merks_below(merk) {
                 self.merks[nested].alive = false;
+                self.flat.retain(|(of, _), _| *of != nested);
+            }
+            if !clear {
+                self.flat.retain(|(of, _), _| *of != merk);
             }
             leaving_prefixes.push(self.merks[merk].prefix);
             let (host, position) = self.merks[merk].host.expect("a hosted Merk");
@@ -298,6 +342,9 @@ impl Grove {
             }
         }
         self.dirty.retain(|node| self.nodes[*node].alive);
+        let flat = &self.flat;
+        self.unwritten
+            .retain(|(merk, column, _)| flat.contains_key(&(*merk, *column)));
 
         // A Merk is entered before its host is written.
         for merk in 0..self.merks.len() {
@@ -314,10 +361,21 @@ impl Grove {
                 key,
                 position: *position,
             });
-            self.directory
-                .add(&mut txn.flat, &prefix, b"tree", host)
+            let mut flats = Flats {
+                pages: &mut txn.flat,
+                columns: &self.columns,
+                drops: &self.drops,
+                at: txn.tree.at,
+            };
+            enter(&self.directory, &mut flats, &prefix, b"tree", host)
                 .expect("the Merk is entered");
             self.merks[merk].entered = true;
+        }
+        for (merk, column, key) in std::mem::take(&mut self.unwritten) {
+            let stored = self.stored_key(merk, column, &key);
+            let value = &self.flat[&(merk, column)][&key];
+            let tree = self.columns[column].tree;
+            tree.put(&mut txn.flat, &stored, value).expect("a record");
         }
 
         let order: Vec<usize> = self.dirty.iter().copied().collect();
@@ -397,12 +455,18 @@ impl Grove {
                 })
                 .collect();
             let began = Instant::now();
+            let mut flats = Flats {
+                pages: &mut txn.flat,
+                columns: &self.columns,
+                drops: &self.drops,
+                at: txn.tree.at,
+            };
             let done = unlink(
                 &mut self.fragments,
                 &mut txn.tree,
                 &mut txn.values,
                 &mut self.directory,
-                &mut txn.flat,
+                &mut flats,
                 &write,
                 &leaving,
             )
@@ -463,6 +527,65 @@ impl Grove {
         (report, left)
     }
 
+    /// The key that the column `column` stores the record `key` of `merk`
+    /// under.
+    pub fn stored_key(&self, merk: usize, column: usize, key: &[u8]) -> Vec<u8> {
+        let mut stored = self.columns[column].range(&self.merks[merk].prefix);
+        stored.extend_from_slice(key);
+        stored
+    }
+
+    /// The flat records of the subtree under `prefix` in the column
+    /// `column`, as a reader finds them: through the entry that `directory`
+    /// opens under the prefix in `pages`, and `None` where it opens none.
+    pub fn read_flat<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+        directory: &Directory,
+        prefix: &Prefix,
+        column: usize,
+    ) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
+        directory.open(pages, prefix).expect("a lookup")?;
+        let column = &self.columns[column];
+        let mut cursor = column.tree.cursor_within(&column.range(prefix));
+        cursor.seek_to_first(pages).expect("a seek");
+        let mut found = BTreeMap::new();
+        while cursor.valid() {
+            let mut value = Vec::new();
+            assert!(cursor.value(pages, &mut value).expect("a value"));
+            found.insert(cursor.key().expect("a key").to_vec(), value);
+            cursor.next(pages).expect("a step");
+        }
+        Some(found)
+    }
+
+    /// The flat records of `merk` in the column `column`, as this model
+    /// has them.
+    pub fn flat_of(&self, merk: usize, column: usize) -> BTreeMap<Vec<u8>, Vec<u8>> {
+        self.flat.get(&(merk, column)).cloned().unwrap_or_default()
+    }
+
+    /// Checks that the columns hold the flat records of the Merks in use
+    /// and no other record at all, at the latest version: what is true
+    /// once everything is reclaimed.
+    pub fn check_columns(&self, db: &Db) {
+        let mut expected: BTreeMap<_, BTreeMap<Vec<u8>, Vec<u8>>> = BTreeMap::new();
+        for ((merk, column), records) in &self.flat {
+            assert!(self.merks[*merk].alive, "the model keeps a dropped Merk");
+            let of = expected
+                .entry(self.columns[*column].tree.root())
+                .or_default();
+            for (key, value) in records {
+                of.insert(self.stored_key(*merk, *column, key), value.clone());
+            }
+        }
+        for column in &self.columns {
+            let found: BTreeMap<_, _> = flat_records(db, &column.tree).into_iter().collect();
+            let expected = expected.get(&column.tree.root()).cloned();
+            assert_eq!(found, expected.unwrap_or_default());
+        }
+    }
+
     /// The directory as the latest version of `db` has it.
     pub fn directory(&self, db: &Db) -> Directory {
         let pages = db.reader();
@@ -492,6 +615,12 @@ impl Grove {
                     let root = self.merks[index].root.and_then(|root| self.nodes[root].at);
                     let entry = entry.expect("a Merk in use is opened");
                     assert_eq!(entry.root().map(|root| root.address), root);
+                    // A reader finds the flat records of the Merk that is
+                    // in use under the prefix, and of no Merk that had it.
+                    for column in 0..self.columns.len() {
+                        let found = self.read_flat(&pages, &directory, &merk.prefix, column);
+                        assert_eq!(found, Some(self.flat_of(index, column)));
+                    }
                 }
             }
         }

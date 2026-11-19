@@ -1,5 +1,6 @@
 mod accept;
 mod cells;
+mod columns;
 mod errors;
 mod flat;
 mod grove;
@@ -37,10 +38,12 @@ use lignin_store::{
     values::{OwnersError, ValueChange, ValueHold, ValueStore, ValueWriter},
 };
 
+use std::cell::RefCell;
+
 use super::*;
 use crate::{
     directory::{Directory, Dropped},
-    flat::{Committed, FlatConfig, Private, StepLog},
+    flat::{Committed, FlatConfig, FlatError, FlatPages, FlatPagesMut, Private, Revision, StepLog},
     fragment::{FragmentError, PageMut, Pages},
     node::{ChangeSink, Lease, NodeError, NodePage, NodePageMut},
     value::{InlinePolicy, TreeValues, ValueSource},
@@ -128,6 +131,10 @@ pub(super) struct Db {
     /// A flat keyspace that a commit writes when it has nothing else to
     /// write.
     scratch: Mutex<Option<FlatTree>>,
+    /// The flat keyspaces that hold records of subtrees, and the keyspace
+    /// of the unlinked pages: what a grove made when it began.
+    pub columns: Mutex<Vec<Column<'static>>>,
+    pub flat_drops: Mutex<Option<FlatDrops>>,
 }
 
 impl Db {
@@ -178,7 +185,22 @@ impl Db {
             pins,
             refuse_appends: AtomicU64::new(0),
             scratch: Mutex::new(None),
+            columns: Mutex::new(Vec::new()),
+            flat_drops: Mutex::new(None),
         }
+    }
+
+    /// Every flat keyspace that holds records of subtrees.
+    pub fn columns(&self) -> Vec<Column<'static>> {
+        self.columns.lock().expect("the columns").clone()
+    }
+
+    /// The keyspace of the pages that lazy range deletes left.
+    pub fn drops(&self) -> FlatDrops {
+        self.flat_drops
+            .lock()
+            .expect("the records")
+            .expect("a grove began")
     }
 
     /// A commit that changes one record of a keyspace of its own: the
@@ -274,9 +296,14 @@ impl Db {
                 buffers: LoadBuffers::new(),
                 reads_uncopied: false,
                 after_read: None,
+                read: BTreeSet::new(),
             },
             values: TreeValues::new(InlinePolicy::DEFAULT),
-            flat: Private::new(self.reader_at(at), &self.pool, self.owner(), &self.ids),
+            flat: Counted {
+                inner: Private::new(self.reader_at(at), &self.pool, self.owner(), &self.ids),
+                read: RefCell::default(),
+                wrote: BTreeSet::new(),
+            },
         }
     }
 
@@ -288,8 +315,9 @@ impl Db {
         let Txn {
             mut tree,
             mut values,
-            mut flat,
+            flat,
         } = txn;
+        let mut flat = flat.inner;
         // A commit whose cells stop holding value pointers holds the lock on
         // the counts from before its append to its count (LT7). Any other
         // commit takes no lock that a page step takes, but that of a page.
@@ -746,6 +774,8 @@ pub(super) struct TreePages<'d> {
     pub reads_uncopied: bool,
     /// Called after a write has read a page.
     pub after_read: Option<Box<dyn FnMut(PageId) + 'd>>,
+    /// The pages that were read.
+    pub read: BTreeSet<PageId>,
 }
 
 fn unreachable_page(error: impl std::fmt::Display) -> FragmentError {
@@ -800,6 +830,7 @@ impl Pages for TreePages<'_> {
         page: PageId,
         read: impl FnOnce(NodePage<'_>) -> R,
     ) -> Result<R, FragmentError> {
+        self.read.insert(page);
         if !self.reads_uncopied {
             self.own(page)?;
         }
@@ -870,7 +901,102 @@ impl Pages for TreePages<'_> {
 pub(super) struct Txn<'d> {
     pub tree: TreePages<'d>,
     pub values: TreeValues,
-    pub flat: Writer<'d>,
+    pub flat: Counted<Writer<'d>>,
+}
+
+impl Txn<'_> {
+    /// Forgets the pages that were read and written so far.
+    pub fn count_from_here(&mut self) {
+        self.tree.read.clear();
+        self.flat.read.borrow_mut().clear();
+        self.flat.wrote.clear();
+    }
+}
+
+/// The flat pages of a writer, with the pages that were read through them.
+pub(super) struct Counted<W> {
+    pub inner: W,
+    pub read: RefCell<BTreeSet<PageId>>,
+    pub wrote: BTreeSet<PageId>,
+}
+
+impl<W> std::ops::Deref for Counted<W> {
+    type Target = W;
+
+    fn deref(&self) -> &W {
+        &self.inner
+    }
+}
+
+impl<W> std::ops::DerefMut for Counted<W> {
+    fn deref_mut(&mut self) -> &mut W {
+        &mut self.inner
+    }
+}
+
+impl<W: FlatPages> FlatPages for Counted<W> {
+    type Page<'a>
+        = W::Page<'a>
+    where
+        Self: 'a;
+
+    fn page(&self, page: PageId) -> Result<Self::Page<'_>, FlatError> {
+        self.read.borrow_mut().insert(page);
+        self.inner.page(page)
+    }
+
+    fn read_value(
+        &self,
+        held: &Self::Page<'_>,
+        page: PageId,
+        slot: usize,
+        place: ValuePlace,
+        out: &mut Vec<u8>,
+    ) -> Result<(), FlatError> {
+        self.inner.read_value(held, page, slot, place, out)
+    }
+
+    fn revision(&self) -> Revision {
+        self.inner.revision()
+    }
+}
+
+impl<W: FlatPagesMut> FlatPagesMut for Counted<W> {
+    fn allocate(&mut self) -> Result<PageId, FlatError> {
+        self.inner.allocate()
+    }
+
+    fn take(&mut self, page: PageId) -> Result<Vec<u8>, FlatError> {
+        self.read.borrow_mut().insert(page);
+        self.inner.take(page)
+    }
+
+    fn write(&mut self, page: PageId, image: &[u8]) -> Result<(), FlatError> {
+        self.wrote.insert(page);
+        self.inner.write(page, image)
+    }
+
+    fn free(&mut self, page: PageId) -> Result<(), FlatError> {
+        self.inner.free(page)
+    }
+
+    fn hold_value(&mut self, page: PageId, value: &[u8]) -> Result<PendingValue, FlatError> {
+        self.inner.hold_value(page, value)
+    }
+
+    fn drop_value(&mut self, page: PageId, place: ValuePlace) -> Result<(), FlatError> {
+        self.inner.drop_value(page, place)
+    }
+
+    fn carry_value(
+        &mut self,
+        from: PageId,
+        slot: usize,
+        to: PageId,
+        place: ValuePlace,
+    ) -> Result<PendingValue, FlatError> {
+        self.inner.carry_value(from, slot, to, place)
+    }
 }
 
 /// `len` bytes that depend on `seed`.
@@ -901,9 +1027,10 @@ pub(super) fn drops(db: &Db, directory: &Directory) -> Vec<Dropped> {
 /// a commit wherever a page waits for one.
 pub(super) fn finish(db: &Db, directory: &Directory, reclaim: &mut Reclaim, steps: usize) {
     let reclaimer = db.reclaimer();
+    let columns = db.columns();
     for _ in 0..1_000_000 {
         match reclaimer
-            .reclaim(reclaim, directory, &GUARD, steps)
+            .reclaim(reclaim, directory, &columns, &GUARD, steps)
             .expect("a step")
         {
             Progress::Done => return,
@@ -915,8 +1042,33 @@ pub(super) fn finish(db: &Db, directory: &Directory, reclaim: &mut Reclaim, step
     panic!("the reclaiming does not end");
 }
 
-/// Reclaims what every drop of the latest version left, and returns what
-/// each reclaiming took out.
+/// Frees the pages that every lazy range delete of the latest version
+/// left, and returns what that took out.
+pub(super) fn free_unlinked(db: &Db, drops: &FlatDrops) -> FlatReclaimed {
+    let reclaimer = db.reclaimer();
+    let mut done = FlatReclaimed::default();
+    for left in reclaimer.flat_drops(drops, &GUARD).expect("the records") {
+        let mut wait = Wait::new(db.latest());
+        assert!(wait.poll(&db.pins), "nothing is pinned");
+        for _ in 0..1_000_000 {
+            match reclaimer
+                .reclaim_flat(drops, &left, &GUARD, usize::MAX, &mut done)
+                .expect("a step")
+            {
+                Progress::Done => break,
+                Progress::More => {}
+                Progress::Blocked(Busy::Newborn) => drop(db.tick()),
+                Progress::Blocked(busy) => panic!("nothing holds a page: {busy:?}"),
+            }
+        }
+    }
+    assert!(done.miscount.is_none());
+    done
+}
+
+/// Reclaims what every drop of the latest version left, in the tree pages,
+/// the directory and the flat columns, and returns what each reclaiming of
+/// a Merk took out.
 pub(super) fn reclaim_all(db: &Db, grove: &Grove) -> Vec<Reclaimed> {
     let directory = grove.directory(db);
     let mut done = Vec::new();
@@ -928,14 +1080,79 @@ pub(super) fn reclaim_all(db: &Db, grove: &Grove) -> Vec<Reclaimed> {
         assert!(reclaim.is_done() && reclaim.miscount().is_none());
         done.push(reclaim.reclaimed().clone());
     }
+    free_unlinked(db, &db.drops());
     done
+}
+
+/// The pages of the flat keyspace `tree` at the latest version, with the
+/// trees of its buckets, its records under their stored keys, and the
+/// value pointers its entries hold.
+pub(super) struct FlatScan {
+    pub pages: BTreeSet<PageId>,
+    pub leaves: usize,
+    pub empty_leaves: usize,
+    pub pointers: Vec<ValuePointer>,
+}
+
+pub(super) fn scan_flat(db: &Db, tree: &FlatTree) -> FlatScan {
+    let reader = db.reader();
+    let mut found = FlatScan {
+        pages: BTreeSet::new(),
+        leaves: 0,
+        empty_leaves: 0,
+        pointers: Vec::new(),
+    };
+    let mut next = vec![tree.root()];
+    while let Some(page) = next.pop() {
+        assert!(found.pages.insert(page), "{page} is reached twice");
+        let frame = reader.page(page).expect("a page");
+        match FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a flat page") {
+            FlatPage::Branch(branch) => {
+                next.extend((0..=branch.len()).map(|index| branch.child(index).expect("a child")));
+            }
+            FlatPage::Leaf(leaf) => {
+                found.leaves += 1;
+                found.empty_leaves += usize::from(leaf.is_empty());
+                for (key, value) in leaf.iter() {
+                    match value {
+                        FlatValue::Inline(root) if key.len() > db.config.key_limit() => {
+                            let root: [u8; 4] = root.try_into().expect("a page id");
+                            next.push(PageId::decode(root).expect("a page"));
+                        }
+                        FlatValue::Inline(_) => {}
+                        FlatValue::OutOfLine(place) => {
+                            let place = ValuePlace::decode(place.try_into().expect("a place"));
+                            found.pointers.extend(place.expect("a place").pointer());
+                        }
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Every record of the flat keyspace `tree` at the latest version.
+pub(super) fn flat_records(db: &Db, tree: &FlatTree) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let pages = db.reader();
+    let mut cursor = tree.cursor();
+    cursor.seek_to_first(&pages).expect("a seek");
+    let mut found = Vec::new();
+    while cursor.valid() {
+        let mut value = Vec::new();
+        assert!(cursor.value(&pages, &mut value).expect("a value"));
+        found.push((cursor.key().expect("a key").to_vec(), value));
+        cursor.next(&pages).expect("a step");
+    }
+    found
 }
 
 /// Checks the store after everything was reclaimed: the tree pages hold
 /// the cells of the nodes in use and no other, every page passes its own
 /// check and none is empty, the directory holds the Merks in use and
-/// nothing else, and the counts of live values are those of the pointers
-/// that cells hold.
+/// nothing else, the flat columns hold the records of the subtrees in use
+/// and no other, no unlinked page waits, and the counts of live values are
+/// those of the pointers that cells and entries hold.
 pub(super) fn check_reclaimed(db: &Db, grove: &Grove) {
     assert_eq!(db.cells(), grove.alive());
     db.check_pages();
@@ -947,5 +1164,17 @@ pub(super) fn check_reclaimed(db: &Db, grove: &Grove) {
         (census.live, census.left_over, census.dropped),
         (live, 0, 0)
     );
-    db.check_counts(&db.tree_pointers());
+    let drops = db.drops();
+    let waiting = db.reclaimer().flat_drops(&drops, &GUARD);
+    assert!(waiting.expect("the records").is_empty());
+    let mut held = db.tree_pointers();
+    let mut trees: Vec<FlatTree> = db.columns().iter().map(|column| column.tree).collect();
+    trees.extend([*directory.tree(), *drops.tree()]);
+    trees.sort_by_key(|tree| tree.root());
+    trees.dedup();
+    for tree in &trees {
+        held.extend(scan_flat(db, tree).pointers);
+    }
+    db.check_counts(&held);
+    grove.check_columns(db);
 }

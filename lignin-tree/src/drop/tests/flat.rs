@@ -545,6 +545,11 @@ fn a_record_or_a_page_that_is_not_one_is_refused() {
         page: root,
         above: Some(1),
     }]);
+    let whole = Unlinked {
+        page: root,
+        above: None,
+    };
+    refused(vec![whole, whole]);
     let mut txn = db.begin();
     let mut grove = Grove::new(&db, &mut txn);
     let node = grove.put(0, b"a node", b"its value");

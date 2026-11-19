@@ -56,7 +56,20 @@ pub(super) struct CellsRemoved {
     /// The cells in other pages that the removed cells named.
     pub targets: Vec<CellAddress>,
     pub released: Vec<ValuePointer>,
+    /// How many of the cells held a value that no value-log file has yet.
+    pub pending: u64,
     pub freed: bool,
+    /// Why the released pointers could not be counted as reported.
+    pub miscount: Option<ValueStoreError>,
+}
+
+/// What a step that took entries out of a flat leaf did.
+#[derive(Debug)]
+pub(super) struct EntriesRemoved {
+    pub released: Vec<ValuePointer>,
+    /// How many of the entries held a value that no value-log file has
+    /// yet.
+    pub pending: u64,
     /// Why the released pointers could not be counted as reported.
     pub miscount: Option<ValueStoreError>,
 }
@@ -288,11 +301,17 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
 
     /// The current version of `page`, or `None` if the page is no page.
     pub(super) fn current(&self, page: PageId) -> Result<Option<PageRef<'s>>, DropError> {
-        let latest = self.log.latest();
-        match self
-            .loader
-            .get(page, latest, &mut self.buffers.borrow_mut())
-        {
+        self.at(page, self.log.latest())
+    }
+
+    /// The version of `page` that a reader at `at` sees, or `None` if the
+    /// page is no page there.
+    pub(super) fn at(
+        &self,
+        page: PageId,
+        at: CommitVersion,
+    ) -> Result<Option<PageRef<'s>>, DropError> {
+        match self.loader.get(page, at, &mut self.buffers.borrow_mut()) {
             Ok(frame) => Ok(Some(frame)),
             Err(LoadError::NoPage { .. }) => Ok(None),
             Err(error) => Err(error.into()),
@@ -403,6 +422,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         roots: &[SlotId],
     ) -> Result<Step<CellsRemoved>, DropError> {
         for _ in 0..LOOKS {
+            // A page that a writer holds is not looked at any closer.
+            if self.pool.page_step(page).private_copies() != 0 {
+                return Ok(Step::Refused(Busy::Copied));
+            }
             // What the page is afterwards is made before any lock is taken.
             let Prepared {
                 frame,
@@ -447,6 +470,7 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 bytes: found.bytes,
                 targets: found.targets,
                 released: found.released,
+                pending: found.pending.len() as u64,
                 freed: empties,
                 miscount,
             }));
@@ -472,22 +496,20 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         }
     }
 
-    /// One page step: takes the entry under `key` out of its leaf in
-    /// `tree`, if it is the entry that was `seen`, and releases the value
-    /// pointer it held.
+    /// Takes the entry under `key` out of its leaf in `tree`, if it is the
+    /// entry that was `seen`, in one page step
+    /// ([`Self::remove_entries`]).
     ///
     /// **The entry is taken out only as it was seen** (PV7, check 2): a
     /// write can have put another record under the key since, and that one
-    /// is not the reclaimer's.
+    /// is not the reclaimer's. An entry whose value is out of line is known
+    /// by the place of that value, which write-back and the value log's
+    /// cleaner change without changing the record. So
+    /// [`EntryRemoved::Changed`] says that the caller looks again, not
+    /// that the record is another one.
     ///
-    /// The leaf keeps its place in the tree and its prefix, also with no
-    /// entry left: a page step changes one leaf and nothing else
-    /// ([`flat`](crate::flat), choice 12). `key` is no longer than the
-    /// tree stores a key as it is: an entry of the tree of a bucket is not
-    /// taken out here.
-    ///
-    /// An error other than [`DropError::Broken`] says that nothing was
-    /// changed.
+    /// `key` is no longer than the tree stores a key as it is: an entry of
+    /// the tree of a bucket is not taken out here.
     pub(super) fn remove_entry(
         &self,
         tree: &FlatTree,
@@ -500,56 +522,94 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         }
         for _ in 0..LOOKS {
             let (page, frame) = self.leaf_of(tree, key)?;
-            let leaf = flat_leaf(&frame, page)?;
-            let Some(value) = leaf.get(key) else {
+            let Some(value) = flat_leaf(&frame, page)?.get(key) else {
                 return Ok(Step::Made(EntryRemoved::Absent));
             };
             if Seen::of(value) != *seen {
                 return Ok(Step::Made(EntryRemoved::Changed));
             }
-            let place = match value {
-                FlatValue::Inline(_) => None,
-                FlatValue::OutOfLine(bytes) => Some(place_of(page, bytes)?),
-            };
-            let mut run = Vec::new();
-            let mut removes = FlatRunWriter::new(page, &mut run);
-            removes.push(&FlatChange::Remove { key })?;
-            removes.finish()?;
-            let removes = FlatRun::decode(&run, FRAME_FORMAT)?;
-            let mut image = Vec::new();
-            let capacity = config.capacity();
-            removes.apply(Some(leaf.as_bytes()), FRAME_FORMAT, capacity, &mut image)?;
-            let mut blank = self.pool.blank();
-            blank.copy_from(&frame);
-            let (head, tail) = blank
-                .split_at_mut_checked(image.len())
-                .ok_or(damaged(page, "an image longer than a frame"))?;
-            head.copy_from_slice(&image);
-            tail.fill(0);
-            if let Some(ValuePlace::Pending(pending)) = place {
-                blank.detach(pending.id());
+            match self.remove_entries(&frame, config.capacity(), &[key.to_vec()])? {
+                None => continue,
+                Some(Step::Refused(busy)) => return Ok(Step::Refused(busy)),
+                Some(Step::Made(removed)) => {
+                    return Ok(Step::Made(EntryRemoved::Removed(removed.miscount)))
+                }
             }
-            let released = place.and_then(|place| place.pointer());
-
-            let counts = self.values.step()?;
-            let step = self.pool.page_step(page);
-            if step.private_copies() != 0 {
-                return Ok(Step::Refused(Busy::Copied));
-            }
-            if !step.is_current(&frame) {
-                continue;
-            }
-            let mut record = Vec::new();
-            let removed = Some(Removed::Flat(removes));
-            write_reclaim(page, removed, None, released, &mut record)?;
-            self.log.append(&record).map_err(DropError::Store)?;
-            let replaced = step.replace(&frame, blank);
-            replaced.map_err(|refusal| broken(page)(refusal.into()))?;
-            drop(step);
-            let miscount = self.count(counts, released.as_slice());
-            return Ok(Step::Made(EntryRemoved::Removed(miscount)));
         }
         Ok(Step::Refused(Busy::Contended))
+    }
+
+    /// One page step: takes the entries under `keys`, in ascending order,
+    /// out of the flat leaf in `frame`, and releases the value pointers
+    /// they held. `capacity` is the longest image of a page.
+    ///
+    /// The leaf keeps its place in the tree and its prefix, also with no
+    /// entry left: a page step changes one leaf and nothing else
+    /// ([`flat`](crate::flat), choice 12).
+    ///
+    /// Returns `None` if `frame` is not how the page is stored any more:
+    /// the caller looks again. An error other than [`DropError::Broken`]
+    /// says that nothing was changed.
+    pub(super) fn remove_entries(
+        &self,
+        frame: &PageRef<'s>,
+        capacity: usize,
+        keys: &[Vec<u8>],
+    ) -> Result<Option<Step<EntriesRemoved>>, DropError> {
+        let page = frame.page();
+        let leaf = flat_leaf(frame, page)?;
+        let (mut released, mut pending) = (Vec::new(), Vec::new());
+        let mut run = Vec::new();
+        let mut removes = FlatRunWriter::new(page, &mut run);
+        for key in keys {
+            let value = leaf.get(key);
+            let value = value.ok_or(damaged(page, "no entry where one was read"))?;
+            if let FlatValue::OutOfLine(bytes) = value {
+                match place_of(page, bytes)? {
+                    ValuePlace::Placed(pointer) => released.push(pointer),
+                    ValuePlace::Pending(named) => pending.push(named.id()),
+                }
+            }
+            removes.push(&FlatChange::Remove { key })?;
+        }
+        removes.finish()?;
+        sort_released(page, &mut released)?;
+        let removes = FlatRun::decode(&run, FRAME_FORMAT)?;
+        let mut image = Vec::new();
+        removes.apply(Some(leaf.as_bytes()), FRAME_FORMAT, capacity, &mut image)?;
+        let mut blank = self.pool.blank();
+        blank.copy_from(frame);
+        let (head, tail) = blank
+            .split_at_mut_checked(image.len())
+            .ok_or(damaged(page, "an image longer than a frame"))?;
+        head.copy_from_slice(&image);
+        tail.fill(0);
+        for name in &pending {
+            blank.detach(*name);
+        }
+        let pending = pending.len() as u64;
+
+        let counts = self.values.step()?;
+        let step = self.pool.page_step(page);
+        if step.private_copies() != 0 {
+            return Ok(Some(Step::Refused(Busy::Copied)));
+        }
+        if !step.is_current(frame) {
+            return Ok(None);
+        }
+        let mut record = Vec::new();
+        let removed = Some(Removed::Flat(removes));
+        write_reclaim(page, removed, None, released.iter().copied(), &mut record)?;
+        self.log.append(&record).map_err(DropError::Store)?;
+        let replaced = step.replace(frame, blank);
+        replaced.map_err(|refusal| broken(page)(refusal.into()))?;
+        drop(step);
+        let miscount = self.count(counts, &released);
+        Ok(Some(Step::Made(EntriesRemoved {
+            released,
+            pending,
+            miscount,
+        })))
     }
 
     /// One page step: frees the flat page in `frame`, which a range delete

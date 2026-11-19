@@ -48,9 +48,12 @@ pub struct FlatDrop {
 impl FlatDrop {
     /// The newest version a page that the range delete left can have been
     /// born at: the version after the one its writer read at, which is the
-    /// earliest its commit can have taken. A page under one of the ids
-    /// that was born later is another page, which has the id since the one
-    /// that was left was freed.
+    /// version its commit took. A commit takes the version after its base
+    /// (`transactions.md` CM3, steps 4 and 6), and a transaction that began
+    /// over an older base has made its pages again over that one by then,
+    /// this record among them (WT7). A page under one of the ids that was
+    /// born later is another page, which has the id since the one that was
+    /// left was freed.
     fn newest_birth(&self) -> CommitVersion {
         self.at.next().unwrap_or(self.at)
     }
@@ -160,7 +163,11 @@ impl FlatDrops {
     /// transaction, which is the latest version when the transaction
     /// commits (`transactions.md` CM3). It is never a later one. With a
     /// later one, a page that takes the id of a freed one could be taken
-    /// for it.
+    /// for it. And it is not an earlier one than the transaction commits
+    /// over: a transaction that makes its pages again over another base
+    /// (WT7) makes this call again, with that base. With an earlier one,
+    /// the pages that the transaction wrote itself would be taken for
+    /// pages of a later commit, and would never be freed.
     ///
     /// Returns the number of the record, or `None` if the range delete took
     /// no page out whole: then nothing is left to free.
@@ -287,7 +294,13 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// The [`Wait`](super::Wait) for the range delete is over, and `guard`
     /// is the guard of the caller's operation. An error other than
     /// [`DropError::Broken`] says that the step it came from changed
-    /// nothing.
+    /// nothing. After [`DropError::Broken`] the caller stops: the store is
+    /// not as its log has it, and a call that began again would meet the
+    /// page of that step half freed.
+    ///
+    /// Every call begins at the record and asks of each page below a
+    /// branch whether it is still there, so a call is given steps by the
+    /// hundred, not one at a time.
     pub fn reclaim_flat<G: OperationGuard + ?Sized>(
         &self,
         drops: &FlatDrops,
@@ -300,7 +313,11 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         let mut left = steps;
         // A page stays here until every page below it is gone.
         let mut walk: Vec<Unlinked> = drop.pages.iter().rev().copied().collect();
-        let mut on_way: HashSet<PageId> = walk.iter().map(|left| left.page).collect();
+        let mut on_way = HashSet::with_capacity(walk.len());
+        let twice = "a page that the pages a range delete left name twice";
+        if let Some(left) = walk.iter().find(|left| !on_way.insert(left.page)) {
+            return Err(damaged(left.page, twice));
+        }
         while let Some(&top) = walk.last() {
             if left == 0 {
                 return Ok(Progress::More);
@@ -313,9 +330,8 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
                 }
                 Met::Above(below) => {
                     // No page is below itself, and none is named twice.
-                    if let Some(twice) = below.iter().find(|left| !on_way.insert(left.page)) {
-                        let what = "a page that the pages a range delete left name twice";
-                        return Err(damaged(twice.page, what));
+                    if let Some(left) = below.iter().find(|left| !on_way.insert(left.page)) {
+                        return Err(damaged(left.page, twice));
                     }
                     walk.extend(below);
                 }
@@ -325,20 +341,27 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
         if left == 0 {
             return Ok(Progress::More);
         }
+        // The record has a number that no other has, so one that is not as
+        // it was read is the same record, with its value in another place:
+        // it is read again.
         let key = FlatDrop::key(drop.id);
-        let pages = Committed::new(self.loader, self.values, guard, self.log.latest());
-        let Some(seen) = seen(&pages, &drops.tree, &key)? else {
-            return Ok(Progress::Done);
-        };
-        match self.remove_entry(&drops.tree, &key, &seen)? {
-            Step::Refused(busy) => Ok(Progress::Blocked(busy)),
-            Step::Made(EntryRemoved::Removed(miscount)) => {
-                done.records += 1;
-                done.miscounted(miscount);
-                Ok(Progress::Done)
+        for _ in 0..LOOKS {
+            let pages = Committed::new(self.loader, self.values, guard, self.log.latest());
+            let Some(seen) = seen(&pages, &drops.tree, &key)? else {
+                return Ok(Progress::Done);
+            };
+            match self.remove_entry(&drops.tree, &key, &seen)? {
+                Step::Refused(busy) => return Ok(Progress::Blocked(busy)),
+                Step::Made(EntryRemoved::Removed(miscount)) => {
+                    done.records += 1;
+                    done.miscounted(miscount);
+                    return Ok(Progress::Done);
+                }
+                Step::Made(EntryRemoved::Absent) => return Ok(Progress::Done),
+                Step::Made(EntryRemoved::Changed) => {}
             }
-            Step::Made(EntryRemoved::Absent | EntryRemoved::Changed) => Ok(Progress::Done),
         }
+        Ok(Progress::Blocked(Busy::Contended))
     }
 
     /// Looks at one page that the range delete left: names what is below

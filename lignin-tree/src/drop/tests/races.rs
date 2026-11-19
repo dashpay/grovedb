@@ -165,7 +165,8 @@ fn nothing_is_reclaimed_while_the_page_of_the_root_is_copied() {
         let mut reclaim = Reclaim::new(dropped);
         let cells = db.cells();
         for _ in 0..3 {
-            let progress = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX);
+            let progress =
+                reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
             assert_eq!(progress.expect("a look"), Progress::Blocked(Busy::Copied));
         }
         // The records of the nested Merks are gone, and the Merk's own is
@@ -211,7 +212,8 @@ fn the_walk_waits_at_a_page_that_is_copied_and_goes_on_afterwards() {
         txn.tree.copy(held);
         let reclaimer = db.reclaimer();
         let mut reclaim = Reclaim::new(dropped);
-        let progress = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX);
+        let progress =
+            reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
         assert_eq!(
             progress.expect("the steps"),
             Progress::Blocked(Busy::Copied)
@@ -224,7 +226,7 @@ fn the_walk_waits_at_a_page_that_is_copied_and_goes_on_afterwards() {
         db.check_pages();
         grove.check(&db);
         db.check_counts(&db.tree_pointers());
-        let again = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX);
+        let again = reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
         assert_eq!(again.expect("a look"), Progress::Blocked(Busy::Copied));
         assert_eq!(reclaim.reclaimed().cells, so_far);
 
@@ -259,7 +261,7 @@ fn a_copy_made_after_a_step_does_not_bring_a_cell_back() {
     // The steps up to the first that takes cells out: that of the root.
     while reclaim.reclaimed().cells == 0 {
         reclaimer
-            .reclaim(&mut reclaim, &directory, &GUARD, 1)
+            .reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 1)
             .expect("a step");
     }
     assert!(reclaim.holds_cells());
@@ -311,9 +313,13 @@ fn a_step_between_the_plan_of_a_write_and_its_changes_is_refused() {
         if page != root_page {
             return;
         }
-        let progress =
-            db.reclaimer()
-                .reclaim(&mut reclaim.borrow_mut(), &directory, &GUARD, usize::MAX);
+        let progress = db.reclaimer().reclaim(
+            &mut reclaim.borrow_mut(),
+            &directory,
+            &db.columns(),
+            &GUARD,
+            usize::MAX,
+        );
         assert_eq!(progress.expect("a look"), Progress::Blocked(Busy::Copied));
         *seen_blocked.borrow_mut() += 1;
     }));
@@ -363,7 +369,7 @@ fn a_record_waits_while_its_leaf_is_copied() {
 
     let reclaimer = db.reclaimer();
     let mut reclaim = Reclaim::new(dropped);
-    let progress = reclaimer.reclaim(&mut reclaim, &directory, &GUARD, usize::MAX);
+    let progress = reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, usize::MAX);
     assert_eq!(progress.expect("a look"), Progress::Blocked(Busy::Copied));
     assert!(!reclaim.holds_cells() && reclaim.reclaimed().cells == 0);
     db.commit(txn);
@@ -432,7 +438,7 @@ fn a_record_that_is_another_one_by_now_is_not_taken_out() {
     // A second reclaiming of the same drop finds no record, and takes no
     // cell.
     let mut second = Reclaim::new(dropped);
-    let refused = reclaimer.reclaim(&mut second, &now, &GUARD, usize::MAX);
+    let refused = reclaimer.reclaim(&mut second, &now, &db.columns(), &GUARD, usize::MAX);
     assert!(matches!(
         refused,
         Err(DropError::Directory(
@@ -480,7 +486,7 @@ fn a_writer_and_the_reclaimer_at_once_leave_the_pages_whole() {
                 let mut reclaim = Reclaim::new(dropped);
                 let mut waits = 0u32;
                 loop {
-                    match reclaimer.reclaim(&mut reclaim, &directory, &GUARD, 1) {
+                    match reclaimer.reclaim(&mut reclaim, &directory, &db.columns(), &GUARD, 1) {
                         Ok(Progress::Done) => break,
                         Ok(Progress::More) => {}
                         Ok(Progress::Blocked(_)) => {

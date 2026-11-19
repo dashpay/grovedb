@@ -4,9 +4,9 @@ use std::collections::HashSet;
 
 use lignin_format::CellAddress;
 
-use super::error::DropError;
+use super::{column::Flats, error::DropError};
 use crate::{
-    directory::{Directory, DirectoryError, Dropped, Prefix},
+    directory::{Directory, DirectoryError, Dropped, Entry, MerkId, Prefix},
     flat::FlatPagesMut,
     fragment::{Fragments, Pages, Report, Values, Write},
 };
@@ -46,18 +46,29 @@ pub struct Unlink {
 
 /// Applies the write of an operation that drops or clears Merks, and
 /// unlinks them: the one write of the operation to the tree pages, with the
-/// root of each Merk named as dropped, and the Merk's records in the
-/// directory.
+/// root of each Merk named as dropped, the Merk's records in the directory,
+/// and the flat records of each dropped Merk in every column.
 ///
 /// `write` is the operation's write without those roots: the cell of each
 /// host without its pointer, or among the removed ones, and what else the
-/// operation changed. What it names as dropped already stays so.
+/// operation changed. What it names as dropped already stays so. `flats`
+/// is the flat side of the operation ([`Flats`]).
 ///
 /// Nothing of the Merks is read but their entries, and nothing below them
 /// at all: the cost does not depend on what they hold. From this call on no
 /// lookup of `directory` returns a Merk below a dropped or cleared one.
 ///
-/// A Merk that is not entered, one that is named twice, and one with no
+/// **The flat records of a dropped Merk go here**, by the lazy range delete
+/// ([`FlatDrops::unlink_prefix`](super::FlatDrops::unlink_prefix)): the
+/// record that the directory keeps of a dropped Merk has no prefix, so no
+/// reclaimer finds them later. A cleared Merk keeps its own flat records,
+/// as it keeps its entry. Those of the Merks below either are the
+/// reclaimer's, and no reader is shown them: they are found through an
+/// entry, and no lookup returns the entry.
+///
+/// A Merk that is not entered, one that is named twice, one that is below
+/// another of those named ([`DropError::Below`]: the outer one takes it
+/// along), and one with no
 /// root that has Merks below it are refused before any page is changed, and
 /// so is a write that the tree pages refuse without a change
 /// ([`FragmentError::Write`](crate::fragment::FragmentError::Write),
@@ -74,27 +85,40 @@ pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
     pages: &mut P,
     values: &mut V,
     directory: &mut Directory,
-    flat: &mut F,
+    flats: &mut Flats<'_, F>,
     write: &Write<'_>,
     leaving: &[Leaving<'_>],
 ) -> Result<Unlink, DropError> {
     let mut dropped: Vec<CellAddress> = write.dropped.to_vec();
     let mut named = HashSet::new();
+    let mut entries = Vec::with_capacity(leaving.len());
     for merk in leaving {
         let prefix = merk.prefix();
         if !named.insert(*prefix) {
             return Err(DirectoryError::Twice { prefix: *prefix }.into());
         }
-        let entry = directory.open(flat, prefix)?;
+        let entry = directory.open(flats.pages, prefix)?;
         let entry = entry.ok_or(DirectoryError::NotFound { prefix: *prefix })?;
         match entry.root() {
             Some(root) => dropped.push(root.address),
             None => {
-                let below = directory.children(entry.id()).next(flat)?;
+                let below = directory.children(entry.id()).next(flats.pages)?;
                 if below.is_some() && matches!(merk, Leaving::Dropped(_)) {
                     return Err(DirectoryError::NotEmpty { prefix: *prefix }.into());
                 }
             }
+        }
+        entries.push(entry);
+    }
+    // A Merk below another one that leaves goes with it: its cells would
+    // be walked from both, and its entry is no entry once the outer one
+    // has left.
+    let ids: HashSet<MerkId> = entries.iter().map(Entry::id).collect();
+    for (merk, entry) in leaving.iter().zip(&entries) {
+        if entry.lineage().any(|above| ids.contains(&above)) {
+            return Err(DropError::Below {
+                prefix: *merk.prefix(),
+            });
         }
     }
 
@@ -106,8 +130,11 @@ pub fn unlink<P: Pages, V: Values, F: FlatPagesMut + ?Sized>(
     let mut left = Vec::with_capacity(leaving.len());
     for merk in leaving {
         match merk {
-            Leaving::Dropped(prefix) => left.push(directory.unlink(flat, prefix)?),
-            Leaving::Cleared(prefix) => left.extend(directory.clear(flat, prefix)?),
+            Leaving::Dropped(prefix) => {
+                left.push(directory.unlink(flats.pages, prefix)?);
+                flats.unlink_subtree(prefix)?;
+            }
+            Leaving::Cleared(prefix) => left.extend(directory.clear(flats.pages, prefix)?),
         }
     }
     Ok(Unlink { report, left })

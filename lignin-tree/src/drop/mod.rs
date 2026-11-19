@@ -2,8 +2,12 @@
 //! it left.
 //!
 //! - [`unlink`] is the drop: the write of the transaction that drops or
-//!   clears Merks ([`Leaving`]). It writes the page of each host and the
-//!   Merk's records in the directory, whatever the Merk holds.
+//!   clears Merks ([`Leaving`]). It writes the page of each host, the
+//!   Merk's records in the directory and the two ends of its flat records
+//!   in each column, whatever the Merk holds.
+//! - [`enter`] enters a Merk, so that it starts with no flat record.
+//!   [`Flats`] is the flat side of both: the columns ([`Column`]) and the
+//!   keyspace of the unlinked pages.
 //! - [`Reclaimer`] takes out what a drop left, in page steps on the pages
 //!   of a store, and [`Reclaim`] is one dropped Merk while that goes on.
 //! - [`Wait`] says when it may begin.
@@ -29,6 +33,15 @@
 //! page of the host and four records of the directory (D1), and **what a
 //! Merk holds does not enter into it**: a million nodes cost what one
 //! costs.
+//!
+//! **The flat records of a dropped Merk go with the drop** (the exception
+//! in D1): [`unlink`] takes the Merk's range out of every column by the
+//! lazy range delete. That reads one path of each column and writes the
+//! leaf at each end of the range, the branches above them and one record
+//! of the pages between, whatever the range holds; a column with no record
+//! of the Merk is read and not written. A cleared Merk keeps its flat
+//! records. Nothing of the Merks below either is read: their flat records
+//! are the reclaimer's, as their entries are.
 //!
 //! One thing can add to that. **A host inside a dropped Merk that is
 //! behind is written first**, with its roots, by a write of its own
@@ -59,11 +72,16 @@
 //!
 //! The steps of one dropped Merk come in this order:
 //!
-//! 1. **The records of the Merks below it**, the innermost first: for
-//!    each, the record of its root, its entry, and the record of its host
+//! 1. **What the Merks below it left outside the tree pages**, the
+//!    innermost first. For each: its flat records in every column, a leaf
+//!    at a time, and then the record of its root, its entry, and the
+//!    record of its host
 //!    ([`Directory::left_by`](crate::directory::Directory::left_by)). The
 //!    nested subtrees are found through the directory and through nothing
-//!    else, and [`Reclaimed::merks`] names each.
+//!    else, and [`Reclaimed::merks`] names each. The flat records go
+//!    before the entry because the entry is what says whose they are: a
+//!    reclaiming that begins again finds them by it, and a step is made
+//!    only while the entry under the prefix is that Merk's (see below).
 //! 2. **The Merk's own record.**
 //! 3. **The cells**, from the root down. A cell goes after the cell that
 //!    names it, and with every cell of its page that hangs below it there:
@@ -119,9 +137,78 @@
 //! empty stays so until a write touches it. A flat leaf from which a
 //! record of the directory was taken keeps its place and its prefix, also
 //! with no entry left: a page step changes one leaf and nothing else.
+//! The same holds for the leaves of a column from which the flat records
+//! of a nested Merk were taken: a leaf that held nothing else stays in the
+//! tree with no entry, and a bucket of long keys stays with an empty tree,
+//! until a write merges the leaf or a range delete covers it.
 //! [`Reclaimed`] counts the cells and their bytes, the pages that were
-//! written again and the pages that were freed, for whoever measures the
-//! space (PERF-08).
+//! written again and the pages that were freed, and the flat records and
+//! the leaves they were taken out of, for whoever measures the space
+//! (PERF-08).
+//!
+//! # The flat records of subtrees
+//!
+//! A subtree has records outside its Merk: in the aux, meta and roots
+//! columns, and its data where a tree keeps that flat. A record of the
+//! subtree under `prefix` is in its column under `lead ++ prefix ++ key`
+//! ([`Column`]). One rule says whose a record is (`tree-layout.md` D6):
+//!
+//! > **In every column, at every version, the records under a prefix are
+//! > those of the entry that the directory stores under that prefix at
+//! > that version**, an entry in use or a left-over one. Where the
+//! > directory stores no entry, no column has a record.
+//!
+//! So **a reader finds flat records through the directory**: it opens the
+//! prefix at the version it reads
+//! ([`Directory::open`](crate::directory::Directory::open)), and where
+//! that returns nothing there is no record for it in any column. A handle
+//! that is kept across writes is asked again
+//! ([`Directory::is_live`](crate::directory::Directory::is_live)). The
+//! records of a left-over entry are in the pages and are shown to nobody,
+//! exactly as the entry is (CV9, T-CL1).
+//!
+//! Three writers keep the rule, and they are all in this module:
+//!
+//! 1. **The drop** takes the dropped Merk's own range out of every column
+//!    ([`unlink`]): its entry goes, so its records go with it.
+//! 2. **The enter** takes out what a left-over entry under the prefix has,
+//!    in the operation that puts the new entry there ([`enter`]): the
+//!    records under the prefix are the new entry's from then on, and it
+//!    starts with none.
+//! 3. **The reclaimer** takes the flat records of a Merk that was below a
+//!    dropped one out before the Merk's entry, and only while the entry
+//!    that the directory stores under the prefix is that Merk's
+//!    ([`Reclaimer::reclaim`]).
+//!
+//! **A write transaction that enters every Merk through [`enter`] and
+//! drops and clears through [`unlink`] keeps the rule, with nothing else
+//! to remember.** What the two need of it is [`Flats`], the same for both.
+//!
+//! The rule asks two things of code that is not here:
+//!
+//! - **A move takes the flat records along.** An operation that gives a
+//!   Merk another prefix
+//!   ([`Directory::rekey`](crate::directory::Directory::rekey)) writes its
+//!   flat records under the new prefix and removes them under the old one
+//!   in the same operation (GROVE-03).
+//! - **A clear keeps the cleared Merk's own flat records**, and drops
+//!   those of the Merks below it. [`unlink`] does that for
+//!   [`Leaving::Cleared`]; an operation that means to empty the columns of
+//!   the cleared Merk too removes them itself (GROVE-05).
+//!
+//! **Why a step of the reclaimer cannot take a record of another Merk.**
+//! A Merk can be entered again under the prefix at any time, with records
+//! under the keys the old one had. The reclaimer reads the entry under the
+//! prefix and a leaf at one version, goes on only if the entry is the
+//! nested Merk's, and makes its step only if that version of the leaf is
+//! still the current one. A page version that a reader of some version
+//! sees holds no write of a later commit, so the records under the prefix
+//! in it are those of the entry of that version. The enter that puts
+//! another entry there rewrites the leaf at each end of the range, which
+//! are other versions from its commit on, and unlinks the leaves between
+//! whole. A step can still be made on one of those: it takes left-over
+//! records out of a page that waits to be freed, which no reader of the
+//! new Merk reaches, and the freeing releases what is left in it.
 //!
 //! # Flat keyspaces
 //!
@@ -140,16 +227,19 @@
 //! left hold nothing in use, so no commit writes them and nothing but the
 //! reclaimer frees them. Their versions therefore tell what a slot of a
 //! shared tree page cannot: a page that was born after the range delete
-//! can have committed is another page under the same id. The record keeps
-//! the version its writer read at for that.
+//! committed is another page under the same id. The record keeps the
+//! version its writer read at for that: a commit takes the version after
+//! its base (`transactions.md` CM3).
 //!
 //! # What the callers do
 //!
 //! - **A write transaction** drops with [`unlink`], in the operation that
 //!   deletes or rewrites the host, and states the roots that the write
 //!   carried to the directory afterwards, as after any write. It writes
-//!   the hosts that are behind first. It gives
-//!   [`FlatDrops::unlink_range`] the version it reads at.
+//!   the hosts that are behind first. It enters every Merk with [`enter`].
+//!   It gives both every column ([`Flats`]), and the version it reads at:
+//!   a transaction that makes its pages again over a newer base
+//!   (`transactions.md` WT7) makes these calls again with that base.
 //! - **A write transaction copies a tree page before a write is planned on
 //!   it.** Fragment maintenance reads the pages of a write, plans, and
 //!   then changes them, and asks that nothing changes a page between the
@@ -165,8 +255,10 @@
 //!   for each with that version. It asks the wait between operations,
 //!   holding no guard. When the wait is over it makes a [`Reclaim`] and
 //!   calls [`Reclaimer::reclaim`] with the directory of the latest
-//!   version until it is done: at once, and again after
-//!   [`Progress::Blocked`]. It keeps a [`Reclaim`] that
+//!   version and every column until it is done: at once, and again after
+//!   [`Progress::Blocked`]. It does the same for the records of the lazy
+//!   range deletes ([`Reclaimer::flat_drops`],
+//!   [`Reclaimer::reclaim_flat`]), which drops and enters write as well. It keeps a [`Reclaim`] that
 //!   [holds cells](Reclaim::holds_cells) until it is done, also through a
 //!   shutdown that can wait.
 //! - **It loads its directory again** when a reclaiming is done: the
@@ -221,19 +313,45 @@
 //!     Merk can be entered again under the prefix of a left-over entry
 //!     between the reclaimer's look and its step, and that entry is not
 //!     the reclaimer's. The step compares the entry with the one it saw.
+//!     An entry whose value is out of line is known by the place of the
+//!     value, which write-back and the cleaner change, so an entry that
+//!     is not as it was seen is looked at again, and never passed over.
 //! 11. **A step that frees a page checks, and then frees.** The pool has
 //!     no page step that frees: its free takes the step's lock itself. So
 //!     the check that no private copy exists and the free are two holds of
-//!     that lock. A copy that is made between them is of a page with no
-//!     cell in use, which no write reads or changes, and the pool refuses
-//!     to install one over a freed page. A free inside the pool's page
-//!     step would make this one step.
+//!     that lock, with the lock on the counts held across both, which
+//!     keeps every other background step out. What it rests on is that
+//!     **no write copies a page that holds no cell in use**: a write reads
+//!     and changes the pages of the cells it holds and the pages beside
+//!     them, each of which holds a cell in use. If a write did copy such a
+//!     page between the two and commit it, its commit or this step would
+//!     be refused by the pool, after the free link is in the page table:
+//!     the step ends with [`DropError::Broken`]. A free inside the pool's
+//!     page step would make this one step, and the rule unneeded.
 //! 12. **A step that failed before its record changed nothing**, and is
 //!     made again: the log can refuse a record, and the walk goes on from
 //!     where it was. A count of live values that does not take the
 //!     pointers of a step is noted ([`Reclaim::miscount`]) and does not
 //!     stop the walk: the step is made, and the value log keeps the file.
+//! 13. **The flat records of the dropped Merk go with the drop, and those
+//!     of the Merks below it with the reclaimer.** The record that a drop
+//!     leaves in the directory has the Merk's id and its root, and no
+//!     prefix, so nothing could find the Merk's own flat records later;
+//!     and the prefix can be entered again in the next operation. The
+//!     Merks below keep their entries, which have their prefixes, until
+//!     the reclaimer takes them. Unlinking theirs in the drop as well
+//!     would make the drop walk the directory below the Merk, which D1
+//!     rules out.
+//! 14. **The reclaimer takes flat records out a leaf at a time, and never
+//!     a page.** A page step changes one leaf, so it cannot take a leaf
+//!     out of its branch. The lazy range delete could, and is a write of a
+//!     transaction: background work has none. What is left is leaves with
+//!     no entry, which [`Reclaimed::flat_leaves`] bounds.
+//! 15. **A call makes at most the page steps it was given**, and a look at
+//!     a record that was not as it was read counts as one, so that a call
+//!     ends.
 
+mod column;
 mod error;
 mod flat;
 mod merk;
@@ -244,6 +362,7 @@ mod wait;
 #[cfg(test)]
 mod tests;
 
+pub use column::{enter, Column, Flats};
 pub use error::DropError;
 pub use flat::{FlatDrop, FlatDrops, FlatReclaimed};
 pub use merk::{Progress, Reclaim, Reclaimed};
