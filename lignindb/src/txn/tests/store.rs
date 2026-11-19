@@ -28,6 +28,7 @@ use lignin_store::{
     flush::{FlushConfig, FlushError, FlushState, Stores, WriteBack},
     load::{LoadBuffers, PageLoader},
     segment::{ManifestStore, SegmentStore},
+    stats::Stats,
     table::{PageTable, TableCheckpoints},
     values::ValueStore,
     wal::{LogOptions, LogReader, LogStore},
@@ -183,6 +184,9 @@ pub struct Db {
     /// that they were told.
     pub committing: CommitState,
     pub flush_errors: Arc<Mutex<Vec<String>>>,
+    /// The counts of the store, which a write transaction is counted in
+    /// while it has a write.
+    pub stats: Stats,
     /// The files of the store, and the directory they are in.
     pub vfs: Arc<dyn Vfs>,
     pub dir: PathBuf,
@@ -273,6 +277,7 @@ impl Db {
             flush: FlushState::new(flush),
             committing: CommitState::reporting(report),
             flush_errors,
+            stats: Stats::new(),
             vfs,
             dir: dir.to_path_buf(),
             keyspaces: OnceLock::new(),
@@ -407,6 +412,7 @@ impl Db {
             ids: &self.ids,
             values: &self.values,
             commits: &self.commits,
+            stats: &self.stats,
             directory: self.directory(),
         };
         WritePath::new(

@@ -256,6 +256,13 @@
 //!   its frames are given up (ID1).
 //! - **A watch on the key sets of commits** while it has a write
 //!   ([`Commits`]).
+//! - **A place among the open write transactions of the store's counts**
+//!   ([`WritePath::stats`]), from its first write until its write set is
+//!   empty again: by its commit, a rollback, a rollback to a savepoint
+//!   that takes every write out, or its drop. That is the time in which it
+//!   can hold private copies, which is what holds the log
+//!   (`lignin_store::stats`, "What an operator watches"). A transaction
+//!   that only reads is not counted.
 //!
 //! # Choices made here that the plan left open
 //!

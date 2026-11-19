@@ -8,6 +8,7 @@ mod kept;
 mod outcomes;
 mod pages;
 mod schedule;
+mod stats;
 
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 

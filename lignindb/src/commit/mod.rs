@@ -222,7 +222,11 @@
 //!   sampling step (CK2), and holds it for that step only.
 //! - **The open of the engine** (TXN-07) makes the [`CommitState`] and the
 //!   [`Committer`], and passes [`CommitState::reporting`] whoever is to be
-//!   told the errors of write-back in a committer's own turns. A bulk load
+//!   told the errors of write-back in a committer's own turns. It gives
+//!   the write path the store's counts
+//!   ([`WritePath::stats`](crate::txn::WritePath::stats)), in which a
+//!   write transaction is open from its first write until its commit or
+//!   its rollback ends it. A bulk load
 //!   that takes value pointers over from loaded files (`log-format.md`
 //!   LG16) is its commit to make: a commit here lists no pointer as taken
 //!   over.

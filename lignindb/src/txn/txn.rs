@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
-use lignin_store::load::LoadBuffers;
+use lignin_store::{load::LoadBuffers, stats::OpenWrite};
 use lignin_tree::{
     directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
@@ -85,6 +85,11 @@ struct State<'s> {
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
     watch: Option<Watch<'s>>,
+    /// The transaction among the open write transactions of the store's
+    /// counts, from its first write until its write set is empty again:
+    /// while it can hold private copies, and with them the log
+    /// (`lignin_store::stats`, "What an operator watches").
+    open: Option<OpenWrite<'s>>,
     /// The lease committed pages are read under where the transaction has
     /// no frames, and the version it is for (PN8).
     lease: Lease,
@@ -131,6 +136,7 @@ impl State<'_> {
         self.stuck = None;
         if self.set.is_empty() {
             self.watch = None;
+            self.open = None;
             self.under.clear();
             self.owed.clear();
         }
@@ -248,6 +254,7 @@ impl<'s> WriteTxn<'s> {
                 base: None,
                 frames: None,
                 watch: None,
+                open: None,
                 lease: Lease::take(),
                 lease_at: None,
                 directory: None,
@@ -478,6 +485,9 @@ impl<'s> WriteTxn<'s> {
         let guard = path.versions.guard();
         if writing && state.watch.is_none() {
             state.watch = Some(path.commits.watch());
+        }
+        if writing && state.open.is_none() {
+            state.open = Some(path.stats.write_opened());
         }
         let mut at = guard.latest();
         loop {
