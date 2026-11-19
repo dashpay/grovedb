@@ -10,7 +10,7 @@ use grovedb_query::Query;
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use super::{
-    super::access::{Seek, Walk},
+    super::access::{with_child_keys, Seek, StoredLink, Walk},
     *,
 };
 use crate::merk::KVIterator;
@@ -198,7 +198,6 @@ struct Both<'a, 't, 's> {
     rocks: &'a TempStorage,
     rocks_transaction: &'a RocksTransaction<'a>,
     writer: &'a LigninWriter<'t, 's>,
-    subtree: LigninSubtree,
 }
 
 impl Both<'_, '_, '_> {
@@ -222,11 +221,19 @@ impl Both<'_, '_, '_> {
         expected.push((format!("{:?}", applied.value), applied.cost));
 
         let staged = LigninBatch::new();
-        let store = LigninNodeStore::deferred(self.writer, self.subtree.clone(), Some(&staged));
+        let store = LigninNodeStore::deferred(self.writer, ROOT, Some(&staged));
         let mut found = acts(store, self.tree_type, calls);
         let applied = staged.apply(self.writer);
         found.push((format!("{:?}", applied.value.map(|_| ())), applied.cost));
         self.same(calls, found, expected)
+    }
+
+    /// [`Self::immediate`] or [`Self::deferred`].
+    fn run(&self, immediate: bool, calls: &[Act]) -> Vec<String> {
+        match immediate {
+            true => self.immediate(calls),
+            false => self.deferred(calls),
+        }
     }
 
     /// As [`Self::deferred`], on handles that write at once.
@@ -236,7 +243,7 @@ impl Both<'_, '_, '_> {
             .get_immediate_storage_context(SubtreePath::empty(), self.rocks_transaction)
             .unwrap();
         let expected = acts(context, self.tree_type, calls);
-        let store = LigninNodeStore::immediate(self.writer, self.subtree.clone());
+        let store = LigninNodeStore::immediate(self.writer, ROOT);
         let found = acts(store, self.tree_type, calls);
         self.same(calls, found, expected)
     }
@@ -296,7 +303,6 @@ fn with_both(
         rocks: &rocks,
         rocks_transaction: &rocks_transaction,
         writer: &writer,
-        subtree: ROOT,
     };
     for batch in &committed {
         both.deferred(std::slice::from_ref(batch));
@@ -317,7 +323,6 @@ fn with_both(
         rocks: &rocks,
         rocks_transaction: &rocks_transaction,
         writer: &writer,
-        subtree: ROOT,
     };
     for batch in &written {
         both.deferred(std::slice::from_ref(batch));
@@ -353,10 +358,7 @@ fn clear_removes_every_node_and_charges_what_it_charges_on_rocksdb() {
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
         for immediate in [false, true] {
             with_both(tree_type, 0x0c1e_a400 + seed as u64, 4, &[], |both| {
-                let run = |calls: &[Act]| match immediate {
-                    true => both.immediate(calls),
-                    false => both.deferred(calls),
-                };
+                let run = |calls: &[Act]| both.run(immediate, calls);
                 // The nodes are those the last commit left and those the
                 // transaction wrote since. Each is removed with no cost of
                 // the writer's, and is charged from its committed record:
@@ -431,10 +433,7 @@ fn the_aux_and_meta_records_of_a_merk_are_what_they_are_on_rocksdb() {
     ];
     for immediate in [false, true] {
         with_both(TreeType::NormalTree, 0x0a11, 2, &committed, |both| {
-            let run = |calls: &[Act]| match immediate {
-                true => both.immediate(calls),
-                false => both.deferred(calls),
-            };
+            let run = |calls: &[Act]| both.run(immediate, calls);
             let all = [
                 Act::GetAux(name(b"committed")),
                 Act::GetAux(name(b"kept")),
@@ -546,6 +545,14 @@ fn walked<'db, S: NodeStore<'db>>(store: &S) -> Vec<(Vec<u8>, Vec<u8>)> {
     found
 }
 
+/// Whether `store` has the aux and the meta record that the test below
+/// gives each Merk, and how many nodes its cursor shows.
+fn side_records<'db, S: NodeStore<'db>>(store: &S) -> (bool, bool, usize) {
+    let aux = store.get_aux_record(b"aux").unwrap().unwrap();
+    let meta = store.get_meta_record(b"meta").unwrap().unwrap();
+    (aux.is_some(), meta.is_some(), walked(store).len())
+}
+
 /// D-083: a drop takes every record of every column under the dropped
 /// prefix, and under the subtrees below it. A Merk that is cleared loses
 /// its nodes and keeps its other records, as on RocksDB.
@@ -589,10 +596,7 @@ fn a_drop_takes_the_side_records_below_it_and_a_clear_keeps_those_of_its_merk() 
         merk.root_key()
     };
     let side = |subtree: &LigninSubtree| {
-        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
-        let aux = reader.get_aux_record(b"aux").unwrap().unwrap();
-        let meta = reader.get_meta_record(b"meta").unwrap().unwrap();
-        (aux.is_some(), meta.is_some(), walked(&reader).len())
+        side_records(&LigninNodeStore::deferred(&writer, subtree.clone(), None))
     };
     let apply_staged = |staged: &LigninBatch| {
         (staged.apply(&writer).unwrap()).expect("the batch is applied");
@@ -627,10 +631,7 @@ fn a_drop_takes_the_side_records_below_it_and_a_clear_keeps_those_of_its_merk() 
     merk.clear().unwrap().expect("the Merk is cleared");
     drop(merk);
     let side = |subtree: &LigninSubtree| {
-        let reader = LigninNodeStore::deferred(&writer, subtree.clone(), None);
-        let aux = reader.get_aux_record(b"aux").unwrap().unwrap();
-        let meta = reader.get_meta_record(b"meta").unwrap().unwrap();
-        (aux.is_some(), meta.is_some(), walked(&reader).len())
+        side_records(&LigninNodeStore::deferred(&writer, subtree.clone(), None))
     };
     (staged.apply(&writer).unwrap()).expect("the batch is applied");
     assert_eq!(side(&outer), (true, true, 0), "a clear takes the nodes");
@@ -663,10 +664,7 @@ fn a_drop_takes_the_side_records_below_it_and_a_clear_keeps_those_of_its_merk() 
     // So it is for the next transaction, which reads what was committed.
     let transaction = path.begin();
     let side = |subtree: &LigninSubtree| {
-        let reader = LigninNodeStore::read_only(&transaction, subtree.clone());
-        let aux = reader.get_aux_record(b"aux").unwrap().unwrap();
-        let meta = reader.get_meta_record(b"meta").unwrap().unwrap();
-        (aux.is_some(), meta.is_some(), walked(&reader).len())
+        side_records(&LigninNodeStore::read_only(&transaction, subtree.clone()))
     };
     assert_eq!(side(&outer), (true, true, 1));
     assert_eq!(side(&middle), (false, false, 1));
@@ -758,6 +756,22 @@ fn a_cursor_keeps_the_state_it_was_opened_on_and_sees_its_transactions_writes() 
     cursor.next().unwrap();
     assert_eq!(cursor.key().unwrap(), Some(&be(18)[..]));
     assert!(format!("{cursor:?}").contains("LigninCursor"));
+
+    // A scan that stands on a key whose node is then removed passes over
+    // it, and has come to the end when it ends.
+    let mut all_keys = Query::new();
+    all_keys.insert_all();
+    let mut scan = KVIterator::new(store.cursor(), &all_keys).unwrap();
+    let first = scan.next_kv().unwrap().expect("a record").0;
+    assert_eq!(first, be(0));
+    apply(&mut merk, &[(be(2), Op::Delete)]);
+    assert_eq!(scan.next_kv().unwrap().expect("a record").0, be(4));
+    let mut scanned = 2;
+    while scan.next_kv().unwrap().is_some() {
+        scanned += 1;
+    }
+    assert!(scan.status().is_ok());
+    assert_eq!(scanned, walked(&store).len());
 }
 
 #[test]
@@ -941,7 +955,25 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         assert_eq!(cursor.status().is_ok(), opens);
         drop(cursor);
 
-        // Merk's walks.
+        // Merk's walks. A scan gives the records it came to and says that
+        // it did not come to the end.
+        let mut query = Query::new();
+        query.insert_range(be(0)..be(9));
+        query.insert_range(be(9)..be(30));
+        let mut scan = KVIterator::new(store.cursor(), &query).unwrap();
+        let mut scanned = 0;
+        while let Some((key, _)) = scan.next_kv().unwrap() {
+            assert_eq!(key, be(scanned));
+            scanned += 1;
+        }
+        // The second range is another seek, which is one of the moves.
+        let before = moves - usize::from(moves > 10);
+        assert_eq!(scanned as usize, before, "every record before the failure");
+        let status = scan.status().expect_err("the scan failed");
+        assert!(status.to_string().contains(refused), "{status}");
+        assert_eq!(scan.next_kv().unwrap(), None, "and it stays ended");
+        drop(scan);
+
         let mut merk = open_layered(store, root.clone());
         assert!(!merk.is_empty_tree_except(except(&all)).unwrap());
         if moves == 0 {
@@ -967,6 +999,15 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
     assert!(merk.is_empty_tree_except(except(&all)).unwrap());
     assert!(!merk.is_empty_tree_except(except(&all[1..])).unwrap());
     assert!(!merk.is_empty_tree().unwrap());
+    let mut all_keys = Query::new();
+    all_keys.insert_all();
+    let mut scan = KVIterator::new(merk.storage.cursor(), &all_keys).unwrap();
+    let mut scanned = 0;
+    while scan.next_kv().unwrap().is_some() {
+        scanned += 1;
+    }
+    assert_eq!((scanned, scan.status().is_ok()), (20, true));
+    drop(scan);
 
     // A record that cannot be read: the cursor stands on its key, shows no
     // value, and its status is the error, until it is sought again.
@@ -991,6 +1032,39 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
     cursor.seek(be(6)).unwrap();
     assert!(cursor.status().is_ok());
     assert!(format!("{cursor:?}").contains("failure: None"));
+    // A scan ends at a record it cannot read, and says so.
+    let mut scan = KVIterator::new(store.cursor(), &all_keys).unwrap();
+    assert_eq!(scan.next_kv().unwrap(), None);
+    let status = scan.status().expect_err("no record was read");
+    assert!(
+        status.to_string().contains("the node was not read"),
+        "{status}"
+    );
+
+    // A link whose child's key was not read with the node is no record.
+    let mut unread = StoredNode {
+        feature: BASIC,
+        value_hash: [1; 32],
+        kv_hash: [2; 32],
+        value_len: 0,
+        value: Some(Vec::new()),
+        left: None,
+        right: None,
+        location: None,
+    };
+    let keys = &mut lignindb::txn::ChildKeys::new();
+    assert_eq!(with_child_keys(unread.clone(), keys).unwrap(), unread);
+    unread.right = Some(StoredLink {
+        hash: [3; 32],
+        heights: (0, 0),
+        key_len: 3,
+        key: None,
+        aggregate: AggregateData::NoAggregateData,
+    });
+    let error = with_child_keys(unread.clone(), keys).unwrap_err();
+    assert!(matches!(error, Error::CorruptedState(_)), "{error:?}");
+    unread.right.as_mut().unwrap().key = Some(b"abc".to_vec());
+    assert_eq!(with_child_keys(unread.clone(), keys).unwrap(), unread);
 }
 
 /// A read under a cursor is a read of its scope (`transactions.md` SC3):
@@ -1023,7 +1097,8 @@ fn a_cursor_that_another_scopes_write_claim_refuses_is_no_empty_merk() {
     cursor.seek_to_first().unwrap();
     assert!(!cursor.valid().unwrap());
     let status = cursor.status().expect_err("the other scope holds the Merk");
-    assert!(status.to_string().contains("scope"), "{status}");
+    let held = "another open scope of the transaction holds";
+    assert!(status.to_string().contains(held), "{status}");
     // The handle cannot read the root either, so the Merk is opened as
     // the caller that knows its root key has it: with no node loaded.
     let mut merk = Merk::open_layered_with_root_key(
@@ -1079,7 +1154,8 @@ fn a_cursor_of_a_handle_that_only_reads_is_refused_beside_a_writing_scope() {
     );
     before.seek_to_first().unwrap();
     let status = before.status().expect_err("a scope is writing the Merk");
-    assert!(status.to_string().contains("lignindb"), "{status}");
+    let held = "another open scope of the transaction holds";
+    assert!(status.to_string().contains(held), "{status}");
     let merk = open_layered(LigninNodeStore::read_only(&transaction, ROOT), None);
     assert!(!merk.is_empty_tree().unwrap(), "it could not be read");
 

@@ -25,7 +25,8 @@ use crate::{store::NodeCursor, Error};
 ///   it: from the node's cell, and from the cell of each child for the
 ///   child's key, which a cell does not hold (`tree-page.md` TP10). A walk
 ///   that reads keys only, as [`Merk::clear`](crate::Merk::clear) does,
-///   reads no value and no child.
+///   reads no value and no child. The record is read once for a place: a
+///   write to the key after `value` was asked shows after the next move.
 /// - **It holds no lock and no page between two calls.** Each move, and
 ///   the read of a record, is one operation of the transaction. On a
 ///   writer's handle it takes the writer's lock for that long.
@@ -141,16 +142,14 @@ impl NodeCursor for LigninCursor<'_> {
     }
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
-        let stored_key_len = self.stored_key_len();
-        let record = match stored_key_len {
-            Some(_) => self.record.get_or_init(|| self.read()).as_deref(),
-            None => None,
+        let Some(key_len) = self.stored_key_len() else {
+            return None.wrap_with_cost(MODEL.cursor_key(None));
         };
-        let cost = match (stored_key_len, record) {
-            (Some(key_len), Some(record)) => MODEL.cursor_value(Some((key_len, record.len()))),
-            (key_len, _) => MODEL.cursor_key(key_len),
-        };
-        record.wrap_with_cost(cost)
+        match self.record.get_or_init(|| self.read()) {
+            Some(record) => Some(record.as_slice())
+                .wrap_with_cost(MODEL.cursor_value(Some((key_len, record.len())))),
+            None => None.wrap_with_cost(MODEL.cursor_key(Some(key_len))),
+        }
     }
 
     fn key(&self) -> CostContext<Option<&[u8]>> {

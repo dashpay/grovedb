@@ -12,7 +12,7 @@ use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
     Batch, ChildKeys, Column, HostPut, Hosted, LinkPut, LinkView, MerkCursor, MerkSide, MerkWrite,
-    NodePut, NodeView, ParkedCursor, RecordWrite, RootPut, Scope, Subtree, SubtreeView,
+    NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope, Subtree, SubtreeView,
     SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
 };
 
@@ -342,41 +342,64 @@ fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Erro
     })
 }
 
-fn go(cursor: &mut MerkCursor<'_, '_>, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
-    key.clear();
-    match to {
-        Seek::First => cursor.seek_to_first(),
-        Seek::Last => cursor.seek_to_last(),
-        Seek::From(key) => cursor.seek(key),
-        Seek::Back(key) => cursor.seek_for_prev(key),
-        Seek::Next => cursor.next(),
-        Seek::Prev => cursor.prev(),
+/// The key of each child of `node` in its link. A cell names a child by
+/// its address, and the key was read from the child's cell with the node
+/// (`children`); a record of the write set names its children by key.
+pub(super) fn with_child_keys(
+    mut node: StoredNode,
+    children: &mut ChildKeys,
+) -> Result<StoredNode, Error> {
+    for (side, link) in [(Side::Left, &mut node.left), (Side::Right, &mut node.right)] {
+        let Some(link) = link else {
+            continue;
+        };
+        let key = link.key.get_or_insert_with(|| children.take(side));
+        if key.len() != usize::from(link.key_len) {
+            return Err(Error::CorruptedState(
+                "a child's key was not read with its node",
+            ));
+        }
     }
-    .map_err(fault)?;
-    key.extend_from_slice(cursor.key().unwrap_or_default());
-    Ok(cursor.valid())
+    Ok(node)
 }
 
-/// The node a cursor stands on. A cell names a child by its address, so
-/// the key of each child is read from the child's cell with the node, in
-/// one operation of the transaction: for a node of the cursor's committed
-/// side that is the cell of the cursor's version.
-fn node_under(cursor: &mut MerkCursor<'_, '_>) -> Result<Option<StoredNode>, Error> {
-    let mut children = ChildKeys::new();
-    let node = cursor
-        .node_with_children(&mut children, |view| {
-            view.map(|view| stored_node(&view, true)).transpose()
-        })
-        .map_err(fault)??;
-    Ok(node.map(|mut node| {
-        for (side, link) in [(Side::Left, &mut node.left), (Side::Right, &mut node.right)] {
-            if let Some(link) = link {
-                link.key = Some(children.key(side).to_vec());
+/// What the store asks of a cursor of the transaction, for the cursor
+/// itself and for a parked one that is resumed: a move, which gives the
+/// key the cursor then stands on, and the node under that key, read with
+/// the keys of its children in one operation (for a node of the cursor's
+/// committed side at the cursor's version).
+macro_rules! walks {
+    ($go:ident, $node:ident, $cursor:ty) => {
+        fn $go<'s>(cursor: &mut $cursor, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
+            key.clear();
+            match to {
+                Seek::First => cursor.seek_to_first(),
+                Seek::Last => cursor.seek_to_last(),
+                Seek::From(key) => cursor.seek(key),
+                Seek::Back(key) => cursor.seek_for_prev(key),
+                Seek::Next => cursor.next(),
+                Seek::Prev => cursor.prev(),
             }
+            .map_err(fault)?;
+            key.extend_from_slice(cursor.key().unwrap_or_default());
+            Ok(cursor.valid())
         }
-        node
-    }))
+
+        fn $node<'s>(cursor: &mut $cursor) -> Result<Option<StoredNode>, Error> {
+            let mut children = ChildKeys::new();
+            let node = cursor
+                .node_with_children(&mut children, |view| {
+                    view.map(|view| stored_node(&view, true)).transpose()
+                })
+                .map_err(fault)??;
+            node.map(|node| with_child_keys(node, &mut children))
+                .transpose()
+        }
+    };
 }
+
+walks!(go, node_under, MerkCursor<'_, 's>);
+walks!(go_resumed, node_resumed, Resumed<'_, '_, 's, MerkSide<'s>>);
 
 /// The cursor of a handle that only reads: a cursor of its transaction.
 struct TxnWalk<'a, 's>(MerkCursor<'a, 's>);
@@ -391,35 +414,34 @@ impl Walk for TxnWalk<'_, '_> {
     }
 }
 
-/// The cursor of a writer's handle. A cursor of a scope borrows the scope,
-/// which the writer keeps behind its lock, so the cursor is parked between
-/// two calls: it owns where it stands, the pin of its version and its
-/// lease, and takes the lock for the length of each call.
+/// The cursor of a writer's handle: parked between two calls
+/// ([`ParkedCursor`]), and resumed under the writer's lock for the length
+/// of each.
 struct ScopeWalk<'a, 't, 's> {
     writer: &'a LigninWriter<'t, 's>,
     parked: ParkedCursor<'t, 's, MerkSide<'s>>,
 }
 
-impl ScopeWalk<'_, '_, '_> {
+impl<'s> ScopeWalk<'_, '_, 's> {
     fn resumed<T>(
         &mut self,
-        call: impl FnOnce(&mut MerkCursor<'_, '_>) -> Result<T, Error>,
+        call: impl FnOnce(&mut Resumed<'_, '_, 's, MerkSide<'s>>) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let scope = self.writer.scope();
-        let cursor = scope
+        let mut cursor = scope
             .resume(&mut self.parked)
-            .ok_or_else(|| refused("a cursor of another transaction"))?;
-        call(cursor)
+            .ok_or_else(|| refused("a cursor of another scope"))?;
+        call(&mut cursor)
     }
 }
 
 impl Walk for ScopeWalk<'_, '_, '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
-        self.resumed(|cursor| go(cursor, to, key))
+        self.resumed(|cursor| go_resumed(cursor, to, key))
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
-        self.resumed(node_under)
+        self.resumed(node_resumed)
     }
 }
 

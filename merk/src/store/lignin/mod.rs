@@ -78,11 +78,8 @@
 //! # The cursor
 //!
 //! [`LigninCursor`] walks the nodes of the Merk in key order and shows each
-//! as the record Merk encodes of it. It shows what the handle's reads show:
-//! the committed nodes of the moment it was opened, with the transaction's
-//! own writes, and nothing that is staged. It owns the place it stands on
-//! and holds nothing of the writer between two calls, so a handle and its
-//! cursors are `Send`.
+//! as the record Merk encodes of it. Its documentation says what it shows
+//! and what it holds.
 //!
 //! # Costs
 //!
