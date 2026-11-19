@@ -169,8 +169,7 @@ impl State<'_> {
         // The pending marks that were set or taken off after the mark go
         // with the writes after it (WT8). The frames know the cells of the
         // marked elements, so they are made again with them.
-        let marks = self.scopes.marks_len() > mark.pending;
-        self.scopes.rewind_marks(mark.pending);
+        let marks = self.scopes.rewind_marks(mark.pending);
         if self.set.rewind(mark) || marks {
             // The frames are made again from what is left, over the latest
             // version of that moment (WT8). The base stays pinned until

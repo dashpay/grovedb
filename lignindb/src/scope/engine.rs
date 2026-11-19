@@ -12,8 +12,8 @@ use lignin_tree::directory::MerkId;
 
 use super::*;
 use crate::{
-    scope::table::{Lineage, MarkKey, Refused, ScopeId},
-    txn::{key::KeySet, write_set::OpBatch, Hosted, RecordWrite},
+    scope::table::{Lineage, MarkChange, MarkKey, Refused, ScopeId},
+    txn::{key::KeySet, Hosted, RecordWrite},
 };
 
 /// The handle one thread writes a transaction through (`transactions.md`
@@ -252,24 +252,6 @@ fn marked_cell(
     find(&mut frames.tree, root, key)
 }
 
-/// The cells of `behind` that a write carried are behind where they are
-/// now.
-fn follow_behind(
-    behind: &mut std::collections::HashSet<CellAddress>,
-    carried: &[(CellAddress, NodeHandle)],
-) {
-    if behind.is_empty() {
-        return;
-    }
-    let moved: Vec<_> = (carried.iter())
-        .filter(|(from, _)| behind.contains(from))
-        .collect();
-    for (from, _) in &moved {
-        behind.remove(from);
-    }
-    behind.extend(moved.iter().map(|(_, to)| to.address()));
-}
-
 /// The cells of hosts that are behind in `frames` and that `batch`
 /// deletes, where `marked` says which elements may be marked. Once the
 /// batch is applied nothing is behind there, whichever node takes the
@@ -298,24 +280,28 @@ fn behind_deleted(
 /// those it deleted are behind no more, and those it carried are behind
 /// where they are now.
 fn move_behind(frames: &mut Awake<'_, '_>, deleted: &[CellAddress], applied: &Applied) {
+    let behind = &mut frames.tree.behind;
     for cell in deleted {
-        frames.tree.behind.remove(cell);
+        behind.remove(cell);
     }
-    follow_behind(&mut frames.tree.behind, &applied.carried);
+    let carried = applied.carried.iter();
+    let moved: Vec<_> = carried.filter(|(from, _)| behind.contains(from)).collect();
+    for (from, _) in &moved {
+        behind.remove(from);
+    }
+    behind.extend(moved.iter().map(|(_, to)| to.address()));
 }
 
-/// One operation of a write set as the batch it was, for applying it again
-/// by key.
-fn with_op<R>(set: &WriteSet, op: usize, apply: impl FnOnce(&Batch<'_>, &[bool]) -> R) -> R {
-    let hosted = set.hosted_lists(op);
-    let batch: OpBatch<'_> = set.batch(op, &hosted);
-    let (merks, subtrees) = (batch.merks(), batch.subtrees());
-    let batch = Batch {
-        records: batch.records(),
-        merks: &merks,
-        subtrees: &subtrees,
-    };
-    apply(&batch, &set.made(op))
+/// Has the element that `mark` is on be behind in `frames`, or behind no
+/// more, where they have its node.
+fn set_behind(frames: &mut Awake<'_, '_>, set: bool, mark: &MarkKey) -> Result<(), TxnError> {
+    if let Some(cell) = marked_cell(frames, mark)? {
+        match set {
+            true => frames.tree.behind.insert(cell),
+            false => frames.tree.behind.remove(&cell),
+        };
+    }
+    Ok(())
 }
 
 impl<'s> WriteTxn<'s> {
@@ -497,7 +483,7 @@ impl<'s> WriteTxn<'s> {
             .map(|(_, key)| key)
             .collect();
         for op in (0..set.ops()).filter(|op| set.laid(*op)) {
-            with_op(set, op, |batch, made| frames.apply(path, batch, Some(made)))
+            set.with_batch(op, |batch, made| frames.apply(path, batch, Some(made)))
                 .map_err(|refused| refused.error)?;
         }
         frames.tree.behind_keys.clear();
@@ -699,7 +685,7 @@ impl<'s> WriteTxn<'s> {
         frames: &mut Awake<'s, '_>,
         set: &WriteSet,
         ops: &[usize],
-        marks: &[(bool, MarkKey)],
+        marks: &[MarkChange],
     ) -> Result<(), (TxnError, bool)> {
         let mut dirty = false;
         // When each mark was set among the operations is not kept: a host
@@ -710,7 +696,7 @@ impl<'s> WriteTxn<'s> {
             dirty |= cell.is_some_and(|cell| frames.tree.behind.insert(cell));
         }
         for op in ops {
-            with_op(set, *op, |batch, made| {
+            set.with_batch(*op, |batch, made| {
                 // A host that is behind here may be marked: every mark of
                 // the scope is of a host that was found above.
                 let deleted =
@@ -723,12 +709,7 @@ impl<'s> WriteTxn<'s> {
             dirty = true;
         }
         for (set, mark) in marks {
-            let cell = marked_cell(frames, mark).map_err(|error| (error, true))?;
-            match (set, cell) {
-                (true, Some(cell)) => frames.tree.behind.insert(cell),
-                (false, Some(cell)) => frames.tree.behind.remove(&cell),
-                (_, None) => false,
-            };
+            set_behind(frames, *set, mark).map_err(|error| (error, true))?;
         }
         Ok(())
     }
@@ -786,11 +767,7 @@ impl<'s> WriteTxn<'s> {
             // behind no more, from here on.
             let op = self.begin(state, false)?;
             if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
-                match (set, marked_cell(&mut frames, &mark)?) {
-                    (true, Some(cell)) => frames.tree.behind.insert(cell),
-                    (false, Some(cell)) => frames.tree.behind.remove(&cell),
-                    (_, None) => false,
-                };
+                set_behind(&mut frames, set, &mark)?;
             }
         }
         state.scopes.mark(id, set, mark);

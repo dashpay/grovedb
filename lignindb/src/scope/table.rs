@@ -417,14 +417,16 @@ impl Scopes {
     }
 
     /// Undoes every change of the transaction's marks after the first
-    /// `len`, newest first (WT8).
-    pub(crate) fn rewind_marks(&mut self, len: usize) {
+    /// `len`, newest first (WT8), and says whether there was one.
+    pub(crate) fn rewind_marks(&mut self, len: usize) -> bool {
+        let changed = self.log.len() > len;
         while self.log.len() > len {
             match self.log.pop().expect("more changes than the mark") {
                 (true, key) => self.pending.remove(&key),
                 (false, key) => self.pending.insert(key),
             };
         }
+        changed
     }
 
     /// Takes every mark of the transaction off (WT9).

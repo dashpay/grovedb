@@ -90,8 +90,8 @@ impl Owners {
     }
 
     /// The scope of the number `tag` was rolled back: its writes leave the
-    /// model, and the subtrees it entered are below nothing.
-    fn forget<'s>(&self, world: &World<'s>, tx: &Tx<'s>, tag: u32) {
+    /// model.
+    fn forget(&self, tx: &Tx<'_>, tag: u32) {
         let mut owners = self.0.borrow_mut();
         let mut model = tx.model.borrow_mut();
         owners.resize(model.writes.len(), 0);
@@ -101,7 +101,6 @@ impl Owners {
             owners[at - 1] != tag
         });
         owners.retain(|owner| *owner != tag);
-        let _ = world;
     }
 }
 
@@ -415,7 +414,7 @@ fn a_rollback_beside_a_merge_leaves_exactly_the_merged_writes() {
             true => scope.merge(),
             false => {
                 scope.rollback();
-                owners.forget(&world, &tx, tag);
+                owners.forget(&tx, tag);
             }
         };
         match merge_first == first_merges {
@@ -507,7 +506,7 @@ fn a_commit_needs_every_scope_closed_and_no_mark_left() {
     beside.mark_pending(subtree, &key(4)).expect("a mark");
     assert!(beside.is_pending(subtree, &key(4)));
     beside.rollback();
-    owners.forget(&world, &tx, 2);
+    owners.forget(&tx, 2);
     scope.merge();
     assert!(tx.txn.is_pending(subtree, &host));
     assert!(!tx.txn.is_pending(subtree, &key(4)));
@@ -617,7 +616,7 @@ fn the_roots_of_merks_that_scopes_write_side_by_side_are_where_the_directory_say
             match (case, tag) {
                 (2, 1) => {
                     scope.rollback();
-                    owners.forget(&world, &tx, tag);
+                    owners.forget(&tx, tag);
                 }
                 _ => scope.merge(),
             }
@@ -776,7 +775,7 @@ fn a_scope_that_drops_a_subtree_holds_everything_below_it() {
             true => dropper.merge(),
             false => {
                 dropper.rollback();
-                owners.forget(&world, &tx, 2);
+                owners.forget(&tx, 2);
             }
         }
         // The other scope reads below the subtree again: what is there if
@@ -1235,7 +1234,7 @@ fn a_node_that_names_a_merk_reads_its_unit() {
     check_through(&world, &tx, &writer, &[SMALL[0]]);
     namer.merge();
     writer.rollback();
-    owners.forget(&world, &tx, 2);
+    owners.forget(&tx, 2);
     world.check(&tx);
     assert!(committed(world.commit(tx, &[])));
     world.check_committed();
@@ -1462,7 +1461,7 @@ fn a_write_that_the_pages_refuse_is_refused_when_it_is_laid_out() {
     assert_eq!(read, Some(b"good".to_vec()));
     alone.merge();
     beside.rollback();
-    owners.forget(&world, &tx, 2);
+    owners.forget(&tx, 2);
     assert_eq!(tx.txn.stats().writes, 0);
     world.check(&tx);
 
@@ -1501,6 +1500,48 @@ fn write_own<'s>(
         items.insert(key(100 + node), vec![name; 50]);
     }))
     .expect("a Merk of its own");
+}
+
+/// A node that is written again and keeps its value has the value of the
+/// write before it (WT3). Where that write kept it too and is laid out,
+/// the value is in the transaction's pages and nowhere in the write set: a
+/// scope that was opened beside another, whose write goes into the write
+/// set alone, takes it from there.
+#[test]
+fn a_scope_beside_another_keeps_a_value_that_only_the_pages_hold() {
+    let (db, versions) = Db::new(64);
+    let mut world = World::new(&db, &versions);
+    planted(&mut world, 2);
+    let tx = world.begin();
+    let owners = Owners::default();
+    // Every node from the new one up to the root is written again, and
+    // keeps its value.
+    let alone = tx.txn.scope().expect("a scope");
+    (owners.edit(&world, &tx, (1, &alone), 1, |items| {
+        drop(items.insert(key(51), b"first".to_vec()))
+    }))
+    .expect("its Merk");
+    alone.merge();
+    let other = tx.txn.scope().expect("a scope");
+    let beside = tx.txn.scope().expect("a scope");
+    assert!(!beside.is_laid_out());
+    for node in [53, 1] {
+        (owners.edit(&world, &tx, (2, &beside), 1, |items| {
+            drop(items.insert(key(node), b"second".to_vec()))
+        }))
+        .expect("its Merk");
+        check_through(&world, &tx, &beside, &[1]);
+    }
+    // A commit outside meets nothing of it, and the frames are made again
+    // from the write set, which has the values now.
+    world.edit_outside(2, |items| drop(items.insert(key(7), b"x".to_vec())), &[&tx]);
+    check_through(&world, &tx, &beside, &[1]);
+    beside.merge();
+    other.rollback();
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
 }
 
 /// SC8, SC5, CF4: a commit outside lands while scopes are open. The
@@ -1551,7 +1592,7 @@ fn a_commit_outside_lands_while_scopes_are_open() {
         match rolls_back {
             true => {
                 two.rollback();
-                owners.forget(&world, &tx, 2);
+                owners.forget(&tx, 2);
             }
             false => two.merge(),
         }

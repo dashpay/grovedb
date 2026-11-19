@@ -374,10 +374,11 @@ fn marks_are_a_scopes_until_it_merges() {
     assert_eq!(scopes.marks_len(), before);
 
     // A rollback to a mark of the write set undoes what came after it.
-    scopes.rewind_marks(merged);
+    assert!(scopes.rewind_marks(merged));
+    assert!(!scopes.rewind_marks(merged), "nothing came after it");
     assert!(scopes.is_pending(Who::OUTSIDE, &host));
     assert!(!scopes.is_pending(Who::OUTSIDE, &other));
-    scopes.rewind_marks(0);
+    assert!(scopes.rewind_marks(0));
     assert!(scopes.finalized());
     let five = scopes.open();
     scopes.mark(five, true, host.clone());

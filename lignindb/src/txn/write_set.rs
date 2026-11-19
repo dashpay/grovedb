@@ -18,6 +18,7 @@ use super::{
         ValuePut,
     },
 };
+use crate::scope::table::ScopeId;
 
 /// The position of an entry in the write set. A later write has a higher
 /// one.
@@ -163,7 +164,7 @@ struct Op {
     serial: u64,
     /// The open scope that made the operation, or zero for an operation
     /// that is the transaction's: its scope has merged (SC6).
-    scope: u32,
+    scope: ScopeId,
     /// Whether the transaction's frames show the operation. A scope that
     /// was opened beside another lays its operations out when it merges
     /// (`lignindb::scope`).
@@ -205,7 +206,7 @@ struct UnitIndex {
 
 /// A place in a write set: the writes after it can be taken out again, which
 /// is what a savepoint is (WT8). The writes of a scope are taken out by the
-/// scope they name ([`WriteSet::remove_scope`], SC6).
+/// scope they name (SC6).
 ///
 /// It is a place of the set for as long as every write before it stays. A
 /// rollback behind it ends it, and it is then refused.
@@ -635,7 +636,7 @@ impl WriteSet {
 
     /// Says that the open scope `scope` made the operation that was added
     /// last, and whether the transaction's frames show it.
-    pub(crate) fn tag_last(&mut self, scope: u32, laid: bool) {
+    pub(crate) fn tag_last(&mut self, scope: ScopeId, laid: bool) {
         let op = self.ops.last_mut().expect("an operation was added");
         (op.scope, op.laid) = (scope, laid);
     }
@@ -647,7 +648,7 @@ impl WriteSet {
     }
 
     /// The operations of the open scope `scope`, oldest first.
-    pub(crate) fn ops_of(&self, scope: u32) -> Vec<usize> {
+    pub(crate) fn ops_of(&self, scope: ScopeId) -> Vec<usize> {
         let ops = self.ops.iter().enumerate();
         ops.filter_map(|(at, op)| (op.scope == scope).then_some(at))
             .collect()
@@ -655,7 +656,7 @@ impl WriteSet {
 
     /// Makes the operations of the scope `scope` the transaction's (SC6),
     /// all of them laid out.
-    pub(crate) fn merge_scope(&mut self, scope: u32) {
+    pub(crate) fn merge_scope(&mut self, scope: ScopeId) {
         for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
             (op.scope, op.laid) = (0, true);
         }
@@ -663,7 +664,7 @@ impl WriteSet {
 
     /// The operations of the open scope `scope` are laid out: the
     /// transaction's frames show them from here on.
-    pub(crate) fn lay_scope(&mut self, scope: u32) {
+    pub(crate) fn lay_scope(&mut self, scope: ScopeId) {
         for op in self.ops.iter_mut().filter(|op| op.scope == scope) {
             op.laid = true;
         }
@@ -687,10 +688,10 @@ impl WriteSet {
         unlaid.map(|id| self.entry(*id).unit.subtree).collect()
     }
 
-    /// The place before the operation `op`.
-    fn mark_at(&self, op: usize) -> Mark {
+    /// Takes out the operation `op` and every one after it.
+    fn rewind_before(&mut self, op: usize) {
         let this = self.ops[op];
-        Mark {
+        let before = Mark {
             entries: this.entries as usize,
             ops: op,
             merks: this.merks as usize,
@@ -700,7 +701,27 @@ impl WriteSet {
                 .checked_sub(1)
                 .map_or(0, |before| self.ops[before].serial),
             pending: 0,
-        }
+        };
+        let removed = self.rewind(before);
+        debug_assert!(removed, "the place before an operation of the set");
+    }
+
+    /// Calls `apply` with the operation `op` as the batch it was, and with
+    /// what [`Self::made`] says of its Merks: for applying it again by key.
+    pub(crate) fn with_batch<R>(
+        &self,
+        op: usize,
+        apply: impl FnOnce(&Batch<'_>, &[bool]) -> R,
+    ) -> R {
+        let hosted = self.hosted_lists(op);
+        let batch = self.batch(op, &hosted);
+        let (merks, subtrees) = (batch.merks(), batch.subtrees());
+        let batch = Batch {
+            records: batch.records(),
+            merks: &merks,
+            subtrees: &subtrees,
+        };
+        apply(&batch, &self.made(op))
     }
 
     /// The subtrees below the one it drops or clears that the operation
@@ -723,33 +744,25 @@ impl WriteSet {
     /// overlap set it had. That is done in a copy of the set, which takes
     /// the set's place when all of them are in: the cost is that of the
     /// whole write set, once.
-    pub(crate) fn remove_scope(&mut self, scope: u32) -> bool {
+    pub(crate) fn remove_scope(&mut self, scope: ScopeId) -> bool {
         let Some(first) = self.ops.iter().position(|op| op.scope == scope) else {
             return false;
         };
         if self.ops[first..].iter().all(|op| op.scope == scope) {
-            let removed = self.rewind(self.mark_at(first));
-            debug_assert!(removed, "the place before an operation of the set");
+            self.rewind_before(first);
             return true;
         }
         let mut kept = self.clone();
-        let removed = kept.rewind(kept.mark_at(first));
-        debug_assert!(removed, "the place before an operation of the set");
+        kept.rewind_before(first);
         for op in (first..self.ops.len()).filter(|op| self.ops[*op].scope != scope) {
             let was = self.ops[op];
-            let hosted = self.hosted_lists(op);
-            let batch = self.batch(op, &hosted);
-            let (merks, subtrees) = (batch.merks(), batch.subtrees());
-            let batch = Batch {
-                records: batch.records(),
-                merks: &merks,
-                subtrees: &subtrees,
-            };
             // A Merk that the operation gave its first root is stated as
             // one that had none, and every other root is stated as it was
             // kept: both come out as they went in.
             let start = kept.entries.len();
-            kept.add(&batch, was.first_write, &self.made(op), &self.op_cut(op));
+            self.with_batch(op, |batch, made| {
+                kept.add(batch, was.first_write, made, &self.op_cut(op));
+            });
             let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
             let (from, to, ..) = self.op_bounds(op);
