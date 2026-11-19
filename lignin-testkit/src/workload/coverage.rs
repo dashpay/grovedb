@@ -88,6 +88,8 @@ named_variants! {
     ProvableCountProvableBigSumTree,
     CountBigSumTree,
     ProvableBigSumTree,
+    ProvableBigSumIndexedTree,
+    ProvableCountProvableBigSumIndexedTree,
 }
 
 named_variants! {
@@ -115,6 +117,8 @@ named_variants! {
     ProvableCountProvableBigSumTree,
     CountBigSumTree,
     ProvableBigSumTree,
+    ProvableBigSumIndexedTree,
+    ProvableCountProvableBigSumIndexedTree,
 }
 
 named_variants! {

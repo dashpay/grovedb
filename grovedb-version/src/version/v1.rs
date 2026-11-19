@@ -50,6 +50,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
             keyless_append_repeats: 0,
             same_key_tree_type_conflict: 0,
             tree_insert_above_emptied_level: 0,
+            filled_tree_insert_checks: 0,
             indexed_mirror_entry_read: 0,
         },
         element: GroveDBElementMethodVersions {
@@ -175,6 +176,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 read: 0,
                 prove_single_path: 0,
                 verify_single_path: 0,
+                big_sum_axis: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -200,6 +202,7 @@ pub const GROVE_V1: GroveVersion = GroveVersion {
                 axis_descent_in_v1_envelope: 0,
                 sum_budget_in_v1_envelope: 0,
                 count_offset_reference_empty_tree_rows: 0,
+                instance_cap_layer_truncation: 0,
                 unreported_empty_tree_row_charge: 0,
                 subquery_descent_on_key: 0,
             },

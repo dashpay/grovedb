@@ -88,12 +88,14 @@ fn v5_matches_v4_apart_from_its_gates() {
     operations.average_case.average_case_merk_insert_element = 0;
     operations.worst_case.worst_case_merk_insert_element = 0;
     operations.proof.count_offset_reference_empty_tree_rows = 0;
+    operations.proof.instance_cap_layer_truncation = 0;
     operations.proof.unreported_empty_tree_row_charge = 0;
     operations.proof.subquery_descent_on_key = 0;
     operations
         .insert
         .provable_count_provable_big_sum_tree_creation = 0;
     operations.insert.big_sum_tree_twins_creation = 0;
+    operations.indexed_axis.big_sum_axis = 0;
     v5_as_v4.grovedb_versions.element.path_query_push =
         GROVE_V4.grovedb_versions.element.path_query_push;
     v5_as_v4.grovedb_versions.element.delete = 0;
@@ -121,6 +123,10 @@ fn v5_matches_v4_apart_from_its_gates() {
         .grovedb_versions
         .apply_batch
         .indexed_mirror_entry_read = 0;
+    v5_as_v4
+        .grovedb_versions
+        .apply_batch
+        .filled_tree_insert_checks = 0;
     v5_as_v4.merk_versions.tree.just_in_time_value_update =
         GROVE_V4.merk_versions.tree.just_in_time_value_update;
     assert_eq!(format!("{v5_as_v4:?}"), format!("{GROVE_V4:?}"));
@@ -152,6 +158,33 @@ fn provable_count_provable_big_sum_tree_creation_is_gated_to_v5() {
 }
 
 #[test]
+fn instance_cap_layer_truncation_is_gated_to_v5() {
+    // GROVE_V4 as GroveDB 6.1.1 shipped it proves a layer with subquery
+    // branches under a per-instance cap in full, and its verifier refuses a
+    // truncated one: turning the truncation on there would change the proofs
+    // a live protocol version emits and accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions
+                .operations
+                .proof
+                .instance_cap_layer_truncation,
+            0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .proof
+            .instance_cap_layer_truncation,
+        1
+    );
+}
+
+#[test]
 fn same_key_tree_type_conflict_is_gated_to_v5() {
     // GROVE_V4 as GroveDB 6.1.1 shipped it applies a batch inserting trees of
     // different tree types at one key (consistency check disabled), and Dash
@@ -169,6 +202,28 @@ fn same_key_tree_type_conflict_is_gated_to_v5() {
             .grovedb_versions
             .apply_batch
             .same_key_tree_type_conflict,
+        1
+    );
+}
+
+#[test]
+fn filled_tree_insert_checks_are_gated_to_v5() {
+    // GROVE_V4 as GroveDB 6.1.1 shipped it applies a batch that creates a
+    // tree and writes into it without the checks the insert alone meets, and
+    // Dash Platform 5.0 runs it: refusing the batch there would change what
+    // a live protocol version accepts.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions.apply_batch.filled_tree_insert_checks, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .apply_batch
+            .filled_tree_insert_checks,
         1
     );
 }
@@ -913,6 +968,27 @@ fn local_offsets_only_change_the_v5_query_slots() {
     );
     assert_eq!(GROVE_V5.grovedb_versions.path_query_methods.merge, 2);
     assert_eq!(GROVE_V5.grovedb_versions.element.path_query_push, 2);
+}
+
+#[test]
+fn big_sum_axis_is_gated_to_v5() {
+    // No tree has the axis before GROVE_V5, and a released build cannot
+    // decode a query that names it.
+    for v in [&GROVE_V1, &GROVE_V2, &GROVE_V3, &GROVE_V4] {
+        assert_eq!(
+            v.grovedb_versions.operations.indexed_axis.big_sum_axis, 0,
+            "v{}",
+            v.protocol_version
+        );
+    }
+    assert_eq!(
+        GROVE_V5
+            .grovedb_versions
+            .operations
+            .indexed_axis
+            .big_sum_axis,
+        1
+    );
 }
 
 #[test]

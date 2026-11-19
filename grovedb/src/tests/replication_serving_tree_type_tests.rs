@@ -526,7 +526,7 @@ mod tests {
                     .chain(synthetic_locals())
                     .collect();
                 for root_key in &root_keys {
-                    for type_byte in (0..=19u8).chain([20, 128, u8::MAX]) {
+                    for type_byte in (0..=21u8).chain([22, 128, u8::MAX]) {
                         for locals in &shapes {
                             let request = pack_nested_bytes(vec![global_chunk_id_with_type_byte(
                                 target.prefix,
@@ -561,7 +561,7 @@ mod tests {
                                 Served::Ok if must_refuse_family(target, root_key, type_byte) => {
                                     panic!("{case}: a mismatched family must be refused")
                                 }
-                                Served::Ok if type_byte > 19 => {
+                                Served::Ok if type_byte > 21 => {
                                     panic!("{case}: an unknown tree type must be refused")
                                 }
                                 Served::Ok | Served::Err(_) => {}

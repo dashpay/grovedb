@@ -3581,6 +3581,221 @@ mod tests {
         });
     }
 
+    /// The entries the 128-bit indexed round trips sync: subtrees of sum
+    /// items whose sums reach past an `i64` in both directions.
+    fn wide_indexed_entries() -> Vec<(&'static [u8], Vec<i64>)> {
+        vec![
+            (b"a", vec![i64::MAX, i64::MAX]),
+            (b"b", vec![i64::MAX, i64::MAX, i64::MAX]),
+            (b"c", vec![5]),
+            (b"d", vec![i64::MIN, i64::MIN]),
+        ]
+    }
+
+    /// The big sum axis of the tree at `[TEST_LEAF, tree]` ranks the entries
+    /// of [`wide_indexed_entries`] by the sums written out here, lowest
+    /// first. The expected sums are literals, so the check does not lean on
+    /// the code that derives the secondary keys.
+    fn assert_big_sum_ranking_of_wide_entries(
+        db: &GroveDb,
+        tree: &[u8],
+        grove_version: &GroveVersion,
+    ) {
+        use grovedb_element::indexed::IndexAxis;
+        use grovedb_merk::proofs::query::AxisQuery;
+
+        use crate::{
+            operations::get::PathQueryRun,
+            query_result_type::{AxisKeys, QueryResultType},
+            PathQuery,
+        };
+
+        let query = PathQuery::new_axis(
+            vec![TEST_LEAF.to_vec(), tree.to_vec()],
+            AxisQuery::top_k(IndexAxis::BigSum, 10, 0, false).keys_only(),
+        );
+        let PathQueryRun::AxisKeys {
+            keys: AxisKeys::BigSum(ranked),
+            ..
+        } = db
+            .run_path_query(
+                &query,
+                true,
+                true,
+                true,
+                QueryResultType::QueryKeyElementPairResultType,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("read the big sum axis")
+        else {
+            panic!("expected the keys of the big sum axis");
+        };
+        assert_eq!(
+            ranked,
+            vec![
+                (2 * (i64::MIN as i128), b"d".to_vec()),
+                (5, b"c".to_vec()),
+                (2 * (i64::MAX as i128), b"a".to_vec()),
+                (3 * (i64::MAX as i128), b"b".to_vec()),
+            ]
+        );
+    }
+
+    /// Full round trip for a populated `ProvableBigSumIndexedTree`, whose
+    /// one secondary is on the big sum axis.
+    #[test]
+    fn state_sync_populated_pbsit_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pbsit",
+                Element::empty_provable_big_sum_indexed_tree(),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PBSIT");
+        for (k, items) in wide_indexed_entries() {
+            source
+                .insert_into_provable_big_sum_indexed_tree(
+                    [TEST_LEAF, b"pbsit"].as_ref(),
+                    k,
+                    Element::empty_big_sum_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PBSIT entry");
+            for (i, item) in items.iter().enumerate() {
+                source
+                    .insert(
+                        [TEST_LEAF, b"pbsit", k].as_ref(),
+                        &[i as u8],
+                        Element::new_sum_item(*item),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("derive PBSIT entry sum");
+            }
+        }
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync of a populated PBSIT should succeed");
+
+        assert_big_sum_ranking_of_wide_entries(&dest, b"pbsit", grove_version);
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_provable_big_sum_indexed_tree(
+                [TEST_LEAF, b"pbsit"].as_ref(),
+                b"e",
+                Element::new_sum_item(21),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync PBSIT insert");
+        });
+    }
+
+    /// Full round trip for a three-axis (count + avg + big sum)
+    /// `ProvableCountProvableBigSumIndexedTree`, with the default batch size
+    /// and with a `subtrees_batch_size` of 1.
+    #[test]
+    fn state_sync_pcpbsit_three_axes_round_trip() {
+        let grove_version = GroveVersion::latest();
+        let source = make_test_grovedb(grove_version);
+
+        let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(0, None), (2, None), (3, None)];
+        source
+            .insert(
+                [TEST_LEAF].as_ref(),
+                b"pcpbsit",
+                Element::empty_provable_count_provable_big_sum_indexed_tree(axes)
+                    .expect("canonical axes"),
+                None,
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("create PCPBSIT");
+        for (k, items) in wide_indexed_entries() {
+            source
+                .insert_into_provable_count_provable_big_sum_indexed_tree(
+                    [TEST_LEAF, b"pcpbsit"].as_ref(),
+                    k,
+                    Element::empty_count_big_sum_tree(),
+                    None,
+                    grove_version,
+                )
+                .unwrap()
+                .expect("insert PCPBSIT entry");
+            for (i, item) in items.iter().enumerate() {
+                source
+                    .insert(
+                        [TEST_LEAF, b"pcpbsit", k].as_ref(),
+                        &[i as u8],
+                        Element::new_sum_item(*item),
+                        None,
+                        None,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .expect("derive PCPBSIT entry count and sum");
+            }
+        }
+
+        for batch_size in [64usize, 1] {
+            let dest = run_sync_with_version(
+                &source,
+                grove_version,
+                batch_size,
+                None,
+                None,
+                CURRENT_STATE_SYNC_VERSION,
+            )
+            .unwrap_or_else(|e| {
+                panic!("sync of a 3-axis PCPBSIT (batch {batch_size}) failed: {e:?}")
+            });
+            assert_big_sum_ranking_of_wide_entries(&dest, b"pcpbsit", grove_version);
+            assert_indexed_round_trip(&source, &dest, grove_version, |_| {});
+        }
+
+        let dest = run_sync_with_version(
+            &source,
+            grove_version,
+            64,
+            None,
+            None,
+            CURRENT_STATE_SYNC_VERSION,
+        )
+        .expect("sync should succeed");
+        assert_indexed_round_trip(&source, &dest, grove_version, |db| {
+            db.insert_into_provable_count_provable_big_sum_indexed_tree(
+                [TEST_LEAF, b"pcpbsit"].as_ref(),
+                b"e",
+                Element::new_sum_item(7),
+                None,
+                grove_version,
+            )
+            .unwrap()
+            .expect("post-sync PCPBSIT insert");
+        });
+    }
+
     /// A NESTED indexed tree: a PCPSIT entry that is itself a populated
     /// PCPSIT. The outer group's primary transfer must discover the inner
     /// indexed child and open a second group for it.

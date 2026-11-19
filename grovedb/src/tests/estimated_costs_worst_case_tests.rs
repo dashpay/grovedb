@@ -9,7 +9,7 @@ use grovedb_merk::{
     estimated_costs::worst_case_costs::WorstCaseLayerInformation, tree_type::TreeType,
 };
 use grovedb_storage::rocksdb_storage::RocksDbStorage;
-use grovedb_version::version::GroveVersion;
+use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
 use crate::{
     batch::{key_info::KeyInfo::KnownKey, KeyInfoPath},
@@ -759,5 +759,68 @@ fn test_worst_case_merk_delete_tree_indexed_variants() {
             .value
             .as_ref()
             .unwrap_or_else(|_| panic!("delete {:?} should succeed", tt));
+    }
+}
+
+/// The worst-case element estimate has always counted the byte of a tree's
+/// wrapper, once: through the wrapper overhead of the trees it sizes as
+/// layered, and through the serialized size of the others. It needed no
+/// change when the average-case estimate gained the byte in `GROVE_V5`
+/// (issue #911), so the figures are the same in `GROVE_V4` and `GROVE_V5`.
+#[test]
+fn test_worst_case_merk_insert_element_counts_a_tree_wrapper_byte_once() {
+    let flags = Some(vec![1, 2, 3]);
+    let non_counted = |tree: Element| {
+        let wrapped = Element::new_non_counted(tree.clone()).expect("a tree wraps as non-counted");
+        (wrapped, tree)
+    };
+    let not_summed = |tree: Element| {
+        let wrapped =
+            Element::new_not_summed(tree.clone()).expect("a sum tree wraps as not-summed");
+        (wrapped, tree)
+    };
+    let not_counted_or_summed = |tree: Element| {
+        let wrapped = Element::new_not_counted_or_summed(tree.clone())
+            .expect("a sum tree wraps as not-counted-or-summed");
+        (wrapped, tree)
+    };
+    let wrapped_trees = vec![
+        non_counted(Element::empty_tree()),
+        non_counted(Element::empty_tree_with_flags(flags.clone())),
+        non_counted(Element::empty_count_tree()),
+        non_counted(Element::empty_provable_count_sum_tree()),
+        not_summed(Element::empty_sum_tree()),
+        not_summed(Element::empty_big_sum_tree_with_flags(flags.clone())),
+        not_summed(Element::empty_count_sum_tree()),
+        not_counted_or_summed(Element::empty_sum_tree()),
+        not_counted_or_summed(Element::empty_provable_count_provable_sum_tree_with_flags(
+            flags,
+        )),
+    ];
+    let added_bytes = |element: &Element, grove_version: &GroveVersion| {
+        let result = GroveDb::worst_case_merk_insert_element(
+            &KnownKey(b"tree".to_vec()),
+            element,
+            TreeType::CountSumTree,
+            None,
+            grove_version,
+        );
+        result.value.as_ref().expect("the estimate should succeed");
+        result.cost.storage_cost.added_bytes
+    };
+
+    for (wrapped, bare) in wrapped_trees {
+        for grove_version in [&GROVE_V4, GroveVersion::latest()] {
+            assert_eq!(
+                added_bytes(&wrapped, grove_version),
+                added_bytes(&bare, grove_version) + 1,
+                "{wrapped}: the wrapper must add exactly one byte",
+            );
+        }
+        assert_eq!(
+            added_bytes(&wrapped, &GROVE_V4),
+            added_bytes(&wrapped, GroveVersion::latest()),
+            "{wrapped}: the worst case is the same in V4 and V5",
+        );
     }
 }

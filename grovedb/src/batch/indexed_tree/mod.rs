@@ -64,7 +64,9 @@ pub(crate) use preflight::reject_indexed_overwrite_with_descendants;
 
 use crate::{Element, Error};
 
-use crate::operations::indexed_tree::IndexedEntryState;
+use crate::operations::indexed_tree::{
+    entry_count_and_sum, is_wide_indexed_primary, IndexedEntryState,
+};
 
 /// A primary entry's state, `None` when the entry does not exist on that
 /// side of the transition.
@@ -143,7 +145,7 @@ fn read_entry_aggregates_v1<'db, S: NodeStore<'db>>(
         Element::deserialize(bytes.as_slice(), grove_version)
             .map_err(|e| Error::CorruptedData(format!("indexed {phase}-state deserialize: {e}")))
     );
-    let (count, sum) = elem.count_sum_value_or_default();
+    let (count, sum) = entry_count_and_sum(&elem, is_wide_indexed_primary(primary_merk.tree_type));
     Ok(Some(IndexedEntryState {
         count,
         sum,
@@ -209,7 +211,7 @@ fn read_entry_aggregates_v0<'db, S: NodeStore<'db>>(
             hex::encode(key)
         )))
     );
-    let (count, sum) = elem.count_sum_value_or_default();
+    let (count, sum) = entry_count_and_sum(&elem, is_wide_indexed_primary(primary_merk.tree_type));
     Ok(Some(IndexedEntryState {
         count,
         sum,

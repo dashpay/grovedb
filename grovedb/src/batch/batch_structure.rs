@@ -24,7 +24,13 @@ use intmap::IntMap;
 
 #[cfg(feature = "minimal")]
 use crate::{
-    batch::{key_info::KeyInfo, GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache},
+    batch::{
+        filled_tree_insert_checks::{
+            check_inserted_tree_element, holds_filled_trees_to_insert_checks,
+        },
+        key_info::KeyInfo,
+        GroveOp, KeyInfoPath, QualifiedGroveDbOp, TreeCache,
+    },
     operations::insert::check_wide_sum_tree_creation,
     ElementFlags, Error,
 };
@@ -207,6 +213,11 @@ where
         let refuse_tree_type_conflicts =
             cost_return_on_error_no_add!(cost, refuses_same_key_tree_type_conflict(grove_version));
 
+        // V1..V4 check a tree element only where its insert is applied, which
+        // a tree the batch also fills never reaches; V5 checks it on entry.
+        let hold_filled_trees_to_insert_checks =
+            cost_return_on_error_no_add!(cost, holds_filled_trees_to_insert_checks(grove_version));
+
         let mut ops_by_level_paths: OpsByLevelPath = previous_ops.unwrap_or_default();
         let mut current_last_level: u32 =
             ops_by_level_paths.iter().map(|(k, _)| k).max().unwrap_or(0);
@@ -276,6 +287,16 @@ where
                     cost,
                     check_wide_sum_tree_creation(element, "batch insert", grove_version)
                 );
+                // For the same reason, from V5 every check an insert makes on
+                // the tree element alone is made here: an indexed tree with
+                // axes out of order would be committed with them, and no
+                // proof of the tree would verify.
+                if hold_filled_trees_to_insert_checks {
+                    cost_return_on_error_no_add!(
+                        cost,
+                        check_inserted_tree_element(element, grove_version)
+                    );
+                }
             }
 
             // Validate key length: Merk link encoding stores key length as a

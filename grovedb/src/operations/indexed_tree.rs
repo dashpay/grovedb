@@ -44,8 +44,8 @@ use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
 use grovedb_element::indexed::{
-    decode_avg_sort_key, decode_sum_sort_key, encode_avg_sort_key, encode_count_sort_key,
-    encode_sum_sort_key, IndexAxis,
+    decode_avg_sort_key, decode_big_sum_sort_key, decode_sum_sort_key, encode_avg_sort_key,
+    encode_big_sum_sort_key, encode_count_sort_key, encode_sum_sort_key, IndexAxis,
 };
 use grovedb_merk::{
     element::{
@@ -75,7 +75,8 @@ use crate::{
 /// proof claims from the same definition the mirror writes with. Re-exported
 /// here because this is where the write paths look for it.
 pub(crate) use crate::operations::proof::indexed_axis::canonical_row::{
-    axis_row_reference, axis_sort_key_len, decode_axis_row_reference, make_axis_secondary_key,
+    axis_row_reference, axis_sort_key_len, decode_axis_row_reference, entry_count_and_sum,
+    is_wide_indexed_primary, make_axis_secondary_key, EntrySum,
 };
 
 /// Per-axis Merk tree type to open the secondary with.
@@ -108,8 +109,34 @@ pub(crate) fn axis_secondary_tree_type(axis: IndexAxis) -> TreeType {
         // Each sum entry contributes (count = 1, sum = its own
         // SumValue).
         IndexAxis::Sum => TreeType::ProvableCountProvableSumTree,
-        // Each avg entry contributes (count = 1, sum = item's SumValue).
+        // Each avg entry contributes (count = 1, sum = item's SumValue),
+        // or sum = 0 under a primary whose sum is 128 bits wide.
         IndexAxis::Avg => TreeType::ProvableCountProvableSumTree,
+        // Each big sum entry contributes (count = 1, sum = 0): the row's
+        // sum is an `i64` and cannot carry the entry's 128-bit sum, which
+        // the key holds. The count half is what offset pagination and the
+        // band's population read.
+        IndexAxis::BigSum => TreeType::ProvableCountProvableSumTree,
+    }
+}
+
+/// The tag an axis's secondary storage namespace is derived from
+/// (`RocksDbStorage::secondary_prefix_for`).
+///
+/// It is the axis's own tag, except that the big sum axis shares the sum
+/// axis's namespace. An indexed tree has one or the other, by the width of
+/// its sum, so the two never meet under one primary; and every cleanup that
+/// sweeps the count, sum and avg namespaces of a removed primary then
+/// covers a 128-bit tree exactly as it covers a 64-bit one, with no fourth
+/// namespace to sweep and no cost added to a removal.
+///
+/// Every reader and writer of one axis's secondary derives its prefix
+/// through this; the sweeps name the three namespaces directly.
+#[inline]
+pub(crate) fn axis_storage_tag(axis: IndexAxis) -> u8 {
+    match axis {
+        IndexAxis::BigSum => IndexAxis::Sum.tag(),
+        IndexAxis::Count | IndexAxis::Sum | IndexAxis::Avg => axis.tag(),
     }
 }
 
@@ -128,23 +155,38 @@ pub(crate) fn indexed_element_axes(
     match element.underlying() {
         Element::ProvableCountIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Count, s.clone())]),
         Element::ProvableSumIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::Sum, s.clone())]),
-        Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => axes
-            .iter()
-            .map(|(tag, root_key)| {
-                IndexAxis::try_from_tag(*tag)
-                    .map(|axis| (axis, root_key.clone()))
-                    .map_err(|e| {
-                        Error::CorruptedData(format!(
-                            "invalid axis tag in indexed-tree element: {e}"
-                        ))
-                    })
-            })
-            .collect(),
+        Element::ProvableBigSumIndexedTree(_, s, ..) => Ok(vec![(IndexAxis::BigSum, s.clone())]),
+        Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _) => {
+            tlv_axes(axes, IndexAxis::BigSum)
+        }
+        Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _) => {
+            tlv_axes(axes, IndexAxis::Sum)
+        }
         other => Err(Error::CorruptedData(format!(
             "expected an indexed-tree element, got {}",
             other.type_str()
         ))),
     }
+}
+
+/// Decode an axes TLV, refusing the sum axis of the other width
+/// (`refused_axis`): a 64-bit tree has no big sum axis and a 128-bit tree no
+/// sum axis, which is what the axes validators enforce at creation.
+fn tlv_axes(
+    axes: &[(u8, Option<Vec<u8>>)],
+    refused_axis: IndexAxis,
+) -> Result<Vec<(IndexAxis, Option<Vec<u8>>)>, Error> {
+    axes.iter()
+        .map(|(tag, root_key)| match IndexAxis::try_from_tag(*tag) {
+            Ok(axis) if axis != refused_axis => Ok((axis, root_key.clone())),
+            Ok(_) => Err(Error::CorruptedData(format!(
+                "invalid axis tag in indexed-tree element: unknown axis tag {tag}"
+            ))),
+            Err(e) => Err(Error::CorruptedData(format!(
+                "invalid axis tag in indexed-tree element: {e}"
+            ))),
+        })
+        .collect()
 }
 
 /// One primary entry's mirror-relevant state.
@@ -159,8 +201,8 @@ pub(crate) fn indexed_element_axes(
 pub(crate) struct IndexedEntryState {
     /// The entry's count aggregate.
     pub(crate) count: u64,
-    /// The entry's sum aggregate.
-    pub(crate) sum: i64,
+    /// The entry's sum aggregate, at the width of its primary's sum.
+    pub(crate) sum: EntrySum,
     /// The primary node's Merk-stored committed value hash — a simple
     /// hash for an item, a layered/combined hash for a tree, a combined
     /// hash for a nested reference. This is the immediate-node binding
@@ -188,6 +230,10 @@ pub(crate) struct IndexedEntryState {
 ///   refuse it as not carrying a count explicitly.
 /// - **PCIT** adds nothing beyond the generic rule — every element carries a
 ///   count contribution.
+/// - The 128-bit counterparts of PSIT and PCPSIT index an `i128` sum, so they
+///   accept what their 64-bit counterparts accept and the big sum trees
+///   besides (`Element::is_big_sum_bearing_child`,
+///   `Element::is_count_and_big_sum_bearing_child`).
 ///
 /// Applied on both the dedicated and the batch path. Keeping it in one place
 /// is the point: while each door had its own rules, batches accepted children
@@ -244,6 +290,31 @@ pub(crate) fn validate_indexed_child_for_variant(
             }
             Ok(())
         }
+        TreeType::ProvableBigSumIndexedTree => {
+            if !item.is_big_sum_bearing_child() {
+                return Err(Error::InvalidInput(
+                    "ProvableBigSumIndexedTree only accepts sum-bearing children (SumItem, \
+                     ItemWithSumItem, ReferenceWithSumItem, or any sum-bearing tree variant, a \
+                     big sum one included)",
+                ));
+            }
+            Ok(())
+        }
+        TreeType::ProvableCountProvableBigSumIndexedTree => {
+            // A bare `SumItem` counts one and adds its sum, as under the
+            // 64-bit tree from `GROVE_V4`; this tree exists only after it.
+            if !matches!(item, Element::SumItem(..)) && !item.is_count_and_big_sum_bearing_child() {
+                return Err(Error::InvalidInput(
+                    "ProvableCountProvableBigSumIndexedTree only accepts children that \
+                     contribute both count and sum (SumItem, ItemWithSumItem, \
+                     ReferenceWithSumItem, CountSumTree, ProvableCountSumTree, \
+                     ProvableCountProvableSumTree, CountBigSumTree, \
+                     ProvableCountProvableBigSumTree, or a nested count and sum indexed tree \
+                     of either width)",
+                ));
+            }
+            Ok(())
+        }
         _ => Ok(()),
     }
 }
@@ -282,9 +353,14 @@ pub(crate) fn reject_generic_write_into_indexed_primary(
          dedicated indexed-tree APIs instead — insert_into_count_indexed_tree / \
          delete_from_count_indexed_tree (ProvableCountIndexedTree), \
          insert_into_provable_sum_indexed_tree / delete_from_provable_sum_indexed_tree \
-         (ProvableSumIndexedTree), or insert_into_provable_count_provable_sum_indexed_tree / \
+         (ProvableSumIndexedTree), insert_into_provable_count_provable_sum_indexed_tree / \
          delete_from_provable_count_provable_sum_indexed_tree \
-         (ProvableCountProvableSumIndexedTree)"
+         (ProvableCountProvableSumIndexedTree), or their big sum counterparts \
+         insert_into_provable_big_sum_indexed_tree / delete_from_provable_big_sum_indexed_tree \
+         (ProvableBigSumIndexedTree) and \
+         insert_into_provable_count_provable_big_sum_indexed_tree / \
+         delete_from_provable_count_provable_big_sum_indexed_tree \
+         (ProvableCountProvableBigSumIndexedTree)"
     )))
 }
 
@@ -345,7 +421,11 @@ fn reject_non_empty_dedicated_indexed_child_claim(
         }
         Element::ProvableCountIndexedTree(p, s, c, _) => p.is_some() || s.is_some() || *c != 0,
         Element::ProvableSumIndexedTree(p, s, sum, _) => p.is_some() || s.is_some() || *sum != 0,
+        Element::ProvableBigSumIndexedTree(p, s, sum, _) => p.is_some() || s.is_some() || *sum != 0,
         Element::ProvableCountProvableSumIndexedTree(p, c, sum, axes, _) => {
+            p.is_some() || *c != 0 || *sum != 0 || axes.iter().any(|(_, sk)| sk.is_some())
+        }
+        Element::ProvableCountProvableBigSumIndexedTree(p, c, sum, axes, _) => {
             p.is_some() || *c != 0 || *sum != 0 || axes.iter().any(|(_, sk)| sk.is_some())
         }
         _ => false,
@@ -390,8 +470,9 @@ impl<E: Engine> GroveDb<E> {
     {
         let mut cost = OperationCost::default();
         let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
-        let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-            .unwrap_add_cost(&mut cost);
+        let secondary_prefix =
+            RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
+                .unwrap_add_cost(&mut cost);
         let storage = self
             .db
             .subtree_by_prefix(secondary_prefix, batch, tx)
@@ -1020,7 +1101,8 @@ impl<E: Engine> GroveDb<E> {
                     hex::encode(&key)
                 )))
             );
-            let (count, sum) = element.count_sum_value_or_default();
+            let (count, sum) =
+                entry_count_and_sum(&element, is_wide_indexed_primary(primary_merk.tree_type));
             entries.push((
                 key,
                 IndexedEntryState {
@@ -1202,6 +1284,7 @@ impl<E: Engine> GroveDb<E> {
         let is_multi_axis = matches!(
             indexed_element.underlying(),
             Element::ProvableCountProvableSumIndexedTree(..)
+                | Element::ProvableCountProvableBigSumIndexedTree(..)
         );
         let (reconstructed, second_hash) = if is_multi_axis {
             let axes_tlv: Vec<(u8, Option<Vec<u8>>)> = per_axis_state
@@ -1477,8 +1560,9 @@ impl<E: Engine> GroveDb<E> {
         let parent_prefix =
             RocksDbStorage::build_prefix(parent_path.clone()).unwrap_add_cost(&mut cost);
         let primary_prefix = RocksDbStorage::build_prefix(path).unwrap_add_cost(&mut cost);
-        let secondary_prefix = RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-            .unwrap_add_cost(&mut cost);
+        let secondary_prefix =
+            RocksDbStorage::secondary_prefix_for(&primary_prefix, axis_storage_tag(axis))
+                .unwrap_add_cost(&mut cost);
         let parent_ctx = self
             .db
             .subtree_by_prefix(parent_prefix, None, tx_ref)
@@ -2435,6 +2519,217 @@ impl<E: Engine> GroveDb<E> {
         .add_cost(cost)
     }
 
+    // ---- big sum axis ----
+    //
+    // The sum axis of an indexed tree whose sum is 128 bits wide. Its
+    // secondary is keyed `big_sum_sortable_be(16) ‖ original_key`, the
+    // sign-flipped big-endian encoding the avg axis also uses for its
+    // `i128`, so the two share their key codec and differ in what the
+    // value means.
+
+    /// Paginated top `k` of the big sum axis: `(sum, original_key)` entries
+    /// in sum order, after skipping `offset`. The 128-bit counterpart of
+    /// [`Self::indexed_sum_top_k_paginated`], with the same skip rule and
+    /// the same lack of a proof.
+    ///
+    /// Accepts [`Element::ProvableBigSumIndexedTree`], or
+    /// [`Element::ProvableCountProvableBigSumIndexedTree`] if its TLV
+    /// contains the big sum axis. Any other tree is refused with
+    /// `Error::InvalidPath`.
+    pub(crate) fn indexed_big_sum_top_k_paginated<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedTopKPage<i128>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_paginated_generic(
+            path.into(),
+            IndexAxis::BigSum,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_big_sum_secondary_key,
+        )
+    }
+
+    /// The entries of the big sum axis whose sum falls in the inclusive
+    /// band `[lo_sum, hi_sum]`, up to `limit`, in the direction
+    /// `descending` gives. The 128-bit counterpart of
+    /// [`Self::indexed_sum_range`]. `lo_sum > hi_sum` returns an empty
+    /// vector.
+    pub(crate) fn indexed_big_sum_range<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        lo_sum: i128,
+        hi_sum: i128,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<IndexedAxisEntry<i128>>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        // The version gate precedes the degenerate-range fast path, as in
+        // every other range read.
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_big_sum_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let (lo_bytes, upper_bytes) = big_sum_range_bounds(lo_sum, hi_sum);
+        self.indexed_axis_range_generic(
+            path.into(),
+            IndexAxis::BigSum,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            |sk| {
+                decode_big_sum_secondary_key(sk).inspect(|(sum, _)| {
+                    debug_assert!(*sum >= lo_sum && *sum <= hi_sum);
+                })
+            },
+        )
+        .add_cost(cost)
+    }
+
+    /// How many entries of the big sum axis fall in the inclusive band
+    /// `[lo_sum, hi_sum]`. The 128-bit counterpart of
+    /// [`Self::indexed_sum_population_over_value_range`], answered off the
+    /// secondary's count aggregate.
+    ///
+    /// The band has no total: a row of this axis carries no sum, because
+    /// the entry's 128-bit sum does not fit the row's `i64` and lives in
+    /// the key instead. `AxisQuery::validate` refuses the total.
+    pub(crate) fn indexed_big_sum_population_over_value_range<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        lo_sum: i128,
+        hi_sum: i128,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<u64, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_big_sum_population_over_value_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        use grovedb_merk::proofs::query::QueryItem as MerkQueryItemForRange;
+
+        let mut cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(0u64).wrap_with_cost(cost);
+        }
+        let path: SubtreePath<B> = path.into();
+        let tx = TxRef::for_read(&self.db, transaction);
+        let tx_ref = tx.as_ref();
+
+        let secondary_merk = cost_return_on_error!(
+            &mut cost,
+            self.open_validated_axis_secondary(path, IndexAxis::BigSum, tx_ref, grove_version)
+        );
+
+        let (lo_bytes, upper_bytes) = big_sum_range_bounds(lo_sum, hi_sum);
+        let inner_range = match upper_bytes {
+            Some(upper_bytes) => MerkQueryItemForRange::Range(lo_bytes..upper_bytes),
+            None => MerkQueryItemForRange::RangeFrom(lo_bytes..),
+        };
+
+        let population = cost_return_on_error!(
+            &mut cost,
+            secondary_merk
+                .count_aggregate_on_range(&inner_range, grove_version)
+                .map_err(|e| Error::CorruptedData(format!(
+                    "indexed big sum population on range: {e}"
+                )))
+        );
+
+        Ok(population).wrap_with_cost(cost)
+    }
+
+    /// Keys-only [`Self::indexed_big_sum_top_k_paginated`].
+    pub(crate) fn indexed_big_sum_top_k_paginated_keys<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        k: u16,
+        offset: u64,
+        descending: bool,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<IndexedTopKKeysPage<i128>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.indexed_axis_top_k_paginated_keys_generic(
+            path.into(),
+            IndexAxis::BigSum,
+            k,
+            offset,
+            descending,
+            transaction,
+            grove_version,
+            decode_big_sum_secondary_key,
+        )
+    }
+
+    /// Keys-only [`Self::indexed_big_sum_range`].
+    pub(crate) fn indexed_big_sum_range_keys<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        lo_sum: i128,
+        hi_sum: i128,
+        descending: bool,
+        limit: u16,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<(i128, Vec<u8>)>, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        grovedb_version::check_grovedb_v0_with_cost!(
+            "indexed_big_sum_range",
+            grove_version.grovedb_versions.operations.indexed_axis.read
+        );
+        let cost = OperationCost::default();
+        if lo_sum > hi_sum {
+            return Ok(Vec::new()).wrap_with_cost(cost);
+        }
+        let (lo_bytes, upper_bytes) = big_sum_range_bounds(lo_sum, hi_sum);
+        self.indexed_axis_range_keys_generic(
+            path.into(),
+            IndexAxis::BigSum,
+            lo_bytes,
+            upper_bytes,
+            descending,
+            limit,
+            transaction,
+            grove_version,
+            decode_big_sum_secondary_key,
+        )
+        .add_cost(cost)
+    }
+
     // -----------------------------------------------------------------
     // Keys-only reads.
     //
@@ -2961,6 +3256,119 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
+impl<E: Engine> GroveDb<E> {
+    // -----------------------------------------------------------------
+    // The 128-bit counterparts of the PSIT and PCPSIT direct-insert /
+    // direct-delete paths.
+    // -----------------------------------------------------------------
+
+    /// Insert (or update) an item under a key into a
+    /// `ProvableBigSumIndexedTree` primary, mirroring the change into the
+    /// secondary ordered by the 128-bit sum (the big sum axis).
+    ///
+    /// The 128-bit counterpart of
+    /// [`Self::insert_into_provable_sum_indexed_tree`]. The child must carry a
+    /// sum, of either width (see [`Element::is_big_sum_bearing_child`]).
+    pub fn insert_into_provable_big_sum_indexed_tree<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        item_key: &[u8],
+        item: Element,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.insert_into_indexed_tree_via_batch(
+            path,
+            item_key,
+            item,
+            TreeType::ProvableBigSumIndexedTree,
+            "insert_into_provable_big_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Delete an item from a `ProvableBigSumIndexedTree` primary.
+    pub fn delete_from_provable_big_sum_indexed_tree<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        item_key: &[u8],
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.delete_from_indexed_tree_via_batch(
+            path,
+            item_key,
+            TreeType::ProvableBigSumIndexedTree,
+            "delete_from_provable_big_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Insert (or update) an item under a key into a
+    /// `ProvableCountProvableBigSumIndexedTree` primary, mirroring the change
+    /// into the secondary of every axis the tree declares.
+    ///
+    /// The 128-bit counterpart of
+    /// [`Self::insert_into_provable_count_provable_sum_indexed_tree`]. The
+    /// child must contribute both a count and a sum, of either width (see
+    /// [`Element::is_count_and_big_sum_bearing_child`]), or be a `SumItem`.
+    pub fn insert_into_provable_count_provable_big_sum_indexed_tree<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        item_key: &[u8],
+        item: Element,
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.insert_into_indexed_tree_via_batch(
+            path,
+            item_key,
+            item,
+            TreeType::ProvableCountProvableBigSumIndexedTree,
+            "insert_into_provable_count_provable_big_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
+    }
+
+    /// Delete an item from a `ProvableCountProvableBigSumIndexedTree`
+    /// primary, removing its rows from every configured axis.
+    pub fn delete_from_provable_count_provable_big_sum_indexed_tree<'db, 'b, B, P>(
+        &'db self,
+        path: P,
+        item_key: &[u8],
+        transaction: TransactionArg<'db, '_, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<bool, Error>
+    where
+        B: AsRef<[u8]> + 'b,
+        P: Into<SubtreePath<'b, B>>,
+    {
+        self.delete_from_indexed_tree_via_batch(
+            path,
+            item_key,
+            TreeType::ProvableCountProvableBigSumIndexedTree,
+            "delete_from_provable_count_provable_big_sum_indexed_tree",
+            transaction,
+            grove_version,
+        )
+    }
+}
+
 /// Apply an axis secondary mirror covering insert, update, and delete via
 /// the (old, new) [`IndexedEntryState`] pair.
 ///
@@ -3078,7 +3486,7 @@ pub const MAX_AVG_INDEXED_ITEM_KEY_LEN: usize = 239;
 pub(crate) fn max_item_key_len_for_axis(axis: IndexAxis) -> usize {
     match axis {
         IndexAxis::Count | IndexAxis::Sum => MAX_CIDX_ITEM_KEY_LEN,
-        IndexAxis::Avg => MAX_AVG_INDEXED_ITEM_KEY_LEN,
+        IndexAxis::Avg | IndexAxis::BigSum => MAX_AVG_INDEXED_ITEM_KEY_LEN,
     }
 }
 
@@ -3113,6 +3521,17 @@ fn avg_range_bounds(lo_avg: i128, hi_avg: i128) -> (Vec<u8>, Option<Vec<u8>>) {
         None
     } else {
         Some(encode_avg_sort_key(hi_avg + 1).to_vec())
+    };
+    (lo_bytes, upper_bytes)
+}
+
+/// Inclusive big sum range `[lo, hi]` → the secondary's byte bounds.
+fn big_sum_range_bounds(lo_sum: i128, hi_sum: i128) -> (Vec<u8>, Option<Vec<u8>>) {
+    let lo_bytes = encode_big_sum_sort_key(lo_sum).to_vec();
+    let upper_bytes = if hi_sum == i128::MAX {
+        None
+    } else {
+        Some(encode_big_sum_sort_key(hi_sum + 1).to_vec())
     };
     (lo_bytes, upper_bytes)
 }
@@ -3168,12 +3587,26 @@ fn decode_avg_secondary_key(secondary_key: &[u8]) -> Option<(i128, Vec<u8>)> {
     Some((avg, secondary_key[16..].to_vec()))
 }
 
+/// Inverse of `make_axis_secondary_key(IndexAxis::BigSum, ..)`: split a
+/// big-sum-secondary key into `(sum, original_key)`. Returns `None` if the
+/// key is shorter than the 16-byte sort prefix.
+#[inline]
+fn decode_big_sum_secondary_key(secondary_key: &[u8]) -> Option<(i128, Vec<u8>)> {
+    if secondary_key.len() < 16 {
+        return None;
+    }
+    let mut sum_bytes = [0u8; 16];
+    sum_bytes.copy_from_slice(&secondary_key[..16]);
+    let sum = decode_big_sum_sort_key(&sum_bytes);
+    Some((sum, secondary_key[16..].to_vec()))
+}
+
 /// Width (in bytes) of the per-axis sort-key prefix in a secondary key.
 #[inline]
 fn axis_sort_prefix_len(axis: IndexAxis) -> usize {
     match axis {
         IndexAxis::Count | IndexAxis::Sum => 8,
-        IndexAxis::Avg => 16,
+        IndexAxis::Avg | IndexAxis::BigSum => 16,
     }
 }
 
@@ -3391,9 +3824,21 @@ fn axis_secondary_root_key_from_element(
         (IndexAxis::Sum, Element::ProvableSumIndexedTree(_, secondary, ..)) => {
             Ok(secondary.clone())
         }
+        // Its 128-bit counterpart carries a single secondary; only the big
+        // sum axis is valid.
+        (IndexAxis::BigSum, Element::ProvableBigSumIndexedTree(_, secondary, ..)) => {
+            Ok(secondary.clone())
+        }
         // PCPSIT carries a TLV of 1..=3 axis-tagged secondaries; the
-        // requested axis must appear in the TLV.
-        (_, Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)) => {
+        // requested axis must appear in the TLV. The axes validators keep
+        // the big sum axis out of a 64-bit tree's TLV and the sum axis out
+        // of a 128-bit tree's, so the lookup by tag refuses the axis of the
+        // other width.
+        (
+            _,
+            Element::ProvableCountProvableSumIndexedTree(_, _, _, axes, _)
+            | Element::ProvableCountProvableBigSumIndexedTree(_, _, _, axes, _),
+        ) => {
             let want_tag = axis.tag();
             match axes.iter().find(|(t, _)| *t == want_tag) {
                 Some((_, sec)) => Ok(sec.clone()),
@@ -4023,9 +4468,10 @@ mod secondary_key_codec_tests {
     use grovedb_element::indexed::IndexAxis;
 
     use super::{
-        axis_sort_key_len, axis_sort_prefix_len, corrupted_secondary_key_error,
-        decode_avg_secondary_key, decode_secondary_key, decode_sum_secondary_key,
-        make_axis_secondary_key, max_item_key_len_for_axis, MAX_AVG_INDEXED_ITEM_KEY_LEN,
+        axis_row_reference, axis_sort_key_len, axis_sort_prefix_len, axis_storage_tag,
+        corrupted_secondary_key_error, decode_avg_secondary_key, decode_axis_row_reference,
+        decode_big_sum_secondary_key, decode_secondary_key, decode_sum_secondary_key,
+        make_axis_secondary_key, max_item_key_len_for_axis, EntrySum, MAX_AVG_INDEXED_ITEM_KEY_LEN,
         MAX_CIDX_ITEM_KEY_LEN,
     };
     use crate::Error;
@@ -4074,6 +4520,115 @@ mod secondary_key_codec_tests {
         assert!(avg_key < make_axis_secondary_key(IndexAxis::Avg, 2, 11, b"row"));
     }
 
+    /// The big sum axis keys a row by the entry's 128-bit sum in 16 bytes,
+    /// in signed order across the whole `i128` range.
+    #[test]
+    fn big_sum_secondary_keys_round_trip_and_sort_across_the_i128_range() {
+        let past = i64::MAX as i128 * 3;
+        let key = make_axis_secondary_key(IndexAxis::BigSum, 0, EntrySum::Wide(past), b"row");
+        assert_eq!(key.len(), 16 + 3, "big sum prefix is 16 bytes");
+        assert_eq!(
+            decode_big_sum_secondary_key(&key),
+            Some((past, b"row".to_vec()))
+        );
+
+        let sums = [
+            i128::MIN,
+            i64::MIN as i128 * 2,
+            i64::MIN as i128,
+            -1,
+            0,
+            1,
+            i64::MAX as i128,
+            past,
+            i128::MAX,
+        ];
+        let keys: Vec<Vec<u8>> = sums
+            .iter()
+            .map(|sum| make_axis_secondary_key(IndexAxis::BigSum, 0, EntrySum::Wide(*sum), b"k"))
+            .collect();
+        assert!(
+            keys.windows(2).all(|pair| pair[0] < pair[1]),
+            "byte order is the signed order of the sums"
+        );
+        for (sum, key) in sums.iter().zip(&keys) {
+            assert_eq!(
+                decode_big_sum_secondary_key(key),
+                Some((*sum, b"k".to_vec()))
+            );
+        }
+
+        assert_eq!(decode_big_sum_secondary_key(&[0u8; 15]), None);
+        assert!(decode_big_sum_secondary_key(&[0u8; 16]).is_some());
+    }
+
+    /// The avg key of a wide entry is computed from its 128-bit sum, and
+    /// equals the avg key of a narrow entry holding the same sum.
+    #[test]
+    fn avg_keys_of_wide_entries_follow_the_128_bit_sum() {
+        for (count, sum) in [
+            (1u64, 5i64),
+            (3, 10),
+            (7, -22),
+            (2, i64::MAX),
+            (9, i64::MIN),
+        ] {
+            assert_eq!(
+                make_axis_secondary_key(IndexAxis::Avg, count, EntrySum::Wide(sum as i128), b"k"),
+                make_axis_secondary_key(IndexAxis::Avg, count, EntrySum::Narrow(sum), b"k"),
+                "count {count}, sum {sum}"
+            );
+        }
+        let wide = i64::MAX as i128 * 4;
+        assert_eq!(
+            decode_avg_secondary_key(&make_axis_secondary_key(
+                IndexAxis::Avg,
+                2,
+                EntrySum::Wide(wide),
+                b"k"
+            )),
+            Some((
+                grovedb_element::indexed::compute_big_avg_fixed_point(wide, 2),
+                b"k".to_vec()
+            ))
+        );
+    }
+
+    /// A row carries an `i64`: the count on the count axis, the entry's sum
+    /// on the sum and avg axes of a 64-bit tree, and nothing where the
+    /// entry's sum is 128 bits wide (it is in the key instead).
+    #[test]
+    fn rows_under_a_wide_sum_carry_no_sum() {
+        let carried = |axis, count, sum: EntrySum| {
+            let row = axis_row_reference(axis, b"k", count, sum).expect("row");
+            let (target, carried) = decode_axis_row_reference(&row, "test").expect("canonical row");
+            assert_eq!(target, b"k");
+            carried
+        };
+        let wide = EntrySum::Wide(i64::MAX as i128 * 3);
+        assert_eq!(carried(IndexAxis::BigSum, 4, wide), 0);
+        assert_eq!(carried(IndexAxis::Avg, 4, wide), 0);
+        assert_eq!(carried(IndexAxis::Count, 4, wide), 4);
+        // A sum that would fit is not carried either: the width is the
+        // tree's, so every row of one secondary is built the same way.
+        assert_eq!(carried(IndexAxis::BigSum, 4, EntrySum::Wide(5)), 0);
+        assert_eq!(carried(IndexAxis::Avg, 4, EntrySum::Wide(5)), 0);
+        // Under a 64-bit tree nothing changes.
+        assert_eq!(carried(IndexAxis::Sum, 4, EntrySum::Narrow(5)), 5);
+        assert_eq!(carried(IndexAxis::Avg, 4, EntrySum::Narrow(5)), 5);
+        assert_eq!(carried(IndexAxis::Count, 4, EntrySum::Narrow(5)), 4);
+    }
+
+    /// The big sum axis shares the sum axis's storage namespace; every other
+    /// axis has its own.
+    #[test]
+    fn the_big_sum_axis_lives_in_the_sum_axis_namespace() {
+        assert_eq!(axis_storage_tag(IndexAxis::Count), 0);
+        assert_eq!(axis_storage_tag(IndexAxis::Sum), 1);
+        assert_eq!(axis_storage_tag(IndexAxis::Avg), 2);
+        assert_eq!(axis_storage_tag(IndexAxis::BigSum), 1);
+    }
+
     /// A key one byte shorter than its axis prefix must decode to `None` — that
     /// is what makes the query cores raise `CorruptedData` rather than index
     /// out of bounds or truncate a row into a bogus value.
@@ -4097,6 +4652,7 @@ mod secondary_key_codec_tests {
             (IndexAxis::Count, 8usize),
             (IndexAxis::Sum, 8),
             (IndexAxis::Avg, 16),
+            (IndexAxis::BigSum, 16),
         ] {
             assert_eq!(axis_sort_prefix_len(axis), width, "{axis:?} prefix width");
             assert_eq!(axis_sort_key_len(axis), width, "{axis:?} sort key length");
@@ -4189,7 +4745,7 @@ mod direct_axis_mirror_tests {
     fn state(count: u64, sum: i64, seed: u8) -> IndexedEntryState {
         IndexedEntryState {
             count,
-            sum,
+            sum: sum.into(),
             value_hash: target_hash(seed),
         }
     }

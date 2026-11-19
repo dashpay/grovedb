@@ -2,7 +2,7 @@ lignin-golden-trace 1
 name delete-heavy
 seed 0x1
 grove-version 1
-engine f101691960d8eb7b679f19e72853c8a04ff7502c
+engine 2a79d035167b1e484ba66d53186396057658be9f
 workload delete-heavy
 cfb3brc9d0
   step 0

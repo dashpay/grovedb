@@ -15,8 +15,11 @@ use grovedb_version::version::GroveVersion;
 
 use super::{read_entry_aggregates, MaybeEntryState};
 use crate::{
-    batch::{GroveOp, KeyInfo},
-    operations::indexed_tree::MAX_CIDX_ITEM_KEY_LEN,
+    batch::{
+        filled_tree_insert_checks::holds_filled_trees_to_insert_checks, merk_tree_from_aggregate,
+        GroveOp, KeyInfo,
+    },
+    operations::indexed_tree::{validate_indexed_child_for_variant, MAX_CIDX_ITEM_KEY_LEN},
     Element, Error,
 };
 
@@ -45,6 +48,21 @@ fn enforce_indexed_item_key_ceiling(
     Ok(())
 }
 
+/// The type rules for an entry that reaches an indexed primary as the
+/// computed root of a tree the same batch created and filled: what the tree
+/// type accepts, and what the indexed variant accepts. Its aggregate is
+/// derived from its contents, so the rootless-claim rule does not apply.
+fn validate_propagated_entry(
+    entry: &Element,
+    primary_tree_type: grovedb_merk::TreeType,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    entry
+        .validate_insertable_into(primary_tree_type)
+        .map_err(Error::MerkError)?;
+    validate_indexed_child_for_variant(entry, primary_tree_type, grove_version)
+}
+
 /// Validate every caller-supplied element this level's ops would place under
 /// an indexed primary, with the same rules the dedicated insert paths
 /// enforce (`reject_non_empty_dedicated_indexed_child_claim` and friends):
@@ -68,6 +86,9 @@ fn validate_indexed_child_ops(
     primary_tree_type: grovedb_merk::TreeType,
     grove_version: &GroveVersion,
 ) -> Result<(), Error> {
+    // V1..V4 leave an entry the batch created and filled out of the rules
+    // below; V5 holds it to them.
+    let holds_propagated_entries = holds_filled_trees_to_insert_checks(grove_version)?;
     for op in ops_at_path_by_key.values() {
         // EXHAUSTIVE on purpose — no `_` arm. An earlier revision used a
         // catch-all and silently skipped `GroveOp::Patch`, which carries an
@@ -86,6 +107,42 @@ fn validate_indexed_child_ops(
             | GroveOp::PatchDontCheckForBackwardsReferences { element, .. }
             | GroveOp::InsertIfNotExists { element, .. }
             | GroveOp::InsertWithKnownToNotAlreadyExist { element } => element,
+            // A tree inserted and filled by the same batch arrives as its
+            // computed root state, with the caller's element gone: the type
+            // it had is the one the aggregate names. From V5 it is held to
+            // the child rule here, where a plain tree would otherwise pass
+            // as an entry with a sum of zero. V1..V4 keep the behaviour they
+            // shipped with.
+            GroveOp::InsertTreeWithRootHash {
+                aggregate_data,
+                non_counted,
+                not_summed,
+                not_counted_or_summed,
+                ..
+            } => {
+                if holds_propagated_entries {
+                    let tree = merk_tree_from_aggregate(None, None, *aggregate_data);
+                    let tree = if *non_counted {
+                        Element::NonCounted(Box::new(tree))
+                    } else if *not_summed {
+                        Element::NotSummed(Box::new(tree))
+                    } else if *not_counted_or_summed {
+                        Element::NotCountedOrSummed(Box::new(tree))
+                    } else {
+                        tree
+                    };
+                    validate_propagated_entry(&tree, primary_tree_type, grove_version)?;
+                }
+                continue;
+            }
+            // An indexed tree created and filled by the same batch keeps the
+            // caller's element in the op, and is held to the same rule.
+            GroveOp::InsertAggregateIndexedTreeRootKeys { element, .. } => {
+                if holds_propagated_entries {
+                    validate_propagated_entry(element, primary_tree_type, grove_version)?;
+                }
+                continue;
+            }
             // Ops that carry no caller-supplied element, or whose element is
             // internally derived rather than caller-claimed.
             GroveOp::Delete
@@ -94,11 +151,9 @@ fn validate_indexed_child_ops(
             | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             | GroveOp::ReplaceBackwardReferenceFamilyMember { .. }
             | GroveOp::ReplaceTreeRootKey { .. }
-            | GroveOp::InsertTreeWithRootHash { .. }
             | GroveOp::ReplaceNonMerkTreeRoot { .. }
             | GroveOp::InsertNonMerkTree { .. }
             | GroveOp::ReplaceAggregateIndexedTreeRootKeys { .. }
-            | GroveOp::InsertAggregateIndexedTreeRootKeys { .. }
             | GroveOp::RefreshReference { .. }
             | GroveOp::CommitmentTreeInsert { .. }
             | GroveOp::MmrTreeAppend { .. }
@@ -126,11 +181,7 @@ fn validate_indexed_child_ops(
         element
             .validate_insertable_into(primary_tree_type)
             .map_err(Error::MerkError)?;
-        crate::operations::indexed_tree::validate_indexed_child_for_variant(
-            element,
-            primary_tree_type,
-            grove_version,
-        )?;
+        validate_indexed_child_for_variant(element, primary_tree_type, grove_version)?;
         let rootless_with_aggregate = match element.underlying() {
             Element::SumTree(None, sum, _) | Element::ProvableSumTree(None, sum, _) => *sum != 0,
             Element::BigSumTree(None, big_sum, _)

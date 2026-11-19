@@ -446,6 +446,8 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
             // child Merk keeping the first one's type.
             same_key_tree_type_conflict: 0,
             tree_insert_above_emptied_level: 0,
+            // v0: a tree the batch also fills skips the insert checks.
+            filled_tree_insert_checks: 0,
             // v0: the mirror reads an entry with `Merk::get`.
             indexed_mirror_entry_read: 0,
         },
@@ -619,6 +621,7 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 read: 0,
                 prove_single_path: 0,
                 verify_single_path: 0,
+                big_sum_axis: 0,
             },
             proof: GroveDBOperationsProofVersions {
                 prove_query: 0,
@@ -644,6 +647,9 @@ pub const GROVE_V4: GroveVersion = GroveVersion {
                 axis_descent_in_v1_envelope: 1, // axis-ordered descents in the V1 envelope (ReadMode::Axis)
                 sum_budget_in_v1_envelope: 1, // sum-budget windows in the V1 envelope (ReadMode::SumBudget)
                 count_offset_reference_empty_tree_rows: 0,
+                // 0 = a layer with subquery branches under a per-instance cap
+                // is proven in full, as 6.1.1 shipped; truncation is GROVE_V5
+                instance_cap_layer_truncation: 0,
                 unreported_empty_tree_row_charge: 0,
                 subquery_descent_on_key: 0,
             },

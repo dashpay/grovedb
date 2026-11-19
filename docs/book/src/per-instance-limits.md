@@ -91,11 +91,80 @@ The limit is not part of the proof wire format — like the global limit,
 it is an input supplied identically to prover and verifier, changing
 only which nodes the prover emits as values versus hashes. The V1
 prover and verifier thread a shared global budget plus a frame-local
-instance budget per layer; each layer's merk walk runs under
-`min(global, instance)`, and the merk-level *"proof returns more data
-than limit"* check is what rejects a proof that over-delivers against
-an instance cap — a proof built for wider caps does not verify under
-tighter ones.
+instance budget per layer. A layer without subqueries holds the result
+rows themselves, so its merk walk runs under `min(global, instance)`,
+and the merk-level *"proof returns more data than limit"* check is what
+rejects a proof that over-delivers against an instance cap — a proof
+built for wider caps does not verify under tighter ones.
+
+### Layers with subqueries
+
+A layer that has subquery branches is different: the cap budgets the
+rows found *below* its keys, not the keys. A key whose subtree is empty
+spends none of the cap and a key whose subtree is large can spend all of
+it, so the number of keys the walk needs is known only once the descents
+have run.
+
+Under `GROVE_V4`, the first version to serve per-instance limits, such
+a layer is proven under the global budget only.
+With no global limit, which is the normal case for a page merged with
+other queries, it carries every key its query selects, and only the
+descents stop once the cap is spent. The proof is correct, but its size
+follows the range, not the page.
+
+From `GROVE_V5` (`operations.proof.instance_cap_layer_truncation`) the
+prover runs the descents and, once the instance budget is spent, proves
+the layer truncated after the key that spent it. Everything after that
+key is hashes: the rows the page does not need, and the range bounds
+that would prove later queried keys absent. A layer whose walk ends
+because the global budget ran out keeps its `GROVE_V4` shape, which the
+global limit already bounds.
+
+| 5-row page over an ordered index | `GROVE_V4` | `GROVE_V5` |
+|---|---|---|
+| 10 index keys | 754 bytes | 655 bytes |
+| 200 index keys | 9,684 bytes | 927 bytes |
+| 2,000 index keys | 94,286 bytes | 1,131 bytes |
+
+The verifier does not learn the cut from the proof. It reads the layer
+as a gap-free prefix of its query (Merk's `ProofLimitMode::UpperBound`):
+the keys it gets are the first keys the layer query selects in the
+walk's direction, none missing between them, and nothing may be revealed
+after the point where the layer stops. It then verifies every revealed
+key as before (a populated subtree must carry its lower layer, an empty
+one is bound to its empty root and spends no instance budget) and keeps
+its own budget from the rows it verified. A layer that stopped early is
+accepted only if that budget, the frame's or the global one, is now
+zero. A frame with a spent budget owes no further row, so every hidden
+key is one whose rows the query does not ask for:
+
+- a prover that stops **earlier** leaves budget unspent and is refused;
+- a prover that stops **later** only reveals keys the verifier does not
+  read, so a `GROVE_V5` verifier still accepts a layer proven in full;
+- a layer that stops exactly where the global limit truncates it is the
+  `GROVE_V4` shape and is accepted as before.
+
+A `GROVE_V4` verifier refuses a truncated layer, so prover and verifier
+move to `GROVE_V5` together. The rows returned are the same in every
+version, and this change leaves the proofs of queries without a
+per-instance cap as they were.
+
+Size is not the only cost of a layer proven in full: merk refuses a
+layer proof of more than 50,000 ops (`MAX_PROOF_OPS`), about 25,000
+keys, so past that length a `GROVE_V4` proof of even a small page does
+not verify. A truncated layer stays far below it.
+
+The cut relies on prover and verifier counting the same rows against
+the instance budget. `GROVE_V5` completes that: an empty plain `Tree`
+that is itself a result row, which a default verifier does not report,
+is charged by the verifier too from the same version
+(`operations.proof.unreported_empty_tree_row_charge`).
+
+Two limits of the V5 prover: it still walks the whole layer once before
+truncating it, as V4 does, so the saving is in proof size and verifier
+work; and a layer that needs more than 65,535 keys before its budget is
+spent (a merk limit is a `u16`) is left whole, which puts it past the op
+count above, as it is in V4.
 
 ## What fails closed
 

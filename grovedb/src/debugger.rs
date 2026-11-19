@@ -1392,6 +1392,7 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
         // at the primary's root key. The secondary (or axes TLV for
         // PCPSIT) is invisible to the debug UI for now.
         crate::Element::ProvableSumIndexedTree(primary_root_key, _, _, element_flags)
+        | crate::Element::ProvableBigSumIndexedTree(primary_root_key, _, _, element_flags)
         | crate::Element::ProvableCountIndexedTree(primary_root_key, _, _, element_flags) => {
             grovedbg_types::Element::Subtree {
                 root_key: primary_root_key,
@@ -1399,6 +1400,13 @@ fn element_to_grovedbg(element: crate::Element) -> grovedbg_types::Element {
             }
         }
         crate::Element::ProvableCountProvableSumIndexedTree(
+            primary_root_key,
+            _,
+            _,
+            _,
+            element_flags,
+        )
+        | crate::Element::ProvableCountProvableBigSumIndexedTree(
             primary_root_key,
             _,
             _,

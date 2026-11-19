@@ -150,6 +150,35 @@ graph TD
 
 This is a significant optimization when many operations target the same subtree.
 
+### A tree the batch creates and fills
+
+When a batch inserts a tree and also writes under it, the level below runs
+first and its root hash, root key and aggregate are merged into the insert one
+level up. The insert is replaced by an internal operation that carries that
+root state (`InsertTreeWithRootHash`, `InsertNonMerkTree`, or
+`InsertAggregateIndexedTreeRootKeys` for an indexed tree), so it is never
+applied as an insert.
+
+The checks an insert makes on its element are therefore made in two other
+places, from `GROVE_V5` (`apply_batch.filled_tree_insert_checks`):
+
+| Check | Where it is made |
+|---|---|
+| An indexed tree is empty and its axes are canonical; a `PrivateDocumentStore` is empty with a valid config | Where the operation enters the batch |
+| A `NonCounted`, `NotSummed` or `NotCountedOrSummed` tree sits under a parent that takes the wrapper | Where the propagated operation is applied, with the parent's tree type known |
+| An entry of an indexed tree satisfies that tree's child rule | Before the indexed tree's level is applied |
+
+A batch that fails one is refused with the error the same insert gives without
+the writes under it. `GROVE_V1`..`GROVE_V4` make these checks only where an
+insert is applied, so there a tree the batch also fills skips them.
+
+The checks on what the key already holds
+(`validate_insertion_does_not_override`,
+`validate_insertion_does_not_override_tree`, `InsertIfNotExists`) are not made
+for a filled tree on any version: it is written without reading its key. The
+rule that an entry of an indexed tree without a root key claims no aggregate
+is not made for it either: the entry stores the aggregate its contents give.
+
 ## Atomic Cross-Subtree Operations
 
 A key property of GroveDB batches is **atomicity across subtrees**. A single batch

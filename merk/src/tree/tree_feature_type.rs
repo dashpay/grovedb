@@ -108,6 +108,10 @@ impl AggregateData {
         match self {
             AggregateData::ProvableCount(_) => Some(TreeType::ProvableCountIndexedTree),
             AggregateData::ProvableSum(_) => Some(TreeType::ProvableSumIndexedTree),
+            AggregateData::ProvableBigSum(_) => Some(TreeType::ProvableBigSumIndexedTree),
+            AggregateData::ProvableCountAndProvableBigSum(..) => {
+                Some(TreeType::ProvableCountProvableBigSumIndexedTree)
+            }
             AggregateData::ProvableCountAndProvableSum(..) => {
                 Some(TreeType::ProvableCountProvableSumIndexedTree)
             }
@@ -235,6 +239,8 @@ mod tests {
             AggregateData::ProvableCount(3),
             AggregateData::ProvableSum(7),
             AggregateData::ProvableCountAndProvableSum(1, 2),
+            AggregateData::ProvableBigSum(7),
+            AggregateData::ProvableCountAndProvableBigSum(1, 2),
         ] {
             let indexed = agg
                 .indexed_parent_tree_type()
@@ -458,7 +464,10 @@ mod tests {
             agg.parent_tree_type(),
             TreeType::ProvableCountProvableBigSumTree
         );
-        assert_eq!(agg.indexed_parent_tree_type(), None);
+        assert_eq!(
+            agg.indexed_parent_tree_type(),
+            Some(TreeType::ProvableCountProvableBigSumIndexedTree)
+        );
         assert_eq!(agg.as_count_u64(), 7);
         assert_eq!(agg.as_summed_i128(), past_i64);
         assert_eq!(agg.as_sum_i64(), i64::MAX);

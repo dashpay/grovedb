@@ -339,6 +339,95 @@ pub enum Node {
     HashWithBigSum(CryptoHash, CryptoHash, CryptoHash, i128),
 }
 
+impl Node {
+    /// The key and the value of a node that reveals both: a row. A node
+    /// that reveals a key without a value (a `KVDigest*` range bound) or no
+    /// key at all (a hash) is `None`.
+    ///
+    /// Every variant is listed in one of the two accessors' arms, so a new
+    /// one has to be classified here, in one place.
+    pub fn key_and_value(&self) -> Option<(&[u8], &[u8])> {
+        match self {
+            Node::KV(key, value)
+            | Node::KVValueHash(key, value, ..)
+            | Node::KVValueHashFeatureType(key, value, ..)
+            | Node::KVValueHashFeatureTypeWithChildHash(key, value, ..)
+            | Node::KVCount(key, value, ..)
+            | Node::KVRefValueHash(key, value, ..)
+            | Node::KVRefValueHashCount(key, value, ..)
+            | Node::KVSum(key, value, ..)
+            | Node::KVRefValueHashSum(key, value, ..)
+            | Node::KVCountBigSum(key, value, ..)
+            | Node::KVCountSum(key, value, ..)
+            | Node::KVRefValueHashCountBigSum(key, value, ..)
+            | Node::KVBigSum(key, value, ..)
+            | Node::KVRefValueHashBigSum(key, value, ..)
+            | Node::KVRefValueHashCountSum(key, value, ..) => {
+                Some((key.as_slice(), value.as_slice()))
+            }
+            Node::KVDigest(..)
+            | Node::KVDigestCount(..)
+            | Node::KVDigestSum(..)
+            | Node::KVDigestCountBigSum(..)
+            | Node::KVDigestBigSum(..)
+            | Node::KVDigestCountSum(..)
+            | Node::Hash(_)
+            | Node::KVHash(_)
+            | Node::KVHashCount(..)
+            | Node::HashWithCount(..)
+            | Node::KVHashSum(..)
+            | Node::HashWithSum(..)
+            | Node::KVHashCountBigSum(..)
+            | Node::KVHashBigSum(..)
+            | Node::HashWithBigSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndBigSum(..)
+            | Node::HashWithCountAndSum(..) => None,
+        }
+    }
+
+    /// The key of a node that reveals one, with a value (a row) or without
+    /// (a `KVDigest*` range bound). A node that reveals only hashes is
+    /// `None`.
+    pub fn key(&self) -> Option<&[u8]> {
+        match self {
+            Node::KVDigest(key, ..)
+            | Node::KVDigestCount(key, ..)
+            | Node::KVDigestSum(key, ..)
+            | Node::KVDigestCountBigSum(key, ..)
+            | Node::KVDigestBigSum(key, ..)
+            | Node::KVDigestCountSum(key, ..) => Some(key.as_slice()),
+            Node::KV(..)
+            | Node::KVValueHash(..)
+            | Node::KVValueHashFeatureType(..)
+            | Node::KVValueHashFeatureTypeWithChildHash(..)
+            | Node::KVCount(..)
+            | Node::KVRefValueHash(..)
+            | Node::KVRefValueHashCount(..)
+            | Node::KVSum(..)
+            | Node::KVRefValueHashSum(..)
+            | Node::KVCountBigSum(..)
+            | Node::KVCountSum(..)
+            | Node::KVRefValueHashCountBigSum(..)
+            | Node::KVBigSum(..)
+            | Node::KVRefValueHashBigSum(..)
+            | Node::KVRefValueHashCountSum(..)
+            | Node::Hash(_)
+            | Node::KVHash(_)
+            | Node::KVHashCount(..)
+            | Node::HashWithCount(..)
+            | Node::KVHashSum(..)
+            | Node::HashWithSum(..)
+            | Node::KVHashCountBigSum(..)
+            | Node::KVHashBigSum(..)
+            | Node::HashWithBigSum(..)
+            | Node::KVHashCountSum(..)
+            | Node::HashWithCountAndBigSum(..)
+            | Node::HashWithCountAndSum(..) => self.key_and_value().map(|(key, _)| key),
+        }
+    }
+}
+
 use std::fmt;
 
 impl fmt::Display for Node {
@@ -823,6 +912,80 @@ mod tests {
     // exercise the Push + PushInverted Encode arms (tag bytes 0x40..=0x4D)
     // and the matching Decode arms; without these tests the encoding.rs
     // additions show up as ~263 uncovered lines.
+
+    /// Rows reveal a key and a value, range bounds a key only, and hash
+    /// nodes neither, in every node family.
+    #[test]
+    fn key_and_value_accessors_classify_every_family() {
+        let key = vec![7u8];
+        let value = vec![8u8, 9];
+        let hash = [3u8; 32];
+        let feature = TreeFeatureType::BasicMerkNode;
+
+        let rows = [
+            Node::KV(key.clone(), value.clone()),
+            Node::KVValueHash(key.clone(), value.clone(), hash),
+            Node::KVValueHashFeatureType(key.clone(), value.clone(), hash, feature),
+            Node::KVValueHashFeatureTypeWithChildHash(
+                key.clone(),
+                value.clone(),
+                hash,
+                feature,
+                hash,
+            ),
+            Node::KVCount(key.clone(), value.clone(), 1),
+            Node::KVRefValueHash(key.clone(), value.clone(), hash),
+            Node::KVRefValueHashCount(key.clone(), value.clone(), hash, 1),
+            Node::KVSum(key.clone(), value.clone(), 1),
+            Node::KVRefValueHashSum(key.clone(), value.clone(), hash, 1),
+            Node::KVCountSum(key.clone(), value.clone(), 1, 1),
+            Node::KVRefValueHashCountSum(key.clone(), value.clone(), hash, 1, 1),
+            Node::KVCountBigSum(key.clone(), value.clone(), 1, 1),
+            Node::KVRefValueHashCountBigSum(key.clone(), value.clone(), hash, 1, 1),
+            Node::KVBigSum(key.clone(), value.clone(), 1),
+            Node::KVRefValueHashBigSum(key.clone(), value.clone(), hash, 1),
+        ];
+        for node in rows {
+            assert_eq!(
+                node.key_and_value(),
+                Some((key.as_slice(), value.as_slice())),
+                "{node}"
+            );
+            assert_eq!(node.key(), Some(key.as_slice()), "{node}");
+        }
+
+        let bounds = [
+            Node::KVDigest(key.clone(), hash),
+            Node::KVDigestCount(key.clone(), hash, 1),
+            Node::KVDigestSum(key.clone(), hash, 1),
+            Node::KVDigestCountSum(key.clone(), hash, 1, 1),
+            Node::KVDigestCountBigSum(key.clone(), hash, 1, 1),
+            Node::KVDigestBigSum(key.clone(), hash, 1),
+        ];
+        for node in bounds {
+            assert_eq!(node.key_and_value(), None, "{node}");
+            assert_eq!(node.key(), Some(key.as_slice()), "{node}");
+        }
+
+        let hidden = [
+            Node::Hash(hash),
+            Node::KVHash(hash),
+            Node::KVHashCount(hash, 1),
+            Node::KVHashSum(hash, 1),
+            Node::KVHashCountSum(hash, 1, 1),
+            Node::KVHashCountBigSum(hash, 1, 1),
+            Node::HashWithCount(hash, hash, hash, 1),
+            Node::HashWithSum(hash, hash, hash, 1),
+            Node::HashWithCountAndSum(hash, hash, hash, 1, 1),
+            Node::HashWithCountAndBigSum(hash, hash, hash, 1, 1),
+            Node::KVHashBigSum(hash, 1),
+            Node::HashWithBigSum(hash, hash, hash, 1),
+        ];
+        for node in hidden {
+            assert_eq!(node.key_and_value(), None, "{node}");
+            assert_eq!(node.key(), None, "{node}");
+        }
+    }
 
     fn round_trip_push(node: Node) {
         use ed::Encode;

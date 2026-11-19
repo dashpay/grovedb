@@ -41,6 +41,8 @@ ln -sfn "$here/manifest.toml" "$storage/Cargo.toml"
 ln -sfn "$here/src" "$storage/src"
 
 export CARGO_TARGET_DIR=$work/target
+# A test that is about RocksDB itself is compiled out of this workspace.
+export RUSTFLAGS="${RUSTFLAGS:-} --cfg lignin_cost_model"
 hits=$work/rule-hits.tsv
 counts=$work/rule-hits
 rm -rf "$hits" "$counts"

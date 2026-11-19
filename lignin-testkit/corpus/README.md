@@ -19,14 +19,14 @@ describes the design.
 Every trace names the commit of the engine it was recorded from, in its
 `engine` line: the newest commit that touched a workspace crate outside
 LigninDB. The corpus here was recorded from
-`f101691960d8eb7b679f19e72853c8a04ff7502c` (`develop`, "count and report
-tree result rows as the trusted read does (GROVE_V5)", #1061). The workspace
+`2a79d035167b1e484ba66d53186396057658be9f` (`develop`, "indexed trees with a
+128-bit sum and the big sum axis", #1062). The workspace
 manifest is not part of that: LigninDB adds its crates to it. `Cargo.lock`
 is not committed in this repository, so the commit pins GroveDB's own code
 and not the versions of its dependencies. `record` refuses to run when an
 engine crate has uncommitted changes.
 
-The pin has moved once. The corpus was first recorded from
+The pin has moved twice. The corpus was first recorded from
 `22f163c2b82d9bc5c985a77034529a32ef9a7c04` (`develop`, "range aggregates and
 count offsets on a ProvableCountProvableBigSumTree"). When `develop` was
 merged into `feat/LigninDB` up to `f1016919`, it brought #1059, which takes
@@ -36,6 +36,23 @@ that hold such an element: `element-zoo`, `reference-chains` and `suite` on
 grove versions 4 and 5. Every other trace, the five of the reference scale
 included, came out as it was but for its `engine` line. The other commits of
 that range (#1056, #1055, #1061) changed no trace.
+
+When `develop` was merged up to `2a79d035`, every trace of both scales came
+out as it was but for its `engine` line. The four commits of that range reach
+nothing the corpus holds:
+
+- #1058 can end the proof of a layer early, on grove version 5, when the
+  layer has subqueries below it and the limit of a query node is in force
+  there: the limit of its own node, or one it inherits from a node above. It
+  does so when the rows below the layer's keys spend the limit before the
+  layer's last key. The workloads and the hand-written cases put such a limit
+  only on a node with no subquery below it (`pages`, `identity-keys`,
+  `subquery-limit`), so no layer with subqueries is under one.
+- #1057 changes an estimate. The corpus records no estimate.
+- #1060 refuses, on grove version 5, a tree that one batch creates and fills
+  and that the insert alone would refuse. No stream makes such a batch.
+- #1062 adds two indexed trees with a 128-bit sum and the axis they are
+  ranked on. No workload produces them yet.
 
 ## Using it
 
@@ -79,7 +96,7 @@ from the branch that has the new workloads, and write into that branch's
 corpus:
 
 ```text
-git worktree add --detach <scratch>/pinned f1016919
+git worktree add --detach <scratch>/pinned 2a79d035
 git -C <scratch>/pinned checkout <branch> -- Cargo.toml lignin-format lignin-io \
     lignin-store lignin-tree lignindb lignin-tools lignin-testkit
 cp <checkout of the branch>/Cargo.lock <scratch>/pinned/
@@ -88,11 +105,11 @@ cargo run --release -p lignin-testkit --bin lignin-golden -- record \
     --corpus <checkout of the branch>/lignin-testkit/corpus
 ```
 
-`f1016919` is a commit of `develop`, so it has no LigninDB crate: the
+`2a79d035` is a commit of `develop`, so it has no LigninDB crate: the
 checkout brings the branch's, with the manifest that lists them, and the
 copied `Cargo.lock` gives the build the branch's versions of the
 dependencies. None of these is an engine crate, so the traces come out
-naming `f1016919`. A trace whose operations and recorded values did not change
+naming `2a79d035`. A trace whose operations and recorded values did not change
 comes out byte for byte as it was, so `git status` shows what the new
 workloads added. Then replay on the branch itself: what was recorded from
 the pinned engine has to come out the same there.
