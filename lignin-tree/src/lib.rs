@@ -7,5 +7,6 @@ pub mod flat;
 pub mod fragment;
 mod guard;
 pub mod node;
+pub mod value;
 
 pub use guard::OperationGuard;
