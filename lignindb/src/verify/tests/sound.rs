@@ -11,12 +11,11 @@ use lignin_tree::{
     node::NodeRef,
 };
 
-use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, OUTER};
+use super::{drop_subtree, key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, OUTER};
 use crate::{
     txn::{
         tests::{
-            model::{self, OwnedBatch, OwnedSubtree},
-            put,
+            model, put,
             store::{Db, Rules, ENTERED, SIZE},
             World,
         },
@@ -115,18 +114,6 @@ fn a_pinned_version_is_checked_beside_later_commits() {
     assert_eq!(latest.census.merks, before.census.merks - 2);
     assert_eq!(latest.census.dropped_merks, 2);
     assert_eq!(latest.census.live_cells, before.census.live_cells - 5);
-}
-
-/// Drops the subtree `name` of `store` in a commit of its own.
-fn drop_subtree(store: &Planted, name: u8) {
-    let mut world = World::new(&store.db, &store.versions);
-    let tx = world.begin();
-    let batch = OwnedBatch {
-        subtrees: vec![OwnedSubtree::Drop(model::subtree(name))],
-        ..OwnedBatch::default()
-    };
-    world.apply(&tx, &batch).expect("the subtree is dropped");
-    world.commit(tx, &[]);
 }
 
 /// A store is sound before a reclaiming, after every page step of it, and

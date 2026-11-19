@@ -439,7 +439,8 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
     }
 
     /// The page `page`, which the run read before, for a walk to enter.
-    /// Where it is not read now, that is reported.
+    /// Where it is not read now, that is reported once: from then on it is
+    /// a page that is not read, as if the run had never read it.
     fn enter(&mut self, page: PageId) -> Option<PageRef<'s>> {
         match self.frame(page) {
             Ok(frame) => Some(frame),
@@ -447,6 +448,7 @@ impl<'a, 's, 'c> Run<'a, 's, 'c> {
                 self.add(Rule::PageUnreadable, Place::Page(page), || {
                     error.to_string()
                 });
+                self.pages.insert(page, Seen::Bad);
                 None
             }
         }

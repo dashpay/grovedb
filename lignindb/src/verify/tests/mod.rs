@@ -165,6 +165,18 @@ pub(super) fn plant() -> Planted {
     Planted { db, versions }
 }
 
+/// Drops the subtree `name` of `store` in a commit of its own.
+pub(super) fn drop_subtree(store: &Planted, name: u8) {
+    let mut world = World::new(&store.db, &store.versions);
+    let tx = world.begin();
+    let batch = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Drop(model::subtree(name))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree is dropped");
+    world.commit(tx, &[]);
+}
+
 impl Planted {
     pub(super) fn latest(&self) -> CommitVersion {
         self.versions.latest()

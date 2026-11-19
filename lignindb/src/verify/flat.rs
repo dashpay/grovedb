@@ -239,17 +239,28 @@ impl Run<'_, '_, '_> {
         }
     }
 
-    /// Walks the keyspace `tree` from its root, and returns whether
-    /// nothing was found wrong with its pages.
+    /// Walks the keyspace `tree` from its root, and returns whether its
+    /// pages are a tree that was read whole: the walk read every page it
+    /// was pointed at, and found nothing.
     fn walk_flat(&mut self, tree: &FlatTree, records: Records<'_>) -> bool {
         let before = self.found.count();
-        self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
-        before == self.found.count()
+        let whole = self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
+        whole && before == self.found.count()
     }
 
-    fn walk_flat_from(&mut self, first: Visit, tree: &FlatTree, records: Records<'_>, from: From) {
+    /// Walks the flat pages from `first`, and returns whether the walk
+    /// read every page it was pointed at. A page that is not read was
+    /// reported where it was read first, which may be before this walk.
+    fn walk_flat_from(
+        &mut self,
+        first: Visit,
+        tree: &FlatTree,
+        records: Records<'_>,
+        from: From,
+    ) -> bool {
         let key_limit = tree.config().key_limit();
         let mut stack = vec![first];
+        let mut whole = true;
         // The prefix of the record before, which the directory has.
         let mut entered: Option<Prefix> = None;
         while let Some(visit) = stack.pop() {
@@ -260,7 +271,7 @@ impl Run<'_, '_, '_> {
             let kind = match self.see(page) {
                 Kind::None if left => continue,
                 Kind::Bad => {
-                    self.cut.flat = true;
+                    whole = false;
                     continue;
                 }
                 kind => kind,
@@ -295,7 +306,8 @@ impl Run<'_, '_, '_> {
                     self.add(Rule::PageUnreadable, Place::Page(page), || {
                         error.to_string()
                     });
-                    self.cut.flat = true;
+                    self.pages.insert(page, Seen::Bad);
+                    whole = false;
                     continue;
                 }
             };
@@ -327,7 +339,7 @@ impl Run<'_, '_, '_> {
                     self.add(Rule::FlatPageFormat, Place::Page(page), || {
                         error.to_string()
                     });
-                    self.cut.flat = true;
+                    whole = false;
                     continue;
                 }
             };
@@ -357,7 +369,7 @@ impl Run<'_, '_, '_> {
                             self.add(Rule::FlatPageFormat, Place::Page(page), || {
                                 format!("the branch has no child {index}")
                             });
-                            self.cut.flat = true;
+                            whole = false;
                             break;
                         };
                         stack.push(Visit {
@@ -438,6 +450,8 @@ impl Run<'_, '_, '_> {
                 }
             }
         }
+        self.cut.flat |= !whole;
+        whole
     }
 }
 

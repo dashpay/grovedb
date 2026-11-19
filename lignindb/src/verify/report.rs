@@ -32,7 +32,8 @@ pub struct Unreached {
     /// Whether a walk was pointed at a page that is not read, or the
     /// directory was not read. The cells that only such a page or the
     /// directory leads to are then counted here with the others, and the
-    /// run has a finding that says what was not read.
+    /// cells of the page itself are not counted at all. The run has a
+    /// finding that says what was not read.
     pub uncertain: bool,
 }
 

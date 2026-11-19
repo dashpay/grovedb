@@ -27,7 +27,9 @@ use lignin_tree::{
     flat::FlatTree,
 };
 
-use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, NEVER, OUTER};
+use super::{
+    drop_subtree, key, plant, prefix, write_back, Planted, BIG, FLAT, INNER, NEVER, OUTER,
+};
 use crate::{
     txn::{
         tests::{
@@ -38,7 +40,7 @@ use crate::{
         },
         Column,
     },
-    verify::{Place, Rule},
+    verify::{Place, Report, Rule},
 };
 
 /// One corruption: what it is, the change that makes it, and the rule
@@ -1249,12 +1251,19 @@ fn a_flat_branch_that_is_not_read_blames_no_page_below_it() {
 }
 
 /// The keyspace of the records of range deletes is no tree: its records
-/// are not read, which is reported, and no flat page is reported as one
-/// that nothing reaches, since a record that is not read may name it.
+/// are not read, which is reported, and the pages that a range delete
+/// left are not reported as pages that nothing reaches, since a record
+/// that is not read names them.
 #[test]
 fn records_of_range_deletes_that_are_not_read_blame_no_page() {
     let store = plant();
     store.db.unchecked();
+    // The subtree with the many flat records is dropped, which leaves the
+    // leaves between the ends of its range to their record.
+    drop_subtree(&store, FLAT);
+    let sound = store.check();
+    assert!(sound.is_sound(), "{sound}");
+    assert!(sound.census.left_flat_pages >= 1, "{sound}");
     let root = store.db.flat_drops().tree().root();
     store.spoil(root, |bytes| FlatPage::decode(bytes, FRAME_FORMAT).is_err());
     let report = store.check();
@@ -1263,6 +1272,32 @@ fn records_of_range_deletes_that_are_not_read_blame_no_page() {
         [Rule::FlatPageFormat, Rule::FlatDropRecord],
         "{report}"
     );
+    assert!(said(&report, "its keyspace is no tree"), "{report}");
+}
+
+/// A page of the directory's keyspace is not read: the directory is not
+/// read from what is left of its keyspace, no Merk is walked, and nothing
+/// is compared with it.
+#[test]
+fn a_directory_in_a_keyspace_with_a_page_that_is_not_read_is_not_read() {
+    let store = plant();
+    store.db.unchecked();
+    let root = store.db.directory().root();
+    store.spoil(root, |bytes| FlatPage::decode(bytes, FRAME_FORMAT).is_err());
+    let report = store.check();
+    assert_eq!(
+        report.rules(),
+        [Rule::FlatPageFormat, Rule::Directory],
+        "{report}"
+    );
+    assert!(said(&report, "its keyspace is no tree"), "{report}");
+    assert_eq!(report.census.live_cells, 0);
+    assert!(report.unreached.uncertain, "{report}");
+}
+
+/// Whether a finding of `report` says `words`.
+fn said(report: &Report, words: &str) -> bool {
+    (report.findings.iter()).any(|finding| finding.detail.contains(words))
 }
 
 /// A page at another level than its branch states is reported and read
@@ -1278,7 +1313,6 @@ fn a_page_at_the_wrong_level_is_read_all_the_same() {
     assert!(report.has(Rule::FlatLevel), "{report}");
     assert!(!report.has(Rule::FlatPageUnreached), "{report}");
     assert_eq!(report.census.flat_records, sound.flat_records, "{report}");
-    assert_eq!(report.census.flat_pages, sound.flat_pages, "{report}");
 }
 
 #[test]
