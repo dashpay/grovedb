@@ -513,6 +513,9 @@ fn one_batch_is_what_its_operations_are_one_after_the_other() {
 #[test]
 fn a_merk_and_its_host_across_the_operations_of_one_batch() {
     let store = Store::new();
+    // The element is written again with hashes that no rule makes, to tell
+    // the two records of it apart.
+    store.db.unhashed();
     let host = items(&[(b"h", b"element")]);
     let inner = items(&[(b"a", b"1"), (b"b", b"2"), (b"c", b"3")]);
 

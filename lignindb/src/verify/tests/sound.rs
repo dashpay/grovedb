@@ -5,13 +5,12 @@ use std::sync::atomic::AtomicU64;
 use lignin_format::{tree_page::Side, CommitVersion, PageId};
 use lignin_store::table::{Link, LinkKind};
 use lignin_tree::{
-    directory::record,
-    drop::FlatDrops,
+    drop::{FlatDrops, Progress},
     hash::{HashRules, Refusal},
     node::NodeRef,
 };
 
-use super::{key, plant, prefix, write_back, Planted, BIG, FLAT, GONE, INNER, OUTER};
+use super::{key, plant, write_back, Planted, BIG, FLAT, GONE, INNER, OUTER};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -28,12 +27,6 @@ use crate::{
         Unreached,
     },
 };
-
-/// A Merk that is entered, filled and dropped, and whose record is then
-/// taken out of the directory: what a reclaiming leaves from the moment it
-/// begins on the cells (`lignin_tree::drop`, step 2).
-const LOST: u8 = ENTERED + 14;
-const LOST_NODES: usize = 20;
 
 fn rules(calls: &AtomicU64) -> Rules<'_> {
     Rules(calls)
@@ -115,23 +108,7 @@ fn a_pinned_version_is_checked_beside_later_commits() {
     assert_eq!(before.census.ids, None);
     assert_eq!(before.census.links, 0);
 
-    {
-        let mut world = World::new(&store.db, &store.versions);
-        world.model.version = store.latest().get();
-        let tx = world.begin();
-        let batch = OwnedBatch {
-            subtrees: vec![OwnedSubtree::Drop(model::subtree(OUTER))],
-            ..OwnedBatch::default()
-        };
-        // The model of this world knows no record of the store: the drop
-        // is applied to the store alone.
-        let scope = tx.txn.scope().expect("a scope");
-        batch
-            .with(|batch| scope.apply(batch))
-            .expect("the subtree is dropped");
-        scope.merge();
-        (store.db.commit(&store.versions, &tx.txn)).expect("a commit");
-    }
+    drop_subtree(&store, OUTER);
     assert!(store.latest() > pin.version());
     let pinned = (store.db).verify(pin.version(), Scope::Reader, Some(&mut rules(&calls)));
     assert!(pinned.is_sound(), "{pinned}");
@@ -144,84 +121,153 @@ fn a_pinned_version_is_checked_beside_later_commits() {
     assert_eq!(latest.census.live_cells, before.census.live_cells - 5);
 }
 
-/// What a reclaiming leaves from the moment it takes the record of a
-/// dropped Merk: cells that nothing leads to. They are counted, and they
-/// are no finding.
+/// Drops the subtree `name` of `store` in a commit of its own.
+fn drop_subtree(store: &Planted, name: u8) {
+    let mut world = World::new(&store.db, &store.versions);
+    let tx = world.begin();
+    let batch = OwnedBatch {
+        subtrees: vec![OwnedSubtree::Drop(model::subtree(name))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the subtree is dropped");
+    world.commit(tx, &[]);
+}
+
+/// A store is sound before a reclaiming, after every page step of it, and
+/// after it. From the step that takes the record of the dropped Merk to the
+/// one that takes its last cell, the cells that are left have nothing that
+/// leads to them: they are counted apart, and they are no finding. A crash
+/// in that time leaves them for good (`lignin_tree::drop`).
+#[test]
+fn a_store_is_sound_before_during_and_after_a_reclaiming() {
+    let store = plant();
+    // A commit after the drop: a page that the latest commit wrote is not
+    // freed before the next one.
+    {
+        let mut world = World::new(&store.db, &store.versions);
+        let tx = world.begin();
+        world.write(
+            &tx,
+            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
+        );
+        world.commit(tx, &[]);
+    }
+    let before = store.check();
+    assert!(before.is_sound(), "{before}");
+    assert!(before.unreached.is_empty(), "{before}");
+    let census = &before.census;
+    assert_eq!((census.dropped_merks, census.left_over_entries), (1, 1));
+    assert_eq!(census.left_cells, 43);
+
+    let (mut merks, flat_drops, mut wait) = store.db.left(&store.versions);
+    assert!(
+        wait.poll(&store.versions),
+        "no reader is from before the drop"
+    );
+    assert_eq!((merks.len(), flat_drops.len()), (1, 0));
+    let (mut steps, mut with_unreached, mut cells) = (0, 0, before.census.cells);
+    loop {
+        let progress = store.db.reclaim(&store.versions, &mut merks[0], 1);
+        steps += 1;
+        let during = store.check();
+        assert!(during.is_sound(), "after {steps} steps:\n{during}");
+        let (census, unreached) = (&during.census, &during.unreached);
+        assert!(
+            census.cells <= cells,
+            "a step takes cells out and puts none in"
+        );
+        cells = census.cells;
+        assert_eq!(census.live_cells, before.census.live_cells);
+        // The cells that are left are walked from the record of the
+        // dropped Merk while it is there, and are reached by nothing once
+        // it is gone.
+        match census.dropped_merks {
+            1 => assert_eq!((census.left_cells, unreached.cells), (43, 0), "{during}"),
+            _ => {
+                assert_eq!(census.left_cells, 0, "{during}");
+                assert_eq!(census.cells, census.live_cells + unreached.cells);
+                assert_eq!(census.left_over_entries, 0);
+                with_unreached += u64::from(unreached.cells > 0);
+            }
+        }
+        match progress {
+            Progress::Done => break,
+            Progress::More => {}
+            Progress::Blocked(busy) => panic!("the step is refused: {busy:?}"),
+        }
+        assert!(steps < 200, "the reclaiming does not end");
+    }
+    assert!(steps > 4, "{steps} steps");
+    assert!(
+        with_unreached > 0,
+        "no step left cells that nothing reaches"
+    );
+
+    let after = store.check();
+    assert!(after.is_sound(), "{after}");
+    assert!(after.unreached.is_empty(), "{after}");
+    let census = &after.census;
+    assert_eq!((census.dropped_merks, census.left_over_entries), (0, 0));
+    assert_eq!(
+        (census.left_cells, census.cells),
+        (0, before.census.live_cells)
+    );
+    // The values of the cells that went are released from the counts.
+    assert_eq!(census.placed_values, before.census.placed_values - 11);
+    assert!(census.tree_pages < before.census.tree_pages, "{after}");
+    // The pages that write-back owes after the steps are written, and the
+    // store is sound in its segments as well.
+    write_back(&store.db, &store.versions);
+    let written = store.check();
+    assert!(written.is_sound(), "{written}");
+}
+
+/// What a crash while the cells of a dropped Merk go leaves: the report
+/// says how many cells nothing reaches, how much room they take and where
+/// the first of them are, and calls the store sound.
 #[test]
 fn cells_that_nothing_reaches_are_reported_apart() {
     let store = plant();
     {
         let mut world = World::new(&store.db, &store.versions);
-        world.model.version = store.latest().get();
         let tx = world.begin();
-        let lost = world.merk(&tx, LOST, |items| {
-            for index in 0..LOST_NODES {
-                let len = if index % 4 == 0 { 300 } else { 20 };
-                items.insert(key(index), vec![index as u8; len]);
-            }
-        });
-        let batch = OwnedBatch {
-            merks: vec![lost],
-            subtrees: vec![OwnedSubtree::Enter(model::subtree(LOST), None)],
-            ..OwnedBatch::default()
-        };
-        world.apply(&tx, &batch).expect("the subtree is made");
+        world.write(
+            &tx,
+            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
+        );
         world.commit(tx, &[]);
     }
-    let id = {
-        let guard = store.versions.guard();
-        let pages = store.db.committed(&guard, store.latest());
-        let directory = store.db.directory_at(&pages);
-        let entry = directory.stored(&pages, &prefix(LOST)).expect("a read");
-        entry.expect("the Merk is entered").id()
+    let (mut merks, _, mut wait) = store.db.left(&store.versions);
+    assert!(wait.poll(&store.versions));
+    // The reclaiming is taken on until the record of the dropped Merk is
+    // gone and the first cells with it, and is then given up, as a process
+    // that ends gives it up.
+    let report = loop {
+        let progress = store.db.reclaim(&store.versions, &mut merks[0], 1);
+        assert_eq!(progress, Progress::More);
+        let report = store.check();
+        if report.unreached.cells > 0 {
+            break report;
+        }
     };
-    {
-        let mut world = World::new(&store.db, &store.versions);
-        world.model.version = store.latest().get();
-        let tx = world.begin();
-        let batch = OwnedBatch {
-            subtrees: vec![OwnedSubtree::Drop(model::subtree(LOST))],
-            ..OwnedBatch::default()
-        };
-        let scope = tx.txn.scope().expect("a scope");
-        batch
-            .with(|batch| scope.apply(batch))
-            .expect("the subtree is dropped");
-        scope.merge();
-        (store.db.commit(&store.versions, &tx.txn)).expect("a commit");
-    }
-    write_back(&store.db, &store.versions);
-    let dropped = store.check();
-    assert!(dropped.is_sound(), "{dropped}");
-    assert!(dropped.unreached.is_empty());
-    assert_eq!(dropped.census.dropped_merks, 2);
-
-    // The record of the dropped Merk goes, as the reclaimer takes it
-    // before the first cell.
-    store.write_flat(|pages| {
-        let key = record::dropped_key(id);
-        assert!(store.db.directory().delete(pages, &key).expect("a delete"));
-    });
-    let report = store.check();
+    drop(merks);
     assert!(report.is_sound(), "{report}");
     let unreached = &report.unreached;
-    assert_eq!(unreached.cells, LOST_NODES as u64);
-    assert_eq!(unreached.values, LOST_NODES as u64 / 4);
-    assert!(unreached.pages >= 1 && unreached.bytes > 20 * LOST_NODES as u64);
-    assert_eq!(unreached.first.len(), Unreached::SAMPLE.min(LOST_NODES));
-    assert_eq!(
-        report.census.left_cells,
-        dropped.census.left_cells - LOST_NODES as u64
-    );
-    // Their values stay counted, so the counts still agree.
-    assert_eq!(report.census.placed_values, dropped.census.placed_values);
+    assert!(unreached.pages >= 1 && unreached.bytes > 20 * unreached.cells);
+    assert!(unreached.values > 0 && unreached.values <= 11, "{report}");
+    let sample = (unreached.cells as usize).min(Unreached::SAMPLE);
+    assert_eq!(unreached.first.len(), sample);
+    assert_eq!(report.census.left_cells, 0);
+    // Their values stay counted, so the counts of live values still agree
+    // with the pointers the pages hold.
     let text = report.to_string();
     assert!(text.starts_with("sound: every rule holds"), "{text}");
-    assert!(
-        text.contains("space that nothing reaches: 20 cells"),
-        "{text}"
-    );
-    store.db.unchecked();
+    let said = format!("space that nothing reaches: {} cells", unreached.cells);
+    assert!(text.contains(&said), "{text}");
+    // Nothing leads a second reclaiming to them: the store has no record.
+    let (merks, flat, _) = store.db.left(&store.versions);
+    assert!(merks.is_empty() && flat.is_empty());
+    assert_eq!(store.check().unreached.cells, unreached.cells);
 }
 
 /// A store with no directory is walked from the roots it is given, through
@@ -269,16 +315,11 @@ impl lignin_tree::OperationGuard for Guard {}
 
 /// The pages that a lazy range delete left are flat pages that no
 /// keyspace reaches: the store names the keyspace of their records, and
-/// they are walked from there.
+/// they are walked from there, before and after the reclaimer frees them.
 #[test]
 fn the_pages_a_range_delete_left_are_walked_from_its_record() {
     let store = plant();
-    let meta = store.db.keyspaces().meta;
-    let mut drops = None;
-    store.write_flat(|pages| {
-        drops = Some(FlatDrops::create(pages, store.db.config()).expect("a keyspace"));
-    });
-    let drops = drops.expect("the keyspace was made");
+    let drops = store.db.flat_drops();
     let check = |drops: Option<FlatDrops>| {
         let calls = AtomicU64::new(0);
         (store.db).verify_with(
@@ -294,27 +335,45 @@ fn the_pages_a_range_delete_left_are_walked_from_its_record() {
     // A store that does not name the keyspace has pages nothing reaches.
     assert_eq!(check(None).rules(), [Rule::FlatPageUnreached]);
 
-    let at = store.latest();
-    store.write_flat(|pages| {
-        let range = [&prefix(FLAT)[..], b"key"].concat();
-        let left = drops.unlink_prefix(pages, &meta, &range, at);
-        assert!(
-            left.expect("the range is unlinked").is_some(),
-            "pages are left"
-        );
-    });
-    let report = check(Some(drops));
-    assert!(report.is_sound(), "{report}");
-    assert!(report.census.left_flat_pages >= 1, "{report}");
-    assert!(report.census.flat_records < before.census.flat_records - 200);
-    assert!(report
+    // The subtree with the many flat records is dropped: the leaves
+    // between the two ends of its range are unlinked unread.
+    drop_subtree(&store, FLAT);
+    let dropped = check(Some(drops));
+    assert!(dropped.is_sound(), "{dropped}");
+    assert!(dropped.census.left_flat_pages >= 1, "{dropped}");
+    assert!(dropped.census.flat_records < before.census.flat_records - 200);
+    assert!(dropped
         .to_string()
         .contains("more pages left by range deletes"));
     let unnamed = check(None);
     assert_eq!(unnamed.rules(), [Rule::FlatPageUnreached], "{unnamed}");
 
+    // A commit later the reclaimer frees them, and takes their record.
+    {
+        let mut world = World::new(&store.db, &store.versions);
+        let tx = world.begin();
+        world.write(
+            &tx,
+            vec![put(model::unit(Column::Aux, BIG), b"later", b"1")],
+        );
+        world.commit(tx, &[]);
+    }
+    let swept = store.db.sweep(&store.versions);
+    assert!(!swept.waiting && swept.blocked.is_none(), "{swept:?}");
+    assert!(!swept.flat_drops.is_empty(), "{swept:?}");
+    let after = check(Some(drops));
+    assert!(after.is_sound(), "{after}");
+    assert_eq!(after.census.left_flat_pages, 0);
+    assert!(
+        after.census.flat_pages < dropped.census.flat_pages,
+        "{after}"
+    );
+    assert_eq!(after.census.dropped_merks, 0);
+    assert!(after.unreached.is_empty(), "{after}");
+
     // A record that names a tree page, and one that names a page which a
     // keyspace reaches.
+    let at = store.latest();
     let record = |id: u64, page: PageId| {
         let key = [&[2][..], &id.to_be_bytes()].concat();
         let value = [&at.get().to_le_bytes()[..], &page.encode(), &[0, 0]].concat();
@@ -414,14 +473,7 @@ fn a_run_keeps_its_findings_up_to_a_limit() {
     assert!(total > 2 * 405, "{total}");
     assert!(!all.is_sound());
 
-    let keyspaces = store.db.keyspaces();
-    let columns = [
-        keyspaces.data,
-        keyspaces.aux,
-        keyspaces.roots,
-        keyspaces.meta,
-    ]
-    .map(|tree| lignin_tree::drop::Column { tree, lead: &[] });
+    let columns = store.db.keyspaces().columns();
     let parts = Store {
         loader: store.db.loader(),
         table: &store.db.table,
@@ -433,7 +485,7 @@ fn a_run_keeps_its_findings_up_to_a_limit() {
             tree: store.db.directory(),
             columns: &columns,
         },
-        flat_drops: None,
+        flat_drops: Some(store.db.flat_drops()),
         flat: &[],
         values_counted: true,
     };
