@@ -3,4 +3,5 @@
 #![forbid(unsafe_code)]
 
 pub mod flat;
+pub mod fragment;
 pub mod node;
