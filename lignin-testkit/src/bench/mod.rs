@@ -3,7 +3,7 @@
 //!
 //! A run applies the plan's reference workload,
 //! [`Documents::reference`](crate::workload::drive::Documents::reference),
-//! through [`crate::workload::apply`] to an [`Engine`], and writes one
+//! through [`crate::workload::apply()`] to an [`Engine`], and writes one
 //! [`Report`] as JSON: the machine, the commit, the workload and seed, and
 //! per engine every row with its unit, the raw samples behind it, the value
 //! the plan recorded and the ratio to RocksDB in the same run. The
@@ -36,7 +36,7 @@
 //!
 //! The write phases are `load` (the million documents), then `create`,
 //! `update` and `delete` at size. `at-size` is the state right after the
-//! load, `flushed` the same after a flush. [`run`] says what each phase
+//! load, `flushed` the same after a flush. [`mod@run`] says what each phase
 //! does.
 //!
 //! GroveDB's storage layer charges one seek for every record it writes, so

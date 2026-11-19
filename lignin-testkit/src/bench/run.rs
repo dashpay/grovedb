@@ -11,9 +11,10 @@
 //!    more creates, then `updates` replacements and `deletes` deletions,
 //!    with per-block samples.
 //!
-//! Every count row comes from the engine's [`Counters`] or GroveDB's
-//! `OperationCost`; every time row from `Instant` around the engine call
-//! alone, with the engine's bookkeeping (`settle`, `counters`) outside.
+//! Every count row comes from the engine's [`Counters`](super::Counters) or
+//! GroveDB's `OperationCost`; every time row from `Instant` around the
+//! engine call alone, with the engine's bookkeeping (`settle`, `counters`)
+//! outside.
 //!
 //! A write phase ends by waiting for the engine's background work to go
 //! idle, so the flushes and compactions it set off are counted in it rather

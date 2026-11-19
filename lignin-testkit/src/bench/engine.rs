@@ -2,7 +2,7 @@
 //!
 //! The `Engine` trait of SEAM-04 does not exist yet, so the harness has its
 //! own small one. An engine opens a database in a directory, applies
-//! workload operations block by block through [`crate::workload::apply`],
+//! workload operations block by block through [`crate::workload::apply()`],
 //! serves reads and proofs, checkpoints, flushes, and reports
 //! [`Counters`]: the physical work it did, which GroveDB's
 //! `OperationCost` cannot see.
@@ -64,7 +64,7 @@ pub trait Engine: Sized {
     fn settle(&mut self) -> Result<(), BenchError>;
 
     /// Applies a read outside any transaction, through
-    /// [`crate::workload::apply`].
+    /// [`crate::workload::apply()`].
     fn read(&self, op: &Op, grove_version: &GroveVersion) -> Result<OperationCost, BenchError>;
 
     /// Proves `query` against the committed state.
@@ -103,7 +103,7 @@ pub trait Engine: Sized {
 
 /// The write transaction of one block.
 pub trait Block {
-    /// Applies one operation through [`crate::workload::apply`] and returns
+    /// Applies one operation through [`crate::workload::apply()`] and returns
     /// what GroveDB charged for it.
     fn apply(&mut self, op: &Op, grove_version: &GroveVersion)
         -> Result<OperationCost, BenchError>;
