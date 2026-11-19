@@ -688,6 +688,17 @@ the directory entry of the dropped Merk goes. The cells of the dropped Merk
 are not touched by the transaction, and neither are the cells and the
 directory entries of the Merks hosted inside it (TREE-09: "unlink in O(1)").
 
+One exception, as built (`lignin-tree::fragment`, `lignin-tree::drop`): a
+host inside the dropped Merk whose pointer is behind (T3) is written first,
+by a write of its own that names its roots, because the walk of D2 follows
+every pointer it finds. That is at least one page for each such host, and
+it is bounded by what the transaction wrote, not by the size of the
+subtree. On existing GroveVersions no host is behind.
+
+As built, the directory's part is four records: the entry, the record of
+the root and the record of the host go, and a record of the dropped Merk
+takes their place (`lignin-tree::directory`).
+
 **D2. The dropped cells are removed later.** Because of P2 a page can hold
 cells of a dropped Merk beside cells that live on. So reclaiming is not only
 freeing whole pages: the reclaimer walks the dropped Merk from its root by
@@ -696,6 +707,19 @@ the way it removes the directory entries of the Merks nested in it and
 reports the value pointers the cells held (O6 of value-log-format.md). The
 walk needs the root's address, which TREE-09 must keep from the moment of
 the drop.
+
+As built (`lignin-tree::drop`): the address is in the record that the
+directory leaves under the dropped Merk's id. The steps come in this order:
+the directory records of the Merks nested in the subtree, the innermost
+first; the record of the dropped Merk; then the cells from the root down,
+the cells of one fragment in one step. A cell goes after the cell that
+names it, because a freed slot is given to the next cell that arrives (S4)
+and nothing in a page tells that cell from the one before: no address of a
+cell that is gone may be left in a cell that stays, and no walk may begin a
+second time from the record. The price is that a crash while the cells of
+one Merk go leaves the rest of them in their pages with nothing that leads
+to them. They are in no state, their pages pass every check of a page, and
+only a walk of every page finds them (section 17, item 15).
 
 **D3. Reclaiming comes after the commit and does not merge.** Until the
 reclaimer has come, the cells of a dropped Merk keep their room in their
@@ -1252,7 +1276,12 @@ owner can overrule one before FMT-02 and TREE-03 build on it.
     walk can follow every pointer it finds only if no host inside a dropped
     Merk was marked pending when it was dropped (T3). `lignin-tree::fragment`
     asks the caller to write such hosts first, at least one page each
-    beyond D1 (`Write::dropped`).
+    beyond D1 (`Write::dropped`). As built in `lignin-tree::drop`: the
+    cells go from the root down, after every directory record of the
+    subtree, and a crash during that walk leaves the cells it had not
+    reached unreachable (D2). Closing that needs a background step that
+    changes two pages as one, or a durable place for where a walk stands,
+    and the store has neither.
 16. **A directory entry holds the address of the root cell** and is counted
     as a page when it is written. It is 0.14 of the 7.04, in peaks: one
     split in the owner index rewrites the entries of every co-located
