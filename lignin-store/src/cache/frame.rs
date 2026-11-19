@@ -1106,12 +1106,14 @@ impl Chain {
                 arena.holds(pointer),
                 "a chain of arena frames left the arena"
             );
-            // SAFETY: the pointer is to a header of `arena`, which was just
-            // checked, and the header of an arena frame may be read by
-            // anyone for as long as the arena lives (A1). That the walk
-            // comes to no other frame is what the two lists of a bucket
-            // are for: `first`, and `next` of an arena frame, point to
-            // arena frames only.
+            // SAFETY: the pointer came from `first` or from the `next` of a
+            // frame, which hold pointers to the starts of headers, and it
+            // lies among the headers of `arena`, which was just checked.
+            // The header of an arena frame may be read by anyone for as
+            // long as the arena lives (A1). That the walk comes to no
+            // other frame is what the two lists of a bucket are for:
+            // `first`, and `next` of an arena frame, point to arena frames
+            // only.
             let frame: &'a Frame = unsafe { pointer.as_ref() };
             if frame.kind() == kind::PUBLISHED && wanted(frame) {
                 break (FramePtr(pointer), frame);
@@ -1400,16 +1402,12 @@ impl Arena {
         &self.lanes
     }
 
-    /// Whether `pointer` is to one of the arena's own frames.
+    /// Whether `pointer` lies among the arena's own headers. A pointer that
+    /// a chain or a frame keeps is to the start of a header, so one that
+    /// lies among these is to one of the arena's frames.
     fn holds(&self, pointer: NonNull<Frame>) -> bool {
         let first = self.frames.as_ptr().addr();
-        pointer
-            .as_ptr()
-            .addr()
-            .checked_sub(first)
-            .is_some_and(|offset| {
-                offset % size_of::<Frame>() == 0 && offset / size_of::<Frame>() < self.count
-            })
+        pointer.as_ptr().addr().wrapping_sub(first) < self.count * size_of::<Frame>()
     }
 
     /// Whether a cell of a lane announces `frame` at the moment this looks
