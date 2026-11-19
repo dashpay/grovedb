@@ -43,10 +43,15 @@
 //! - **A claim never waits.** It is granted or refused inside the call,
 //!   under the transaction's lock. A call that is refused adds no write of
 //!   its batch, shows the caller no record and keeps no claim, and its
-//!   scope stays open and usable. It is an operation of the transaction
-//!   all the same: it takes in the commits that were published since the
-//!   last one, which can end the node handles read before (PN8), and it
-//!   reads the subtree directory where it has to ask what is below what.
+//!   scope stays open and usable. A batch, a read of a record or of a
+//!   node, and a cursor's read of the node it stands on begin an operation
+//!   of the transaction before their claim is checked: also where they are
+//!   refused, they take in the commits that were published since the last
+//!   one, which can end the node handles read before (PN8). A cursor's
+//!   movement, and its read of the flat record it stands on, check the
+//!   claim and begin no operation: refused, they take nothing in. Any of
+//!   them reads the subtree directory where it has to ask what is below
+//!   what.
 //! - **A scope keeps its claims until it ends**, also the claims of a
 //!   batch that was then refused for what it says.
 //! - **The claims of one batch are granted together or not at all.**
