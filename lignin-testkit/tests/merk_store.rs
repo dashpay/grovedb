@@ -64,6 +64,9 @@
 //! a node, on every grove version, is held by the tests of
 //! `merk::store::lignin`, where a Merk runs on both engines.
 
+#[path = "merk_store/hashes.rs"]
+mod hashes;
+
 use std::{
     collections::{BTreeMap, HashMap},
     panic::{catch_unwind, AssertUnwindSafe},
@@ -177,6 +180,9 @@ struct Tally {
     /// The cells of the Merks in use that the physical invariant checker
     /// walked in the store as the replay left it.
     checked: u64,
+    /// The committed cells whose hashes Merk's hash rules made again, the
+    /// hashes they made, and the value hashes only their writer can make.
+    hashed: hashes::Made,
 }
 
 impl Tally {
@@ -196,6 +202,9 @@ impl Tally {
         self.reads_charged += other.reads_charged;
         self.bytes_loaded += other.bytes_loaded;
         self.checked += other.checked;
+        self.hashed.cells += other.hashed.cells;
+        self.hashed.hashes += other.hashed.hashes;
+        self.hashed.stated += other.hashed.stated;
     }
 }
 
@@ -956,6 +965,23 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
         replay.compare_all(&committed, &reader, block, grove);
+
+        // The hashes of the committed pages are the ones Merk's hash
+        // rules make, and the root hash they make is GroveDB's.
+        let root_hash = db.root_hash(Some(block), spec.grove_version).unwrap();
+        let made = hashes::check(
+            &lignin,
+            &versions,
+            committed.at,
+            &committed.roots,
+            Subtree::new(grove.merk(MerkId::ROOT).prefix),
+            root_hash.expect("the root hash of the grove"),
+            spec.grove_version,
+        );
+        replay.tally.add(Tally {
+            hashed: made,
+            ..Tally::default()
+        });
     }
 
     // The store as the replay leaves it passes the physical invariant
@@ -1075,5 +1101,11 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             "{tally:?}"
         );
         assert!(tally.checked > 10_000, "{tally:?}");
+        let hashed = tally.hashed;
+        assert_eq!(hashed.cells, tally.compared, "{tally:?}");
+        assert!(
+            hashed.hashes > 3 * hashed.cells && hashed.stated > 10_000,
+            "{tally:?}"
+        );
     }
 }
