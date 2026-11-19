@@ -1,7 +1,7 @@
 //! The background loop of write-back, and the backpressure it puts on
 //! whoever commits (`transactions.md` FL5).
 
-use std::sync::atomic::Ordering;
+use std::{sync::atomic::Ordering, time::Instant};
 
 use super::{
     checkpoint::Checkpointed,
@@ -81,6 +81,22 @@ impl WriteBack<'_> {
     /// its turns. With none, the caller makes the turns itself
     /// ([`Self::tick`]), and their errors are its own.
     pub fn wait_for_room(&self) -> Result<Room, FlushError> {
+        if self.has_room() {
+            return Ok(Room::Free);
+        }
+        let began = Instant::now();
+        let room = self.wait_while_full();
+        let counters = &self.state.counters;
+        count(&counters.room_waits, 1);
+        if matches!(room, Ok(Room::Stalled)) {
+            count(&counters.room_stalls, 1);
+        }
+        let waited = u64::try_from(began.elapsed().as_nanos()).unwrap_or(u64::MAX);
+        count(&counters.room_waited_nanos, waited);
+        room
+    }
+
+    fn wait_while_full(&self) -> Result<Room, FlushError> {
         loop {
             if self.has_room() {
                 return Ok(Room::Free);

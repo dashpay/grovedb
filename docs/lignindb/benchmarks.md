@@ -92,9 +92,10 @@ only.
 | `bytes_handed_per_transition` | B | engine: key and value bytes of every record written |
 | `bytes_logged_per_transition` | B | engine: bytes appended to the write-ahead log |
 | `physical_bytes_per_transition` | B | engine: log plus flush plus compaction (cleaner) bytes |
-| `keyed_lookups_per_transition` | lookups | `OperationCost::seek_count`, less one per record written |
+| `keyed_lookups_per_transition` | lookups | engine: searches by key, where it counts them; else `OperationCost::seek_count`, less one per record written |
 | `seeks_per_transition` | seeks | `OperationCost::seek_count` |
 | `hashes_per_transition` | calls | `OperationCost::hash_node_calls` |
+| `engine_hashes_per_transition` | calls | engine: hashes computed, where it counts them (LigninDB only) |
 | `node_record_*_share` | fraction | the node records in the log, decoded (RocksDB only) |
 | `size_on_disk` | B | file lengths under the database directory |
 | `point_proof_bytes`, `references_proof_bytes` | B | proof lengths |
@@ -102,9 +103,11 @@ only.
 | `point_get`, `point_query_proof`, `references_proof` | µs | `Instant` around one read |
 | `checkpoint`, `reopen` | ms | `Instant` around one checkpoint or open |
 
-GroveDB's storage layer charges one seek for every record it writes. So
-`keyed_lookups_per_transition` subtracts the records the engine logged, which
-leaves the lookups.
+GroveDB's storage layer charges one seek for every record it writes. So, for
+an engine that does not count its lookups (RocksDB), `keyed_lookups_per_transition`
+subtracts the records the engine logged, which leaves the lookups. GroveDB's
+charges are the same on every engine, so they cannot show the lookups LigninDB
+saves (PERF-03); LigninDB counts them itself.
 
 ### RocksDB's counters
 
@@ -147,13 +150,15 @@ until SEAM-04's `Engine` exists:
 - counters.
 
 LigninDB implements it over `GroveDb<LigninEngine>` (GROVE-01). Its
-`Counters` come from `lignin-store::stats` (STORE-11), as the table in
-`bench/engine.rs` lists:
+`Counters` come from `lignin-store::stats` (STORE-11) through
+`Counters::from(&StoreStats)`, as the table in `bench/engine.rs` lists:
 
 - log bytes and groups;
 - value cells and hash records;
 - flusher and cleaner bytes;
-- page reads and cache hits.
+- page reads and cache hits;
+- keyed lookups and hashes, which the tree layer counts in the store's
+  `Stats`.
 
 To add the engine, add an `EngineChoice` arm. A run with `--engine rocksdb
 --engine lignindb` then reports every row of both engines, with each

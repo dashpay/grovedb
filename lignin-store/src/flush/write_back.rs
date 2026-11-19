@@ -2,19 +2,19 @@
 //! page step tell it, and the pass that writes page versions to segments.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     sync::{atomic::Ordering, Mutex, MutexGuard},
 };
 
 use lignin_format::{
     delta::DeltaRun,
     segment::{BlockContent, Compression, FRAME_LEN},
-    wal::{Change, Entry, Record, Removed},
+    wal::{Change, Entry, FlatRun, Record, Removed},
     CommitVersion, FormatVersion, PageId, PageSize, SlotId,
 };
 
 use super::{
-    config::{count, max_run_len},
+    config::{count, max_run_len, Counters},
     error::FlushError,
     page::{self, PageKind},
     state::{lock, Changes, Files, FlushState},
@@ -173,12 +173,52 @@ pub(super) struct Round {
     regroups: bool,
     /// The first error that did not end the pass.
     failed: Option<FlushError>,
+    /// The pages that their bytes kept from being written.
+    failing: BTreeSet<PageId>,
 }
 
 impl Round {
     /// Notes an error that does not end the pass.
     pub(super) fn fail(&mut self, error: FlushError) {
+        if let FlushError::Page { page, .. } | FlushError::PendingValue { page, .. } = error {
+            self.failing.insert(page);
+        }
         self.failed.get_or_insert(error);
+    }
+}
+
+/// The records of one commit group, by kind, for [`FlushStats`].
+///
+/// [`FlushStats`]: super::FlushStats
+#[derive(Debug, Default)]
+struct Told {
+    node_records: usize,
+    node_bytes: usize,
+    other_records: usize,
+    other_bytes: usize,
+}
+
+impl Told {
+    fn entry(&mut self, entry: &Entry<'_>) {
+        match entry {
+            Entry::Tree(run) => {
+                self.node_records += run.deltas().len();
+                self.node_bytes += run.encoded_len() - DeltaRun::HEADER_LEN;
+            }
+            Entry::Flat(run) => {
+                self.other_records += run.changes().len();
+                self.other_bytes += run.as_bytes().len() - FlatRun::HEADER_LEN;
+            }
+            Entry::Freed(_) | Entry::Released(_) | Entry::Acquired(_) => {}
+        }
+    }
+
+    fn count(&self, counters: &Counters) {
+        count(&counters.groups, 1);
+        count(&counters.node_records, self.node_records as u64);
+        count(&counters.node_record_bytes, self.node_bytes as u64);
+        count(&counters.other_records, self.other_records as u64);
+        count(&counters.other_record_bytes, self.other_bytes as u64);
     }
 }
 
@@ -243,6 +283,11 @@ impl<'s> WriteBack<'s> {
         self.state
     }
 
+    /// The stores this handle works on.
+    pub fn stores(&self) -> Stores<'s> {
+        self.stores
+    }
+
     /// The manifest, settled: if a replacement left it in doubt, it is
     /// opened again first, and every store is told of the manifest that is
     /// in force.
@@ -288,11 +333,14 @@ impl<'s> WriteBack<'s> {
     ) -> Result<(), FlushError> {
         let mut parts = Vec::new();
         let mut offset = 0;
+        let mut told = Told::default();
         while offset < group.len() {
             let (record, len) = Record::decode(&group[offset..], FormatVersion::CURRENT)
                 .map_err(|source| FlushError::Log(LogError::Refused { offset, source }))?;
-            if let Record::Part(part) = record {
-                parts.push(part);
+            match record {
+                Record::Part(part) => parts.push(part),
+                Record::Value(part) => told.node_bytes += part.data().len(),
+                _ => {}
             }
             offset += len;
         }
@@ -306,6 +354,7 @@ impl<'s> WriteBack<'s> {
             .fetch_add(logged, Ordering::Relaxed);
         kept.group_at(version.get(), at, before);
         for entry in parts.iter().flat_map(|part| part.entries()) {
+            told.entry(&entry);
             match entry {
                 Entry::Tree(run) => {
                     match run.created() {
@@ -330,6 +379,7 @@ impl<'s> WriteBack<'s> {
         drop(kept);
         self.state.owed.fetch_add(pages, Ordering::Relaxed);
         self.state.logged.fetch_add(logged, Ordering::Relaxed);
+        told.count(&self.state.counters);
         Ok(())
     }
 
@@ -446,13 +496,19 @@ impl<'s> WriteBack<'s> {
             oldest_pin: self.stores.versions.oldest_pin(),
             regroups: self.stores.page_values.is_some(),
             failed: None,
+            failing: BTreeSet::new(),
         };
         let ended = self.pass_with(&mut files, &mut round);
         let Round {
-            mut pass, failed, ..
+            mut pass,
+            failed,
+            failing,
+            ..
         } = round;
         pass.waiting = self.owed().values().map(Vec::len).sum();
         self.state.owed.store(pass.waiting, Ordering::Relaxed);
+        self.state.failing.store(failing.len(), Ordering::Relaxed);
+        self.state.blocked.store(pass.blocked, Ordering::Relaxed);
         (pass, failed.map_or(ended, Err))
     }
 
@@ -1041,6 +1097,7 @@ impl<'s> WriteBack<'s> {
     pub(super) fn segment_failed(&self, files: &mut Files, mut writer: SegmentWriter) {
         if writer.sync().is_err() {
             self.state.segments_failed.store(true, Ordering::Release);
+            count(&self.state.counters.segment_syncs_failed, 1);
             files.failed.push(writer);
         }
     }

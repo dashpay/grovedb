@@ -142,6 +142,39 @@ pub struct FlushStats {
     pub log_files_dropped: u64,
     /// Calls of the background loop that ended with an error.
     pub errors: u64,
+    /// Commit groups write-back was told of ([`WriteBack::committed`]).
+    ///
+    /// [`WriteBack::committed`]: super::WriteBack::committed
+    pub groups: u64,
+    /// Page deltas those groups carry for tree pages: the cells and hashes
+    /// the commits changed.
+    pub node_records: u64,
+    /// Their bytes, without the page id of each run, plus the bytes of the
+    /// out-of-line values the groups carry.
+    pub node_record_bytes: u64,
+    /// Changes those groups carry for flat pages: the flat keyspace.
+    pub other_records: u64,
+    /// Their bytes, without the page id of each run.
+    pub other_record_bytes: u64,
+    /// The bytes the values counted in `value_bytes` take in the value
+    /// log, frames included.
+    pub value_stored_bytes: u64,
+    /// The bytes of the table-checkpoint files written, installed or not.
+    pub checkpoint_bytes: u64,
+    /// Calls of [`WriteBack::wait_for_room`] that found write-back over its
+    /// bounds and waited.
+    ///
+    /// [`WriteBack::wait_for_room`]: super::WriteBack::wait_for_room
+    pub room_waits: u64,
+    /// Those of them that ended with [`Room::Stalled`].
+    ///
+    /// [`Room::Stalled`]: super::Room::Stalled
+    pub room_stalls: u64,
+    /// The time those calls waited, in all.
+    pub room_waited: Duration,
+    /// Segments whose sync failed. Not zero means that no table checkpoint
+    /// is installed until the store is opened again.
+    pub segment_syncs_failed: u64,
 }
 
 #[derive(Debug, Default)]
@@ -165,6 +198,17 @@ pub(super) struct Counters {
     pub(super) checkpoints_put_off: AtomicU64,
     pub(super) log_files_dropped: AtomicU64,
     pub(super) errors: AtomicU64,
+    pub(super) groups: AtomicU64,
+    pub(super) node_records: AtomicU64,
+    pub(super) node_record_bytes: AtomicU64,
+    pub(super) other_records: AtomicU64,
+    pub(super) other_record_bytes: AtomicU64,
+    pub(super) value_stored_bytes: AtomicU64,
+    pub(super) checkpoint_bytes: AtomicU64,
+    pub(super) room_waits: AtomicU64,
+    pub(super) room_stalls: AtomicU64,
+    pub(super) room_waited_nanos: AtomicU64,
+    pub(super) segment_syncs_failed: AtomicU64,
 }
 
 pub(super) fn count(counter: &AtomicU64, by: u64) {
@@ -194,6 +238,17 @@ impl Counters {
             checkpoints_put_off: read(&self.checkpoints_put_off),
             log_files_dropped: read(&self.log_files_dropped),
             errors: read(&self.errors),
+            groups: read(&self.groups),
+            node_records: read(&self.node_records),
+            node_record_bytes: read(&self.node_record_bytes),
+            other_records: read(&self.other_records),
+            other_record_bytes: read(&self.other_record_bytes),
+            value_stored_bytes: read(&self.value_stored_bytes),
+            checkpoint_bytes: read(&self.checkpoint_bytes),
+            room_waits: read(&self.room_waits),
+            room_stalls: read(&self.room_stalls),
+            room_waited: Duration::from_nanos(read(&self.room_waited_nanos)),
+            segment_syncs_failed: read(&self.segment_syncs_failed),
         }
     }
 }

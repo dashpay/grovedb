@@ -318,6 +318,11 @@ pub struct FlushState {
     pub(super) logged: AtomicU64,
     /// The bytes logged since this state was made.
     pub(super) logged_in_all: AtomicU64,
+    /// Pages the last pass could not write because of their bytes.
+    pub(super) failing: AtomicUsize,
+    /// Pages the last pass could not write because a write transaction
+    /// holds a private copy ([`Pass::blocked`](super::Pass::blocked)).
+    pub(super) blocked: AtomicUsize,
     pub(super) segments_failed: AtomicBool,
     pub(super) running: AtomicBool,
     pub(super) stopping: AtomicBool,
@@ -341,6 +346,8 @@ impl FlushState {
             owed: AtomicUsize::new(0),
             logged: AtomicU64::new(0),
             logged_in_all: AtomicU64::new(0),
+            failing: AtomicUsize::new(0),
+            blocked: AtomicUsize::new(0),
             segments_failed: AtomicBool::new(false),
             running: AtomicBool::new(false),
             stopping: AtomicBool::new(false),
@@ -369,6 +376,30 @@ impl FlushState {
     /// that pass left.
     pub fn unwritten(&self) -> usize {
         self.owed.load(Ordering::Relaxed)
+    }
+
+    /// The pages that the last pass could not write because of their
+    /// bytes: a page its format does not allow ([`FlushError::Page`]), or
+    /// a pending value with no bytes of its length
+    /// ([`FlushError::PendingValue`]). Such a page holds the log until the
+    /// store is opened again (D-091).
+    ///
+    /// [`FlushError::Page`]: super::FlushError::Page
+    /// [`FlushError::PendingValue`]: super::FlushError::PendingValue
+    pub fn failing(&self) -> usize {
+        self.failing.load(Ordering::Relaxed)
+    }
+
+    /// The pages that the last pass could not write because a write
+    /// transaction holds a private copy of them.
+    pub fn blocked(&self) -> usize {
+        self.blocked.load(Ordering::Relaxed)
+    }
+
+    /// Whether a segment's sync failed in this session, so that no table
+    /// checkpoint is installed until the store is opened again.
+    pub fn segments_not_durable(&self) -> bool {
+        self.segments_failed.load(Ordering::Acquire)
     }
 
     /// The table checkpoint that write-back knows to be in force: the

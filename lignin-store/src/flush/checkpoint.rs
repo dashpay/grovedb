@@ -349,6 +349,10 @@ impl<'s> WriteBack<'s> {
                 .collect(),
         };
         let info = checkpoints.write(table, covers, &sample, || log.end())?;
+        count(
+            &self.state.counters.checkpoint_bytes,
+            info.named().valid_len(),
+        );
         let named = Named {
             covers,
             place: Some(place),
@@ -431,6 +435,7 @@ impl<'s> WriteBack<'s> {
         if let Some(writer) = files.segment.take() {
             files.failed.push(writer);
         }
+        count(&self.state.counters.segment_syncs_failed, 1);
         self.state.segments_failed.store(true, Ordering::Release);
     }
 
