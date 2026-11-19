@@ -246,7 +246,7 @@ mod tests {
         diff::{
             engines::{Fault, StandIn},
             pair::testing::{
-                added_by_the_last_of, rocksdb, stand_in, stand_in_with_a_stray_record,
+                added_by_the_last_of, rocksdb, stand_in, stand_in_with_a_stray_record, unhurried,
             },
         },
         golden::record::on_a_deep_stack,
@@ -331,7 +331,7 @@ mod tests {
         let case = Case::of(9, GroveVersion::latest(), ops);
 
         let candidate = StandIn::side(Fault::AddedByte { when_added });
-        let (divergence, shrunk) = shrunk(&case, &candidate, Budget::default());
+        let (divergence, shrunk) = shrunk(&case, &candidate, unhurried());
         assert_eq!(
             (divergence.step, &divergence.parts),
             (47, &vec![Part::Cost])
@@ -358,7 +358,7 @@ mod tests {
         // stream out.
         let few_runs = Budget {
             runs: 2,
-            ..Budget::default()
+            ..unhurried()
         };
         let (_, cut) = shrunk(&case, &candidate, few_runs);
         assert!(cut.reproduced && !cut.minimal);
@@ -369,11 +369,11 @@ mod tests {
         for nothing in [
             Budget {
                 time: Duration::ZERO,
-                ..Budget::default()
+                ..unhurried()
             },
             Budget {
                 runs: 0,
-                ..Budget::default()
+                ..unhurried()
             },
         ] {
             let (_, cut) = shrunk(&case, &candidate, nothing);
@@ -381,7 +381,7 @@ mod tests {
             assert_eq!((cut.runs, cut.case.ops.len()), (1, 41));
         }
 
-        let (_, whole) = shrunk(&case, &candidate, Budget::default());
+        let (_, whole) = shrunk(&case, &candidate, unhurried());
         assert!(whole.minimal);
         assert_eq!(whole.case.ops, needed);
     }
@@ -392,8 +392,7 @@ mod tests {
     fn a_divergence_in_what_is_stored_shrinks_to_its_first_step() {
         let ops: Vec<Op> = (0..12).map(|key| insert(key, item(4))).collect();
         let case = Case::of(0, GroveVersion::latest(), ops);
-        let (divergence, shrunk) =
-            shrunk(&case, &stand_in_with_a_stray_record(), Budget::default());
+        let (divergence, shrunk) = shrunk(&case, &stand_in_with_a_stray_record(), unhurried());
         assert_eq!(
             (divergence.step, &divergence.parts),
             (11, &vec![Part::Stored])
@@ -421,7 +420,7 @@ mod tests {
                 &rocksdb(),
                 &stand_in(),
                 scratch.path(),
-                Budget::default(),
+                unhurried(),
             )
         })
         .expect("the case runs");
@@ -453,7 +452,7 @@ mod tests {
                 &rocksdb(),
                 &StandIn::side(Fault::Panic { when_added }),
                 scratch.path(),
-                Budget::default(),
+                unhurried(),
             )
         })
         .expect("the case runs");
@@ -493,7 +492,7 @@ mod tests {
             ],
         );
         let candidate = StandIn::side(Fault::AddedByte { when_added });
-        let (divergence, shrunk) = shrunk(&case, &candidate, Budget::default());
+        let (divergence, shrunk) = shrunk(&case, &candidate, unhurried());
         assert_eq!(divergence.step, 3);
         assert!(shrunk.minimal);
         assert_eq!(shrunk.case.ops, needed);

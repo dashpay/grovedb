@@ -20,14 +20,17 @@
 //! - the root hash, inside the open transaction;
 //! - for a read GroveDB proves: the proof bytes, the cost of proving, and
 //!   whether the proof verifies to the committed root;
-//! - whether an engine panicked.
+//! - whether an engine panicked, and with what message.
 //!
 //! And every so many operations, the records the two databases store
 //! ([`state`]): the nodes of every Merk as Merk encodes them, the records
-//! of the append-only trees, and the aux and meta records. That is where
-//! the referrer list of an element that takes backward references shows,
-//! which is in no hash and which no read returns, and a record of the
-//! auxiliary keyspace, which was never in one.
+//! of the append-only trees, the aux and meta records, and the drops that
+//! are pending, staged or committed. That is where the referrer list of an
+//! element that takes backward references shows, which is in no hash and
+//! which no read returns, and a record of the auxiliary keyspace, which
+//! was never in one. A subtree that is gone since the last comparison is
+//! looked into once more, for what a delete, a move or a rollback left
+//! behind.
 //!
 //! # The streams
 //!
@@ -71,9 +74,16 @@
 //! - What the corpus does not see either: `GroveDb::clear_subtree` and
 //!   `GroveDb::fetch_chunk` return no cost, and an error is compared by
 //!   the name of its variant, not by its message.
-//! - Two engines that panic at the same step count as the same answer.
-//!   The run goes on to the next case and its report says how many cases
-//!   were cut short and why the first one was.
+//! - Two engines that panic at the same step with the same message count
+//!   as the same answer, and so do two that cannot be observed in the same
+//!   way. The run goes on to the next case, and its report says how many
+//!   cases were cut short and why the first one was.
+//! - What a subtree that was dropped flat still holds while the drop is
+//!   pending: an engine may keep those records until the flush or hide
+//!   them at the drop. After the flush the subtree is looked into like any
+//!   other that is gone. And storage under no path that a comparison ever
+//!   reached: the fuzzer reads what GroveDB can address, not what a file
+//!   holds.
 //! - One transaction writes at a time: the streams are applied from one
 //!   thread. Commits that race, and what a crash leaves, are other tasks'
 //!   (VER-11, VER-04).

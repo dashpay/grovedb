@@ -53,9 +53,11 @@ pub type Candidate = StandIn;
 
 /// A defect planted in a [`StandIn`].
 ///
-/// Each one changes a single cost by a single byte, and only for one size
-/// of write: what an engine that works a charge out from logical sizes gets
-/// wrong at one boundary. Root hashes, results and proofs stay as they are.
+/// The byte faults change a single cost by a single byte, and only for one
+/// size of write: what an engine that works a charge out from logical sizes
+/// gets wrong at one boundary. Root hashes, results and proofs stay as they
+/// are. The unreclaimed fault changes none of those and no cost either:
+/// only what is stored shows it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Fault {
     /// No defect.
@@ -77,6 +79,9 @@ pub enum Fault {
         /// The added bytes of the batches the engine panics on.
         when_added: u32,
     },
+    /// A flush of the pending drops frees nothing: the records of a
+    /// subtree that was dropped flat stay under its prefixes.
+    Unreclaimed,
 }
 
 impl fmt::Display for Fault {
@@ -86,6 +91,7 @@ impl fmt::Display for Fault {
             Fault::AddedByte { when_added } => write!(f, "added-byte:{when_added}"),
             Fault::LoadedByte { when_loaded } => write!(f, "loaded-byte:{when_loaded}"),
             Fault::Panic { when_added } => write!(f, "panic:{when_added}"),
+            Fault::Unreclaimed => write!(f, "unreclaimed"),
         }
     }
 }
@@ -94,15 +100,18 @@ impl FromStr for Fault {
     type Err = String;
 
     /// A fault as [`fmt::Display`] writes it: `none`, `added-byte:N`,
-    /// `loaded-byte:N` or `panic:N`.
+    /// `loaded-byte:N`, `panic:N` or `unreclaimed`.
     fn from_str(text: &str) -> Result<Self, String> {
         let unknown = || {
             format!(
-                "`{text}` is not a fault: none, added-byte:N, loaded-byte:N or panic:N are faults"
+                "`{text}` is not a fault: none, added-byte:N, loaded-byte:N, panic:N or \
+                 unreclaimed are faults"
             )
         };
-        if text == "none" {
-            return Ok(Fault::None);
+        match text {
+            "none" => return Ok(Fault::None),
+            "unreclaimed" => return Ok(Fault::Unreclaimed),
+            _ => {}
         }
         let (kind, size) = text.split_once(':').ok_or_else(unknown)?;
         match kind {
@@ -168,6 +177,9 @@ impl PendingPrefixDrops for StandIn {
     }
 
     fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), StorageError> {
+        if self.fault == Fault::Unreclaimed {
+            return Ok(());
+        }
         self.engine.delete_prefix_ranges(prefixes)
     }
 

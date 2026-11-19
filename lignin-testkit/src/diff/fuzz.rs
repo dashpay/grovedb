@@ -334,7 +334,7 @@ mod tests {
     use crate::diff::{
         engines::{Fault, StandIn},
         pair::{
-            testing::{rocksdb, stand_in, stand_in_that_opens},
+            testing::{rocksdb, stand_in, stand_in_that_opens, unhurried},
             Part,
         },
     };
@@ -451,7 +451,7 @@ mod tests {
                 },
             )
         };
-        let summary = run(1, Some(Budget::default()));
+        let summary = run(1, Some(unhurried()));
         let finding = summary.finding.expect("the planted fault");
         assert_eq!(finding.divergence.parts, [Part::Cost]);
         assert_eq!(finding.case.seed, case_seed(1, finding.index));

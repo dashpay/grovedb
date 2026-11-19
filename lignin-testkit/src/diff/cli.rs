@@ -45,8 +45,10 @@ options:
                       (default: 32; 0 for after the last only)
   --fault FAULT       seeded, case: the defect planted in the stand-in
                       engine, which is then the candidate: added-byte:N,
-                      loaded-byte:N or panic:N (seeded: added-byte:71
-                      unless one is given)
+                      loaded-byte:N, panic:N or unreclaimed (seeded:
+                      added-byte:71 unless one is given)
+  --shrink-seconds N  how long the shrinking of a stream the engines differ
+                      on may take (default: 300)
   --no-shrink         leave a stream the engines differ on as it is
 
 A case is a function of its seed and of --grove-version and --max-ops, so
@@ -87,6 +89,7 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
     let mut settings = Settings::default();
     let mut fault = None;
     let mut grove_version = None;
+    let mut shrink_time = None;
     while let Some(option) = arguments.next() {
         let mut value = || {
             arguments
@@ -116,9 +119,13 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
                 }
             }
             "--fault" => fault = Some(value()?.parse::<Fault>()?),
+            "--shrink-seconds" => shrink_time = Some(Duration::from_secs(number(value()?)?)),
             "--no-shrink" => settings.shrink = None,
             other => return Err(format!("`{other}` is not an option")),
         }
+    }
+    if let (Some(budget), Some(time)) = (settings.shrink.as_mut(), shrink_time) {
+        budget.time = time;
     }
     if let Some(number) = grove_version {
         let number =
@@ -490,6 +497,17 @@ mod tests {
         );
         assert_eq!(cases.settings.stored, Stored::Every(4));
         assert_eq!(cases.settings.shrink, Some(Budget::default()));
+        let patient = parse(&arguments("fuzz --shrink-seconds 7")).expect("an invocation");
+        assert_eq!(
+            patient.settings.shrink,
+            Some(Budget {
+                time: Duration::from_secs(7),
+                ..Budget::default()
+            })
+        );
+        let neither =
+            parse(&arguments("fuzz --shrink-seconds 7 --no-shrink")).expect("an invocation");
+        assert_eq!(neither.settings.shrink, None);
 
         let fuzz = parse(&arguments("fuzz")).expect("an invocation");
         assert_eq!(fuzz.settings.duration, Some(Duration::from_secs(60)));
@@ -529,7 +547,8 @@ mod tests {
             ),
             (
                 "seeded --fault wrong",
-                "`wrong` is not a fault: none, added-byte:N, loaded-byte:N or panic:N are faults",
+                "`wrong` is not a fault: none, added-byte:N, loaded-byte:N, panic:N or \
+                 unreclaimed are faults",
             ),
         ] {
             assert_eq!(parse(&arguments(line)).unwrap_err(), error, "{line}");
@@ -563,7 +582,8 @@ mod tests {
     fn a_planted_fault_that_is_found_is_reported_shrunk_and_exits_with_zero() {
         let scratch = tempfile::tempdir().expect("a directory");
         let (code, text) = ran(
-            "seeded --fault added-byte:0 --duration 60 --jobs 2 --max-ops 60",
+            "seeded --fault added-byte:0 --duration 600 --shrink-seconds 3600 --jobs 2 \
+             --max-ops 60",
             scratch.path(),
         );
         assert_eq!(code, 0, "{text}");

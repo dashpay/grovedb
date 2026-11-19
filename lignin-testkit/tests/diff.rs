@@ -21,6 +21,15 @@ use lignin_testkit::diff::{
 
 const A_MINUTE: Duration = Duration::from_secs(60);
 
+/// A directory for the databases: in memory where the machine has such a
+/// file system, so that the minute is the fuzzer's and not that of a disk
+/// the other tests write to at the same time.
+fn scratch() -> tempfile::TempDir {
+    tempfile::tempdir_in("/dev/shm")
+        .or_else(|_| tempfile::tempdir())
+        .expect("a directory")
+}
+
 fn settings(scratch: &tempfile::TempDir) -> Settings {
     Settings {
         scratch: scratch.path().to_path_buf(),
@@ -69,7 +78,7 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
         (Fault::LoadedByte { when_loaded: 413 }, "loaded"),
     ];
     for (fault, field) in faults {
-        let scratch = tempfile::tempdir().expect("a directory");
+        let scratch = scratch();
         let started = Instant::now();
         let summary = fuzz(
             &Side::<Reference>::of("reference"),
@@ -119,7 +128,7 @@ fn a_seeded_one_byte_cost_bug_is_found_within_a_minute() {
 
 #[test]
 fn the_candidate_answers_as_the_reference_does() {
-    let scratch = tempfile::tempdir().expect("a directory");
+    let scratch = scratch();
     let summary = fuzz(
         &Side::<Reference>::of("reference"),
         &Side::<Candidate>::of("candidate"),

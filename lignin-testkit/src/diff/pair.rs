@@ -37,7 +37,7 @@ use crate::{
         trace::{one_line, shortened},
         Error,
     },
-    workload::{BatchOp, Op, Path as SubtreePath, StreamEngine, TransactionOp, Write},
+    workload::{Op, StreamEngine, TransactionOp},
 };
 
 /// The longest line of a report. A proof of a hundred documents is a
@@ -487,24 +487,6 @@ fn reads(op: &Op) -> bool {
     )
 }
 
-/// The subtrees `op` asks to drop flat, whether or not it succeeds.
-fn dropped_flat(op: &Op) -> impl Iterator<Item = SubtreePath> + '_ {
-    let at = |path: &SubtreePath, key: &Vec<u8>| {
-        let mut path = path.clone();
-        path.push(key.clone());
-        path
-    };
-    let written = match op {
-        Op::Write(Write::DropFlat { path, key }) => Some(at(path, key)),
-        _ => None,
-    };
-    let batched = op.batch_ops().filter_map(move |op| match op {
-        BatchOp::DropFlat { path, key, .. } => Some(at(path, key)),
-        _ => None,
-    });
-    written.into_iter().chain(batched)
-}
-
 /// Runs `case` on a fresh database of each engine, under `scratch`, and
 /// compares them after every step. `interrupted` is asked before each
 /// operation and ends the run when it says so.
@@ -534,7 +516,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
     // drop flat, whose records an engine may keep until the drop is flushed
     // (`super::state`).
     let mut places: BTreeSet<Place> = BTreeSet::new();
-    let mut flat_drops: BTreeSet<SubtreePath> = BTreeSet::new();
     let ended = |tally, divergence, cut_short, interrupted| {
         Ok(Run {
             tally,
@@ -563,7 +544,6 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         let was = observe(&mut reference_runner, op);
         let is = observe(&mut candidate_runner, op);
         tally.steps += 1;
-        flat_drops.extend(dropped_flat(op));
         let (was, is) = match both(was, is, |observed| lines(&observed)) {
             Both::Answered(was, is) => (was, is),
             Both::Alike(why) => return cut_short(tally, step, why),
@@ -587,10 +567,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
         if !due {
             continue;
         }
-        let before: BTreeSet<Place> = std::mem::take(&mut places)
-            .into_iter()
-            .filter(|place| !flat_drops.contains(&place.path))
-            .collect();
+        let before = std::mem::take(&mut places);
         let was = walk(&reference_db, &reference_runner, case, &before);
         let is = walk(&candidate_db, &candidate_runner, case, &before);
         let listed = |listing: Listing| vec![format!("{} records", listing.records.len())];
@@ -607,7 +584,7 @@ pub fn run<A: StreamEngine, B: StreamEngine>(
             };
             return diverged(tally, step, vec![Part::Stored], text(was), text(is));
         }
-        places = was.places;
+        places = was.handed_on();
     }
     ended(tally, None, None, false)
 }
@@ -618,11 +595,17 @@ pub(crate) mod testing {
     use grovedb::{GroveDb, RocksDbEngine};
     use grovedb_version::version::GroveVersion;
 
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        sync::atomic::{AtomicU64, Ordering},
+        time::Duration,
+    };
 
     use super::Side;
     use crate::{
-        diff::engines::{Fault, StandIn},
+        diff::{
+            engines::{Fault, StandIn},
+            shrink::Budget,
+        },
         golden::run::Runner,
         workload::Op,
     };
@@ -659,6 +642,15 @@ pub(crate) mod testing {
         })
     }
 
+    /// The budget of a shrinking that is to end by itself, however slow the
+    /// disk of the databases is while the tests run.
+    pub(crate) fn unhurried() -> Budget {
+        Budget {
+            time: Duration::MAX,
+            ..Budget::default()
+        }
+    }
+
     /// The bytes the last of `ops` adds, on a fresh database.
     pub(crate) fn added_by_the_last_of(ops: &[Op]) -> u32 {
         let dir = tempfile::tempdir().expect("a directory");
@@ -687,7 +679,7 @@ mod tests {
             record::on_a_deep_stack,
             step::{Proved, Value, Verification},
         },
-        workload::{AppendEntry, Query, QueryItem, Read},
+        workload::{AppendEntry, Query, QueryItem, Read, Write},
     };
 
     fn insert(key: &[u8], value: Vec<u8>) -> Op {
@@ -896,75 +888,111 @@ mod tests {
         assert_eq!(unseen.divergence, None);
     }
 
+    /// A tree that holds a leaf, committed.
+    fn a_filled_log() -> Vec<Op> {
+        vec![
+            Op::Write(Write::Insert {
+                path: Vec::new(),
+                key: b"log".to_vec(),
+                element: Element::empty_mmr_tree(),
+            }),
+            Op::Write(Write::Append {
+                path: vec![b"log".to_vec()],
+                entry: AppendEntry::Mmr(vec![9; 40]),
+            }),
+            Op::Commit,
+        ]
+    }
+
+    fn drop_the_log() -> Op {
+        Op::Write(Write::DropFlat {
+            path: Vec::new(),
+            key: b"log".to_vec(),
+        })
+    }
+
     /// A subtree that is dropped flat keeps its records until the drop is
     /// flushed, on the engines of today. They are not listed as left
-    /// behind: an engine may hide them at the drop. A subtree that is
-    /// deleted is looked into once more, and holds nothing.
+    /// behind while the drop is pending: an engine may hide them at the
+    /// drop. A subtree that is deleted is looked into once more, and holds
+    /// nothing.
     #[test]
     fn what_a_flat_drop_leaves_until_it_is_flushed_is_not_compared() {
-        let log = || {
-            vec![
-                Op::Write(Write::Insert {
-                    path: Vec::new(),
-                    key: b"log".to_vec(),
-                    element: Element::empty_mmr_tree(),
-                }),
-                Op::Write(Write::Append {
-                    path: vec![b"log".to_vec()],
-                    entry: AppendEntry::Mmr(vec![9; 40]),
-                }),
-            ]
-        };
         let records = |ops: Vec<Op>| {
             let run = compared(&case(ops), &rocksdb(), &stand_in(), Stored::Every(1));
             assert_eq!((run.divergence, run.cut_short), (None, None));
             run.tally.records
         };
-        let empty_log = records(log()[..1].to_vec());
+        let empty_log = records(a_filled_log()[..1].to_vec());
         assert_eq!(empty_log, 2, "the root key and the node of the tree");
-        let filled = records(log()) - empty_log;
+        let filled = records(a_filled_log()[..2].to_vec()) - empty_log;
         assert!(filled > empty_log, "the tree holds its leaf");
+        let committed = empty_log + filled + filled;
+        assert_eq!(records(a_filled_log()), committed);
 
-        let mut dropped = log();
-        dropped.extend([
-            Op::Commit,
-            Op::Write(Write::DropFlat {
-                path: Vec::new(),
-                key: b"log".to_vec(),
-            }),
-            Op::Commit,
-            Op::FlushPendingDrops,
-        ]);
-        // The walks after the drop and after the flush list nothing: the
-        // root tree is empty. The one after the commit of the drop lists
-        // the drop, which is pending then.
-        assert_eq!(records(dropped), empty_log + filled + filled + 1);
+        let mut dropped = a_filled_log();
+        dropped.extend([drop_the_log(), Op::Commit, Op::FlushPendingDrops]);
+        // The root tree is empty from the drop on. The walk after the drop
+        // lists the record the drop staged, the one after its commit that
+        // record and the drop the engine reports, and the one after the
+        // flush nothing.
+        assert_eq!(records(dropped), committed + 1 + 2);
 
-        let mut deleted = log();
+        let mut deleted = a_filled_log();
         deleted.extend([
-            Op::Commit,
             Op::Write(Write::Delete {
                 path: Vec::new(),
                 key: b"log".to_vec(),
             }),
             Op::Commit,
         ]);
-        assert_eq!(records(deleted), empty_log + filled + filled);
+        assert_eq!(records(deleted), committed);
+    }
 
-        let paths = |op: &Op| dropped_flat(op).collect::<Vec<_>>();
-        let batch = Op::Batch(vec![
-            BatchOp::DropFlat {
-                path: vec![vec![1]],
-                key: vec![2],
-                tree_type: grovedb::TreeType::NormalTree,
-            },
-            BatchOp::Delete {
-                path: vec![vec![3]],
-                key: vec![4],
-            },
+    /// An engine whose flush frees nothing answers every operation as the
+    /// reference does. The walk after the flush looks at the subtree the
+    /// drop was to free, and finds what the engine kept.
+    #[test]
+    fn what_a_flush_did_not_free_is_a_divergence() {
+        let keeps = StandIn::side(Fault::Unreclaimed);
+        let mut ops = a_filled_log();
+        ops.extend([drop_the_log(), Op::Commit, Op::FlushPendingDrops]);
+        let flush = ops.len() - 1;
+
+        let run = compared(&case(ops.clone()), &rocksdb(), &keeps, Stored::Every(1));
+        let divergence = run.divergence.expect("the records that were kept");
+        assert_eq!(
+            (divergence.step, &divergence.parts),
+            (flush, &vec![Part::Stored])
+        );
+        assert_eq!(divergence.reference, ["no further record"]);
+        assert!(
+            divergence.candidate[0].starts_with("left behind: flat /6c6f67 key "),
+            "{:?}",
+            divergence.candidate
+        );
+
+        // A drop that is rolled back frees nothing and excuses nothing.
+        // The tree is deleted after it, and both engines clear it.
+        let mut rolled_back = a_filled_log();
+        rolled_back.extend([
+            drop_the_log(),
+            Op::Transaction(TransactionOp::Rollback),
+            Op::Write(Write::Delete {
+                path: Vec::new(),
+                key: b"log".to_vec(),
+            }),
+            Op::Commit,
+            Op::FlushPendingDrops,
         ]);
-        assert_eq!(paths(&batch), [vec![vec![1], vec![2]]]);
-        assert_eq!(paths(&Op::Commit), Vec::<SubtreePath>::new());
+        let run = compared(&case(rolled_back), &rocksdb(), &keeps, Stored::Every(1));
+        assert_eq!((run.divergence, run.cut_short), (None, None));
+        assert_eq!(run.tally.failed, 0);
+
+        // Without a walk between the drop and the flush that was told of
+        // the subtree, nothing is seen: the walks hand the places on.
+        let unseen = compared(&case(ops), &rocksdb(), &keeps, Stored::AtTheEnd);
+        assert_eq!(unseen.divergence, None);
     }
 
     #[test]

@@ -15,7 +15,9 @@
 //! append-only tree (the cursor of `FlatStore`); and the aux and meta
 //! records of each subtree. The secondary trees of an indexed tree, which
 //! are not under a path, are reached by their prefixes. The drops that are
-//! pending are listed as the engine reports them.
+//! pending are listed twice: as the engine reports them, which are the
+//! committed ones, and as the records the transaction sees, which include
+//! the ones it staged itself.
 //!
 //! The listing is engine-neutral by the contract of the two seams: a node
 //! is shown in Merk's encoding whatever an engine keeps of it, and a flat
@@ -33,12 +35,17 @@
 //!
 //! # What the walk does not reach
 //!
-//! A subtree that was dropped flat is left out of that: its records stay
-//! until the drop is flushed on an engine that reclaims then, and are gone
-//! at once on one that hides them at the drop, and both are right. The
-//! caller leaves such a subtree out of the places it hands on. Storage
-//! under a prefix that never was a place of a walk is not looked at
-//! either: the walk reads what GroveDB can address, not what a file holds.
+//! A subtree that was dropped flat is left out of that for as long as the
+//! drop is pending: its records stay until the drop is flushed on an
+//! engine that reclaims then, and are gone at once on one that hides them
+//! at the drop, and both are right. The walk knows such a subtree by the
+//! records of the drops its transaction sees, which name the prefixes each
+//! drop frees, so a drop that failed or was rolled back excuses nothing.
+//! It hands the subtree on ([`Listing::dropped`]) for the next walk to be
+//! told of, and the walk after the flush looks at it like at any other
+//! subtree that is gone. Storage under a prefix that never was a place of
+//! a walk is not looked at either: the walk reads what GroveDB can
+//! address, not what a file holds.
 //!
 //! A cost that a handle or a cursor reports is dropped (`unwrap` on a
 //! `CostContext` returns the value and cannot fail): the walk is no
@@ -54,6 +61,7 @@ use grovedb::{
 use grovedb_merk::{element::decode::ElementDecodeExtensions, store::NodeStore};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
+    flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord, SubtreePrefix},
     prefix::{build_prefix, secondary_prefix_for},
     FlatStore, RawIterator,
 };
@@ -108,6 +116,10 @@ pub enum Keyspace {
     /// reports them: the prefixes each one frees, under the prefix of the
     /// subtree.
     PendingDrop,
+    /// The records of those drops as the transaction sees them, the ones
+    /// it staged and has not committed among them: the record as it was
+    /// put, under the prefix of the subtree.
+    DropRecord,
 }
 
 impl Keyspace {
@@ -119,6 +131,7 @@ impl Keyspace {
             Keyspace::Aux => "aux",
             Keyspace::Meta => "meta",
             Keyspace::PendingDrop => "pending-drop",
+            Keyspace::DropRecord => "drop-record",
         }
     }
 }
@@ -191,12 +204,27 @@ pub struct Listing {
     pub records: Vec<Record>,
     /// The subtrees the walk reached from the root tree.
     pub places: BTreeSet<Place>,
+    /// The subtrees of `before` the walk did not reach and did not look
+    /// at, because a drop its transaction sees is to free their storage.
+    pub dropped: BTreeSet<Place>,
+}
+
+impl Listing {
+    /// The subtrees to tell the next walk of: the ones this walk reached,
+    /// and the ones a pending drop kept it from looking at.
+    pub fn handed_on(self) -> BTreeSet<Place> {
+        let mut places = self.places;
+        places.extend(self.dropped);
+        places
+    }
 }
 
 /// Every record `db` stores, as `transaction` sees it.
 ///
-/// `before` are the subtrees an earlier walk reached. The keyspaces of each
-/// one this walk does not reach are listed as well, as records left behind.
+/// `before` are the subtrees an earlier walk handed on
+/// ([`Listing::handed_on`]). The keyspaces of each one this walk does not
+/// reach are listed as well, as records left behind, unless a drop the
+/// transaction sees is to free them.
 pub fn stored<'db, E: StreamEngine>(
     db: &'db Db<E>,
     transaction: &Tx<'db, E>,
@@ -292,10 +320,52 @@ pub fn stored<'db, E: StreamEngine>(
         });
     }
 
-    for gone in before.difference(&places) {
-        list(engine, transaction, gone, true, &mut records)?;
+    let mut doomed: BTreeSet<SubtreePrefix> = BTreeSet::new();
+    {
+        let namespace = engine
+            .subtree_by_prefix(*pending_prefix_drops_namespace(), None, transaction)
+            .unwrap();
+        walk(FlatStore::cursor(&namespace.meta()), |key, value| {
+            // A record that does not decode is listed and frees nothing
+            // the walk could name.
+            let drop = PendingPrefixDropRecord::decode(key, value).ok();
+            records.push(Record {
+                path: drop
+                    .as_ref()
+                    .map(|drop| drop.path.clone())
+                    .unwrap_or_default(),
+                secondary: None,
+                keyspace: Keyspace::DropRecord,
+                key: key.to_vec(),
+                value: value.to_vec(),
+                left_behind: false,
+            });
+            doomed.extend(drop.into_iter().flat_map(|drop| drop.doomed_prefixes));
+        })?;
     }
-    Ok(Listing { records, places })
+
+    let mut dropped = BTreeSet::new();
+    for gone in before.difference(&places) {
+        if doomed.contains(&prefix(gone)) {
+            dropped.insert(gone.clone());
+        } else {
+            list(engine, transaction, gone, true, &mut records)?;
+        }
+    }
+    Ok(Listing {
+        records,
+        places,
+        dropped,
+    })
+}
+
+/// The prefix the storage of `place` is under.
+fn prefix(place: &Place) -> SubtreePrefix {
+    let primary = build_prefix(SubtreePath::from(place.path.as_slice())).unwrap();
+    match place.secondary {
+        None => primary,
+        Some(tag) => secondary_prefix_for(&primary, tag).unwrap(),
+    }
 }
 
 /// Opens the subtree at `place` and lists its keyspaces.
@@ -309,10 +379,9 @@ fn list<'db, E: Engine>(
     let path = SubtreePath::from(place.path.as_slice());
     let handle = match place.secondary {
         None => engine.subtree(path, None, transaction).unwrap(),
-        Some(tag) => {
-            let prefix = secondary_prefix_for(&build_prefix(path).unwrap(), tag).unwrap();
-            engine.subtree_by_prefix(prefix, None, transaction).unwrap()
-        }
+        Some(_) => engine
+            .subtree_by_prefix(prefix(place), None, transaction)
+            .unwrap(),
     };
     subtree(&handle, place, left_behind, records)
 }
@@ -675,6 +744,7 @@ mod tests {
             (Keyspace::Flat, "flat"),
             (Keyspace::Meta, "meta"),
             (Keyspace::PendingDrop, "pending-drop"),
+            (Keyspace::DropRecord, "drop-record"),
         ] {
             assert_eq!(keyspace.name(), name);
         }
@@ -810,6 +880,129 @@ mod tests {
         assert!(listing(&db)
             .iter()
             .all(|record| record.keyspace != Keyspace::PendingDrop));
+    }
+
+    /// A subtree a pending drop is to free is not looked at, whether the
+    /// drop is staged in the transaction of the walk or committed, and is
+    /// handed on. A drop that was rolled back excuses nothing. The walk
+    /// after the flush looks at the subtree again.
+    #[test]
+    fn a_pending_drop_excuses_its_subtree_until_it_is_flushed() {
+        let grove_version = GroveVersion::latest();
+        let (_dir, db) = open::<RocksDbEngine>();
+        filled(&db);
+        let before = listed_after(&db, &BTreeSet::new());
+        let log = Place {
+            path: vec![b"log".to_vec()],
+            secondary: None,
+            data: Keyspace::Flat,
+        };
+        assert!(before.places.contains(&log) && before.dropped.is_empty());
+        let drop = Op::Write(Write::DropFlat {
+            path: Vec::new(),
+            key: b"log".to_vec(),
+        });
+        let count = |listing: &Listing, keyspace| {
+            listing
+                .records
+                .iter()
+                .filter(|record| record.keyspace == keyspace)
+                .count()
+        };
+        let left = |listing: &Listing| {
+            listing
+                .records
+                .iter()
+                .filter(|record| record.left_behind)
+                .count()
+        };
+        let kept = |transaction| {
+            let mut records = Vec::new();
+            list(db.engine(), transaction, &log, true, &mut records).expect("a listing");
+            records.len()
+        };
+
+        // Staged: the transaction sees the record of its drop, the engine
+        // reports no drop yet, and the records of the tree are still there.
+        let transaction = db.start_transaction();
+        apply(&db, &drop, Some(&transaction), grove_version)
+            .unwrap()
+            .expect("a drop");
+        let staged = stored(&db, &transaction, grove_version, &before.places).expect("a listing");
+        assert!(!staged.places.contains(&log));
+        assert_eq!(staged.dropped, BTreeSet::from([log.clone()]));
+        assert_eq!(
+            (
+                left(&staged),
+                count(&staged, Keyspace::DropRecord),
+                count(&staged, Keyspace::PendingDrop)
+            ),
+            (0, 1, 0)
+        );
+        assert!(kept(&transaction) > 0);
+        let handed_on = staged.handed_on();
+        assert!(handed_on.contains(&log));
+
+        // Rolled back: the tree is under its path again.
+        std::mem::drop(transaction);
+        let rolled_back = listed_after(&db, &handed_on);
+        assert!(rolled_back.places.contains(&log) && rolled_back.dropped.is_empty());
+        assert_eq!(count(&rolled_back, Keyspace::DropRecord), 0);
+
+        // Committed: the engine reports the drop as well.
+        applied(&db, std::slice::from_ref(&drop));
+        let committed = listed_after(&db, &rolled_back.handed_on());
+        assert_eq!(committed.dropped, BTreeSet::from([log.clone()]));
+        assert_eq!(
+            (
+                left(&committed),
+                count(&committed, Keyspace::DropRecord),
+                count(&committed, Keyspace::PendingDrop)
+            ),
+            (0, 1, 1)
+        );
+        let handed_on = committed.handed_on();
+
+        // A subtree no drop names is looked at as before.
+        let other = Place {
+            path: vec![b"gone".to_vec()],
+            ..log.clone()
+        };
+        let mut told = handed_on.clone();
+        told.insert(other.clone());
+        let listed = listed_after(&db, &told);
+        assert_eq!(listed.dropped, BTreeSet::from([log.clone()]));
+        assert!(!listed.handed_on().contains(&other));
+
+        // Flushed: the subtree is looked at, holds nothing, and is handed
+        // on no further.
+        db.flush_pending_prefix_drops(grove_version)
+            .expect("the drop is flushed");
+        let flushed = listed_after(&db, &handed_on);
+        assert!(flushed.dropped.is_empty());
+        assert_eq!(
+            (
+                left(&flushed),
+                count(&flushed, Keyspace::DropRecord),
+                count(&flushed, Keyspace::PendingDrop)
+            ),
+            (0, 0, 0)
+        );
+        assert!(!flushed.handed_on().contains(&log));
+
+        // A record that a flush did not free is listed as left behind.
+        let transaction = db.start_transaction();
+        {
+            let handle = db
+                .engine()
+                .immediate_subtree(SubtreePath::from(log.path.as_slice()), &transaction)
+                .unwrap();
+            FlatStore::put(&handle, b"kept", b"leaf", None)
+                .unwrap()
+                .expect("a record");
+        }
+        let listed = stored(&db, &transaction, grove_version, &handed_on).expect("a listing");
+        assert_eq!(left(&listed), 1);
     }
 
     #[test]
