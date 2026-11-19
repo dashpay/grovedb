@@ -24,9 +24,9 @@ use super::{
     opened::Opened,
     pages::{find, follow, CommittedPages, NodePages},
     path::WritePath,
-    view::NodeView,
+    view::{NodeView, SubtreeView},
     write::{Applied, Batch, SubtreeWrite, ValuePut},
-    write_set::{EntryId, Mark, Own, WriteSet},
+    write_set::{EntryId, Mark, Own, OwnSubtree, WriteSet},
 };
 use crate::{
     scope::table::{Scopes, Who},
@@ -760,10 +760,66 @@ impl<'s> WriteTxn<'s> {
         }
     }
 
+    /// Shows `read` what the subtree directory holds of `subtree` as `who`
+    /// sees it, or `None` for a subtree that is not entered: the frames'
+    /// directory, which has the enters, drops, clears and roots of every
+    /// write that is laid out, and otherwise what the write set says of
+    /// the subtree over the entry of the committed version the operation
+    /// reads.
+    ///
+    /// The write set answers where the transaction has no frames, and for
+    /// a scope whose writes are kept in it (`crate::scope`): the frames do
+    /// not show those. Every write of the set is asked, laid out or not.
+    /// A unit that `who` reads has no write of another open scope, and no
+    /// other open scope has taken a subtree above it (SC3).
+    ///
+    /// The entry of a Merk is of the Merk's unit (SC2): the read claims
+    /// its data column.
+    fn subtree_in<R>(
+        &self,
+        who: Who,
+        subtree: Subtree,
+        read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        let mut state = self.lock();
+        let state = &mut *state;
+        let op = self.begin(state, false)?;
+        self.claim_read(state, &op.guard, op.at, who, Unit::data(subtree))?;
+        if who.id().is_none_or(|id| state.scopes.laid(id))
+            && let Some(frames) = Woken::wake(&mut state.frames, &op.guard)
+        {
+            let entry = frames.entry(&subtree)?;
+            return Ok(read(entry.as_ref().map(SubtreeView::of)));
+        }
+        let State { directory, set, .. } = state;
+        let root = match set.subtree(&subtree) {
+            OwnSubtree::Gone => return Ok(read(None)),
+            OwnSubtree::Entered { view, op: entered } => {
+                // A subtree that was entered and not written is named by
+                // no drop: it went with a subtree above it that left since.
+                let left = set.left_after(entered);
+                let gone = !left.is_empty() && {
+                    let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
+                    self.below(set, opened, &op, subtree, &left, Some(entered))?
+                };
+                return Ok(read((!gone).then_some(view)));
+            }
+            OwnSubtree::Unwritten { root } => root,
+        };
+        let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
+        let entry = opened.seen_entry(&self.path, &op.guard, set, &subtree)?;
+        Ok(read(entry.map(|entry| {
+            let view = SubtreeView::of(entry);
+            SubtreeView {
+                root_key: root.unwrap_or(view.root_key),
+                ..view
+            }
+        })))
+    }
+
     /// Those of the subtrees the transaction has written that are below
     /// one that `batch` drops or clears, where the transaction has no
-    /// frames to ask: by the hosts of the subtrees it entered itself, and
-    /// by the committed directory from there up.
+    /// frames to ask ([`Self::below`]).
     fn cut(
         &self,
         state: &mut State<'s>,
@@ -779,25 +835,54 @@ impl<'s> WriteTxn<'s> {
         let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
         let mut cut = Vec::new();
         for written in set.written().filter(|written| !leaving.contains(written)) {
-            let (mut at, mut below) = (written, false);
-            for _ in 0..MAX_DEPTH {
-                let Some(Some(host)) = set.host_of(&at) else {
-                    break;
-                };
-                below = leaving.contains(&host);
-                if below {
-                    break;
-                }
-                at = host;
-            }
-            if !below && set.host_of(&at).is_none() {
-                below = opened.below(&self.path, &op.guard, &at, &leaving)?;
-            }
-            if below {
+            if self.below(set, opened, op, written, &leaving, None)? {
                 cut.push(written);
             }
         }
         Ok(cut)
+    }
+
+    /// Whether `subtree` is below one of `leaving`, where the transaction
+    /// has no frames to ask: by the hosts of the subtrees it entered
+    /// itself, and by the committed directory from there up.
+    ///
+    /// `since` is the operation that entered `subtree`, where `leaving`
+    /// left in operations after it. A host that was entered again since
+    /// left in between, with what it hosted, whatever it is below now: a
+    /// subtree is entered again only after it left. That holds for the
+    /// batches the frames take. While the transaction serves its records
+    /// by key a batch is not checked against the directory, and the commit
+    /// of a write set the frames would refuse is refused.
+    ///
+    /// One answer is not the frames': a clear of a Merk with no node
+    /// leaves the directory as it is, and here it takes what the
+    /// transaction entered below that Merk. An element hosts a subtree, so
+    /// no writer of a grove enters one below a Merk with no node.
+    fn below(
+        &self,
+        set: &WriteSet,
+        opened: &mut Opened,
+        op: &Op<'s>,
+        subtree: Subtree,
+        leaving: &[Subtree],
+        since: Option<usize>,
+    ) -> Result<bool, TxnError> {
+        let again =
+            |host: &Subtree, since| set.entered_in(host).is_some_and(|entered| entered > since);
+        let mut at = subtree;
+        for _ in 0..MAX_DEPTH {
+            let Some(Some(host)) = set.host_of(&at) else {
+                break;
+            };
+            if leaving.contains(&host) || since.is_some_and(|since| again(&host, since)) {
+                return Ok(true);
+            }
+            at = host;
+        }
+        match set.host_of(&at) {
+            None => opened.below(&self.path, &op.guard, &at, leaving),
+            Some(_) => Ok(false),
+        }
     }
 
     /// Shows `read` the node under `key` as the transaction has it: in its
@@ -1338,6 +1423,37 @@ macro_rules! reads {
             read: impl FnOnce(Option<NodeView<'_>>) -> R,
         ) -> Result<R, TxnError> {
             self.txn().committed_node_in(self.who(), subtree, key, read)
+        }
+
+        /// Shows `read` what the subtree directory holds of `subtree`
+        /// (`lignin_tree::directory`), or `None` for a subtree that is not
+        /// entered: the key of the root of its Merk, its tree type and the
+        /// element that hosts it. It is the open by prefix: one lookup in
+        /// the directory of the transaction's frames, or with no write of
+        /// its own in the committed one.
+        ///
+        /// The transaction's own writes are in it: a subtree it entered,
+        /// the root its change sets left a Merk with, and `None` for a
+        /// subtree it dropped and for one below a subtree it dropped or
+        /// cleared. For a subtree it has not written it is the entry of the
+        /// latest committed state (RD3). A transaction that serves its
+        /// records by key (WT7b) answers from its write set, and also
+        /// looks up the committed entry of each subtree it took out. So
+        /// does a scope whose writes are not laid out (`crate::scope`).
+        ///
+        /// The read claims the data column of `subtree` (SC2, SC3): it is
+        /// refused with [`TxnError::ScopeOverlap`] where another open
+        /// scope writes that unit, or has dropped or cleared a subtree
+        /// above it.
+        ///
+        /// `read` runs inside the operation: it must not call the
+        /// transaction.
+        pub fn subtree<R>(
+            &self,
+            subtree: Subtree,
+            read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+        ) -> Result<R, TxnError> {
+            self.txn().subtree_in(self.who(), subtree, read)
         }
 
         /// A cursor over the flat records of `unit`, not positioned (RD6).

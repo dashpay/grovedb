@@ -145,10 +145,23 @@ impl Opened {
         set: &WriteSet,
         subtree: &Subtree,
     ) -> Result<Option<Option<CellAddress>>, TxnError> {
+        let entry = self.seen_entry(path, guard, set, subtree)?;
+        Ok(entry.map(|entry| entry.root().map(|root| root.address)))
+    }
+
+    /// As [`Self::seen`], with all the directory holds of `subtree`.
+    pub(crate) fn seen_entry<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+    ) -> Result<Option<&Entry>, TxnError> {
         let left: Vec<Subtree> = set.leaving().collect();
         if !left.is_empty() && self.below(path, guard, subtree, &left)? {
             return Ok(None);
         }
-        self.root(path, guard, subtree)
+        self.open(path, guard, subtree)?;
+        Ok(self.entries[subtree].as_ref())
     }
 }
