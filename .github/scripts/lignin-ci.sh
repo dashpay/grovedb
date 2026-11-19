@@ -12,14 +12,17 @@
 #   lignin-ci.sh docs                rustdoc with warnings denied, for the
 #                                    crates whose documentation builds clean
 #   lignin-ci.sh loom                the loom models
-#   lignin-ci.sh miri                Miri over the file layer, the buffer pool
-#                                    and the software path of the checksum
+#   lignin-ci.sh miri [--full]       Miri over the file layer, the buffer pool
+#                                    and the software path of the checksum;
+#                                    --full adds the file layer under Tree
+#                                    Borrows and every test of the checksum
 #   lignin-ci.sh fuzz-targets        build the fuzz targets of lignin-format
 #   lignin-ci.sh cost-model          the golden corpus replayed on the cost model
 #
 # The nightly runs, which take longer:
 #
-#   lignin-ci.sh diff-fuzz SECONDS        the differential fuzzer
+#   lignin-ci.sh diff-fuzz SECONDS [ARGS] the differential fuzzer; ARGS
+#                                         follow `lignin-diff fuzz`
 #   lignin-ci.sh corpus-reference [ARGS]  the corpus of the reference scale;
 #                                         ARGS follow `lignin-golden replay`
 #   lignin-ci.sh corpus-at-pin [ARGS]     the corpus recorded again from the
@@ -128,6 +131,7 @@ features)
     say "Merk on RocksDB alone: no LigninDB among its crates"
     build_of normal,build grovedb-merk --no-default-features --features rocksdb_storage |
         refuse '^lignin' "LigninDB is among the crates of Merk on RocksDB"
+    cargo check -p grovedb-merk --no-default-features --features rocksdb_storage
 
     say "The LigninDB crates that have features, with none and with every one"
     names=$(listed crates '.features | length > 0')
@@ -167,20 +171,32 @@ MODELS
     ;;
 
 miri)
-    for borrows in "" -Zmiri-tree-borrows; do
+    # The file layer has no unsafe code of its own, so a pull request runs
+    # it under one borrow model and the night under both. The pool's unsafe
+    # code runs under both on every run.
+    case "${2:-}" in
+    "") file_layer=("") checksum=checksum::tests::crc32c_matches ;;
+    --full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
+    *) fail "usage: lignin-ci.sh miri [--full]" ;;
+    esac
+    for borrows in "${file_layer[@]}"; do
         say "Miri: the file layer ${borrows:-(Stacked Borrows)}"
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation $borrows" \
             cargo "+$nightly" miri test -p lignin-io
+    done
+    for borrows in "" -Zmiri-tree-borrows; do
         say "Miri: the buffer pool ${borrows:-(Stacked Borrows)}"
         MIRIFLAGS="${MIRIFLAGS:-} $borrows" \
             cargo "+$nightly" miri test -p lignin-store --lib cache::
     done
     # crc32c takes the instructions of the machine where it finds them
     # (x86_64, aarch64) and its tables elsewhere. A big-endian target has
-    # neither, so this runs the tables, on the other byte order.
-    say "Miri: the checksum's software path, big-endian"
+    # neither, so this runs the tables, on the other byte order. A pull
+    # request runs the published vectors and the random lengths; the night
+    # adds the test that walks 128 MiB.
+    say "Miri: the checksum's software path, big-endian ($checksum)"
     cargo "+$nightly" miri test -p lignin-format --lib \
-        --target s390x-unknown-linux-gnu checksum::
+        --target s390x-unknown-linux-gnu "$checksum"
     ;;
 
 fuzz-targets)
@@ -202,9 +218,10 @@ cost-model)
     ;;
 
 diff-fuzz)
-    seconds=${2:?"usage: lignin-ci.sh diff-fuzz SECONDS"}
-    say "lignin-diff fuzz --duration $seconds"
-    cargo run --release -p lignin-testkit --bin lignin-diff -- fuzz --duration "$seconds"
+    seconds=${2:?"usage: lignin-ci.sh diff-fuzz SECONDS [ARGS]"}
+    shift 2
+    say "lignin-diff fuzz --duration $seconds $*"
+    cargo run --release -p lignin-testkit --bin lignin-diff -- fuzz --duration "$seconds" "$@"
     ;;
 
 corpus-reference)
@@ -232,13 +249,22 @@ corpus-at-pin)
             differ=1
         fi
     done
-    # A recording of the whole standard scale has every trace of it.
-    if [ $# -eq 0 ]; then
-        committed=$(cd lignin-testkit/corpus && find . -path ./reference -prune -o -name '*.trace' -print | sort)
-        if [ "$committed" != "$recorded" ]; then
-            diff <(echo "$committed") <(echo "$recorded") || true
-            differ=1
+    # Each directory recorded (a grove version, or the reference scale) has
+    # every committed trace of it, unless the recording named its traces.
+    if [[ " $* " != *" --only "* ]]; then
+        dirs=$(cd "$into" && find . -mindepth 1 -maxdepth 1 -type d | sort)
+        if [ $# -eq 0 ]; then
+            dirs=$(cd lignin-testkit/corpus && find . -mindepth 1 -maxdepth 1 -type d ! -name reference | sort)
         fi
+        for dir in $dirs; do
+            committed=$(cd lignin-testkit/corpus && find "$dir" -name '*.trace' | sort)
+            made=$(cd "$into" && { [ ! -d "$dir" ] || find "$dir" -name '*.trace'; } | sort)
+            if [ "$committed" != "$made" ]; then
+                echo "the traces of $dir are not those committed:"
+                diff <(echo "$committed") <(echo "$made") || true
+                differ=1
+            fi
+        done
     fi
     [ "$differ" = 0 ] || fail "the corpus does not come out of its pinned engine as committed"
     echo "$(wc -l <<<"$recorded") traces recorded, all as committed"

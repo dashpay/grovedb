@@ -2,7 +2,7 @@
 
 LigninDB task OPS-06 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 3](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960583786)).
 
-GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` branches, from the workflow files of the pull request's head. This document says which jobs check the LigninDB crates and the two engines, on which platforms, and how to run each by hand. Every LigninDB job is one command of `.github/scripts/lignin-ci.sh`, which runs from any directory of a checkout. The engine matrix is [`test-engines.md`](test-engines.md)'s; the crates a release publishes are [`publishing.md`](publishing.md)'s.
+GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` branches, from the workflow files of the pull request's head. This document says which jobs check the LigninDB crates and the two engines, on which platforms, and how to run each by hand. The commands of the LigninDB jobs are those of `.github/scripts/lignin-ci.sh`, which runs from any directory of a checkout; the table gives each job's. The engine matrix is [`test-engines.md`](test-engines.md)'s; the crates a release publishes are [`publishing.md`](publishing.md)'s.
 
 ## What a pull request runs
 
@@ -10,23 +10,23 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 
 | Job | Runner | What it runs | By hand |
 | --- | --- | --- | --- |
-| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the whole workspace with every feature, in three shards, with coverage: every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`) and the differential fuzzer's acceptance test (`--test diff`) | `cargo test --workspace --all-features` |
+| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`) and the differential fuzzer's acceptance test (`--test diff`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
 | LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
 | LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), at the bounds the models set | `lignin-ci.sh loom` |
-| LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` and the buffer pool, under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
+| LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` under Stacked Borrows, the buffer pool under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
 | Cost model replay | Linux x86_64 | the golden corpus replayed on the cost model ([`cost-model.md`](cost-model.md)) | `lignin-ci.sh cost-model` |
 | Linting | Linux x86_64 | clippy, every target type-checked, and three steps below | |
 | | | the feature sets that must build apart | `lignin-ci.sh features` |
-| | | the LigninDB crates' documentation with warnings denied | `lignin-ci.sh docs` |
+| | | the LigninDB crates' documentation with warnings denied, but `lignin-testkit`'s | `lignin-ci.sh docs` |
 | | | the order of the crates a release publishes | `.github/scripts/release-crates.sh check` |
 
 "Linux x86_64" is the organisation's self-hosted runners for a pull request from the repository itself and `ubuntu-latest` for one from a fork (the comment at the top of `grovedb.yml`). A self-hosted runner takes its tools from its image and installs none, so the jobs that install a nightly toolchain (Miri) run on `ubuntu-latest` always.
 
 ### Both engines on every pull request
 
-A pull request that changes either engine runs the suites of both. Detect Changes does not look at which crate changed: any change of code runs every job above. The RocksDB side is GroveDB's, Merk's and the storage crate's suites (the shards and the per-engine jobs); the LigninDB side is the LigninDB crates' tests, which include the corpus replayed through the LigninDB node store (`lignin-testkit/tests/merk_store.rs`), on all three platforms. When LigninDB is registered as an engine of GroveDB's and Merk's suites (GROVE-01, MERK-08), the per-engine jobs run those suites on it with no change here.
+A pull request that changes either engine runs the suites of both. Detect Changes does not look at which crate changed: a change of code other than doc comments runs every job above. The RocksDB side is GroveDB's, Merk's and the storage crate's suites (the shards and the per-engine jobs); the LigninDB side is the LigninDB crates' tests, which include the corpus replayed through the LigninDB node store (`lignin-testkit/tests/merk_store.rs`), on all three platforms. When LigninDB is registered as an engine of GroveDB's and Merk's suites (GROVE-01, MERK-08), the per-engine jobs run those suites on it with no change here.
 
 ### The platforms of DEC-06
 
@@ -49,17 +49,21 @@ The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the
 
 ### Documentation
 
-`lignin-ci.sh docs` builds the documentation of the LigninDB crates with `-D warnings`, which fails on a broken intra-doc link. The older crates are not in it: `grovedb-merk` had 33 errors in older code when the step was added. A crate is added to the step when its documentation builds clean.
+`lignin-ci.sh docs` builds the documentation of six LigninDB crates with `-D warnings`, which fails on a broken intra-doc link. `lignin-testkit` is not in it: its documentation had two ambiguous links (in `diff`) when the step was added. Nor are the older crates: `grovedb-merk` had 33 errors in older code. A crate is added to the step when its documentation builds clean.
 
 ### Loom and Miri
 
-The loom models run on every pull request: with their bounds they take minutes. `loom` is a dependency of `lignin-store` and `lignindb` under `cfg(loom)` only (D-059 item 3); `cargo audit` reads the lock file, which lists it, and passes, so the models stay where they are. The models build in `target/loom`, because the cfg changes every crate they compile.
+The loom models run on every pull request that runs the tests: with their bounds they take minutes (seven on a loaded strixbox). `loom` is a dependency of `lignin-store` and `lignindb` under `cfg(loom)` only (D-059 item 3); `cargo audit` reads the lock file, which lists it, and passes, so the models stay where they are. The models build in `target/loom`, because the cfg changes every crate they compile.
 
-Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over; the job runs its commands that take minutes: the file layer and the pool under both borrow models. The 64 schedules of the races run nightly.
+Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over. A pull request runs the pool, which has the unsafe code, under both borrow models, and the file layer, which has none of its own, under Stacked Borrows: one pass over `lignin-io` took 27 minutes on a loaded strixbox. The checksum runs its published vectors and random lengths there. The nightly run (`lignin-ci.sh miri --full`) adds the file layer under Tree Borrows, the checksum test that walks 128 MiB, and the races under 64 of Miri's schedules.
 
 ### Test scratch
 
 The tests make their databases in the temporary directory, which `TMPDIR` names. On a self-hosted runner it is the job's own directory, which the runner empties around every job (`.github/actions/persistent-runner`); `/dev/shm` there is small and shared, and no test may count on it (D-114).
+
+### Open files
+
+`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises it first: `ulimit -n 65536`.
 
 ## Nightly
 
@@ -67,11 +71,11 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 | Job | Nightly | On such a pull request | By hand |
 | --- | --- | --- | --- |
-| Differential fuzzer | one hour, RocksDB against the engine that stands in for LigninDB (VER-01, D-113 item 7) | two minutes | `lignin-ci.sh diff-fuzz 3600` |
+| Differential fuzzer | one hour, RocksDB against the engine that stands in for LigninDB (VER-01, D-113 item 7), from a seed of its own each night (the run's id, which the log names) | two minutes, seed 1 | `lignin-ci.sh diff-fuzz 3600 --seed N` |
 | Corpus of the reference scale | the five traces of a million documents | grove version 5 | `lignin-ci.sh corpus-reference` |
 | Corpus from its pinned engine | the corpus recorded again from the commit of `develop` its traces name, through `record-at-pin.sh`, and compared with the committed one byte for byte (D-107) | grove version 5 | `lignin-ci.sh corpus-at-pin` |
 | Decoder fuzzing | five minutes for each fuzz target of `lignin-format` (FMT-08), from its seeds | 20 seconds each | `lignin-ci.sh fuzz-decoders 300` |
-| Miri schedules | the pool's races under 64 of Miri's schedules, both borrow models | 4 | `lignin-ci.sh miri-schedules 64` |
+| Miri | the file layer under both borrow models and every checksum test; the pool's races under 64 of Miri's schedules, both borrow models | the races under 4 | `lignin-ci.sh miri --full`, `lignin-ci.sh miri-schedules 64` |
 
 The corpus from its pinned engine is what a sync with `develop` runs first (D-107): done every night, a recipe that has rotted is found the day it rots.
 

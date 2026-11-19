@@ -65,7 +65,9 @@ jobs:
           # above checked.
           # A version that is already on crates.io is skipped, which makes a
           # re-run after a partial failure pick up where the last run stopped.
-          mapfile -t crates < <(.github/scripts/release-crates.sh list)
+          list=$(.github/scripts/release-crates.sh list)
+          [ -n "$list" ] || { echo "::error::the release lists no crate"; exit 1; }
+          mapfile -t crates <<<"$list"
 
           metadata="$(cargo metadata --format-version 1 --no-deps)"
           published=()

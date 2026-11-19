@@ -13,7 +13,8 @@
 # on a member that is not listed before it. A dependency counts if a build
 # of the published crate resolves it on crates.io: a normal or build
 # dependency, optional or not, and a dev-dependency that names a version
-# (Cargo drops one that names a path alone when it publishes).
+# (Cargo drops one that names a path alone when it publishes), whether it
+# names the member by path or the member's version through crates.io.
 set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -75,21 +76,32 @@ check)
     problems=$(cargo metadata --no-deps --format-version 1 |
         jq -r --argjson release "$release" '
             $ARGS.positional as $order
-            | (.packages | map({key: .name, value: .}) | from_entries) as $by_name
+            # A member can go to crates.io when its manifest has no `publish`
+            # or one that names crates.io.
+            | def publishable: .publish == null or (.publish | index("crates-io"));
+            # A dependency is on the member of its name by path, or on the
+            # member'"'"'s own version through crates.io.
+            def on_member($by_name):
+                $by_name[.name] as $member
+                | $member != null
+                  and (.path != null
+                       or ((.source // "" | startswith("registry+https://github.com/rust-lang/crates.io-index"))
+                           and (.req | ltrimstr("=") | ltrimstr("^")) == $member.version));
+            (.packages | map({key: .name, value: .}) | from_entries) as $by_name
             | ($order | to_entries | map({key: .value, value: .key}) | from_entries) as $place
             | (
                 ($order[] | select($by_name[.] == null)
                     | "\(.) is listed and is not a member of the workspace"),
-                (.packages[] | select(.publish == null and ($place[.name] == null))
+                (.packages[] | select(publishable and ($place[.name] == null))
                     | "\(.name) can be published and is not listed"),
                 ($order[] | . as $crate | select($by_name[$crate] != null)
                     | $by_name[$crate].dependencies[]
-                    | select(.path != null and $by_name[.name] != null)
+                    | select(on_member($by_name))
                     | select((.kind // "normal") != "dev" or .req != "*")
                     | select(($place[.name] // 1e9) > $place[$crate])
                     | "\($crate) depends on \(.name) (\(.kind // "normal")\(if .optional then ", optional" else "" end)), which is not listed before it"),
                 (if $release then
-                    ($order[] | select($by_name[.].publish != null and ($by_name[.].publish | index("crates-io") | not))
+                    ($order[] | select($by_name[.] | publishable | not)
                         | "\(.) is listed and cannot be published to crates.io (`publish` in its manifest)")
                  else empty end)
             )' --args $(list))
@@ -98,7 +110,7 @@ check)
         echo "$problems" >&2
         exit 1
     fi
-    echo "release-crates: $(list | wc -l) crates, in an order crates.io can resolve"
+    echo "release-crates: $(list | grep -c .) crates, in an order crates.io can resolve"
     ;;
 *)
     usage

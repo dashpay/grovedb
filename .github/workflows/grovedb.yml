@@ -399,7 +399,7 @@ jobs:
     needs: detect-changes
     if: needs.detect-changes.outputs.needs-tests == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       LIGNIN_NIGHTLY: nightly-2026-02-24
     steps:
@@ -411,9 +411,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
-          workspaces: |
-            .
-            lignin-format/fuzz
       - name: Run Miri
         run: .github/scripts/lignin-ci.sh miri
       - name: Build the fuzz targets of lignin-format

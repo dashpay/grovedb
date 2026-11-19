@@ -59,8 +59,12 @@ jobs:
         if: runner.environment == 'github-hosted'
         with:
           cache-on-failure: "false"
+      # Each night a seed of its own, so that the nights cover different
+      # cases; the log names it, and `lignin-diff case` replays a case.
       - name: Fuzz
-        run: .github/scripts/lignin-ci.sh diff-fuzz ${{ github.event_name == 'pull_request' && 120 || 3600 }}
+        run: >
+          .github/scripts/lignin-ci.sh diff-fuzz
+          ${{ github.event_name == 'pull_request' && '120' || format('3600 --seed {0}', github.run_id) }}
 
   # The golden corpus of the reference scale: a million documents on each
   # grove version, replayed on RocksDB.
@@ -137,6 +141,7 @@ jobs:
         with:
           toolchain: ${{ env.LIGNIN_NIGHTLY }}
       - uses: Swatinem/rust-cache@v2
+        if: hashFiles('lignin-format/fuzz/Cargo.toml') != ''
         with:
           cache-on-failure: "false"
           workspaces: lignin-format/fuzz
@@ -153,12 +158,14 @@ jobs:
           path: lignin-format/fuzz/artifacts
           if-no-files-found: ignore
 
-  # The buffer pool's races under many of Miri's random schedules, with its
-  # data-race detector and weak-memory emulation.
-  miri-schedules:
-    name: Miri schedules
+  # What the pull request's Miri job leaves out: the file layer under Tree
+  # Borrows and the checksum test that walks 128 MiB; and the buffer pool's
+  # races under many of Miri's random schedules, with its data-race detector
+  # and weak-memory emulation.
+  miri:
+    name: Miri
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 330
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master
@@ -168,5 +175,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: "false"
+      - name: Run Miri over everything
+        if: github.event_name != 'pull_request'
+        run: .github/scripts/lignin-ci.sh miri --full
       - name: Run the races
         run: .github/scripts/lignin-ci.sh miri-schedules ${{ github.event_name == 'pull_request' && 4 || 64 }}
