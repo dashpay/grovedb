@@ -162,8 +162,12 @@ fn a_drop_reads_and_writes_the_two_ends_of_its_flat_records() {
 /// when that keyspace is not among those a drop is given.
 #[test]
 fn a_drop_is_given_every_column_of_the_store() {
-    let (db, _versions) = Db::new(32);
+    let (db, versions) = Db::new(32);
     let keyspaces = db.keyspaces();
+    // The write path has the keyspace of the unlinked pages as the store
+    // was made with it.
+    let unlinked = db.path(&versions).flat_drops();
+    assert_eq!(unlinked.root_page(), db.flat_drops().root_page());
     let Keyspaces {
         data,
         aux,

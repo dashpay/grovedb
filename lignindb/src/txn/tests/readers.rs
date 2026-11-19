@@ -311,6 +311,46 @@ fn a_reader_knows_the_drops_of_its_version_however_late_it_opens() {
     assert!(beside.is_some_and(|beside| beside.root().is_none()));
 }
 
+/// A reader whose directory cannot be loaded opens nothing. A snapshot
+/// learns it when it is taken and answers every open with it; an
+/// operation that pins no version learns it at its first open.
+#[test]
+fn a_reader_whose_directory_cannot_be_loaded_opens_nothing() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    // A record of the aux column whose stored key begins as the records
+    // of dropped Merks do in a directory.
+    let tx = world.begin();
+    world.write(&tx, vec![put(model::unit(Column::Aux, 5), b"k", b"v")]);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    // The aux column in the place of the directory: no directory is there.
+    let keyspaces = db.keyspaces();
+    let reads = ReadPath::new(&versions, db.loader());
+    let reads = reads.with_records(&db.values, keyspaces, keyspaces.aux);
+    assert!(format!("{reads:?}").contains("Records"));
+
+    let snapshot = reads.snapshot();
+    for name in [1, 5] {
+        let operation = snapshot.operation();
+        match operation.open(model::subtree(name)) {
+            Err(error @ ReadError::Unloaded(_)) => {
+                assert!(error.to_string().contains("when the snapshot was taken"));
+                assert!(std::error::Error::source(&error).is_some());
+            }
+            other => panic!("the directory was not loaded, and not {other:?}"),
+        }
+    }
+    let mut lease = LatestLease::new();
+    let operation = reads.operation(&mut lease);
+    match operation.open(model::subtree(1)) {
+        Err(error @ ReadError::Directory(_)) => {
+            assert!(error.to_string().starts_with("subtree directory: "));
+            assert!(std::error::Error::source(&error).is_some());
+        }
+        other => panic!("the directory is not loaded, and not {other:?}"),
+    }
+}
+
 /// A subtree that a reader kept is of one database: an operation of
 /// another database looks it up again, also at a version of the same
 /// number, and one of the same database and version reads nothing for it.
@@ -342,9 +382,15 @@ fn a_kept_subtree_is_looked_up_again_in_another_database() {
     assert!(operation.resume(&kept).expect("a lookup").is_none());
 
     // Another snapshot of the database it was kept in, at that version.
-    let again = reads.snapshot();
-    let operation = again.operation();
+    // Taking it reads one path of the directory, down to where the records
+    // of dropped Merks would be.
     let gets = |db: &Db| db.pool.stats().hits + db.pool.stats().misses;
+    let asked = gets(&db);
+    let again = reads.snapshot();
+    let loaded = gets(&db) - asked;
+    println!("a snapshot of a read path with records: {loaded} pages asked of the pool");
+    assert!((1..=3).contains(&loaded), "{loaded}");
+    let operation = again.operation();
     let asked = gets(&db);
     let inner = operation.resume(&kept).expect("no lookup");
     assert_eq!(gets(&db), asked, "no page was asked for");
