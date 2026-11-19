@@ -385,9 +385,11 @@ impl LigninApplied {
 
 #[derive(Default)]
 struct Staged {
-    /// What the operation does to whole subtrees, with the element that
-    /// hosted a subtree it drops.
-    subtrees: Vec<(SubtreeChange, Option<LigninHost>)>,
+    /// What the operation does to whole subtrees.
+    subtrees: Vec<SubtreeChange>,
+    /// The element that hosted each dropped subtree, as it is after the
+    /// drop.
+    dropped_hosts: Vec<LigninHost>,
     merks: Vec<LigninChangeSet>,
     /// The writes of records that are no nodes, by keyspace and stored key:
     /// one outcome for a key.
@@ -419,6 +421,7 @@ impl fmt::Debug for LigninBatch {
         let staged = self.staged();
         f.debug_struct("LigninBatch")
             .field("subtrees", &staged.subtrees)
+            .field("dropped_hosts", &staged.dropped_hosts)
             .field("merks", &staged.merks)
             .field("records", &staged.records.len())
             .finish()
@@ -473,7 +476,7 @@ impl LigninBatch {
             tree_type: tree_type.to_vec(),
             host,
         };
-        self.staged().subtrees.push((enter, None));
+        self.staged().subtrees.push(enter);
         Ok(())
     }
 
@@ -485,8 +488,9 @@ impl LigninBatch {
     /// is that element with the subtrees it hosts afterwards, and the batch
     /// names them in its node if it writes one.
     pub fn drop_subtree(&self, subtree: &LigninSubtree) {
-        let dropped = (SubtreeChange::Drop(subtree.prefix), subtree.host.clone());
-        self.staged().subtrees.push(dropped);
+        let mut staged = self.staged();
+        staged.subtrees.push(SubtreeChange::Drop(subtree.prefix));
+        staged.dropped_hosts.extend(subtree.host.clone());
     }
 
     pub(super) fn stage(&self, mut change_set: LigninChangeSet) -> Result<(), Error> {
@@ -643,30 +647,35 @@ fn into_write(staged: Staged) -> Write {
     let (hosts, mut merks): (Vec<Option<LigninHost>>, Vec<MerkChange>) = (staged.merks.into_iter())
         .map(|mut merk| (merk.subtree.host.take(), merk.into_merk(false)))
         .unzip();
-    let name = |merks: &mut Vec<MerkChange>, host: LigninHost| {
-        let named = (merks.iter_mut())
-            .find(|at| at.subtree == host.subtree)
-            .and_then(|at| at.nodes.iter_mut().find(|node| node.key == host.key));
-        named.map(|node| node.hosted = Some(host.hosted)).is_some()
-    };
     for (merk, host) in hosts.into_iter().enumerate() {
-        if host.is_some_and(|host| !name(&mut merks, host)) {
+        if host.is_some_and(|host| !name_hosted(&mut merks, host)) {
             merks[merk].anchored = true;
         }
     }
-    let mut subtrees = Vec::with_capacity(staged.subtrees.len());
-    for (change, host) in staged.subtrees {
-        if let Some(host) = host {
-            name(&mut merks, host);
-        }
-        subtrees.push(change);
+    for host in staged.dropped_hosts {
+        name_hosted(&mut merks, host);
     }
     let records = (staged.records.into_values())
         .map(|record| record.change)
         .collect();
     Write {
-        subtrees,
+        subtrees: staged.subtrees,
         merks,
         records,
+    }
+}
+
+/// Names the subtrees `host` hosts in its node, where `merks` write that
+/// node, and returns whether they do.
+fn name_hosted(merks: &mut [MerkChange], host: LigninHost) -> bool {
+    let node = (merks.iter_mut())
+        .find(|merk| merk.subtree == host.subtree)
+        .and_then(|merk| merk.nodes.iter_mut().find(|node| node.key == host.key));
+    match node {
+        Some(node) => {
+            node.hosted = Some(host.hosted);
+            true
+        }
+        None => false,
     }
 }
