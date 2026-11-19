@@ -316,6 +316,36 @@ fn a_fault_at_any_operation_of_a_copying_creation_leaves_the_live_store_as_it_wa
     }
 }
 
+/// A manifest is written, the sync that makes it durable fails, and so
+/// does the sync after its removal: the creation fails, and it leaves
+/// every file in the target. A power cut can bring that manifest back, and
+/// it then names files that are all there: what opens is the whole
+/// checkpoint, and never one with a file missing.
+#[test]
+fn a_manifest_whose_removal_is_not_durable_keeps_its_files() {
+    let made = made(61, Files::Linked);
+    // The names in the target are made durable, and from then on no sync
+    // of the target succeeds.
+    let syncs = OpSet::of(&[OpKind::SyncDir]);
+    let rule = FaultRule::new(Fault::Eio).on(syncs).skip(1).forever();
+    made.fs.add_rule(rule.at(&made.target));
+    let failed = checkpointer(&made.db, &made.versions)
+        .with_options(NO_CATCH_UP)
+        .create(&made.target);
+    made.fs.clear_rules();
+    assert!(
+        matches!(failed, Err(CheckpointError::Install(_))),
+        "{failed:?}"
+    );
+    assert!(read_manifest(&made.fs, &made.target).is_err());
+    let kept = store_files(&made.fs, &made.target);
+    assert!(kept.iter().any(|file| file.starts_with("wal")), "{kept:?}");
+    assert!(kept.iter().any(|file| file.starts_with("seg")), "{kept:?}");
+    let mut left = Left::default();
+    made.check_crash(false, "a removal that is not durable", &mut left);
+    assert!(left.whole > 0 && left.none > 0, "{left:?}");
+}
+
 /// A catch-up that the file layer fails changes nothing of the checkpoint
 /// but how much log its first open replays (CK6): the creation reports it
 /// and goes on.

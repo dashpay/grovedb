@@ -342,21 +342,48 @@ fn deleting_a_checkpoint_removes_its_directory() {
     world.check_committed();
 
     // What a deletion leaves that was cut short is finished: a directory
-    // with the renamed manifest and whatever else, or an empty one.
-    for marked in [true, false] {
-        let leftover = checkpoints.join("leftover");
+    // with the renamed manifest and whatever else, a manifest that was
+    // made beside it since among that; an empty directory; and one with
+    // an empty lock file alone.
+    let leftover = checkpoints.join("leftover");
+    let leftovers: [&[(&str, &[u8])]; 4] = [
+        &[
+            (DELETING_FILE_NAME, b"renamed"),
+            ("seg/00000001.seg", b"left"),
+            ("LOCK", b""),
+        ],
+        &[
+            (DELETING_FILE_NAME, b"renamed"),
+            ("MANIFEST", b"made since"),
+        ],
+        &[],
+        &[("LOCK", b"")],
+    ];
+    for files in leftovers {
         std::fs::create_dir(&leftover).expect("a directory");
-        if marked {
-            std::fs::write(leftover.join(DELETING_FILE_NAME), b"").expect("a file");
-            std::fs::create_dir(leftover.join("seg")).expect("a directory");
-            std::fs::write(leftover.join("seg").join("00000001.seg"), b"left").expect("a file");
+        for (name, bytes) in files {
+            let path = leftover.join(name);
+            std::fs::create_dir_all(path.parent().expect("a directory")).expect("a directory");
+            std::fs::write(path, bytes).expect("a file");
         }
         checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
-        assert!(!leftover.exists());
+        assert!(!leftover.exists(), "{files:?}");
     }
+    // The lock file alone, and somebody has its lock.
+    std::fs::create_dir(&leftover).expect("a directory");
+    let held = StdVfs.lock(&leftover.join("LOCK")).expect("the lock");
+    let refused = checkpoint::delete(&StdVfs, &leftover);
+    assert!(
+        matches!(&refused, Err(CheckpointError::Open { dir }) if *dir == leftover),
+        "{refused:?}"
+    );
+    drop(held);
+    checkpoint::delete(&StdVfs, &leftover).expect("the leftover is deleted");
+    assert!(!leftover.exists());
 
     // No database, and nothing of it is touched: a directory of the
-    // caller's, though it holds a file that is named as the lock file is.
+    // caller's, though all it holds is a file that is named as the lock
+    // file is. That file is not empty, as a lock file is.
     let not_one = checkpoints.join("not-one");
     std::fs::create_dir(&not_one).expect("a directory");
     std::fs::write(not_one.join("LOCK"), b"as it was").expect("a file");
@@ -505,6 +532,11 @@ impl Kept {
         }
         checkpoint::delete(left, &self.target).unwrap_or_else(|error| panic!("{context}: {error}"));
         assert!(left.read_dir(&self.target).is_err(), "{context}");
+        // And durably: a power cut that loses every unsynced change does
+        // not bring it back.
+        let image = left.crash_image();
+        let after = image.recover(&image.lose_all()).expect("a state");
+        assert!(after.read_dir(&self.target).is_err(), "{context}");
     }
 }
 
@@ -522,11 +554,9 @@ fn a_deletion_that_the_file_layer_fails_leaves_the_checkpoint_or_no_database() {
     checkpoint::delete(&whole.fs, &whole.target).expect("the checkpoint is deleted");
     let ops = whole.fs.stats().ops - from;
     assert!(ops > 12, "a deletion of {ops} operations");
-    // Durable: a power cut that loses every unsynced change does not
-    // bring it back.
     let image = whole.fs.crash_image();
     let left = image.recover(&image.lose_all()).expect("a state");
-    assert!(left.read_dir(&whole.target).is_err());
+    assert!(left.read_dir(&whole.target).is_err(), "it is not durable");
 
     let mut seen = LeftOf::default();
     for at in 1..=ops {

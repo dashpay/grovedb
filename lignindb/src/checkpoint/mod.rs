@@ -229,7 +229,11 @@
 //! was made stays, and the target with it, and where the creation does
 //! not get the lock of the target it has just made, somebody else has
 //! it, and nothing in the target is touched. Where the file layer fails
-//! the removal too, what is left is for the caller to remove. An error of
+//! the removal too, what is left is for the caller to remove. **No file
+//! goes while a manifest could come back**: where a manifest was written
+//! and its removal cannot be made durable, every file stays, so that a
+//! power cut leaves the whole checkpoint or a directory without a
+//! manifest, and not a manifest without one of its files. An error of
 //! the catch-up of step 2 does not fail
 //! the creation: it is reported in [`Created::catch_up`], and the
 //! checkpoint's first open replays more log.
@@ -294,15 +298,16 @@
 //!
 //! - It removes nothing of a path that is no directory of its own, of a
 //!   directory that is no database of this engine, or of one that a handle
-//!   has open.
+//!   has open. An empty directory, and one that holds an empty lock file
+//!   and nothing else, it removes whatever they were: nothing is lost with
+//!   them, and a deletion that was cut short can leave both.
 //! - **It makes the directory stop being a database before it removes a
 //!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], durably,
 //!   and then everything goes, the renamed manifest last. A deletion that
 //!   is cut short therefore never leaves a directory that opens with
 //!   something missing: not a file of the store, which an open would miss,
 //!   and not a file that the engine or Platform keeps beside them (P-17),
-//!   which it would not. What it leaves has the renamed manifest, or is
-//!   empty, and a second call finishes it.
+//!   which it would not. A second call finishes what it leaves.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the

@@ -288,7 +288,10 @@ fn the_log_of_a_checkpoint_ends_where_the_sample_ended() {
             assert!(turned.expect("the log is rolled"), "the log did not turn");
         }
         let target = checkpoints.join(round.to_string());
-        let created = (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+        let created = checkpointer(&db, &versions)
+            .with_options(NO_CATCH_UP)
+            .create(&target)
+            .expect("a checkpoint");
         let end = created.log_end.expect("the log has an end");
         assert_eq!(created.log_end, db.log.end());
         made.push((target, created.version, world.model.clone(), end));

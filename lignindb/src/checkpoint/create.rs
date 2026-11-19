@@ -221,8 +221,9 @@ impl<'s> Checkpointer<'s> {
     /// until the database is opened again, as after any sync of it that
     /// fails (`lignin_store::wal`). What was made of `target` is taken away
     /// again as far as the file layer lets it. Where that fails too,
-    /// `target` is left without a manifest, or with one that this call does
-    /// not vouch for, and removing it is the caller's.
+    /// `target` is left for the caller to remove: without a manifest, or,
+    /// where a manifest was written and its removal could not be made
+    /// durable, with every file that manifest names.
     pub fn create(&self, target: &Path) -> Result<Created, CheckpointError> {
         if let Some(stopped) = self.state.stopped() {
             return Err(CheckpointError::Stopped(stopped));

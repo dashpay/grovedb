@@ -11,7 +11,7 @@ use std::{
 
 use lignin_format::FileId;
 use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
-use lignin_store::segment::{read_manifest, FileNames, ManifestStore};
+use lignin_store::segment::{read_manifest, FileNames, ManifestStore, SegmentStoreError};
 
 use super::error::CheckpointError;
 
@@ -311,12 +311,20 @@ impl Target {
     /// lock file are this creation's. Nothing else is touched: a file that
     /// somebody else put into the target stays, and the target with it.
     /// What cannot be removed stays for the caller to remove.
+    ///
+    /// **No file goes while the manifest could come back.** Where a
+    /// manifest was written and its removal cannot be made durable,
+    /// everything else stays: every file it names is durable by then, so
+    /// what a power cut leaves is the whole checkpoint or a directory
+    /// without a manifest, and never a manifest without one of its files.
     pub(super) fn remove(self) {
         let vfs = &*self.vfs;
-        for name in [ManifestStore::FILE_NAME, ManifestStore::TEMP_FILE_NAME] {
-            let _ = vfs.remove_file(&self.dir.join(name));
+        match vfs.remove_file(&self.dir.join(ManifestStore::FILE_NAME)) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {}
+            Ok(()) if vfs.sync_dir(&self.dir).is_ok() => {}
+            _ => return,
         }
-        let _ = vfs.sync_dir(&self.dir);
+        let _ = vfs.remove_file(&self.dir.join(ManifestStore::TEMP_FILE_NAME));
         for file in self.files.iter().rev() {
             let _ = vfs.remove_file(file);
         }
@@ -383,9 +391,17 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// durable, and only then is the first file removed. So if the removal is
 /// cut short, by an error or by the power, the directory either opens as
 /// the whole checkpoint it was, with every file that anybody put beside
-/// it, or it has no manifest and opens as nothing. What is left then has
-/// the renamed manifest, or is empty, and the call can be made again and
-/// finishes it. When it returns `Ok`, the removal is durable.
+/// it, or it has no manifest and opens as nothing. When the call returns
+/// `Ok`, the removal is durable.
+///
+/// **What a deletion leaves that was cut short is finished by the next
+/// call.** That is a directory with the renamed manifest, whatever else it
+/// holds; an empty directory; and a directory that holds an empty lock
+/// file and nothing else, which is left where somebody took the lock of
+/// the directory while its last names went, and by a creation that could
+/// not take the lock of its target. The last two are removed whatever
+/// they were, since nothing is lost with them: an empty directory without
+/// its lock, by a removal that fails if it is no longer empty.
 pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     let not_a_directory = || CheckpointError::NotADirectory {
         dir: dir.to_path_buf(),
@@ -403,17 +419,10 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     let entries = vfs
         .read_dir(dir)
         .map_err(CheckpointError::io("list", dir))?;
-    // An empty directory is what a deletion leaves that was cut short at
-    // its end, and removing one loses nothing whatever it was.
     if !entries.is_empty() {
         // Nothing is changed, the lock file included, in a directory that
-        // is neither a database nor one that is being deleted.
-        if !being_deleted(&entries) {
-            read_manifest(vfs, dir).map_err(|source| CheckpointError::NotADatabase {
-                dir: dir.to_path_buf(),
-                source,
-            })?;
-        }
+        // is neither a database nor what a deletion left.
+        Left::of(vfs, dir, &entries)?;
         let lock_path = dir.join(LOCK_FILE_NAME);
         let lock = vfs.lock(&lock_path).map_err(|source| match source.kind() {
             ErrorKind::WouldBlock => CheckpointError::Open {
@@ -430,14 +439,60 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
         .map_err(CheckpointError::io("sync the directory", parent))
 }
 
-/// Whether a directory with `entries` is one that [`delete`] has begun to
-/// remove.
-fn being_deleted(entries: &[DirEntry]) -> bool {
-    (entries.iter()).any(|entry| entry.name == DELETING_FILE_NAME)
+/// What a directory that [`delete`] may empty is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Left {
+    /// A database: it has a manifest of this engine.
+    Database,
+    /// A database whose deletion has begun: it has the renamed manifest.
+    /// A manifest beside that one is of a database that was made in the
+    /// directory since, against the rule for one that is being deleted,
+    /// and goes with it.
+    BeingDeleted {
+        /// Whether it has a manifest as well.
+        manifest: bool,
+    },
+    /// An empty lock file and nothing else.
+    LockAlone,
 }
 
-/// Removes everything from the database directory `dir`, whose lock the
-/// caller holds, the lock file included.
+impl Left {
+    /// What the directory `dir` with `entries` is, or
+    /// [`CheckpointError::NotADatabase`] for one that is none of these.
+    fn of(vfs: &dyn Vfs, dir: &Path, entries: &[DirEntry]) -> Result<Self, CheckpointError> {
+        let has = |name: &str| {
+            (entries.iter()).any(|entry| entry.name == name && entry.kind == EntryKind::File)
+        };
+        let manifest = has(ManifestStore::FILE_NAME);
+        if has(DELETING_FILE_NAME) {
+            return Ok(Self::BeingDeleted { manifest });
+        }
+        let not_a_database = |source| CheckpointError::NotADatabase {
+            dir: dir.to_path_buf(),
+            source,
+        };
+        if manifest || entries.len() != 1 || !has(LOCK_FILE_NAME) {
+            return match read_manifest(vfs, dir) {
+                Ok(_) => Ok(Self::Database),
+                Err(source) => Err(not_a_database(source)),
+            };
+        }
+        let lock_path = dir.join(LOCK_FILE_NAME);
+        let len = vfs
+            .open(&lock_path, OpenMode::Read)
+            .and_then(|lock| lock.len())
+            .map_err(CheckpointError::io("measure", &lock_path))?;
+        match len {
+            0 => Ok(Self::LockAlone),
+            _ => Err(not_a_database(SegmentStoreError::NoManifest {
+                dir: dir.to_path_buf(),
+            })),
+        }
+    }
+}
+
+/// Removes everything from the directory `dir`, whose lock the caller
+/// holds, the lock file included.
 fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     let list = || vfs.read_dir(dir).map_err(CheckpointError::io("list", dir));
     let sync = || {
@@ -454,20 +509,14 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
         }
     };
     // What the directory is, asked again now that nobody else is in it.
-    let marker = dir.join(DELETING_FILE_NAME);
-    match read_manifest(vfs, dir) {
-        Ok(_) => {
-            let manifest = dir.join(ManifestStore::FILE_NAME);
-            vfs.rename(&manifest, &marker)
-                .map_err(CheckpointError::io("rename", &manifest))?;
-        }
-        Err(source) if !being_deleted(&list()?) => {
-            return Err(CheckpointError::NotADatabase {
-                dir: dir.to_path_buf(),
-                source,
-            });
-        }
-        Err(_) => {}
+    let renamed = match Left::of(vfs, dir, &list()?)? {
+        Left::Database | Left::BeingDeleted { manifest: true } => true,
+        Left::BeingDeleted { manifest: false } | Left::LockAlone => false,
+    };
+    if renamed {
+        let manifest = dir.join(ManifestStore::FILE_NAME);
+        vfs.rename(&manifest, &dir.join(DELETING_FILE_NAME))
+            .map_err(CheckpointError::io("rename", &manifest))?;
     }
     // From here the directory is no database, whatever a power cut keeps
     // of the removals below.
@@ -481,8 +530,10 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     // The renamed manifest goes last, and only once every other removal is
     // durable: what a power cut leaves is known by it for what it is, or
     // is empty. The lock file goes before it for that reason. Whoever
-    // takes a new one from here finds no database, and nothing but the
-    // renamed manifest is removed any more.
+    // takes the lock of the directory from here makes a new lock file and
+    // finds no database. Nothing but the renamed manifest is removed any
+    // more, so their lock file stays, and the directory with it, for the
+    // next call to remove.
     remove(LOCK_FILE_NAME)?;
     sync()?;
     remove(DELETING_FILE_NAME)
