@@ -15,8 +15,8 @@ use lignin_format::tree_page::{Hash, Side};
 
 use super::store::Rng;
 use crate::txn::{
-    Batch, Column, Hosted, LinkPut, MerkWrite, NodePut, NodeValue, NodeView, RecordWrite, RootPut,
-    Subtree, Unit, ValuePut,
+    Batch, Column, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite, RootPut, Subtree,
+    Unit, ValuePut,
 };
 
 pub fn subtree(name: u8) -> Subtree {
@@ -75,11 +75,7 @@ impl NodeRec {
     /// Checks that `view` shows this record.
     pub fn check(&self, key: &[u8], view: &NodeView<'_>) {
         assert_eq!(view.key(), key);
-        assert_eq!(
-            view.value(),
-            NodeValue::Bytes(&self.value),
-            "the value of {key:?}"
-        );
+        assert_eq!(super::value_of(view), self.value, "the value of {key:?}");
         assert_eq!(view.value_len() as usize, self.value.len());
         assert_eq!(view.feature(), self.feature, "the feature of {key:?}");
         assert_eq!(view.value_hash(), &self.value_hash);

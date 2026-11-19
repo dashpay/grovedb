@@ -6,7 +6,10 @@ use lignin_format::{FormatError, PageId};
 use lignin_store::{
     alloc::AllocError, cache::CacheError, load::LoadError, values::ValueStoreError,
 };
-use lignin_tree::{cursor::CursorError, flat::FlatError, fragment::FragmentError, node::NodeError};
+use lignin_tree::{
+    cursor::CursorError, flat::FlatError, fragment::FragmentError, node::NodeError,
+    value::ValueError,
+};
 
 use super::key::{Subtree, Unit};
 
@@ -184,6 +187,9 @@ pub enum TxnError {
     Load(LoadError),
     /// A value was not read from the value log.
     Values(ValueStoreError),
+    /// A value of a node that is not in its cell was not kept or not read
+    /// (`lignin_tree::value`).
+    TreeValue(ValueError),
     /// Bytes that should be a page or a value are not.
     Format(FormatError),
     /// The subtree directory did not answer.
@@ -195,13 +201,6 @@ pub enum TxnError {
     },
     /// The pages do not hold what every committed state holds.
     Damaged(&'static str),
-    /// A value that is out of line and that no value-log file holds yet is
-    /// needed in bytes, and it is not one the transaction wrote. Reading
-    /// such a value from the frame of its page is the read path of TREE-08.
-    PendingValue {
-        /// The Merk of the node that holds the value.
-        subtree: Subtree,
-    },
 }
 
 impl fmt::Display for TxnError {
@@ -217,16 +216,11 @@ impl fmt::Display for TxnError {
             Self::Alloc(error) => write!(f, "page ids: {error}"),
             Self::Load(error) => write!(f, "page load: {error}"),
             Self::Values(error) => write!(f, "value log: {error}"),
+            Self::TreeValue(error) => write!(f, "node value: {error}"),
             Self::Format(error) => write!(f, "format: {error}"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
             Self::PageFreed { page } => write!(f, "{page} was freed by the transaction"),
             Self::Damaged(what) => write!(f, "damaged pages: {what}"),
-            Self::PendingValue { subtree } => {
-                write!(
-                    f,
-                    "a pending value of the Merk {subtree} is not the transaction's to read"
-                )
-            }
         }
     }
 }
@@ -243,12 +237,10 @@ impl Error for TxnError {
             Self::Alloc(error) => Some(error),
             Self::Load(error) => Some(error),
             Self::Values(error) => Some(error),
+            Self::TreeValue(error) => Some(error),
             Self::Format(error) => Some(error),
             Self::Directory(error) => Some(error.as_ref()),
-            Self::ScopeOpen
-            | Self::PageFreed { .. }
-            | Self::Damaged(_)
-            | Self::PendingValue { .. } => None,
+            Self::ScopeOpen | Self::PageFreed { .. } | Self::Damaged(_) => None,
         }
     }
 }
@@ -273,6 +265,7 @@ from! {
     AllocError => Alloc,
     LoadError => Load,
     ValueStoreError => Values,
+    ValueError => TreeValue,
     FormatError => Format,
 }
 

@@ -425,10 +425,7 @@ fn a_kept_value_is_the_transactions_own_after_a_commit_outside_overwrote_it() {
         },
         &[&tx],
     );
-    let value = |view: Option<NodeView<'_>>| match view.expect("a node").value() {
-        NodeValue::Bytes(bytes) => bytes.to_vec(),
-        other => panic!("{other:?}"),
-    };
+    let value = |view: Option<NodeView<'_>>| value_of(&view.expect("a node"));
     for at in &kept {
         let index = at[1];
         let shown = (tx.txn.node(model::subtree(1), at, value)).expect("a read");

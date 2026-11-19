@@ -130,8 +130,10 @@
 //! store's rule, by the value's length alone
 //! ([`InlinePolicy`](lignin_tree::value::InlinePolicy),
 //! [`WritePath::inline_policy`]). The bytes of a value out of line stay
-//! with the transaction until its commit carries them in the log group
-//! (WT4, FL7).
+//! with the transaction's frames until its commit carries them in the log
+//! group and attaches them to the frame of their page (WT4, FL7). Every
+//! rebuild of the frames states the write set to values that have not
+//! seen it.
 //!
 //! # Locations that are kept
 //!
@@ -225,15 +227,12 @@
 //!    ([`BatchError::RootTaken`]). No writer of an existing GroveVersion
 //!    gets there, because both would have written the element that hosts
 //!    the Merk (GM3). The rule for iteration two is GROVE-11's.
-//! 9. **A value out of line that an earlier commit logged and that no
-//!    value-log file holds yet is not read in bytes here**
-//!    ([`NodeValue::Pending`], [`TxnError::PendingValue`]). The commit
-//!    that logs it attaches its bytes to the frame of its page, under the
-//!    value's name ([`ValueId`](lignin_store::cache::ValueId)), and
-//!    reading them there is the read path of TREE-08: neither is here
-//!    yet. Until then a transaction that kept such a value and is then
-//!    overlapped has no copy of it to serve: its operations fail with that
-//!    error until it is rolled back, or its commit reports the conflict.
+//! 9. **A node's value is read where it is, by the tree layer's read
+//!    path** ([`NodeView::value`], `lignin_tree::value`): in its cell, in
+//!    the value log, with the frame of its page while it is pending, or
+//!    with the transaction that wrote it. The frames keep the values of
+//!    their cells in a [`TreeValues`](lignin_tree::value::TreeValues),
+//!    which is what the commit logs, attaches and counts from.
 //!
 //! # What is not here
 //!
@@ -273,7 +272,7 @@ pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub use path::{Directory, DirectoryError, FlatReader, FlatWriter, Keyspaces, WritePath};
 pub use txn::{Scope, TxnStats, WriteTxn};
-pub use view::{LinkView, NodeValue, NodeView};
+pub use view::{LinkView, NodeView};
 pub use write::{
     Applied, Batch, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, ValuePut,
 };

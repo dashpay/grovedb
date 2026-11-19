@@ -7,15 +7,12 @@ use std::{
     sync::{Mutex, MutexGuard, PoisonError},
 };
 
-use lignin_format::{
-    tree_page::{CellValue, Side},
-    value_log::ValuePlace,
-    CellAddress, CommitVersion,
-};
+use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
 use lignin_store::load::LoadBuffers;
 use lignin_tree::{
     fragment::FragmentError,
     node::{Lease, NodeError, NodeHandle},
+    value::{read_value, ValueBuf},
 };
 
 use super::{
@@ -54,8 +51,10 @@ pub struct TxnStats {
     pub tree_pages: usize,
     /// The private copies of flat pages it holds.
     pub flat_pages: usize,
-    /// The values it holds out of line for tree cells, and their bytes.
-    pub held_values: (usize, usize),
+    /// The tree pages whose cells hold values out of line that the
+    /// transaction's commit writes: its own new values, and those of cells
+    /// it carried to another page.
+    pub value_pages: usize,
     /// How many times the frames were made again from the write set: after
     /// a commit outside the transaction (WT7), a rollback to a mark, or an
     /// operation that failed half way.
@@ -272,7 +271,7 @@ impl<'s> WriteTxn<'s> {
             pinned: state.base.as_ref().map(VersionPin::version),
             tree_pages: frames.map_or(0, |frames| frames.tree.copies()),
             flat_pages: frames.map_or(0, |frames| frames.flat.copies()),
-            held_values: frames.map_or((0, 0), |frames| frames.values.held_bytes()),
+            value_pages: frames.map_or(0, |frames| frames.values.pages().count()),
             rebuilds: state.rebuilds,
             handles_followed: state.followed,
             keyed_reads: state.keyed,
@@ -377,13 +376,12 @@ impl<'s> WriteTxn<'s> {
             let subtree = state.set.entry(id).unit.subtree;
             let root = (path.directory.committed_root(&committed, &subtree))
                 .map_err(TxnError::Directory)?;
-            let mut pages = path.committed_pages(version, lease, &mut state.buffers);
+            let mut pages = path.committed_pages(guard, version, lease, &mut state.buffers);
             // No commit wrote the key since the transaction did, or the
             // entry would be met: the node it kept the value of is there.
             let address = find(&mut pages, root, state.set.key(id))?
                 .ok_or(TxnError::Damaged("a node whose value is kept is gone"))?;
-            let value = Self::read_value(path, &mut pages, address)?
-                .ok_or(TxnError::PendingValue { subtree })?;
+            let value = Self::read_value(&mut pages, address)?;
             state.set.keep(id, &value);
         }
         Ok(())
@@ -538,13 +536,10 @@ impl<'s> WriteTxn<'s> {
                     Own::Unwritten => {
                         let root = committed_root(&subtree)?;
                         let mut pages =
-                            path.committed_pages(op.at, state.lease, &mut state.buffers);
+                            path.committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
                         match find(&mut pages, root, node.key)? {
                             None => None,
-                            Some(address) => Some(
-                                Self::read_value(path, &mut pages, address)?
-                                    .ok_or(TxnError::PendingValue { subtree })?,
-                            ),
+                            Some(address) => Some(Self::read_value(&mut pages, address)?),
                         }
                     }
                 };
@@ -559,32 +554,15 @@ impl<'s> WriteTxn<'s> {
         Ok(Applied::default())
     }
 
-    /// The bytes of the value of the committed cell at `address`. `None`
-    /// for a pending value, whose bytes are not the transaction's to read.
+    /// The bytes of the value of the committed cell at `address`, wherever
+    /// the value is.
     fn read_value(
-        path: &WritePath<'s>,
         pages: &mut CommittedPages<'_, 's>,
         address: CellAddress,
-    ) -> Result<Option<Vec<u8>>, TxnError> {
-        let mut value = Vec::new();
-        let place = pages.page(address.page(), |page| {
-            let node = page.node(address.slot())?;
-            let stored = node.value();
-            if let CellValue::Inline(bytes) = stored {
-                value.extend_from_slice(bytes);
-            }
-            Some(stored.place())
-        })?;
-        match place.ok_or(NodeError::NoNode { address })? {
-            None => Ok(Some(value)),
-            Some(ValuePlace::Placed(pointer)) => {
-                let mut buf = Vec::new();
-                let read = path.values.read(pointer, address.page(), &mut buf)?;
-                read.parts().for_each(|part| value.extend_from_slice(part));
-                Ok(Some(value))
-            }
-            Some(ValuePlace::Pending(_)) => Ok(None),
-        }
+    ) -> Result<Vec<u8>, TxnError> {
+        let node = pages.pinned(address)?;
+        let mut buf = ValueBuf::new();
+        Ok(read_value(pages.values, &node, &mut buf)?.to_vec())
     }
 
     fn get_in(
@@ -708,7 +686,7 @@ impl<'s> WriteTxn<'s> {
             Err(read) => read,
         };
         let lease = state.lease;
-        let mut pages = (self.path).committed_pages(op.at, lease, &mut state.buffers);
+        let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let followed = hint.and_then(|handle| follow(&mut pages, lease, handle, key));
         let at = match followed {
             Some(at) => {
@@ -762,9 +740,9 @@ impl<'s> WriteTxn<'s> {
         // the transaction may have rebuilt the tree around it (RD10). It is
         // read under a lease of its own, so no handle to it is followed
         // into the transaction's frames.
-        let mut pages = self
-            .path
-            .committed_pages(op.at, Lease::take(), &mut state.buffers);
+        let mut pages =
+            self.path
+                .committed_pages(&op.guard, op.at, Lease::take(), &mut state.buffers);
         let at = find(&mut pages, root, key)?;
         show_committed(&mut pages, at, read)
     }
@@ -798,9 +776,9 @@ impl<'s> WriteTxn<'s> {
             return Ok(None);
         }
         let unit = Unit::data(subtree);
-        let mut pages = self
-            .path
-            .committed_pages(op.at, state.lease, &mut state.buffers);
+        let mut pages =
+            self.path
+                .committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
         let mut key = std::mem::take(&mut state.key);
         key.clear();
         let child = pages.page(parent.page(), |page| {
@@ -960,7 +938,7 @@ pub(crate) struct Parts<'s> {
     pub(crate) tree: super::pages::TreePages<'s>,
     /// The values of tree cells that are out of line: those the commit
     /// logs, and the pointers it releases.
-    pub(crate) values: super::pages::TreeValues<'s>,
+    pub(crate) values: lignin_tree::value::TreeValues,
     /// The flat pages (`lignin_tree::flat`, "What a commit writes"). The
     /// commit takes the writer out, under its own guard, when it installs
     /// them.
@@ -978,11 +956,15 @@ fn show_framed<R>(
     let Some(address) = at else {
         return Ok(read(None));
     };
-    let Frames { tree, values, .. } = frames;
+    let Frames {
+        tree,
+        values,
+        source,
+        ..
+    } = frames;
     let shown = tree.page(address.page(), |page| {
         let node = page.node(address.slot())?;
-        let held = node.value().pending().and_then(|value| values.held(value));
-        Some(read(Some(NodeView::cell(node, held))))
+        Some(read(Some(NodeView::framed(node, values, source))))
     })?;
     Ok(shown.ok_or(NodeError::NoNode { address })?)
 }
@@ -996,11 +978,8 @@ pub(crate) fn show_committed<R>(
     let Some(address) = at else {
         return Ok(read(None));
     };
-    let shown = pages.page(address.page(), |page| {
-        let node = page.node(address.slot())?;
-        Some(read(Some(NodeView::cell(node, None))))
-    })?;
-    Ok(shown.ok_or(NodeError::NoNode { address })?)
+    let node = pages.pinned(address)?;
+    Ok(read(Some(NodeView::committed(&node, pages.values))))
 }
 
 macro_rules! reads {

@@ -189,13 +189,15 @@ impl<'s> MerkSide<'s> {
         if self.cursor.key() == Some(key) {
             let reader = self.reader(guard);
             let node = self.cursor.node(&reader, &mut self.buffers)?;
-            let view = node.as_ref().map(|node| NodeView::cell(node.node(), None));
-            return Ok(read(view));
+            let store = self.path.values;
+            return Ok(read(
+                node.as_ref().map(|node| NodeView::committed(node, store)),
+            ));
         }
         // The cursor stands on a key that the transaction wrote and has
         // taken back since: the version's node under it, if it has one, is
         // found by the key.
-        let mut pages = (self.path).committed_pages(self.at, self.lease, &mut self.buffers);
+        let mut pages = (self.path).committed_pages(guard, self.at, self.lease, &mut self.buffers);
         let found = find(&mut pages, self.cursor.root(), key)?;
         show_committed(&mut pages, found, read)
     }

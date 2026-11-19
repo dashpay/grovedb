@@ -351,6 +351,12 @@ fn scan_merk(
     keys
 }
 
+/// The bytes of a node's value, wherever the value is.
+fn value_of(view: &NodeView<'_>) -> Vec<u8> {
+    let mut buf = lignin_tree::value::ValueBuf::new();
+    view.value(&mut buf).expect("the value is read").to_vec()
+}
+
 fn flat(value: &[u8]) -> Val {
     Val::Flat(value.to_vec())
 }

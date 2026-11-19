@@ -15,7 +15,10 @@ use std::{
 };
 
 use lignin_format::{
-    manifest::Manifest, tree_page::Side, CellAddress, CommitVersion, PageId, PageSize,
+    manifest::Manifest,
+    tree_page::Side,
+    wal::{write_file_start, GroupWriter, LogStart},
+    CellAddress, CommitVersion, FileId, PageId, PageSize,
 };
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
@@ -30,7 +33,7 @@ use lignin_tree::{
     flat::{Committed, FlatConfig, FlatPages, FlatTree, Private},
     fragment::Layout,
     node::{Lease, NodePage},
-    value::InlinePolicy,
+    value::{InlinePolicy, ValueSource},
 };
 
 use crate::{
@@ -205,9 +208,8 @@ pub struct Counts {
     /// The pointers to hosted roots that the last check of the tree pages
     /// followed.
     pub hosted: AtomicU64,
-    /// Cells that a commit carried with a pending value of an earlier
-    /// commit.
-    pub carried_pending: AtomicU64,
+    /// The tree pages that commits attached values to.
+    pub value_pages: AtomicU64,
 }
 
 /// How a commit of the test store ended.
@@ -233,6 +235,9 @@ pub struct Db {
     pub counts: Counts,
     keyspaces: OnceLock<Keyspaces>,
     commit_lock: Mutex<()>,
+    /// The log groups of the commits, one after the other: what gives each
+    /// committed value that is out of line its name.
+    log: Mutex<Vec<u8>>,
     used: Mutex<BTreeSet<PageId>>,
     _dir: tempfile::TempDir,
 }
@@ -279,6 +284,11 @@ impl Db {
             counts: Counts::default(),
             keyspaces: OnceLock::new(),
             commit_lock: Mutex::new(()),
+            log: Mutex::new({
+                let mut log = Vec::new();
+                write_file_start(FileId::MIN, &LogStart::FIRST, &mut log).expect("a log file");
+                log
+            }),
             used: Mutex::new(BTreeSet::new()),
             _dir: dir,
         });
@@ -378,21 +388,37 @@ impl Db {
         let mut freed = Vec::new();
         let mut unused = Vec::new();
 
-        // The values of tree cells: nothing of these stores is in the
-        // value log, so no pointer is released, and a cell that was carried
-        // with a pending value went to another page.
-        let mut values = parts.values;
-        assert!(values.released().is_empty(), "a pointer of no value log");
-        for carried in values.carried() {
-            assert_ne!(carried.from, carried.to, "{:?}", carried.value);
-            self.counts.carried_pending.fetch_add(1, Ordering::Relaxed);
-        }
-        let tree = parts.tree.into_parts();
+        // The values of tree cells, as the commit will handle them
+        // (`lignin_tree::value`, "The commit"): each goes into the group
+        // for the page of its cell, which names it by its place in the log
+        // from then on, and its bytes go with the frame of that page.
+        // Nothing of these stores is in the value log, so no pointer is
+        // released and the counts do not change.
+        let (mut tree, mut values) = (parts.tree, parts.values);
+        let source = ValueSource::new(&self.values, self.loader(), parts.base);
+        let mut log = locked(&self.log);
+        let address = LogStart::FIRST
+            .address(log.len() as u64)
+            .expect("an address");
+        let mut group = GroupWriter::new(commit, address, &mut log).expect("a group");
+        values
+            .log_values(&mut tree, &source, &mut group)
+            .expect("the values are logged");
+        group.finish();
+        drop(log);
+        assert!(values.released_pointers().is_empty() && values.change().is_empty());
+        self.counts
+            .value_pages
+            .fetch_add(values.pages().count() as u64, Ordering::Relaxed);
+        let tree = tree.into_parts();
         for (page, copy) in tree.written {
             if copy.is_unchanged() {
                 self.pool.discard(&copy.frame).expect("it is discarded");
                 continue;
             }
+            let mut latch = copy.frame.write().expect("the copy is the commit's");
+            values.attach(&mut latch).expect("the bytes are attached");
+            drop(latch);
             drop(self.pool.install(&copy.frame, commit).expect("it installs"));
             if copy.created {
                 created.push(page);

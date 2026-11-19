@@ -242,15 +242,19 @@ impl<'s> WritePath<'s> {
         Committed::new(self.loader, self.values, guard, version)
     }
 
-    /// The committed tree pages at `version`, read under `lease`.
+    /// The committed tree pages at `version`, read under `lease` in the
+    /// operation that holds `guard`.
     pub(crate) fn committed_pages<'a>(
         &self,
+        guard: &'a OperationGuard<'s>,
         version: CommitVersion,
         lease: Lease,
         buffers: &'a mut LoadBuffers,
     ) -> CommittedPages<'a, 's> {
         CommittedPages {
             loader: self.loader,
+            values: self.values,
+            guard,
             at: version,
             lease,
             buffers,

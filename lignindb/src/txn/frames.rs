@@ -1,10 +1,7 @@
 //! The private frames of a write transaction, and how a batch is applied
 //! to them by key.
 
-use std::{
-    collections::{HashMap, HashSet},
-    sync::Arc,
-};
+use std::collections::{HashMap, HashSet};
 
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_store::alloc::PageAllocator;
@@ -15,12 +12,13 @@ use lignin_tree::{
         Write,
     },
     node::{Lease, NodeError, NodeHandle},
+    value::{TreeValues, ValueSource},
 };
 
 use super::{
     error::{BatchError, TxnError},
     key::{Column, Subtree},
-    pages::{find, follow, NodePages, TreePages, TreeValues},
+    pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
     write::{Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, ValuePut},
     write_set::WriteSet,
@@ -96,7 +94,10 @@ pub(crate) fn subtree_end(subtree: &Subtree) -> Option<Vec<u8>> {
 pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     base: CommitVersion,
     pub(crate) tree: TreePages<'s>,
-    pub(crate) values: TreeValues<'s>,
+    /// The values of the transaction's cells that are not in their cells,
+    /// and where those are read from that are not in its memory.
+    pub(crate) values: TreeValues,
+    pub(crate) source: ValueSource<'s>,
     pub(crate) flat: FlatFrames<'s, 'g, G>,
     fragments: Fragments,
     key: Vec<u8>,
@@ -318,6 +319,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             base: self.base,
             tree: self.tree,
             values: self.values,
+            source: self.source,
             flat: self.flat.under(guard),
             fragments: self.fragments,
             key: self.key,
@@ -339,7 +341,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let size = path.layout.page_size();
         Self {
             tree: TreePages::new(path.loader, path.pool, path.ids, owner, at, lease, size),
-            values: TreeValues::new(path.values),
+            values: TreeValues::new(path.inline),
+            source: ValueSource::new(path.values, path.loader, at),
             flat: FlatFrames(Some(FlatWriter::new(
                 path.committed(guard, at),
                 path.pool,
@@ -535,7 +538,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         } = match resolved {
             Ok(resolved) => resolved,
             Err(error) => {
-                self.values.forget(&held);
+                self.forget(&held);
                 return Err(Refused::clean(error));
             }
         };
@@ -566,12 +569,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let report = match (self.fragments).apply(&mut self.tree, &mut self.values, &write) {
             Ok(report) => report,
             Err(error @ (FragmentError::Write(_) | FragmentError::NoRoom { .. })) => {
-                self.values.forget(&held);
+                self.forget(&held);
                 return Err(Refused::clean(error));
             }
             Err(error) => return Err(Refused::dirty(error)),
         };
-        self.values.take_failure().map_err(Refused::dirty)?;
+        self.values.check().map_err(Refused::dirty)?;
 
         // The directory entry of each Merk whose root is another cell now,
         // and of each Merk whose root went along with its host.
@@ -613,6 +616,13 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 .collect(),
             nodes: report.nodes,
         })
+    }
+
+    /// Gives up the pending values of a write that was refused.
+    fn forget(&mut self, held: &[lignin_format::value_log::PendingValue]) {
+        for pending in held {
+            self.values.forget(*pending);
+        }
     }
 
     /// Checks that the cell at `host`, which is written and keeps the Merks
@@ -706,13 +716,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                     ValuePut::Keep => ValueWrite::Keep,
                     // The length alone says where a value goes, and a
                     // value of no bytes is never out of line.
-                    ValuePut::Value(value) if path.inline.is_inline(value.len()) => {
-                        ValueWrite::Inline(value)
-                    }
                     ValuePut::Value(value) => {
-                        let pending = self.values.hold(Arc::from(value))?;
-                        held.push(pending);
-                        ValueWrite::Pending(pending)
+                        let write = self.values.write(value)?;
+                        if let ValueWrite::Pending(pending) = write {
+                            held.push(pending);
+                        }
+                        write
                     }
                 };
                 nodes.push(Resolved {

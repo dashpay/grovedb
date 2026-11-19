@@ -20,12 +20,7 @@ fn get(tx: &Tx<'_>, unit: Unit, key: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn node_value(tx: &Tx<'_>, name: u8, key: &[u8]) -> Option<Vec<u8>> {
-    let read = |view: Option<NodeView<'_>>| {
-        view.map(|view| match view.value() {
-            NodeValue::Bytes(bytes) => bytes.to_vec(),
-            other => panic!("the value is {other:?}"),
-        })
-    };
+    let read = |view: Option<NodeView<'_>>| view.map(|view| value_of(&view));
     (tx.txn.node(model::subtree(name), key, read)).expect("a read")
 }
 
@@ -540,11 +535,7 @@ fn a_merk_cursor_reads_its_version_and_the_transactions_nodes() {
         items.insert(key(41), b"written under the cursor".to_vec());
         items.remove(&key(42));
     });
-    let value = |node: Option<NodeView<'_>>| match node.map(|node| node.value()) {
-        Some(NodeValue::Bytes(bytes)) => Some(bytes.to_vec()),
-        Some(other) => panic!("the value is {other:?}"),
-        None => None,
-    };
+    let value = |node: Option<NodeView<'_>>| node.map(|node| value_of(&node));
     cursor.next().expect("a step");
     assert_eq!(cursor.key(), Some(&key(41)[..]));
     assert_eq!(

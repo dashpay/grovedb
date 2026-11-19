@@ -247,13 +247,6 @@ fn a_host_that_keeps_its_pointers_beside_its_merk_is_refused() {
     assert_eq!(db.private_ids(), 0);
 }
 
-fn bytes_of(view: Option<NodeView<'_>>) -> Option<Vec<u8>> {
-    match view?.value() {
-        NodeValue::Bytes(bytes) => Some(bytes.to_vec()),
-        _ => None,
-    }
-}
-
 #[test]
 fn a_value_that_is_out_of_line_stays_with_the_transaction() {
     let (db, versions) = Db::new(128);
@@ -285,6 +278,7 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         OwnedBatch { merks, records }
     }
     let subtree = model::subtree(1);
+    let pages_with_values = |tx: &Tx<'_>| tx.txn.stats().value_pages;
 
     // The length alone says where a value goes: one of the threshold's
     // length is in its cell, and one byte more is out of line.
@@ -293,12 +287,12 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
     world.edit(&tx, 2, |items| {
         items.insert(b"at".to_vec(), vec![1; LONG - 1]);
     });
-    assert_eq!(tx.txn.stats().held_values, (0, 0));
+    assert_eq!(pages_with_values(&tx), 0);
     world.edit(&tx, 2, |items| {
         items.insert(b"over".to_vec(), vec![2; LONG]);
         items.insert(b"none".to_vec(), Vec::new());
     });
-    assert_eq!(tx.txn.stats().held_values, (1, LONG));
+    assert_eq!(pages_with_values(&tx), 1);
     world.check(&tx);
     tx.txn.rollback().expect("no scope is open");
     tx.forget();
@@ -307,11 +301,8 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
     world.apply(&tx, &batch).expect("values out of line");
     // The transaction reads the bytes it holds (WT4).
     world.check(&tx);
-    let (held, bytes) = tx.txn.stats().held_values;
-    assert!(
-        held >= 26 && bytes > held * 200,
-        "{held} values, {bytes} bytes"
-    );
+    let first = pages_with_values(&tx);
+    assert!(first > 0);
     // More nodes cut the pages: cells are carried with their values.
     let mark = tx.txn.mark();
     let writes = tx.model.borrow().writes.len();
@@ -320,12 +311,12 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         world.apply(&tx, &batch).expect("values out of line");
         world.check(&tx);
     }
-    assert!(tx.txn.stats().held_values.0 > held * 3);
+    assert!(pages_with_values(&tx) > first);
     // A rollback to the mark gives the later values up.
     tx.txn.rewind(mark);
     tx.model.borrow_mut().writes.truncate(writes);
     world.check(&tx);
-    assert_eq!(tx.txn.stats().held_values.0, held);
+    assert_eq!(pages_with_values(&tx), first);
     // A rebase holds them again, from the write set.
     world.edit_outside(
         2,
@@ -333,18 +324,14 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
         &[&tx],
     );
     world.check(&tx);
-    assert_eq!(
-        (tx.txn.stats().rebuilds, tx.txn.stats().held_values.0),
-        (2, held)
-    );
-    // A value is replaced by one in its cell, and a node is deleted: the
-    // transaction lets go of both.
+    assert_eq!(tx.txn.stats().rebuilds, 2);
+    assert!(pages_with_values(&tx) > 0);
+    // A value is replaced by one in its cell, and a node is deleted.
     world.edit(&tx, 1, |items| {
         items.insert(key(1), b"short now".to_vec());
         items.remove(&key(2));
     });
     world.check(&tx);
-    assert_eq!(tx.txn.stats().held_values.0, held - 2);
     // Overlapped, it serves the bytes from its write set.
     let outside = world.begin();
     world.write(
@@ -357,88 +344,48 @@ fn a_value_that_is_out_of_line_stays_with_the_transaction() {
     ));
     world.check(&tx);
     assert!(tx.txn.stats().overlapped > 0);
-    assert_eq!(tx.txn.stats().held_values, (0, 0));
+    assert_eq!(pages_with_values(&tx), 0);
     assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
 
-    // Committed, such a value is pending until write-back places it (FL7):
-    // its cell says how long it is, and its bytes are the commit's and the
-    // read path's of TREE-08 to give.
+    // Committed, such a value is with the frame of its page until
+    // write-back places it (FL7), and whoever reads the node reads its
+    // bytes there.
+    let attached = || db.counts.value_pages.load(Ordering::Relaxed);
+    let before = attached();
     let tx = world.begin();
     let batch = long(&world, &tx, &mut rng, 0, 9);
     world.apply(&tx, &batch).expect("values out of line");
-    let expected = tx
-        .model
-        .borrow()
-        .view(&world.model.records, Unit::data(subtree));
     assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
-    let reader = world.begin();
-    for (at, record) in &expected {
-        let Val::Node(record) = record else {
-            unreachable!("a Merk");
-        };
-        let shown = |view: Option<NodeView<'_>>| {
-            let view = view.expect("the node is committed");
-            let pending = matches!(view.value(), NodeValue::Pending(_));
-            (
-                pending,
-                view.value_len() as usize,
-                view.value().len() as usize,
-                view.value().is_empty(),
-            )
-        };
-        let (pending, len, value_len, empty) =
-            (reader.txn.node(subtree, at, shown)).expect("a read");
-        assert_eq!(pending, record.value.len() >= LONG, "{at:?}");
-        assert_eq!(
-            (len, value_len, empty),
-            (record.value.len(), record.value.len(), false)
-        );
-    }
-    // A transaction rewrites a node around such a value, which it keeps.
+    assert!(attached() > before);
+    world.check_committed();
+    // A later transaction cuts the pages: cells are carried with values
+    // that the earlier commit left pending, and its commit repeats them
+    // for their new pages.
+    let tx = world.begin();
+    let batch = long(&world, &tx, &mut rng, 9, 60);
+    world.apply(&tx, &batch).expect("values out of line");
+    world.check(&tx);
+    assert!(matches!(world.commit(tx, &[]), Outcome::Committed(_)));
+    world.check_committed();
+
+    // A transaction rewrites nodes around such values, which it keeps:
+    // its frames read them where they are.
     let tx = world.begin();
     world.edit(&tx, 1, |items| {
         drop(items.insert(key(0), b"changed".to_vec()))
     });
-    let kept: Vec<Vec<u8>> = (expected.iter())
-        .filter(|(at, value)| matches!(value, Val::Node(node) if node.value.len() >= LONG && **at != key(0)))
-        .map(|(at, _)| at.clone())
-        .collect();
-    let untouched = kept.iter().filter(|at| {
-        let is_pending = |view: Option<NodeView<'_>>| {
-            matches!(view.expect("a node").value(), NodeValue::Pending(_))
-        };
-        (tx.txn.node(subtree, at, is_pending)).expect("a read")
-    });
-    assert_eq!(
-        untouched.count(),
-        kept.len(),
-        "the values stay where they are"
-    );
-    assert_eq!(
-        (tx.txn.node(subtree, &key(0), bytes_of)).expect("a read"),
-        Some(b"changed".to_vec())
-    );
-    // If a commit outside then overwrites those nodes, the transaction
-    // would have to take its own copy of bytes it cannot read yet.
+    world.check(&tx);
+    // A commit outside then overwrites those nodes. The transaction takes
+    // its own copy of every value it kept, and goes on reading them.
     let outside = world.begin();
     world.edit(&outside, 1, |items| items.clear());
-    let committed = db.commit(&versions, &outside.txn).expect("a commit");
-    assert!(matches!(committed, Outcome::Committed(_)));
-    let error = (tx.txn.node(subtree, &key(0), bytes_of)).expect_err("a value it cannot copy");
-    assert!(
-        matches!(error, TxnError::PendingValue { subtree: of } if of == subtree),
-        "{error}"
-    );
-    // Its commit fails with the conflict, not with that error (CF6), and
-    // ends it.
-    let outcome = db
-        .commit(&versions, &tx.txn)
-        .expect("the conflict is decided first");
-    assert_eq!(outcome, Outcome::Conflict);
-    assert_eq!(tx.txn.stats().writes, 0);
-    assert_eq!(
-        (tx.txn.node(subtree, &key(0), bytes_of)).expect("a read"),
-        None
-    );
+    assert!(matches!(
+        world.commit(outside, &[&tx]),
+        Outcome::Committed(_)
+    ));
+    world.check(&tx);
+    assert!(tx.txn.stats().overlapped > 0);
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    world.check_committed();
     assert_eq!(db.private_ids(), 0);
 }
