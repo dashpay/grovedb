@@ -456,6 +456,23 @@ impl<'p> PageStep<'p> {
         frozen.map(|frozen| PageRef::new(self.pool, frozen))
     }
 
+    /// Whether the page version that the commit `born` bore is still to be
+    /// written back: the pool has it, as it was installed or as a page
+    /// step left it, and lists it as unwritten.
+    ///
+    /// It is not once the page was freed ([`BufferPool::free`] takes what
+    /// was owed of a page off the lists), also when the id names another
+    /// page by now, whose versions were born later. Whoever writes back
+    /// asks this in the step in which it pushes the link of the version's
+    /// block (`page-table.md` T18).
+    pub fn owes(&self, born: CommitVersion) -> bool {
+        let chain = self.pool.bucket(self.page.get()).chain.read();
+        published(&chain, self.page).any(|entry| {
+            let frame = entry.frame();
+            frame.born() == born.get() && frame.has(flag::UNWRITTEN)
+        })
+    }
+
     /// How many private copies of the page open write transactions hold.
     pub fn private_copies(&self) -> usize {
         let chain = self.pool.bucket(self.page.get()).chain.read();

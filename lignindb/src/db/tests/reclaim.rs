@@ -12,7 +12,7 @@ use std::{
 
 use lignin_format::PageId;
 use lignin_io::sim::{SimConfig, SimVfs};
-use lignin_store::table::LinkKind;
+use lignin_store::{alloc::PageState, table::LinkKind};
 
 use super::*;
 use crate::{commit::CommitError, db::WriteError};
@@ -362,15 +362,18 @@ fn the_reclaimer_runs_beside_a_writer_and_readers_on_threads() {
 }
 
 /// T18 for a page that is freed before it has a link, with a write-back
-/// pass in the way (D-116). The pass has taken its pages in hand and is
-/// held at its first block. Meanwhile the Merk in those pages is dropped
-/// and reclaimed: their ids named other pages before, so the newest link
-/// of each is an older free link, which refuses no block of the new page.
-/// When the pass goes on, it links none of them. The page table then says
-/// of every id what the allocator says, and so does the next session,
-/// which is opened from the checkpoint the close takes.
+/// pass in the way (D-116). The pass is held with such a page in hand: its
+/// block is not written and its link not pushed. Meanwhile the Merk in
+/// that page is dropped and reclaimed. Its id named another page before,
+/// so the newest link of the id is an older free link, which refuses no
+/// block of the page. Then the id is given out again, to a page of a
+/// third Merk. When the pass goes on it links nothing: not the page it
+/// holds, whose id has a current version again, and none of the others
+/// that were freed. The page table says of every id what the allocator
+/// says, and so does the next session, opened from the checkpoint of the
+/// close.
 #[test]
-fn a_pass_that_holds_pages_while_they_are_freed_links_none_of_them() {
+fn a_pass_that_holds_a_page_while_it_is_freed_links_nothing_of_it() {
     let dir = temp();
     let watched = Watched::default();
     let options = Options {
@@ -379,7 +382,8 @@ fn a_pass_that_holds_pages_while_they_are_freed_links_none_of_them() {
     };
     let db = Db::open(dir.path(), &options).expect("a new database");
     halt_background(&db);
-    let pass = |db: &Db| db.shared.write_back().pass().expect("a pass");
+    let store = &*db.shared.store;
+    let pass = || db.shared.write_back().pass().expect("a pass");
     let settle = |merks: u64| {
         for _ in 0..1_000 {
             db.reclaim();
@@ -390,23 +394,31 @@ fn a_pass_that_holds_pages_while_they_are_freed_links_none_of_them() {
         }
         panic!("the drops are not reclaimed: {:?}", db.stats());
     };
-    // The ids that the page table has in use: their newest link is no
-    // free link.
-    let linked = |db: &Db| {
+    let id = |raw: u32| PageId::new(raw).expect("a page id");
+    let free_head =
+        |page: PageId| (store.table.newest(page)).is_some_and(|link| link.kind == LinkKind::Free);
+    // The page table and the allocator, id by id: an id is in use exactly
+    // where its newest link is no free link.
+    let agree = |db: &Db, when: &str| {
         let store = &*db.shared.store;
         let high = store.ids.census().high_water.map_or(0, PageId::get);
-        let in_use = |raw: &u32| {
-            let page = PageId::new(*raw).expect("a page id");
-            (store.table.newest(page)).is_some_and(|link| link.kind != LinkKind::Free)
-        };
-        (1..=high).filter(in_use).count() as u64
+        for page in (1..=high).map(id) {
+            let newest = store.table.newest(page);
+            let linked = newest.is_some_and(|link| link.kind != LinkKind::Free);
+            let state = store.ids.state(page);
+            assert_eq!(
+                linked,
+                state == PageState::Live,
+                "{when}: {page} is {state:?} with {newest:?}"
+            );
+        }
     };
 
     plant(&db, subtree(9), Merk::sized(b'k', 40, 20));
     // The first life of the ids: a Merk that is written back, dropped and
     // reclaimed, so that every id of it has a free link.
     plant(&db, subtree(1), Merk::sized(b'a', 300, 30));
-    pass(&db);
+    pass();
     drop_of(&[subtree(1)]).commit(&db);
     let first = settle(1);
     assert!(first.pages_freed > 2, "{first:?}");
@@ -415,35 +427,71 @@ fn a_pass_that_holds_pages_while_they_are_freed_links_none_of_them() {
         db.reclaim();
     }
     assert!(db.stats().ids_released >= first.pages_freed);
-    pass(&db);
-    assert_eq!(linked(&db), db.shared.store.ids.census().live);
+    pass();
+    agree(&db, "before the second life");
 
-    // The second life: a Merk in pages under those ids, which no block
-    // holds when a pass takes them in hand.
+    // The second life: a Merk in pages under those ids. No block holds
+    // one of them, so each is owed and has a free link as its newest.
     plant(&db, subtree(2), Merk::sized(b'b', 300, 30));
-    watched.hold_segment_appends();
-    let passed = thread::scope(|threads| {
-        let held = threads.spawn(|| db.shared.write_back().pass());
+    let mut owed = std::collections::BTreeSet::new();
+    let (mut versions, mut pages) = (Vec::new(), Vec::new());
+    store.pool.unwritten_versions(&mut versions);
+    for born in versions {
+        store.pool.unwritten_pages(born, &mut pages);
+        owed.extend(pages.drain(..));
+    }
+    let held = (owed.iter().copied().find(|page| free_head(*page)))
+        .expect("a page of the second life is owed");
+    // A pass writes the pages in the order of their ids, one block each:
+    // it is let through to the page before, and held with this one.
+    let before = owed.iter().filter(|page| **page < held).count() as u64;
+    watched.hold_segment_appends_after(before);
+    let refused = store.flush.stats().links_refused;
+    thread::scope(|threads| {
+        let pass = threads.spawn(|| db.shared.write_back().pass());
         let _release = Released(&watched);
         wait_for("the pass is held at a block", || watched.held() > 0);
+        assert!(free_head(held), "the page that is held was linked");
+        for page in owed.iter().filter(|page| **page < held) {
+            assert!(!free_head(*page), "{page} is before the held page");
+        }
+
+        // The Merk goes, and its pages with it.
         drop_of(&[subtree(2)]).commit(&db);
         let second = settle(2);
         assert!(second.pages_never_linked > 2, "{second:?}");
         assert_eq!(second.given_up, 0);
+        assert_eq!(store.ids.state(held), PageState::Retired);
+        // The ids come back, and a third Merk is made under them.
+        for name in [22, 23] {
+            enter_alone(&db, subtree(name));
+            db.reclaim();
+        }
+        plant(&db, subtree(3), Merk::sized(b'c', 300, 30));
+        assert_eq!(
+            store.ids.state(held),
+            PageState::Live,
+            "the id of the held page is not used again"
+        );
+
         watched.release();
-        held.join().expect("the pass ends").expect("a pass")
+        let passed = pass.join().expect("the pass ends").expect("a pass");
+        println!("{passed:?}");
     });
-    println!("{passed:?}");
-    let refused = db.shared.store.flush.stats().links_refused;
-    assert!(refused > 2, "{refused} links were refused");
+    // The block of the freed page got no link: the id still has the free
+    // link of its first page as its newest, and the page that has the id
+    // now is yet to be written.
+    assert!(free_head(held), "{:?}", store.table.newest(held));
+    assert!(store.flush.stats().links_refused > refused);
     // Whatever else is owed is written, and the two agree on every id.
-    pass(&db);
-    let live = db.shared.store.ids.census().live;
-    assert_eq!(linked(&db), live, "a freed page was linked");
+    pass();
+    agree(&db, "after the pass");
+    let live = store.ids.census().live;
     let check = |db: &Db| {
         let snapshot = db.snapshot();
         let operation = snapshot.operation();
         assert_eq!(seen(&operation, subtree(9), b"k"), Some((40, vec![])));
+        assert_eq!(seen(&operation, subtree(3), b"k"), Some((300, vec![])));
         for gone in [1, 2] {
             assert_eq!(seen(&operation, subtree(gone), b"k"), None);
         }
@@ -452,20 +500,16 @@ fn a_pass_that_holds_pages_while_they_are_freed_links_none_of_them() {
     let background = db.stats().background;
     assert_eq!(background.reclaim_errors, 0, "{background:?}");
 
-    // The next session is opened from the checkpoint of the close: an id
-    // that the table had in use is in use there. The threads of this
-    // session were ended above, so the test ends write-back's work.
+    // The next session is opened from the checkpoint of the close. The
+    // threads of this session were ended above, so the test ends
+    // write-back's work.
     (db.shared.write_back().finish()).expect("the checkpoint of the close");
     drop(db);
     let db = Db::open(dir.path(), &options).expect("the database is opened again");
     assert_eq!(db.stats().recovery.commits, 0, "nothing is replayed");
     assert_eq!(db.shared.store.ids.census().live, live);
+    agree(&db, "in the next session");
     check(&db);
-    plant(&db, subtree(3), Merk::sized(b'c', 300, 30));
-    assert_eq!(
-        seen(&db.snapshot().operation(), subtree(3), b"k"),
-        Some((300, vec![]))
-    );
 }
 
 /// Lets a held pass go when a test ends early, so that it ends too.

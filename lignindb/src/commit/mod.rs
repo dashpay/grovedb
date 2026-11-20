@@ -212,8 +212,8 @@
 //! The free link of a page is also what keeps write-back from linking a
 //! block of it afterwards (`page-table.md` T18), and the earlier page's
 //! link is too old to do that for this one. Write-back therefore links
-//! a block only in a page step in which the pool still has a current
-//! version of the page, and the commit pushes the free link once more
+//! a block only in a page step in which the pool still owes the page
+//! version of the block, and the commit pushes the free link once more
 //! after it has told the pool: a link that a pass pushed between the two
 //! has the free link above it, and the page is not counted here.
 //!

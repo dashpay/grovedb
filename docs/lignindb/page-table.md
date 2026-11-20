@@ -169,11 +169,12 @@ link (`LinkError::AlreadyFree`). That link is older than the page, so it
 refuses none of the page's blocks. For this case:
 
 - Whoever writes back pushes the link of a block in a page step (PV7) in
-  which the page still has a current version in the buffer pool. Freeing
-  a page in the pool is a page step too, and a freed page has no current
-  version, so no block of a page is linked once the pool was told that
-  the page is freed. The table's lock is taken under the lock of the page
-  step here (LT7).
+  which the buffer pool still owes the page version of that block.
+  Freeing a page in the pool is a page step too, and takes what is owed
+  of the page off the pool's lists, so no block of a page is linked once
+  the pool was told that the page is freed: also not when the id names
+  another page by then, whose versions are other versions. The table's
+  lock is taken under the lock of the page step here (LT7).
 - Whoever frees a page, and was refused the free link because the id has
   one, pushes it once more after it has told the pool. A link that
   write-back pushed between the first push and the pool's word then has

@@ -280,6 +280,20 @@ pub struct Reclaimer<'s, L> {
     buffers: RefCell<LoadBuffers>,
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What a test runs, once, in [`Reclaimer::free`] on the page it frees:
+    /// after the table refused the free link because the id has one, and
+    /// before the pool is told. A write-back pass that links the page falls
+    /// there.
+    pub(super) static BEFORE_THE_POOL_IS_TOLD: std::cell::RefCell<Option<Between>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// What a test runs on a page between two things its freeing step does.
+#[cfg(test)]
+pub(super) type Between = Box<dyn FnOnce(PageId)>;
+
 impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// A reclaimer of the pages of `page_size` that `loader` reads into
     /// `pool`, whose chains are in `table`, whose ids are `ids` and whose
@@ -425,6 +439,13 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             Err(error) => Err(broken(error.into())),
         };
         let mut never_linked = free()?;
+        #[cfg(test)]
+        if never_linked {
+            let hook = BEFORE_THE_POOL_IS_TOLD.with(|hook| hook.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook(page);
+            }
+        }
         self.pool
             .free(page, version)
             .map_err(|error| broken(error.into()))?;

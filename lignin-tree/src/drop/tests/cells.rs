@@ -678,3 +678,89 @@ fn a_page_under_a_reused_id_that_no_segment_holds_is_freed_without_a_link() {
         .iter()
         .any(|page| db.state(*page) == PageState::Live));
 }
+
+/// The same page, with write-back between the two things its freeing step
+/// tells. The table has refused the free link, because the id has the one
+/// of the page before, and before the pool hears of the free a pass writes
+/// the page and links it. The step pushes the free link once more after
+/// the pool's word, and it lands above the pass's link: the table has the
+/// page free, as the allocator has, and the page is not counted as one
+/// that was given no link (`page-table.md` T18).
+#[test]
+fn a_page_that_is_linked_while_it_is_freed_has_its_free_link_above() {
+    use std::{cell::Cell, rc::Rc};
+
+    use lignin_store::table::LinkKind;
+
+    use super::super::step::BEFORE_THE_POOL_IS_TOLD;
+
+    let Built {
+        db,
+        mut grove,
+        host,
+        ..
+    } = build_nested(40, 400, usize::MAX);
+    let db = Rc::new(db);
+    let mut txn = db.begin();
+    grove.drop_with_host(&mut txn, host);
+    db.commit(txn);
+    db.tick();
+    reclaim_all(&db, &grove);
+    let released: BTreeSet<PageId> = db.reclaim_ids().into_iter().collect();
+    assert!(released.len() > 2);
+
+    // The second Merk, in pages under those ids that no segment holds. Its
+    // values stay in their cells, so a pass has nothing to place and takes
+    // no lock that a freeing step holds.
+    let mut txn = db.begin();
+    let host = grove.put(0, b"host again", b"a tree");
+    let merk = grove.host(host);
+    for n in 0..400 {
+        grove.put(merk, &key(5_000 + n), &bytes(n as u64, 24));
+    }
+    grove.flush(&mut txn);
+    db.commit(txn);
+    let live = |page: &&PageId| db.state(**page) == PageState::Live;
+    let reused: BTreeSet<PageId> = released.iter().filter(live).copied().collect();
+    assert!(reused.len() > 2, "{} ids were used again", reused.len());
+
+    let mut txn = db.begin();
+    grove.drop_with_host(&mut txn, host);
+    db.commit(txn);
+    db.tick();
+    // The pass falls into the first step that is refused the free link.
+    let linked = Rc::new(Cell::new(None));
+    let (store, told) = (db.clone(), linked.clone());
+    BEFORE_THE_POOL_IS_TOLD.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |page| {
+            store.write_back();
+            let newest = store.table.newest(page).expect("the pass linked the page");
+            assert!(matches!(newest.kind, LinkKind::Base(_)), "{newest:?}");
+            told.set(Some(page));
+        }));
+    });
+    let steps = db.reclaims().len();
+    let second = reclaim_all(&db, &grove);
+    BEFORE_THE_POOL_IS_TOLD.with(|hook| hook.borrow_mut().take());
+    let page = linked.get().expect("a step was refused the free link");
+    assert!(reused.contains(&page));
+    let [done] = &second[..] else {
+        panic!("one Merk was dropped");
+    };
+    assert!(done.cells >= 400 && done.pages_freed > 2, "{done:?}");
+    // The pass wrote every page of the Merk, so each was given its free
+    // link: the one it was freed with, by the second push.
+    assert_eq!(done.pages_never_linked, 0, "{done:?}");
+    let freed: BTreeSet<PageId> = (db.reclaims()[steps..].iter())
+        .filter(|(_, freed, ..)| freed.is_some())
+        .map(|(page, ..)| *page)
+        .collect();
+    assert!(freed.contains(&page));
+    for page in &freed {
+        let newest = db.table.newest(*page).expect("a link");
+        assert_eq!(newest.kind, LinkKind::Free, "{page}: {newest:?}");
+        assert_eq!(db.state(*page), PageState::Retired, "{page}");
+        assert!(db.current(*page).is_none(), "{page} is still a page");
+    }
+    check_reclaimed(&db, &grove);
+}

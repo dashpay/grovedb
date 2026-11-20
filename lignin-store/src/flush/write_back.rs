@@ -847,15 +847,15 @@ impl<'s> WriteBack<'s> {
         // link, was given none: the newest link of its id is the free
         // link of the page before it, which is older than this block.
         // So the link is pushed in a page step, in which the pool is
-        // asked: `BufferPool::free` takes that lock, and a page that was
-        // freed has no current version. A page that is in use and has
-        // none in the pool had it written, and a link below that one is
-        // refused by the table as it always was.
+        // asked whether it still owes this version: `BufferPool::free`
+        // takes that lock, and takes what is owed of the page off its
+        // lists. The id may name another page by now, which is why the
+        // question is about the version and not about the page.
         let pushed = {
             let step = pool.page_step(page);
-            match step.current() {
-                Some(_) => table.push(page, link),
-                None => {
+            match step.owes(born) {
+                true => table.push(page, link),
+                false => {
                     count(&counters.links_refused, 1);
                     return Ok(Outcome::Refused);
                 }

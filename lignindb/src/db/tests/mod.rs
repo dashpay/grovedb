@@ -54,8 +54,9 @@ pub(super) struct Counts {
     synced_dirs: Mutex<Vec<PathBuf>>,
     /// The directory that paths with no root are in, if there is one.
     root: Option<PathBuf>,
-    /// Whether an append to a segment waits, and how many wait.
-    holding: Mutex<bool>,
+    /// How many appends to a segment go through before one waits, if one
+    /// is to wait, and how many have waited.
+    holding: Mutex<Option<u64>>,
     released: Condvar,
     held: AtomicU64,
 }
@@ -117,16 +118,17 @@ impl Watched {
         self.0.changes.load(Ordering::Relaxed)
     }
 
-    /// From here on an append to a segment waits until [`Self::release`]:
-    /// a write-back pass is held with a page in hand, its block not
+    /// From here on `through` appends to a segment are made, and the next
+    /// waits until [`Self::release`]. A block is one append, so a
+    /// write-back pass is held with its next page in hand, the block not
     /// written and its link not pushed.
-    pub(super) fn hold_segment_appends(&self) {
-        *self.0.holding.lock().expect("the gate") = true;
+    pub(super) fn hold_segment_appends_after(&self, through: u64) {
+        *self.0.holding.lock().expect("the gate") = Some(through);
     }
 
-    /// Lets the appends that wait go on, and holds none any more.
+    /// Lets the append that waits go on, and holds none any more.
     pub(super) fn release(&self) {
-        *self.0.holding.lock().expect("the gate") = false;
+        *self.0.holding.lock().expect("the gate") = None;
         self.0.released.notify_all();
     }
 
@@ -137,10 +139,16 @@ impl Watched {
 
     fn wait_at_the_gate(&self) {
         let mut holding = self.0.holding.lock().expect("the gate");
-        if *holding {
-            self.0.held.fetch_add(1, Ordering::AcqRel);
+        match *holding {
+            None => return,
+            Some(0) => {}
+            Some(through) => {
+                *holding = Some(through - 1);
+                return;
+            }
         }
-        while *holding {
+        self.0.held.fetch_add(1, Ordering::AcqRel);
+        while holding.is_some() {
             holding = self.0.released.wait(holding).expect("the gate");
         }
     }
