@@ -2,7 +2,8 @@
 //! count-offset proofs, and the trunk and branch proofs. The same calls on
 //! a Merk on RocksDB give the same bytes and charge the same, and the walk
 //! of a proof reads from the value log the values the proof emits and no
-//! other.
+//! other, but for a count-offset proof, which also reads those of the rows
+//! of its range that it skips.
 
 use std::{
     collections::{BTreeSet, LinkedList},
