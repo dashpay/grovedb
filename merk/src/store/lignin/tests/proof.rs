@@ -840,8 +840,15 @@ fn a_point_proof_reads_no_value_from_the_value_log_but_the_targets() {
             // none.
             let mut absent = be(target);
             absent.push(1);
-            let (_, reads) = counted.reads(tree_type, &[point(absent)]);
+            let (_, reads) = counted.reads(tree_type, &[point(absent.clone())]);
             assert_eq!(reads, [1, 0], "{tree_type:?}: no key after {target}");
+
+            // On a Merk that has made the proof, the proof reads the
+            // target's value again and no value of the nodes on its way.
+            let again = [point(be(target)), point(be(target)), point(absent)];
+            let (answers, reads) = counted.reads(tree_type, &again);
+            assert_eq!(answers[0], answers[1]);
+            assert_eq!(reads, [1, 1, 1, 0], "{tree_type:?}: {target} again");
         }
         // The root's value is in memory since the open.
         let (_, reads) = counted.reads(tree_type, &[point(root)]);
