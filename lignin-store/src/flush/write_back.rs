@@ -1140,11 +1140,13 @@ impl<'s> WriteBack<'s> {
     /// left. **A chain is trimmed between passes because a trim can take
     /// the free link of a page away**, with everything older. A pass looks
     /// at the page versions that were unwritten when it began, and what
-    /// tells it that one of them is of a page that a commit has freed since
-    /// is that free link (T18). A pass that begins afterwards does not
-    /// list such a version: the pool takes it off its list before the
-    /// freeing commit is published, and `oldest` is no version that is not
-    /// published.
+    /// tells it, before it writes a block, that one of them is of a page
+    /// that a commit has freed since is that free link (T18). Without it
+    /// the pass would write the block for nothing: the link is refused
+    /// where it is pushed, because the pool owes the version no more. A
+    /// pass that begins afterwards does not list such a version: the pool
+    /// takes it off its list before the freeing commit is published, and
+    /// `oldest` is no version that is not published.
     ///
     /// It waits for a pass that is under way, and holds no other lock of
     /// the store while it does.

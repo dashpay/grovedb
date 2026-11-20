@@ -201,10 +201,12 @@
 //!
 //! The chains are trimmed through [`WriteBack::trim_chains`], between two
 //! passes of write-back. A trim can take the free link of a page away,
-//! and that link is what tells a pass of write-back that a page version
-//! it listed as unwritten is of a page that was freed since
-//! (`page-table.md` T18). Trimmed while a pass is under way, the chain of
-//! a freed page could get a block again.
+//! and that link is what tells a pass of write-back, before it writes a
+//! block, that a page version it listed as unwritten is of a page that
+//! was freed since (`page-table.md` T18). Trimmed while a pass is under
+//! way, the pass would write the block of such a version for nothing:
+//! its link is refused where it is pushed, because the pool owes the
+//! version no more.
 //!
 //! # Moving
 //!
