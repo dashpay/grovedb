@@ -905,7 +905,7 @@ What this shows and what it does not:
 
 ### 15.6 Sensitivity
 
-A check that cannot fail shows nothing, so 30 faults were put into the store and into `node_record_len_from_sizes`, one at a time, and the checks run on each: the tests of `merk/src/store/lignin/tests/cost.rs` with the N1 tests of `merk/src/cost_model.rs`, and for the faults that reach a node the corpus replay on two traces, `v3/balances` (sum trees, no removal) and `v5/delete-heavy`. Every fault is found. The second column names the tests that fail: **N1** for the tests of the record length, **Merk** for the Merk on both engines, **seam** for the history of seam operations, **D2** and **D2 tree** for the two tests of removals with no cost, **fetch** for the one seek of a fetch, **conversion** for the conversion to a 128-bit sum, **unlinked** for the removal of a key that is no node, **ledger** for the ledger, and **refused** for the node that has no record length.
+A check that cannot fail shows nothing, so 31 faults were put into the store and into `node_record_len_from_sizes`, one at a time, and the checks run on each: the tests of `merk/src/store/lignin/tests/cost.rs` with the N1 tests of `merk/src/cost_model.rs`, and for the faults that reach a node the corpus replay on two traces, `v3/balances` (sum trees, no removal) and `v5/delete-heavy`. Every fault is found. The second column names the tests that fail: **N1** for the tests of the record length, **Merk** for the Merk on both engines, **seam** for the history of seam operations, **D2** and **D2 tree** for the two tests of removals with no cost, **fetch** for the one seek of a fetch, **conversion** for the conversion to a 128-bit sum, **unlinked** for the removal of a key that is no node, **ledger** for the ledger, and **refused** for the node that has no record length.
 
 | Fault | Tests of the store that fail | Corpus replay |
 | --- | --- | --- |
@@ -928,10 +928,11 @@ A check that cannot fail shows nothing, so 30 faults were put into the store and
 | D2: a key the committed state lacks charged as a record of one byte | seam, D2, D2 tree, unlinked | `delete-heavy` fails |
 | B1: the records that are no nodes charged after the nodes | Merk, seam | not run |
 | B1: nodes charged by key and not by subtree first | seam | `balances` fails |
-| B1: nodes charged in the order they were given, puts before removals | Merk, seam | `balances` fails |
+| B1: nodes charged in the order they were given, puts before removals | Merk, seam, conversion | `balances` fails |
 | B1: storage cost charged for a batch the transaction did not take | seam | not run |
 | B1: storage cost charged for a batch with a refused put | seam | not run |
 | A batch: a delete stands against an earlier put of the same record | seam | not run |
+| A batch: the later of two removals of a record stands | seam | not run |
 | M1: a write made directly through an immediate handle charged a seek | Merk, seam | not run |
 | M2: the cost of an immediate handle's commit dropped | Merk, seam, conversion, unlinked, ledger | not run |
 | M2: an immediate change set charged without the sizes of a node's links | Merk, seam, conversion | not run |
@@ -942,7 +943,9 @@ A check that cannot fail shows nothing, so 30 faults were put into the store and
 
 How the table was made, and what it showed:
 
-- The second column is of the tests as they are: the run was made on the last commit that changed `cost.rs`. The third is of the replay before its last change, which compares the lookup of a removed node with the second storage and no longer with GroveDB's. Each fault the replay finds, it finds by another comparison.
+- The second column is of the tests as they are: the run was made on the last commit that changed `cost.rs` or the store.
+- The third column is older. It is of the replay before two changes to it: the lookup of a removed node is compared with the second storage and no longer with GroveDB's, and each read of a committed node is compared by itself and no longer as a sum over its Merk. Each fault the replay found, it found by a comparison that is made as it was: what a batch is charged, what staging a change set is charged, the read of a written node, or the lookup of one. The first four rows were run again on the replay as it is, with the same result.
+- The later of two removals of a record standing is what the store did until a review of this unit; the fault puts it back. No Merk and no trace of the corpus removes a record twice in one batch, so only the history of seam operations finds it.
 - A fault counts as found only where a test fails with its own assertion. Unchanged, the store passes every one of these checks.
 - The last two faults change no number the store reports, so no comparison with RocksDB sees them. The ledger does.
 - The fault before them is no fault in a charge: with it the store charges what RocksDB charges and writes every value again. The conversion test finds it by counting the values written.
