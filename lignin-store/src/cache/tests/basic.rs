@@ -834,8 +834,9 @@ const MAPS: bool = cfg!(all(
 /// aligned to 4,096 bytes as the frames of a small pool are, they lie side
 /// by side in one block, the first and the last of them can be written
 /// from end to end, and the pool counts them as its memory from the start.
-/// Miri fails this test if a frame is not zeroed or lies outside the block,
-/// and if the block is used after the pool gave it back.
+/// Under Miri the test reads three frames of each pool and writes two, and
+/// Miri fails it if one of those was not zeroed or reaches outside the
+/// block.
 #[test]
 fn the_frames_of_a_large_pool_are_mapped_zeroed_and_side_by_side() {
     for size in [8_192, 16_384, 32_768, 65_536] {

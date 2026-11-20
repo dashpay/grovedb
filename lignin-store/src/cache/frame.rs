@@ -1315,10 +1315,12 @@ impl ChainWrite<'_> {
 
 /// The layout of `count` frames of `frame_len` bytes side by side.
 ///
-/// A frame starts at a multiple of 4,096 bytes, whatever the size of a
-/// store's pages, each of which is a multiple of that. A block of frames is
-/// aligned to that and to no more, from the allocator or as a mapping: a
-/// frame is not aligned to the size of a page.
+/// A block of frames is asked for with an alignment of 4,096 bytes,
+/// whatever the size of a store's pages, each of which is a multiple of
+/// that. So every frame of a store's pages starts at a multiple of 4,096
+/// bytes, and that is all that is promised of where it starts. A frame
+/// length that is no multiple of 4,096, which only tests have, is aligned
+/// to 64 bytes.
 fn layout(frame_len: usize, count: usize) -> Result<Layout, CacheError> {
     let align = if frame_len.is_multiple_of(4096) {
         4096
@@ -1390,10 +1392,8 @@ mod mapping {
     };
 
     /// A mapping of memory that is no file's, which this value made and
-    /// unmaps when it is dropped. The system gives such memory zeroed, so
-    /// nothing is written to make it. When the system backs a page of it
-    /// with memory of its own is the system's affair: as a rule, when the
-    /// page is first used.
+    /// asks the system to unmap when it is dropped. The system gives such
+    /// memory zeroed, so nothing is written to make it.
     pub(super) struct Mapped {
         start: NonNull<u8>,
         len: usize,
@@ -1490,8 +1490,7 @@ mod mapping {
             // a neighbour, and the process is at its limit of mappings.
             // The mapping then stays the process's until the process ends,
             // which loses memory and breaks no rule. A build with debug
-            // assertions stops here, so that a refusal for a range that is
-            // no mapping, which would be a mistake of this file, is seen.
+            // assertions stops on a refusal that the system reports.
             debug_assert_eq!(refused, 0, "the system unmaps a mapping");
         }
     }
@@ -1527,8 +1526,9 @@ mod mapping {
     }
 }
 
-/// The block of an arena's frames, owned: it is given back when this value
-/// is dropped, in the way it was come by.
+/// The block of an arena's frames, owned. When this value is dropped the
+/// block goes back the way it was come by: to the allocator, or, a mapping,
+/// to the system, which is asked to unmap it.
 enum Block {
     /// From the allocator, which was asked for it zeroed.
     Allocated(Allocated),
@@ -1567,8 +1567,8 @@ pub(super) struct Arena {
     frames: NonNull<Frame>,
     count: usize,
     /// The block of the frames. The arena's drop frees the headers, which
-    /// point into it, and the block is given back after that, when the
-    /// arena's fields are dropped.
+    /// point into it, and this value is dropped after that, with the
+    /// arena's fields.
     block: Block,
     frame_len: usize,
     /// Where the pins that are not counted are announced (A6).
@@ -1609,7 +1609,7 @@ impl Arena {
 
     /// The bytes of frames from which an arena's block is a mapping of its
     /// own, where the system has one for this file. A smaller block is the
-    /// allocator's, which zeroes it when the arena is made.
+    /// allocator's, which is asked for it zeroed.
     pub(super) const MAPPED_FROM: usize = 1 << 20;
 
     /// The arena, and each of its frames, owned.
@@ -1617,15 +1617,16 @@ impl Arena {
         count: usize,
         frame_len: usize,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
-        Self::with_mapping(count, frame_len, Mapped::new)
+        Self::make(count, frame_len, true)
     }
 
-    /// As [`Self::new`], where `map` is asked for the mapping of a block
-    /// that is to be one: the system, or a test that refuses.
-    fn with_mapping(
+    /// As [`Self::new`]. Without `may_map` the system is not asked for a
+    /// mapping, and the arena does what it does when the system refuses
+    /// one: a test's way to that.
+    fn make(
         count: usize,
         frame_len: usize,
-        map: impl FnOnce(Layout) -> Option<Mapped>,
+        may_map: bool,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
         static ARENAS: plain::AtomicU64 = plain::AtomicU64::new(1);
@@ -1640,8 +1641,8 @@ impl Arena {
         // made before it.
         let lanes = Lanes::new(Lanes::count_for(count));
         let dead = Padded(Mutex::new(None));
-        let mapped = (layout.size() >= Self::MAPPED_FROM)
-            .then(|| map(layout))
+        let mapped = (may_map && layout.size() >= Self::MAPPED_FROM)
+            .then(|| Mapped::new(layout))
             .flatten();
         let block = match mapped {
             Some(mapped) => Block::Mapped(mapped),
@@ -1827,8 +1828,8 @@ impl Drop for Arena {
         // into a raw pointer, and the arena is its only owner. Nothing can
         // follow a pointer to a header any more: a pin borrows the arena.
         drop(unsafe { Box::from_raw(headers) });
-        // The block is given back when the arena's fields are dropped, which
-        // is after this and so after the headers.
+        // The block's value is dropped with the arena's fields, which is
+        // after this and so after the headers.
     }
 }
 
@@ -1869,18 +1870,13 @@ mod tests {
             .expect("a panic with a message")
     }
 
-    /// An arena whose mapping is refused asks the allocator for its block,
-    /// and its frames are zeroed and aligned as those of any arena.
+    /// An arena that gets no mapping for a block that could be one, as
+    /// when the system refuses, asks the allocator for the block, and its
+    /// frames are zeroed and aligned as those of any arena.
     #[test]
-    fn an_arena_whose_mapping_is_refused_takes_its_block_from_the_allocator() {
+    fn an_arena_that_gets_no_mapping_takes_its_block_from_the_allocator() {
         let (count, frame_len) = (Arena::MAPPED_FROM / 8_192, 8_192);
-        let mut asked = None;
-        let (arena, frames) = Arena::with_mapping(count, frame_len, |layout| {
-            asked = Some(layout.size());
-            None
-        })
-        .expect("an arena");
-        assert_eq!(asked, Some(count * frame_len), "a mapping was asked for");
+        let (arena, frames) = Arena::make(count, frame_len, false).expect("an arena");
         assert_eq!(arena.mapped(), 0);
         assert_eq!(frames.len(), count);
         for frame in [&frames[0], &frames[count - 1]] {

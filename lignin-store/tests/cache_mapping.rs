@@ -3,13 +3,19 @@
 //! when it is dropped.
 //!
 //! On Linux the test reads the ranges of addresses the process has mapped,
-//! and looks for the frames' own range among them. On macOS, which has no
-//! such file, it reads the size of the process's address space through
-//! `ps`. It is the one test of its file, so that its thread is the only
-//! one of the process that maps or allocates while it measures. Miri has
-//! neither to read, and does not report a mapping that is never unmapped.
+//! and looks for the frames' own range among them. Between the drop of the
+//! pool and that reading it allocates nothing and opens nothing: the file
+//! is open and the buffer is there before. On macOS, which has no such
+//! list, it reads the size of the process's address space through `ps`,
+//! which is a looser test.
+//!
+//! It is the one test of its file, so that its thread is the only one of
+//! the process that maps or allocates while it measures. Miri has neither
+//! thing to read, and does not report a mapping that is never unmapped.
 
 #![cfg(not(miri))]
+
+use std::{fs::File, io::Read};
 
 use lignin_format::PageSize;
 use lignin_store::cache::{Blank, BufferPool, PoolConfig};
@@ -27,39 +33,56 @@ const MAPS: bool = cfg!(all(
     ),
 ));
 
-/// What the test reads of the process's memory.
-enum Seen {
-    /// Linux: the ranges of addresses that are mapped, in their order.
-    Ranges(Vec<(u64, u64)>),
-    /// macOS: the size of the address space, in bytes.
-    Size(u64),
+/// The ranges of addresses a process has mapped, on Linux: read from an
+/// open file into a buffer that is long enough, with no allocation.
+struct Mappings {
+    file: File,
+    text: Vec<u8>,
+    len: usize,
 }
 
-fn seen() -> Seen {
-    if cfg!(target_os = "linux") {
-        let maps = std::fs::read_to_string("/proc/self/maps").expect("the mappings");
-        let ranges = maps
-            .lines()
+impl Mappings {
+    fn ready() -> Self {
+        Self {
+            file: File::open("/proc/self/maps").expect("the mappings"),
+            text: vec![0; 1 << 20],
+            len: 0,
+        }
+    }
+
+    fn read(&mut self) {
+        loop {
+            let read = self
+                .file
+                .read(&mut self.text[self.len..])
+                .expect("the mappings");
+            if read == 0 {
+                return;
+            }
+            self.len += read;
+            assert!(self.len < self.text.len(), "the buffer holds the mappings");
+        }
+    }
+
+    /// Each line begins with two addresses in hexadecimal and a hyphen
+    /// between them. The rest of a line can be a path that is not text.
+    fn ranges(&self) -> Vec<(u64, u64)> {
+        self.text[..self.len]
+            .split(|&byte| byte == b'\n')
+            .filter(|line| !line.is_empty())
             .map(|line| {
-                let range = line.split(' ').next().expect("a range");
+                let range = line.split(|&byte| byte == b' ').next().expect("a range");
+                let range = std::str::from_utf8(range).expect("two addresses");
                 let (start, end) = range.split_once('-').expect("two addresses");
                 let address = |text| u64::from_str_radix(text, 16).expect("an address");
                 (address(start), address(end))
             })
-            .collect();
-        Seen::Ranges(ranges)
-    } else {
-        let asked = std::process::Command::new("ps")
-            .args(["-o", "vsz=", "-p", &std::process::id().to_string()])
-            .output()
-            .expect("ps runs");
-        let text = String::from_utf8(asked.stdout).expect("text");
-        let kib: u64 = text.trim().parse().expect("a number");
-        Seen::Size(kib * 1024)
+            .collect()
     }
 }
 
-/// Whether every address from `start` up to `end` is in one of the ranges.
+/// Whether every address from `start` up to `end` is in one of the ranges,
+/// which are in the order of their addresses.
 fn covers(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
     let mut reached = start;
     for &(from, to) in ranges {
@@ -75,8 +98,24 @@ fn touches(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
     ranges.iter().any(|&(from, to)| from < end && start < to)
 }
 
+/// The size of the process's address space in bytes, on macOS.
+fn address_space() -> u64 {
+    let asked = std::process::Command::new("ps")
+        .args(["-o", "vsz=", "-p", &std::process::id().to_string()])
+        .output()
+        .expect("ps runs");
+    let text = String::from_utf8(asked.stdout).expect("text");
+    let kib: u64 = text.trim().parse().expect("a number");
+    kib * 1024
+}
+
 #[test]
 fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
+    // What the two readings of the ranges are judged by.
+    let ranges = [(10, 20), (20, 30), (40, 50)];
+    assert!(covers(&ranges, 12, 30) && !covers(&ranges, 12, 31) && !covers(&ranges, 5, 15));
+    assert!(touches(&ranges, 29, 35) && !touches(&ranges, 30, 40));
+
     let config = PoolConfig {
         page_size: PageSize::MIN,
         capacity: 256 << 20,
@@ -86,9 +125,10 @@ fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
         assert_eq!(pool.mapped_memory(), 0);
         return;
     }
-    // The first reading is taken after this thread has allocated, so that
-    // what the allocator maps for a new thread is there already.
-    let before = seen();
+    let linux = cfg!(target_os = "linux");
+    let (mut living, mut gone) = (linux.then(Mappings::ready), linux.then(Mappings::ready));
+    let before = (!linux).then(address_space);
+
     let pool = BufferPool::new(config).expect("holds frames");
     let mapped = pool.mapped_memory() as u64;
     assert_eq!(mapped, (pool.frames() * pool.frame_len()) as u64);
@@ -104,43 +144,34 @@ fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
     blanks[0].fill(7);
     drop(blanks);
 
-    let with = seen();
-    drop(pool);
-    let after = seen();
-    match (before, with, after) {
-        (Seen::Ranges(_), Seen::Ranges(with), Seen::Ranges(after)) => {
-            assert!(
-                covers(&with, start, start + mapped),
-                "the frames are mapped while the pool lives"
-            );
-            assert!(
-                !touches(&after, start, start + mapped),
-                "and no part of them once it is dropped"
-            );
-        }
-        (Seen::Size(before), Seen::Size(with), Seen::Size(after)) => {
-            assert!(
-                with >= before + mapped,
-                "the frames are mapped: {before} bytes, then {with}"
-            );
-            // Beside its frames the pool allocated its headers and its
-            // table, which are far less than an eighth of the frames and
-            // which the allocator may keep.
-            assert!(
-                after <= with - mapped + mapped / 8,
-                "and unmapped with the pool: {with} bytes, then {after}"
-            );
-        }
-        _ => unreachable!("one system, one way to read"),
+    if let (Some(living), Some(gone)) = (&mut living, &mut gone) {
+        living.read();
+        // Nothing is allocated or opened from here to the second reading.
+        drop(pool);
+        gone.read();
+        assert!(
+            covers(&living.ranges(), start, start + mapped),
+            "the frames are mapped while the pool lives"
+        );
+        assert!(
+            !touches(&gone.ranges(), start, start + mapped),
+            "and no part of them once it is dropped"
+        );
+    } else {
+        let before = before.expect("read before the pool was made");
+        let with = address_space();
+        drop(pool);
+        let after = address_space();
+        assert!(
+            with >= before + mapped,
+            "the frames are mapped: {before} bytes, then {with}"
+        );
+        // Beside its frames the pool allocated its headers and its table,
+        // which are far less than an eighth of the frames and which the
+        // allocator may keep.
+        assert!(
+            after <= with - mapped + mapped / 8,
+            "and unmapped with the pool: {with} bytes, then {after}"
+        );
     }
-}
-
-#[test]
-fn a_range_is_covered_by_ranges_that_join_and_touched_by_any_that_overlap() {
-    let ranges = [(10, 20), (20, 30), (40, 50)];
-    assert!(covers(&ranges, 12, 30));
-    assert!(!covers(&ranges, 12, 31));
-    assert!(!covers(&ranges, 5, 15));
-    assert!(touches(&ranges, 29, 35));
-    assert!(!touches(&ranges, 30, 40));
 }

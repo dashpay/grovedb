@@ -259,7 +259,7 @@
 //! the configured size holds, their headers, the table and the lanes
 //! ([`BufferPool::fixed_memory`]). What it counts is the bytes it asks for.
 //! The allocator and the system may each take more for a request, which is
-//! not counted.
+//! not counted: the system takes a mapping in whole pages of its own size.
 //! On Linux and on Apple's systems no lock of the pool adds to it: none is
 //! allocated when it is first taken.
 //!
@@ -272,18 +272,10 @@
 //! ([`BufferPool::mapped_memory`]), which the system gives zeroed. On any
 //! other system, and where the system refuses a mapping, those frames are
 //! the allocator's too. Either way the frames are counted in the fixed
-//! memory from the start, used or not.
+//! memory from the start, used or not. What zeroed memory costs its giver,
+//! and when, is not the pool's to say.
 //!
-//! What a block of zeroed memory costs to come by is its giver's affair.
-//! An allocator may write a block to zero it. A system as a rule backs a
-//! page of a mapping with memory when the page is first used, so that
-//! making a large pool costs by its headers and its table, and a frame's
-//! first use takes the system's page faults; a process that has its memory
-//! locked has every page backed at once. A mapping takes address space in
-//! whole pages of the system's size, which can be most of one such page
-//! more than the frames.
-//!
-//! A frame starts at a multiple of 4,096 bytes, whatever the page size.
+//! Every frame starts at a multiple of 4,096 bytes.
 //!
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page
