@@ -488,8 +488,15 @@
 //! the removal of what a dropped subtree left) appends its record through
 //! [`WriteBack::append_change`] where it would call the log.
 //!
-//! **Whoever cleans segments** (STORE-08) reads [`FlushState::dead_space`]
-//! and trims the chains of freed pages, which write-back does not.
+//! **Whoever cleans segments** ([`crate::cleaner`], STORE-08) takes the
+//! live blocks from the page table. It trims the chains of freed pages and
+//! those an earlier session left, which a pass does not, through
+//! [`WriteBack::trim_chains`], between two passes. It drops a segment that
+//! [`FlushState::checkpoint_segments`] does not list, has the segment and
+//! the value-log file that are being filled closed when they hold too
+//! much that is dead ([`WriteBack::seal_segment`],
+//! [`WriteBack::close_value_file`]), and asks for a table checkpoint
+//! ([`WriteBack::checkpoint`]) when segments wait for one.
 //!
 //! **Whoever closes the store** stops the loop ([`WriteBack::stop`]) and
 //! calls [`WriteBack::finish`].
@@ -519,7 +526,7 @@ mod state;
 mod write_back;
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 pub use checkpoint::Checkpointed;
 pub use config::{

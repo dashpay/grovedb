@@ -23,16 +23,16 @@ use crate::{
 };
 
 /// What a recovery found.
-pub(super) struct Recovered {
+pub(crate) struct Recovered {
     /// The version it landed on: the last commit whose group the log holds.
-    pub(super) landed: CommitVersion,
+    pub(crate) landed: CommitVersion,
     /// The version the checkpoint in force covers.
-    pub(super) covers: CommitVersion,
+    pub(crate) covers: CommitVersion,
     /// Whether the manifest names a checkpoint.
-    pub(super) checkpoint: bool,
+    pub(crate) checkpoint: bool,
     /// What each page that was asked for says there, or `None` if it is
     /// no page at that version.
-    pub(super) pages: BTreeMap<PageId, Option<Vec<Cell>>>,
+    pub(crate) pages: BTreeMap<PageId, Option<Vec<Cell>>>,
 }
 
 /// Recovers the store in the directory `path` of `vfs`, and returns what
@@ -43,7 +43,7 @@ pub(super) struct Recovered {
 /// to apply to whose page is not freed or made again afterwards (K11), a
 /// sample's place at which no mark of the checkpoint stands (LG29), or
 /// counts of live values that are not the pointers the pages hold (DU5).
-pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recovered {
+pub(crate) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recovered {
     let size = Db::SIZE;
     let manifest = ManifestStore::open(vfs.clone(), path).expect("a manifest");
     let named = manifest.manifest().expect("a manifest").clone();
@@ -136,6 +136,17 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                                 }
                             }
                             Entry::Freed(id) if committed > covers => {
+                                // The chain already holds what the commit
+                                // did, and more: the id was given to a new
+                                // page since, and its block was linked
+                                // before the checkpoint copied the chain
+                                // (K3, as for a run).
+                                let has = table
+                                    .newest(id)
+                                    .is_some_and(|link| link.version >= committed);
+                                if has {
+                                    continue;
+                                }
                                 frames.insert(id, None);
                                 dropped.remove(&id);
                             }
@@ -277,7 +288,7 @@ pub(super) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
 
 /// How the store's recovery is run on a state: with the pool of these
 /// tests, and with as many rebuilt pages kept in memory as `kept` says.
-pub(super) fn options(kept: Option<usize>) -> RecoveryOptions {
+pub(crate) fn options(kept: Option<usize>) -> RecoveryOptions {
     RecoveryOptions {
         pool_capacity: 4 << 20,
         max_replay_pages: kept,
@@ -303,7 +314,7 @@ pub(super) fn options(kept: Option<usize>) -> RecoveryOptions {
 ///
 /// Returns how many pages the second recovery wrote to a segment while it
 /// read the log.
-pub(super) fn the_store_recovers_the_same(
+pub(crate) fn the_store_recovers_the_same(
     vfs: Arc<dyn Vfs>,
     path: &Path,
     ids: &[PageId],

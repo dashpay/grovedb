@@ -34,11 +34,11 @@ use crate::{
 
 /// The root Merk of the grove of these tests, the Merk of the documents
 /// and the Merk of the references to them.
-const ROOT: u8 = 30;
-const DOCUMENTS: u8 = 31;
-const REFERENCES: u8 = 32;
+pub(super) const ROOT: u8 = 30;
+pub(super) const DOCUMENTS: u8 = 31;
+pub(super) const REFERENCES: u8 = 32;
 
-type Items = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(super) type Items = BTreeMap<Vec<u8>, Vec<u8>>;
 
 /// What the element of a tree holds of the Merk below it.
 fn element(items: &Items) -> Vec<u8> {
@@ -53,7 +53,7 @@ fn element(items: &Items) -> Vec<u8> {
 /// references: the change sets of the two Merks, that of the root Merk,
 /// whose elements change with them, and the base root key if the root
 /// Merk's root changes (`transactions.md` 14.1).
-fn grove_batch<'s>(
+pub(super) fn grove_batch<'s>(
     world: &World<'s>,
     tx: &Tx<'s>,
     documents: impl FnOnce(&mut Items),
@@ -80,12 +80,12 @@ fn grove_batch<'s>(
     }
 }
 
-fn document_key(serial: u64) -> Vec<u8> {
+pub(super) fn document_key(serial: u64) -> Vec<u8> {
     let scattered = model::hash_of(&[&serial.to_be_bytes()]);
     [&scattered[..], &serial.to_be_bytes()[..]].concat()
 }
 
-fn reference_key(serial: u64) -> Vec<u8> {
+pub(super) fn reference_key(serial: u64) -> Vec<u8> {
     format!(
         "by-age/{:04}/{serial:08}",
         model::hash_of(&[b"age", &serial.to_le_bytes()])[0]

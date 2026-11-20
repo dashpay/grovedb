@@ -2,6 +2,7 @@
 //! tests (`txn/tests/store.rs`), whose commit is this module's.
 
 mod acceptance;
+mod cleaner;
 mod conflicts;
 mod faults;
 mod kept;

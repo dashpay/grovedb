@@ -805,6 +805,65 @@ fn a_file_is_kept_for_the_pins_there_were_when_the_caller_began_to_wait() {
     );
 }
 
+/// A commit counts what it releases before its version is published. A
+/// page step that moves the file's last value between the two reads the
+/// version before the commit's as the latest. The file is empty from the
+/// commit's version on: a snapshot of the version before it still reads
+/// the cell that the commit changed (`value-log-format.md` O8).
+#[test]
+fn a_file_is_not_empty_at_a_version_before_one_that_released_from_it() {
+    let (store, pointers) = one_closed_file(&[40, 40]);
+    store.apply(&acquired(&pointers), 1);
+    // The commit of version 3 has counted, and is not published yet.
+    store.apply(&released(&pointers[..1]), 3);
+    // The step that takes the other value out reads 2 as the latest.
+    store.apply(&released(&pointers[1..]), 2);
+    store.all_durable();
+
+    let pinned_at_2 = store.values.retire(version(2));
+    assert!(
+        store.values.drop_empty(pinned_at_2).unwrap().is_empty(),
+        "the snapshot of version 2 reads the first value"
+    );
+    assert_eq!(store.read(pointers[0], 1).unwrap(), bytes(40, 0));
+
+    let after_the_pin = store.values.retire(version(3));
+    assert_eq!(
+        store.values.drop_empty(after_the_pin).unwrap(),
+        [file_id(1)]
+    );
+}
+
+/// A commit counts under its version when it releases nothing too. Its
+/// pages are installed before its version is published, and a page step
+/// can move a value in one of them meanwhile: the owner of a value is
+/// looked for in the installed version of its page. The file that such a
+/// step empties is empty from the commit's version on, and a snapshot of
+/// the version before it keeps the file.
+#[test]
+fn a_commit_that_releases_nothing_dates_what_a_step_empties_after_it() {
+    let (store, pointers) = one_closed_file(&[40, 40]);
+    store.apply(&acquired(&pointers), 1);
+    // The commit of version 3 has counted, and is not published yet.
+    store.apply(&ValueChange::new(), 3);
+    // The step that moves the values out reads 2 as the latest.
+    store.apply(&released(&pointers), 2);
+    store.all_durable();
+
+    let pinned_at_2 = store.values.retire(version(2));
+    assert!(
+        store.values.drop_empty(pinned_at_2).unwrap().is_empty(),
+        "the snapshot of version 2 reads both values"
+    );
+    assert_eq!(store.read(pointers[1], 2).unwrap(), bytes(40, 1));
+
+    let after_the_pin = store.values.retire(version(3));
+    assert_eq!(
+        store.values.drop_empty(after_the_pin).unwrap(),
+        [file_id(1)]
+    );
+}
+
 #[test]
 fn a_release_that_the_counted_bytes_do_not_include_marks_the_file() {
     let [short, long, last] = [10, 500, 10];

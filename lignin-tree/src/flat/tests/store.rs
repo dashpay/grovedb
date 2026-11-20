@@ -704,6 +704,56 @@ fn a_carried_value_is_appended_again_for_its_new_page_in_the_same_commit() {
     assert!(db.cold(merged, |pages| scan_all(pages, &tree)) == expected);
 }
 
+/// A log under which the newest commit has installed its pages and is not
+/// published yet: it says the version before as the latest.
+struct Unpublished<'d>(&'d Db);
+
+impl StepLog for Unpublished<'_> {
+    fn latest(&self) -> CommitVersion {
+        version(self.0.latest().get() - 1)
+    }
+
+    fn append(&self, record: &[u8]) -> Result<(), OwnersError> {
+        self.0.append(record)
+    }
+}
+
+/// A commit installs its pages before its version is published, and
+/// write-back can place a value in one of them meanwhile. That version of
+/// the leaf is the current one, and the owner of the value is found in it
+/// (`transactions.md` PV7), not in the leaf as the latest published
+/// version has it.
+#[test]
+fn an_owner_is_found_in_a_leaf_whose_commit_is_not_published_yet() {
+    let db = Db::new();
+    let big = |n: u8| vec![n; db.config.max_inline() + 1 + usize::from(n)];
+    let key = |n: u8| [vec![n], vec![b'k'; 300]].concat();
+    let mut writer = db.writer();
+    let tree = FlatTree::create(&mut writer, db.config).expect("a keyspace");
+    for n in 0..20 {
+        tree.put(&mut writer, &key(n), &big(n)).expect("a put");
+    }
+    db.commit(writer);
+    db.write_back();
+    // A second commit writes one more record, and write-back places its
+    // value.
+    let mut writer = db.writer();
+    tree.put(&mut writer, &key(100), &big(100)).expect("a put");
+    db.commit(writer);
+    db.write_back();
+    let reader = db.reader();
+    let (page, place) = home(&reader, &tree, &key(100));
+    let pointer = place.pointer().expect("placed");
+    drop(reader);
+    assert_eq!(db.latest(), version(2));
+
+    let owners = FlatOwners::new(db.loader(), &db.pool, db.config, Unpublished(&db));
+    assert_eq!(
+        owners.find(page, pointer).expect("a look"),
+        Some(version(2))
+    );
+}
+
 #[test]
 fn the_cleaner_of_the_value_log_finds_and_repoints_the_entries_of_flat_leaves() {
     let db = Db::new();

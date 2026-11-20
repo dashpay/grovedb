@@ -291,7 +291,7 @@ impl<'s> WriteBack<'s> {
     /// The manifest, settled: if a replacement left it in doubt, it is
     /// opened again first, and every store is told of the manifest that is
     /// in force.
-    pub(super) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
+    pub(crate) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
         let mut manifest = lock(self.stores.manifest);
         if manifest.manifest().is_err() {
             let reopened = ManifestStore::open(manifest.vfs().clone(), manifest.dir())?;
@@ -1122,6 +1122,82 @@ impl<'s> WriteBack<'s> {
             count(&self.state.counters.segment_syncs_failed, 1);
             files.failed.push(writer);
         }
+    }
+
+    /// Removes from the chain of each of `pages` the links that no reader
+    /// at the version `oldest` or later needs (`page-table.md` T11),
+    /// between two passes, and returns the removed links that point to a
+    /// block. Their blocks are counted as dead space
+    /// ([`FlushState::dead_space`]).
+    ///
+    /// The caller vouches for `oldest`: no version pin is below it, and
+    /// none will be. A caller that also waits until every operation that
+    /// was running when it found that has ended spares the operations
+    /// that hold no pin and read the latest version of their beginning.
+    ///
+    /// This is for whoever cleans segments, which trims the chains that a
+    /// pass does not: those of freed pages, and those an earlier session
+    /// left. **A chain is trimmed between passes because a trim can take
+    /// the free link of a page away**, with everything older. A pass looks
+    /// at the page versions that were unwritten when it began, and what
+    /// tells it, before it writes a block, that one of them is of a page
+    /// that a commit has freed since is that free link (T18). Without it
+    /// the pass could write the block for nothing: the link is refused
+    /// where it is pushed, because the pool owes the version no more. A
+    /// pass that begins afterwards does not list such a version: the pool
+    /// takes it off its list before the freeing commit is published, and
+    /// `oldest` is no version that is not published.
+    ///
+    /// It waits for a pass that is under way, and holds no other lock of
+    /// the store while it does.
+    pub fn trim_chains(&self, pages: &[PageId], oldest: CommitVersion) -> Vec<Link> {
+        let _files = lock(&self.state.files);
+        let mut removed = Vec::new();
+        for &page in pages {
+            self.stores.table.trim(page, oldest, &mut removed);
+        }
+        if !removed.is_empty() {
+            let mut kept = lock(&self.state.kept);
+            removed.iter().for_each(|link| kept.died(link));
+        }
+        removed
+    }
+
+    /// Seals the segment `file` if it is the one that write-back is
+    /// filling, so that the next block goes to a new segment. Returns
+    /// whether it was.
+    ///
+    /// A segment is not cleaned while it is written. Whoever cleans
+    /// segments asks for this when the segment that is being filled holds
+    /// more dead blocks than it can leave there, or has become so large a
+    /// part of the store that it could not be moved in one piece. It
+    /// waits for a pass that is under way.
+    pub fn seal_segment(&self, file: lignin_format::FileId) -> Result<bool, FlushError> {
+        let mut files = lock(&self.state.files);
+        let Some(writer) = files.segment.take_if(|writer| writer.file_id() == file) else {
+            return Ok(false);
+        };
+        self.seal(&mut files, writer)?;
+        Ok(true)
+    }
+
+    /// Closes the value-log file `file` if it is the one that write-back
+    /// is filling, so that the next value goes to a new file. Returns
+    /// whether it was.
+    ///
+    /// A value-log file is not cleaned while it is written. Whoever cleans
+    /// the value log asks for this when the file that is being filled
+    /// holds more dead values than it can leave there, or has become too
+    /// large a part of the value log. It waits for a pass that is under
+    /// way. The values of the file that wait for their page step keep
+    /// their holds.
+    pub fn close_value_file(&self, file: lignin_format::FileId) -> Result<bool, FlushError> {
+        let mut files = lock(&self.state.files);
+        let Some(writer) = files.values.take_if(|writer| writer.file_id() == file) else {
+            return Ok(false);
+        };
+        writer.finish()?;
+        Ok(true)
     }
 
     /// Removes the links that no reader needs any more from the chains of

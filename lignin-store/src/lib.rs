@@ -5,6 +5,7 @@
 
 pub mod alloc;
 pub mod cache;
+pub mod cleaner;
 pub mod flush;
 pub mod load;
 pub mod recovery;

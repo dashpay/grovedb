@@ -71,15 +71,22 @@ impl<'s, L: StepLog> FlatOwners<'s, L> {
         }
     }
 
-    /// The current version of `page`, if the page exists.
+    /// The current version of `page`, if the page exists: the newest one
+    /// that is installed, which a page step changes (`transactions.md`
+    /// PV7).
+    ///
+    /// That is not always the page as the latest published version has
+    /// it. A commit installs its pages before its version is published,
+    /// and write-back can place a value in one of them meanwhile. The
+    /// count of the value's file says so at once, and an owner that is
+    /// looked for in the published version is not found there.
     fn current(
         &self,
         page: PageId,
-        latest: CommitVersion,
     ) -> Result<Option<lignin_store::cache::PageRef<'s>>, OwnersError> {
         match self
             .loader
-            .get(page, latest, &mut self.buffers.borrow_mut())
+            .get(page, CommitVersion::MAX, &mut self.buffers.borrow_mut())
         {
             Ok(frame) => Ok(Some(frame)),
             Err(LoadError::NoPage { .. }) => Ok(None),
@@ -106,7 +113,7 @@ impl<L: StepLog> ValueOwners for FlatOwners<'_, L> {
         page: PageId,
         pointer: ValuePointer,
     ) -> Result<Option<CommitVersion>, OwnersError> {
-        let frame = self.current(page, self.log.latest())?;
+        let frame = self.current(page)?;
         Ok(frame
             .filter(|frame| holds(frame, pointer))
             .map(|frame| frame.born()))
@@ -118,8 +125,7 @@ impl<L: StepLog> ValueOwners for FlatOwners<'_, L> {
         found: CommitVersion,
     ) -> Result<Rewrite, OwnersError> {
         let (page, from, to) = (step.page(), step.from(), step.to());
-        let latest = self.log.latest();
-        let Some(frame) = self.current(page, latest)? else {
+        let Some(frame) = self.current(page)? else {
             return Ok(Rewrite::Refused(Refusal::OwnerGone));
         };
         let guard = self.pool.page_step(page);

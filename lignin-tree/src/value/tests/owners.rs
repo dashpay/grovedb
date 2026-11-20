@@ -56,6 +56,56 @@ impl Db {
     }
 }
 
+/// A log under which the newest commit has installed its pages and is not
+/// published yet: it says the version before as the latest.
+struct Unpublished<'d>(&'d Db);
+
+impl StepLog for Unpublished<'_> {
+    fn latest(&self) -> CommitVersion {
+        version(self.0.latest().get() - 1)
+    }
+
+    fn append(&self, record: &[u8]) -> Result<(), OwnersError> {
+        StepLog::append(&self.0, record)
+    }
+}
+
+/// A commit installs its pages before its version is published, and
+/// write-back can place a value in one of them meanwhile. That page
+/// version is the current one: the owner of the value is found in it, and
+/// its pointer is rewritten there (`transactions.md` PV7). Looked for in
+/// the page as the latest published version has it, the value would have
+/// no owner, and the value log would take its file for one that no
+/// cleaning helps.
+#[test]
+fn an_owner_is_found_in_a_page_version_whose_commit_is_not_published_yet() {
+    let db = Db::new();
+    let order = shuffled(40, 40);
+    let tree = grown(&db, &order, 10);
+    let last = key(*order.last().expect("a key"));
+    let scanned = tree.scan(&db);
+    let read = (scanned.iter().find(|read| read.key == last)).expect("the last key");
+    let (home, pointer) = (read.at.page(), pointer_of(read));
+    let born = db.current(home).born();
+    assert_eq!(born, db.latest(), "the last commit wrote the page");
+
+    let owners = TreeOwners::new(db.loader(), &db.pool, SIZE, Unpublished(&db));
+    assert_eq!(owners.find(home, pointer).expect("a look"), Some(born));
+
+    // The file is cleaned with that commit unpublished: every value has
+    // its owner, and none is left behind.
+    let file = pointer.file();
+    let mut to = db.close_value_file();
+    let cleaned = {
+        let mut manifest = db.manifest.borrow_mut();
+        db.values.clean(file, &mut to, &mut manifest, &owners)
+    }
+    .expect("a pass");
+    assert_eq!((cleaned.unowned, cleaned.busy, cleaned.live), (0, 0, 0));
+    assert!(cleaned.moved >= 10, "{cleaned:?}");
+    assert_eq!(values_of(&tree, &db).len(), 40);
+}
+
 /// A log that takes a number of records and then no more.
 struct Full<'d> {
     db: &'d Db,

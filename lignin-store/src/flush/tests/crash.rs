@@ -20,7 +20,7 @@ use crate::segment::tests::sim::{crash_states, db_dir, shared, sim_fs, Plans};
 
 /// One step of a script.
 #[derive(Debug, Clone)]
-pub(super) enum Step {
+pub(crate) enum Step {
     Commit(Vec<Op>),
     Pass,
     Checkpoint,
@@ -39,7 +39,7 @@ pub(super) enum Step {
     Flat(u32, Vec<(Vec<u8>, Val)>),
 }
 
-pub(super) fn config() -> FlushConfig {
+pub(crate) fn config() -> FlushConfig {
     FlushConfig {
         max_chain_deltas: 2,
         ..FlushConfig::new(Db::SIZE)
@@ -48,7 +48,7 @@ pub(super) fn config() -> FlushConfig {
 
 /// Small log files, so that the log turns often and checkpoints have
 /// files to take out of it.
-pub(super) fn log_options() -> LogOptions {
+pub(crate) fn log_options() -> LogOptions {
     LogOptions {
         target_file_len: 600,
         ..LogOptions::default()
@@ -56,20 +56,20 @@ pub(super) fn log_options() -> LogOptions {
 }
 
 /// How one run of a script ended.
-pub(super) struct Ran {
-    pub(super) fs: SimVfs,
-    pub(super) model: Model,
+pub(crate) struct Ran {
+    pub(crate) fs: SimVfs,
+    pub(crate) model: Model,
     /// The version the log was known to be durable through.
-    pub(super) durable: CommitVersion,
-    pub(super) latest: CommitVersion,
-    checkpoints: u64,
-    log_files_dropped: u64,
-    put_off: u64,
+    pub(crate) durable: CommitVersion,
+    pub(crate) latest: CommitVersion,
+    pub(crate) checkpoints: u64,
+    pub(crate) log_files_dropped: u64,
+    pub(crate) put_off: u64,
 }
 
 /// Runs `script` on a new store, with the power going off after `crash`
 /// changes to what a crash can leave, if that many are made.
-pub(super) fn run(script: &[Step], crash: Option<u64>) -> Ran {
+pub(crate) fn run(script: &[Step], crash: Option<u64>) -> Ran {
     let fs = sim_fs(SimConfig::new(11));
     if let Some(changes) = crash {
         fs.crash_at(CrashPoint::AfterChange(changes));
@@ -111,7 +111,7 @@ pub(super) fn run(script: &[Step], crash: Option<u64>) -> Ran {
 
 impl Ran {
     /// How things stand in `db`, which is on `fs`.
-    pub(super) fn of(fs: &SimVfs, db: &Db) -> Self {
+    pub(crate) fn of(fs: &SimVfs, db: &Db) -> Self {
         let model = db
             .model
             .lock()
@@ -131,18 +131,18 @@ impl Ran {
 }
 
 /// A store that a script is run on, step by step.
-pub(super) struct Session<'d> {
+pub(crate) struct Session<'d> {
     db: &'d Db,
     held: Option<Txn<'d>>,
 }
 
 impl<'d> Session<'d> {
-    pub(super) fn new(db: &'d Db) -> Self {
+    pub(crate) fn new(db: &'d Db) -> Self {
         Self { db, held: None }
     }
 
     /// The part of `step` that is a committer's or the cleaner's.
-    pub(super) fn commits(&mut self, step: &Step) {
+    pub(crate) fn commits(&mut self, step: &Step) {
         let db = self.db;
         match step {
             Step::Commit(ops) => drop(db.commit(ops)),
@@ -166,7 +166,7 @@ impl<'d> Session<'d> {
     }
 
     /// The part of `step` that is write-back's.
-    pub(super) fn writes_back(&mut self, step: &Step) -> Result<(), FlushError> {
+    pub(crate) fn writes_back(&mut self, step: &Step) -> Result<(), FlushError> {
         let wb = self.db.wb();
         match step {
             Step::Pass => wb.pass().map(drop),
@@ -178,7 +178,7 @@ impl<'d> Session<'d> {
     }
 
     /// The transaction that holds a copy gives it up, if there is one.
-    pub(super) fn release(&mut self) {
+    pub(crate) fn release(&mut self) {
         if let Some(txn) = self.held.take() {
             txn.roll_back();
         }
@@ -191,14 +191,14 @@ impl<'d> Session<'d> {
 
 /// What the recoveries of one script came to.
 #[derive(Debug, Default)]
-pub(super) struct Tally {
-    pub(super) crashes: u64,
-    pub(super) states: u64,
+pub(crate) struct Tally {
+    pub(crate) crashes: u64,
+    pub(crate) states: u64,
     /// Recoveries that landed above the version known durable: commits
     /// that a crash kept though nobody had synced them.
-    pub(super) ahead: u64,
+    pub(crate) ahead: u64,
     /// Recoveries that replayed commits on a checkpoint.
-    pub(super) replayed: u64,
+    pub(crate) replayed: u64,
     from_checkpoint: u64,
     /// Pages that the store's recovery wrote to a segment while it read
     /// the log, when it was made to keep one page in memory.
@@ -207,13 +207,13 @@ pub(super) struct Tally {
 
 /// Recovers every state that a crash of `ran` can leave, as `plans` picks
 /// them, and checks each against the model.
-pub(super) fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
+pub(crate) fn check(ran: &Ran, plans: &Plans, tally: &mut Tally) {
     check_image(&ran.fs.crash_image(), ran, plans, tally);
 }
 
 /// Recovers every state that `image` can leave, as `plans` picks them, and
 /// checks each ([`check_state`]).
-pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &mut Tally) {
+pub(crate) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &mut Tally) {
     tally.crashes += 1;
     for (plan, state) in crash_states(image, plans).states {
         check_state(&state, ran, &plan, tally);
@@ -225,7 +225,7 @@ pub(super) fn check_image(image: &CrashImage, ran: &Ran, plans: &Plans, tally: &
 /// and what it lands on is what the model of `ran` says. Returns the
 /// version, or `None` if the power went before the store had its first
 /// manifest.
-pub(super) fn check_state(
+pub(crate) fn check_state(
     state: &SimVfs,
     ran: &Ran,
     plan: &dyn std::fmt::Debug,
@@ -271,15 +271,15 @@ pub(super) fn check_state(
     Some(landed)
 }
 
-pub(super) fn commit(ops: &[Op]) -> Step {
+pub(crate) fn commit(ops: &[Op]) -> Step {
     Step::Commit(ops.to_vec())
 }
 
-pub(super) fn free(id: u32) -> Op {
+pub(crate) fn free(id: u32) -> Op {
     Op::Free { page: page(id) }
 }
 
-pub(super) fn flat(id: u32, entries: &[(&[u8], Val)]) -> Step {
+pub(crate) fn flat(id: u32, entries: &[(&[u8], Val)]) -> Step {
     let entries = entries
         .iter()
         .map(|(key, value)| (key.to_vec(), value.clone()));
@@ -302,7 +302,7 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// a page that a move changed cannot be written, a page freed with a
 /// change that was never written back, its id used again, and table
 /// checkpoints in between that take log files away.
-pub(super) fn life() -> Vec<Step> {
+pub(crate) fn life() -> Vec<Step> {
     vec![
         commit(&[
             insert((1, 1), b"a", inline(b"one")),
@@ -374,7 +374,7 @@ fn the_script_takes_checkpoints_drops_log_files_and_puts_a_checkpoint_off() {
     assert!(tally.states > 0);
 }
 
-pub(super) const PLANS: Plans = Plans {
+pub(crate) const PLANS: Plans = Plans {
     every_plan_limit: 48,
     samples: 4,
 };

@@ -5,12 +5,12 @@
 mod acceptance;
 mod chains;
 mod checkpoint;
-mod crash;
+pub(crate) mod crash;
 mod errors;
 mod faults;
 mod flat;
 mod measure;
-mod recover;
+pub(crate) mod recover;
 mod recovered;
 mod regroup;
 mod stats;
@@ -55,21 +55,21 @@ use crate::{
 
 const V1: FormatVersion = FormatVersion::V1;
 
-pub(super) fn version(raw: u64) -> CommitVersion {
+pub(crate) fn version(raw: u64) -> CommitVersion {
     CommitVersion::new(raw).expect("a version")
 }
 
-pub(super) fn page(raw: u32) -> PageId {
+pub(crate) fn page(raw: u32) -> PageId {
     PageId::new(raw).expect("a page id")
 }
 
-pub(super) fn slot(raw: u16) -> SlotId {
+pub(crate) fn slot(raw: u16) -> SlotId {
     SlotId::new(raw).expect("a slot")
 }
 
 /// What a checkpoint that was installed covers, the place of its sample,
 /// and how many log files went after it.
-pub(super) fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace, usize) {
+pub(crate) fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace, usize) {
     match checkpointed {
         Checkpointed::Installed {
             covers,
@@ -82,7 +82,7 @@ pub(super) fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace,
 
 /// Ends the background loop when it goes, whatever becomes of the thread
 /// that holds it.
-pub(super) struct StopOnDrop<'s>(pub(super) WriteBack<'s>);
+pub(crate) struct StopOnDrop<'s>(pub(crate) WriteBack<'s>);
 
 impl Drop for StopOnDrop<'_> {
     fn drop(&mut self) {
@@ -91,7 +91,7 @@ impl Drop for StopOnDrop<'_> {
 }
 
 /// An empty buffer pool for pages of `size`.
-pub(super) fn new_pool(size: PageSize) -> BufferPool {
+pub(crate) fn new_pool(size: PageSize) -> BufferPool {
     BufferPool::new(PoolConfig {
         page_size: size,
         capacity: 4 << 20,
@@ -101,7 +101,7 @@ pub(super) fn new_pool(size: PageSize) -> BufferPool {
 
 /// The counts of live values that the sample of a checkpoint holds, as
 /// the value log takes them back.
-pub(super) fn sample_counts(info: Option<&CheckpointInfo>) -> Vec<FileCount> {
+pub(crate) fn sample_counts(info: Option<&CheckpointInfo>) -> Vec<FileCount> {
     info.iter()
         .flat_map(|info| &info.sample().counts)
         .map(|count| FileCount {
@@ -116,11 +116,16 @@ pub(super) fn sample_counts(info: Option<&CheckpointInfo>) -> Vec<FileCount> {
 /// Who publishes and who pins, for a store with one snapshot at most and
 /// no operation that outlives a call.
 #[derive(Debug)]
-pub(super) struct Versions {
+pub(crate) struct Versions {
     latest: AtomicU64,
     pin: AtomicU64,
     epoch: AtomicU64,
     guards: AtomicU64,
+    /// The epoch of an operation guard that a test holds, or `u64::MAX`.
+    held: AtomicU64,
+    /// The epochs of the guards under which write-back reads blocks now,
+    /// by a number of their own.
+    reading: Mutex<BTreeMap<u64, u64>>,
 }
 
 impl Versions {
@@ -130,20 +135,54 @@ impl Versions {
             pin: AtomicU64::new(u64::MAX),
             epoch: AtomicU64::new(0),
             guards: AtomicU64::new(0),
+            held: AtomicU64::new(u64::MAX),
+            reading: Mutex::default(),
         }
     }
 
+    /// Takes an operation guard, as an operation that goes on running
+    /// does: it is of the epoch that is current now.
+    pub(crate) fn hold_guard(&self) {
+        // Announced, and then looked at again, as a guard is taken: a
+        // reclaimer that started an epoch in between finds the guard, or
+        // the guard is of that epoch.
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            self.held.store(epoch, Ordering::SeqCst);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                return;
+            }
+        }
+    }
+
+    /// Pins the latest version, as a snapshot does, and returns it: the
+    /// version is announced, and then found to be the latest still.
+    pub(crate) fn pin_latest(&self) -> CommitVersion {
+        loop {
+            let latest = self.latest.load(Ordering::SeqCst);
+            self.pin.store(latest, Ordering::SeqCst);
+            if self.latest.load(Ordering::SeqCst) == latest {
+                return version(latest);
+            }
+        }
+    }
+
+    /// Gives the guard of [`Self::hold_guard`] back.
+    pub(crate) fn release_guard(&self) {
+        self.held.store(u64::MAX, Ordering::SeqCst);
+    }
+
     /// Pins `version`, as a snapshot does.
-    pub(super) fn pin(&self, version: CommitVersion) {
+    pub(crate) fn pin(&self, version: CommitVersion) {
         self.pin.store(version.get(), Ordering::SeqCst);
     }
 
-    pub(super) fn unpin(&self) {
+    pub(crate) fn unpin(&self) {
         self.pin.store(u64::MAX, Ordering::SeqCst);
     }
 
     /// How many times write-back read blocks under an operation guard.
-    pub(super) fn guards(&self) -> u64 {
+    pub(crate) fn guards(&self) -> u64 {
         self.guards.load(Ordering::SeqCst)
     }
 }
@@ -159,7 +198,10 @@ impl Pins for Versions {
     }
 
     fn oldest_guard(&self) -> Epoch {
-        Epoch::new(self.epoch.load(Ordering::SeqCst))
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let reading = self.reading.lock().expect("the guards");
+        let oldest = reading.values().copied().min().unwrap_or(u64::MAX);
+        Epoch::new(epoch.min(self.held.load(Ordering::SeqCst)).min(oldest))
     }
 }
 
@@ -169,14 +211,24 @@ impl Published for Versions {
     }
 
     fn guarded(&self, work: &mut dyn FnMut()) {
-        self.guards.fetch_add(1, Ordering::SeqCst);
+        // A guard of its own, announced and then looked at again, as a
+        // guard is taken: whoever deletes a file waits for it.
+        let number = self.guards.fetch_add(1, Ordering::SeqCst);
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            (self.reading.lock().expect("the guards")).insert(number, epoch);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                break;
+            }
+        }
         work();
+        (self.reading.lock().expect("the guards")).remove(&number);
     }
 }
 
 /// What the layer above tree pages is to write-back, for pages whose cells
 /// a scan reads in the order of their keys.
-pub(super) struct ByKey<'d>(pub(super) &'d Db);
+pub(crate) struct ByKey<'d>(pub(crate) &'d Db);
 
 impl ByKey<'_> {
     fn slots(frame: &[u8]) -> Vec<SlotId> {
@@ -235,7 +287,7 @@ impl PageValues for ByKey<'_> {
 
 /// The value of a cell that a test writes.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Val {
+pub(crate) enum Val {
     /// Stored in the cell.
     Inline(Vec<u8>),
     /// Too long for its cell: the commit carries it in its group, and the
@@ -245,7 +297,7 @@ pub(super) enum Val {
 
 /// One change of a commit to a tree page.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum Op {
+pub(crate) enum Op {
     /// A new cell. A page that no commit has written yet is made by its
     /// first insert.
     Insert {
@@ -298,7 +350,7 @@ impl Op {
     }
 }
 
-pub(super) fn insert(at: (u32, u16), key: &[u8], value: Val) -> Op {
+pub(crate) fn insert(at: (u32, u16), key: &[u8], value: Val) -> Op {
     Op::Insert {
         page: page(at.0),
         slot: slot(at.1),
@@ -307,7 +359,7 @@ pub(super) fn insert(at: (u32, u16), key: &[u8], value: Val) -> Op {
     }
 }
 
-pub(super) fn hash(at: (u32, u16), byte: u8) -> Op {
+pub(crate) fn hash(at: (u32, u16), byte: u8) -> Op {
     Op::Hash {
         page: page(at.0),
         slot: slot(at.1),
@@ -315,12 +367,12 @@ pub(super) fn hash(at: (u32, u16), byte: u8) -> Op {
     }
 }
 
-pub(super) fn inline(bytes: &[u8]) -> Val {
+pub(crate) fn inline(bytes: &[u8]) -> Val {
     Val::Inline(bytes.to_vec())
 }
 
 /// `len` bytes that do not compress.
-pub(super) fn noise(seed: u64, len: usize) -> Vec<u8> {
+pub(crate) fn noise(seed: u64, len: usize) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
     (0..len)
         .map(|_| {
@@ -333,32 +385,32 @@ pub(super) fn noise(seed: u64, len: usize) -> Vec<u8> {
 }
 
 /// A value of `len` bytes that no cell of the smallest page holds.
-pub(super) fn long(seed: u8, len: usize) -> Val {
+pub(crate) fn long(seed: u8, len: usize) -> Val {
     Val::Out((0..len).map(|at| seed.wrapping_add(at as u8)).collect())
 }
 
 /// What a cell says, with its value as a reader gets it: wherever it is.
 #[derive(Debug, Clone)]
-pub(super) struct Cell {
+pub(crate) struct Cell {
     slot: u16,
     key: Vec<u8>,
     value_hash: [u8; 32],
     value: Vec<u8>,
     /// Where the value is, if it is in the value log.
-    pub(super) pointer: Option<ValuePointer>,
+    pub(crate) pointer: Option<ValuePointer>,
 }
 
 impl Cell {
     /// The cell without the place of its value, which write-back and a
     /// cleaner change and no reader sees.
-    fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
+    pub(crate) fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
         (self.slot, &self.key, &self.value_hash, &self.value)
     }
 }
 
 /// Whether two pages say the same: their cells, with the values wherever
 /// they are.
-pub(super) fn same(found: &[Cell], expected: &[Cell]) -> bool {
+pub(crate) fn same(found: &[Cell], expected: &[Cell]) -> bool {
     found
         .iter()
         .map(Cell::said)
@@ -366,12 +418,12 @@ pub(super) fn same(found: &[Cell], expected: &[Cell]) -> bool {
 }
 
 /// Whether `frame` holds a flat page, as a loader tells.
-pub(super) fn is_flat(frame: &[u8]) -> bool {
+pub(crate) fn is_flat(frame: &[u8]) -> bool {
     FlatPageKind::from_code(frame[0], FRAME_FORMAT).is_ok()
 }
 
 /// Whether the page in `frame`, of either kind, has a pending value.
-pub(super) fn has_pending(frame: &[u8]) -> bool {
+pub(crate) fn has_pending(frame: &[u8]) -> bool {
     match is_flat(frame) {
         true => FlatPage::from_validated(frame, FRAME_FORMAT)
             .expect("a flat page")
@@ -383,7 +435,7 @@ pub(super) fn has_pending(frame: &[u8]) -> bool {
 }
 
 /// Where the value of a cell or of an entry of a flat leaf is.
-enum Stored {
+pub(crate) enum Stored {
     Inline(Vec<u8>),
     Placed(ValuePointer),
     Pending(PendingValue),
@@ -392,7 +444,7 @@ enum Stored {
 /// What the page in `frame` holds, cell by cell: the slot, the key, the
 /// value hash, and where the value is. An entry of a flat leaf has its
 /// position, from 1, for a slot, and no hash.
-fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
+pub(crate) fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
     if is_flat(frame) {
         let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
         assert_eq!(page.id(), id);
@@ -434,7 +486,7 @@ fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
 /// What the cells of the page in `frame` say, with each value read from
 /// where it is: the cell, the frame the page is in, the log, or the value
 /// log. The entries of a flat leaf are its cells.
-pub(super) fn cells_of(
+pub(crate) fn cells_of(
     id: PageId,
     frame: &[u8],
     attached: Option<&PageRef<'_>>,
@@ -515,20 +567,20 @@ fn committed_cells(
 
 /// What a page said from one version on: the version, and its cells, or
 /// `None` from the commit that freed it.
-pub(super) type Versioned = (u64, Option<Vec<Cell>>);
+pub(crate) type Versioned = (u64, Option<Vec<Cell>>);
 
 /// An entry of a flat leaf: its key, its value unless that is pending,
 /// and the pointer to it if it is out of line.
-pub(super) type FlatEntry = (Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>);
+pub(crate) type FlatEntry = (Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>);
 
 /// What every version of every page says, as the commits left it.
 #[derive(Debug, Default, Clone)]
-pub(super) struct Model {
-    pub(super) pages: BTreeMap<PageId, Vec<Versioned>>,
+pub(crate) struct Model {
+    pub(crate) pages: BTreeMap<PageId, Vec<Versioned>>,
 }
 
 impl Model {
-    pub(super) fn at(&self, page: PageId, at: CommitVersion) -> Option<(u64, &[Cell])> {
+    pub(crate) fn at(&self, page: PageId, at: CommitVersion) -> Option<(u64, &[Cell])> {
         let versions = self.pages.get(&page)?;
         let (born, cells) = versions.iter().rev().find(|(born, _)| *born <= at.get())?;
         cells.as_deref().map(|cells| (*born, cells))
@@ -546,49 +598,49 @@ fn cell_value<'a>(value: &'a Val, pending: &Option<PendingValue>) -> CellValue<'
 }
 
 /// A write transaction: the private copies it has made so far.
-pub(super) struct Txn<'d> {
+pub(crate) struct Txn<'d> {
     db: &'d Db,
     owner: OwnerId,
     copies: BTreeMap<PageId, (PrivateRef<'d>, bool)>,
     /// Whether the bytes of the values the commit writes out of line are
     /// left off the frames, so that only the log has them.
-    pub(super) values_in_log_only: bool,
+    pub(crate) values_in_log_only: bool,
 }
 
 /// A store in a directory.
-pub(super) struct Db {
+pub(crate) struct Db {
     _dir: Option<TempDir>,
-    pub(super) vfs: Arc<dyn Vfs>,
-    pub(super) path: PathBuf,
-    pub(super) size: PageSize,
-    pub(super) manifest: Mutex<ManifestStore>,
-    pub(super) segments: SegmentStore,
-    pub(super) values: ValueStore,
-    pub(super) log: LogStore,
-    pub(super) checkpoints: TableCheckpoints,
-    pub(super) table: PageTable,
-    pub(super) pool: BufferPool,
-    pub(super) versions: Versions,
-    pub(super) state: FlushState,
+    pub(crate) vfs: Arc<dyn Vfs>,
+    pub(crate) path: PathBuf,
+    pub(crate) size: PageSize,
+    pub(crate) manifest: Mutex<ManifestStore>,
+    pub(crate) segments: SegmentStore,
+    pub(crate) values: ValueStore,
+    pub(crate) log: LogStore,
+    pub(crate) checkpoints: TableCheckpoints,
+    pub(crate) table: PageTable,
+    pub(crate) pool: BufferPool,
+    pub(crate) versions: Versions,
+    pub(crate) state: FlushState,
     owners: AtomicU64,
-    pub(super) model: Mutex<Model>,
+    pub(crate) model: Mutex<Model>,
 }
 
 impl Db {
-    pub(super) const SIZE: PageSize = PageSize::MIN;
+    pub(crate) const SIZE: PageSize = PageSize::MIN;
 
     /// A new store with the default thresholds.
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with(FlushConfig::new(Self::SIZE))
     }
 
     /// A new store in a directory of its own.
-    pub(super) fn with(config: FlushConfig) -> Self {
+    pub(crate) fn with(config: FlushConfig) -> Self {
         Self::with_log(config, LogOptions::default())
     }
 
     /// A new store whose log is written as `log` says.
-    pub(super) fn with_log(config: FlushConfig, log: LogOptions) -> Self {
+    pub(crate) fn with_log(config: FlushConfig, log: LogOptions) -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let path = dir.path().to_path_buf();
         let mut db = Self::create(Arc::new(StdVfs), &path, config, log);
@@ -597,7 +649,7 @@ impl Db {
     }
 
     /// A new store in the directory `path` of `vfs`, which exists.
-    pub(super) fn create(
+    pub(crate) fn create(
         vfs: Arc<dyn Vfs>,
         path: &Path,
         config: FlushConfig,
@@ -638,7 +690,7 @@ impl Db {
 
     /// A new store on a simulated file system, which the test can make
     /// fail.
-    pub(super) fn on_sim(config: FlushConfig, log: LogOptions) -> (SimVfs, Self) {
+    pub(crate) fn on_sim(config: FlushConfig, log: LogOptions) -> (SimVfs, Self) {
         use crate::segment::tests::sim::{db_dir, shared, sim_fs};
         let fs = sim_fs(SimConfig::new(5));
         let db = Self::create(shared(&fs), db_dir(), config, log);
@@ -648,7 +700,7 @@ impl Db {
     /// Ends the session as a store does ([`WriteBack::finish`]) and opens
     /// the directory again, with nothing in memory: what the next session
     /// starts from. Every commit must have been written back.
-    pub(super) fn reopen(self) -> Self {
+    pub(crate) fn reopen(self) -> Self {
         let finished = self.wb().finish().expect("the session ends");
         let latest = self.latest();
         assert!(
@@ -709,7 +761,7 @@ impl Db {
     /// left. What they committed after the version the recovery lands on
     /// is not part of the store any more, and is taken out of it: those
     /// versions are given to the commits of this session.
-    pub(super) fn recover(
+    pub(crate) fn recover(
         vfs: Arc<dyn Vfs>,
         path: &Path,
         options: &RecoveryOptions,
@@ -755,12 +807,12 @@ impl Db {
         }
     }
 
-    pub(super) fn wb(&self) -> WriteBack<'_> {
+    pub(crate) fn wb(&self) -> WriteBack<'_> {
         self.wb_with(None)
     }
 
     /// Write-back that is handed `page_values` by the layer above.
-    pub(super) fn wb_with<'s>(&'s self, page_values: Option<&'s dyn PageValues>) -> WriteBack<'s> {
+    pub(crate) fn wb_with<'s>(&'s self, page_values: Option<&'s dyn PageValues>) -> WriteBack<'s> {
         let stores = Stores {
             pool: &self.pool,
             table: &self.table,
@@ -775,16 +827,16 @@ impl Db {
         WriteBack::new(stores, &self.state, self.size).expect("write-back")
     }
 
-    pub(super) fn latest(&self) -> CommitVersion {
+    pub(crate) fn latest(&self) -> CommitVersion {
         Published::latest(&self.versions)
     }
 
     /// How many values the value log counts as live.
-    pub(super) fn live_values(&self) -> u64 {
+    pub(crate) fn live_values(&self) -> u64 {
         self.values.counts().iter().map(|count| count.values).sum()
     }
 
-    pub(super) fn stats(&self) -> FlushStats {
+    pub(crate) fn stats(&self) -> FlushStats {
         self.state.stats()
     }
 
@@ -793,13 +845,13 @@ impl Db {
     }
 
     /// The page as a reader at `at` gets it from this store's pool.
-    pub(super) fn frame(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, LoadError> {
+    pub(crate) fn frame(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, LoadError> {
         self.loader(&self.pool)
             .get(page, at, &mut LoadBuffers::new())
     }
 
     /// The chain of `page`, oldest link first.
-    pub(super) fn chain(&self, page: PageId) -> Vec<Link> {
+    pub(crate) fn chain(&self, page: PageId) -> Vec<Link> {
         let mut links = Vec::new();
         self.table.chain(page, &mut links);
         links
@@ -807,7 +859,7 @@ impl Db {
 
     /// The kinds of the links of `page`'s chain, as a string: `B` for a
     /// base image, `d` for a run of deltas, `F` for a free link.
-    pub(super) fn shape(&self, page: PageId) -> String {
+    pub(crate) fn shape(&self, page: PageId) -> String {
         self.chain(page)
             .iter()
             .map(|link| match link.kind {
@@ -825,14 +877,14 @@ impl Db {
     }
 
     /// The pending values of the current version of `page`.
-    pub(super) fn pending(&self, page: PageId) -> Vec<(SlotId, PendingValue)> {
+    pub(crate) fn pending(&self, page: PageId) -> Vec<(SlotId, PendingValue)> {
         let frame = self.frame(page, self.latest()).expect("the page");
         let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
         tree.pending_values().collect()
     }
 
     /// The value pointers the cells of the current version of `page` hold.
-    pub(super) fn pointers(&self, page: PageId) -> Vec<ValuePointer> {
+    pub(crate) fn pointers(&self, page: PageId) -> Vec<ValuePointer> {
         let frame = self.frame(page, self.latest()).expect("the page");
         let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
         tree.cells()
@@ -842,7 +894,7 @@ impl Db {
 
     /// The value pointer that the cell in `slot` of the current version
     /// of `id` holds.
-    pub(super) fn pointer(&self, id: PageId, slot: SlotId) -> ValuePointer {
+    pub(crate) fn pointer(&self, id: PageId, slot: SlotId) -> ValuePointer {
         let frame = self.frame(id, self.latest()).expect("the page");
         let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
         let cell = tree.cell(slot).expect("the cell");
@@ -856,7 +908,7 @@ impl Db {
     /// log through write-back, or, with `past_write_back`, straight to the
     /// log, which leaves write-back with records that no longer lead to
     /// the frame.
-    pub(super) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
+    pub(crate) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
         let from = self.pointer(id, slot);
         let mut buf = Vec::new();
         let bytes = self
@@ -881,7 +933,7 @@ impl Db {
     /// of `id`, which holds `from`, the pointer `to`. Returns whether the
     /// step was made: it is not while a write transaction holds a private
     /// copy of the page.
-    pub(super) fn repoint(
+    pub(crate) fn repoint(
         &self,
         id: PageId,
         slot: SlotId,
@@ -921,7 +973,7 @@ impl Db {
     /// A value that is out of line is carried by the group and pending in
     /// its entry, or stays where `placed` says it is. The pointers that
     /// the leaf held and holds no more are released.
-    pub(super) fn commit_flat(
+    pub(crate) fn commit_flat(
         &self,
         id: PageId,
         entries: &[(&[u8], Val)],
@@ -1055,7 +1107,7 @@ impl Db {
     /// The entries of the flat leaf in `frame`: each key with its value,
     /// read through its pointer if it is out of line, and that pointer.
     /// A value that is still pending has no bytes here.
-    pub(super) fn flat_entries(&self, id: PageId, frame: &[u8]) -> Vec<FlatEntry> {
+    pub(crate) fn flat_entries(&self, id: PageId, frame: &[u8]) -> Vec<FlatEntry> {
         let mut buf = Vec::new();
         stored(id, frame)
             .into_iter()
@@ -1070,7 +1122,7 @@ impl Db {
             .collect()
     }
 
-    pub(super) fn begin(&self) -> Txn<'_> {
+    pub(crate) fn begin(&self) -> Txn<'_> {
         Txn {
             db: self,
             owner: OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1),
@@ -1080,20 +1132,20 @@ impl Db {
     }
 
     /// A transaction that makes `ops` and commits.
-    pub(super) fn commit(&self, ops: &[Op]) -> CommitVersion {
+    pub(crate) fn commit(&self, ops: &[Op]) -> CommitVersion {
         self.begin().commit(ops)
     }
 
     /// Checks every version from the oldest a reader can ask for to the
     /// latest, as a reader gets it through this store's pool.
-    pub(super) fn check_warm(&self) {
+    pub(crate) fn check_warm(&self) {
         self.check(&self.pool, false);
     }
 
     /// The same, through an empty pool: every page comes from its
     /// segments, so every version must have been written back, and no
     /// value may be pending.
-    pub(super) fn check_cold(&self) {
+    pub(crate) fn check_cold(&self) {
         self.check(&new_pool(self.size), true);
     }
 
@@ -1134,7 +1186,7 @@ impl Db {
 
     /// Checks that no chain is longer than the thresholds allow: for every
     /// link, the runs between it and the base image under it.
-    pub(super) fn check_chains(&self) {
+    pub(crate) fn check_chains(&self) {
         let config = self.state.config();
         let pages: Vec<PageId> = self
             .model
@@ -1170,7 +1222,7 @@ impl Db {
 impl<'d> Txn<'d> {
     /// Makes the private copy of `id` now, as a write of the transaction
     /// to that page does. Returns whether the page is new.
-    pub(super) fn copy(&mut self, id: PageId) -> bool {
+    pub(crate) fn copy(&mut self, id: PageId) -> bool {
         let Db { pool, size, .. } = self.db;
         if let Some((_, created)) = self.copies.get(&id) {
             return *created;
@@ -1197,14 +1249,14 @@ impl<'d> Txn<'d> {
 
     /// Attaches `bytes` to the copy of `id` under a name that no cell of
     /// the page holds.
-    pub(super) fn attach_stray(&mut self, id: PageId, name: [u8; 8], bytes: &[u8]) {
+    pub(crate) fn attach_stray(&mut self, id: PageId, name: [u8; 8], bytes: &[u8]) {
         self.copy(id);
         let mut latch = self.copies[&id].0.write().expect("private");
         latch.attach(name, Arc::from(bytes));
     }
 
     /// Gives the copies up: nothing of the transaction is left.
-    pub(super) fn roll_back(self) {
+    pub(crate) fn roll_back(self) {
         for (copy, _) in self.copies.into_values() {
             self.db.pool.discard(&copy).expect("discarded");
         }
@@ -1214,7 +1266,7 @@ impl<'d> Txn<'d> {
     /// runs of the pages in ascending order and the pointers released;
     /// write-back is told; then the copies are installed, the freed pages
     /// freed and the version published (`transactions.md` CM3).
-    pub(super) fn commit(mut self, ops: &[Op]) -> CommitVersion {
+    pub(crate) fn commit(mut self, ops: &[Op]) -> CommitVersion {
         let db = self.db;
         let ids: BTreeSet<PageId> = ops.iter().map(Op::page).collect();
         let freed: BTreeSet<PageId> = ops
@@ -1335,9 +1387,13 @@ impl<'d> Txn<'d> {
             if freed.contains(&id) {
                 db.pool.discard(&copy).expect("discarded");
                 if db.table.newest(id).is_some() {
-                    db.table
-                        .push(id, Link::free(committed))
-                        .expect("a free link");
+                    // A page that was made under an id that named a freed
+                    // page before, and that no block holds yet, gets no
+                    // second free link (the engine's commit does the same).
+                    match db.table.push(id, Link::free(committed)) {
+                        Ok(()) | Err(crate::table::LinkError::AlreadyFree) => {}
+                        Err(error) => panic!("a free link: {error}"),
+                    }
                 }
                 db.pool.free(id, committed).expect("freed");
                 model

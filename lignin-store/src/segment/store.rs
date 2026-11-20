@@ -42,12 +42,39 @@ pub struct BlockLocation {
     pub len: u32,
 }
 
+/// One segment of a store as it is now, from [`SegmentStore::extents`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Extent {
+    /// The segment.
+    pub file: FileId,
+    /// How a manifest written now would name the segment. A segment that is
+    /// not named open takes no more blocks.
+    pub state: FileState,
+    /// Whether a writer of this session still has the segment.
+    pub has_writer: bool,
+    /// The file offset at which the segment ends now: after the last block
+    /// that was appended, durable or not, and after the footer of a sealed
+    /// segment.
+    pub end: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Created,
     Open,
     Closed,
     Sealed,
+}
+
+impl Phase {
+    /// The state a manifest names a segment in this phase with.
+    fn file_state(self) -> FileState {
+        match self {
+            Self::Created | Self::Open => FileState::Open,
+            Self::Closed => FileState::Closed,
+            Self::Sealed => FileState::Sealed,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -245,11 +272,7 @@ impl Segment {
 
     fn live_file(&self) -> Result<LiveFile, SegmentStoreError> {
         let state = self.state();
-        let file_state = match state.phase {
-            Phase::Created | Phase::Open => FileState::Open,
-            Phase::Closed => FileState::Closed,
-            Phase::Sealed => FileState::Sealed,
-        };
+        let file_state = state.phase.file_state();
         LiveFile::new(FileKind::Segment, self.id, file_state, state.durable_len)
             .map_err(self.format_error(0))
     }
@@ -614,6 +637,34 @@ impl SegmentStore {
             .ok_or(SegmentStoreError::UnknownSegment { file })?;
         segments.dropped.insert(file, segment.path.clone());
         Ok(())
+    }
+
+    /// Every segment in the store as it is now, in the order of their ids:
+    /// how a manifest written now would name it, whether a writer still has
+    /// it, and where it ends. No file is read.
+    ///
+    /// A segment that is not named open and has no writer takes no more
+    /// blocks, in this session or a later one.
+    pub fn extents(&self) -> Vec<Extent> {
+        self.live()
+            .iter()
+            .map(|segment| {
+                let state = segment.state();
+                Extent {
+                    file: segment.id,
+                    state: state.phase.file_state(),
+                    has_writer: state.has_writer,
+                    end: segment.end.load(Ordering::Acquire),
+                }
+            })
+            .collect()
+    }
+
+    /// The file offset at which the blocks of the segment `file` end: where
+    /// the footer of a sealed segment begins, which is read from its last
+    /// bytes, and where any other segment ends now.
+    pub fn blocks_end(&self, file: FileId) -> Result<u64, SegmentStoreError> {
+        self.segment(file)?.blocks_end()
     }
 
     /// The segments in the store, as a manifest written now would name them:
