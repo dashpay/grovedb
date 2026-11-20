@@ -346,8 +346,8 @@ jobs:
           - platform: macOS aarch64
             runner: macos-15
     env:
-      # A panic still names its file and line, and the build takes about
-      # two fifths less disk and a quarter less memory (measured on x86_64).
+      # A panic still names its file and line, and the build takes about a
+      # third less disk and a quarter less memory (measured on x86_64).
       # The hosted arm runner died three runs in a row while the test
       # executables were linked with full debug info (docs/lignindb/ci.md,
       # "Hosted runners").

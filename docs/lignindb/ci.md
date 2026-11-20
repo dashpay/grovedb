@@ -73,12 +73,12 @@ The jobs on GitHub's hosted runners (`ubuntu-24.04-arm`, `macos-15`) build the L
 
 Why: the arm job died three runs in a row ("The runner has received a shutdown signal", exit code 143) about two minutes into the last phase of the build, while the test executables were linked, with no test run; its log shows no "No space left on device" and no killed compiler. The likely cause is that phase's disk or memory. A reproduction of the job's first command on strixbox (x86_64, four build jobs as on the arm runner, a cap of 16 GiB of memory with no swap, no compiler cache) gave:
 
-| Debug info | Test executables (38) | All artifacts | RocksDB's objects | Peak memory, page cache included |
+| Debug info | Executables (38) | All artifacts | RocksDB's objects, besides | Peak memory, page cache included |
 | --- | --- | --- | --- | --- |
 | full, Cargo's default | 9.3 GiB | 11.7 GiB | 1.9 GiB | 14.9 GB |
 | line tables | 5.3 GiB | 7.2 GiB | 1.9 GiB | 11.0 GB |
 
-GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. The arm build was not measured; it is not expected to be much smaller.
+The 38 executables are the 35 test binaries and the programs `lignin-diff`, `lignin-bench` and `lignin-golden`. In all, line tables take about a third less disk (9.1 GiB against 13.6) and a quarter less memory. GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. The arm build was not measured.
 
 Each of those jobs prints the runner's cores, memory, swap and free disk at its start (`lignin-ci.sh machine`), and again every minute while the tests build and run, so a runner that dies leaves its last sample in the log. On macOS the memory printed is what is installed, and the swap what is in use.
 

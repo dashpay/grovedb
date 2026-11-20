@@ -98,25 +98,48 @@ refuse() {
     [ -z "$found" ] || fail "$what:"$'\n'"$found"
 }
 
+# What command "$@" prints, or `unreadable` when it fails or prints nothing.
+probe() {
+    local out
+    if out=$("$@" 2>/dev/null) && [ -n "$out" ]; then
+        echo "$out"
+    else
+        echo unreadable
+    fi
+}
+
+linux_memory() {
+    LC_ALL=C free -m | awk '
+        /^Mem:/ { memory = sprintf("memory %d of %d MiB used", $3, $2) }
+        /^Swap:/ { swap = sprintf(", swap %d of %d MiB", $3, $2) }
+        END { if (memory != "") print memory swap }'
+}
+
+macos_memory() {
+    local bytes
+    bytes=$(sysctl -n hw.memsize) && [[ $bytes =~ ^[0-9]+$ ]] &&
+        echo "memory $((bytes / 1048576)) MiB installed"
+}
+
+disk_free() {
+    df -Pm "$1" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4 " MiB" }'
+}
+
 # Cores, memory and swap (on Linux used of total; on macOS the memory
 # installed and the swap in use), and the disk free under the checkout and
 # the temporary directory. A value that cannot be read is printed as such.
 machine() {
     local cores memory
     if [ -r /proc/meminfo ]; then
-        cores=$(nproc || echo unreadable)
-        memory=$(free -m | awk '/^Mem:/ { printf "memory %d of %d MiB used", $3, $2 } /^Swap:/ { printf ", swap %d of %d MiB", $3, $2 }') ||
-            memory="memory unreadable"
+        cores=$(probe nproc)
+        memory=$(probe linux_memory)
     else
-        cores=$(sysctl -n hw.ncpu || echo unreadable)
-        memory="memory $(($(sysctl -n hw.memsize || echo 0) / 1048576)) MiB installed, swap $(sysctl -n vm.swapusage || echo unreadable)"
+        cores=$(probe sysctl -n hw.ncpu)
+        memory="$(probe macos_memory), swap $(probe sysctl -n vm.swapusage)"
     fi
+    memory=${memory/#unreadable/memory unreadable}
     printf '== %s machine: %s cores, %s; free disk: %s here, %s in %s\n' "$(date -u +%H:%M:%S)" \
-        "$cores" "$memory" "$(free_disk .)" "$(free_disk "${TMPDIR:-/tmp}")" "${TMPDIR:-/tmp}"
-}
-
-free_disk() {
-    df -Pm "$1" | awk 'NR == 2 { print $4 " MiB" }' || echo unreadable
+        "$cores" "$memory" "$(probe disk_free .)" "$(probe disk_free "${TMPDIR:-/tmp}")" "${TMPDIR:-/tmp}"
 }
 
 case "${1:-}" in
