@@ -37,73 +37,97 @@ const MAPS: bool = cfg!(all(
     ),
 ));
 
-/// The ranges of addresses in the text of `/proc/self/maps`. Each line
-/// begins with two addresses in hexadecimal and a hyphen between them. The
-/// rest of a line can be a path that is not text.
-fn ranges(text: &[u8]) -> Vec<(u64, u64)> {
-    text.split(|&byte| byte == b'\n')
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let range = line.split(|&byte| byte == b' ').next().expect("a range");
-            let range = std::str::from_utf8(range).expect("two addresses");
-            let (start, end) = range.split_once('-').expect("two addresses");
-            let address = |text| u64::from_str_radix(text, 16).expect("an address");
-            (address(start), address(end))
-        })
-        .collect()
+/// Reads the ranges of addresses out of the text of `/proc/self/maps`,
+/// which it is given in pieces of any length. Each line begins with two
+/// addresses in hexadecimal, a hyphen between them and a space after the
+/// second. The rest of a line can be a path that is not text.
+#[derive(Default)]
+struct Scan {
+    part: Part,
+    from: u64,
+    to: u64,
+}
+
+/// Which part of a line the next byte belongs to.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+enum Part {
+    #[default]
+    From,
+    To,
+    Rest,
+}
+
+impl Scan {
+    /// Takes the next piece of the text, and hands on each range whose
+    /// second address ends in it.
+    fn take(&mut self, piece: &[u8], mut range: impl FnMut(u64, u64)) {
+        for &byte in piece {
+            match (self.part, byte) {
+                (Part::Rest, b'\n') => *self = Self::default(),
+                (Part::Rest, _) => {}
+                (Part::From, b'-') => self.part = Part::To,
+                (Part::To, b' ') => {
+                    self.part = Part::Rest;
+                    range(self.from, self.to);
+                }
+                (Part::From, digit) => self.from = (self.from << 4) | hex(digit),
+                (Part::To, digit) => self.to = (self.to << 4) | hex(digit),
+            }
+        }
+    }
+}
+
+fn hex(digit: u8) -> u64 {
+    let digit = char::from(digit).to_digit(16).expect("an address");
+    u64::from(digit)
 }
 
 /// A reading of `/proc/self/maps` that is made ready before it is taken:
-/// the file is open and the buffer is there, so that taking it allocates
-/// nothing and opens nothing.
+/// the file is open and the buffer for a piece of its text is there, so
+/// that taking it allocates nothing and opens nothing, however long the
+/// text is.
 struct Reading {
     file: File,
-    text: Vec<u8>,
-    len: usize,
+    piece: Vec<u8>,
 }
 
 impl Reading {
-    fn ready(room: usize) -> Self {
+    fn ready() -> Self {
         Self {
             file: File::open("/proc/self/maps").expect("the mappings"),
-            text: vec![0; room],
-            len: 0,
+            piece: vec![0; 1 << 16],
         }
     }
 
-    /// Reads the file to its end. The buffer has to be longer than the
-    /// text: the test fails if it is not.
-    fn take(&mut self) -> &[u8] {
+    /// Reads the file to its end, and hands on each range of it.
+    fn take(&mut self, mut range: impl FnMut(u64, u64)) {
+        let mut scan = Scan::default();
         loop {
-            let read = match self.file.read(&mut self.text[self.len..]) {
-                Ok(read) => read,
-                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            match self.file.read(&mut self.piece) {
+                Ok(0) => break,
+                Ok(read) => scan.take(&self.piece[..read], &mut range),
+                Err(error) if error.kind() == ErrorKind::Interrupted => {}
                 Err(error) => panic!("the mappings: {error}"),
-            };
-            if read == 0 {
-                return &self.text[..self.len];
             }
-            self.len += read;
-            assert!(self.len < self.text.len(), "the buffer holds the mappings");
         }
+        assert_eq!(scan.part, Part::From, "the text ends with a whole line");
     }
 }
 
-/// Whether every address from `start` up to `end` is in one of the ranges,
-/// which are in the order of their addresses.
-fn covers(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
-    let mut reached = start;
-    for &(from, to) in ranges {
-        if from <= reached && reached < to {
-            reached = to;
-        }
+/// How far the addresses from some start on are covered without a gap,
+/// when they were covered up to `reached` and the range that comes next in
+/// the order of the addresses is counted in.
+fn reach(reached: u64, from: u64, to: u64) -> u64 {
+    if from <= reached && reached < to {
+        to
+    } else {
+        reached
     }
-    reached >= end
 }
 
-/// Whether any address from `start` up to `end` is in one of the ranges.
-fn touches(ranges: &[(u64, u64)], start: u64, end: u64) -> bool {
-    ranges.iter().any(|&(from, to)| from < end && start < to)
+/// Whether the range has any address from `start` up to `end`.
+fn touches(from: u64, to: u64, start: u64, end: u64) -> bool {
+    from < end && start < to
 }
 
 /// The size of the process's address space in bytes, on macOS.
@@ -119,14 +143,21 @@ fn address_space() -> u64 {
 
 #[test]
 fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
-    // What the two readings of the ranges are judged by.
+    // What the two readings are judged by, and what reads them.
     let sample = [(10, 20), (20, 30), (40, 50)];
-    assert!(covers(&sample, 12, 30) && !covers(&sample, 12, 31) && !covers(&sample, 5, 15));
-    assert!(touches(&sample, 29, 35) && !touches(&sample, 30, 40));
-    assert_eq!(
-        ranges(b"a-14 r-xp /\xff\n14-1e rw-p\n"),
-        [(10, 20), (20, 30)]
-    );
+    let reached = |start| {
+        let counted = |reached, &(from, to): &(u64, u64)| reach(reached, from, to);
+        sample.iter().fold(start, counted)
+    };
+    assert_eq!((reached(12), reached(5), reached(35)), (30, 5, 35));
+    assert!(touches(20, 30, 29, 35) && !touches(20, 30, 30, 40) && !touches(40, 50, 30, 40));
+    let text = b"a-14 r-xp /\xff\n14-1e rw-p\n";
+    for cut in 0..=text.len() {
+        let (mut scan, mut seen) = (Scan::default(), Vec::new());
+        scan.take(&text[..cut], |from, to| seen.push((from, to)));
+        scan.take(&text[cut..], |from, to| seen.push((from, to)));
+        assert_eq!(seen, [(10, 20), (20, 30)], "cut at {cut}");
+    }
 
     let config = PoolConfig {
         page_size: PageSize::MIN,
@@ -156,23 +187,19 @@ fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
     drop(blanks);
 
     if linux {
-        // The first reading allocates as it needs. The second is taken
-        // into a buffer that is made before the pool is dropped, with
-        // twice the room the first took and 64 KiB more.
-        let living = std::fs::read("/proc/self/maps").expect("the mappings");
-        let mut gone = Reading::ready(2 * living.len() + (1 << 16));
-        // This thread allocates and opens nothing from here to the end of
+        let end = start + mapped;
+        // Both readings are made ready before the pool is dropped. This
+        // thread allocates and opens nothing from the drop to the end of
         // the second reading.
+        let mut living = Reading::ready();
+        let mut gone = Reading::ready();
+        let mut reached = start;
+        living.take(|from, to| reached = reach(reached, from, to));
         drop(pool);
-        let gone = gone.take();
-        assert!(
-            covers(&ranges(&living), start, start + mapped),
-            "the frames are mapped while the pool lives"
-        );
-        assert!(
-            !touches(&ranges(gone), start, start + mapped),
-            "and no part of them once it is dropped"
-        );
+        let mut touched = false;
+        gone.take(|from, to| touched |= touches(from, to, start, end));
+        assert!(reached >= end, "the frames are mapped while the pool lives");
+        assert!(!touched, "and no part of them once it is dropped");
     } else {
         let before = before.expect("read before the pool was made");
         let with = address_space();

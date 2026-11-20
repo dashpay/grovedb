@@ -1887,9 +1887,10 @@ mod tests {
         drop(frames);
     }
 
-    /// A mapping of the largest size a layout can have is `None`: where
-    /// this file maps, the system refuses it, and elsewhere no mapping is
-    /// ever made. Miri stops when it is asked for a mapping of that size.
+    /// A mapping of the largest size a layout with an alignment of 4,096
+    /// bytes can have is `None`: where this file maps, the system refuses
+    /// it, and elsewhere no mapping is ever made. Miri stops when it is
+    /// asked for a mapping of that size.
     #[cfg_attr(miri, ignore = "Miri stops on a mapping that is too large")]
     #[test]
     fn a_mapping_the_system_refuses_is_none() {
