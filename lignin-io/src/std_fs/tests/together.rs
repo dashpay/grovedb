@@ -6,7 +6,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        mpsc, Arc,
     },
     time::{Duration, Instant},
 };
@@ -44,14 +44,60 @@ fn ino(file: &File) -> u64 {
     file.metadata().unwrap().ino()
 }
 
+/// Whether a set has the turn, so that no sync that is made alone can begin.
+fn a_set_has_the_turn() -> bool {
+    let tried = SYNC_TURNS.try_read();
+    matches!(tried, Err(std::sync::TryLockError::WouldBlock))
+}
+
+/// Whether a sync that is made alone is under way, so that no set can take
+/// its turn.
+fn a_set_has_to_wait() -> bool {
+    let tried = SYNC_TURNS.try_write();
+    matches!(tried, Err(std::sync::TryLockError::WouldBlock))
+}
+
+/// Whether `dir` is on an APFS volume, as `df` and `mount` say and not as
+/// this backend finds out.
+#[cfg(target_os = "macos")]
+fn is_on_apfs(dir: &Path) -> bool {
+    let said = |command: &mut Command| {
+        let output = command.output().unwrap();
+        assert!(output.status.success(), "{command:?}: {output:?}");
+        String::from_utf8(output.stdout).unwrap()
+    };
+    let df = said(Command::new("/bin/df").arg(dir));
+    let device = df
+        .lines()
+        .nth(1)
+        .unwrap()
+        .split_whitespace()
+        .next()
+        .unwrap();
+    said(Command::new("/sbin/mount").args(["-t", "apfs"]))
+        .lines()
+        .any(|line| line.starts_with(&format!("{device} on ")))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_on_apfs(_: &Path) -> bool {
+    false
+}
+
 /// A set whose items are all on one file system that shares a flush.
 fn sharing<'a>(hand_over: FileCall<'a>, flush: FileCall<'a>) -> SetSync<'a> {
+    sharing_in(&apart_from_other_syncs, hand_over, flush)
+}
+
+/// As [`sharing`], with the turn taken by `turn`.
+fn sharing_in<'a>(turn: Turn<'a>, hand_over: FileCall<'a>, flush: FileCall<'a>) -> SetSync<'a> {
     SetSync {
         alone: &|_, _| panic!("no item of this set is synced alone"),
         shared: Some(SharedFlush {
             file_system: &|_| Ok(Some(1)),
             hand_over,
             flush,
+            turn,
         }),
     }
 }
@@ -85,8 +131,8 @@ fn nine<'a>(
     items
 }
 
-/// The calls of this system for a set of nine, counted. Where the file
-/// system of the temporary directory shares a flush, which on macOS is APFS,
+/// The calls of this system for a set of nine, counted. Where the temporary
+/// directory is on APFS, which on macOS it is unless it was put elsewhere,
 /// they are nine calls that hand an item to the device and one flush.
 /// Everywhere else they are the nine single syncs.
 #[test]
@@ -117,6 +163,7 @@ fn a_set_of_nine_is_nine_calls_and_one_flush_where_a_flush_is_shared() {
             file_system: shared.file_system,
             hand_over: &count_hand_over,
             flush: &count_flush,
+            turn: shared.turn,
         }),
     };
     sync_together_using(&items, &counted).unwrap();
@@ -126,8 +173,8 @@ fn a_set_of_nine_is_nine_calls_and_one_flush_where_a_flush_is_shared() {
         .is_some_and(|shared| (shared.file_system)(&log.file).unwrap().is_some());
     assert_eq!(
         shares,
-        cfg!(target_os = "macos"),
-        "on macOS this test wants its temporary directory on APFS"
+        is_on_apfs(&root),
+        "a flush is shared on APFS and nowhere else"
     );
     let mut singly = vec![Member::Data, Member::All];
     singly.extend([Member::Dir; 7]);
@@ -197,54 +244,53 @@ fn a_failed_flush_of_a_set_stops_every_handle_that_waited_for_it() {
         .unwrap();
 }
 
-/// A handle of the set is synced by another thread after it was handed over
-/// and before the flush, and that sync fails: the set fails, and makes no
-/// flush that would seem to vouch for the handle.
+/// A sync of a handle of the set fails after the set looked at the handle
+/// and before the set's turn: the set fails with what the handle remembers,
+/// and hands nothing over, not the items before that one in the list
+/// either.
 #[test]
-fn a_sync_that_fails_while_its_handle_waits_for_the_flush_fails_the_set() {
+fn a_sync_that_fails_before_the_turn_of_its_set_fails_the_set() {
     let (_, root, _dir) = setup();
     let files = ["a", "b"].map(|name| written(&root.join(name)));
-    let (handed_over, flushes) = (Cell::new(0), Cell::new(0));
-    let the_first_fails_meanwhile = |_: &File| {
-        handed_over.set(handed_over.get() + 1);
-        if handed_over.get() == 2 {
-            files[0].sync_using(|_| Err(full())).unwrap_err();
+    let asked = Cell::new(0);
+    let the_second_fails_meanwhile = |_: &File| {
+        asked.set(asked.get() + 1);
+        if asked.get() == 2 {
+            files[1].sync_using(|_| Err(full())).unwrap_err();
         }
-        Ok(())
+        Ok(Some(1))
     };
-    let flush = |_: &File| {
-        flushes.set(flushes.get() + 1);
-        Ok(())
+    let set = SetSync {
+        alone: &|_, _| panic!("no item is synced alone"),
+        shared: Some(SharedFlush {
+            file_system: &the_second_fails_meanwhile,
+            hand_over: &|_| panic!("no item is handed over"),
+            flush: &|_| panic!("no flush is made"),
+            turn: &apart_from_other_syncs,
+        }),
     };
-    let set = sharing(&the_first_fails_meanwhile, &flush);
     let items = [SyncItem::Data(&files[0]), SyncItem::Data(&files[1])];
 
     let error = sync_together_using(&items, &set).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Other);
     assert!(error.to_string().contains("an earlier sync"), "{error}");
-    assert_eq!((handed_over.get(), flushes.get()), (2, 0));
-    assert!(is_stopped(&files[0]) && !is_stopped(&files[1]));
-}
-
-fn is_held(file: &StdFile) -> bool {
-    let tried = file.sync_failure.try_lock();
-    matches!(tried, Err(std::sync::TryLockError::WouldBlock))
+    assert_eq!(asked.get(), 2);
+    assert!(!is_stopped(&files[0]) && is_stopped(&files[1]));
 }
 
 /// The failure of a flush, which counts how often its text was made and
-/// how often every one of `files` was held when it was.
-#[derive(Debug)]
+/// how often a set had the turn when it was.
+#[derive(Debug, Default)]
 struct Told {
-    files: Arc<[StdFile; 3]>,
     made: Arc<AtomicUsize>,
-    made_with_all_held: Arc<AtomicUsize>,
+    made_in_the_turn: Arc<AtomicUsize>,
 }
 
 impl fmt::Display for Told {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.made.fetch_add(1, Ordering::Relaxed);
-        if self.files.iter().all(is_held) {
-            self.made_with_all_held.fetch_add(1, Ordering::Relaxed);
+        if a_set_has_the_turn() {
+            self.made_in_the_turn.fetch_add(1, Ordering::Relaxed);
         }
         f.write_str("the flush failed")
     }
@@ -252,53 +298,178 @@ impl fmt::Display for Told {
 
 impl std::error::Error for Told {}
 
-/// While the flush is made, and until its failure is on record, every handle
-/// that waits for it is held: the record has the failure's text, which is
-/// made with all of them held, and a sync of one of them on another thread
-/// waits and then fails. It cannot return `Ok` in between. A handle that is
-/// in the list twice is held once.
+/// From the first item that a set hands over to the record of its flush's
+/// failure no other sync runs, and the set takes one turn for it, not one
+/// after another. A sync that is made alone cannot begin; the
+/// record has the failure's text, which is made in the turn; and a sync on
+/// another thread that is started during the flush waits: of a handle of the
+/// set it then fails, and of another handle it is made once the failure is
+/// on record.
 #[test]
-fn the_handles_of_a_set_are_held_from_the_flush_to_the_record_of_its_failure() {
+fn a_set_has_the_turn_from_its_first_hand_over_to_the_record_of_its_failed_flush() {
     let (_, root, _dir) = setup();
-    let files = Arc::new(["a", "b", "c"].map(|name| written(&root.join(name))));
+    let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
     let outside = written(&root.join("outside"));
     let items = [
         SyncItem::Data(&files[0]),
+        SyncItem::Dir(&root),
         SyncItem::Data(&files[1]),
         SyncItem::All(&files[2]),
         SyncItem::Data(&files[0]),
     ];
-
-    let flush = |_: &File| {
-        assert!(files.iter().all(is_held) && !is_held(&outside));
-        Ok(())
+    let told = Told::default();
+    let (made, made_in_the_turn) = (told.made.clone(), told.made_in_the_turn.clone());
+    let (handed_over, told) = (Cell::new(0), Cell::new(Some(told)));
+    let turns = Cell::new(0);
+    let turn = || {
+        turns.set(turns.get() + 1);
+        apart_from_other_syncs()
     };
-    sync_together_using(&items, &sharing(&|_| Ok(()), &flush)).unwrap();
-    assert!(!files.iter().any(is_held));
 
-    let (made, made_with_all_held) = (Arc::default(), Arc::default());
     std::thread::scope(|scope| {
-        let beside = Cell::new(None);
-        let flush = |_: &File| {
-            assert!(files.iter().all(is_held));
-            beside.set(Some(scope.spawn(|| files[1].sync_using(|_| Ok(())))));
-            Err(io::Error::other(Told {
-                files: Arc::clone(&files),
-                made: Arc::clone(&made),
-                made_with_all_held: Arc::clone(&made_with_all_held),
-            }))
+        let beside = RefCell::new(Vec::new());
+        let hand_over = |_: &File| {
+            assert!(a_set_has_the_turn());
+            handed_over.set(handed_over.get() + 1);
+            Ok(())
         };
-        sync_together_using(&items, &sharing(&|_| Ok(()), &flush)).unwrap_err();
-        let (made, held) = (&made, &made_with_all_held);
-        let (made, held): (usize, usize) =
-            (made.load(Ordering::Relaxed), held.load(Ordering::Relaxed));
-        assert!(made > 0 && made == held, "{held} of {made}");
-        let beside = beside.take().unwrap().join().unwrap().unwrap_err();
-        assert_eq!(beside.kind(), ErrorKind::Other);
+        let flush = |_: &File| {
+            assert!(a_set_has_the_turn());
+            assert_eq!(handed_over.get(), 5);
+            let of_the_set = || files[1].sync_using(|_| Ok(()));
+            let of_another = || {
+                outside.sync_using(|_| {
+                    let on_record = guard(&files[1].sync_failure)?.is_some();
+                    assert!(on_record, "a sync ran before the failure was on record");
+                    Ok(())
+                })
+            };
+            let mut beside = beside.borrow_mut();
+            beside.push(scope.spawn(of_the_set));
+            beside.push(scope.spawn(of_another));
+            Err(io::Error::other(told.take().unwrap()))
+        };
+        sync_together_using(&items, &sharing_in(&turn, &hand_over, &flush)).unwrap_err();
+        assert_eq!(turns.get(), 1);
+
+        let (made, in_the_turn) = (&made, &made_in_the_turn);
+        let (made, in_the_turn) = (
+            made.load(Ordering::Relaxed),
+            in_the_turn.load(Ordering::Relaxed),
+        );
+        assert!(made > 0 && made == in_the_turn, "{in_the_turn} of {made}");
+        let mut beside = beside
+            .into_inner()
+            .into_iter()
+            .map(|sync| sync.join().unwrap());
+        assert_eq!(beside.next().unwrap().unwrap_err().kind(), ErrorKind::Other);
+        beside.next().unwrap().unwrap();
     });
-    assert!(!files.iter().any(is_held));
     assert!(files.iter().all(is_stopped));
     assert!(!is_stopped(&outside));
+}
+
+/// Two sets with a handle in common take their turns one after the other:
+/// the second, started while the first hands over, hands nothing over until
+/// the first has made its flush and put a failure of it on record. So a
+/// handle is stopped by the failed flush that its bytes were handed over
+/// for, and left alone by one that failed after its own had been made.
+#[test]
+fn two_sets_with_a_handle_in_common_do_not_mix() {
+    for the_first_fails in [false, true] {
+        let (_, root, _dir) = setup();
+        let [a, b, c] = ["a", "b", "c"].map(|name| written(&root.join(name)));
+        let events = Mutex::new(Vec::new());
+        let event = |what: &'static str| events.lock().unwrap().push(what);
+        let (second_hands_over, first_waits) = mpsc::channel();
+        let second_hands_over = Mutex::new(second_hands_over);
+
+        let second = std::thread::scope(|scope| {
+            let (started, second) = (Cell::new(false), Cell::new(None));
+            let the_second_set = || {
+                let hand_over = |_: &File| {
+                    let _ = second_hands_over.lock().unwrap().send(());
+                    event("the second hands over");
+                    Ok(())
+                };
+                let flush = |_: &File| {
+                    event("the second flushes");
+                    match the_first_fails {
+                        true => Ok(()),
+                        false => Err(full()),
+                    }
+                };
+                let items = [SyncItem::Data(&a), SyncItem::Data(&c)];
+                sync_together_using(&items, &sharing(&hand_over, &flush))
+            };
+            let hand_over = |_: &File| {
+                event("the first hands over");
+                if !started.replace(true) {
+                    second.set(Some(scope.spawn(the_second_set)));
+                }
+                Ok(())
+            };
+            let flush = |_: &File| {
+                let waited = first_waits.recv_timeout(Duration::from_millis(100));
+                assert_eq!(waited, Err(mpsc::RecvTimeoutError::Timeout));
+                event("the first flushes");
+                match the_first_fails {
+                    true => Err(full()),
+                    false => Ok(()),
+                }
+            };
+            let items = [SyncItem::Data(&a), SyncItem::Data(&b)];
+            let first = sync_together_using(&items, &sharing(&hand_over, &flush));
+            assert_eq!(first.is_err(), the_first_fails);
+            second.take().unwrap().join().unwrap()
+        });
+
+        let of_the_first = [
+            "the first hands over",
+            "the first hands over",
+            "the first flushes",
+        ];
+        let of_the_second = [
+            "the second hands over",
+            "the second hands over",
+            "the second flushes",
+        ];
+        let events = events.into_inner().unwrap();
+        let stopped = [&a, &b, &c].map(is_stopped);
+        if the_first_fails {
+            assert_eq!(second.unwrap_err().kind(), ErrorKind::Other);
+            assert_eq!(events, of_the_first);
+            assert_eq!(stopped, [true, true, false]);
+        } else {
+            assert_eq!(second.unwrap_err().kind(), ErrorKind::StorageFull);
+            assert_eq!(events, [of_the_first, of_the_second].concat());
+            assert_eq!(stopped, [true, false, true]);
+        }
+    }
+}
+
+/// A sync that is made alone keeps a set from its turn while it runs: of a
+/// file, of a directory, and each single sync of a set.
+#[test]
+fn a_sync_that_is_made_alone_keeps_a_set_from_its_turn() {
+    let (_, root, _dir) = setup();
+    let file = written(&root.join("file"));
+    let seen = Cell::new(0);
+    let look = |_: &File| {
+        assert!(a_set_has_to_wait());
+        seen.set(seen.get() + 1);
+        Ok(())
+    };
+
+    file.sync_using(look).unwrap();
+    sync_dir_using(&open_dir(&root).unwrap(), look).unwrap();
+    let singly = SetSync {
+        alone: &|file, _| look(file),
+        shared: None,
+    };
+    let items = [SyncItem::Data(&file), SyncItem::Dir(&root)];
+    sync_together_using(&items, &singly).unwrap();
+    assert_eq!(seen.get(), 4);
 }
 
 /// A handle whose syncs were stopped fails a set with what it remembers,
@@ -321,6 +492,7 @@ fn a_stopped_handle_fails_a_set_before_its_file_system_is_asked() {
             file_system: &cannot_tell,
             hand_over: &|_| panic!("no item is handed over"),
             flush: &|_| panic!("no flush is made"),
+            turn: &|| panic!("no turn is taken"),
         }),
     };
 
@@ -371,9 +543,13 @@ fn a_failed_sync_of_one_item_stops_that_handle_and_the_set() {
         assert_eq!((calls.get(), flushes.get()), (2, 0));
         assert_eq!(files.each_ref().map(is_stopped), [false, true, false]);
 
+        // Where a flush is shared, the stopped handle is seen before anything
+        // is handed over. Where none is, it is seen after the single sync of
+        // the item before it.
         let error = sync_together_using(&items, &set).unwrap_err();
         assert_eq!(error.kind(), ErrorKind::Other);
-        assert_eq!((calls.get(), flushes.get()), (3, 0));
+        let calls_by_then = if shared { 2 } else { 3 };
+        assert_eq!((calls.get(), flushes.get()), (calls_by_then, 0));
     }
 }
 
@@ -484,12 +660,18 @@ fn a_set_is_flushed_once_for_each_file_system_that_shares_a_flush() {
             false => Ok(()),
         }
     };
+    let turns = Cell::new(0);
+    let turn = || {
+        turns.set(turns.get() + 1);
+        apart_from_other_syncs()
+    };
     let set = SetSync {
         alone: &sync_alone,
         shared: Some(SharedFlush {
             file_system: &file_system,
             hand_over: &hand_over,
             flush: &flush,
+            turn: &turn,
         }),
     };
     let items = [
@@ -507,6 +689,7 @@ fn a_set_is_flushed_once_for_each_file_system_that_shares_a_flush() {
     assert_eq!(*synced_alone.borrow(), alone_inos);
     assert_eq!(handed_over.borrow().len(), 5);
     assert_eq!(*flushed.borrow(), [on_one[1], ino(&two[1].file)]);
+    assert_eq!(turns.get(), 2);
 
     flushed.borrow_mut().clear();
     second_flush_fails.set(true);

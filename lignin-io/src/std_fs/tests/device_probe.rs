@@ -150,6 +150,7 @@ fn change(root: &Path, way: &str) {
             file_system: &by_device,
             hand_over: &hand_to_device,
             flush,
+            turn: &apart_from_other_syncs,
         }),
     };
     let alone = SetSync {

@@ -59,6 +59,18 @@
 //! system is synced by its single call, with a full flush of its own, and so
 //! is a file of the list that another file layer opened.
 //!
+//! The items that share a flush are synced after the others of the list,
+//! those of each volume in one turn apart from every other sync this backend
+//! makes in the process. From the first `fsync` of a turn to its flush, and
+//! until a failure of that flush is on record for every handle among the
+//! turn's items, a single sync and another set wait, whatever volume they are
+//! for. So no flush of this backend is made, or fails, between a hand-over
+//! and the flush that covers it, and no sync of a handle returns between a
+//! failed flush and the record that stops the handle. Any number of single
+//! syncs run at once. A set that waits for its turn keeps the single syncs
+//! that come after it waiting as well, so one slow sync, on any volume, holds
+//! up every sync of the process once a set waits for it.
+//!
 //! That one full flush is enough on APFS rests on three things.
 //!
 //! - **What Apple says of the two calls.** `fsync(2)` on macOS: it "causes
@@ -131,6 +143,15 @@
 //! had reached the image file shortly after a set's calls returned, not that
 //! a device keeps it through a power cut: that the flush makes it so is
 //! Apple's statement, and no test of this crate cuts the power.
+//!
+//! A flush that this backend does not make can fail between a set's
+//! hand-overs and its flush without the set seeing it: one that other code
+//! of the process asks for (another storage engine, a file that is synced
+//! past this backend), another process, or the system of its own accord.
+//! What a device then does with the bytes it was handed is not known here. A
+//! single `F_FULLFSYNC` has the same gap between its two halves, and a file
+//! whose bytes the system wrote to the device early has it for longer; a set
+//! has it for as long as its `fsync` calls take.
 
 use std::{
     any::Any,
@@ -138,7 +159,7 @@ use std::{
     io::{self, ErrorKind, Write},
     os::unix::fs::{FileExt, MetadataExt},
     path::Path,
-    sync::{Mutex, MutexGuard},
+    sync::{Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard},
 };
 
 use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, SyncItem, Vfs, VfsFile, VfsLock};
@@ -201,7 +222,7 @@ impl Vfs for StdVfs {
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        open_dir(path)?.sync_all()
+        sync_dir_using(&open_dir(path)?, File::sync_all)
     }
 
     fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
@@ -288,7 +309,14 @@ impl StdFile {
         })
     }
 
+    /// A sync of this handle that is made alone.
     fn sync_using(&self, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
+        let _turn = beside_other_syncs();
+        self.sync_in_turn(sync)
+    }
+
+    /// A sync of this handle by a caller that has taken a turn for it.
+    fn sync_in_turn(&self, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
         let mut failure = guard(&self.sync_failure)?;
         still_syncing(&failure)?;
         sync(&self.file).inspect_err(|error| *failure = Some(failed_sync(error)))
@@ -446,6 +474,35 @@ fn open_dir(path: &Path) -> io::Result<File> {
     Ok(dir)
 }
 
+/// The turns of the syncs this backend makes, in the whole process.
+///
+/// A sync that is made alone holds it shared, with any number of others. A
+/// set holds it for itself once for the items of each file system that
+/// share a flush: from the first of them that it hands to the device to the
+/// flush that covers them, and until a failure of that flush is on record.
+/// So no flush of this backend is made, or fails, between a hand-over and
+/// its flush, and no sync returns between a failed flush and the record of
+/// its failure.
+///
+/// It guards nothing a panic could leave half done, so a turn is taken
+/// whether or not an earlier holder panicked.
+static SYNC_TURNS: RwLock<()> = RwLock::new(());
+
+fn beside_other_syncs() -> RwLockReadGuard<'static, ()> {
+    SYNC_TURNS.read().unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn apart_from_other_syncs() -> RwLockWriteGuard<'static, ()> {
+    SYNC_TURNS.write().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The sync of a directory that is made alone.
+fn sync_dir_using(dir: &File, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
+    let _turn = beside_other_syncs();
+    sync(dir)
+}
+
 /// Which single sync an item of a set stands for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Member {
@@ -456,6 +513,7 @@ enum Member {
 
 type FileCall<'a> = &'a dyn Fn(&File) -> io::Result<()>;
 type FileSystemOf<'a> = &'a dyn Fn(&File) -> io::Result<Option<u64>>;
+type Turn<'a> = &'a dyn Fn() -> RwLockWriteGuard<'static, ()>;
 
 /// How a set is made durable.
 #[derive(Clone, Copy)]
@@ -476,16 +534,18 @@ struct SharedFlush<'a> {
     /// The flush. Asked on one item, it makes durable what was handed over
     /// of every item on that item's file system.
     flush: FileCall<'a>,
+    /// Takes the turn in which the items on one file system are handed over
+    /// and flushed, apart from every other sync (see [`SYNC_TURNS`]).
+    turn: Turn<'a>,
 }
 
-impl<'a> SetSync<'a> {
-    /// The flush `file` can share, with the file system it is shared on.
-    fn shared_on(&self, file: &File) -> io::Result<Option<(u64, &SharedFlush<'a>)>> {
-        let Some(shared) = &self.shared else {
-            return Ok(None);
-        };
-        let file_system = (shared.file_system)(file)?;
-        Ok(file_system.map(|file_system| (file_system, shared)))
+impl SetSync<'_> {
+    /// The file system `file` is on, if the items on it share a flush.
+    fn shared_on(&self, file: &File) -> io::Result<Option<u64>> {
+        match &self.shared {
+            Some(shared) => (shared.file_system)(file),
+            None => Ok(None),
+        }
     }
 }
 
@@ -507,6 +567,7 @@ const SYSTEM: SetSync<'static> = SetSync {
         file_system: &apfs_volume,
         hand_over: &hand_to_device,
         flush: &full_flush,
+        turn: &apart_from_other_syncs,
     }),
 };
 
@@ -545,53 +606,51 @@ fn full_flush(file: &File) -> io::Result<()> {
     file.sync_all()
 }
 
-/// The items of a set on one file system, which wait for its flush.
-struct Waiting<'a> {
+/// The items of a set on one file system on which they share a flush, in
+/// the order of the list.
+struct Sharing<'a> {
     file_system: u64,
-    /// The handles among them, whose syncs stop if the flush fails.
-    handles: Vec<&'a StdFile>,
-    /// The last of them, which the flush is asked on.
-    last: Last<'a>,
+    items: Vec<Shared<'a>>,
 }
 
-enum Last<'a> {
-    Handle(&'a File),
+enum Shared<'a> {
+    Handle(&'a StdFile),
     Dir(File),
 }
 
-impl Last<'_> {
+impl Shared<'_> {
     fn file(&self) -> &File {
         match self {
-            Self::Handle(file) => file,
+            Self::Handle(handle) => &handle.file,
             Self::Dir(dir) => dir,
+        }
+    }
+
+    fn handle(&self) -> Option<&StdFile> {
+        match self {
+            Self::Handle(handle) => Some(handle),
+            Self::Dir(_) => None,
         }
     }
 }
 
-/// Puts an item that was handed over among those that wait for the flush of
-/// its file system.
-fn wait_for_flush<'a>(
-    waiting: &mut Vec<Waiting<'a>>,
-    file_system: u64,
-    handle: Option<&'a StdFile>,
-    last: Last<'a>,
-) {
-    let on_it = |group: &Waiting<'_>| group.file_system == file_system;
-    match waiting.iter().position(on_it) {
-        Some(at) => {
-            waiting[at].last = last;
-            waiting[at].handles.extend(handle);
-        }
-        None => waiting.push(Waiting {
+/// Puts an item among those that share the flush of its file system.
+fn share<'a>(sharing: &mut Vec<Sharing<'a>>, file_system: u64, item: Shared<'a>) {
+    let on_it = |group: &Sharing<'_>| group.file_system == file_system;
+    match sharing.iter().position(on_it) {
+        Some(at) => sharing[at].items.push(item),
+        None => sharing.push(Sharing {
             file_system,
-            handles: handle.into_iter().collect(),
-            last,
+            items: vec![item],
         }),
     }
 }
 
+/// Syncs a set: in the order of the list every item that shares no flush, by
+/// its single call, and then the items of each file system that do share
+/// one.
 fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<()> {
-    let mut waiting = Vec::new();
+    let mut sharing = Vec::new();
     for item in items {
         let (member, file) = match *item {
             SyncItem::Data(file) => (Member::Data, file),
@@ -599,11 +658,8 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
             SyncItem::Dir(path) => {
                 let dir = open_dir(path)?;
                 match set.shared_on(&dir)? {
-                    Some((file_system, shared)) => {
-                        (shared.hand_over)(&dir)?;
-                        wait_for_flush(&mut waiting, file_system, None, Last::Dir(dir));
-                    }
-                    None => (set.alone)(&dir, Member::Dir)?,
+                    Some(file_system) => share(&mut sharing, file_system, Shared::Dir(dir)),
+                    None => sync_dir_using(&dir, |dir| (set.alone)(dir, Member::Dir))?,
                 }
                 continue;
             }
@@ -611,7 +667,7 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
         let any: &dyn Any = file;
         let Some(handle) = any.downcast_ref::<StdFile>() else {
             // A file of another file layer: that layer's own call syncs it
-            // whole, so it waits for no flush of this one.
+            // whole, so it shares no flush of this one.
             if member == Member::Data {
                 file.sync_data()?;
             } else {
@@ -621,49 +677,46 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
         };
         still_syncing(&*guard(&handle.sync_failure)?)?;
         match set.shared_on(&handle.file)? {
-            Some((file_system, shared)) => {
-                handle.sync_using(shared.hand_over)?;
-                let last = Last::Handle(&handle.file);
-                wait_for_flush(&mut waiting, file_system, Some(handle), last);
-            }
+            Some(file_system) => share(&mut sharing, file_system, Shared::Handle(handle)),
             None => handle.sync_using(|file| (set.alone)(file, member))?,
         }
     }
     let Some(shared) = &set.shared else {
         return Ok(());
     };
-    for group in &waiting {
-        flush_for(group, shared.flush)?;
+    for group in &sharing {
+        sync_sharing(group, shared)?;
     }
     Ok(())
 }
 
-/// Makes the flush that the items of `group` wait for.
+/// Syncs the items of `group` with one flush.
 ///
-/// Every handle among them is held for it, from before the flush until its
-/// failure is on record. So no sync of one of them, alone or in another set,
-/// runs in between and returns `Ok` for bytes that the failed flush left
-/// unknown, and a handle whose own sync failed since it was handed over
-/// fails the set before the flush. The handles are taken in the order of
-/// their addresses, each once: two sets with the same handles in another
-/// order do not wait for each other, nor a handle that is in a list twice
-/// for itself.
-fn flush_for(group: &Waiting<'_>, flush: FileCall<'_>) -> io::Result<()> {
-    fn address(handle: &StdFile) -> usize {
-        std::ptr::from_ref(handle).addr()
+/// It is one turn apart from every other sync (see [`SYNC_TURNS`]). In it
+/// the handles are looked at, so that one whose syncs were stopped fails the
+/// set before anything is handed over; every item is handed to the device;
+/// the flush is made on the last of them; and a failure of the flush is put
+/// on record for every handle of the group.
+fn sync_sharing(group: &Sharing<'_>, shared: &SharedFlush<'_>) -> io::Result<()> {
+    let Some(last) = group.items.last() else {
+        return Ok(());
+    };
+    let handles = || group.items.iter().filter_map(Shared::handle);
+    let _turn = (shared.turn)();
+    for handle in handles() {
+        still_syncing(&*guard(&handle.sync_failure)?)?;
     }
-    let mut handles = group.handles.clone();
-    handles.sort_by_key(|handle| address(handle));
-    handles.dedup_by_key(|handle| address(handle));
-    let mut failures = Vec::with_capacity(handles.len());
-    for handle in handles {
-        let failure = guard(&handle.sync_failure)?;
-        still_syncing(&failure)?;
-        failures.push(failure);
+    for item in &group.items {
+        match item {
+            Shared::Handle(handle) => handle.sync_in_turn(shared.hand_over)?,
+            Shared::Dir(dir) => (shared.hand_over)(dir)?,
+        }
     }
-    flush(group.last.file()).inspect_err(|error| {
-        for failure in &mut failures {
-            **failure = Some(failed_sync(error));
+    (shared.flush)(last.file()).inspect_err(|error| {
+        for handle in handles() {
+            if let Ok(mut failure) = guard(&handle.sync_failure) {
+                *failure = Some(failed_sync(error));
+            }
         }
     })
 }

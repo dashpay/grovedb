@@ -107,18 +107,19 @@
 //!   of a file or of a directory, and returns `Ok` when every one of them has
 //!   been made. Each file and each directory of the list is then durable as
 //!   its own call would have made it ([`VfsFile::sync_data`],
-//!   [`VfsFile::sync_all`] or [`Vfs::sync_dir`]), and nothing more is
-//!   promised than those calls promise. Before it returns, a crash may find
-//!   any of the syncs made and any not, whatever their order in the list: it
-//!   leaves what it could leave if the calls had been made one by one and it
-//!   had come after some of them and before the others. The list is not
+//!   [`VfsFile::sync_all`] or [`Vfs::sync_dir`]), and nothing more is promised
+//!   than those calls promise: as for a single sync, `Ok` does not cover the
+//!   changes that a failed sync of the same file had left unknown before it,
+//!   through whatever handle that sync was made. Before it returns, a crash
+//!   may find any of the syncs made and any not, whatever their order in the
+//!   list: it leaves what it could leave if the calls had been made one by one
+//!   and it had come after some of them and before the others. The list is not
 //!   atomic, and a caller that needs one thing durable before another makes
 //!   two calls. What the one call gives is a lower cost where a sync ends with
 //!   a flush of a whole device: the file layer may make that flush once for
-//!   the list. If the call fails, any of the syncs may have been made, and
-//!   the caller is not told which one failed. The next rule then holds for
-//!   every file of the list, and no directory of the list is known to be
-//!   synced.
+//!   the list. If the call fails, any of the syncs may have been made, and the
+//!   caller is not told which one failed. The next rule then holds for every
+//!   file of the list, and no directory of the list is known to be synced.
 //! - **A failed sync cannot be made good.** When a sync of a file fails, the
 //!   changes that were not yet synced are left unknown: the system may have
 //!   written them or dropped them, and it will not say which. A later sync
@@ -181,12 +182,15 @@
 //!   both fail on that handle from then on, and so does a
 //!   [`Vfs::sync_together`] that has the handle in its list. The rule above
 //!   about a failed sync holds for every handle of the file, including the
-//!   ones this does not stop.
+//!   ones this does not stop. Those report nothing of the failure, alone or
+//!   in a list: another handle is how the changes are written again, so it
+//!   is not stopped, and whoever syncs one file through several handles
+//!   keeps track of the failures of each.
 //! - A [`Vfs::sync_together`] that fails is a failed sync of the handles it
 //!   can no longer vouch for: the one whose own sync failed, and every one
-//!   whose bytes were waiting for a flush that failed. Those keep failing as
-//!   above. The rule about a failed sync holds for every file of the list,
-//!   including the ones this does not stop.
+//!   whose bytes the call had handed to a device for a flush that then failed.
+//!   Those keep failing as above. The rule about a failed sync holds for every
+//!   file of the list, including the ones this does not stop.
 //! - A failed [`VfsFile::append`] is undone: the file keeps the length it had.
 //!   If it cannot be undone, every later append on that handle fails.
 //!
@@ -349,9 +353,12 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     ///
     /// When it returns `Ok`, each file and each directory of the list is
     /// durable as the call its [`SyncItem`] names would have made it, for
-    /// every change that returned before this call began. Until then a crash
-    /// may find any of the syncs made and any not. A list with nothing in it
-    /// is `Ok`, and a file or a directory may be in the list more than once.
+    /// every change that returned before this call began, and with that call's
+    /// exception: a sync of the file, through any handle, that failed after
+    /// the change and before this call returned. Until then a crash may find
+    /// any of the syncs made and any not, and a file layer may make them in
+    /// another order than the list's. A list with nothing in it is `Ok`, and a
+    /// file or a directory may be in the list more than once.
     ///
     /// If it fails, it fails as the call of one of its items does: with
     /// [`NotFound`](io::ErrorKind::NotFound) or
@@ -479,8 +486,9 @@ pub trait VfsLock: fmt::Debug + Send + Sync {
     /// Whether the file this guard is on is the file that `path` names
     /// now. It is not once the lock file was removed or renamed away, or
     /// another file was put under its name: the directory was renamed away,
-    /// or removed and made again, or a copy of it took its place. A path that names nothing, or whose
-    /// directory is gone, is answered with `false`.
+    /// or removed and made again, or a copy of it took its place. A path
+    /// that names nothing, or whose directory is gone, is answered with
+    /// `false`.
     ///
     /// The guard stays as it is, and nothing is written. Whoever is about
     /// to write into the directory of a lock it has held for long asks
