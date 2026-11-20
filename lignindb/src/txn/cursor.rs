@@ -3,7 +3,7 @@
 
 use std::{cmp::Ordering, fmt, ops::Bound};
 
-use lignin_format::CommitVersion;
+use lignin_format::{tree_page::Side, CommitVersion};
 use lignin_store::load::LoadBuffers;
 use lignin_tree::{
     cursor as tree,
@@ -16,10 +16,10 @@ use super::{
     frames::stored_key,
     key::{Subtree, Unit},
     opened::Opened,
-    pages::find,
+    pages::{child_keys, find},
     path::{FlatReader, Idle, WritePath, IDLE},
     txn::{show_committed, WriteTxn},
-    view::NodeView,
+    view::{ChildKeys, NodeView},
     write_set::{Own, WriteSet},
 };
 use crate::{
@@ -184,15 +184,28 @@ impl<'s> MerkSide<'s> {
 
     /// Shows `read` the committed node under `key`, or `None` if the
     /// version has none. `key` is mostly the key the side stands on.
+    ///
+    /// `children`, where it is given, takes the key of each child of that
+    /// node, read from the child's cell at the side's version.
     fn node<R>(
         &mut self,
         guard: &OperationGuard<'s>,
         key: &[u8],
+        children: Option<&mut ChildKeys>,
         read: impl FnOnce(Option<NodeView<'_>>) -> R,
     ) -> Result<R, TxnError> {
         if self.cursor.key() == Some(key) {
             let reader = self.reader(guard);
             let node = self.cursor.node(&reader, &mut self.buffers)?;
+            if let (Some(node), Some(children)) = (&node, children) {
+                for side in [Side::Left, Side::Right] {
+                    let slot = children.slot(side);
+                    if let Some(link) = node.node().link(side) {
+                        let child = reader.node(link.child, &mut self.buffers)?;
+                        slot.extend_from_slice(child.node().key());
+                    }
+                }
+            }
             let store = self.path.values;
             return Ok(read(
                 node.as_ref().map(|node| NodeView::committed(node, store)),
@@ -203,6 +216,9 @@ impl<'s> MerkSide<'s> {
         // found by the key.
         let mut pages = (self.path).committed_pages(guard, self.at, self.lease, &mut self.buffers);
         let found = find(&mut pages, self.cursor.root(), key)?;
+        if let (Some(found), Some(children)) = (found, children) {
+            child_keys(&mut pages, found, children)?;
+        }
         show_committed(&mut pages, found, read)
     }
 }
@@ -392,20 +408,185 @@ impl<'t, 's> MerkCursor<'t, 's> {
     ///
     /// `read` runs inside the operation: it must not call the transaction.
     pub fn node<R>(&mut self, read: impl FnOnce(Option<NodeView<'_>>) -> R) -> Result<R, TxnError> {
+        self.show(None, read)
+    }
+
+    /// As [`Self::node`], and reads the key of each child of the node into
+    /// `children`, in the same operation, where the node is shown from a
+    /// cell: from the child's cell in the transaction's frames for a node
+    /// it wrote, and otherwise from the child's cell at the cursor's
+    /// version. A node that is shown as a record of the write set has the
+    /// keys in its links ([`LinkView::key`](super::LinkView::key)), and
+    /// `children` holds none, as with no node shown.
+    ///
+    /// It is what a record of the node as Merk encodes it takes
+    /// (`tree-page.md`, section 7): a cell holds the length of a child's
+    /// key and not the key (TP10).
+    pub fn node_with_children<R>(
+        &mut self,
+        children: &mut ChildKeys,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        self.show(Some(children), read)
+    }
+
+    fn show<R>(
+        &mut self,
+        mut children: Option<&mut ChildKeys>,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        if let Some(children) = children.as_deref_mut() {
+            children.clear();
+        }
         let Some(key) = &self.key else {
             return Ok(read(None));
         };
         let key = key.clone();
         let subtree = self.unit.subtree;
-        let read = match (self.txn).own_node_in(self.who, subtree, &key, read)? {
+        let own = children.as_deref_mut();
+        let read = match (self.txn).own_node_in(self.who, subtree, &key, own, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
         let guard = self.txn.path().versions().guard();
         match self.reads(&guard)? {
-            true => self.side.node(&guard, &key, read),
+            true => self.side.node(&guard, &key, children, read),
             false => Ok(read(None)),
         }
+    }
+}
+
+/// A cursor of a scope between two calls, kept apart from the scope
+/// ([`Scope::parked_merk_cursor`](super::Scope::parked_merk_cursor)).
+///
+/// A cursor borrows the scope it was opened through, so its holder keeps
+/// the scope borrowed for as long as the cursor lives. A parked cursor
+/// borrows the transaction instead and offers no call of its own: it is
+/// moved and read through [`Scope::resume`](super::Scope::resume) of the
+/// scope that opened it, which gives a [`Resumed`] for the length of one
+/// borrow of the scope. So it is never used without its scope, nor after
+/// the scope has ended, and it can be kept beside a scope that is behind a
+/// lock.
+///
+/// Parked, it holds what a cursor holds between two calls: the pin of its
+/// version, its lease, and the key it stands on (RD6). It holds no page:
+/// the ordered cursor of the tree layer keeps none pinned between two
+/// calls ([`lignin_tree::cursor`]). The pin of the version is held until
+/// the parked cursor is dropped, also after its scope has ended.
+pub struct ParkedCursor<'t, 's, C = FlatSide<'s>> {
+    cursor: Cursor<'t, 's, C>,
+}
+
+const _: fn() = || {
+    fn moved<T: Send>() {}
+    moved::<MerkCursor<'static, 'static>>();
+    moved::<ParkedCursor<'static, 'static, MerkSide<'static>>>();
+};
+
+impl<'t, 's, C> ParkedCursor<'t, 's, C> {
+    pub(crate) fn new(cursor: Cursor<'t, 's, C>) -> Self {
+        Self { cursor }
+    }
+
+    /// The cursor, for the scope `who` of the transaction `txn`, if that
+    /// is the scope that opened it.
+    pub(crate) fn resume(
+        &mut self,
+        txn: &WriteTxn<'s>,
+        who: Who,
+    ) -> Option<Resumed<'_, 't, 's, C>> {
+        let opened = std::ptr::eq(self.cursor.txn, txn) && self.cursor.who == who;
+        opened.then_some(Resumed {
+            cursor: &mut self.cursor,
+        })
+    }
+}
+
+/// A parked cursor for the length of one borrow of the scope that opened
+/// it ([`Scope::resume`](super::Scope::resume)): the calls of a [`Cursor`],
+/// each as the cursor makes it.
+///
+/// It does not hand the cursor out. A cursor that could be taken from its
+/// place could be used once its scope has ended.
+pub struct Resumed<'a, 't, 's, C = FlatSide<'s>> {
+    cursor: &'a mut Cursor<'t, 's, C>,
+}
+
+impl<'s, C: CommittedSide<'s>> Resumed<'_, '_, 's, C> {
+    /// [`Cursor::version`].
+    pub fn version(&self) -> CommitVersion {
+        self.cursor.version()
+    }
+
+    /// [`Cursor::valid`].
+    pub fn valid(&self) -> bool {
+        self.cursor.valid()
+    }
+
+    /// [`Cursor::key`].
+    pub fn key(&self) -> Option<&[u8]> {
+        self.cursor.key()
+    }
+
+    /// [`Cursor::seek`].
+    pub fn seek(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        self.cursor.seek(key)
+    }
+
+    /// [`Cursor::seek_for_prev`].
+    pub fn seek_for_prev(&mut self, key: &[u8]) -> Result<(), TxnError> {
+        self.cursor.seek_for_prev(key)
+    }
+
+    /// [`Cursor::seek_to_first`].
+    pub fn seek_to_first(&mut self) -> Result<(), TxnError> {
+        self.cursor.seek_to_first()
+    }
+
+    /// [`Cursor::seek_to_last`].
+    pub fn seek_to_last(&mut self) -> Result<(), TxnError> {
+        self.cursor.seek_to_last()
+    }
+
+    /// [`Cursor::next`].
+    #[allow(clippy::should_implement_trait)]
+    pub fn next(&mut self) -> Result<(), TxnError> {
+        self.cursor.next()
+    }
+
+    /// [`Cursor::prev`].
+    pub fn prev(&mut self) -> Result<(), TxnError> {
+        self.cursor.prev()
+    }
+}
+
+#[cfg(test)]
+impl<'t, 's, C> Resumed<'_, 't, 's, C> {
+    /// The cursor itself, for the tests of this crate.
+    pub(crate) fn cursor(&mut self) -> &mut Cursor<'t, 's, C> {
+        self.cursor
+    }
+}
+
+impl<'s> Resumed<'_, '_, 's, MerkSide<'s>> {
+    /// [`MerkCursor::node`].
+    pub fn node<R>(&mut self, read: impl FnOnce(Option<NodeView<'_>>) -> R) -> Result<R, TxnError> {
+        self.cursor.node(read)
+    }
+
+    /// [`MerkCursor::node_with_children`].
+    pub fn node_with_children<R>(
+        &mut self,
+        children: &mut ChildKeys,
+        read: impl FnOnce(Option<NodeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
+        self.cursor.node_with_children(children, read)
+    }
+}
+
+impl<C: fmt::Debug> fmt::Debug for ParkedCursor<'_, '_, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("ParkedCursor").field(&self.cursor).finish()
     }
 }
 

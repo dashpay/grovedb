@@ -13,7 +13,8 @@
 //!   nodes are named by their keys ([`NodePut`]).
 //! - [`NodeView`] is a node as a transaction shows it, and [`Cursor`] walks
 //!   the flat records of one unit, or the nodes of one Merk
-//!   ([`MerkCursor`]), in key order.
+//!   ([`MerkCursor`]), in key order. A [`ParkedCursor`] is a cursor of a
+//!   scope that is kept apart from the scope between two calls.
 //! - [`KeySet`] is the key set of a commit, which decides whether a commit
 //!   outside a transaction has met one of its writes.
 //!
@@ -325,11 +326,15 @@
 //!
 //! # What is not here
 //!
-//! - **The record Merk's callers expect from a cursor**, which is built
-//!   from a node and its children's cells (MERK-05). A cursor over a Merk
-//!   shows the node ([`MerkCursor::node`]): the transaction's own, or the
-//!   one that the ordered cursor of the tree layer
-//!   ([`lignin_tree::cursor`]) stands on at the cursor's version.
+//! - **The record Merk's callers expect from a cursor**, which Merk's
+//!   store builds (`merk::store::lignin`). A cursor over a Merk shows the
+//!   node ([`MerkCursor::node`]): the transaction's own, or the one that
+//!   the ordered cursor of the tree layer ([`lignin_tree::cursor`]) stands
+//!   on at the cursor's version. A record names each child by its key,
+//!   which a cell does not hold, so the cursor also reads the keys of the
+//!   node's children with it ([`MerkCursor::node_with_children`],
+//!   [`ChildKeys`]): for a node of its committed side from the children's
+//!   cells at its own version, which no read of the scope reaches.
 //! - **Starting a reclaimer** (CL6): what a drop left is reclaimed by
 //!   `lignin_tree::drop::Reclaimer`, which the tests run beside a writing
 //!   transaction. The engine owes it the log of its page steps (TXN-07).
@@ -382,13 +387,13 @@ pub mod testing;
 pub(crate) mod tests;
 
 pub use commits::Commits;
-pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide};
+pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed};
 pub use error::{BatchError, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
 pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};
-pub use view::{LinkView, NodeView, SubtreeView};
+pub use view::{ChildKeys, LinkView, NodeView, SubtreeView};
 pub use write::{
     Applied, Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
     SubtreeWrite, ValuePut,

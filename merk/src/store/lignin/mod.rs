@@ -75,6 +75,12 @@
 //! and [`hash`] has them, with what each state of a link means for the
 //! store. A node with a hash that is not made yet is not read.
 //!
+//! # The cursor
+//!
+//! [`LigninCursor`] walks the nodes of the Merk in key order and shows each
+//! as the record Merk encodes of it. Its documentation says what it shows
+//! and what it holds.
+//!
 //! # Costs
 //!
 //! Every charge comes from the functions of [`cost_model`], with the sizes
@@ -91,8 +97,6 @@
 //!
 //! # What is not here
 //!
-//! - **The cursor** (MERK-05). [`LigninNodeStore::cursor`] gives a cursor
-//!   that stands on no record and whose `status` is an error.
 //! - **Which subtrees an operation enters and drops.** A batch passes
 //!   each on to the subtree directory ([`LigninBatch::enter`],
 //!   [`LigninBatch::drop_subtree`]), and names a Merk in the host a batch
@@ -108,6 +112,7 @@
 
 mod access;
 mod change_set;
+mod cursor;
 mod directory;
 mod feature;
 pub mod hash;
@@ -118,7 +123,7 @@ mod tests;
 
 use std::{cell::RefCell, collections::HashMap, fmt};
 
-use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
+use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
 use lignindb::txn::WriteTxn;
@@ -127,9 +132,10 @@ use self::access::{Access, Child, Location, StoredLink, StoredNode};
 pub use self::{
     access::LigninWriter,
     change_set::{LigninApplied, LigninBatch, LigninChangeSet, PreparedNode},
+    cursor::LigninCursor,
     directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
 };
-use super::{NodeChange, NodeCursor, NodeStore};
+use super::{NodeChange, NodeStore};
 use crate::{
     cost_model::{self, Keyspace, StorageCostModel},
     merk::defaults::ROOT_KEY_KEY,
@@ -448,13 +454,14 @@ const _: fn() = || {
     moved::<LigninNodeStore<'static>>();
     moved::<crate::Merk<LigninNodeStore<'static>>>();
     moved::<LigninChangeSet>();
+    moved::<LigninCursor<'static>>();
     moved::<LigninBatch>();
     moved::<LigninWriter<'static, 'static>>();
 };
 
 impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     type ChangeSet = LigninChangeSet;
-    type Cursor = LigninCursor;
+    type Cursor = LigninCursor<'db>;
 
     fn get_node(
         &self,
@@ -507,8 +514,8 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.write_record(Keyspace::Roots, ROOT_KEY_KEY, root_key)
     }
 
-    fn cursor(&self) -> LigninCursor {
-        LigninCursor
+    fn cursor(&self) -> LigninCursor<'db> {
+        LigninCursor::open(self.access, &self.subtree.prefix)
     }
 
     fn change_set(&self) -> LigninChangeSet {
@@ -533,61 +540,5 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
 
     fn delete_meta_record(&self, key: &[u8]) -> CostResult<(), Error> {
         self.write_record(Keyspace::Meta, key, None)
-    }
-}
-
-/// The cursor of a [`LigninNodeStore`], which MERK-05 builds. Until then
-/// it stands on no record, and [`NodeCursor::status`] says that it stopped
-/// on an error and not at the end of the records.
-#[derive(Debug)]
-pub struct LigninCursor;
-
-impl LigninCursor {
-    fn nowhere<T: Default>() -> CostContext<T> {
-        T::default().wrap_with_cost(OperationCost::default())
-    }
-}
-
-impl NodeCursor for LigninCursor {
-    fn seek_to_first(&mut self) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn seek_to_last(&mut self) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn next(&mut self) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn prev(&mut self) -> CostContext<()> {
-        Self::nowhere()
-    }
-
-    fn value(&self) -> CostContext<Option<&[u8]>> {
-        Self::nowhere()
-    }
-
-    fn key(&self) -> CostContext<Option<&[u8]>> {
-        Self::nowhere()
-    }
-
-    fn valid(&self) -> CostContext<bool> {
-        Self::nowhere()
-    }
-
-    fn status(&self) -> Result<(), StorageError> {
-        Err(StorageError::StorageError(
-            "lignindb: the cursor over the nodes of a Merk is not built yet".to_owned(),
-        ))
     }
 }

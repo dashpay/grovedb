@@ -22,9 +22,9 @@ use super::{
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, KeySet, Subtree, Unit},
     opened::Opened,
-    pages::{find, follow, CommittedPages, NodePages},
+    pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
-    view::{NodeView, SubtreeView},
+    view::{ChildKeys, NodeView, SubtreeView},
     write::{Applied, Batch, SubtreeWrite, ValuePut},
     write_set::{EntryId, Mark, Own, OwnSubtree, WriteSet},
 };
@@ -189,6 +189,15 @@ impl State<'_> {
         }
         true
     }
+}
+
+/// What a read of the transaction's own node is given beside the key.
+enum Beside<'c> {
+    /// A handle of the node, which is followed while it is good (PN8).
+    Hint(Option<NodeHandle>),
+    /// Where the keys of the children of a cell go, for a cursor that
+    /// reads them with the node.
+    Children(Option<&'c mut ChildKeys>),
 }
 
 /// How many subtrees one inside the other the hosts of a transaction's own
@@ -895,12 +904,16 @@ impl<'s> WriteTxn<'s> {
         op: &Op<'s>,
         subtree: Subtree,
         key: &[u8],
-        hint: Option<NodeHandle>,
+        beside: Beside<'_>,
         read: F,
     ) -> Result<Result<R, F>, TxnError>
     where
         F: FnOnce(Option<NodeView<'_>>) -> R,
     {
+        let (hint, children) = match beside {
+            Beside::Hint(hint) => (hint, None),
+            Beside::Children(children) => (None, children),
+        };
         if let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) {
             // The frames show the transaction's view (WT3): the node is
             // where a good handle says, or where its key leads to.
@@ -916,6 +929,9 @@ impl<'s> WriteTxn<'s> {
                     find(&mut frames.tree, root, key)?
                 }
             };
+            if let (Some(at), Some(children)) = (at, children) {
+                child_keys(&mut frames.tree, at, children)?;
+            }
             return show_framed(&mut frames, at, read).map(Ok);
         }
         let own = state.set.own(Unit::data(subtree), key);
@@ -946,7 +962,7 @@ impl<'s> WriteTxn<'s> {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
-        let read = match self.own_node(state, &op, subtree, key, hint, read)? {
+        let read = match self.own_node(state, &op, subtree, key, Beside::Hint(hint), read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
@@ -974,11 +990,16 @@ impl<'s> WriteTxn<'s> {
     /// deleted the node, if it has a write that covers the key. With none,
     /// `read` is handed back, and nothing committed is read: a cursor then
     /// shows the node of its own version (RD6).
+    ///
+    /// `children`, where it is given, takes the key of each child of a
+    /// node that is shown from a cell of the frames, in the same operation.
+    /// A record of the write set names its children itself.
     pub(crate) fn own_node_in<R, F>(
         &self,
         who: Who,
         subtree: Subtree,
         key: &[u8],
+        children: Option<&mut ChildKeys>,
         read: F,
     ) -> Result<Result<R, F>, TxnError>
     where
@@ -995,7 +1016,7 @@ impl<'s> WriteTxn<'s> {
         if state.set.own(Unit::data(subtree), key) == Own::Unwritten {
             return Ok(Err(read));
         }
-        self.own_node(state, &op, subtree, key, None, read)
+        self.own_node(state, &op, subtree, key, Beside::Children(children), read)
     }
 
     fn committed_node_in<R>(

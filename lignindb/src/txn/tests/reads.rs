@@ -471,7 +471,7 @@ fn a_merk_cursor_reads_its_version_and_the_transactions_nodes() {
         let Some(Val::Node(expected)) = view.get(&keys[at]) else {
             unreachable!("a Merk");
         };
-        (cursor.node(|node| expected.check(&keys[at], &node.expect("a node")))).expect("a read");
+        check_under(cursor, &keys[at], expected);
     };
     for _ in 0..300 {
         let target = match rng.below(3) {

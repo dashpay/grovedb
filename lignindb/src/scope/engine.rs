@@ -13,7 +13,7 @@ use lignin_tree::directory::MerkId;
 use super::*;
 use crate::{
     scope::table::{Lineage, MarkChange, MarkKey, Refused, ScopeId},
-    txn::{key::KeySet, Hosted, RecordWrite},
+    txn::{key::KeySet, Hosted, MerkSide, ParkedCursor, RecordWrite, Resumed},
 };
 
 /// The handle one thread writes a transaction through (`transactions.md`
@@ -88,6 +88,40 @@ impl<'t, 's> Scope<'t, 's> {
     /// A cursor of the scope may be open: it sees the writes (RD6).
     pub fn apply(&self, batch: &Batch<'_>) -> Result<Applied, TxnError> {
         self.txn.apply_scoped(self.id, batch)
+    }
+
+    /// A cursor over the nodes of the Merk `subtree`, as
+    /// [`Self::merk_cursor`] gives one, for a holder that cannot keep a
+    /// borrow of the scope from one call to the next: the handles of a
+    /// writer share its scope behind a lock, which they take for each
+    /// call.
+    ///
+    /// The cursor is parked ([`ParkedCursor`]): it is moved and read
+    /// through [`Self::resume`] only, so by no one once this scope has
+    /// ended.
+    pub fn parked_merk_cursor(
+        &self,
+        subtree: Subtree,
+    ) -> Result<ParkedCursor<'t, 's, MerkSide<'s>>, TxnError> {
+        let cursor = crate::txn::Cursor::merk(self.txn, self.who(), subtree)?;
+        Ok(ParkedCursor::new(cursor))
+    }
+
+    /// The cursor `parked` holds, for calls through this scope, which
+    /// opened it. Each call is a read of the scope like any other: it
+    /// reads the scope's writes as they are then (RD6), and it is refused
+    /// with [`TxnError::ScopeOverlap`] where another open scope holds the
+    /// Merk for writing (SC3).
+    ///
+    /// `None` for a cursor that another scope opened, which stays as it
+    /// was. No scope has the number of one that has ended, so a parked
+    /// cursor is resumed by no one once its scope has merged or was rolled
+    /// back.
+    pub fn resume<'a, C>(
+        &'a self,
+        parked: &'a mut ParkedCursor<'t, 's, C>,
+    ) -> Option<Resumed<'a, 't, 's, C>> {
+        parked.resume(self.txn, self.who())
     }
 
     /// Whether the scope's writes are laid out on the transaction's pages

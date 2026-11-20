@@ -11,8 +11,9 @@ use std::sync::{Mutex, MutexGuard, PoisonError};
 use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
-    Batch, Column, HostPut, Hosted, LinkPut, LinkView, MerkWrite, NodePut, NodeView, RecordWrite,
-    RootPut, Scope, Subtree, SubtreeView, SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
+    Batch, ChildKeys, Column, HostPut, Hosted, LinkPut, LinkView, MerkCursor, MerkSide, MerkWrite,
+    NodePut, NodeView, ParkedCursor, RecordWrite, Resumed, RootPut, Scope, Subtree, SubtreeView,
+    SubtreeWrite, TxnError, Unit, ValuePut, WriteTxn,
 };
 
 use super::{
@@ -201,8 +202,43 @@ pub(super) struct Written {
     pub(super) values_kept: usize,
 }
 
+/// Where a cursor goes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Seek<'k> {
+    /// To the first node.
+    First,
+    /// To the last node.
+    Last,
+    /// To the first node at or after a key.
+    From(&'k [u8]),
+    /// To the last node at or before a key.
+    Back(&'k [u8]),
+    /// To the node after the one it stands on.
+    Next,
+    /// To the node before the one it stands on.
+    Prev,
+}
+
+/// The cursor of a transaction over the nodes of one Merk, in key order,
+/// as the store uses it (`transactions.md` RD6): the nodes of the committed
+/// state of the moment it was opened, with the transaction's own writes as
+/// they are at each call.
+pub(super) trait Walk: Send {
+    /// Moves the cursor. `key` is emptied and takes the key the cursor then
+    /// stands on, and the answer is whether it stands on one.
+    fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error>;
+
+    /// The node under the key the cursor stands on, with its value and
+    /// with the key of each child in its link. `None` if the transaction
+    /// has deleted the node since the cursor came to its key.
+    fn node(&mut self) -> Result<Option<StoredNode>, Error>;
+}
+
 /// One writer's view of a LigninDB transaction, as the store uses it.
 pub(super) trait Access: Sync {
+    /// A cursor over the nodes of `subtree`, which stands on no node yet.
+    fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error>;
+
     /// The node under `key` in `subtree`, through `hint` while that is
     /// good. The value's bytes are copied when `with_value` asks for them.
     fn node(
@@ -304,6 +340,109 @@ fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Erro
         stale: view.stale(),
         location: view.handle().map(Location),
     })
+}
+
+/// The key of each child of `node` in its link. A cell names a child by
+/// its address, and the key was read from the child's cell with the node
+/// (`children`); a record of the write set names its children by key.
+pub(super) fn with_child_keys(
+    mut node: StoredNode,
+    children: &mut ChildKeys,
+) -> Result<StoredNode, Error> {
+    for (side, link) in [(Side::Left, &mut node.left), (Side::Right, &mut node.right)] {
+        let Some(link) = link else {
+            continue;
+        };
+        let key = link.key.get_or_insert_with(|| children.take(side));
+        if key.len() != usize::from(link.key_len) {
+            return Err(Error::CorruptedState(
+                "a child's key was not read with its node",
+            ));
+        }
+    }
+    Ok(node)
+}
+
+/// What the store asks of a cursor of the transaction, for the cursor
+/// itself and for a parked one that is resumed: a move, which gives the
+/// key the cursor then stands on, and the node under that key, read with
+/// the keys of its children in one operation (for a node of the cursor's
+/// committed side at the cursor's version).
+macro_rules! walks {
+    ($go:ident, $node:ident, $cursor:ty) => {
+        fn $go<'s>(cursor: &mut $cursor, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
+            key.clear();
+            match to {
+                Seek::First => cursor.seek_to_first(),
+                Seek::Last => cursor.seek_to_last(),
+                Seek::From(key) => cursor.seek(key),
+                Seek::Back(key) => cursor.seek_for_prev(key),
+                Seek::Next => cursor.next(),
+                Seek::Prev => cursor.prev(),
+            }
+            .map_err(fault)?;
+            key.extend_from_slice(cursor.key().unwrap_or_default());
+            Ok(cursor.valid())
+        }
+
+        fn $node<'s>(cursor: &mut $cursor) -> Result<Option<StoredNode>, Error> {
+            let mut children = ChildKeys::new();
+            let node = cursor
+                .node_with_children(&mut children, |view| {
+                    view.map(|view| stored_node(&view, true)).transpose()
+                })
+                .map_err(fault)??;
+            node.map(|node| with_child_keys(node, &mut children))
+                .transpose()
+        }
+    };
+}
+
+walks!(go, node_under, MerkCursor<'_, 's>);
+walks!(go_resumed, node_resumed, Resumed<'_, '_, 's, MerkSide<'s>>);
+
+/// The cursor of a handle that only reads: a cursor of its transaction.
+struct TxnWalk<'a, 's>(MerkCursor<'a, 's>);
+
+impl Walk for TxnWalk<'_, '_> {
+    fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
+        go(&mut self.0, to, key)
+    }
+
+    fn node(&mut self) -> Result<Option<StoredNode>, Error> {
+        node_under(&mut self.0)
+    }
+}
+
+/// The cursor of a writer's handle: parked between two calls
+/// ([`ParkedCursor`]), and resumed under the writer's lock for the length
+/// of each.
+struct ScopeWalk<'a, 't, 's> {
+    writer: &'a LigninWriter<'t, 's>,
+    parked: ParkedCursor<'t, 's, MerkSide<'s>>,
+}
+
+impl<'s> ScopeWalk<'_, '_, 's> {
+    fn resumed<T>(
+        &mut self,
+        call: impl FnOnce(&mut Resumed<'_, '_, 's, MerkSide<'s>>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let scope = self.writer.scope();
+        let mut cursor = scope
+            .resume(&mut self.parked)
+            .ok_or_else(|| refused("a cursor of another scope"))?;
+        call(&mut cursor)
+    }
+}
+
+impl Walk for ScopeWalk<'_, '_, '_> {
+    fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
+        self.resumed(|cursor| go_resumed(cursor, to, key))
+    }
+
+    fn node(&mut self) -> Result<Option<StoredNode>, Error> {
+        self.resumed(node_resumed)
+    }
 }
 
 /// The reads a write transaction offers outside any scope and a scope
@@ -716,6 +855,8 @@ trait Reader: Sync {
     fn reading<T>(&self, read: impl FnOnce(&Self::Reads) -> T) -> T;
 
     fn write(&self, write: &Write) -> Result<Written, Error>;
+
+    fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError>;
 }
 
 impl<'t, 's> Reader for LigninWriter<'t, 's> {
@@ -727,6 +868,14 @@ impl<'t, 's> Reader for LigninWriter<'t, 's> {
 
     fn write(&self, write: &Write) -> Result<Written, Error> {
         apply(&self.scope(), write)
+    }
+
+    fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
+        let parked = self.scope().parked_merk_cursor(subtree)?;
+        Ok(Box::new(ScopeWalk {
+            writer: self,
+            parked,
+        }))
     }
 }
 
@@ -742,9 +891,17 @@ impl Reader for WriteTxn<'_> {
     fn write(&self, _write: &Write) -> Result<Written, Error> {
         Err(refused("a write through a handle that only reads"))
     }
+
+    fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
+        Ok(Box::new(TxnWalk(self.merk_cursor(subtree)?)))
+    }
 }
 
 impl<A: Reader> Access for A {
+    fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
+        self.walk(Subtree::new(*subtree)).map_err(fault)
+    }
+
     fn node(
         &self,
         subtree: &Prefix,

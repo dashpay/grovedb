@@ -157,34 +157,38 @@ impl<'a, I: NodeCursor> KVIterator<'a, I> {
 
     /// Returns the current node the iter points to if it's valid for the given
     /// query item returns None otherwise
+    ///
+    /// A key the cursor stands on with no record under it was removed under
+    /// the cursor, and is passed over. Where the record could not be read,
+    /// which the cursor's status says, the walk ends.
     fn get_kv(&mut self, query_item: &QueryItem) -> CostContext<Option<(Vec<u8>, Vec<u8>)>> {
         let mut cost = OperationCost::default();
 
-        if query_item
+        while query_item
             .iter_is_valid_for_type(&self.raw_iter, None, None, self.left_to_right)
             .unwrap_add_cost(&mut cost)
         {
-            let kv = (
-                self.raw_iter
-                    .key()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("key must exist as iter is valid")
-                    .to_vec(),
-                self.raw_iter
-                    .value()
-                    .unwrap_add_cost(&mut cost)
-                    .expect("value must exists as iter is valid")
-                    .to_vec(),
-            );
+            let key = self
+                .raw_iter
+                .key()
+                .unwrap_add_cost(&mut cost)
+                .expect("key must exist as iter is valid")
+                .to_vec();
+            let value = self.raw_iter.value().unwrap_add_cost(&mut cost);
+            let value = value.map(<[u8]>::to_vec);
+            if value.is_none() && self.raw_iter.status().is_err() {
+                break;
+            }
             if self.left_to_right {
                 self.raw_iter.next().unwrap_add_cost(&mut cost)
             } else {
                 self.raw_iter.prev().unwrap_add_cost(&mut cost)
             }
-            Some(kv).wrap_with_cost(cost)
-        } else {
-            None.wrap_with_cost(cost)
+            if let Some(value) = value {
+                return Some((key, value)).wrap_with_cost(cost);
+            }
         }
+        None.wrap_with_cost(cost)
     }
 
     /// Moves the iter to the start of the next query item
@@ -592,12 +596,22 @@ where
     }
 
     /// Checks if it's an empty tree
+    ///
+    /// A cursor that reports an error answers "not empty": the first node
+    /// could not be read, so nothing is known of the tree. That is the safe
+    /// side. A caller acts on "empty" by removing the tree's element and
+    /// leaving its nodes alone, which would strand the nodes of a tree
+    /// that has some; on "not empty" it refuses or walks the tree.
     pub fn is_empty_tree(&self) -> CostContext<bool> {
         let mut iter = self.storage.cursor();
-        iter.seek_to_first().flat_map(|_| iter.valid().map(|x| !x))
+        iter.seek_to_first()
+            .flat_map(|_| iter.valid().map(|x| !x && iter.status().is_ok()))
     }
 
     /// Checks if it's an empty tree excluding exceptions
+    ///
+    /// A cursor that reports an error answers "not empty", as for
+    /// [`Self::is_empty_tree`]: the walk did not come to every node.
     pub fn is_empty_tree_except(&self, mut except_keys: BTreeSet<&[u8]>) -> CostContext<bool> {
         let mut cost = OperationCost::default();
 
@@ -609,7 +623,7 @@ where
             }
             iter.next().unwrap_add_cost(&mut cost)
         }
-        true.wrap_with_cost(cost)
+        iter.status().is_ok().wrap_with_cost(cost)
     }
 
     /// Use tree

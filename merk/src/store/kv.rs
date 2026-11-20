@@ -707,7 +707,7 @@ mod tests {
         for delete in ["batch.delete a", "batch.delete b", "batch.delete c"] {
             cleared.extend(["cursor.valid", "cursor.key", delete, "cursor.next"]);
         }
-        cleared.extend(["cursor.valid", "commit_batch"]);
+        cleared.extend(["cursor.valid", "cursor.status", "commit_batch"]);
         assert_eq!(tape.take_brief(), cleared);
 
         let mut merk = open();
@@ -766,6 +766,7 @@ mod tests {
             .unwrap());
         assert_eq!(tape.take_brief(), walk);
         walk.extend(["cursor.next", "cursor.key"].repeat(2));
+        walk.push("cursor.status");
         assert!(layered
             .is_empty_tree_except(BTreeSet::from([b"e".as_slice(), b"f", b"g"]))
             .unwrap());
