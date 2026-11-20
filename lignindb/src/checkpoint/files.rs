@@ -507,9 +507,9 @@ impl Target {
     }
 }
 
-/// Makes the directory `building`, which was there under a name that a
-/// creation builds under and whose lock the caller holds, one that
-/// nothing is in but its lock file.
+/// Makes the directory `building`, which has a name that a creation
+/// builds under and whose lock the caller holds, one that nothing is in
+/// but its lock file.
 ///
 /// **Its name is made durable first.** A creation that failed can have
 /// given the directory the name of its target and taken it back without

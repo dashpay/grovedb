@@ -231,7 +231,7 @@ impl<'s> Checkpointer<'s> {
     /// ([`CheckpointError::TargetExists`]). It can lie inside the database
     /// directory, and on another file system.
     ///
-    /// **`target` is there only once it is the whole checkpoint.** The
+    /// **This call puts nothing at `target` but the whole checkpoint.** The
     /// checkpoint is built beside it, in a directory of the target's name
     /// with [`CREATING_SUFFIX`](super::CREATING_SUFFIX) added, which is
     /// renamed to `target` when everything in it is durable. That name is

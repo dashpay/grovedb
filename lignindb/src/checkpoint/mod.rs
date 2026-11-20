@@ -67,7 +67,7 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
-//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name is taken for what an earlier creation left: everything in it goes but its lock file. One whose lock is held is left alone, and the creation fails. | the lock of that directory, to the end |
+//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. One whose lock is held is left alone, and the creation fails. | the lock of that directory, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
@@ -285,9 +285,11 @@
 //! the target's with [`CREATING_SUFFIX`] added, and that directory is
 //! renamed to the target only when everything in it is durable, with the
 //! name it has. So a power cut during a creation leaves at the target
-//! what was there before, which is nothing, or the whole checkpoint, and
-//! never a directory that is empty or has a part of one. That matters
-//! because an open that makes a database where it finds none takes an
+//! what would be there without the creation, which is nothing unless
+//! somebody else put something there, or the whole checkpoint. The
+//! creation itself never leaves there a directory that is empty or has a
+//! part of a checkpoint. That matters because
+//! an open that makes a database where it finds none takes an
 //! empty directory, and one with a lock file alone, for a place to make
 //! one in: Platform opens its checkpoints with such an open (P-19), and
 //! would have an empty database for a checkpoint. The tests of
@@ -296,16 +298,16 @@
 //!
 //! **What a cut leaves that is not at the target is under the other
 //! name**: a part of a checkpoint, or a whole one that did not get its
-//! name. A directory of that name is
-//! no database to open. It holds links to the live database's files, and
-//! so the space of those that the live database deletes, until it is
-//! removed: by the next creation at the same target, which empties it and
-//! builds in it, or by [`delete`], of the target or of the directory
-//! itself. A directory of that name is taken for a creation's with
+//! name. A directory of that name is no database to open. It holds links
+//! to the live database's files, and so the space of those that the live
+//! database deletes, until it is removed. A creation at the same target
+//! that gets as far as building empties it and builds in it, and
+//! [`delete`] removes it ("Deleting a checkpoint, and removing one that
+//! is open"). A directory of that name is taken for a creation's with
 //! everything in it, so whatever it holds goes then, and no checkpoint is
 //! made at a name that ends so. Only a directory of its own is taken for
 //! one: a link of that name is not followed. And one whose lock is held
-//! is left alone ([`CheckpointError::Creating`]).
+//! is left alone.
 //!
 //! **The name of the target is the caller's to keep free.** A target that
 //! is there is refused before anything is done, and again right before
@@ -319,24 +321,26 @@
 //! database's as much as the creation's: if the sync of the log fails
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
-//! removes what it made, and the directory it built in, so that the same
-//! call can be made again. Of what came into that directory after the
-//! creation had taken it, it removes nothing it did not make: such a file
-//! stays, and the directory with it, as what a creation left. Where the
-//! file layer fails a removal too, or fails the making of a file without
-//! saying whether it made it, what stays is under the other name as well,
-//! and so is a directory that could not be listed once its lock was
-//! taken.
+//! then removes what it made, and the directory it built in, so that the
+//! same call can be made again, with these exceptions. Of what came into
+//! that directory after the creation had taken it, it removes nothing it
+//! did not make: such a file stays, and the directory with it, as what a
+//! creation left. What the file layer does not let it remove stays in the
+//! same way, and so does a file whose making failed without the file
+//! layer saying whether it was made, and a directory that could not be
+//! listed, or whose name could not be made durable, once its lock was
+//! taken. And a directory that had been given the name of the target is
+//! dealt with as the next paragraph says.
 //!
-//! **What a creation put into its directory is removed only once that
+//! **A creation that fails, the next creation, and a deletion of what a
+//! creation left remove what is in a creation's directory only once that
 //! directory has not the name of the target and cannot come back with
-//! it.** That holds for the creation itself when it fails, for the next
-//! creation, which takes the directory over, and for a deletion of what
-//! a creation left:
+//! it:**
 //!
 //! - If the rename of step 11 was made and the sync after it fails, the
-//!   directory is given its first name back, and only once that is
-//!   durable is anything in it removed. Where the name cannot be taken
+//!   directory, if it is at the target still, is given its first name
+//!   back, and only once that is durable is anything in it removed.
+//!   Where the name cannot be taken
 //!   back, the whole checkpoint is at the target when the call returns
 //!   its error, and is not known to be durable there. Where it is taken
 //!   back and that cannot be made durable, the whole checkpoint is under
@@ -461,9 +465,11 @@
 //!
 //! - **The open of the engine** (TXN-07, GROVE-01) opens a checkpoint as
 //!   it opens any directory, and is told nothing by the directory.
-//!   - **It needs no rule for a creation that was cut short**: nothing
-//!     but the whole checkpoint gets the name of a target, and nobody
-//!     opens a directory whose name ends in [`CREATING_SUFFIX`].
+//!   - **For a creation that was cut short it needs one rule, which is
+//!     its callers' to keep**: a directory whose name ends in
+//!     [`CREATING_SUFFIX`] is not opened as a database. A creation puts
+//!     nothing but the whole checkpoint under the name of its target, so
+//!     nothing that it leaves is at a name that a caller opens.
 //!   - **It makes no database in a directory that holds
 //!     [`DELETING_FILE_NAME`]**: that is a checkpoint, or a database,
 //!     whose deletion was cut short, and [`delete`] finishes it.
