@@ -381,7 +381,7 @@ A batch also says what its operation does to whole subtrees, which the transacti
 A batch is applied in two steps, which the partial batch of GroveDB needs apart (`engine.md`, "The batch across subtrees"):
 
 1. `LigninBatch::settle(committed)` takes everything staged out of the batch, resolves it, and works out its charge (`LigninSettled`). What is owed at once is returned: the seeks, and for a delete that came with no cost the bytes of the record that the committed state holds, read through the view it is given. The storage cost is held back (`LigninSettled::pending_cost`).
-2. `LigninSettled::apply(parts, view, enters)` hands the settled batches to the transaction, one operation each and in their order, through one scope: all of them or none. The storage cost is charged if the transaction took them. `enters` are subtrees that are entered with the first of them: `LigninSettled::written` says which subtrees a batch writes into, with the host each handle named, so that whoever applies it can enter those the transaction does not hold (`engine.md`, "Subtrees are entered by the first batch that writes into them").
+2. `LigninSettled::apply(parts, view, enters)` hands the settled batches to the transaction, one operation each and in their order, through one scope: all of them or none. The storage cost is charged if the transaction took them. `enters` are subtrees that are entered with the first of them, and with no batch there is none to enter them with. A settled batch says what whoever applies it needs to work them out (`engine.md`, "Subtrees are entered by the first batch that writes into them"): `LigninSettled::written` is the subtrees it writes into, each once and with the host its handle named, where of two handles of one subtree the one that names a host is kept; `enters` says whether it enters a subtree itself; and `node` is what it holds for a key of a Merk, a put with the value it states or a removal (`LigninOutcome`).
 
 `LigninBatch::apply(view)` is both steps for one batch that enters what it names itself. The batch is empty after `settle`, and a handle that stays open stages its next writes in it.
 
@@ -395,6 +395,7 @@ A handle is also the `FlatStore` of its subtree's data keyspace, for a tree that
 
 - `get` is a point read of the view, charged as a read of a storage context (`cost-model.md` R1, R2).
 - `put` and `delete` are staged in the batch of a deferred handle, with the writer's cost, and made at once on an immediate one, at the charge of a direct write (M1). A put into the data keyspace completes the cost of a new key, as a put of a node does.
+- `clear` is the walk of the trait over the keyspace's records, at its cost. On the data keyspace of a handle it is refused with `Error::NotSupported` where the subtree's Merk has a node: the nodes of a Merk are no flat records, the walk would pass them, and the clear would remove nothing and say that it did. A subtree whose Merk has no node, one that keeps its data flat and one that is not entered are walked.
 - `cursor` (`LigninFlatCursor`) walks the records of the column in key order: a cursor of the write transaction, which keeps the committed state of the moment it was opened and shows the transaction's own writes (RD6), or a cursor of the snapshot. It is charged as a cursor of a storage context (C1 to C3). **The handles of a writer have none**: a cursor of a scope borrows the scope, and the transaction offers no parked cursor over flat records. Such a cursor stands on no record, and its `status` says why.
 
 ### Opening a Merk
@@ -580,6 +581,18 @@ What MERK-02 left open:
 | `a_store_of_whole_nodes_fetches_whole_nodes_for_a_walk` | On RocksDB the fetch for a walk is the whole fetch, and the read of a value does nothing, or refuses a node that has none. |
 
 `merk/src/tree/walk/ref_walker.rs` holds the walker with no engine, on a source that hands out the stored nodes of a tree whole or without values and keeps what it was asked: a walk keeps the whole nodes it fetches, on demand or not; a walk on demand keeps no node that came without its value, owns what it fetches below one, reads a value once where it is asked, and leaves the tree as it found it; a walk with a cost function fetches whole nodes at a node of the tree, and is refused below a node the walk owns; a proof whose value is refused fails at the charge of its fetches and leaves the tree as it was; and for every key of a tree the proof made from nodes without values is the proof made from whole nodes, at the same cost, with the same nodes fetched and one value read.
+
+`merk/src/store/lignin/tests/views.rs` (GROVE-01) runs on a database of the engine's facade (`lignindb::Db`), and has the physical checker read it.
+
+| Test | What it holds |
+| --- | --- |
+| `a_transaction_with_no_writer_of_its_own_writes_through_a_scope_for_each_write` | A handle on a write transaction: a batch and the commits of an immediate handle at the costs of RocksDB, no scope open between two writes, a refused write that leaves nothing, and a savepoint that takes the writes back. |
+| `a_snapshot_reads_the_merk_of_its_version_and_refuses_every_write` | A handle on a snapshot reads the nodes, the records and the cursor of its version beside a later one, at the costs of the same reads through a transaction, and refuses every write. |
+| `a_merk_that_two_operations_of_one_batch_write_is_charged_for_what_stands` | A Merk written by two change sets of one batch has the outcome and the cost of the storage batch. |
+| `a_flat_keyspace_costs_what_it_costs_in_a_storage_context` | The data, aux and meta keyspaces of a deferred and of an immediate handle: every call, its answer and its cost against a storage context of RocksDB. |
+| `a_clear_removes_flat_records_and_refuses_the_nodes_of_a_merk` | `FlatStore::clear` on a handle: refused for a Merk with a node, which keeps its nodes; the walk and its cost for a Merk with none, for flat records and for a subtree that is not entered; and the error of a directory that another scope holds. |
+| `settled_batches_are_applied_together_or_not_at_all` | What a settled batch says of a key and of the subtrees it writes into, two settled batches of which the second is refused and nothing is kept, and both applied with a subtree entered beside them. |
+| `a_writers_handle_has_no_cursor_over_flat_records` | The cursor of a writer's flat keyspace stands on no record and says why, and a writer refuses a group of two settled batches. |
 
 `lignindb/src/txn/tests/parked.rs` holds the two additions to the transaction: a parked cursor reads its version across later commits and adds no page pin; it is resumed by the scope that opened it and by no other, nor by any once that scope has ended, and a read through it is refused where another scope holds the Merk for writing; it asks for its subtree again after a drop and a clear; and the keys of a node's children are read at the cursor's version, also for a node that is found by its key after a commit outside gave the Merk another shape.
 

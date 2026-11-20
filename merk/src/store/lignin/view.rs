@@ -117,10 +117,7 @@ impl<'s> LigninSnapshot<'s> {
             Some(Some(kept)) => operation.resume(&kept).map_err(unread),
             None => {
                 let found = operation.open(Subtree::new(*subtree)).map_err(unread)?;
-                let kept = match found {
-                    Some(found) => Some(found.keep()),
-                    None => None,
-                };
+                let kept = found.map(|found| found.keep());
                 let opened = match &kept {
                     Some(kept) => operation.resume(kept).map_err(unread)?,
                     None => None,
@@ -137,11 +134,11 @@ impl<'s> LigninSnapshot<'s> {
     fn reading<T>(
         &self,
         subtree: &Prefix,
-        read: impl FnOnce(&Operation<'_>, &Opened<'_, '_>) -> Result<Option<T>, Error>,
+        read: impl FnOnce(&Opened<'_, '_>) -> Result<Option<T>, Error>,
     ) -> Result<Option<T>, Error> {
         let operation = self.snapshot.operation();
         match self.open(&operation, subtree)? {
-            Some(opened) => read(&operation, &opened),
+            Some(opened) => read(&opened),
             None => Ok(None),
         }
     }
@@ -211,7 +208,7 @@ impl Walk for SnapshotNodes<'_, '_> {
     }
 
     fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
-        self.walk = (self.snapshot).reading(subtree, |_, opened| Ok(Some(opened.walk())))?;
+        self.walk = (self.snapshot).reading(subtree, |opened| Ok(Some(opened.walk())))?;
         Ok(())
     }
 }
@@ -250,7 +247,7 @@ impl FlatAccess for LigninSnapshot<'_> {
         keyspace: Keyspace,
         subtree: &Prefix,
     ) -> Result<Box<dyn FlatWalk + 'a>, Error> {
-        let walk = self.reading(subtree, |_, opened| {
+        let walk = self.reading(subtree, |opened| {
             Ok(Some(opened.record_walk(column(keyspace))))
         })?;
         Ok(Box::new(SnapshotRecords {
@@ -262,7 +259,7 @@ impl FlatAccess for LigninSnapshot<'_> {
 
 impl Access for LigninSnapshot<'_> {
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
-        let walk = self.reading(subtree, |_, opened| Ok(Some(opened.walk())))?;
+        let walk = self.reading(subtree, |opened| Ok(Some(opened.walk())))?;
         Ok(Box::new(SnapshotNodes {
             snapshot: self,
             walk,
@@ -276,11 +273,11 @@ impl Access for LigninSnapshot<'_> {
         _hint: Option<Location>,
         with_value: bool,
     ) -> Result<Option<StoredNode>, Error> {
-        self.reading(subtree, |_, opened| node_of(opened, key, with_value))
+        self.reading(subtree, |opened| node_of(opened, key, with_value))
     }
 
     fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error> {
-        self.reading(subtree, |_, opened| node_of(opened, key, false))
+        self.reading(subtree, |opened| node_of(opened, key, false))
     }
 
     fn child(&self, _subtree: &Prefix, _parent: Location, _left: bool) -> Result<Child, Error> {
@@ -291,7 +288,7 @@ impl Access for LigninSnapshot<'_> {
     }
 
     fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
-        self.reading(subtree, |_, opened| {
+        self.reading(subtree, |opened| {
             let entry = opened.entry();
             Ok(Some(LigninEntry {
                 root_key: entry.root().map(|root| root.key.to_vec()),
@@ -311,7 +308,7 @@ impl Access for LigninSnapshot<'_> {
         subtree: &Prefix,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, Error> {
-        self.reading(subtree, |_, opened| {
+        self.reading(subtree, |opened| {
             let mut value = Vec::new();
             let found = opened.get(column(keyspace), key, &mut value);
             Ok(found.map_err(unread)?.then_some(value))

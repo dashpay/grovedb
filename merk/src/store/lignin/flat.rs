@@ -239,31 +239,29 @@ pub struct LigninKeyspace<'a, 'db> {
 }
 
 impl<'db> LigninNodeStore<'db> {
-    /// The aux keyspace of the handle's subtree.
-    pub fn aux(&self) -> LigninKeyspace<'_, 'db> {
+    fn keyspace(&self, keyspace: Keyspace) -> LigninKeyspace<'_, 'db> {
         LigninKeyspace {
             store: self,
-            keyspace: Keyspace::Aux,
+            keyspace,
         }
+    }
+
+    /// The aux keyspace of the handle's subtree.
+    pub fn aux(&self) -> LigninKeyspace<'_, 'db> {
+        self.keyspace(Keyspace::Aux)
     }
 
     /// The meta keyspace of the handle's subtree.
     pub fn meta(&self) -> LigninKeyspace<'_, 'db> {
-        LigninKeyspace {
-            store: self,
-            keyspace: Keyspace::Meta,
-        }
+        self.keyspace(Keyspace::Meta)
     }
 
     fn data(&self) -> LigninKeyspace<'_, 'db> {
-        LigninKeyspace {
-            store: self,
-            keyspace: Keyspace::Data,
-        }
+        self.keyspace(Keyspace::Data)
     }
 }
 
-fn storage_error(error: Error) -> StorageError {
+pub(super) fn storage_error(error: Error) -> StorageError {
     match error {
         Error::StorageError(error) => error,
         error => StorageError::StorageError(error.to_string()),
@@ -355,7 +353,27 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     }
 
     fn cursor(&self) -> Self::Cursor<'_> {
-        let cursor = self.data().cursor();
-        cursor
+        LigninFlatCursor::open(self.access.records(Keyspace::Data, &self.subtree.prefix))
+    }
+
+    /// Removes every flat record of the subtree's data, as the walk of the
+    /// trait does and at its cost.
+    ///
+    /// The nodes of a Merk are no flat records, and the walk sees none of
+    /// them. Where the subtree keeps a Merk that has a node, the removal
+    /// is therefore refused with [`StorageError::NotSupported`]: it would
+    /// remove nothing and say that it did. A Merk is emptied by
+    /// `Merk::clear`, and a subtree leaves with its element by a drop
+    /// ([`LigninBatch::drop_subtree`](super::LigninBatch::drop_subtree)).
+    fn clear(&self) -> CostResult<(), StorageError> {
+        match self.entry() {
+            Ok(Some(entry)) if entry.root_key.is_some() => Err(StorageError::NotSupported(
+                "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace"
+                    .to_owned(),
+            ))
+            .wrap_with_cost(Default::default()),
+            Ok(_) => self.data().clear(),
+            Err(error) => Err(storage_error(error)).wrap_with_cost(Default::default()),
+        }
     }
 }

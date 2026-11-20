@@ -33,8 +33,8 @@ use super::{
     },
     flat::{FlatAccess, FlatWalk},
     hash::MerkHashRules,
-    LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore, LigninSettled,
-    LigninSubtree, LigninWriter, Mode,
+    tree_type_bytes, LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore,
+    LigninOutcome, LigninSettled, LigninSubtree, LigninView, LigninWriter, Mode,
 };
 use crate::{
     cost_model::Keyspace,

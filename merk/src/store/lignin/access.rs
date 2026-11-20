@@ -18,6 +18,7 @@ use lignindb::txn::{
 };
 
 use super::{
+    change_set::node_put,
     feature::{decode_aggregate, decode_feature, Tp12},
     refused, LigninEntry, LigninHosted,
 };
@@ -304,8 +305,11 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
 /// A batch that is handed to a transaction as it stands when it is asked
 /// for: the batch of an operation, resolved.
 pub(super) trait BatchPart {
-    /// Calls `run` with the batch.
-    fn with_batch(&self, run: &mut dyn FnMut(&Batch<'_>));
+    /// Calls `run` with the batch, and returns what it returns.
+    fn with_batch(
+        &self,
+        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
+    ) -> Result<Written, Error>;
 }
 
 /// A read or a write the transaction did not perform. Every failure of the
@@ -827,25 +831,11 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
     let nodes: Vec<Vec<NodePut<'_>>> = (write.merks.iter().zip(&hosted))
         .map(|(merk, hosted)| {
             let puts = (merk.nodes.iter().zip(hosted)).map(|(node, hosted)| NodePut {
-                key: &node.key,
-                feature: node.feature.as_slice(),
-                value_hash: &node.value_hash,
-                kv_hash: &node.kv_hash,
-                left: link_of(&node.left),
-                right: link_of(&node.right),
                 hosted: match hosted {
                     None => Hosted::Keep,
                     Some(hosted) => Hosted::Set(hosted),
                 },
-                value: match &node.value {
-                    ValueWrite::Stated(stated) => ValuePut::Value(stated),
-                    ValueWrite::Kept => ValuePut::Keep,
-                },
-                at: match &node.value {
-                    ValueWrite::Kept => node.read.map(|Location(handle)| handle),
-                    ValueWrite::Stated(_) => node.hint.map(|Location(handle)| handle),
-                },
-                stale: node.stale,
+                ..node_put(node)
             });
             puts.collect()
         })
@@ -896,37 +886,26 @@ fn apply_parts(
 ) -> Result<Vec<Written>, Error> {
     let mut enters: Vec<SubtreeWrite<'_>> = enters.iter().map(subtree_write).collect();
     let mut written = Vec::with_capacity(parts.len());
-    let mut failed = None;
     for part in parts {
-        part.with_batch(&mut |batch| {
-            if failed.is_some() {
-                return;
-            }
-            // The parts of a batch are applied in the order of their
-            // kinds wherever they stand in it, so the enters of the
-            // caller go with the batch's own subtree writes.
-            let mut subtrees: Vec<SubtreeWrite<'_>> = Vec::new();
-            for enter in enters.drain(..) {
-                subtrees.push(enter);
-            }
+        // The parts of a batch are applied in the order of their kinds
+        // wherever they stand in it, so the enters of the caller go with
+        // the batch's own subtree writes.
+        written.push(part.with_batch(&mut |batch| {
+            let mut subtrees: Vec<SubtreeWrite<'_>> = enters.drain(..).collect();
             subtrees.extend_from_slice(batch.subtrees);
-            let applied = apply_batch(
+            apply_batch(
                 scope,
                 &Batch {
                     subtrees: &subtrees,
                     ..*batch
                 },
-            );
-            match applied {
-                Ok(applied) => written.push(applied),
-                Err(error) => failed = Some(error),
-            }
-        });
+            )
+        })?);
     }
-    match failed {
-        Some(error) => Err(error),
-        None => Ok(written),
+    if !enters.is_empty() {
+        return Err(refused("subtrees were to be entered with no batch"));
     }
+    Ok(written)
 }
 
 /// One writer's part of a LigninDB write transaction: the scope it writes

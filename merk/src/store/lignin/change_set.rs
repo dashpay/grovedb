@@ -1,7 +1,7 @@
 //! The change set of a Merk on LigninDB, and the batch of one operation.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -430,8 +430,11 @@ enum Charge {
 }
 
 impl BatchPart for Resolved<Charge> {
-    fn with_batch(&self, run: &mut dyn FnMut(&Batch<'_>)) {
-        Resolved::with_batch(self, |batch| run(batch));
+    fn with_batch(
+        &self,
+        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
+    ) -> Result<Written, Error> {
+        Resolved::with_batch(self, run)
     }
 }
 
@@ -506,7 +509,7 @@ const fn keyspace(column: Column) -> Keyspace {
     }
 }
 
-fn node_put(node: &NodeWrite) -> NodePut<'_> {
+pub(super) fn node_put(node: &NodeWrite) -> NodePut<'_> {
     NodePut {
         key: &node.key,
         feature: node.feature.as_slice(),
@@ -558,21 +561,31 @@ pub struct LigninBatch {
     marks: Mutex<Marks>,
 }
 
-/// What a batch keeps beside the outcomes: which subtrees it writes and
-/// which it was told to enter.
+/// What a batch keeps beside the outcomes: the subtrees that a staged
+/// write is in, in any column, each as its handle named it.
 #[derive(Default)]
 struct Marks {
-    /// The subtrees that a staged write is in, in any column, each as its
-    /// handle named it.
     written: BTreeMap<Prefix, LigninSubtree>,
-    /// The subtrees that were entered through the batch.
-    entered: BTreeSet<Prefix>,
 }
 
 impl Marks {
+    /// Takes in that a write was staged in the subtree `named`. Of two
+    /// handles of one subtree, the one that names its host is kept: a
+    /// handle by prefix names none where the directory has none yet.
+    fn write(&mut self, named: LigninSubtree) {
+        match self.written.get_mut(&named.prefix) {
+            Some(known) if known.host.is_some() && named.host.is_none() => {}
+            Some(known) => *known = named,
+            None => {
+                self.written.insert(named.prefix, named);
+            }
+        }
+    }
+
     fn take_in(&mut self, other: Self) {
-        self.written.extend(other.written);
-        self.entered.extend(other.entered);
+        for named in other.written.into_values() {
+            self.write(named);
+        }
     }
 }
 
@@ -582,7 +595,6 @@ impl fmt::Debug for LigninBatch {
         f.debug_struct("LigninBatch")
             .field("staged", &self.staged)
             .field("written", &marks.written.len())
-            .field("entered", &marks.entered.len())
             .finish()
     }
 }
@@ -649,7 +661,6 @@ impl LigninBatch {
         entering(subtree, tree_type)?;
         self.host(subtree);
         (self.staged).enter(Subtree::new(subtree.prefix), tree_type);
-        self.marks().entered.insert(subtree.prefix);
         Ok(())
     }
 
@@ -711,7 +722,7 @@ impl LigninBatch {
                 None => (self.staged).delete(unit, &change.key, Charge::Delete(cost)),
             }
         }
-        self.marks().written.insert(named.prefix, named);
+        self.marks().write(named);
         Ok(())
     }
 
@@ -775,34 +786,23 @@ impl LigninBatch {
 pub struct LigninSettled {
     resolved: Resolved<Charge>,
     written: BTreeMap<Prefix, LigninSubtree>,
-    /// The subtrees the batch enters.
-    entered: BTreeSet<Prefix>,
     pending: OperationCost,
+}
+
+/// What a settled batch holds for the node under a key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LigninOutcome<'a> {
+    /// It puts the node, with this value where the put states one.
+    Put(Option<&'a [u8]>),
+    /// It removes the node.
+    Removed,
 }
 
 impl LigninSettled {
     fn new(resolved: Resolved<Charge>, marks: Marks, pending: OperationCost) -> Self {
-        let Marks {
-            written,
-            mut entered,
-        } = marks;
-        // A later operation of the batch can have dropped a subtree that an
-        // earlier one entered: the batch says which enters stand.
-        if !entered.is_empty() {
-            resolved.with_batch(|batch| {
-                let enters = |subtree: &Prefix| {
-                    let subtree = Subtree::new(*subtree);
-                    let enters = (batch.subtrees.iter())
-                        .any(|write| write.enters() && write.subtree() == subtree);
-                    enters
-                };
-                entered.retain(enters);
-            });
-        }
         Self {
             resolved,
-            written,
-            entered,
+            written: marks.written,
             pending,
         }
     }
@@ -827,19 +827,17 @@ impl LigninSettled {
 
     /// Whether the batch itself enters the subtree `prefix`.
     pub fn enters(&self, prefix: &[u8; 32]) -> bool {
-        self.entered.contains(prefix)
+        self.resolved.enters().contains(&Subtree::new(*prefix))
     }
 
-    /// The value the batch states for the node `key` of the Merk under
-    /// `prefix`, if it puts that node with one.
-    pub fn stated_value(&self, prefix: &[u8; 32], key: &[u8]) -> Option<&[u8]> {
-        let unit = Unit::data(Subtree::new(*prefix));
-        (self.resolved.outcomes())
-            .find(|outcome| outcome.unit == unit && outcome.key == key)
-            .and_then(|outcome| match outcome.write {
-                Staged::Node(node) => node.value.as_deref(),
-                Staged::Record(_) | Staged::Removed | Staged::NodeRemoved => None,
-            })
+    /// What the batch holds for the node `key` of the Merk under `prefix`,
+    /// or `None` if it holds nothing for it.
+    pub fn node(&self, prefix: &[u8; 32], key: &[u8]) -> Option<LigninOutcome<'_>> {
+        match self.resolved.held(Subtree::new(*prefix), key)? {
+            Staged::Node(node) => Some(LigninOutcome::Put(node.value.as_deref())),
+            Staged::NodeRemoved => Some(LigninOutcome::Removed),
+            Staged::Record(_) | Staged::Removed => None,
+        }
     }
 
     /// Applies `parts` to the transaction that `view` writes, in their
@@ -892,6 +890,11 @@ fn charge_outcomes(
     let charges: Vec<Charge> = (resolved.tags_mut())
         .map(|charge| std::mem::replace(charge, Charge::Delete(None)))
         .collect();
+    if charges.len() != resolved.len() {
+        return Err(Error::CorruptedState(
+            "a batch does not have one charge for each of its outcomes",
+        ));
+    }
     for (outcome, attached) in resolved.outcomes().zip(charges) {
         let keyspace = keyspace(outcome.unit.column);
         let prefix = outcome.unit.subtree.as_bytes();

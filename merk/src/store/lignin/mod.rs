@@ -167,7 +167,9 @@ use grovedb_version::version::GroveVersion;
 use self::access::{Access, Child, Location, StoredLink, StoredNode};
 pub use self::{
     access::LigninWriter,
-    change_set::{LigninApplied, LigninBatch, LigninChangeSet, LigninSettled, PreparedNode},
+    change_set::{
+        LigninApplied, LigninBatch, LigninChangeSet, LigninOutcome, LigninSettled, PreparedNode,
+    },
     cursor::LigninCursor,
     directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
     flat::{LigninFlatCursor, LigninKeyspace},
