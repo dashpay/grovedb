@@ -256,6 +256,20 @@ pub(super) struct Both<'a, 't, 's> {
 }
 
 impl Both<'_, '_, '_> {
+    /// A deferred context of the Merk on RocksDB, which stages in `batch`.
+    pub(super) fn rocks_context<'b>(
+        &'b self,
+        batch: &'b StorageBatch,
+    ) -> <RocksDbStorage as Storage<'b>>::BatchTransactionalStorageContext {
+        self.rocks
+            .get_transactional_storage_context(
+                SubtreePath::empty(),
+                Some(batch),
+                self.rocks_transaction,
+            )
+            .unwrap()
+    }
+
     /// Makes `calls` on a Merk on a deferred handle of each engine and
     /// applies what they staged. The answers, the cost of every call and
     /// the cost of the batch are the same on both, and are returned.
