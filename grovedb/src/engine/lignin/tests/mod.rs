@@ -13,6 +13,7 @@
 //! it, with every hash of every Merk node made again by Merk's rules.
 
 mod cases;
+mod restore;
 
 use grovedb_costs::OperationCost;
 use grovedb_merk::store::{lignin::hash::MerkHashRules, NodeStore};
