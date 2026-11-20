@@ -77,14 +77,9 @@ pub struct Options {
     pub flush: Option<FlushConfig>,
     /// The policy of the cleaner, which moves what is live out of
     /// segments and value-log files that are mostly dead and gives the
-    /// files back: the share of dead bytes it works towards in the
-    /// segments ([`CleanerConfig::target_dead_percent`]) and in the value
-    /// log ([`CleanerConfig::value_dead_percent`]), and its throttle, the
-    /// bytes one pass may copy ([`CleanerConfig::max_pass_bytes`]) and the
-    /// sleep between two passes ([`CleanerConfig::idle`]). `None` is
-    /// [`CleanerConfig::new`], which says what its values hold dead space
-    /// to and where they do not. None of it changes what a reader is
-    /// given.
+    /// files back: what [`CleanerConfig`] says of each of its fields.
+    /// `None` is [`CleanerConfig::new`]. None of it changes what a reader
+    /// is given.
     pub cleaner: Option<CleanerConfig>,
     /// How long the reclaiming thread sleeps when nobody wakes it. A
     /// reclaim that a reader held back, and a step of the reclaimer that a

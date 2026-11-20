@@ -626,6 +626,39 @@ impl Merk {
     pub(super) fn len(&self) -> usize {
         self.nodes.len()
     }
+
+    /// The keys and the values of the nodes, in key order.
+    pub(super) fn items(&self) -> Items {
+        let items = self.nodes.iter();
+        let mut items: Items = items
+            .map(|node| (node.key.clone(), node.value.clone()))
+            .collect();
+        items.sort();
+        items
+    }
+}
+
+/// The keys and the values of the nodes of a Merk, in key order.
+pub(super) type Items = Vec<(Vec<u8>, Vec<u8>)>;
+
+/// The nodes of the Merk of `subtree` as a reader walks them: each key
+/// with the bytes of its value. `None` if the subtree is not entered.
+pub(super) fn items_of(operation: &Operation<'_>, subtree: Subtree) -> Option<Items> {
+    let opened = operation.open(subtree).expect("a lookup")?;
+    let mut walk = opened.walk();
+    let mut items = Items::new();
+    walk.seek_to_first(operation).expect("a move");
+    while let Some(key) = walk.key().map(<[u8]>::to_vec) {
+        let mut children = crate::txn::ChildKeys::new();
+        let value = walk.node_with_children(operation, &mut children, |view| {
+            let view = view.expect("the node the cursor stands on");
+            let mut value = lignin_tree::value::ValueBuf::new();
+            view.value(&mut value).expect("a value").to_vec()
+        });
+        items.push((key, value.expect("a read")));
+        walk.next(operation).expect("a move");
+    }
+    Some(items)
 }
 
 /// A subtree to enter, with the subtree and the key of the node that
@@ -712,10 +745,28 @@ impl Writes {
 
     /// Commits these writes with no transaction, and returns the commit.
     pub(super) fn commit(&self, db: &Db) -> Box<Published> {
-        match self.with(|batch| db.write(batch, &mut NoStaleHashes)) {
+        let before = db.version();
+        let published = match self.with(|batch| db.write(batch, &mut NoStaleHashes)) {
             Ok(Committed::Published(published)) => published,
             other => panic!("the writes are committed, and not {other:?}"),
+        };
+        assert!(published.version > before, "a commit takes a later version");
+        assert!(published.miscounted.is_none(), "a value is miscounted");
+        if !published.dropped.is_empty() {
+            // The handle the commit hands on is the directory of the
+            // version that was published: it leaves out what one that is
+            // loaded from the pages of that version leaves out.
+            let store = &*db.shared.store;
+            let guard = db.shared.versions.guard();
+            let pages = store.committed(&guard, published.version);
+            let fresh = store.catalog().load_directory(&pages);
+            let fresh = fresh.expect("the directory of the version");
+            let mut entries = fresh.entries();
+            while let Some((_, entry)) = entries.next(&pages).expect("an entry") {
+                assert_eq!(published.directory.is_live(&entry), fresh.is_live(&entry));
+            }
         }
+        published
     }
 }
 

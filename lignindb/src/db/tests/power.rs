@@ -11,8 +11,20 @@ use lignin_store::flush::Checkpointed;
 
 use super::*;
 
-/// What each subtree of the script holds at a version: how many nodes.
-type State = BTreeMap<u8, u32>;
+/// What each subtree of the script holds at a version: the keys and the
+/// values of the nodes of its Merk. The three lives of the page ids are
+/// Merks of as many nodes with other keys and values, so a version that
+/// was recovered with the pages of another life is told from its own.
+type State = BTreeMap<u8, Items>;
+
+/// What a table checkpoint of the script comes to, where the power is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Expected {
+    /// It is installed.
+    Installed,
+    /// It is put off for a page that a write transaction holds back.
+    PutOff,
+}
 
 /// The subtrees the script ever enters.
 const NAMES: [u8; 10] = [1, 2, 3, 9, 20, 21, 22, 23, 50, 77];
@@ -82,14 +94,15 @@ impl Script<'_> {
         }
     }
 
-    fn plant(&mut self, name: u8, merk: Merk, nodes: u32) -> bool {
+    fn plant(&mut self, name: u8, merk: Merk) -> bool {
+        let items = merk.items();
         let writes = Writes {
             enter: vec![(subtree(name), None)],
             merks: vec![(subtree(name), merk)],
             ..Writes::default()
         };
         self.commit(writes, |state| {
-            state.insert(name, nodes);
+            state.insert(name, items);
         })
     }
 
@@ -99,7 +112,7 @@ impl Script<'_> {
             ..Writes::default()
         };
         self.commit(writes, |state| {
-            state.insert(name, 0);
+            state.insert(name, Items::new());
         })
     }
 
@@ -145,10 +158,22 @@ impl Script<'_> {
         }
     }
 
-    /// A table checkpoint. One that is installed has synced the log, so
-    /// every version published before it is durable.
-    fn checkpoint(&mut self) -> bool {
-        match self.db.shared.write_back().checkpoint() {
+    /// A table checkpoint, which comes to `expected` where the power is
+    /// on. One that is installed has synced the log, so every version
+    /// published before it is durable.
+    fn checkpoint(&mut self, expected: Expected) -> bool {
+        let taken = self.db.shared.write_back().checkpoint();
+        let came_to = match &taken {
+            Ok(Checkpointed::Installed { .. }) => Some(Expected::Installed),
+            Ok(Checkpointed::PutOff { blocked }) if *blocked > 0 => Some(Expected::PutOff),
+            _ => None,
+        };
+        assert!(
+            taken.is_err() || came_to == Some(expected),
+            "a table checkpoint at version {} came to {taken:?}, and not to {expected:?}",
+            self.ran.latest
+        );
+        match taken {
             Ok(Checkpointed::Installed { .. }) => {
                 if self.ran.installed == 0 {
                     self.ran.never_linked_at_checkpoint = self.ran.never_linked;
@@ -188,8 +213,8 @@ impl Script<'_> {
         let wide = |lead: u8| Merk::sized(lead, 120, 30);
         // A Merk that stays, and the first life of some page ids: a Merk
         // whose pages are written back, dropped, reclaimed and trimmed.
-        let begun = self.plant(9, Merk::sized(b'k', 40, 20), 40)
-            && self.plant(1, wide(b'a'), 120)
+        let begun = self.plant(9, Merk::sized(b'k', 40, 20))
+            && self.plant(1, wide(b'a'))
             && self.flush()
             && self.pass()
             && self.drop_of(1)
@@ -202,7 +227,7 @@ impl Script<'_> {
             && self.reclaim(1)
             // The second life of the ids: a Merk that is dropped before
             // write-back has linked its pages.
-            && self.plant(2, wide(b'b'), 120)
+            && self.plant(2, wide(b'b'))
             && self.drop_of(2)
             // The reclaiming, whose steps free pages that never had a link
             // and are given no free link (D-110). Then a pass that trims, a
@@ -210,14 +235,14 @@ impl Script<'_> {
             // the third life of the ids.
             && self.reclaim(2)
             && self.pass()
-            && self.checkpoint()
+            && self.checkpoint(Expected::Installed)
             && self.enter(22)
             && self.reclaim(2)
             && self.enter(23)
             && self.reclaim(2)
-            && self.plant(3, wide(b'c'), 120)
+            && self.plant(3, wide(b'c'))
             // A Merk with values out of line, which wait for their place.
-            && self.plant(50, long(), 6);
+            && self.plant(50, long());
         if !begun {
             return false;
         }
@@ -237,10 +262,15 @@ impl Script<'_> {
             scope.merge();
             applied.is_ok()
         };
-        let ended = held && self.pass() && self.checkpoint();
+        let ended = held && self.pass() && self.checkpoint(Expected::PutOff);
         let rolled_back = self.db.rollback(&txn).is_ok();
         drop(txn);
-        ended && rolled_back && self.pass() && self.flush() && self.checkpoint() && self.pass()
+        ended
+            && rolled_back
+            && self.pass()
+            && self.flush()
+            && self.checkpoint(Expected::Installed)
+            && self.pass()
     }
 }
 
@@ -275,16 +305,16 @@ fn ran(fs: &SimVfs, cut: Option<u64>) -> Ran {
 }
 
 /// What a reader of the latest version of `db` finds of the script's
-/// subtrees.
+/// subtrees: every key and value of each Merk, and no flat record.
 fn found(db: &Db) -> State {
     let snapshot = db.snapshot();
     let operation = snapshot.operation();
-    let nodes = NAMES.into_iter().filter_map(|name| {
-        let (nodes, records) = seen(&operation, subtree(name), b"k")?;
+    let subtrees = NAMES.into_iter().filter_map(|name| {
+        let (_, records) = seen(&operation, subtree(name), b"k")?;
         assert!(records.is_empty());
-        Some((name, nodes as u32))
+        Some((name, items_of(&operation, subtree(name))?))
     });
-    nodes.collect()
+    subtrees.collect()
 }
 
 /// The script alone, with the power on: it makes what the sweep is for.
@@ -298,7 +328,9 @@ fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
         "no page was freed before it had a link"
     );
     // The first table checkpoint was installed with those freeing steps
-    // in the log before it; the one in the middle was put off.
+    // in the log before it. The script asserts what each of its three
+    // checkpoints came to where it takes it: installed, put off,
+    // installed.
     assert_eq!(ran.never_linked_at_checkpoint, ran.never_linked);
     assert!(
         ran.held_back,
@@ -319,9 +351,12 @@ fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
 /// that was not synced, everything kept, and two drawn from the seed.
 /// Each state opens. It lands on a version the script published, or on
 /// the one whose commit was under way, at or after the last version that
-/// was made durable, and a reader finds what that version held. The
-/// reclaimer of the new session then takes out what was left, a commit
-/// is taken, and the store is sound to the physical checker.
+/// was made durable, and a reader finds what that version held: every
+/// key and every value of every Merk. The reclaimer of the new session
+/// then takes out what was left, a commit is taken, and the store is
+/// sound to the physical checker. The background threads of that session
+/// are ended for it, so its close finishes nothing more: the checker
+/// reads the store as the reclaiming and the commit left it.
 ///
 /// The commits of the script make nothing durable by themselves (the
 /// default sync policy), so a cut lands on the last version that a flush
@@ -338,6 +373,10 @@ fn a_power_cut_at_any_point_of_a_session_recovers_a_committed_version() {
         if ran.whole && !fs.is_powered_off() {
             break;
         }
+        assert!(
+            fs.is_powered_off(),
+            "a cut after change {cut}: the script stopped with the power on"
+        );
         cuts += 1;
         let image = fs.crash_image();
         let plans = [
