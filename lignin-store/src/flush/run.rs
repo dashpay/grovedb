@@ -248,7 +248,24 @@ impl WriteBack<'_> {
     /// write transaction is open, stays in the log.
     ///
     /// The files are closed and the log is made durable whatever became of
-    /// the checkpoint, whose error comes first.
+    /// the checkpoint, whose error comes first. **Every step of the close
+    /// is made whatever became of the one before it**, and the first error
+    /// is returned: each of the three stores replaces the manifest with one
+    /// that names its files as they are, also when the store before it
+    /// could not delete a file, and also when a manifest in doubt was
+    /// settled with such an answer. Only a manifest that is still in doubt,
+    /// because it could not be opened again, is replaced by none of them.
+    ///
+    /// A replacement of the close that fails can leave an earlier
+    /// manifest in force, as a session that is killed does: one that
+    /// names the value log's file as one that is still written, and the
+    /// log's last file open and short of its end. The next session's
+    /// recovery takes a value-log file at the length its manifest gives
+    /// it, which covers every value a page points to, since a value is
+    /// covered by a manifest before a page is given its pointer. It reads
+    /// a log file that is named open past the named length, up to the
+    /// first item that is not whole, and lands on the last commit whose
+    /// group lies whole before that item.
     pub fn finish(&self) -> Result<Checkpointed, FlushError> {
         let checkpointed = self.checkpoint();
         let closed = self.close();
@@ -269,18 +286,25 @@ impl WriteBack<'_> {
         };
         drop(files);
         let synced = self.sync_log().map(drop);
-        let named = self.manifest().and_then(|mut manifest| {
+        // A manifest in doubt is settled first. A store that answers the
+        // settling with an error has heard of the manifest all the same,
+        // so the stores name their files in the manifest as it is: a
+        // replacement refuses one that is still in doubt, and writes
+        // nothing.
+        let settled = self.manifest().map(drop);
+        let named = {
+            let mut manifest = lock(self.stores.manifest);
             let Stores {
                 segments,
                 values,
                 log,
                 ..
             } = self.stores;
-            segments.commit(&mut manifest)?;
-            values.commit(&mut manifest)?;
-            log.commit(&mut manifest)?;
-            Ok(())
-        });
-        sealed.and(finished).and(synced).and(named)
+            let segments = segments.commit(&mut manifest).map_err(FlushError::from);
+            let values = values.commit(&mut manifest).map_err(FlushError::from);
+            let log = log.commit(&mut manifest).map_err(FlushError::from);
+            segments.and(values).and(log)
+        };
+        sealed.and(finished).and(synced).and(settled).and(named)
     }
 }

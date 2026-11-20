@@ -407,3 +407,56 @@ fn a_segment_with_a_damaged_block_is_left_alone() {
         assert_eq!(state.stats().segments_unreadable, 1);
     }
 }
+
+/// **The damage a pass found is what it ends with, also when a step of
+/// the pass fails afterwards.** A live block of the segment a round takes
+/// first is damaged, and the file of the segment it takes second is cut
+/// short, so that the file layer fails the read of its first block. The
+/// pass puts the damage aside, and the failed read ends it. The segment
+/// with the damaged block is left alone for the rest of the session, so
+/// no later pass of it names the block again: the pass that found it has
+/// to.
+#[test]
+fn the_damage_a_pass_found_is_not_replaced_by_a_later_failure() {
+    use std::collections::BTreeSet;
+
+    use crate::cleaner::clean::victims;
+
+    let db = churned(13);
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let space = cleaner.space().expect("the space");
+    let none = BTreeSet::new();
+    let chosen = victims(&space, &none, &none, &moving_only(), 0).segments;
+    let (first, second) = (chosen[0], chosen[1]);
+    let (id, location) = links_of(&db)
+        .into_iter()
+        .filter_map(|(id, link)| Some((id, link.location()?)))
+        .find(|(_, location)| location.file == first)
+        .expect("a block of the first segment that a link points to");
+    let mut bytes = raw(&db, location);
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0x40;
+    overwrite(&db, location, &bytes);
+    let path = FileNames::SEGMENT.path(&db.path, second);
+    let file = (std::fs::OpenOptions::new().write(true).open(path)).expect("the segment");
+    file.set_len(0).expect("the file is cut short");
+
+    let error = cleaner.pass().expect_err("a block is damaged");
+    match &error {
+        CleanerError::Block {
+            page, location: at, ..
+        } => assert_eq!((*page, *at), (id, location), "{error}"),
+        other => panic!("the pass ended with: {other}"),
+    }
+    assert!(error.is_damage(), "{error}");
+    let stats = state.stats();
+    assert_eq!((stats.segments_unreadable, stats.errors), (1, 1));
+    // The failed read ended the round. It had retired the segments that
+    // held no live block when it began, and it retired none of those it
+    // had chosen, which a round that only meets the damage does.
+    let empty = (space.segments.iter())
+        .filter(|segment| !segment.has_writer && segment.live_blocks == 0)
+        .count();
+    assert_eq!(stats.segments_retired, empty as u64, "{stats:?}");
+}

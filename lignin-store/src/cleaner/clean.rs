@@ -245,9 +245,16 @@ impl<'s> Cleaner<'s> {
         // A round moves as much as can wait for one table checkpoint, and
         // has the checkpoint taken. While that sets segments free and the
         // dead space is still above its target, the pass goes on.
+        // The first damage the rounds find is put aside and the pass goes
+        // on. It is what the pass ends with, whatever fails afterwards:
+        // the segment is left alone for the rest of the session, and no
+        // later pass of it names the block again.
         let mut failed = None;
         for _ in 0..MAX_ROUNDS {
-            let more = self.round(work, pass, &mut failed)?;
+            let more = match self.round(work, pass, &mut failed) {
+                Ok(more) => more,
+                Err(error) => return Err(failed.unwrap_or(error)),
+            };
             if !more || pass.more {
                 break;
             }
@@ -365,11 +372,7 @@ impl<'s> Cleaner<'s> {
             return Ok(false);
         }
         let moved = pass.blocks_moved;
-        match self.move_out(work, &space, &chosen.segments, pass) {
-            Ok(()) => {}
-            Err(error) if error.is_damage() => drop(failed.get_or_insert(error)),
-            Err(error) => return Err(error),
-        }
+        self.move_out(work, &space, &chosen.segments, pass, failed)?;
         self.reclaim_with_checkpoint(work, pass, all, false)?;
         // The next round reads the table again. If the dead space is
         // still above its target then, it has a table checkpoint taken
@@ -514,13 +517,16 @@ impl<'s> Cleaner<'s> {
 
     /// Moves the live blocks of `victims` to the cleaner's segment, in the
     /// order of the victims, until the throttle ends the pass. A victim
-    /// that is left with no live block is retired.
+    /// that is left with no live block is retired. The first damaged block
+    /// it meets is put into `failed`, unless `failed` holds an error
+    /// already, and the move goes on with the other victims.
     fn move_out(
         &self,
         work: &mut Work,
         space: &Space,
         victims: &[FileId],
         pass: &mut Pass,
+        failed: &mut Option<CleanerError>,
     ) -> Result<(), CleanerError> {
         let table = self.stores().table;
         let counters = &self.state.counters;
@@ -549,7 +555,6 @@ impl<'s> Cleaner<'s> {
         for (at, ..) in &blocks {
             left[*at] += 1;
         }
-        let mut failed = None;
         let mut buf = Vec::new();
         for (at, from, page) in blocks {
             if work.unreadable.contains(&from.file) {
@@ -591,7 +596,7 @@ impl<'s> Cleaner<'s> {
                 self.retire(work, *file, block_bytes, pass);
             }
         }
-        failed.map_or(Ok(()), Err)
+        Ok(())
     }
 
     /// Copies the block at `from`, which a link of `page` points to, to

@@ -140,9 +140,7 @@ impl<'s> Cleaner<'s> {
         owners: &O,
         pass: &mut ValuePass,
     ) -> Result<(), CleanerError> {
-        let Stores {
-            values, versions, ..
-        } = self.stores();
+        let versions = self.stores().versions;
         let counters = &self.state.counters;
         work.value_passes += 1;
         self.drop_values(work, pass)?;
@@ -182,6 +180,18 @@ impl<'s> Cleaner<'s> {
             }
         }
 
+        // What the cleaning found is what the pass ends with, whatever
+        // fails afterwards: in this session the file is not looked at
+        // again while its count stands.
+        let dropped = self.drop_emptied(work, pass);
+        failed.map_or(dropped, Err)
+    }
+
+    /// Step 3 of [`Self::pass_values`].
+    fn drop_emptied(&self, work: &mut Work, pass: &mut ValuePass) -> Result<(), CleanerError> {
+        let Stores {
+            values, versions, ..
+        } = self.stores();
         // A closed file that no count lists holds no live value: a
         // cleaning emptied it, or the commits did.
         let counted: Vec<FileId> = values.counts().iter().map(|count| count.file).collect();
@@ -217,7 +227,7 @@ impl<'s> Cleaner<'s> {
                 self.drop_values(work, pass)?;
             }
         }
-        failed.map_or(Ok(()), Err)
+        Ok(())
     }
 
     /// The closed file with the largest share of dead bytes, if the dead

@@ -640,3 +640,63 @@ fn the_log_is_synced_once_for_the_moves_that_emptied_a_file() {
     let (_, dropped) = settle_values(&cleaner, &Cells(&db));
     assert_eq!(dropped.len(), 1);
 }
+
+/// **What a cleaning found is what the pass ends with, also when the step
+/// behind it fails.** A commit emptied one file, and the live value of
+/// another, which is half dead, has no owner among the owners given. The
+/// cleaning says so, the pass goes on to the emptied file, and the sync
+/// of the log that a deletion waits for fails. The file whose owners were
+/// not found is not looked at again while its count stands, so the pass
+/// that looked at it has to name it.
+#[test]
+fn owners_that_were_not_found_are_not_replaced_by_a_later_failure() {
+    use lignin_io::sim::{Fault, FaultRule, OpSet, SimConfig};
+
+    use crate::segment::{tests::sim::sim_fs, FileNames};
+
+    let fs = sim_fs(SimConfig::new(5));
+    let db = super::crash::new_store(&fs);
+    for id in 1..=4u8 {
+        db.commit(&[
+            insert((u32::from(id), 1), b"a", long(id, 400)),
+            insert((u32::from(id), 2), b"b", long(id + 40, 400)),
+        ]);
+        db.wb().pass().expect("a pass");
+    }
+    db.commit(&[
+        set((1, 1), inline(b"short")),
+        set((1, 2), inline(b"short too")),
+    ]);
+    db.wb().pass().expect("a pass");
+    db.commit(&[set((2, 2), long(82, 300))]);
+    db.wb().pass().expect("a pass");
+    let half_dead = db.pointer(page(2), slot(1)).file();
+    // A commit that no sync has made durable, in a log whose syncs fail.
+    db.commit(&[insert((5, 1), b"k", inline(b"v"))]);
+    let log = db.log.end().expect("the log has a file").file();
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpSet::SYNCS)
+            .at(FileNames::WAL.path(&db.path, log))
+            .forever(),
+    );
+
+    let odd = Side {
+        cells: Cells(&db),
+        odd: true,
+    };
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let faults = fs.stats().faults;
+    let error = (cleaner.pass_values(&odd)).expect_err("the owners are not found");
+    assert!(
+        fs.stats().faults > faults,
+        "the pass asked for a sync of the log, and it failed"
+    );
+    match error {
+        CleanerError::Values(ValueStoreError::OwnersNotFound { file, .. }) => {
+            assert_eq!(file, half_dead);
+        }
+        other => panic!("the pass ended with: {other}"),
+    }
+}
