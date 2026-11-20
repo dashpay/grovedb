@@ -159,6 +159,10 @@
 //!   disk until [`SimVfs::clear_rules`] gives the space back.
 //! - **By chance.** [`FaultOdds`] gives each operation a chance of `EIO` and
 //!   of `ENOSPC`.
+//! - **By the bytes the files hold.** With a capacity
+//!   ([`SimVfs::set_capacity`]) a write or an append that the device has
+//!   no room for fails with `ENOSPC`, and removing a file or cutting one
+//!   short gives room back.
 //!
 //! What a failed operation leaves is what the contract allows it to leave:
 //!
@@ -215,9 +219,12 @@
 //! are no symbolic links. The trace and the fault rules know a path as text,
 //! so two names that differ only in bytes that are not UTF-8 look the same
 //! to them, and they know a handle by the path it was opened by, also after
-//! a directory above the file was renamed. The space on the device is not
-//! counted: it is full when a rule says so.
+//! a directory above the file was renamed. The space on the device is
+//! counted only where a capacity is set ([`SimVfs::set_capacity`]), and then
+//! by the lengths of the files alone: otherwise the device is full when a
+//! rule says so.
 
+mod budget;
 mod crash;
 mod fault;
 mod rng;
