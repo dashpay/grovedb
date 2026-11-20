@@ -33,6 +33,10 @@ use super::key::{KeySet, Unit};
 /// given out a handle and beside which commits land; what it costs is a
 /// conflict that may be false for a writer that is that many commits
 /// behind.
+///
+/// It is also how many key sets a transaction with no write holds back
+/// where every transaction takes them from (`Commits`): it would keep no
+/// more of them here.
 pub(crate) const KEPT_COMMITS: usize = 64;
 
 /// What the commits since a read did to a key.

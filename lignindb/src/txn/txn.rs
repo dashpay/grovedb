@@ -163,10 +163,15 @@ impl State<'_> {
     /// transaction has no write, and remembers no lease it has shown a node
     /// under. The handle of a node that was shown can still come back in a
     /// write that keeps the node's value, and the commits are watched for
-    /// that.
+    /// that: with no write, for the newest key sets only, which are all
+    /// that its reads are dated with ([`Commits`](super::Commits)).
     fn unwatch(&mut self) {
-        if self.set.is_empty() && !self.reads.any() {
-            self.watch = None;
+        if !self.set.is_empty() {
+            return;
+        }
+        match &mut self.watch {
+            Some(watch) if self.reads.any() => watch.hold_newest(),
+            _ => self.watch = None,
         }
     }
 
@@ -626,7 +631,9 @@ impl<'s> WriteTxn<'s> {
         // the watch before the version a first write is dated with (WT5).
         let guard = path.versions.guard();
         if writing {
-            self.watch(state);
+            // The write is dated with the version that is read below, and
+            // every commit after it is compared with it (CF3).
+            self.watch(state).hold_all();
         }
         if writing && state.open.is_none() {
             state.open = Some(path.stats.write_opened());
@@ -700,11 +707,10 @@ impl<'s> WriteTxn<'s> {
     }
 
     /// Starts to watch the key sets of the commits, if the transaction
-    /// does not watch them yet.
-    fn watch(&self, state: &mut State<'s>) {
-        if state.watch.is_none() {
-            state.watch = Some(self.path.commits.watch());
-        }
+    /// does not watch them yet, and gives its watch.
+    fn watch<'a>(&self, state: &'a mut State<'s>) -> &'a mut Watch<'s> {
+        let commits = &self.path.commits;
+        state.watch.get_or_insert_with(|| commits.watch())
     }
 
     /// Takes a guard and pins the latest version for a cursor over the
@@ -784,10 +790,115 @@ impl<'s> WriteTxn<'s> {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
                     }
+                } else {
+                    drop(frames);
                 }
-                Err(refused.error)
+                Err(self.told(state, op, batch, refused.error))
             }
         }
+    }
+
+    /// The refusal `error` of `batch`, which says so where a commit outside
+    /// the transaction is its cause ([`BatchError::ValueTaken`], CF2a): a
+    /// node of the batch has no value to keep, or its Merk is not entered,
+    /// because such a commit took the node away after the read the keep
+    /// names. Every other refusal is as it was, and so is this one where a
+    /// read that would tell fails.
+    fn told(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+        error: TxnError,
+    ) -> TxnError {
+        let subtree = match &error {
+            TxnError::Batch(
+                BatchError::NoValue { subtree } | BatchError::NotEntered { subtree },
+            ) => *subtree,
+            _ => return error,
+        };
+        match self.taken(state, op, batch, subtree) {
+            Ok(true) => BatchError::ValueTaken { subtree }.into(),
+            Ok(false) | Err(_) => error,
+        }
+    }
+
+    /// Whether commits outside the transaction are why `batch` has no
+    /// value to keep in the Merk `subtree`: every node of that Merk whose
+    /// value the batch keeps and that is not there is one such a commit
+    /// took away, and there is one. A commit took a node away where the
+    /// keep names a read the transaction can date, the key set of a commit
+    /// since that read holds the node's key, and the committed version the
+    /// operation reads has no node under it.
+    ///
+    /// What is not there for another reason leaves the refusal what it
+    /// was: a node the transaction deleted itself, a Merk that it dropped
+    /// or cleared itself or that is below one it did, a keep that names no
+    /// read, and a read it cannot date. Where the Merk is not entered in
+    /// the committed version and the transaction has dropped or cleared
+    /// anything, it does not say whose drop it was. A drop of a Merk above
+    /// this one by a commit outside is not told either: its key set does
+    /// not name this subtree.
+    ///
+    /// Only a refusal asks, so no write that is taken pays for it.
+    fn taken(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        batch: &Batch<'_>,
+        subtree: Subtree,
+    ) -> Result<bool, TxnError> {
+        if batch.leaves(subtree) {
+            return Ok(false);
+        }
+        let Some(merk) = batch.merks.iter().find(|merk| merk.subtree == subtree) else {
+            return Ok(false);
+        };
+        let (path, guard) = (&self.path, &op.guard);
+        let State {
+            directory,
+            set,
+            reads,
+            buffers,
+            lease,
+            ..
+        } = state;
+        // What the committed version has of the Merk, and whether what the
+        // transaction dropped or cleared itself hides it.
+        let opened = Opened::at(directory, path, guard, op.at)?;
+        let entered = opened.root(path, guard, &subtree)?;
+        let hidden = match entered {
+            Some(_) => opened.seen(path, guard, set, &subtree)?.is_none(),
+            None => set.leaving().next().is_some(),
+        };
+        if hidden {
+            return Ok(false);
+        }
+        let unit = Unit::data(subtree);
+        let mut pages = path.committed_pages(guard, op.at, *lease, buffers);
+        let mut taken = false;
+        for node in merk.nodes {
+            if node.value != ValuePut::Keep {
+                continue;
+            }
+            match set.own(unit, node.key) {
+                Own::Unwritten => {}
+                // Its own node is there, with a value to keep.
+                Own::Node(_) => continue,
+                Own::Deleted | Own::Put(_) => return Ok(false),
+            }
+            if find(&mut pages, entered.flatten(), node.key)?.is_some() {
+                continue;
+            }
+            let since = node
+                .at
+                .map(|handle| reads.since(handle.lease(), op.at, unit, node.key));
+            if since != Some(Since::Written) {
+                return Ok(false);
+            }
+            taken = true;
+        }
+        Ok(taken)
     }
 
     /// Adds a batch to a write set that is served by key: no page is
@@ -854,7 +965,11 @@ impl<'s> WriteTxn<'s> {
                         }
                     }
                 };
-                kept.push((entry - 1, value.ok_or(BatchError::NoValue { subtree })?));
+                let Some(value) = value else {
+                    let refused = BatchError::NoValue { subtree }.into();
+                    return Err(self.told(state, op, batch, refused));
+                };
+                kept.push((entry - 1, value));
             }
             entry += merk.removed.len() as EntryId;
         }

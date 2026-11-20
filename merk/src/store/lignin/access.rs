@@ -769,6 +769,15 @@ fn subtree_write(change: &SubtreeChange) -> SubtreeWrite<'_> {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What a test has happen, once and on its own thread, between the
+    /// reads that compare the stated values of a batch and the batch's
+    /// application ([`apply_batch`]): a commit of another transaction.
+    pub(super) static AFTER_COMPARING: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Applies `batch` to the transaction of `scope` as one operation.
 ///
 /// A stated value that the transaction holds already is kept where it is,
@@ -803,6 +812,10 @@ pub(super) fn apply_batch(scope: &Scope<'_, '_>, batch: &Batch<'_>) -> Result<Wr
             kept.push(held);
         }
         keep.push(kept);
+    }
+    #[cfg(test)]
+    if let Some(between) = AFTER_COMPARING.take() {
+        between();
     }
     let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter().zip(&keep))
         .map(|(merk, keep)| {

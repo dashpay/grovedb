@@ -349,6 +349,11 @@ transaction never sees its writes before it commits. Once it has committed,
 every other handle is governed by its own row of the table above: an open
 write transaction sees it at once for the keys it has not written.
 
+Its transaction has read nothing when the write is applied. So its batch
+cannot keep the committed value of a Merk node (CF2a): a keep that names no
+read is refused (`NoRead`), and one that names a read of another
+transaction is one the engine cannot date, which is a conflict.
+
 **RD8. Nobody but *T* sees *T*'s uncommitted writes.** No snapshot, no other
 write transaction, no background actor and no checkpoint reads them (P-10).
 
@@ -1050,13 +1055,59 @@ is an entry *e* in *T*'s write set and a foreign commit *c* such that
 
 Two keys meet when they are the same record key. A key meets a range that
 contains it. Two ranges meet when they share a key (ST4). In all other cases
-the commit does not fail with `Conflict`.
+the commit does not fail with `Conflict`, but for a kept value (CF2a).
 
 In words: the commit fails when someone else committed a write to a key
 after *T* first wrote that key. It does not matter that *T* wrote the key
 again later (case A9). It does not matter how long *T* has been open: a
 commit that landed before *T* first wrote the key is not a conflict, and *T*
 then built on it (cases A2, B2).
+
+**CF2a. A kept value is dated at its read** (D-097, D-155). An entry *e* of
+*T* that writes a Merk node with its value kept, where the value is the
+committed state's and not one *T* stated, depends on that value as *T*'s
+writer read it. The write names that read by the handle the node was read
+with (PN8). Let *r(e)* be the version the read was made at, *r(e)* ≤
+*fw(e)*. The commit of *T* fails with `Conflict` when a foreign commit *c*
+with *v(c)* > *r(e)* has a key set that meets the key of *e*: CF2 with
+*r(e)* in the place of *fw(e)*. So a node is never published whose value
+hash was made for a value another commit has replaced (case A19).
+
+- **An entry that keeps a value *T* stated itself is not touched.** CF2
+  decides from *T*'s first write of the key (case A19c). A node that *T*
+  wrote before with its value kept has the committed value still, and a
+  later keep of it is dated at the read that keep names.
+- **A write that keeps a committed value and names no read is refused**
+  (`NoRead`) and changes nothing (case A19d, WT10).
+- **Where the engine cannot date a read, it takes *e* to be met**: a
+  conflict that CF2a does not ask for, and never a wrong node. That is a
+  handle the engine did not show a node with since *T* last ended, a read
+  more than 64 commits before the write, and a handle of the frames of a
+  write that was itself met in this way. A thread that reads and writes a
+  Merk with no commit of another in between meets none of them.
+- **Where a foreign commit after *r(e)* left no node under the key**, by
+  deleting the node or by dropping or clearing its Merk, there is no value
+  to keep. The write is refused and changes nothing: no keep with nothing
+  to keep enters the write set. The refusal says that foreign commits are
+  its cause (`ValueTaken`) where the engine can tell that of every node
+  of the refused Merk that the batch has no value to keep of: the read is
+  one it can date, the key
+  set of a commit since holds the key, and nothing *T* wrote itself took
+  the node away. That refusal is a conflict to the caller (CF6), and the
+  transaction stays open (WT10). Everywhere else the refusal is of what is
+  not there (`NoValue`, `NotEntered`), as it is with no commit in between:
+  for a keep that names no read, for a read the engine cannot date, for a
+  node *T* deleted itself or a Merk it dropped or cleared itself or that
+  is below one it did, and for a foreign drop of a Merk above the node's,
+  whose key set does not name the Merk below.
+- **CF4 holds for the entry**: a rollback that removes it forgets the mark.
+
+The transaction is given the key sets for this from the first node it is
+shown, or the first cursor it opens over a Merk, and not only from its first
+write. What it has to hold for that is bounded (CF3). It forgets its reads
+when it ends: by a rollback, by a commit, and by a commit with an empty
+write set, which is no commit (CV2) and ends it all the same. A keep by a
+handle from before that is one the engine cannot date.
 
 **CF3. Enough must be remembered to decide CF2 exactly.** While a write
 transaction is open, the engine must be able to evaluate CF2 for it against
@@ -1067,11 +1118,18 @@ transaction and remember the entries it meets. A transaction's commit fails
 if anything is remembered for it. Entries that a rollback removes are
 forgotten with it (CF4).
 
+For CF2a the engine answers "met" where it cannot tell, and it remembers
+the key sets of the newest 64 commits for it and no more. A transaction
+that has been shown a node and has no write uses key sets for nothing else.
+So it holds back at most those 64, however many commits are published
+while it stays open, and a keep by a read from further back is met. A
+transaction with a write holds what CF2 needs, as the first paragraph says.
+
 **CF4. What changes the outcome, and what does not.**
 
 | Does not matter | Because |
 | --- | --- |
-| what *T* read | reads are not tracked. This is not serializability (case A3b). |
+| what *T* read | reads are not tracked. This is not serializability (case A3b). The one read that counts is the read of a Merk node whose value a write keeps (CF2a). |
 | whether the foreign write changed the value | a write is a write (ST5; cases A7, A7b) |
 | who made the foreign commit | a write with no transaction, another write transaction and a wipe count alike (cases A1, A1b, A13) |
 | a foreign write to the same subtree and key in another column | the column is part of the key (case A6) |
@@ -1093,10 +1151,19 @@ this rule as one write of the range "that subtree's column", in place of one
 entry per loaded key. What is read back under those keys is the loaded
 records (RD3).
 
-**CF6. `Conflict` is one typed error, used for this and for nothing else.**
-GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the one
-RocksDB's `Busy` also satisfies. A commit that fails for another reason must
-not return it, and a conflict must not be reported as anything else.
+**CF6. `Conflict` is one typed error, used for CF2 and CF2a and for nothing
+else.** GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the
+one RocksDB's `Busy` also satisfies. A commit that fails for another reason
+must not return it, and a conflict must not be reported as anything else.
+
+One refusal of a write is a conflict too, and says so: `ValueTaken`, the
+keep of a value that a foreign commit took away since its read (CF2a). It
+is not `Conflict`, because it is the answer to a write and not to a commit,
+and it leaves the transaction open with what it wrote before (WT10). A
+caller that takes it as a conflict rolls the transaction back and makes its
+reads and writes again. The seam does not map it to the engine-neutral
+conflict error yet: that is GROVE-10's, which tells it by
+`TxnError::is_conflict()`.
 
 **CF7. A second write transaction is the same rule.** TXN-05 says "a second
 write transaction fails at commit with a conflict". Read through CF2: of two
@@ -1119,10 +1186,15 @@ together with the differences that are not about conflicts.
 | The memtable history no longer reaches back to a first write | commit fails with `TryAgain`, conflict or not (case A11b) | decides CF2 exactly; never an undecided error | only after hundreds of megabytes of foreign writes while one transaction is open |
 | A foreign range delete covers a key *T* wrote | `Busy` only if a point entry for that key is still in a memtable or its retained history (cases A10 to A10d, B17) | always `Conflict` (CF5) | not by the call sites BASE-05 lists: the wipe starts a state-sync restore (P-22), and pending drops are flushed after the block commit and at startup (P-24) |
 | Data loaded outside *T* under keys *T* wrote | never a conflict: file ingestion is invisible to the check (case A18) | `Conflict` (CF5) | no: devnet seeding loads a subtree under which *T* has written nothing (P-30) |
+| A foreign commit writes a Merk node between *T*'s read of it and *T*'s write of it, and *T*'s write keeps the node's value | success: the node holds the value *T* read, and the foreign value is lost (case A19) | `Conflict` (CF2a) | only with two writers of one Merk at a time |
 
-LigninDB is stricter in the last two because the alternative is to commit
-*T*'s older records on top of a range that was deleted or loaded under it,
-which can leave a tree that no longer hashes to its root.
+LigninDB is stricter in the second and the third because the alternative is
+to commit *T*'s older records on top of a range that was deleted or loaded
+under it, which can leave a tree that no longer hashes to its root. It is
+stricter in the fourth because a node of LigninDB can keep its value where
+RocksDB's whole-record put states it again: without the rule the node would
+be published with the foreign value under the hashes *T* made for the value
+it read (D-097).
 
 ## 9. Write scopes: several threads in one transaction
 
@@ -2108,6 +2180,7 @@ document or of the engine.
 | D4 | Commit when the memtable history is too short | `TryAgain` | CF2 decided exactly (CF9) | node-local |
 | D5 | A range delete outside *T* over a key *T* wrote | `Busy` or success, depending on the memtables | `Conflict` (CF9) | node-local; not reached by Platform's call sites |
 | D6 | Records loaded outside *T* under a key *T* wrote | success | `Conflict` (CF9) | devnet seeding only; not reached there |
+| D7 | A Merk node that a foreign commit wrote between *T*'s read of it and *T*'s write of it with its value kept | success; the node holds the value *T* read, and the foreign write is lost | `Conflict` (CF2a, CF9); where the foreign commit took the node away, the write is refused, as a conflict where the engine can tell (`ValueTaken`, CF2a) | needs two writers of one Merk at a time. A caller that retries on a conflict sees one where RocksDB would have dropped the other writer's value. |
 
 Three things that might look like differences are not. A second write
 transaction is allowed on both engines and conflicts by the same rule (CF7).
@@ -2192,6 +2265,12 @@ same result.
   not marked as a difference gives the listed result. Both engines.
 - T-CF2: the differences of CF9 give `Conflict` on LigninDB: a foreign range
   delete, a wipe and a load over a key the transaction wrote.
+- T-CF2a: a kept value is dated at its read (cases A19 to A19d). Both
+  orders of the foreign commit and the write; a foreign delete, clear and
+  drop that take the node away (`ValueTaken` where the read is dated, the
+  plain refusal where it is not); a read that cannot be dated; a
+  transaction with no write beside a thousand commits holds 64 key sets,
+  and one with a write holds them all (`lignindb/src/commit/tests/kept.rs`).
 - T-CF3: a model test. A random schedule of puts, deletes, range deletes,
   savepoints, rollbacks and commits over several transactions is run against
   a model that evaluates CF2 directly. Every commit outcome agrees, in both
@@ -2454,13 +2533,13 @@ them, so the comparison is the same.
 Each case below was run against `rocksdb` 0.25.0 opened with GroveDB's
 options and column families. *T* is a transaction from `transaction()`. *W*
 is a write made outside it: a direct write to the database unless the case
-says otherwise. "LigninDB" is what CF2 and RD3 require.
+says otherwise. "LigninDB" is what CF2, CF2a and RD3 require.
 
 | Case | Sequence | RocksDB | LigninDB |
 | --- | --- | --- | --- |
 | A1 | *T* puts *K*; *W* puts *K*; *T* commits | `Busy` | `Conflict` |
 | A1b | as A1, *W* being a second transaction that commits | `Busy` | `Conflict` |
-| A2 | *T* starts; *W* puts *K*; *T* puts *K*; *T* commits | success; *K* holds *T*'s value | same |
+| A2 | *T* starts; *W* puts *K*; *T* puts *K*; *T* commits | success; *K* holds *T*'s value | same. For a Merk node: where *K* is the root of its Merk, *T* read it before *W*'s commit and that commit changed a node below it, the commit is taken on both engines, and the root is published whole as *T* wrote it, with the link hashes of *T*'s read. The Merk then has a link whose hash is not its child's, and the physical checker reports it. After Merk next changes the value of a node at or below that child, from a read of the Merk that no commit to it followed, the link holds its child's hash again. The links of a node that states its value are not dated (D-155 item 3). A test pins it for LigninDB (`a_stated_value_is_published_with_the_link_hashes_of_its_read`); for RocksDB it follows from this row, whose put is a whole record |
 | A3 | *T* puts *K1*; *W* puts *K2*; *T* reads *K2*; *T* commits | reads *W*'s value; success | same |
 | A3b | *T* reads *K*; *W* puts *K*; *T* reads *K*; *T* puts *K2*; *T* commits | second read gives *W*'s value; success | same |
 | A3c | *T* puts *K*; *W* puts *K*; *T* reads *K* | *T*'s value | same |
@@ -2489,6 +2568,10 @@ says otherwise. "LigninDB" is what CF2 and RD3 require.
 | A16 | *T* sets savepoint 1; puts *K*; sets savepoint 2; puts *K2*; *W* puts *K*; *T* rolls back to 2; commits | `Busy` | `Conflict` |
 | A17 | *T* rolls back to a savepoint when none is set | error | `NoSavepoint` |
 | A18 | *T* puts *K*; *W* ingests a file holding *K*; *T* commits | success; *K* holds *T*'s value | **`Conflict`** (CF9) |
+| A19 | *T* reads *K*; *W* puts *K*; *T* puts *K* with the value it read; *T* commits | success; *K* holds the value *T* read, and *W*'s is lost | same for a record whose value *T* states (case A2). For a Merk node that *T* writes with other hashes or links and its value kept: **`Conflict`** (CF2a) |
+| A19b | as A19, *W* putting another key *K2* | success | same |
+| A19c | *T* puts *K*; *W* puts *K2*; *T* puts *K* again with the value it put; *T* commits | success | same (CF2 alone: the value a later write keeps is *T*'s own) |
+| A19d | as A19, *T*'s write of the node keeping its value and naming no read | not a case there: a put states its value | refused, `NoRead` |
 
 ### 16.4 Runs against GroveDB on RocksDB
 
@@ -2533,6 +2616,13 @@ the root, at `GroveVersion::latest()`. "None" is a call with no transaction.
   trace; its seven results are in 14.3.
 - The program is not part of the repository: this task's location is this
   file. T-CF1 and T-RD2 make its cases permanent tests on both engines.
+- Cases A19 to A19c came with CF2a (D-155) and were run later, on
+  2026-11-20, against `rocksdb` 0.25.0 through `RocksDbStorage` of this
+  repository at `5c83bdc8`: a database from `default_rocksdb_with_path`, *T*
+  from `start_transaction`, *W* a direct put on the database. A scratch test
+  did it, which is not part of the repository either. The three results are
+  what the source predicts, and A1, run beside them, gave `Busy`. A19d is
+  not a case of RocksDB, whose put states its value.
 - Platform's handling of the mainnet heights was read in
   `packages/rs-drive/src/drive/votes/cleanup/remove_all_votes_given_by_identities/v0/mod.rs`
   at `979510a9`, the commit BASE-05 pins.

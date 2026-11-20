@@ -23,13 +23,14 @@ use lignindb::{
     snapshot::Versions,
     txn::{
         testing::{Db, Outcome},
-        WritePath, WriteTxn,
+        BatchError, Subtree, WritePath, WriteTxn,
     },
 };
 
 use super::{
     access::{
-        Access, BatchPart, Child, Location, Prefix, StoredNode, SubtreeChange, Walk, Write, Written,
+        Access, BatchPart, Child, Location, Prefix, StoredNode, SubtreeChange, Walk, Write,
+        Written, AFTER_COMPARING,
     },
     flat::{FlatAccess, FlatWalk},
     hash::MerkHashRules,
@@ -1718,6 +1719,125 @@ fn a_value_that_is_kept_by_comparison_names_the_comparing_read() {
     writer.into_scope().merge();
     assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
     assert_eq!(committed_node(&lignin, 1).encode(), theirs.encode());
+}
+
+/// The store compares a stated value with the bytes the transaction holds
+/// in one operation of the transaction, and writes the node in another,
+/// with its value kept where the bytes were the same. The keep names the
+/// comparing read, so a commit of another transaction between the two is a
+/// commit since that read (`transactions.md` CF2a):
+///
+/// - where it gave the node another value, the transaction's commit is a
+///   conflict, and the node stays as the other commit wrote it. Its bytes
+///   are not published under the hashes of the first writer;
+/// - where it deleted the node, there is no value to keep, and the write is
+///   refused as one whose node a commit outside took away;
+/// - where it wrote another node, nothing is met, and the commit is made.
+///
+/// That is so where the transaction lays its writes out and where it takes
+/// them by key, in a scope that is opened beside another, and through a
+/// handle that writes at once and one that stages its writes.
+#[test]
+fn a_commit_between_the_comparing_read_and_the_write_is_a_commit_since_the_read() {
+    #[derive(Debug, Clone, Copy)]
+    enum Between {
+        Rewrites,
+        Deletes,
+        WritesAnother,
+    }
+    for between in [Between::Rewrites, Between::Deletes, Between::WritesAnother] {
+        for (by_key, staged) in [(false, false), (false, true), (true, false), (true, true)] {
+            let at = format!("{between:?}, by key: {by_key}, staged: {staged}");
+            let (lignin, root) = seven_nodes();
+            let lignin = Arc::new(lignin);
+            let mine = committed_node(&lignin, 1);
+            let other = committed_node(&lignin, 7);
+            let path = lignin.path();
+            let transaction = path.begin();
+            let first = transaction.scope().unwrap();
+            let (scope, beside) = match by_key {
+                true => (transaction.scope().unwrap(), Some(first)),
+                false => (first, None),
+            };
+            assert_eq!(scope.is_laid_out(), !by_key, "{at}");
+            let writer = LigninWriter::new(scope);
+
+            // The other transaction's commit, made when the store has
+            // compared the bytes and before it writes.
+            let theirs = Arc::clone(&lignin);
+            AFTER_COMPARING.set(Some(Box::new(move || match between {
+                Between::Rewrites => rewrite_outside(&theirs, &root, 1, &[9; 8]),
+                Between::Deletes => {
+                    commit_outside(&theirs, &mut root.clone(), &[(be(1), Op::Delete)]);
+                }
+                Between::WritesAnother => rewrite_outside(&theirs, &root, 7, &[9; 8]),
+            })));
+
+            // The node is put with the value it has, through a handle
+            // that has not loaded it: the value is stated, and compared.
+            let batch = LigninBatch::new();
+            let store = match staged {
+                true => LigninNodeStore::deferred(&writer, ROOT, Some(&batch)),
+                false => LigninNodeStore::immediate(&writer, ROOT),
+            };
+            let written = store.write_node(&mine, NodeChange::ValueWritten).unwrap();
+            drop(store);
+            let written = match staged {
+                true => written.and_then(|()| batch.apply(&writer).unwrap().map(drop)),
+                false => written,
+            };
+            assert!(
+                AFTER_COMPARING.take().is_none(),
+                "{at}: no commit came between"
+            );
+
+            match between {
+                Between::Deletes => {
+                    let refused = written.expect_err("there is no value to keep");
+                    let taken = BatchError::ValueTaken {
+                        subtree: Subtree::new([0; 32]),
+                    };
+                    assert!(matches!(refused, Error::StorageError(_)), "{at}: {refused}");
+                    assert!(
+                        refused.to_string().contains(&taken.to_string()),
+                        "{at}: {refused}"
+                    );
+                }
+                _ => written.unwrap_or_else(|error| panic!("{at}: {error}")),
+            }
+            writer.into_scope().merge();
+            if let Some(first) = beside {
+                first.merge();
+            }
+            let outcome = lignin.commit(&transaction);
+            let now = |n: u64| {
+                let transaction = path.begin();
+                let store = LigninNodeStore::read_only(&transaction, ROOT);
+                let node = store.get_node(&be(n), NO_VALUE_DEFINED_COST, version());
+                node.unwrap().unwrap().map(|node| node.encode())
+            };
+            match between {
+                Between::Rewrites => {
+                    assert_eq!(outcome, Outcome::Conflict, "{at}");
+                    let theirs = committed_node(&lignin, 1);
+                    assert_eq!(theirs.value_as_slice(), [9; 8], "{at}");
+                    assert_ne!(theirs.value_hash(), mine.value_hash(), "{at}");
+                }
+                Between::Deletes => {
+                    assert_eq!(outcome, Outcome::Empty, "{at}");
+                    assert_eq!(now(1), None, "{at}");
+                }
+                Between::WritesAnother => {
+                    assert!(
+                        matches!(outcome, Outcome::Committed(_)),
+                        "{at}: {outcome:?}"
+                    );
+                    assert_eq!(now(1), Some(mine.encode()), "{at}");
+                    assert_ne!(now(7), Some(other.encode()), "{at}");
+                }
+            }
+        }
+    }
 }
 
 /// A node that is written outside a commit through a handle that has not
