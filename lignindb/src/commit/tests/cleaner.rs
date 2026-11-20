@@ -418,13 +418,29 @@ fn wait_until(what: &str, reached: impl Fn() -> bool) {
 /// checker reads that version too, as a reader (`verify::Scope::Reader`)
 /// under an operation guard of its own, and finds it sound.
 ///
-/// The threads take turns by construction: the reader holds each pin
-/// until two blocks are committed after it, and every few blocks the
-/// committer waits for a pin of the reader to end, which it then does at
-/// once, and for passes of the cleaner to be made.
+/// **What is asserted of the threads is given by construction**, and by
+/// no share of what they happened to do:
+///
+/// - The store begins with what `BEFORE` blocks leave when write-back
+///   runs and no cleaner does: far more dead space than the cleaner lets
+///   be. The reader's first pin is two blocks behind before the cleaner
+///   makes its first pass, and it is held, with no block committed
+///   meanwhile, until the cleaner has moved blocks, deleted a segment
+///   and emptied a value-log file, which goes after that pin.
+/// - The reader holds each pin until two blocks are committed after it
+///   and the cleaner has then made whole passes, and every few blocks
+///   the committer goes on only once the reader has read at a pin on the
+///   latest version or the one before. So the pin of every such turn is
+///   behind when it is given back.
+///
+/// How often the cleaner trims a chain, and how often a table checkpoint
+/// is taken beside the commits, is the schedule's: it is printed and not
+/// asserted.
 #[test]
 fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     const BLOCKS: u64 = 240;
+    /// The blocks that are committed before the cleaner begins.
+    const BEFORE: u64 = 24;
     let flush = FlushConfig {
         max_unwritten: 64,
         max_pending_bytes: 96 << 10,
@@ -448,40 +464,91 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     // What each version says. A commit is made and its version is put
     // here under one lock, so whoever has seen a version finds it here.
     let published = Mutex::new(BTreeMap::from([(versions.latest().get(), grove.said())]));
+    let mut block = |round: u64| {
+        let tx = grove.write(&world, round, true);
+        let mut published = published.lock().expect("the versions");
+        let version = Grove::commit(&mut world, tx);
+        published.insert(version, grove.said());
+    };
+    for round in 0..BEFORE {
+        block(round);
+        write_back.tick().expect("a turn of write-back");
+    }
+    // Far more of that is dead than the cleaner lets be, and none of it
+    // goes without a move: every segment holds a live block, and so does
+    // the one value-log file. A table checkpoint is in force, which the
+    // cleaner needs before it deletes a segment.
+    let target = f64::from(state.config().target_dead_percent);
+    let space = cleaner.space().expect("the space");
+    let values = cleaner.value_space().expect("the value log");
+    assert!(
+        space.dead_percent() > 2.0 * target && values.dead_percent() > 2.0 * target,
+        "{:.1}% of the blocks and {:.1}% of the values are dead",
+        space.dead_percent(),
+        values.dead_percent()
+    );
+    assert!(
+        space.segments.iter().all(|held| held.live_blocks > 0),
+        "{space:?}"
+    );
+    assert!(values.files == 1 && values.live_bytes > 0, "{values:?}");
+    assert!(db.flush.stats().checkpoints > 0);
+
     let (done, failed) = (AtomicBool::new(false), AtomicBool::new(false));
-    // Whether the committer waits for the reader.
-    let waits = AtomicBool::new(false);
     let cleaner_errors = Mutex::new(Vec::new());
     let (pins, behind, documents_read) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    // The turns of the committer after which two blocks or more follow.
+    let mut turns = 0u64;
+    // The version of the reader's last pin that it has read at.
+    let read_at = AtomicU64::new(0);
 
     std::thread::scope(|scope| {
         scope.spawn(|| write_back.run(|_| failed.store(true, Ordering::Relaxed)));
         let _stop = OnDrop(|| write_back.stop());
         scope.spawn(|| {
-            cleaner.run(
-                |cleaner| db.clean_values(&versions, cleaner),
-                |error| (cleaner_errors.lock().expect("the errors")).push(error.to_string()),
-            )
-        });
-        let _stop_cleaner = OnDrop(|| cleaner.stop());
-        scope.spawn(|| {
             let reads = db.reads(&versions);
-            let ended = || done.load(Ordering::SeqCst) || waits.load(Ordering::SeqCst);
-            while !done.load(Ordering::SeqCst) {
+            let ended = || done.load(Ordering::SeqCst);
+            while !ended() {
                 let snapshot = reads.snapshot();
                 let at = snapshot.version();
                 let expected = *(published.lock().expect("the versions"))
                     .get(&at.get())
                     .expect("a version that was published");
                 assert_eq!(read(&db, &snapshot.operation()), expected, "at {at}");
-                if pins.load(Ordering::SeqCst) % 4 == 0 {
+                read_at.store(at.get(), Ordering::SeqCst);
+                let pinned = pins.load(Ordering::SeqCst);
+                let first = pinned == 0;
+                if pinned % 4 == 0 {
                     let _guard = versions.guard();
                     db.check_trees(&versions, at);
                 }
                 // The pin is held while two blocks are committed, and
-                // while write-back and the cleaner work on what they
-                // superseded.
+                // then while the cleaner works on what they superseded: a
+                // pass is counted when it begins, so of three that began
+                // since, two are whole. Nothing but the end of the test
+                // cuts that short.
                 while versions.latest().get() < at.get() + 2 && !ended() {
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                let then = state.stats();
+                let worked = || {
+                    let did = state.stats();
+                    let passed =
+                        did.passes >= then.passes + 3 && did.value_passes >= then.value_passes + 3;
+                    // The first pin is held until the cleaner has done
+                    // what the store began with: blocks are moved, a
+                    // segment is deleted, and a value-log file is left
+                    // with no live value, which this pin keeps.
+                    let began = || {
+                        let emptied = cleaner.value_space().expect("the value log");
+                        did.blocks_moved > 0
+                            && did.segments_dropped > 0
+                            && did.values_moved > 0
+                            && emptied.waiting_bytes > 0
+                    };
+                    passed && (!first || began())
+                };
+                while !worked() && !ended() {
                     std::thread::sleep(Duration::from_millis(1));
                 }
                 assert_eq!(read(&db, &snapshot.operation()), expected, "at {at}, later");
@@ -495,26 +562,46 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
         });
 
         let _done = OnDrop(|| done.store(true, Ordering::SeqCst));
-        for round in 0..BLOCKS {
-            let tx = grove.write(&world, round, true);
-            {
-                let mut published = published.lock().expect("the versions");
-                let version = Grove::commit(&mut world, tx);
-                published.insert(version, grove.said());
-            }
+        // The reader's first pin is two blocks behind before the cleaner
+        // makes its first pass, and no block is committed until that pin
+        // has ended: what the cleaner does first, it does to the store
+        // as the blocks before left it.
+        wait_until("the reader's first pin", || {
+            read_at.load(Ordering::SeqCst) != 0
+        });
+        for round in BEFORE..BEFORE + 2 {
+            block(round);
+        }
+        scope.spawn(|| {
+            cleaner.run(
+                |cleaner| db.clean_values(&versions, cleaner),
+                |error| (cleaner_errors.lock().expect("the errors")).push(error.to_string()),
+            )
+        });
+        let _stop_cleaner = OnDrop(|| cleaner.stop());
+        wait_until("the reader's first pin to end", || {
+            pins.load(Ordering::SeqCst) > 0
+        });
+        for round in BEFORE + 2..BLOCKS {
+            block(round);
+            // Every few blocks the committer goes on once the reader has
+            // read at a pin on the latest version or on the one before.
+            // The reader comes to that by itself: a pin that is two
+            // blocks behind ends once the cleaner has made its passes.
             if round % 8 == 7 {
-                let (pinned, passed) = (pins.load(Ordering::SeqCst), state.stats());
-                waits.store(true, Ordering::SeqCst);
-                wait_until("a pin of the reader to end", || {
-                    pins.load(Ordering::SeqCst) > pinned
+                let latest = versions.latest().get();
+                wait_until("the reader to come round", || {
+                    read_at.load(Ordering::SeqCst) + 1 >= latest
                 });
-                waits.store(false, Ordering::SeqCst);
-                wait_until("passes of the cleaner", || {
-                    let did = state.stats();
-                    did.passes >= passed.passes + 3 && did.value_passes >= passed.value_passes + 3
-                });
+                turns += u64::from(round + 2 < BLOCKS);
             }
         }
+        // The file that the cleaner emptied under the first pin goes
+        // once no pin is on a version before its last value was moved,
+        // and every pin since the first is on a later one.
+        wait_until("a value-log file to be deleted", || {
+            state.stats().value_files_dropped > 0
+        });
     });
     assert!(
         !failed.load(Ordering::Relaxed),
@@ -527,27 +614,32 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     let (pins, behind) = (pins.into_inner(), behind.into_inner());
     let values = cleaner.value_space().expect("the value log");
     println!(
-        "{did:?}\n{pins} pins, {behind} of them behind, {} documents read; {} KiB of values, \
-         {} KiB of them live",
+        "{did:?}\n{pins} pins, {behind} of them behind, {} documents read; {} table \
+         checkpoints; {} KiB of values, {} KiB of them live",
         documents_read.into_inner(),
+        flushed.checkpoints,
         values.bytes >> 10,
         values.live_bytes >> 10,
     );
     assert_eq!((did.errors, did.segments_unreadable), (0, 0), "{did:?}");
-    assert!(did.links_trimmed > 0 && did.blocks_moved > 0, "{did:?}");
-    assert!(did.segments_dropped > 0, "{did:?}");
+    // The committer waited for each of these: the first pin was held
+    // until the first three and until a value-log file was empty, and
+    // the test did not end before that file was deleted.
+    assert!(did.blocks_moved > 0 && did.segments_dropped > 0, "{did:?}");
     assert!(
         did.values_moved > 0 && did.value_files_dropped > 0,
         "{did:?}"
     );
-    assert!(flushed.checkpoints > 0, "{flushed:?}");
     assert_eq!(
         db.stats.cleaner_bytes(),
         did.bytes_moved + did.bytes_lost + did.value_bytes_copied
     );
+    // The first pin, and the pin that the committer found at each turn
+    // after which two blocks or more were committed, which is another
+    // one every time, were behind when they were given back.
     assert!(
-        pins >= BLOCKS / 8 && behind >= BLOCKS / 16,
-        "{pins} pins, {behind} behind"
+        behind > turns,
+        "{pins} pins, {behind} behind, {turns} turns"
     );
     // The cleaner did not copy the value log over and over: a pin that
     // keeps emptied files has no other file cleaned for them.
