@@ -287,9 +287,12 @@ pub(super) struct Cells<'d>(pub(super) &'d Db);
 
 impl Cells<'_> {
     /// The current version of `id`, from the pool or from its segments,
-    /// if the page exists.
+    /// if the page exists: the one a page step would change, which is
+    /// that of a commit that has installed its pages and is not published
+    /// yet, if there is one. Write-back can have placed a value of such a
+    /// commit already, and the count of its file says so.
     fn current(&self, id: PageId) -> Result<Option<crate::cache::PageRef<'_>>, OwnersError> {
-        match self.0.frame(id, self.0.latest()) {
+        match self.0.frame(id, CommitVersion::MAX) {
             Ok(frame) => Ok(Some(frame)),
             Err(crate::load::LoadError::NoPage { .. }) => Ok(None),
             Err(error) => Err(error.into()),
