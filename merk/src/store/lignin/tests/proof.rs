@@ -9,7 +9,10 @@ use std::{
     ffi::OsStr,
     io,
     path::Path,
-    sync::atomic::{AtomicU64, Ordering::Relaxed},
+    sync::{
+        atomic::{AtomicU64, Ordering::Relaxed},
+        Arc,
+    },
 };
 
 use grovedb_element::{reference_path::ReferencePathType, BackwardReferences, Element};
@@ -23,7 +26,7 @@ use super::{
     cursor::{walked, with_both, Act, Both},
     *,
 };
-use crate::proofs::{encode_into, Op as ProofOp};
+use crate::proofs::{encode_into, Decoder, Node, Op as ProofOp};
 
 /// A proof of a Merk, or a read of it that a Merk answers from the nodes it
 /// has in memory, which the walk of a proof leaves there on a store of
@@ -48,6 +51,19 @@ pub(super) enum Call {
     Get(Vec<u8>, bool),
     Exists(Vec<u8>),
     ValueHash(Vec<u8>),
+    FeatureType(Vec<u8>),
+    /// The value and the value hash under a key, by the read that keeps
+    /// the nodes it fetches, with a value-defined cost function.
+    Observe(Vec<u8>),
+    /// The walk of every link, which keeps every node.
+    LinkedKeys,
+}
+
+/// A cost that a value defines, for the reads and writes that are given a
+/// function: a node that is fetched with it is another node in memory
+/// than one that is fetched without.
+fn defined_cost(_value: &[u8], _: &GroveVersion) -> Option<ValueDefinedCostType> {
+    Some(ValueDefinedCostType::SpecializedValueDefinedCost(11))
 }
 
 fn encoded<'o>(ops: impl IntoIterator<Item = &'o ProofOp>) -> String {
@@ -64,7 +80,10 @@ pub(super) fn answer<'db, S: NodeStore<'db>>(
     cost: &mut OperationCost,
 ) -> String {
     let ops = |ops: &LinkedList<ProofOp>| encoded(ops);
-    match call {
+    // A read says how many seeks it made, so that a test can tell a read
+    // of memory from a read of the store.
+    let mut read = OperationCost::default();
+    let answer = match call {
         Call::Query(items, limit, left_to_right) => {
             let proved =
                 merk.prove_unchecked_query_items(items, *limit, *left_to_right, grove_version);
@@ -135,16 +154,35 @@ pub(super) fn answer<'db, S: NodeStore<'db>>(
         }
         Call::Get(key, from_memory) => {
             let got = merk.get(key, *from_memory, NO_VALUE_DEFINED_COST, grove_version);
-            format!("{:?}", got.unwrap_add_cost(cost))
+            format!("{:?}", got.unwrap_add_cost(&mut read))
         }
         Call::Exists(key) => {
             let exists = merk.exists_by_traversing_tree(key, NO_VALUE_DEFINED_COST, grove_version);
-            format!("{:?}", exists.unwrap_add_cost(cost))
+            format!("{:?}", exists.unwrap_add_cost(&mut read))
         }
         Call::ValueHash(key) => {
             let hash = merk.get_value_hash(key, true, NO_VALUE_DEFINED_COST, grove_version);
-            format!("{:?}", hash.unwrap_add_cost(cost))
+            format!("{:?}", hash.unwrap_add_cost(&mut read))
         }
+        Call::FeatureType(key) => {
+            let feature = merk.get_feature_type(key, true, NO_VALUE_DEFINED_COST, grove_version);
+            format!("{:?}", feature.unwrap_add_cost(&mut read))
+        }
+        Call::Observe(key) => {
+            let observed =
+                merk.observe_value_and_value_hash(key, Some(&defined_cost), grove_version);
+            format!("{:?}", observed.unwrap_add_cost(&mut read))
+        }
+        Call::LinkedKeys => {
+            let keys = merk.linked_keys(Some(&defined_cost), grove_version);
+            format!("{:?}", keys.unwrap_add_cost(&mut read))
+        }
+    };
+    let seeks = read.seek_count;
+    *cost += read;
+    match kind(call) {
+        Some(_) => answer,
+        None => format!("{answer}, in {seeks} seeks"),
     }
 }
 
@@ -243,6 +281,10 @@ fn calls(keys: &[Vec<u8>], round: usize) -> Vec<Call> {
         Call::Get(at(9), false),
         Call::Get(vec![0xff; 9], true),
         Call::Exists(at(11)),
+        Call::FeatureType(at(12)),
+        Call::Observe(at(13)),
+        Call::Observe(between(13)),
+        Call::Query(vec![key(at(13))], None, true),
     ];
     let element = |n: u8| key(element_key(n));
     calls.extend((0..11).map(|n| Call::Query(vec![element(n)], None, n % 2 == 0)));
@@ -277,6 +319,10 @@ fn calls(keys: &[Vec<u8>], round: usize) -> Vec<Call> {
         Call::Branch(element_key(1), 3),
         Call::Get(at(20), true),
         Call::Exists(at(21)),
+        // Every node goes into the tree, and what follows reads memory.
+        Call::LinkedKeys,
+        Call::Get(at(22), true),
+        Call::Query(vec![range()], Some(3), true),
     ]);
     calls
 }
@@ -302,7 +348,12 @@ fn kind(call: &Call) -> Option<&'static str> {
         Call::CountOffset(.., true) => "a local count-offset proof",
         Call::Trunk(..) => "a trunk",
         Call::Branch(..) => "a branch",
-        Call::Get(..) | Call::Exists(_) | Call::ValueHash(_) => return None,
+        Call::Get(..)
+        | Call::Exists(_)
+        | Call::ValueHash(_)
+        | Call::FeatureType(_)
+        | Call::Observe(_)
+        | Call::LinkedKeys => return None,
     })
 }
 
@@ -374,6 +425,9 @@ fn writes_after_proofs(
     [
         vec![
             prove(point(near)),
+            // The read keeps the nodes on the way in the tree, as the
+            // proof fetched them: with no cost that their values define.
+            prove(Call::Observe(keys[near].clone())),
             Act::Apply(vec![(keys[near].clone(), rewrite)]),
             prove(Call::Get(keys[near].clone(), true)),
             prove(point(near)),
@@ -413,6 +467,126 @@ fn a_write_after_a_proof_costs_what_it_costs_on_rocksdb() {
             // makes them all, on other nodes.
             let calls = writes_after_proofs(tree_type, &keys, near + 5, far - 3, vec![0xd1; 4]);
             both.immediate(&calls.concat());
+
+            // A write that is refused and a clear, each after a proof: the
+            // Merk that is cleared forgets the nodes of its proofs with its
+            // tree, and is written and proven again.
+            let prove = |call: Call| Act::Prove(version(), call);
+            let point = |key: &Vec<u8>| Call::Query(vec![QueryItem::Key(key.clone())], None, true);
+            let unsorted = vec![
+                (keys[far].clone(), Op::Delete),
+                (keys[near].clone(), Op::Delete),
+            ];
+            let after = [
+                prove(point(&keys[far])),
+                Act::Apply(unsorted),
+                prove(Call::Get(keys[far].clone(), true)),
+                prove(point(&keys[near])),
+                Act::Clear,
+                prove(point(&keys[far])),
+                prove(Call::Get(keys[far].clone(), true)),
+            ];
+            let answers = both.immediate(&after);
+            assert!(answers[2].starts_with("Err("), "{}", answers[2]);
+            assert!(answers[6].starts_with("Err("), "{}", answers[6]);
+            assert_eq!(answers[7], "Ok(None), in 0 seeks");
+            let again: Vec<(Vec<u8>, Op)> = (0..40u8)
+                .map(|n| (vec![0xc0, n], Op::Put(vec![n; 300], feature(tree_type, 6))))
+                .collect();
+            let written = [
+                Act::Apply(again),
+                prove(point(&vec![0xc0, 7])),
+                prove(Call::Get(vec![0xc0, 7], true)),
+                prove(Call::Query(vec![QueryItem::RangeFull(..)], Some(5), false)),
+            ];
+            both.immediate(&written);
+            // The same on a deferred handle, whose batch takes the clear.
+            let after = [
+                prove(point(&vec![0xc0, 9])),
+                prove(Call::Get(vec![0xc0, 9], true)),
+                Act::Clear,
+                prove(point(&vec![0xc0, 9])),
+                prove(Call::Exists(vec![0xc0, 9])),
+            ];
+            both.deferred(&after);
+        });
+    }
+}
+
+/// The three ends of a read of the nodes in memory that comes to nodes a
+/// proof was charged for and did not keep: at the node of the key, at a
+/// side with no child, and at a child that is not in memory. The first
+/// two are free, as they are on a Merk that kept the nodes, and the third
+/// is one read by key.
+#[test]
+fn a_read_after_a_proof_walks_the_nodes_of_the_proof_as_if_they_were_kept() {
+    for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
+        with_both(tree_type, 0x0600_b000 + seed as u64, 4, &[], |both| {
+            let store = LigninNodeStore::deferred(both.writer, ROOT, None);
+            let node = |key: &[u8]| {
+                let node = store.get_node(key, NO_VALUE_DEFINED_COST, version());
+                node.unwrap().unwrap().expect("a node that is linked")
+            };
+            // A node at least two levels below the root with a sibling,
+            // and the way to it.
+            let root_key = store.root_key().unwrap().unwrap().expect("a root");
+            let (mut way, mut sibling) = (vec![node(&root_key)], None);
+            while way.len() < 3 || sibling.is_none() {
+                let at = way.last().expect("a node");
+                let left =
+                    at.link(true).map_or(0, Link::height) >= at.link(false).map_or(0, Link::height);
+                sibling = at.link(!left).map(|link| link.key().to_vec());
+                way.push(node(
+                    at.link(left).expect("a child on the taller side").key(),
+                ));
+            }
+            let target = way.last().expect("the target").key().to_vec();
+            let sibling = sibling.expect("a sibling");
+            // A key that is not there, on the way below the target or
+            // beside it: the proof that it is absent walks to where it
+            // would be.
+            let mut absent = target.clone();
+            absent.push(0);
+
+            let prove = |call: Call| Act::Prove(version(), call);
+            let point = |key: &Vec<u8>| Call::Query(vec![QueryItem::Key(key.clone())], None, true);
+            for immediate in [false, true] {
+                let answers = both.run(
+                    immediate,
+                    &[
+                        prove(point(&target)),
+                        prove(Call::Get(target.clone(), true)),
+                        prove(Call::Exists(target.clone())),
+                        prove(Call::ValueHash(target.clone())),
+                        prove(Call::Get(sibling.clone(), true)),
+                        prove(Call::Exists(sibling.clone())),
+                        prove(point(&absent)),
+                        prove(Call::Get(absent.clone(), true)),
+                        prove(Call::Exists(absent.clone())),
+                        // Without the nodes in memory every read is one
+                        // of the store.
+                        prove(Call::Get(target.clone(), false)),
+                    ],
+                );
+                let seeks = |n: usize| {
+                    let (_, seeks) = answers[n].rsplit_once(", in ").expect("a read");
+                    seeks.to_owned()
+                };
+                // At the node of the key.
+                assert_eq!(
+                    (seeks(2), seeks(3), seeks(4)),
+                    ("0 seeks".into(), "0 seeks".into(), "0 seeks".into())
+                );
+                assert!(answers[2].starts_with("Ok(Some(") && answers[3].starts_with("Ok(true)"));
+                // At a child that is not in memory: the sibling is a node
+                // the proof gave the hash of and did not fetch.
+                assert_eq!((seeks(5), seeks(6)), ("1 seeks".into(), "1 seeks".into()));
+                assert!(answers[5].starts_with("Ok(Some(") && answers[6].starts_with("Ok(true)"));
+                // At a side with no child.
+                assert_eq!((seeks(8), seeks(9)), ("0 seeks".into(), "0 seeks".into()));
+                assert!(answers[8].starts_with("Ok(None)") && answers[9].starts_with("Ok(false)"));
+                assert_eq!(seeks(10), "1 seeks");
+            }
         });
     }
 }
@@ -421,13 +595,13 @@ fn a_write_after_a_proof_costs_what_it_costs_on_rocksdb() {
 /// value log: every read of a file in the directory `val`.
 #[derive(Debug, Default)]
 struct CountingVfs {
-    value_reads: std::sync::Arc<AtomicU64>,
+    value_reads: Arc<AtomicU64>,
 }
 
 #[derive(Debug)]
 struct CountedFile {
     file: Box<dyn VfsFile>,
-    reads: Option<std::sync::Arc<AtomicU64>>,
+    reads: Option<Arc<AtomicU64>>,
 }
 
 impl CountedFile {
@@ -521,7 +695,7 @@ impl VfsFile for CountedFile {
 /// the value log, since each is longer than a cell holds in line.
 struct Counted {
     lignin: Lignin,
-    value_reads: std::sync::Arc<AtomicU64>,
+    value_reads: Arc<AtomicU64>,
     rocks: TempStorage,
 }
 
@@ -541,7 +715,7 @@ impl Counted {
         let dir = tempfile::tempdir().expect("a directory");
         let path = dir.path().to_path_buf();
         let (db, versions) = Db::on(
-            std::sync::Arc::new(vfs),
+            Arc::new(vfs),
             &path,
             512,
             LogOptions::default(),
@@ -737,11 +911,27 @@ fn a_proof_reads_the_values_it_emits_from_the_value_log() {
     let branch = emitted(&answers[4]);
     assert!((1..=3).contains(&branch.0), "{branch:?}");
     assert_eq!(reads[5], branch.1);
-    // A count-offset proof reads the rows of its range that are on its
-    // way: the two it returns among them, and far fewer than the hundred
-    // the range holds.
+    // A count-offset proof reads the value of every row of its range that
+    // it comes to, which are the nodes of the range it names by key: the
+    // two it returns among them, and far fewer than the hundred and one
+    // the range holds. The rows it skips in whole subtrees it gives as one
+    // hash each, and reads no value of.
     assert_eq!(emitted(&answers[5]).0, 2);
-    assert!((2..40).contains(&reads[6]), "{}", reads[6]);
+    let (_, proof) = answers[5].split_once('"').expect("a proof");
+    let proof = hex::decode(proof.split_once('"').expect("a proof").0).expect("bytes");
+    let named: Vec<u64> = Decoder::new(&proof)
+        .filter_map(|op| match op.expect("an op") {
+            ProofOp::Push(Node::KVCount(key, ..) | Node::KVDigestCount(key, ..)) => Some(key),
+            _ => None,
+        })
+        .map(|key| u64::from_be_bytes(key.try_into().expect("a key of eight bytes")))
+        .filter(|key| (20..=120).contains(key))
+        .collect();
+    assert!((2..40).contains(&named.len()), "{named:?}");
+    assert_eq!(
+        reads[6],
+        named.len() as u64 - u64::from(named.contains(&root))
+    );
 }
 
 /// A value is read for the node that was fetched, or not at all.
@@ -750,7 +940,6 @@ fn a_value_is_not_read_for_a_node_that_was_written_since() {
     let lignin = Lignin::new();
     let transaction = lignin.path().begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
-    let store = LigninNodeStore::immediate(&writer, ROOT);
     let mut merk = open(
         LigninNodeStore::immediate(&writer, ROOT),
         TreeType::NormalTree,
@@ -827,7 +1016,6 @@ fn a_value_is_not_read_for_a_node_that_was_written_since() {
         missing.unwrap(),
         Err(Error::KeyNotFoundError("Key not found for fetch"))
     ));
-    drop(store);
 }
 
 /// A store that keeps one record a node returns it whole, and reads no
