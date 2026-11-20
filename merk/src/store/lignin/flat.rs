@@ -449,10 +449,11 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     /// is therefore refused with [`StorageError::NotSupported`]: it would
     /// remove nothing and say that it did. The Merk is looked at before
     /// the walk, where a refusal removes nothing, and after it, where a
-    /// node means that a commit outside the transaction made the subtree
-    /// a Merk while the walk ran: the deletes of the flat records the
-    /// walk saw are staged or made by then, and the caller gives up the
-    /// batch or the transaction. A Merk is emptied by `Merk::clear`, and
+    /// node means that the subtree got a Merk while the walk ran, by a
+    /// commit outside the transaction or by a write scope that merged
+    /// into it: the deletes of the flat records the walk saw are staged
+    /// or made by then, and the caller gives up the batch or the
+    /// transaction. A Merk is emptied by `Merk::clear`, and
     /// a subtree leaves with its element by a drop
     /// ([`LigninBatch::drop_subtree`](super::LigninBatch::drop_subtree)).
     fn clear(&self) -> CostResult<(), StorageError> {
