@@ -563,6 +563,16 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+#[cfg(test)]
+thread_local! {
+    /// What a test has run once, when a check on demand on this thread
+    /// ([`Db::verify`](super::Db::verify)) has pinned its version and has
+    /// not read a page yet: a commit and a reclaiming that come behind the
+    /// pin.
+    pub(super) static ONCE_PINNED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl StepLog for Steps<'_> {
     fn latest(&self) -> CommitVersion {
         #[cfg(test)]

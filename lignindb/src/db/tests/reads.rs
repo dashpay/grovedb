@@ -1,16 +1,11 @@
 //! What a reader reads of a Merk and of a column through the facade: a
-//! node by its key, the nodes and the flat records in key order with a
-//! cursor that is kept from one operation to the next, and the physical
-//! checker on an open database.
+//! node by its key, and the nodes and the flat records in key order with
+//! a cursor that is kept from one operation to the next.
 
 use lignin_tree::cursor::CursorError;
 
 use super::*;
-use crate::{
-    snapshot::ReadError,
-    txn::ChildKeys,
-    verify::{Rule, Scope},
-};
+use crate::{snapshot::ReadError, txn::ChildKeys};
 
 fn key(lead: u8, number: u32) -> Vec<u8> {
     let mut key = vec![lead];
@@ -269,51 +264,4 @@ fn a_reader_walks_the_records_of_a_column_across_its_operations() {
     let refused = walk.next(&elsewhere.operation());
     assert!(matches!(refused, Err(ReadError::OtherVersion { .. })));
     assert_eq!(value(&walk), Some(b"1".to_vec()));
-}
-
-#[test]
-fn the_physical_checker_reads_an_open_database() {
-    let dir = temp();
-    let db = Db::open(dir.path(), &options()).expect("a new database");
-    assert!(db.check(Scope::Reader, None).is_sound());
-    let host = Merk::sized(b'h', 9, 30).hosting(&key(b'h', 4), subtree(2));
-    Writes {
-        enter: vec![
-            (subtree(1), None),
-            (subtree(2), Some((subtree(1), key(b'h', 4)))),
-        ],
-        merks: vec![(subtree(1), host), (subtree(2), Merk::sized(b'k', 40, 600))],
-        records: vec![(Column::Aux, subtree(2), b"k".to_vec(), vec![7; 500])],
-        ..Writes::default()
-    }
-    .commit(&db);
-    let report = db.check(Scope::Reader, None);
-    assert!(report.is_sound(), "{:?}", report.findings);
-    assert_eq!(report.census.merks, 2);
-    db.close().expect("a close");
-
-    // A database that was just opened is still.
-    let db = Db::open(dir.path(), &options()).expect("the database again");
-    let report = db.check(Scope::Still, None);
-    assert!(report.is_sound(), "{:?}", report.findings);
-    assert_eq!(report.census.merks, 2);
-
-    // What a store must not hold is found: a subtree whose entry names a
-    // host that is no node of the Merk it is said to be in.
-    Writes {
-        enter: vec![(subtree(3), Some((subtree(1), b"no node".to_vec())))],
-        ..Writes::default()
-    }
-    .commit(&db);
-    let report = db.check(Scope::Reader, None);
-    assert!(report.has(Rule::EntryHost), "{:?}", report.findings);
-    assert!(!report.is_sound());
-    // The subtree goes again, and the database is sound as before.
-    Writes {
-        drop: vec![subtree(3)],
-        ..Writes::default()
-    }
-    .commit(&db);
-    let report = db.check(Scope::Reader, None);
-    assert!(report.is_sound(), "{:?}", report.findings);
 }

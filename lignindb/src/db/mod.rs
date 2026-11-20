@@ -124,12 +124,12 @@
 //! | The directory | The open |
 //! | --- | --- |
 //! | is not there, or holds nothing of any engine | makes the database, or fails with [`OpenError::NoDatabase`] if [`Options::create_if_missing`] is off |
+//! | has an entry named `MANIFEST.deleting`, whatever else it holds | [`OpenError::Deleting`] |
 //! | has an entry that RocksDB makes (`CURRENT`, `IDENTITY`, `MANIFEST-…`, `OPTIONS-…`, an `.sst` file), or a `MANIFEST` that is no LigninDB file | [`OpenError::OtherEngine`] |
 //! | has a manifest of a format version this build does not read | [`OpenError::FormatVersion`] |
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
-//! | has `MANIFEST.deleting`, with a manifest beside it or without | [`OpenError::Deleting`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
@@ -172,21 +172,26 @@
 //! close below.
 //!
 //! **Where a database is made** ([`Options::create_if_missing`]): in a
-//! directory that is not there, in an empty one, in one that holds only
-//! entries that are not the engine's, and in one that holds a `LOCK` and
-//! nothing else of the engine, which an open that failed leaves. It is
-//! made in no directory that one of the rows above refuses, and
-//! `MANIFEST.deleting` counts as the engine's. So what a
-//! removal that was cut short left gets no database
-//! (`lignindb::checkpoint::delete` finishes it, and the path is a place
-//! again), and neither does what a creation of a checkpoint left with a
-//! directory of the store in it. What such a creation left empty, or with
-//! its lock file alone, the open cannot tell from a place and makes a
-//! database in: a checkpoint is to be built under another name and
-//! renamed into place, so that a cut creation leaves nothing under the
-//! name it was for (D-128 B). Until it is, whoever makes checkpoints
-//! removes a target that a failed or cut creation left before anything
-//! opens it.
+//! directory that is not there, and in one that holds none of these: an
+//! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
+//! `MANIFEST`, and a directory of a store's files (`seg`, `val`, `wal`,
+//! `table`). So an empty directory is such a place, one that holds only
+//! entries that are not the engine's is, and so is what an open that
+//! failed leaves: a `LOCK`, a `MANIFEST.tmp`, or both.
+//!
+//! A directory that holds the mark of a removal gets no database while
+//! the mark is there ([`OpenError::Deleting`] says what
+//! `lignindb::checkpoint::delete` does with it). Once the mark is gone
+//! the directory is a place like any other, also where the removal was
+//! cut short before the directory itself went. What a creation of a
+//! checkpoint left with a directory of a store's files in it gets no
+//! database either ([`OpenError::NoManifest`]). What such a creation left
+//! empty, or with its lock file alone, the open cannot tell from a place
+//! and makes a database in: a checkpoint is to be built under another
+//! name and renamed into place, so that a cut creation leaves nothing
+//! under the name it was for (D-128 B). Until it is, whoever makes
+//! checkpoints removes a target that a failed or cut creation left before
+//! anything opens it.
 //!
 //! # A new database
 //!
@@ -408,9 +413,10 @@
 //! engine knows no Merk rule.
 //!
 //! In any build, [`Db::verify`] checks the latest version as a reader
-//! sees it, beside writers, and [`Db::close_and_verify`] closes and
-//! returns the report of the full check with no panic: a tool that checks
-//! a database calls these.
+//! sees it, beside writers and with the reclaiming held back for the
+//! run, and [`Db::close_and_verify`] closes and returns the report of
+//! the full check with no panic: a tool that checks a database calls
+//! these.
 //!
 //! # Choices made here that the plan left open
 //!
@@ -471,7 +477,7 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
-    cleaner::{BothOwners, CleanerStats},
+    cleaner::{BothOwners, Cleaner, CleanerStats},
     flush::{Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -919,16 +925,42 @@ impl Db {
 
     /// Checks the latest version of the database as a reader sees it
     /// ([`Scope::Reader`](verify::Scope::Reader)): its pages, its trees,
-    /// its directory and its values. It runs beside writers and the
-    /// background work, pins its version for the run, and changes nothing.
+    /// its directory and its values. It runs beside writers, write-back
+    /// and the cleaner, pins its version for the run, and changes nothing.
     /// `rules` are the functions that make the hashes of the nodes; with
     /// `None` no stored hash is recomputed.
+    ///
+    /// **The reclaiming of what drops left is held back for the run**,
+    /// from before the version is pinned until the check has ended. A
+    /// step of the reclaimer takes cells and records out of the newest
+    /// version of a page, and a Merk goes in several steps on several
+    /// pages. A pinned version reads such a step on the pages that no
+    /// later commit wrote and not on the others, so a check of a sound
+    /// store beside a reclaiming can find a flat record whose entry is
+    /// gone, which is also what damage looks like. With no step made
+    /// during the run, the version that was the latest when it was pinned
+    /// is as every reader of it found it. A round that is due waits and
+    /// goes on when the check has ended, and so does a call of
+    /// [`Self::reclaim`]: for as long as a check takes, the pages and
+    /// values of dropped subtrees are given back later, and nothing else
+    /// waits. No commit, no reader, and neither write-back nor the cleaner
+    /// is held back.
     ///
     /// What a store keeps beside its pages (the page ids, the counts of
     /// live values, the page table against its segments) can be compared
     /// only in a store that is still: [`Self::close_and_verify`].
     pub fn verify(&self, rules: Option<&mut dyn HashRules>) -> verify::Report {
-        let pin = self.shared.versions.pin();
+        let shared = &*self.shared;
+        // Every round of the reclaiming is made under this lock. It is
+        // taken before the pin and given back after it, so no step is
+        // made from the moment the version is the latest one to the end
+        // of the check.
+        let _held_back = lock(&shared.store.reclaiming);
+        let pin = shared.versions.pin();
+        #[cfg(test)]
+        if let Some(beside) = store::ONCE_PINNED.with(|hook| hook.borrow_mut().take()) {
+            beside();
+        }
         self.check(pin.version(), verify::Scope::Reader, rules)
     }
 
@@ -939,8 +971,12 @@ impl Db {
         self.unchecked.store(true, Ordering::Relaxed);
     }
 
-    /// Has the check that a close makes in a debug build recompute every
-    /// stored hash by `rules`. With none given it recomputes none.
+    /// Gives the check that a close makes in a debug build the rules by
+    /// which it makes stored hashes again. It makes those that the checker
+    /// does ([`crate::verify`]): of the cells of the Merks in use. The
+    /// cells that a dropped Merk left, and those that nothing reaches, are
+    /// no state, and their hashes are not made again. With no rules given
+    /// it recomputes none.
     pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
         *lock(&self.hash_rules) = Some(rules);
     }
@@ -1328,42 +1364,6 @@ impl Db {
         self.shared.reclaim_round(false)
     }
 
-    /// Runs the physical checker on the latest version of the database
-    /// ([`crate::verify::check`]): every rule of the layout that a store
-    /// keeps, and with `rules` every stored hash, made again.
-    ///
-    /// Under [`verify::Scope::Reader`] it may run beside writers. Under
-    /// [`verify::Scope::Still`] the caller vouches for what that scope
-    /// asks: nothing commits meanwhile, no write transaction holds a page
-    /// id, and write-back is at rest, as in a database that was just
-    /// opened after a close. The reclaiming of what drops left is held
-    /// back for the run under either scope.
-    pub fn check(&self, scope: verify::Scope, rules: Option<&mut dyn HashRules>) -> verify::Report {
-        let shared = &*self.shared;
-        let store = &*shared.store;
-        let catalog = store.catalog();
-        let _reclaiming = lock(&store.reclaiming);
-        let guard = shared.versions.guard();
-        let columns = catalog.keyspaces.columns();
-        let parts = verify::Store {
-            loader: store.loader(),
-            table: &store.table,
-            segments: &store.segments,
-            values: &store.values,
-            page_size: store.page_size,
-            ids: Some(&store.ids),
-            grove: verify::Grove::Directory {
-                tree: catalog.directory,
-                columns: &columns,
-            },
-            flat_drops: Some(catalog.flat_drops),
-            flat: &[FlatTree::open(open::CATALOG_PAGE, store.config())],
-            values_counted: true,
-        };
-        let options = verify::Options::new(guard.latest(), scope);
-        verify::check(&parts, &guard, options, rules)
-    }
-
     /// The entries of the database directory that are not the engine's,
     /// by name, in order: what an open, a recovery, a wipe and a close
     /// leave alone (P-03).
@@ -1481,23 +1481,36 @@ fn write_back(shared: &Shared) {
     });
 }
 
-/// The background loop of the cleaner, for as long as the session lives
-/// (`lignin_store::cleaner`): a pass over the segments and one over the
-/// value log, again and again. The owners of values are the tree layer's,
-/// made on this thread: the cells of tree pages and the entries of flat
-/// leaves, whose pointers a pass over the value log rewrites in page
-/// steps. The table checkpoints it asks for make passes of write-back,
-/// so it has the view that write-back's own thread has.
-fn clean(shared: &Shared) {
+/// The owners of values that the engine gives its cleaner: the cells of
+/// tree pages, and the entries of flat leaves.
+type Owners<'a> = BothOwners<TreeOwners<'a, store::Steps<'a>>, FlatOwners<'a, store::Steps<'a>>>;
+
+/// Runs `work` with the cleaner of the session as its thread has it, and
+/// with the owners of values. The owners are the tree layer's, made on
+/// this thread: the cells of tree pages and the entries of flat leaves,
+/// whose pointers a pass over the value log rewrites in page steps. The
+/// table checkpoints the cleaner asks for make passes of write-back, so
+/// it has the view that write-back's own thread has.
+fn with_cleaner<R>(shared: &Shared, work: impl FnOnce(&Cleaner<'_>, &Owners<'_>) -> R) -> R {
     let store = &*shared.store;
     let owners = BothOwners(
         TreeOwners::new(store.loader(), &store.pool, store.page_size, shared.steps()),
         FlatOwners::new(store.loader(), &store.pool, store.config(), shared.steps()),
     );
     with_page_values(shared, |write_back| {
-        shared.cleaner_on(write_back).run(
-            |cleaner| cleaner.pass_values(&owners),
-            |error| store.troubles.cleaner_failed(&error),
+        work(&shared.cleaner_on(write_back), &owners)
+    })
+}
+
+/// The background loop of the cleaner, for as long as the session lives
+/// (`lignin_store::cleaner`): a pass over the segments and one over the
+/// value log, again and again.
+fn clean(shared: &Shared) {
+    let troubles = &shared.store.troubles;
+    with_cleaner(shared, |cleaner, owners| {
+        cleaner.run(
+            |cleaner| cleaner.pass_values(owners),
+            |error| troubles.cleaner_failed(&error),
         );
     });
 }

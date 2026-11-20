@@ -7,7 +7,6 @@ use grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost;
 use grovedb_storage::FlatStore;
 use lignindb::{
     commit::{Committed, NoStaleHashes},
-    verify::Scope,
     Db as Database, Options,
 };
 
@@ -40,7 +39,7 @@ impl Facade {
             rules: MerkHashRules::for_check(version()),
             stated: false,
         };
-        let report = self.db.check(Scope::Reader, Some(&mut rules));
+        let report = self.db.verify(Some(&mut rules));
         assert!(report.is_sound(), "{:#?}", report.findings);
     }
 }
