@@ -17,14 +17,14 @@ use grovedb_commitment_tree::{
     serialize_ciphertext, DashMemo, NoteBytesData, TransmittedNoteCiphertext,
 };
 use grovedb_costs::{CostResult, OperationCost};
-use grovedb_merk::store::lignin::hash::MerkHashRules;
+use grovedb_merk::{proofs::Query, store::lignin::hash::MerkHashRules};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignindb::{verify::Scope, Db, Options};
 
 use super::Lignin;
 use crate::{
-    batch::QualifiedGroveDbOp, engine::Engine, operations::delete::DeleteOptions, Element, Error,
-    GroveDb, TransactionArg,
+    batch::QualifiedGroveDbOp, engine::Engine, operations::delete::DeleteOptions,
+    query_result_type::QueryResultType, Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
 /// One call of a history, with what it answered: its cost, and what it
@@ -91,6 +91,19 @@ impl<'db, E: Engine> History<'db, E> {
     }
 }
 
+/// How many of `answers` are of a call named `call` that succeeded.
+pub(super) fn taken(answers: &[Answer], call: &str) -> usize {
+    let ok = |(named, _, answer): &&Answer| named == call && answer.starts_with("Ok(");
+    answers.iter().filter(ok).count()
+}
+
+/// Whether the grove's own check found nothing wrong, each time a history
+/// ran it.
+pub(super) fn sound(answers: &[Answer]) -> bool {
+    let mut checks = answers.iter().filter(|(call, ..)| call == "verified");
+    checks.all(|(.., found)| found == "Ok([])")
+}
+
 /// Opens the database in `dir` again, which nothing has open, and has
 /// the physical checker read it: every rule of the layout, and every
 /// stored hash of every Merk node against the hash that Merk's rules make
@@ -109,6 +122,7 @@ pub(super) fn check(dir: &std::path::Path, v: &GroveVersion) {
 /// and asserts what the history must have done there.
 macro_rules! on_both_engines {
     ($history:path, $told:expr) => {{
+        let told = $told;
         for (number, v) in GROVE_VERSIONS.iter().enumerate() {
             let number = number + 1;
             let dir = tempfile::tempdir().expect("a directory");
@@ -118,9 +132,8 @@ macro_rules! on_both_engines {
                 db.flush().expect("a flush");
                 answers
             };
-            $crate::engine::lignin::tests::append_only::check(dir.path(), v);
-            #[allow(clippy::redundant_closure_call)]
-            ($told)(&on_lignin, number);
+            check(dir.path(), v);
+            told(&on_lignin, number);
             #[cfg(feature = "rocksdb_storage")]
             {
                 let dir = tempfile::tempdir().expect("a directory");
@@ -176,6 +189,11 @@ trait Appended {
 
     /// The batch operation that appends the `n`th value to `tree`.
     fn op(tree: Vec<Vec<u8>>, n: usize) -> QualifiedGroveDbOp;
+
+    /// The key a query names the position `n` of the tree by.
+    fn position(n: u64) -> Vec<u8> {
+        n.to_be_bytes().to_vec()
+    }
 
     /// Every read of the tree's own file, at and around the position `at`.
     fn reads<'db, E: Engine>(
@@ -326,6 +344,10 @@ impl Appended for Dense {
 
     fn op(tree: Vec<Vec<u8>>, n: usize) -> QualifiedGroveDbOp {
         QualifiedGroveDbOp::dense_tree_insert_op(tree, Self::value(n))
+    }
+
+    fn position(n: u64) -> Vec<u8> {
+        (n as u16).to_be_bytes().to_vec()
     }
 
     fn reads<'db, E: Engine>(
@@ -487,11 +509,54 @@ impl Appended for Private {
     }
 }
 
+/// The proof of the positions `from` to `to` of the tree `key` under
+/// `path`, and the element of the tree as the grove's checker and a query
+/// with no proof read it.
+fn proofs<T: Appended, E: Engine>(
+    h: &mut History<'_, E>,
+    path: &[&[u8]],
+    key: &[u8],
+    from: u64,
+    to: u64,
+) {
+    let (db, v) = (h.db, h.v);
+    let mut positions = Query::new();
+    positions.insert_range_inclusive(T::position(from)..=T::position(to));
+    let mut tree = Query::new();
+    tree.insert_key(key.to_vec());
+    tree.set_subquery(positions);
+    let above = path.iter().map(|segment| segment.to_vec()).collect();
+    let query = PathQuery::new_unsized(above, tree);
+    h.read("proof", db.prove_query(&query, None, v));
+    let mut element = Query::new();
+    element.insert_key(key.to_vec());
+    let above = path.iter().map(|segment| segment.to_vec()).collect();
+    let query = PathQuery::new_unsized(above, element);
+    h.read("element proof", db.prove_query(&query, None, v));
+    let elements = QueryResultType::QueryKeyElementPairResultType;
+    let read = db.query_raw(&query, true, true, true, elements, None, v);
+    h.read("query", read);
+}
+
+/// What the grove's own check finds wrong: the paths it names, in order.
+pub(super) fn verified<E: Engine>(h: &mut History<'_, E>) {
+    let issues = h.db.verify_grovedb(None, true, false, h.v);
+    h.plain(
+        "verified",
+        issues.map(|issues| {
+            let mut paths: Vec<_> = issues.into_keys().collect();
+            paths.sort();
+            paths
+        }),
+    );
+}
+
 /// The history of one kind of append-only tree on the engine `E`.
 ///
 /// Trees of the kind at the root, with flags under a tree two deep and
 /// under a count tree; values appended one by one past the tree's own
-/// boundaries, with every read of its file between them; the reads and
+/// boundaries, with every read of its file between them; proofs of its
+/// positions and of its element, and the grove's own check; the reads and
 /// the append on an element of another kind and on a key that holds none;
 /// appends in a transaction that is rolled back to a savepoint and
 /// committed, and in one that is rolled back whole; appends through
@@ -552,6 +617,11 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
     h.read("element", db.get(deep, tree, None, v));
     h.read("element", db.get(ROOT, b"counted", None, v));
     h.read("empty", db.is_empty_tree(at_tree, None, v));
+    proofs::<T, E>(&mut h, ROOT, tree, 0, T::DIRECT as u64 + 3);
+    proofs::<T, E>(&mut h, ROOT, tree, 2, 5);
+    proofs::<T, E>(&mut h, deep, tree, 1, 3);
+    proofs::<T, E>(&mut h, counted, tree, 0, 0);
+    verified(&mut h);
 
     // An element of another kind, and a key that holds none.
     h.write("append", T::append(db, ROOT, b"docs", 0, None, v));
@@ -688,22 +758,25 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
     );
     h.write("delete", db.delete(ROOT, b"unused", None, None, v));
     h.read("element", db.get(ROOT, b"unused", None, v));
+    proofs::<T, E>(&mut h, ROOT, tree, 0, 40);
+    proofs::<T, E>(&mut h, deep, tree, 0, 1);
+    proofs::<T, E>(&mut h, ROOT, b"unused", 0, 1);
+    verified(&mut h);
     h.answers
 }
 
 /// What a history must have done on the grove version `number`, or the
-/// comparison of the engines says nothing of the tree. On a version that
-/// has the kind: every tree is made, every append of a value to one of
-/// them is taken, and every batch but the failing one is applied. Up to
+/// comparison of the engines says nothing of the tree. The grove's own
+/// check finds nothing wrong before the clear, and the element of every
+/// tree is proven and read. On a version that has the kind: every tree is made, every append
+/// of a value to one of them is taken, and every batch but the failing
+/// one is applied. Up to
 /// grove version 3 the clear of an append-only tree leaves its element as
 /// it was, and the append after the clear is refused on every engine. On
 /// a version that has not the kind, no tree is made.
 fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usize) {
     move |answers, number| {
-        let count = |name: &str| {
-            let ok = |(call, _, answer): &&Answer| call == name && answer.starts_with("Ok(");
-            answers.iter().filter(ok).count()
-        };
+        let count = |call: &str| taken(answers, call);
         let appends = T::DIRECT + 24 - usize::from(number <= 3);
         let seen = [
             count("made"),
@@ -712,16 +785,30 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
             count("fresh batch"),
             count("failing batch"),
         ];
-        let failed = || -> Vec<_> {
-            let failed = |(_, answer): &(usize, &str)| !answer.starts_with("Ok(");
-            let all = answers.iter().enumerate();
-            let writes =
-                all.filter(|(_, (call, ..))| ["made", "append", "batch"].contains(&&**call));
-            (writes
-                .map(|(at, (.., answer))| (at, &**answer))
-                .filter(failed))
-            .collect()
+        let failed = || -> Vec<(usize, &str)> {
+            (answers.iter().enumerate())
+                .filter(|(_, (call, _, answer))| {
+                    ["made", "append", "batch"].contains(&call.as_str())
+                        && !answer.starts_with("Ok(")
+                })
+                .map(|(at, (.., answer))| (at, answer.as_str()))
+                .collect()
         };
+        // Up to grove version 3 the clear leaves the element of the
+        // cleared tree as it was, and the grove's own check names that
+        // tree from then on, on every engine.
+        let checks: Vec<_> = (answers.iter())
+            .filter(|(call, ..)| call == "verified")
+            .map(|(.., found)| found == "Ok([])")
+            .collect();
+        let stale = has_tree(number) && number <= 3;
+        assert_eq!(checks, [true, !stale], "{} on version {number}", T::NAME);
+        let read = [count("element proof"), count("query"), count("verified")];
+        assert_eq!(read, [7, 7, 2], "{} on version {number}", T::NAME);
+        // On the latest version every kind proves its positions.
+        if number == GROVE_VERSIONS.len() {
+            assert_eq!(count("proof"), 7, "{}", T::NAME);
+        }
         match has_tree(number) {
             true => assert_eq!(
                 seen,

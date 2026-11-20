@@ -40,6 +40,15 @@
 //!   ([`Engine::subtree_beside`](crate::Engine::subtree_beside)). A write
 //!   through such a handle under an element that hosts no such subtree
 //!   once the group is applied is refused with `Error::NotSupported`.
+//! - **The directory has all of them where the element names them, or
+//!   none.** A subtree is not dropped when its element goes (GROVE-05),
+//!   and a conversion does not move the subtrees of its element
+//!   (MERK-09). So an indexed tree can find, under its key, subtrees that
+//!   an earlier element left entered: a tree of one Merk, or an indexed
+//!   tree with other axes or with its axes in another order. A write into
+//!   it is refused with `Error::NotSupported` where a subtree it hosts is
+//!   entered at another position or under another element, and where one
+//!   is entered and another is not.
 //!
 //! A batch that enters a subtree itself has said its host and its tree
 //! type, and neither is looked at here.
@@ -48,7 +57,11 @@
 //!
 //! - A subtree is not dropped when its element goes (GROVE-05), and its
 //!   entry keeps the tree type and the host it was entered with when its
-//!   element is written again as a tree of another type.
+//!   element is written again as a tree of another type. Where no part of
+//!   a group states the element, what it hosts is read from that entry
+//!   for a tree of one Merk: a secondary of an indexed tree that took the
+//!   place of such a tree is then refused as a subtree its element does
+//!   not host.
 //! - Two transactions that each write first into one subtree both enter
 //!   it, unless one commits before the other looks, and the directory
 //!   takes the enter of the first to commit. The second is refused where
@@ -77,7 +90,7 @@ use grovedb_storage::{prefix::secondary_prefix_for, Error};
 use grovedb_version::version::GroveVersion;
 
 use super::{
-    error::{merk_error, not_supported},
+    error::{failed, merk_error, not_supported},
     ROOT,
 };
 use crate::{
@@ -99,6 +112,13 @@ fn element_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option
     let node = parent.get_node(&host.key, no_cost, GroveVersion::latest());
     let node = node.unwrap().map_err(merk_error)?;
     Ok(node.as_ref().map(|node| element_of(node.value_as_slice())))
+}
+
+fn entered_elsewhere() -> Error {
+    not_supported(
+        "a write into an indexed tree whose subtrees an earlier element under its key left \
+         entered at other places",
+    )
 }
 
 fn beside_nothing() -> Error {
@@ -152,7 +172,7 @@ fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error> {
         return Ok(Hosting::One(Some(tree_type)));
     }
     let axes = indexed_element_axes(element)
-        .map_err(|error| Error::StorageError(format!("lignindb: an indexed tree: {error}")))?;
+        .map_err(|error| failed(format!("an indexed tree: {error}")))?;
     let secondaries = axes.into_iter().map(|(axis, _)| {
         let prefix = secondary_prefix_for(&own, axis_storage_tag(axis)).value;
         (prefix, axis_secondary_tree_type(axis))
@@ -264,16 +284,35 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                 if !named.hosted.contains(&prefix) {
                     return Err(beside_nothing());
                 }
-                for (prefix, tree_type) in hosted {
-                    if enters_itself(&prefix) || entered(view, prefix)?.is_some() {
+                // The Merks of the element are entered together, so the
+                // directory has all of them where the element names
+                // them, or none.
+                let (mut found, mut absent) = (0, Vec::new());
+                for (position, (prefix, tree_type)) in hosted.into_iter().enumerate() {
+                    if enters_itself(&prefix) {
                         continue;
                     }
-                    let subtree = LigninSubtree {
-                        prefix,
-                        host: Some(named.clone()),
+                    let Some(entry) = entered(view, prefix)? else {
+                        let subtree = LigninSubtree {
+                            prefix,
+                            host: Some(named.clone()),
+                        };
+                        absent.push((subtree, tree_type_bytes(tree_type)));
+                        continue;
                     };
-                    owed.enters.push((subtree, tree_type_bytes(tree_type)));
+                    let hangs = entry.host.is_some_and(|at| {
+                        (at.subtree, &at.key, usize::from(at.position))
+                            == (named.subtree, &named.key, position)
+                    });
+                    if !hangs {
+                        return Err(entered_elsewhere());
+                    }
+                    found += 1;
                 }
+                if found > 0 && !absent.is_empty() {
+                    return Err(entered_elsewhere());
+                }
+                owed.enters.extend(absent);
                 owed.hosts.push(named);
             }
             Hosting::One(_) | Hosting::Nothing if prefix != own => return Err(beside_nothing()),
@@ -302,16 +341,11 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
         let hosts = std::iter::successors(Some(subtree), host);
         hosts.take(owed.enters.len()).count()
     };
-    let mut ordered: Vec<_> = (owed.enters.iter())
-        .map(|(subtree, tree_type)| (depth(subtree), subtree, tree_type))
+    let depths: Vec<usize> = (owed.enters.iter())
+        .map(|(subtree, _)| depth(subtree))
         .collect();
-    ordered.sort_by_key(|(depth, ..)| *depth);
-    let enters = ordered
-        .into_iter()
-        .map(|(_, subtree, tree_type)| (subtree.clone(), tree_type.clone()))
-        .collect();
-    Ok(Owed {
-        enters,
-        hosts: owed.hosts,
-    })
+    let mut ordered: Vec<_> = depths.into_iter().zip(owed.enters).collect();
+    ordered.sort_by_key(|(depth, _)| *depth);
+    owed.enters = ordered.into_iter().map(|(_, enter)| enter).collect();
+    Ok(owed)
 }

@@ -669,7 +669,9 @@ impl Engine for LigninEngine {
                 // What an indexed tree hosts is said of its element in
                 // every batch of the group.
                 for part in &mut parts {
-                    owed.hosts.iter().for_each(|host| part.host(host));
+                    for host in &owed.hosts {
+                        part.host(host);
+                    }
                 }
                 LigninSettled::apply(parts, view, &owed.enters).map_err(merk_error)
             }

@@ -439,15 +439,6 @@ enum Charge {
     Delete(Option<KeyValueStorageCost>),
 }
 
-impl BatchPart for Resolved<Charge> {
-    fn with_batch(
-        &self,
-        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
-    ) -> Result<Written, Error> {
-        Resolved::with_batch(self, run)
-    }
-}
-
 /// What the application of a [`LigninBatch`] reports.
 #[derive(Debug, Default)]
 pub struct LigninApplied {
@@ -832,13 +823,14 @@ impl BatchPart for LigninSettled {
         }
         self.resolved.with_batch(|batch| {
             let hosted = |subtree: Subtree, key: &[u8]| {
-                let said =
-                    |(of, at, _): &&(Subtree, Vec<u8>, Vec<Subtree>)| *of == subtree && at == key;
-                self.hosts.iter().find(said).map(|(.., hosted)| &**hosted)
+                (self.hosts.iter())
+                    .find(|(of, at, _)| *of == subtree && at == key)
+                    .map(|(.., hosted)| hosted.as_slice())
             };
             let puts = |subtree: Subtree, key: &[u8]| {
-                let mut merks = batch.merks.iter().filter(|merk| merk.subtree == subtree);
-                merks.any(|merk| merk.nodes.iter().any(|node| node.key == key))
+                batch.merks.iter().any(|merk| {
+                    merk.subtree == subtree && merk.nodes.iter().any(|node| node.key == key)
+                })
             };
             let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter())
                 .map(|merk| {
