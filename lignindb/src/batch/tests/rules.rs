@@ -855,7 +855,9 @@ fn a_resolved_batch_says_what_it_enters_and_what_it_holds_for_a_key() {
     batch.delete_node(subtree(A), b"gone", ());
     let resolved = batch.resolve().expect("no call is refused");
 
-    assert_eq!(resolved.enters(), [subtree(D), subtree(B)]);
+    // Neither is under a subtree the batch enters: the order they were
+    // made in.
+    assert_eq!(resolved.enters(), [subtree(B), subtree(D)]);
     let held = |name: u8, key: &[u8]| resolved.held(subtree(name), key);
     let value = |name: u8, key: &[u8]| match held(name, key) {
         Some(Written::Node(node)) => node.value.as_deref().map(<[u8]>::to_vec),
