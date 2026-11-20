@@ -492,9 +492,10 @@
 //! live blocks from the page table. It trims the chains of freed pages and
 //! those an earlier session left, which a pass does not, through
 //! [`WriteBack::trim_chains`], between two passes. It drops a segment that
-//! [`FlushState::checkpoint_segments`] does not list, has the segment that
-//! is being filled sealed when that one holds too much that is dead
-//! ([`WriteBack::seal_segment`]), and asks for a table checkpoint
+//! [`FlushState::checkpoint_segments`] does not list, has the segment and
+//! the value-log file that are being filled closed when they hold too
+//! much that is dead ([`WriteBack::seal_segment`],
+//! [`WriteBack::close_value_file`]), and asks for a table checkpoint
 //! ([`WriteBack::checkpoint`]) when segments wait for one.
 //!
 //! **Whoever closes the store** stops the loop ([`WriteBack::stop`]) and

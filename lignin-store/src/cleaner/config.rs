@@ -9,7 +9,7 @@ use crate::flush::DEFAULT_SEGMENT_LEN;
 
 /// The share of dead bytes, in a hundred, above which the cleaner moves
 /// blocks by default.
-pub const DEFAULT_TARGET_DEAD_PERCENT: u8 = 10;
+pub const DEFAULT_TARGET_DEAD_PERCENT: u8 = 14;
 
 /// The most bytes of blocks one pass moves by default: 8 MiB.
 pub const DEFAULT_PASS_BYTES: u64 = 8 << 20;
@@ -24,20 +24,31 @@ pub struct CleanerConfig {
     /// that the cleaner works towards: a pass moves live blocks out of
     /// segments while the share is above it. The segments that only wait
     /// to be deleted are left out of the share, since no moving helps them
-    /// on.
+    /// on. The lower it is, the more bytes the cleaner writes for each
+    /// byte it gives back.
     pub target_dead_percent: u8,
-    /// A table checkpoint is asked for when the segments that the page
-    /// table points into no more, and that only the table checkpoint in
-    /// force still keeps, hold this share of the bytes of all blocks, in a
-    /// hundred.
+    /// The most that waits for a table checkpoint: the share of the bytes
+    /// of all blocks, in a hundred, that the segments may hold which the
+    /// page table points into no more and which only the table checkpoint
+    /// in force still keeps. A checkpoint is asked for when they hold
+    /// that much, and when the cleaner would move blocks and has no room
+    /// for the copies under it: a copy takes room until its segment is
+    /// deleted. While no checkpoint can be taken, no more is moved.
     pub checkpoint_dead_percent: u8,
-    /// The segment that write-back is filling is sealed when its dead
-    /// blocks are this share of the bytes of all blocks, in a hundred. A
-    /// segment is not cleaned while it is written.
+    /// A segment that is being filled is sealed when its dead blocks are
+    /// this share of the bytes of all blocks, in a hundred, and a
+    /// value-log file that is being filled is closed when its dead values
+    /// are this share of the bytes of all values. A file is not cleaned
+    /// while it is written.
     pub seal_dead_percent: u8,
-    /// The segment that write-back is filling is not sealed for the
-    /// cleaner before its blocks take this many bytes: a store that is
-    /// small against it is not held to the target.
+    /// A file that is being filled is also closed when what it holds is
+    /// this share of the bytes of all blocks, or of all values, in a
+    /// hundred. Until a file is deleted the store holds what was moved
+    /// out of it twice, so no file is to be a large part of the store.
+    pub max_segment_percent: u8,
+    /// A file that is being filled is not closed for the cleaner before
+    /// what it holds takes this many bytes: a store that is small against
+    /// it is not held to the target.
     pub min_segment_len: u64,
     /// The throttle: the most bytes of blocks, as they are stored, that
     /// one pass moves. With [`Self::idle`] it bounds what the cleaner
@@ -56,17 +67,23 @@ pub struct CleanerConfig {
 }
 
 impl CleanerConfig {
-    /// The defaults: work towards 10 dead bytes in a hundred, in segments
-    /// and in the value log; ask for a table checkpoint, and seal the
-    /// segment that is being filled, at 5 in a hundred, and seal no
-    /// segment before it holds 1 MiB; move at most 8 MiB in a pass, into
-    /// segments of 64 MiB; sleep 100 ms between passes.
+    /// The defaults: work towards 14 dead bytes in a hundred, in segments
+    /// and in the value log; let at most 4 in a hundred wait for a table
+    /// checkpoint; close a file that is being filled when it holds 1 in a
+    /// hundred of the store, or when 2 in a hundred of the store are dead
+    /// in it, and none before it holds 64 KiB; move at most 8 MiB in a
+    /// pass, into segments of 64 MiB; sleep 100 ms between passes.
+    ///
+    /// With these, the dead space of a store with no reader on an old
+    /// version stays below 20 in a hundred: 14 that the cleaner leaves,
+    /// and at most 4 more in what was emptied and waits to be deleted.
     pub const fn new() -> Self {
         Self {
             target_dead_percent: DEFAULT_TARGET_DEAD_PERCENT,
-            checkpoint_dead_percent: DEFAULT_TARGET_DEAD_PERCENT / 2,
-            seal_dead_percent: DEFAULT_TARGET_DEAD_PERCENT / 2,
-            min_segment_len: 1 << 20,
+            checkpoint_dead_percent: 4,
+            seal_dead_percent: 2,
+            max_segment_percent: 1,
+            min_segment_len: 64 << 10,
             max_pass_bytes: DEFAULT_PASS_BYTES,
             segment_len: DEFAULT_SEGMENT_LEN,
             value_dead_percent: DEFAULT_TARGET_DEAD_PERCENT,
@@ -86,7 +103,8 @@ impl Default for CleanerConfig {
 pub struct CleanerStats {
     /// Passes over the segments.
     pub passes: u64,
-    /// Those of them that read the page table through.
+    /// Reads of the whole page table: one for each round of a pass, and
+    /// none for a pass that found the store as the pass before left it.
     pub scans: u64,
     /// Links that were trimmed out of chains at the cleaner's asking: no
     /// reader at the oldest pinned version or later needed them.
@@ -118,9 +136,12 @@ pub struct CleanerStats {
     pub checkpoints: u64,
     /// Table checkpoints it asked for that were put off or failed.
     pub checkpoints_missed: u64,
-    /// Times the segment that write-back was filling was sealed at the
-    /// cleaner's asking.
+    /// Segments that were being filled and were sealed because too much
+    /// of them was dead.
     pub segments_sealed: u64,
+    /// Value-log files that were being filled and were closed for the
+    /// same reason.
+    pub value_files_closed: u64,
     /// Passes over the value log.
     pub value_passes: u64,
     /// Value-log files that a pass cleaned.
@@ -156,6 +177,7 @@ pub(super) struct Counters {
     pub(super) checkpoints: AtomicU64,
     pub(super) checkpoints_missed: AtomicU64,
     pub(super) segments_sealed: AtomicU64,
+    pub(super) value_files_closed: AtomicU64,
     pub(super) value_passes: AtomicU64,
     pub(super) value_files_cleaned: AtomicU64,
     pub(super) values_moved: AtomicU64,
@@ -188,6 +210,7 @@ impl Counters {
             checkpoints: read(&self.checkpoints),
             checkpoints_missed: read(&self.checkpoints_missed),
             segments_sealed: read(&self.segments_sealed),
+            value_files_closed: read(&self.value_files_closed),
             value_passes: read(&self.value_passes),
             value_files_cleaned: read(&self.value_files_cleaned),
             values_moved: read(&self.values_moved),

@@ -27,8 +27,9 @@ pub enum CleanerError {
     /// sealing of the segment that was being filled, the sync of the log,
     /// or the manifest.
     Flush(FlushError),
-    /// A block that a link points to could not be read. Its segment is
-    /// left as it is: no further block of it is moved in this session.
+    /// A block that a link points to could not be read. If the block is
+    /// damaged ([`Self::is_damage`]), its segment is left as it is: no
+    /// further block of it is moved in this session.
     Block {
         /// The page whose chain has the link.
         page: PageId,
@@ -70,6 +71,17 @@ pub enum CleanerError {
 }
 
 impl CleanerError {
+    /// Whether the error says that a block is not what was written: its
+    /// bytes fail their checksum, or do not decode. An error of the file
+    /// layer is none: the read can be made again.
+    pub fn is_damage(&self) -> bool {
+        match self {
+            Self::Payload { .. } => true,
+            Self::Block { source, .. } => !matches!(source, SegmentStoreError::Io { .. }),
+            _ => false,
+        }
+    }
+
     pub(super) fn block(
         page: PageId,
         location: BlockLocation,

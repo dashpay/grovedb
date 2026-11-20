@@ -14,8 +14,8 @@ impl Cleaner<'_> {
     ///
     /// `values` makes the pass over the value log
     /// ([`Self::pass_values`]). It is the caller's because the owners of
-    /// values are: it makes them on this thread, under an operation guard
-    /// of its own if they ask for one.
+    /// values are: it makes them on this thread. It takes no operation
+    /// guard for them, since the pass takes the one they are used under.
     ///
     /// The store has no thread of its own. Whoever opens it runs this on
     /// one, beside write-back's loop.

@@ -123,6 +123,9 @@ pub(crate) struct Versions {
     guards: AtomicU64,
     /// The epoch of an operation guard that a test holds, or `u64::MAX`.
     held: AtomicU64,
+    /// The epochs of the guards under which write-back reads blocks now,
+    /// by a number of their own.
+    reading: Mutex<BTreeMap<u64, u64>>,
 }
 
 impl Versions {
@@ -133,14 +136,35 @@ impl Versions {
             epoch: AtomicU64::new(0),
             guards: AtomicU64::new(0),
             held: AtomicU64::new(u64::MAX),
+            reading: Mutex::default(),
         }
     }
 
     /// Takes an operation guard, as an operation that goes on running
     /// does: it is of the epoch that is current now.
     pub(crate) fn hold_guard(&self) {
-        let epoch = self.epoch.load(Ordering::SeqCst);
-        self.held.store(epoch, Ordering::SeqCst);
+        // Announced, and then looked at again, as a guard is taken: a
+        // reclaimer that started an epoch in between finds the guard, or
+        // the guard is of that epoch.
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            self.held.store(epoch, Ordering::SeqCst);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                return;
+            }
+        }
+    }
+
+    /// Pins the latest version, as a snapshot does, and returns it: the
+    /// version is announced, and then found to be the latest still.
+    pub(crate) fn pin_latest(&self) -> CommitVersion {
+        loop {
+            let latest = self.latest.load(Ordering::SeqCst);
+            self.pin.store(latest, Ordering::SeqCst);
+            if self.latest.load(Ordering::SeqCst) == latest {
+                return version(latest);
+            }
+        }
     }
 
     /// Gives the guard of [`Self::hold_guard`] back.
@@ -175,7 +199,9 @@ impl Pins for Versions {
 
     fn oldest_guard(&self) -> Epoch {
         let epoch = self.epoch.load(Ordering::SeqCst);
-        Epoch::new(epoch.min(self.held.load(Ordering::SeqCst)))
+        let reading = self.reading.lock().expect("the guards");
+        let oldest = reading.values().copied().min().unwrap_or(u64::MAX);
+        Epoch::new(epoch.min(self.held.load(Ordering::SeqCst)).min(oldest))
     }
 }
 
@@ -185,8 +211,18 @@ impl Published for Versions {
     }
 
     fn guarded(&self, work: &mut dyn FnMut()) {
-        self.guards.fetch_add(1, Ordering::SeqCst);
+        // A guard of its own, announced and then looked at again, as a
+        // guard is taken: whoever deletes a file waits for it.
+        let number = self.guards.fetch_add(1, Ordering::SeqCst);
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            (self.reading.lock().expect("the guards")).insert(number, epoch);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                break;
+            }
+        }
         work();
+        (self.reading.lock().expect("the guards")).remove(&number);
     }
 }
 
@@ -367,7 +403,7 @@ pub(crate) struct Cell {
 impl Cell {
     /// The cell without the place of its value, which write-back and a
     /// cleaner change and no reader sees.
-    fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
+    pub(crate) fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
         (self.slot, &self.key, &self.value_hash, &self.value)
     }
 }
@@ -399,7 +435,7 @@ pub(crate) fn has_pending(frame: &[u8]) -> bool {
 }
 
 /// Where the value of a cell or of an entry of a flat leaf is.
-enum Stored {
+pub(crate) enum Stored {
     Inline(Vec<u8>),
     Placed(ValuePointer),
     Pending(PendingValue),
@@ -408,7 +444,7 @@ enum Stored {
 /// What the page in `frame` holds, cell by cell: the slot, the key, the
 /// value hash, and where the value is. An entry of a flat leaf has its
 /// position, from 1, for a slot, and no hash.
-fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
+pub(crate) fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
     if is_flat(frame) {
         let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
         assert_eq!(page.id(), id);
@@ -1351,9 +1387,13 @@ impl<'d> Txn<'d> {
             if freed.contains(&id) {
                 db.pool.discard(&copy).expect("discarded");
                 if db.table.newest(id).is_some() {
-                    db.table
-                        .push(id, Link::free(committed))
-                        .expect("a free link");
+                    // A page that was made under an id that named a freed
+                    // page before, and that no block holds yet, gets no
+                    // second free link (the engine's commit does the same).
+                    match db.table.push(id, Link::free(committed)) {
+                        Ok(()) | Err(crate::table::LinkError::AlreadyFree) => {}
+                        Err(error) => panic!("a free link: {error}"),
+                    }
                 }
                 db.pool.free(id, committed).expect("freed");
                 model

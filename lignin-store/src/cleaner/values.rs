@@ -8,7 +8,7 @@ use super::{
     clean::Cleaner,
     config::count,
     error::CleanerError,
-    space::{is_over, ValueSpace},
+    space::{is_at_least, is_over, ValueSpace},
     state::{lock, Work},
 };
 use crate::{
@@ -21,6 +21,12 @@ use crate::{
 /// when each was given. An answer that no older one has room for is not
 /// asked for: the next pass asks again.
 const MAX_TOKENS: usize = 8;
+
+/// After how many passes that would have asked the value log the same
+/// question as the pass before them it is asked again: a file that a
+/// checkpoint's hold kept is free once the hold is given back, and nothing
+/// else tells the cleaner of that.
+const ASK_AGAIN_AFTER: u32 = 16;
 
 /// What one pass over the value log did ([`Cleaner::pass_values`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -45,12 +51,18 @@ impl<'s> Cleaner<'s> {
     /// them that a cell of the latest version points to.
     pub fn value_space(&self) -> Result<ValueSpace, CleanerError> {
         let values = self.stores().values;
+        let counts = values.counts();
         let mut space = ValueSpace::default();
         for file in values.files_named()? {
+            let held = file.valid_len().saturating_sub(FIRST_RECORD_OFFSET);
             space.files += 1;
-            space.bytes += file.valid_len().saturating_sub(FIRST_RECORD_OFFSET);
+            space.bytes += held;
+            let counted = counts.binary_search_by_key(&file.id(), |count| count.file);
+            if file.state() != FileState::Open && counted.is_err() {
+                space.waiting_bytes += held;
+            }
         }
-        space.live_bytes = values.counts().iter().map(|count| count.bytes).sum();
+        space.live_bytes = counts.iter().map(|count| count.bytes).sum();
         Ok(space)
     }
 
@@ -58,7 +70,8 @@ impl<'s> Cleaner<'s> {
     ///
     /// 1. The files that earlier passes found empty, and that no running
     ///    operation can still read from, are taken out of the store and
-    ///    deleted.
+    ///    deleted. A file that is being filled is closed if too much of
+    ///    it is dead.
     /// 2. If the dead space of the value log is above its target, the
     ///    closed file with the largest share of dead bytes is cleaned: its
     ///    live values are copied to the cleaner's own file, the copies are
@@ -66,13 +79,20 @@ impl<'s> Cleaner<'s> {
     ///    owning cell the pointer to its copy in a page step.
     /// 3. The log is made durable, so that the rewrites which emptied a
     ///    file are, and the value log is asked which files are empty for
-    ///    every reader from now on. The next passes drop them once the
-    ///    operations that are running now have ended.
+    ///    every reader from now on. They are dropped once the operations
+    ///    that are running now have ended: at once if none is, and by a
+    ///    later pass otherwise.
     ///
     /// `owners` is every kind of owner the store has: the cells of tree
     /// pages and the entries of flat leaves each find nothing in a page of
-    /// the other kind ([`BothOwners`](super::BothOwners)). The caller
-    /// holds an operation guard for the pass if `owners` asks for one.
+    /// the other kind ([`BothOwners`](super::BothOwners)).
+    ///
+    /// **The caller holds no operation guard.** The pass takes one itself
+    /// for step 2, in which the owners read pages
+    /// ([`Published::guarded`](crate::flush::Published::guarded)), and has
+    /// given it back before step 3: a guard that is held over the whole
+    /// pass is one of before the file was emptied, and the file would
+    /// wait for the pass after it.
     ///
     /// One pass of the cleaner runs at a time, over the segments or over
     /// the value log.
@@ -100,16 +120,15 @@ impl<'s> Cleaner<'s> {
         let Stores {
             values, versions, ..
         } = self.stores();
-        let config = &self.state.config;
         let counters = &self.state.counters;
         self.drop_values(work, pass)?;
+        self.close_dead_files(work)?;
 
-        let space = self.value_space()?;
-        let worst = match is_over(space.dead_bytes(), space.bytes, config.value_dead_percent) {
-            true => values.cleanable(1).first().map(|file| file.file),
-            false => None,
-        };
-        let cleaned = worst.map(|file| (file, self.clean_file(work, file, owners)));
+        let worst = self.worst_value_file()?;
+        let mut cleaned = None;
+        if let Some(file) = worst {
+            versions.guarded(&mut || cleaned = Some((file, self.clean_file(work, file, owners))));
+        }
         let mut failed = None;
         match cleaned {
             Some((file, Ok(cleaned))) => pass.cleaned = Some((file, cleaned)),
@@ -149,14 +168,101 @@ impl<'s> Cleaner<'s> {
             // A file is deleted only once the change that emptied it is
             // durable: a crash would otherwise bring back pages that point
             // into a file that is gone.
-            self.write_back.sync_log()?;
+            let mark = values.applied();
+            if work.values_synced != Some(mark) {
+                self.write_back.sync_log()?;
+                work.values_synced = Some(mark);
+            }
             // The three questions, in their order (PN6): the oldest pin,
             // then the epoch, and the oldest guard when a later pass looks.
-            let retired = values.retire(versions.oldest_pin());
-            let epoch = versions.next_epoch();
-            work.value_tokens.push_back((retired, epoch));
+            let asked = (values.retire(versions.oldest_pin()), mark);
+            // The same answer drops what it dropped before, unless a hold
+            // on the files was given back meanwhile: it is asked for again
+            // now and then, and not in every pass.
+            let again = work.values_asked == Some(asked);
+            work.asks_spared = match again {
+                true => work.asks_spared + 1,
+                false => 0,
+            };
+            if !again || work.asks_spared >= ASK_AGAIN_AFTER {
+                work.asks_spared = 0;
+                work.values_asked = Some(asked);
+                work.value_tokens
+                    .push_back((asked.0, versions.next_epoch()));
+                // With no operation running, nothing is waited for.
+                self.drop_values(work, pass)?;
+            }
         }
         failed.map_or(Ok(()), Err)
+    }
+
+    /// The closed file with the largest share of dead bytes, if the dead
+    /// space that a cleaning can give back is above its target.
+    ///
+    /// That is the dead space of the files that can be cleaned and of
+    /// those that are being filled. A file that holds no live value and
+    /// waits to be deleted is left out, and so is one that no cleaning
+    /// helps ([`ValueStore::cleanable`](crate::values::ValueStore::cleanable)):
+    /// their bytes are dead whatever is moved out of the other files, and
+    /// counted, they would have file after file cleaned for nothing while
+    /// a pin keeps them.
+    fn worst_value_file(&self) -> Result<Option<FileId>, CleanerError> {
+        let values = self.stores().values;
+        let cleanable = values.cleanable(0);
+        let dead_of = |len: u64, live: u64| len.saturating_sub(live);
+        let (mut dead, mut all) = (0u64, 0u64);
+        for file in &cleanable {
+            all += file.len;
+            dead += dead_of(file.len, file.live_bytes);
+        }
+        let named = values.files_named()?;
+        for file in named.iter().filter(|file| file.state() == FileState::Open) {
+            let len = file.valid_len().saturating_sub(FIRST_RECORD_OFFSET);
+            let live = values.count(file.id()).map_or(0, |count| count.bytes);
+            all += len;
+            dead += dead_of(len, live);
+        }
+        if !is_over(dead, all, self.state.config.value_dead_percent) {
+            return Ok(None);
+        }
+        // The first is the one with the largest share. A file of which
+        // less than one byte in a hundred is dead is not worth a cleaning.
+        let worst = cleanable.first();
+        Ok(worst
+            .filter(|file| is_at_least(dead_of(file.len, file.live_bytes), file.len, 1))
+            .map(|file| file.file))
+    }
+
+    /// Closes the value-log files that are being filled, by write-back or
+    /// with the cleaner's copies, and of which too much is dead: a file is
+    /// not cleaned while it is written.
+    fn close_dead_files(&self, work: &mut Work) -> Result<(), CleanerError> {
+        let values = self.stores().values;
+        let config = &self.state.config;
+        let named = values.files_named()?;
+        let held = |len: u64| len.saturating_sub(FIRST_RECORD_OFFSET);
+        let all: u64 = named.iter().map(|file| held(file.valid_len())).sum();
+        let own = work.values.as_ref().map(ValueWriter::file_id);
+        for file in named.iter().filter(|file| file.state() == FileState::Open) {
+            let len = held(file.valid_len());
+            let live = values.count(file.id()).map_or(0, |count| count.bytes);
+            let dead = len.saturating_sub(live);
+            let closes = is_at_least(dead, all, config.seal_dead_percent)
+                || is_at_least(len, all, config.max_segment_percent);
+            if len < config.min_segment_len || !closes {
+                continue;
+            }
+            let closed = match Some(file.id()) == own {
+                true => {
+                    let writer = work.values.take().expect("the cleaner's file");
+                    writer.finish()?;
+                    true
+                }
+                false => self.write_back.close_value_file(file.id())?,
+            };
+            count(&self.state.counters.value_files_closed, u64::from(closed));
+        }
+        Ok(())
     }
 
     /// Takes out of the store the value-log files that the value log said

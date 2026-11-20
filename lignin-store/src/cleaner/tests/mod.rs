@@ -2,6 +2,7 @@
 //! write one log group each, a write-back that writes their pages to
 //! segments, and a model of what every version of every page says.
 
+mod acceptance;
 mod account;
 mod crash;
 mod deleting;
@@ -22,7 +23,7 @@ use super::*;
 use crate::{
     alloc::Pins,
     flush::{
-        tests::{hash, inline, insert, is_flat, long, noise, page, version, Db, Op},
+        tests::{hash, inline, insert, is_flat, long, noise, page, slot, version, Db, Op, Val},
         Checkpointed, FlushConfig,
     },
     load::FRAME_FORMAT,
@@ -50,6 +51,7 @@ pub(super) fn eager() -> CleanerConfig {
         target_dead_percent: 0,
         checkpoint_dead_percent: 0,
         seal_dead_percent: 0,
+        max_segment_percent: 101,
         min_segment_len: 0,
         max_pass_bytes: u64::MAX,
         segment_len: 300,
@@ -182,6 +184,7 @@ pub(super) fn settle(cleaner: &Cleaner<'_>) -> Pass {
         all.blocks_lost += pass.blocks_lost;
         all.retired += pass.retired;
         all.dropped += pass.dropped;
+        all.checkpoints += pass.checkpoints;
         all.waiting = pass.waiting;
         all.scanned |= pass.scanned;
         if !pass.progressed() && !pass.more {
@@ -189,6 +192,50 @@ pub(super) fn settle(cleaner: &Cleaner<'_>) -> Pass {
         }
     }
     panic!("the cleaner does not come to rest: {all:?}");
+}
+
+/// Passes over the value log until two in a row move nothing on. Returns
+/// the values that were moved and the files that were dropped.
+pub(super) fn settle_values<O: ValueOwners>(
+    cleaner: &Cleaner<'_>,
+    owners: &O,
+) -> (u64, Vec<FileId>) {
+    let (mut moved, mut dropped, mut idle) = (0, Vec::new(), 0);
+    for _ in 0..64 {
+        let pass = cleaner.pass_values(owners).expect("a pass");
+        moved += pass.cleaned.map_or(0, |(_, cleaned)| cleaned.moved);
+        dropped.extend(&pass.dropped);
+        idle = match pass.progressed() {
+            true => 0,
+            false => idle + 1,
+        };
+        if idle == 2 {
+            return (moved, dropped);
+        }
+    }
+    panic!("the value log does not come to rest");
+}
+
+/// Brings the store to rest. The cleaner finishes with the segments and
+/// with the value log; write-back writes what is unwritten, which
+/// includes the pages whose pointers a cleaning rewrote; a table
+/// checkpoint covers that; and the cleaner takes what the checkpoint sets
+/// free.
+///
+/// Until write-back has written a page whose pointer was rewritten, the
+/// block that the segments hold of it is older than the page every reader
+/// is given, which is in the pool, and it may point into a file of the
+/// value log that is gone. So a check that reads every page from its
+/// segments comes after this.
+pub(super) fn rest(db: &Db, cleaner: &Cleaner<'_>) {
+    settle(cleaner);
+    settle_values(cleaner, &Cells(db));
+    db.wb().pass().expect("a pass");
+    match db.wb().checkpoint().expect("a checkpoint") {
+        Checkpointed::Installed { covers, .. } => assert_eq!(covers, db.latest()),
+        other => panic!("nothing holds a copy: {other:?}"),
+    }
+    settle(cleaner);
 }
 
 /// The pages of [`churned`].
@@ -242,11 +289,23 @@ pub(super) fn movable(db: &Db, space: &Space) -> (PageId, BlockLocation) {
 /// log.
 pub(super) struct Cells<'d>(pub(super) &'d Db);
 
+impl Cells<'_> {
+    /// The current version of `id`, from the pool or from its segments,
+    /// if the page exists.
+    fn current(&self, id: PageId) -> Result<Option<crate::cache::PageRef<'_>>, OwnersError> {
+        match self.0.frame(id, self.0.latest()) {
+            Ok(frame) => Ok(Some(frame)),
+            Err(crate::load::LoadError::NoPage { .. }) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 impl ValueOwners for Cells<'_> {
     type Found = (SlotId, CommitVersion);
 
     fn find(&self, id: PageId, pointer: ValuePointer) -> Result<Option<Self::Found>, OwnersError> {
-        let Some(frame) = self.0.pool.page_step(id).current() else {
+        let Some(frame) = self.current(id)? else {
             return Ok(None);
         };
         if is_flat(&frame) {
@@ -270,11 +329,11 @@ impl ValueOwners for Cells<'_> {
         };
         let db = self.0;
         let (id, from, to) = (step.page(), step.from(), step.to());
-        let guard = db.pool.page_step(id);
-        let Some(old) = guard.current() else {
+        let Some(old) = self.current(id)? else {
             return Ok(Rewrite::Refused(Refusal::OwnerGone));
         };
-        if old.born() != born || guard.private_copies() > 0 {
+        let guard = db.pool.page_step(id);
+        if !guard.is_current(&old) || old.born() != born || guard.private_copies() > 0 {
             return Ok(Rewrite::Refused(Refusal::Busy));
         }
         let holds = TreePage::from_validated(&old, FRAME_FORMAT)?

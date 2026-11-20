@@ -296,3 +296,50 @@ fn print_the_fixture() {
     let space = cleaner.space().expect("the space");
     println!("{}", describe(&db, &space));
 }
+
+/// A chain is trimmed only once the operations that were running when the
+/// oldest pin was found to allow it have ended (PN6). An operation that
+/// holds no pin reads the latest version of its beginning, and has not
+/// looked up every page it will read.
+#[test]
+fn a_trim_waits_for_the_operations_that_were_running() {
+    let db = Db::with(small_segments());
+    db.commit(&[insert((1, 1), b"a", inline(&noise(1, 150)))]);
+    db.wb().pass().expect("a pass");
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    assert_eq!(cleaner.pass().expect("a pass").links_trimmed, 0);
+
+    // An operation begins and reads the latest version. Then a commit
+    // frees the page, and nothing is pinned.
+    let reads_at = db.latest();
+    db.versions.hold_guard();
+    db.commit(&[Op::Free { page: page(1) }]);
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.versions.oldest_pin(), db.latest());
+    for _ in 0..6 {
+        let pass = cleaner.pass().expect("a pass");
+        assert_eq!(pass.links_trimmed, 0, "an operation reads at {reads_at}");
+        assert!(pass.scanned, "the cleaner waits, and looks again");
+    }
+    assert_eq!(db.shape(page(1)), "BF");
+    // The operation looks the page up at its version, with nothing of it
+    // in memory, and finds it.
+    let cold = crate::flush::tests::new_pool(db.size);
+    let loader = crate::load::PageLoader::new(&cold, &db.table, &db.segments, db.size);
+    let found = (loader.expect("a loader")).get(page(1), reads_at, &mut Default::default());
+    assert_eq!(found.expect("the page at its version").born(), reads_at);
+
+    db.versions.release_guard();
+    let pass = cleaner.pass().expect("a pass");
+    assert_eq!(pass.links_trimmed, 1, "{pass:?}");
+    assert_eq!(db.shape(page(1)), "");
+    // An answer about the oldest pin that is lower than one before it
+    // allows nothing more, and starts no epoch.
+    let epoch = db.versions.next_epoch();
+    db.versions.pin(version(1));
+    cleaner.pass().expect("a pass");
+    db.versions.unpin();
+    cleaner.pass().expect("a pass");
+    assert_eq!(db.versions.next_epoch().get(), epoch.get() + 1);
+}

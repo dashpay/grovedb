@@ -240,3 +240,144 @@ fn settle_count(db: &Db) -> u64 {
     let state = CleanerState::new(moving_only());
     settle(&Cleaner::new(again.wb(), &state)).blocks_moved
 }
+
+/// What the links of a chain are, without their places.
+fn kinds(chain: &[Link]) -> Vec<(CommitVersion, char)> {
+    let kind = |link: &Link| match link.kind {
+        crate::table::LinkKind::Base(_) => 'B',
+        crate::table::LinkKind::Delta(_) => 'd',
+        crate::table::LinkKind::Free => 'F',
+    };
+    chain
+        .iter()
+        .map(|link| (link.version, kind(link)))
+        .collect()
+}
+
+/// A page that a commit frees while one of its blocks is copied stays
+/// freed. A move adds no link: it points the link the block had at the
+/// copy, which is what the readers below the freeing version read by, and
+/// the free link stays the newest of the chain (the owner's decision
+/// D-116).
+#[test]
+fn a_page_that_is_freed_while_its_block_is_copied_stays_freed() {
+    let db = std::sync::Arc::new(churned(13));
+    let pinned = db.latest();
+    db.versions.pin(pinned);
+    for round in 14..=16 {
+        churn(&db, round);
+    }
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let freed = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (seen, raced) = (freed.clone(), db.clone());
+    let meanwhile = super::super::state::AtSwitch(Box::new(move |id, from| {
+        if seen.lock().expect("seen").is_some() {
+            return;
+        }
+        let before = raced.chain(id);
+        raced.commit(&[Op::Free { page: id }]);
+        raced.wb().pass().expect("a pass");
+        *seen.lock().expect("seen") = Some((id, from, before));
+    }));
+    *state.at_switch.lock().expect("the hook") = Some(meanwhile);
+    let pass = cleaner.pass().expect("a pass");
+    *state.at_switch.lock().expect("the hook") = None;
+
+    let (id, from, before) = (freed.lock().expect("seen").take()).expect("a block was copied");
+    let after = db.chain(id);
+    // The chain has what it had and the free link, which is its newest.
+    let mut expected = kinds(&before);
+    expected.push((db.latest(), 'F'));
+    assert_eq!(kinds(&after), expected);
+    assert_eq!(db.table.newest(id), Some(Link::free(db.latest())));
+    // The block was moved, for the reader that is below the freeing
+    // version: its link points at the copy.
+    assert_eq!(pass.blocks_lost, 0, "{pass:?}");
+    assert!(after.iter().all(|link| link.location() != Some(from)));
+    let cold = crate::flush::tests::new_pool(db.size);
+    let loader = crate::load::PageLoader::new(&cold, &db.table, &db.segments, db.size);
+    let loader = loader.expect("a loader");
+    assert!(loader.get(id, pinned, &mut Default::default()).is_ok());
+    let gone = loader.get(id, db.latest(), &mut Default::default());
+    assert!(matches!(gone, Err(crate::load::LoadError::NoPage { .. })));
+    db.check_warm();
+    db.check_cold();
+
+    // With no reader below the freeing version, the chain goes whole.
+    db.versions.unpin();
+    settle(&cleaner);
+    assert_eq!(db.shape(id), "");
+    db.check_cold();
+}
+
+/// The same for a page that was made under the id of a freed page and
+/// that no block holds yet: the commit that frees it again finds the free
+/// link of the page before it and pushes no second one. A block of the
+/// page before it, which a reader below that free link still reads, is
+/// moved meanwhile, and the id is left with no link that says it is in
+/// use (D-116).
+#[test]
+fn a_move_gives_no_link_to_an_id_that_is_freed_again_before_it_was_written_back() {
+    let db = std::sync::Arc::new(Db::with(small_segments()));
+    // The image of page 1 lies beside one of page 3 that dies.
+    db.commit(&[
+        insert((1, 1), b"a", inline(&noise(1, 120))),
+        insert((3, 1), b"c", inline(&noise(3, 120))),
+    ]);
+    db.wb().pass().expect("a pass");
+    for round in 1..=3 {
+        db.commit(&[hash((3, 1), round)]);
+        db.wb().pass().expect("a pass");
+    }
+    let pinned = db.latest();
+    db.versions.pin(pinned);
+    db.commit(&[Op::Free { page: page(1) }]);
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.shape(page(1)), "BF");
+    // The id names another page, which only the pool and the log hold.
+    db.commit(&[insert((1, 1), b"again", inline(&noise(8, 90)))]);
+    let made = db.latest();
+
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let hit = std::sync::Arc::new(std::sync::Mutex::new(None));
+    let (seen, raced) = (hit.clone(), db.clone());
+    let meanwhile = super::super::state::AtSwitch(Box::new(move |id, from| {
+        if id == page(1) && seen.lock().expect("seen").is_none() {
+            raced.commit(&[Op::Free { page: id }]);
+            *seen.lock().expect("seen") = Some(from);
+        }
+    }));
+    *state.at_switch.lock().expect("the hook") = Some(meanwhile);
+    let pass = cleaner.pass().expect("a pass");
+    *state.at_switch.lock().expect("the hook") = None;
+    let from = hit
+        .lock()
+        .expect("seen")
+        .expect("the block of page 1 was copied");
+    assert!(pass.blocks_moved >= 1, "{pass:?}");
+
+    // The chain is what it was, in another place: an image and the free
+    // link of the first page. Nothing says that the id is in use.
+    let chain = db.chain(page(1));
+    assert_eq!(kinds(&chain), [(version(1), 'B'), (version(5), 'F')]);
+    assert_ne!(chain[0].location(), Some(from));
+    // Write-back owes nothing of the page that was made and freed, and a
+    // pass leaves the chain as it is.
+    db.wb().pass().expect("a pass");
+    assert_eq!(db.shape(page(1)), "BF");
+    assert_eq!(
+        db.model
+            .lock()
+            .expect("the model")
+            .at(page(1), made)
+            .map(|at| at.0),
+        Some(6)
+    );
+    db.check_warm();
+    db.versions.unpin();
+    settle(&cleaner);
+    assert_eq!(db.shape(page(1)), "");
+    db.check_warm();
+}

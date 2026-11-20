@@ -15,7 +15,7 @@ use super::{
 use crate::{
     alloc::Epoch,
     segment::SegmentWriter,
-    values::{Retired, ValueWriter},
+    values::{ChangeMark, Retired, ValueWriter},
 };
 
 pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -59,6 +59,22 @@ pub(super) struct Work {
     /// What the value log may drop, each with the epoch that was started
     /// when it was asked (`ValueStore::retire`).
     pub(super) value_tokens: VecDeque<(Retired, Epoch)>,
+    /// The mark of the value log's changes that the cleaner last made the
+    /// log durable through.
+    pub(super) values_synced: Option<ChangeMark>,
+    /// What the value log was last asked to retire, with the mark the log
+    /// was durable through then, and how many passes have not asked again
+    /// since because the answer would have been the same.
+    pub(super) values_asked: Option<(Retired, ChangeMark)>,
+    pub(super) asks_spared: u32,
+    /// Answers about the oldest pinned version, each with the epoch that
+    /// was started when it was given: no version pin is below it, and it
+    /// waits for the operations that were running then.
+    pub(super) trim_bounds: VecDeque<(Epoch, CommitVersion)>,
+    /// The newest of those answers whose operations have ended: neither a
+    /// version pin nor a running operation reads below it. Chains are
+    /// trimmed at this version.
+    pub(super) trim_at: Option<CommitVersion>,
     /// Where the blocks of each sealed segment end.
     pub(super) blocks_end: BTreeMap<FileId, u64>,
     /// Segments of which a live block could not be read.

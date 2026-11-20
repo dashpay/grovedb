@@ -62,9 +62,9 @@ pub(crate) struct Ran {
     /// The version the log was known to be durable through.
     pub(crate) durable: CommitVersion,
     pub(crate) latest: CommitVersion,
-    checkpoints: u64,
-    log_files_dropped: u64,
-    put_off: u64,
+    pub(crate) checkpoints: u64,
+    pub(crate) log_files_dropped: u64,
+    pub(crate) put_off: u64,
 }
 
 /// Runs `script` on a new store, with the power going off after `crash`

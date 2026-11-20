@@ -16,8 +16,8 @@ pub struct SegmentSpace {
     /// segment.
     pub state: FileState,
     /// Whether a writer of this session had the segment when the read
-    /// began. A segment that is named open, or that has a writer, is not
-    /// cleaned: blocks are still appended to it.
+    /// began. A segment that has a writer is not cleaned: blocks are still
+    /// appended to it.
     pub has_writer: bool,
     /// The bytes of its blocks: from the end of its file header to where
     /// its blocks end. The footer of a sealed segment is not counted.
@@ -45,9 +45,11 @@ impl SegmentSpace {
         self.block_bytes.saturating_sub(self.live_bytes)
     }
 
-    /// Whether blocks can still be appended to the segment.
+    /// Whether blocks can still be appended to the segment: a writer of
+    /// this session has it. A segment that is named open and has no
+    /// writer takes none: its writer was dropped before it was sealed.
     pub fn is_written(&self) -> bool {
-        self.has_writer || self.state == FileState::Open
+        self.has_writer
     }
 }
 
@@ -129,6 +131,12 @@ pub struct ValueSpace {
     /// The bytes of the values that a cell of the latest version points
     /// to.
     pub live_bytes: u64,
+    /// The bytes of the closed files that hold no live value and wait to
+    /// be deleted: for the operations that were running when they were
+    /// emptied, for a pin on a version that still points into them, or
+    /// for a checkpoint that holds the files. They are dead, and no
+    /// cleaning gives them back.
+    pub waiting_bytes: u64,
 }
 
 impl ValueSpace {

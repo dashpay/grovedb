@@ -7,11 +7,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use lignin_format::{
     manifest::FileState,
     segment::{BlockContent, Compression, DATA_START},
-    FileId, PageId,
+    CommitVersion, FileId, PageId,
 };
 
 use super::{
-    config::count,
+    config::{count, CleanerConfig},
     error::CleanerError,
     space::{is_at_least, is_over, trimmable, Live, SegmentSpace, Space},
     state::{lock, CleanerState, RetiredSegment, Seen, Work},
@@ -45,11 +45,15 @@ pub struct Pass {
     pub dropped: usize,
     /// Segments that still wait to be deleted when the pass ends.
     pub waiting: usize,
-    /// The table checkpoint the pass asked for, if it asked for one.
+    /// Table checkpoints that the pass asked for and that were installed.
+    pub checkpoints: u64,
+    /// A table checkpoint the pass asked for that was put off: a write
+    /// transaction holds back a page that has to be in it. The segments
+    /// that wait for it go on waiting.
     pub checkpoint: Option<Checkpointed>,
-    /// The segment that write-back was filling and that the pass had
-    /// sealed.
-    pub sealed: Option<FileId>,
+    /// The segments that were being filled and that the pass had sealed:
+    /// write-back's, the cleaner's own, or both.
+    pub sealed: Vec<FileId>,
     /// Whether the throttle ended the moving of blocks before the dead
     /// space was within its target: the next pass goes on.
     pub more: bool,
@@ -60,10 +64,19 @@ impl Pass {
     pub fn progressed(&self) -> bool {
         self.links_trimmed + self.blocks_moved + self.blocks_lost != 0
             || self.retired + self.dropped != 0
-            || self.sealed.is_some()
-            || matches!(self.checkpoint, Some(Checkpointed::Installed { .. }))
+            || !self.sealed.is_empty()
+            || self.checkpoints != 0
     }
 }
+
+/// How many rounds a pass makes at most: each can end with a table
+/// checkpoint.
+const MAX_ROUNDS: usize = 8;
+
+/// How many answers about the oldest pinned version wait for their
+/// operations at once. An answer that has no room is not kept: a later
+/// pass asks again.
+const MAX_BOUNDS: usize = 8;
 
 /// What became of a block that was copied.
 enum Moved {
@@ -135,7 +148,7 @@ impl<'s> Cleaner<'s> {
     /// changes nothing. It waits for a pass that is under way.
     pub fn space(&self) -> Result<Space, CleanerError> {
         let mut work = lock(&self.state.work);
-        let (mut space, _) = self.read_table(&mut work)?;
+        let (mut space, _) = self.read_table(&mut work, None)?;
         mark_retired(&mut space, &work);
         Ok(space)
     }
@@ -146,16 +159,23 @@ impl<'s> Cleaner<'s> {
     ///    link points to. The chains that hold links no reader needs any
     ///    more are trimmed.
     /// 2. The segments that the table points into no more are retired.
-    /// 3. While the dead space is above its target, the live blocks of the
-    ///    segments with the largest share of dead bytes are moved to the
-    ///    cleaner's own segment, as many bytes as the throttle allows. A
-    ///    segment that is left with no live block is retired.
-    /// 4. The retired segments that no running operation can still read
+    /// 3. The retired segments that no running operation can still read
     ///    from, and that the table checkpoint in force does not point
-    ///    into, are taken out of the store and deleted.
-    /// 5. A table checkpoint is asked for if the segments that only the
-    ///    checkpoint in force keeps hold too much, and the segment that
-    ///    write-back is filling is sealed if it does.
+    ///    into, are taken out of the store and deleted. A table checkpoint
+    ///    is asked for if the segments that only the checkpoint in force
+    ///    keeps hold too much.
+    /// 4. A segment that is being filled is sealed if too much of it is
+    ///    dead, or if it has become a large part of the store.
+    /// 5. While the dead space is above its target, the live blocks of the
+    ///    segments with the largest share of dead bytes are moved to the
+    ///    cleaner's own segment: as many segments as can wait for one
+    ///    table checkpoint, and as many bytes as the throttle allows. A
+    ///    segment that is left with no live block is retired, and step 3
+    ///    is made again.
+    ///
+    /// If step 5 moved blocks, the pass goes round again, a few times at
+    /// most: what was emptied may wait for a table checkpoint, and a round
+    /// that finds the dead space above its target still has one taken.
     ///
     /// One pass runs at a time, and a second call waits for the first. A
     /// pass that finds the store as the pass before left it, with no
@@ -195,19 +215,46 @@ impl<'s> Cleaner<'s> {
     }
 
     fn pass_with(&self, work: &mut Work, pass: &mut Pass) -> Result<(), CleanerError> {
-        let config = &self.state.config;
-        let counters = &self.state.counters;
         let seen = self.seen();
         if work.idle_at == Some(seen) && work.retired.is_empty() {
             return Ok(());
         }
         work.idle_at = None;
+        // A round moves as much as can wait for one table checkpoint, and
+        // has the checkpoint taken. While that sets segments free and the
+        // dead space is still above its target, the pass goes on.
+        let mut failed = None;
+        for _ in 0..MAX_ROUNDS {
+            let more = self.round(work, pass, &mut failed)?;
+            if !more || pass.more {
+                break;
+            }
+        }
+        failed.map_or(Ok(()), Err)?;
+        let waits = !work.retired.is_empty() || !work.trim_bounds.is_empty();
+        if !pass.progressed() && !pass.more && !waits {
+            work.idle_at = Some(seen);
+        }
+        Ok(())
+    }
 
-        let (mut space, trim) = self.read_table(work)?;
+    /// One round of a pass. Returns whether another one may move more:
+    /// this one moved blocks. An error of a move that leaves the rest of
+    /// the round to be made is put into `failed`.
+    fn round(
+        &self,
+        work: &mut Work,
+        pass: &mut Pass,
+        failed: &mut Option<CleanerError>,
+    ) -> Result<bool, CleanerError> {
+        let config = &self.state.config;
+        let counters = &self.state.counters;
+        let trim_at = self.trim_bound(work);
+        let (mut space, trim) = self.read_table(work, trim_at)?;
         pass.scanned = true;
         count(&counters.scans, 1);
-        if !trim.is_empty() {
-            let removed = self.write_back.trim_chains(&trim);
+        if let Some(trim_at) = trim_at.filter(|_| !trim.is_empty()) {
+            let removed = self.write_back.trim_chains(&trim, trim_at);
             let bytes: u64 = removed
                 .iter()
                 .filter_map(Link::location)
@@ -216,8 +263,8 @@ impl<'s> Cleaner<'s> {
             for link in &removed {
                 take_off(&mut space, link);
             }
-            pass.links_trimmed = removed.len() as u64;
-            count(&counters.links_trimmed, pass.links_trimmed);
+            pass.links_trimmed += removed.len() as u64;
+            count(&counters.links_trimmed, removed.len() as u64);
             count(&counters.bytes_trimmed, bytes);
         }
 
@@ -231,73 +278,160 @@ impl<'s> Cleaner<'s> {
         for (file, block_bytes) in empty {
             self.retire(work, file, block_bytes, pass);
         }
-
-        let victims = victims(&space, work, config.target_dead_percent);
-        let moved = match victims.is_empty() {
-            true => Ok(()),
-            false => self.move_out(work, &space, &victims, pass),
-        };
-
-        let mut reclaimed = self.reclaim(work, pass)?;
+        // What is retired now, or was when the table was read, is not
+        // counted among what the cleaner works on, whatever becomes of it
+        // in this round.
+        let out: BTreeSet<FileId> = work.retired.keys().copied().collect();
         let all = space.block_bytes();
-        let ask = is_at_least(
-            reclaimed.kept_by_checkpoint,
-            all,
-            config.checkpoint_dead_percent,
-        );
-        if ask && !self.write_back.state().segments_not_durable() {
-            match self.write_back.checkpoint() {
-                Ok(checkpointed) => {
-                    let installed = matches!(checkpointed, Checkpointed::Installed { .. });
-                    pass.checkpoint = Some(checkpointed);
-                    match installed {
-                        true => {
-                            count(&counters.checkpoints, 1);
-                            reclaimed = self.reclaim(work, pass)?;
-                        }
-                        false => count(&counters.checkpoints_missed, 1),
-                    }
-                }
-                Err(error) => {
-                    count(&counters.checkpoints_missed, 1);
-                    return Err(error.into());
-                }
-            }
-        }
-        let _ = reclaimed;
+        let mut waiting = self.reclaim_with_checkpoint(work, pass, all, false)?;
 
-        // A segment is not cleaned while it is written. The one that
-        // write-back fills is sealed once what is dead in it is too much
-        // to leave there.
+        // A segment is not cleaned while it is written. One that is being
+        // filled, by write-back or with the blocks the cleaner moved, is
+        // sealed once too much of it is dead, and once it is so large a
+        // part of the store that moving what lives in it would take too
+        // much room at once.
         let own = work.segment.as_ref().map(SegmentWriter::file_id);
-        let filling = |segment: &&SegmentSpace| {
-            segment.has_writer
-                && Some(segment.file) != own
-                && segment.block_bytes >= config.min_segment_len
-        };
-        let dead: u64 = space
+        let to_seal: Vec<FileId> = space
             .segments
             .iter()
-            .filter(filling)
-            .map(SegmentSpace::dead_bytes)
-            .sum();
-        if is_at_least(dead, all, config.seal_dead_percent) {
-            pass.sealed = self.write_back.seal_segment()?;
-            count(&counters.segments_sealed, u64::from(pass.sealed.is_some()));
+            .filter(|segment| segment.has_writer)
+            .filter(|segment| segment.block_bytes >= config.min_segment_len)
+            .filter(|segment| {
+                is_at_least(segment.dead_bytes(), all, config.seal_dead_percent)
+                    || is_at_least(segment.block_bytes, all, config.max_segment_percent)
+            })
+            .map(|segment| segment.file)
+            .collect();
+        for file in to_seal {
+            let sealed = match Some(file) == own {
+                true => {
+                    let writer = work.segment.take().expect("the cleaner's segment");
+                    self.seal(work, writer)?;
+                    true
+                }
+                false => self.write_back.seal_segment(file)?,
+            };
+            if sealed {
+                pass.sealed.push(file);
+                count(&counters.segments_sealed, 1);
+            }
         }
 
-        mark_retired(&mut space, work);
-        *lock(&self.state.space) = space;
-        moved?;
-        if !pass.progressed() && !pass.more && work.retired.is_empty() {
-            work.idle_at = Some(seen);
+        // With a segment that cannot be made durable no table checkpoint
+        // is installed in this session, so a copy would never let its
+        // block go: nothing is moved.
+        let durable = work.failed.is_empty() && !self.write_back.state().segments_not_durable();
+        let mut chosen = Chosen::default();
+        if durable {
+            chosen = victims(&space, &out, &work.unreadable, config, waiting);
+            if chosen.no_room {
+                // The dead space is above its target, and what waits for
+                // a table checkpoint leaves no room for a copy.
+                waiting = self.reclaim_with_checkpoint(work, pass, all, true)?;
+                chosen = victims(&space, &out, &work.unreadable, config, waiting);
+            }
         }
-        Ok(())
+        mark_retired(&mut space, work);
+        *lock(&self.state.space) = space.clone();
+        if chosen.segments.is_empty() {
+            return Ok(false);
+        }
+        let moved = pass.blocks_moved;
+        if let Err(error) = self.move_out(work, &space, &chosen.segments, pass) {
+            match error.is_damage() {
+                true => *failed = failed.take().or(Some(error)),
+                false => return Err(error),
+            }
+        }
+        self.reclaim_with_checkpoint(work, pass, all, false)?;
+        // The next round reads the table again. If the dead space is
+        // still above its target then, it has a table checkpoint taken
+        // for what this round emptied, and goes on.
+        Ok(pass.blocks_moved > moved)
+    }
+
+    /// Takes out of the store the retired segments that nothing needs any
+    /// more, and has a table checkpoint taken if the segments that only
+    /// the checkpoint in force keeps hold too much, or if any wait and
+    /// one is `wanted`. Once one was put off, none is asked for again in
+    /// the pass.
+    /// Returns the bytes of the blocks of the segments that still wait
+    /// for a checkpoint.
+    fn reclaim_with_checkpoint(
+        &self,
+        work: &mut Work,
+        pass: &mut Pass,
+        all: u64,
+        wanted: bool,
+    ) -> Result<u64, CleanerError> {
+        let config = &self.state.config;
+        let counters = &self.state.counters;
+        let reclaimed = self.reclaim(work, pass)?;
+        let waiting = reclaimed.kept_by_checkpoint;
+        let due = is_at_least(waiting, all, config.checkpoint_dead_percent);
+        let ask = (due || (wanted && waiting != 0))
+            && pass.checkpoint.is_none()
+            && !self.write_back.state().segments_not_durable();
+        if !ask {
+            return Ok(waiting);
+        }
+        match self.write_back.checkpoint() {
+            Ok(Checkpointed::Installed { .. }) => {
+                count(&counters.checkpoints, 1);
+                pass.checkpoints += 1;
+                Ok(self.reclaim(work, pass)?.kept_by_checkpoint)
+            }
+            Ok(put_off) => {
+                count(&counters.checkpoints_missed, 1);
+                pass.checkpoint = Some(put_off);
+                Ok(waiting)
+            }
+            Err(error) => {
+                count(&counters.checkpoints_missed, 1);
+                Err(error.into())
+            }
+        }
+    }
+
+    /// The version at which chains are trimmed in this pass: one that no
+    /// version pin and no running operation reads below.
+    ///
+    /// The page table asks for the first alone (`page-table.md` T11). An
+    /// operation that holds no pin reads the latest version of its
+    /// beginning, and a link it has not looked up yet is no location it
+    /// has read (`transactions.md` PN5): were the chain of a page that a
+    /// commit freed meanwhile trimmed at once, the operation would find no
+    /// such page. So the cleaner puts the three questions here as it does
+    /// for a file (PN6): the oldest pin, then an epoch, and the bound is
+    /// used once every guard of before that epoch is released. An
+    /// operation that begins later reads a version at or after the bound.
+    fn trim_bound(&self, work: &mut Work) -> Option<CommitVersion> {
+        let versions = self.stores().versions;
+        let oldest = versions.oldest_pin();
+        let asked = work.trim_bounds.back().map(|(_, at)| *at).or(work.trim_at);
+        // A later answer can be lower than an earlier one, and both are
+        // true: only an answer that allows more is worth an epoch.
+        if asked.is_none_or(|asked| oldest > asked) && work.trim_bounds.len() < MAX_BOUNDS {
+            work.trim_bounds.push_back((versions.next_epoch(), oldest));
+        }
+        let oldest_guard = versions.oldest_guard();
+        while let Some((_, at)) = work
+            .trim_bounds
+            .pop_front_if(|(epoch, _)| *epoch <= oldest_guard)
+        {
+            work.trim_at = work.trim_at.max(Some(at));
+        }
+        work.trim_at
     }
 
     /// Reads the page table through: what each segment holds that a link
-    /// points to, and the pages whose chains a trim would shorten.
-    fn read_table(&self, work: &mut Work) -> Result<(Space, Vec<PageId>), CleanerError> {
+    /// points to, and the pages whose chains a trim at `trim_at` would
+    /// shorten.
+    fn read_table(
+        &self,
+        work: &mut Work,
+        trim_at: Option<CommitVersion>,
+    ) -> Result<(Space, Vec<PageId>), CleanerError> {
         let Stores {
             table,
             segments,
@@ -324,7 +458,7 @@ impl<'s> Cleaner<'s> {
             for of_page in links.chunk_by(|one, other| one.0 == other.0) {
                 chain.clear();
                 chain.extend(of_page.iter().map(|(_, link)| *link));
-                if trimmable(&chain, oldest) > 0 {
+                if trim_at.is_some_and(|at| trimmable(&chain, at) > 0) {
                     trim.push(of_page[0].0);
                 }
                 live.chain(&chain, oldest, latest);
@@ -437,11 +571,10 @@ impl<'s> Cleaner<'s> {
                     count(&counters.blocks_lost, 1);
                     count(&counters.bytes_lost, u64::from(to.len));
                 }
-                // A live block that cannot be read is damage that its
-                // readers meet too. The segment keeps its link, so it is
-                // never deleted, and moving the rest of it would gain
-                // nothing.
-                Err(error @ (CleanerError::Block { .. } | CleanerError::Payload { .. })) => {
+                // A live block that is damaged is damage that its readers
+                // meet too. The segment keeps its link, so it is never
+                // deleted, and moving the rest of it would gain nothing.
+                Err(error) if error.is_damage() => {
                     work.unreadable.insert(from.file);
                     count(&counters.segments_unreadable, 1);
                     failed.get_or_insert(error);
@@ -698,15 +831,44 @@ fn mark_retired(space: &mut Space, work: &Work) {
     }
 }
 
+/// The segments a round moves the live blocks out of.
+#[derive(Debug, Default)]
+pub(super) struct Chosen {
+    pub(super) segments: Vec<FileId>,
+    /// Whether the dead space is above its target and no segment was
+    /// chosen because what waits for a table checkpoint leaves no room.
+    pub(super) no_room: bool,
+}
+
 /// The segments whose live blocks are to be moved, the one with the
 /// largest share of dead bytes first: as many as it takes to bring the
-/// dead bytes of the segments that are not retired down to `target` in a
-/// hundred of their block bytes.
+/// dead bytes of the segments that are not retired down to the target, and
+/// no more than can wait for one table checkpoint.
 ///
 /// Moving the live blocks out of a segment and deleting it takes its dead
-/// bytes out of both sums: the copies are as long as what they copy.
-fn victims(space: &Space, work: &Work, target: u8) -> Vec<FileId> {
-    let kept = |segment: &&SegmentSpace| !work.retired.contains_key(&segment.file);
+/// bytes out of both sums: the copies are as long as what they copy. Until
+/// the segment is deleted, the store holds its blocks twice, and a segment
+/// that the table checkpoint in force points into is deleted only after
+/// the next one. So what is chosen, with the `waiting` bytes of the
+/// segments that wait for a checkpoint already, is no more than the share
+/// at which a checkpoint is asked for
+/// ([`CleanerConfig::checkpoint_dead_percent`]). With nothing waiting, one
+/// segment is chosen whatever its size.
+///
+/// `out` are the segments that are retired, or were when `space` was
+/// read. They are left out of the sums, and so are the segments that
+/// cannot be read: what is dead in them stays, whatever is moved out of
+/// the others.
+pub(super) fn victims(
+    space: &Space,
+    out: &BTreeSet<FileId>,
+    unreadable: &BTreeSet<FileId>,
+    config: &CleanerConfig,
+    waiting: u64,
+) -> Chosen {
+    let kept = |segment: &&SegmentSpace| {
+        !out.contains(&segment.file) && !unreadable.contains(&segment.file)
+    };
     let mut dead: u64 = space
         .segments
         .iter()
@@ -719,27 +881,34 @@ fn victims(space: &Space, work: &Work, target: u8) -> Vec<FileId> {
         .filter(kept)
         .map(|segment| segment.block_bytes)
         .sum();
-    let unreadable: &BTreeSet<FileId> = &work.unreadable;
+    let total = u128::from(space.block_bytes());
+    let room = total * u128::from(config.checkpoint_dead_percent) / 100;
     let mut candidates: Vec<&SegmentSpace> = space
         .segments
         .iter()
         .filter(kept)
         .filter(|segment| !segment.has_writer && segment.live_blocks != 0)
-        .filter(|segment| segment.dead_bytes() != 0 && !unreadable.contains(&segment.file))
+        .filter(|segment| segment.dead_bytes() != 0)
         .collect();
     candidates.sort_by(|one, other| {
         let one_share = u128::from(one.dead_bytes()) * u128::from(other.block_bytes);
         let other_share = u128::from(other.dead_bytes()) * u128::from(one.block_bytes);
         other_share.cmp(&one_share).then(one.file.cmp(&other.file))
     });
-    let mut victims = Vec::new();
+    let mut chosen = Chosen::default();
+    let mut waits = waiting;
     for segment in candidates {
-        if !is_over(dead, all, target) {
+        if !is_over(dead, all, config.target_dead_percent) {
             break;
         }
-        victims.push(segment.file);
+        if waits != 0 && u128::from(waits + segment.block_bytes) > room {
+            chosen.no_room = chosen.segments.is_empty();
+            break;
+        }
+        chosen.segments.push(segment.file);
         dead -= segment.dead_bytes();
         all -= segment.dead_bytes();
+        waits += segment.block_bytes;
     }
-    victims
+    chosen
 }

@@ -129,10 +129,10 @@ fn a_segment_the_checkpoint_in_force_points_into_waits_for_the_next_checkpoint()
     let cleaner = Cleaner::new(db.wb(), &eager_state);
     let pass = cleaner.pass().expect("a pass");
     assert!(
-        matches!(pass.checkpoint, Some(Checkpointed::Installed { .. })),
+        pass.checkpoints >= 1 && pass.checkpoint.is_none(),
         "{pass:?}"
     );
-    assert_eq!(eager_state.stats().checkpoints, 1);
+    assert_eq!(eager_state.stats().checkpoints, pass.checkpoints);
     settle(&cleaner);
     let now = db.state.checkpoint_segments().expect("a checkpoint");
     let left = segment_ids(&db);
@@ -250,7 +250,7 @@ fn the_segment_being_filled_is_sealed_when_too_much_of_it_is_dead() {
     let patient = CleanerState::new(moving_only());
     let cleaner = Cleaner::new(db.wb(), &patient);
     let pass = cleaner.pass().expect("a pass");
-    assert_eq!((pass.sealed, pass.blocks_moved), (None, 0), "{pass:?}");
+    assert!(pass.sealed.is_empty() && pass.blocks_moved == 0, "{pass:?}");
     let space = cleaner.space().expect("the space");
     assert!(space.dead_percent() > 80.0, "{}", space.dead_percent());
     assert!(space.segments[0].is_written());
@@ -261,12 +261,12 @@ fn the_segment_being_filled_is_sealed_when_too_much_of_it_is_dead() {
         ..eager()
     });
     let pass = Cleaner::new(db.wb(), &large).pass().expect("a pass");
-    assert_eq!(pass.sealed, None, "{pass:?}");
+    assert!(pass.sealed.is_empty(), "{pass:?}");
 
     let state = CleanerState::new(eager());
     let cleaner = Cleaner::new(db.wb(), &state);
     let pass = cleaner.pass().expect("a pass");
-    assert_eq!(pass.sealed, Some(FileId::MIN), "{pass:?}");
+    assert_eq!(pass.sealed, [FileId::MIN], "{pass:?}");
     assert_eq!(state.stats().segments_sealed, 1);
     let done = settle(&cleaner);
     assert_eq!((done.blocks_moved, done.dropped), (1, 1), "{done:?}");
@@ -289,13 +289,13 @@ fn a_pass_over_a_store_that_has_not_changed_reads_nothing() {
     let state = CleanerState::new(eager());
     let cleaner = Cleaner::new(db.wb(), &state);
     settle(&cleaner);
-    let scans = state.stats().scans;
+    let before = state.stats();
     for _ in 0..5 {
         let pass = cleaner.pass().expect("a pass");
         assert!(!pass.scanned && !pass.progressed(), "{pass:?}");
     }
-    assert_eq!(state.stats().scans, scans);
-    assert_eq!(state.stats().passes, scans + 5);
+    assert_eq!(state.stats().scans, before.scans);
+    assert_eq!(state.stats().passes, before.passes + 5);
 
     db.commit(&[hash((1, 1), 99)]);
     db.wb().pass().expect("a pass");
