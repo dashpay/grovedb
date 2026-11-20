@@ -1581,6 +1581,8 @@ pub fn campaign(settings: &Settings, progress: &mut dyn FnMut(&RunReport, u64)) 
 
 #[cfg(test)]
 mod tests {
+    use lignin_store::wal::LogError;
+
     use super::*;
 
     fn quiet() -> RunShape {
@@ -1937,8 +1939,18 @@ mod tests {
         assert_eq!(lineage.observer.lasting_faults(), 0);
         assert!(!takes(&lineage));
 
-        // A step whose record the log does not take: the error is that
-        // fault's still, with no fault injected into the step.
+        // A step whose record the log does not take, for that reason and
+        // no other: the error is that fault's still, with no fault
+        // injected into the step.
+        let refused = {
+            let session = lineage.session.as_ref().expect("a session");
+            session.reclaim_step(first, &Reclaim::Page, &mut |_| {})
+        };
+        let Stepped::No(reason) = refused else {
+            panic!("the log took the record of the step: {refused:?}");
+        };
+        assert_eq!(reason, LogError::NoActiveFile.to_string());
+        assert!(!takes(&lineage));
         let free = Op::Reclaim {
             page: first,
             what: Reclaim::Page,
@@ -1950,9 +1962,11 @@ mod tests {
         assert_eq!(run.tally.get("reclaiming steps refused"), 0);
         assert_eq!(lineage.history.latest(), 2);
 
-        // A commit rolls the log before it asks for its place, and is
-        // made. From the next operation on nothing is excused: an error is
-        // a violation.
+        // The log still takes no item: the step did not roll it. A commit
+        // rolls the log before it asks for its place, and is made. From
+        // the next operation on nothing is excused: an error is a
+        // violation.
+        assert!(!takes(&lineage));
         assert!(run.step(&mut lineage, page()));
         assert!(takes(&lineage));
         assert_eq!(counts(&run), (3, 2, 0));

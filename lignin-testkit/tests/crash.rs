@@ -194,6 +194,14 @@ fn every_planted_defect_is_found() {
             "{name}: {found}"
         );
         assert_eq!(found.boundary.is_some(), defect.crash, "{name}: {found}");
+        // A violation says where in its run it was found.
+        let said = found.to_string();
+        assert!(
+            said.starts_with(&format!("seed {}, lineage ", found.seed)),
+            "{said}"
+        );
+        assert!(said.contains("the last operations: "), "{said}");
+        assert_eq!(found.boundary.is_some(), found.plan.is_some());
         let clean = RunShape {
             planted: None,
             ..shape
