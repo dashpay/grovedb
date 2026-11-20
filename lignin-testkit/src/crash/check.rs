@@ -40,8 +40,8 @@ pub enum Kind {
     /// The store recovered to a state that is no committed version, or to
     /// one before a commit that was durable.
     NotCommitted,
-    /// A second recovery, or the session that went on and was closed, gave
-    /// another state than the first.
+    /// A second recovery, a recovery with faults injected, or the session
+    /// that went on and was closed, gave another state than the first.
     NotTheSame,
     /// A store that was not crashed says other than the model, or a call
     /// failed with no fault injected.
@@ -198,28 +198,10 @@ pub fn check_again(
     landed: u64,
     pages: &Pages,
 ) -> Result<(), Violation> {
-    let ids: BTreeSet<PageId> = pages.keys().copied().collect();
-    let same = |session: &Session, what: &str| -> Result<(), Violation> {
-        let found = session
-            .read(&ids)
-            .map_err(|error| Violation::new(Kind::NotTheSame, format!("{what}: {error}")))?;
-        let now = session.latest().get();
-        if now != landed {
-            let said = format!("{what} is at version {now}, and the first was at {landed}");
-            return Err(Violation::new(Kind::NotTheSame, said));
-        }
-        if found != *pages {
-            let said = format!("{what}: {}", difference(&found, pages));
-            return Err(Violation::new(Kind::NotTheSame, said));
-        }
-        session
-            .verify()
-            .map_err(|error| Violation::new(Kind::NotTheSame, format!("{what}: {error}")))
-    };
     let gone = || Violation::new(Kind::NotTheSame, "the manifest is gone");
 
     let second = opened(state, again, Kind::NotTheSame)?.ok_or_else(gone)?;
-    same(&second, "the second recovery")?;
+    same(&second, landed, pages, "the second recovery")?;
     let ended = second.finish().map_err(|error| {
         Violation::new(
             Kind::NotTheSame,
@@ -233,7 +215,7 @@ pub fn check_again(
     drop(second);
 
     let third = opened(state, again, Kind::NotTheSame)?.ok_or_else(gone)?;
-    same(&third, "the store that was closed")?;
+    same(&third, landed, pages, "the store that was closed")?;
     let report = third.report();
     if report.commits != 0 || third.log_held() != 0 {
         let said = format!(
@@ -244,6 +226,91 @@ pub fn check_again(
         return Err(Violation::new(Kind::NotTheSame, said));
     }
     Ok(())
+}
+
+/// The store of `session` is at the version `landed` with `pages`, as the
+/// first recovery of its state found it, and sound to the checker.
+fn same(session: &Session, landed: u64, pages: &Pages, what: &str) -> Result<(), Violation> {
+    let not_same = |said: String| Violation::new(Kind::NotTheSame, format!("{what}: {said}"));
+    let ids: BTreeSet<PageId> = pages.keys().copied().collect();
+    let found = session.read(&ids).map_err(not_same)?;
+    let now = session.latest().get();
+    if now != landed {
+        return Err(not_same(format!(
+            "it is at version {now}, and the first was at {landed}"
+        )));
+    }
+    if found != *pages {
+        return Err(not_same(difference(&found, pages)));
+    }
+    session.verify().map_err(not_same)
+}
+
+/// What a recovery with faults injected came to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Faulted {
+    /// It returned a store, the one a recovery with no fault returns.
+    Returned,
+    /// A fault failed it, and the recovery after it returned that store.
+    Failed,
+    /// The directory holds no store, and it said so.
+    NoStore,
+}
+
+/// Recovers `state` with `odds` of faults injected: a state that a crash
+/// left as a recovery with no fault found it on a copy of its own, at the
+/// version `landed` with `pages`, or with no store if `landed` is `None`.
+///
+/// A recovery is a function of the files it finds, so one that a fault
+/// does not fail returns that same store. One that a fault fails says that
+/// the file layer failed and not that the store is damaged, and the
+/// recovery after it, with no fault, returns that same store again
+/// (`lignin_store::recovery`, "Twice"). One that fails with no fault
+/// injected has no excuse.
+pub fn check_with_faults(
+    state: &SimVfs,
+    odds: FaultOdds,
+    tuning: &Tuning,
+    landed: Option<u64>,
+    pages: &Pages,
+) -> Result<Faulted, Violation> {
+    let before = state.stats().faults;
+    state.set_faults(odds);
+    let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
+    let opened_with_faults = Session::open(vfs, db_dir(), tuning);
+    state.set_faults(FaultOdds::NONE);
+    let injected = state.stats().faults > before;
+    let other = |said: &str| Violation::new(Kind::NotTheSame, said);
+    match (opened_with_faults, landed) {
+        (Ok(session), Some(landed)) => {
+            same(&session, landed, pages, "a recovery with faults injected")?;
+            Ok(Faulted::Returned)
+        }
+        (Ok(_), None) => Err(other(
+            "a recovery with faults injected returned a store, and the directory held none",
+        )),
+        (Err(OpenError::NoStore), None) => Ok(Faulted::NoStore),
+        (Err(OpenError::NoStore), Some(_)) => Err(other(
+            "a recovery with faults injected found no store, and the directory holds one",
+        )),
+        (Err(OpenError::Failed { damage: false, .. }), _) if injected => {
+            let what = "the recovery after one that a fault failed";
+            match (opened(state, tuning, Kind::NotTheSame)?, landed) {
+                (Some(session), Some(landed)) => same(&session, landed, pages, what)?,
+                (None, None) => {}
+                (Some(_), None) => return Err(other("it returned a store where there was none")),
+                (None, Some(_)) => return Err(other("it found no store where there was one")),
+            }
+            Ok(Faulted::Failed)
+        }
+        (Err(error), _) => {
+            let said = match injected {
+                true => format!("a recovery that only faults were injected into: {error}"),
+                false => format!("a recovery of a state that had recovered: {error}"),
+            };
+            Err(Violation::new(Kind::NotRecovered, said))
+        }
+    }
 }
 
 #[cfg(test)]

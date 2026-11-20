@@ -36,8 +36,8 @@ fn settings(seed: u64, runs: u64, shape: RunShape) -> Settings {
 
 /// **The short form of the campaign.** Twelve runs, which between them
 /// have every kind of faults with every setting of what a failed sync
-/// leaves: every state that a crash can leave at each of their write
-/// boundaries recovers to a committed version.
+/// leaves: every state that the campaign's crash plans leave at each of
+/// their write boundaries recovers to a committed version.
 #[test]
 fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
     let seeds = 1..=12u64;
@@ -81,7 +81,9 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
         ("states that replayed commits", 5_000),
         ("states from a table checkpoint", 1_000),
         ("states at a reclaiming step", 10),
-        ("states at an item whose append had not returned", 1_500),
+        ("states at an item whose append had not returned", 100),
+        ("states that a killed process leaves", 1_500),
+        ("commits synced", 6),
         ("states with no store yet", 12),
         ("states recovered again", 300),
         ("commits replayed", 15_000),
@@ -159,14 +161,14 @@ fn a_campaign_is_the_same_whatever_runs_at_once() {
 #[test]
 fn every_planted_defect_is_found() {
     let found = |name: &str| {
-        let (_, planted) = DEFECTS
+        let defect = DEFECTS
             .into_iter()
-            .find(|(known, _)| *known == name)
+            .find(|defect| defect.name == name)
             .expect("a defect");
         let shape = RunShape {
             ops: 30,
             faults: Some(Faults::None),
-            planted: Some(planted),
+            planted: Some(defect.planted),
             ..short()
         };
         let mut acted = 0;
@@ -178,8 +180,25 @@ fn every_planted_defect_is_found() {
         let first = report.violations.first();
         let found = first.unwrap_or_else(|| panic!("{name} was not found: {report}"));
         println!("{name}: {found}");
-        // The run that found it is one in which the defect did something.
+        // The run that found it is one in which the defect did something,
+        // the violation is of a kind the defect makes, and the same seed
+        // finds nothing with no defect planted.
         assert!(acted > 0, "{name}: {report}");
+        assert!(
+            defect.kinds.contains(&found.violation.kind),
+            "{name}: {found}"
+        );
+        assert_eq!(found.boundary.is_some(), defect.crash, "{name}: {found}");
+        let clean = RunShape {
+            planted: None,
+            ..shape
+        };
+        let control = run(found.seed, clean);
+        assert!(
+            control.violations.is_empty(),
+            "{name}: {:?}",
+            control.violations
+        );
         // A violation says where in its run it was found.
         let said = found.to_string();
         assert!(

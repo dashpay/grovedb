@@ -1,10 +1,11 @@
 //! The `lignin-crash` command: run the campaign, run one seed again, or
 //! plant a defect and require the campaign to find it.
 
-use std::{io::Write, time::Duration};
+use std::{collections::BTreeMap, io::Write, time::Duration};
 
 use super::{
     campaign::{campaign, Faults, Planted, Report, RunShape, Settings, ACTED},
+    check::Kind,
     observe::Sabotage,
 };
 
@@ -48,32 +49,69 @@ A run is a function of its seed and of --faults, --ops, --lineages, --depth
 and --again, so `seed` takes them as the campaign had them: a campaign that
 found a violation prints the command. run and seed exit with 0 when nothing
 was found and with 1 when a violation was. planted exits with 0 when every
-defect was found and with 1 when one was not: a violation of a run in which
-the defect did nothing is not its finding.
+defect was found and with 1 when one was not. A defect is found by a
+violation of the kind it makes, in a run in which it acted and whose seed
+gives no violation with no defect planted.
 ";
 
-/// The defects `planted` knows, by name.
+/// A defect that `planted` plants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Defect {
+    /// Its name on the command line.
+    pub name: &'static str,
+    /// What is planted.
+    pub planted: Planted,
+    /// The kinds of violation that the defect makes: one of another kind
+    /// is not its finding.
+    pub kinds: &'static [Kind],
+    /// Whether the defect shows in a state that a crash left, and not in
+    /// the store that was not crashed.
+    pub crash: bool,
+}
+
+/// The defects `planted` knows.
 ///
-/// | Name | The defect |
-/// | --- | --- |
-/// | `log-sync` | A sync of a log file after the one that made its header durable does nothing: commits are reported durable that are not. |
-/// | `new-log-sync` | No sync of a log file does anything, the first included. |
-/// | `segment-sync` | The same as `log-sync`, of a segment: a table checkpoint names blocks that are not durable. |
-/// | `value-sync` | The same, of a value-log file: a page points to a value that is not durable. |
-/// | `table-sync` | No sync of a table checkpoint file does anything. |
-/// | `manifest-sync` | No sync of the manifest's temporary file does anything: a manifest is renamed into place that is not durable. |
-/// | `dir-sync` | No sync of the database directory does anything: a manifest that was replaced can come back. |
-/// | `forgotten-hash` | The model misses one changed hash of each commit that changes a key-value hash. |
-pub const DEFECTS: [(&str, Planted); 8] = [
-    ("log-sync", Planted::File(lost("wal/", 1))),
-    ("new-log-sync", Planted::File(lost("wal/", 0))),
-    ("segment-sync", Planted::File(lost("seg/", 1))),
-    ("value-sync", Planted::File(lost("val/", 1))),
-    ("table-sync", Planted::File(lost("table/", 0))),
-    ("manifest-sync", Planted::File(lost("MANIFEST", 0))),
-    ("dir-sync", Planted::File(Sabotage::LostDirSync("db"))),
-    ("forgotten-hash", Planted::ForgottenHash),
+/// | Name | The defect | Found as |
+/// | --- | --- | --- |
+/// | `log-sync` | A sync of a log file after the one that made its header durable does nothing: commits are reported durable that are not. | A crash state before a commit that was durable. |
+/// | `new-log-sync` | No sync of a log file does anything, the first included. | A crash state that does not recover, is not at one with itself, or is before a durable commit. |
+/// | `segment-sync` | The same as `log-sync`, of a segment: a table checkpoint names blocks that are not durable. | A crash state that does not recover or is not at one with itself. |
+/// | `value-sync` | The same, of a value-log file: a page points to a value that is not durable. | As `new-log-sync`. |
+/// | `table-sync` | No sync of a table checkpoint file does anything. | As `new-log-sync`. |
+/// | `manifest-sync` | No sync of the manifest's temporary file does anything: a manifest is renamed into place that is not durable. | As `new-log-sync`. |
+/// | `dir-sync` | No sync of the database directory does anything: a manifest that was replaced can come back. | As `new-log-sync`. |
+/// | `forgotten-hash` | The model misses one changed hash of each commit that changes a key-value hash. | The store that was not crashed says other than the model. |
+pub const DEFECTS: [Defect; 8] = [
+    file("log-sync", lost("wal/", 1), &[Kind::NotCommitted]),
+    file("new-log-sync", lost("wal/", 0), &CRASH),
+    file(
+        "segment-sync",
+        lost("seg/", 1),
+        &[Kind::NotRecovered, Kind::Inconsistent],
+    ),
+    file("value-sync", lost("val/", 1), &CRASH),
+    file("table-sync", lost("table/", 0), &CRASH),
+    file("manifest-sync", lost("MANIFEST", 0), &CRASH),
+    file("dir-sync", Sabotage::LostDirSync("db"), &CRASH),
+    Defect {
+        name: "forgotten-hash",
+        planted: Planted::ForgottenHash,
+        kinds: &[Kind::Session],
+        crash: false,
+    },
 ];
+
+/// What a state that a crash left can be found to be.
+const CRASH: [Kind; 3] = [Kind::NotRecovered, Kind::NotCommitted, Kind::Inconsistent];
+
+const fn file(name: &'static str, sabotage: Sabotage, kinds: &'static [Kind]) -> Defect {
+    Defect {
+        name,
+        planted: Planted::File(sabotage),
+        kinds,
+        crash: true,
+    }
+}
 
 const fn lost(part: &'static str, after: u64) -> Sabotage {
     Sabotage::LostSync { part, after }
@@ -90,7 +128,7 @@ enum Command {
 struct Invocation {
     command: Command,
     settings: Settings,
-    defect: Option<(&'static str, Planted)>,
+    defect: Option<Defect>,
     quiet: bool,
 }
 
@@ -141,7 +179,7 @@ fn parse(arguments: &[String]) -> Result<Invocation, String> {
             "--again" => shape.again_one_in = number(value()?)?,
             "--defect" => {
                 let named = value()?;
-                let known = DEFECTS.into_iter().find(|(name, _)| *name == named);
+                let known = DEFECTS.into_iter().find(|defect| defect.name == named);
                 defect = Some(known.ok_or(format!("`{named}` is no defect"))?);
             }
             "--quiet" => quiet = true,
@@ -227,30 +265,45 @@ fn report(out: &mut dyn Write, report: &Report, shape: &RunShape) {
     }
 }
 
-/// What `planted` says of the defect `name`, and whether it was found:
-/// `done` is its campaign, and `acted` how often the defect did what it is
-/// planted to do in the run that found something.
-fn verdict(name: &str, done: &Report, acted: u64) -> (bool, String) {
-    match done.violations.first() {
-        Some(found) if acted > 0 => {
-            let said = format!(
-                "{name}: found in run {}, after {:.1} s: {}",
-                done.runs,
-                done.elapsed.as_secs_f64(),
-                found.violation
-            );
-            (true, said)
-        }
-        Some(found) => {
-            let said = format!(
-                "{name}: NOT FOUND: run {} has a violation, and the defect did nothing in it: \
-                 {found}",
-                done.runs
-            );
-            (false, said)
-        }
-        None => (false, format!("{name}: NOT FOUND in {} runs", done.runs)),
-    }
+/// What `planted` says of `defect`, and whether it was found. `done` is
+/// its campaign, `acted` how often the defect did what it is planted to do
+/// in the run that found something, and `control` says whether the run of
+/// a seed is clean with no defect planted.
+///
+/// A defect is found by a violation of a kind it makes, in a run in which
+/// it acted, of a seed that gives no violation without it.
+fn verdict(
+    defect: &Defect,
+    done: &Report,
+    acted: u64,
+    control: &mut dyn FnMut(u64) -> bool,
+) -> (bool, String) {
+    let name = defect.name;
+    let Some(found) = done.violations.first() else {
+        return (false, format!("{name}: NOT FOUND in {} runs", done.runs));
+    };
+    let its_own =
+        defect.kinds.contains(&found.violation.kind) && (found.boundary.is_some() || !defect.crash);
+    let why = if acted == 0 {
+        "the defect did nothing in that run"
+    } else if !its_own {
+        "that is not what the defect does"
+    } else if !control(found.seed) {
+        "the run of that seed has a violation with no defect planted"
+    } else {
+        let said = format!(
+            "{name}: found in run {}, after {:.1} s: {}",
+            done.runs,
+            done.elapsed.as_secs_f64(),
+            found.violation
+        );
+        return (true, said);
+    };
+    let said = format!(
+        "{name}: NOT FOUND: run {} has a violation, and {why}: {found}",
+        done.runs
+    );
+    (false, said)
 }
 
 /// The most runs a planted defect may take to be found, unless `--runs`
@@ -285,19 +338,38 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
                 None => DEFECTS.to_vec(),
             };
             settings.runs = Some(settings.runs.unwrap_or(PLANTED_RUNS));
+            // A planted defect is to be found by a store that meets
+            // nothing else: every error is then the defect's.
+            settings.shape.faults = Some(Faults::None);
+            let clean = Settings {
+                runs: Some(1),
+                jobs: 1,
+                ..settings.clone()
+            };
+            let mut controls: BTreeMap<u64, bool> = BTreeMap::new();
+            let mut control = |seed| {
+                let run = || {
+                    campaign(
+                        &Settings {
+                            seed,
+                            ..clean.clone()
+                        },
+                        &mut |_, _| {},
+                    )
+                    .clean()
+                };
+                *controls.entry(seed).or_insert_with(run)
+            };
             let mut missed = 0;
-            for (name, planted) in defects {
-                // A planted defect is to be found by a store that meets
-                // nothing else: every error is then the defect's.
-                settings.shape.faults = Some(Faults::None);
-                settings.shape.planted = Some(planted);
+            for defect in defects {
+                settings.shape.planted = Some(defect.planted);
                 let mut acted = 0;
                 let done = campaign(&settings, &mut |run, _| {
                     if !run.violations.is_empty() {
                         acted = run.tally.get(ACTED);
                     }
                 });
-                let (found, said) = verdict(name, &done, acted);
+                let (found, said) = verdict(&defect, &done, acted, &mut control);
                 let _ = writeln!(out, "{said}");
                 missed += u32::from(!found);
             }
@@ -358,7 +430,7 @@ mod tests {
             Some(1)
         );
         let planted = parse(&arguments("planted --defect dir-sync")).expect("parsed");
-        assert_eq!(planted.defect.map(|(name, _)| name), Some("dir-sync"));
+        assert_eq!(planted.defect.map(|defect| defect.name), Some("dir-sync"));
     }
 
     #[test]
@@ -404,10 +476,7 @@ mod tests {
 
     #[test]
     fn a_violation_comes_with_the_command_that_makes_its_run_again() {
-        use crate::crash::{
-            campaign::Found,
-            check::{Kind, Violation},
-        };
+        use crate::crash::{campaign::Found, check::Violation};
 
         let shape = RunShape {
             faults: Some(Faults::Syncs),
@@ -449,20 +518,57 @@ mod tests {
             "{text}"
         );
 
-        // A planted defect is found by a run in which it acted.
-        let (found, said) = verdict("log-sync", &done, 2);
+        // A planted defect is found by a violation of its kind, in a run
+        // in which it acted, of a seed that is clean without it.
+        let log_sync = DEFECTS[0];
+        assert_eq!(log_sync.name, "log-sync");
+        let mut asked = Vec::new();
+        let mut clean = |seed| {
+            asked.push(seed);
+            true
+        };
+        let (found, said) = verdict(&log_sync, &done, 2, &mut clean);
         assert!(
             found && said.starts_with("log-sync: found in run 3, "),
             "{said}"
         );
-        let (found, said) = verdict("log-sync", &done, 0);
+        let (found, said) = verdict(&log_sync, &done, 0, &mut clean);
         assert!(
-            !found && said.contains("the defect did nothing in it"),
+            !found && said.contains("the defect did nothing in that run"),
+            "{said}"
+        );
+        assert_eq!(asked, [7]);
+        let (found, said) = verdict(&log_sync, &done, 2, &mut |_| false);
+        assert!(!found && said.contains("with no defect planted"), "{said}");
+        // A violation of another kind, or one of a store that was not
+        // crashed, is not what a lost sync of the log does.
+        let forgotten = DEFECTS[7];
+        let (found, said) = verdict(&forgotten, &done, 2, &mut |_| true);
+        assert!(
+            !found && said.contains("not what the defect does"),
+            "{said}"
+        );
+        done.violations[0].boundary = None;
+        let (found, said) = verdict(&log_sync, &done, 2, &mut |_| true);
+        assert!(
+            !found && said.contains("not what the defect does"),
             "{said}"
         );
         done.violations.clear();
-        let (found, said) = verdict("log-sync", &done, 0);
+        let (found, said) = verdict(&log_sync, &done, 0, &mut |_| true);
         assert!(!found && said == "log-sync: NOT FOUND in 3 runs", "{said}");
+
+        // A report of runs whose seeds go past the last number.
+        let wrapped = Report {
+            first_seed: u64::MAX,
+            runs: 2,
+            ..Report::default()
+        };
+        let said = wrapped.to_string();
+        assert!(
+            said.contains(&format!("(seeds {} to 0)", u64::MAX)),
+            "{said}"
+        );
     }
 
     #[test]

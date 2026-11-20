@@ -24,7 +24,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use lignin_format::PageId;
+use lignin_format::{wal::LogPlace, PageId};
 use lignin_io::{
     sim::{
         Chance, CrashImage, CrashPlan, Fault, FaultOdds, FaultRule, OpSet, SimConfig, SimVfs,
@@ -36,12 +36,12 @@ use lignin_store::flush::FlushConfig;
 
 use super::{
     check::{
-        check_again, check_state, db_dir, expected_ids, no_panic, panic_text, Kind, Recovered,
-        Violation,
+        check_again, check_state, check_with_faults, db_dir, expected_ids, no_panic, panic_text,
+        Faulted, Kind, Recovered, Violation,
     },
-    model::{self, apply, Change, Expect, History, Landing, Misfit, Pages, Point},
+    model::{self, apply, Change, Expect, History, Landing, Pages, Point},
     observe::{Observer, Sabotage, Taken},
-    store::{Committed, OpenError, Reclaim, Session, Stepped, Tuning},
+    store::{Committed, Item, OpenError, Reclaim, Session, Stepped, Tuning},
     workload::{Op, Shape, Situation, Workload},
 };
 use crate::workload::rng::Rng;
@@ -317,22 +317,6 @@ fn tuning_of(turn: u64) -> Tuning {
     }
 }
 
-/// The point that an item makes of the pages `made`, told to the observer
-/// before the item is appended: from there a crash can leave the item.
-fn attempting(
-    observer: &Observer,
-    version: u64,
-    made: Result<Pages, Misfit>,
-) -> Result<Arc<Point>, Misfit> {
-    let point = Arc::new(Point {
-        version,
-        end: None,
-        pages: Arc::new(made?),
-    });
-    observer.expecting(|expect| expect.attempt = Some(point.clone()));
-    Ok(point)
-}
-
 /// One run: its seed, its shape, and what it has come to so far.
 struct Run {
     seed: u64,
@@ -362,8 +346,11 @@ struct Lineage {
     sessions: u64,
     session: Option<Session>,
     /// How many faults had been injected into the file system when the
-    /// session was opened.
-    faults_before: u64,
+    /// operation that is being made began.
+    op_before: u64,
+    /// How many faults that last had been injected when the session was
+    /// opened ([`Observer::lasting_faults`]).
+    lasting_before: u64,
     /// The point that the durable part of an image of this file system
     /// last recovered to: no state of a later crash is before it.
     durable: usize,
@@ -383,11 +370,18 @@ struct Lineage {
 }
 
 impl Lineage {
-    /// Whether a fault was injected into this file system since its
-    /// session was opened: a store that a recovery returned owes nothing
-    /// to the faults of the session before.
-    fn faulted(&self) -> bool {
-        self.observer.fs().stats().faults > self.faults_before
+    /// Whether an error of the session is a fault's. One was injected into
+    /// the operation that is being made, or, since the store was opened,
+    /// into a call whose failure lasts for the session: a sync, or a call
+    /// on the log's files or on the manifest
+    /// ([`Observer::lasting_faults`]). A store that a recovery returned
+    /// owes nothing to the faults of the session before, and a write or a
+    /// read that fails in a segment, a value-log file or a table
+    /// checkpoint fails the operation it was injected into and no later
+    /// one.
+    fn excused(&self) -> bool {
+        self.observer.fs().stats().faults > self.op_before
+            || self.observer.lasting_faults() > self.lasting_before
     }
 
     /// What the session knows to be durable is the floor from here on,
@@ -398,16 +392,59 @@ impl Lineage {
             .expecting(|expect| expect.floor = expect.floor.max(floor));
     }
 
-    /// The item `attempt` is in the log, and `point` is what it made: the
-    /// last point of the history now.
-    fn landed(&mut self, attempt: Arc<Point>, point: Point) {
-        self.history.push(point);
+    /// An item that makes `pages` of the store at `version` is about to be
+    /// appended: from here a crash can leave it.
+    fn attempting(&self, version: u64, pages: Pages) -> Arc<Point> {
+        let point = Arc::new(Point {
+            version,
+            end: None,
+            pages: Arc::new(pages),
+        });
+        self.observer
+            .expecting(|expect| expect.attempt = Some(point.clone()));
+        point
+    }
+
+    /// The append of the item `attempt` returned `Ok`: it is the last
+    /// point of the history from here on, and ends at `end` in the log.
+    fn landed(&mut self, attempt: Arc<Point>, end: LogPlace) {
+        self.history.push(Point {
+            end: Some(end),
+            ..(*attempt).clone()
+        });
         let latest = self.history.latest();
         self.settled.push((attempt, latest));
         self.observer.expecting(|expect| {
             expect.attempt = None;
             expect.latest = latest;
         });
+    }
+
+    /// The item that was being appended is out of the log for good.
+    fn gone(&self) {
+        self.observer.expecting(|expect| expect.attempt = None);
+    }
+
+    /// A sync of the log returned `Ok`, or a recovery did: everything in
+    /// the log is durable, whatever place the log reports.
+    fn synced(&self) {
+        let latest = self.history.latest();
+        self.observer.expecting(|expect| expect.floor = latest);
+    }
+
+    /// What the log decided of the item `attempt`, as the session tells
+    /// it.
+    fn told(&mut self, attempt: &mut Option<Arc<Point>>, item: Item<'_>) {
+        match item {
+            Item::Appending(_) => {}
+            Item::Appended(end) => {
+                if let Some(point) = attempt.take() {
+                    self.landed(point, end);
+                }
+            }
+            Item::Gone => self.gone(),
+            Item::Synced => self.synced(),
+        }
     }
 }
 
@@ -491,7 +528,8 @@ impl Run {
             chance: Rng::derive(self.seed, 0x6b65_7074, index),
             sessions: 0,
             session: None,
-            faults_before: 0,
+            op_before: 0,
+            lasting_before: 0,
             durable,
             held: None,
             pinned: false,
@@ -623,7 +661,7 @@ impl Run {
     }
 
     fn tolerate_error(&mut self, lineage: &Lineage, what: &str, error: String) {
-        match lineage.faulted() {
+        match lineage.excused() {
             true => self.tally.count("errors after a fault", 1),
             false => {
                 let said = format!("{what} failed with no fault injected: {error}");
@@ -670,9 +708,16 @@ impl Run {
         lineage.sessions += 1;
         let before = fs.stats().faults;
         let mut opened = Session::open(vfs.clone(), db_dir(), &tuning);
-        if opened.is_err() && fs.stats().faults > before {
-            // A recovery that a fault failed is made again
-            // (`lignin_store::recovery`, "Twice").
+        if let Err(error) = &opened
+            && fs.stats().faults > before
+        {
+            // A recovery that a fault failed says that the file layer
+            // failed, and is made again (`lignin_store::recovery`,
+            // "Twice").
+            if matches!(error, OpenError::Failed { damage: true, .. }) {
+                let said = format!("{why}, with nothing but a fault injected: {error}");
+                self.session_fault(lineage, said);
+            }
             self.tally.count("recoveries failed by a fault", 1);
             lineage.full = false;
             opened = self.quietly(&fs, || {
@@ -724,13 +769,17 @@ impl Run {
         let report = session.report();
         self.tally
             .count("commits replayed at an open", report.commits);
+        // A recovery makes the log durable to its end before it returns
+        // (`lignin_store::recovery`, step 9): nothing it landed on is lost
+        // from here on.
         let latest = lineage.history.latest();
         lineage.observer.expecting(|expect| {
             expect.attempt = None;
             expect.latest = latest;
+            expect.floor = latest;
         });
-        lineage.floor_of(&session);
-        lineage.faults_before = fs.stats().faults;
+        lineage.op_before = fs.stats().faults;
+        lineage.lasting_before = lineage.observer.lasting_faults();
         lineage.session = Some(session);
         self.check_images(lineage);
         true
@@ -746,10 +795,10 @@ impl Run {
         self.tally.count(op.name(), 1);
         let reopen = self.make(lineage, &op);
         let stopped = (lineage.session.as_ref()).is_some_and(|session| session.stopped());
-        if let Some(why) = reopen.or(stopped.then_some("the log takes nothing more")) {
-            if !self.open(lineage, why) {
-                return false;
-            }
+        if let Some(why) = reopen.or(stopped.then_some("the log takes nothing more"))
+            && !self.open(lineage, why)
+        {
+            return false;
         }
         self.after(lineage);
         true
@@ -785,17 +834,20 @@ impl Run {
         }
         self.check_images(lineage);
 
-        // What a sync made durable is not lost by a crash after it: the
-        // state with no unsynced change is held to the floor as it is now.
+        // What the operation made of the floor and of the item it
+        // appended holds from here on, whether or not a file changed
+        // after the session learned it: the states that a crash now can
+        // leave are held to what is expected now.
         let now = lineage.observer.now();
-        let plan = now.image.lose_all();
-        self.check_image(lineage, now, vec![plan]);
+        let plans = plans_of(&now.image, &self.shape);
+        self.check_image(lineage, now, plans);
     }
 
     /// Makes `op`. Returns why the store has to be opened again, if it
     /// has.
     fn make(&mut self, lineage: &mut Lineage, op: &Op) -> Option<&'static str> {
         let session = lineage.session.take()?;
+        lineage.op_before = lineage.observer.fs().stats().faults;
         let reopen = self.make_with(lineage, &session, op);
         for complaint in session.complaints() {
             self.tolerate_error(lineage, "write-back", complaint);
@@ -820,13 +872,9 @@ impl Run {
         let fs = lineage.observer.fs().clone();
         match op {
             Op::Commit { changes, durable } => {
-                let (committed, reopen) = self.commit(lineage, session, changes, false);
-                if committed && *durable {
-                    self.tolerate(lineage, "the sync of a commit", session.sync_log());
-                }
-                return reopen;
+                return self.commit(lineage, session, changes, false, *durable);
             }
-            Op::CommitHeld(changes) => return self.commit(lineage, session, changes, true).1,
+            Op::CommitHeld(changes) => return self.commit(lineage, session, changes, true, false),
             Op::Hold(pages) => {
                 let held = self.tolerate(lineage, "copying pages", session.hold(pages));
                 if held == Some(true) {
@@ -842,7 +890,12 @@ impl Run {
                 self.tally
                     .count("checkpoints asked for", u64::from(covers.is_some()));
             }
-            Op::SyncLog => drop(self.tolerate(lineage, "a sync of the log", session.sync_log())),
+            Op::SyncLog => {
+                let synced = self.tolerate(lineage, "a sync of the log", session.sync_log());
+                if synced.is_some() {
+                    lineage.synced();
+                }
+            }
             Op::RollLog => drop(self.tolerate(lineage, "a roll of the log", session.roll_log())),
             Op::Consolidate => {
                 let done = self.tolerate(lineage, "consolidating", session.consolidate());
@@ -876,7 +929,7 @@ impl Run {
                 session.release();
                 let ended = self.tolerate(lineage, "closing the store", session.finish());
                 let latest = session.latest().get();
-                if ended.is_some_and(|covers| covers != Some(latest)) && !lineage.faulted() {
+                if ended.is_some_and(|covers| covers != Some(latest)) && !lineage.excused() {
                     let said = format!(
                         "the store was closed at version {latest}, and its last table \
                          checkpoint covers {ended:?}"
@@ -898,71 +951,86 @@ impl Run {
         None
     }
 
-    /// A commit of `changes`. The model is told what the commit makes of
-    /// the pages before its group is appended, and takes it for done when
-    /// the store says it is. Returns whether it is, and why the store has
-    /// to be opened again, if it has.
+    /// A commit of `changes`, with a sync of the log if it is to be
+    /// `durable`. The model is told what the log decides of the group when
+    /// the session learns it: what the commit makes of the pages before
+    /// the group is appended, that it is a point once the append has
+    /// returned, and that the point is durable once the sync has. Returns
+    /// why the store has to be opened again, if it has.
     fn commit(
         &mut self,
         lineage: &mut Lineage,
         session: &Session,
         changes: &[Change],
         held: bool,
-    ) -> (bool, Option<&'static str>) {
+        durable: bool,
+    ) -> Option<&'static str> {
         let before = lineage.history.last().clone();
-        let observer = lineage.observer.clone();
+        let made = before.version + 1;
         let forgets = self.shape.planted == Some(Planted::ForgottenHash);
-        let (mut attempt, mut forgotten) = (None, 0);
-        let committed = session.commit(changes, held, &mut |made| {
-            let mut known: Vec<Change> = changes.to_vec();
-            if forgets {
-                let hash = |change: &Change| matches!(change, Change::Hash { kv: true, .. });
-                if let Some(at) = known.iter().position(hash) {
-                    known.remove(at);
-                    forgotten += 1;
+        let (mut attempt, mut misfit, mut forgotten) = (None, None, 0);
+        let committed = session.commit(changes, held, durable, &mut |item| {
+            if let Item::Appending(ids) = item {
+                let mut known: Vec<Change> = changes.to_vec();
+                if forgets {
+                    let hash = |change: &Change| matches!(change, Change::Hash { kv: true, .. });
+                    if let Some(at) = known.iter().position(hash) {
+                        known.remove(at);
+                        forgotten += 1;
+                    }
+                }
+                match apply(&before.pages, &known, ids, made) {
+                    Ok(pages) => attempt = Some(lineage.attempting(made, pages)),
+                    Err(error) => misfit = Some(error),
                 }
             }
-            let pages = apply(&before.pages, &known, made);
-            attempt = Some(attempting(&observer, before.version + 1, pages));
+            lineage.told(&mut attempt, item);
         });
         self.tally.count(ACTED, forgotten);
-        let attempt = match attempt.transpose() {
-            Ok(attempt) => attempt,
-            Err(misfit) => {
-                self.session_fault(lineage, misfit.to_string());
-                return (false, Some("the model did not take a commit"));
-            }
-        };
+        if let Some(misfit) = misfit {
+            self.session_fault(lineage, misfit.to_string());
+            return Some("the model did not take a commit");
+        }
         match committed {
-            Committed::Yes { version, end, .. } => {
-                let point = attempt.expect("the group was appended");
-                if version != point.version {
-                    let said = format!("a commit made version {version}, not {}", point.version);
+            Committed::Yes {
+                version, synced, ..
+            } => {
+                if version != made {
+                    let said = format!("a commit made version {version}, not {made}");
                     self.session_fault(lineage, said);
                 }
-                let made = Point {
-                    version,
-                    end: Some(end),
-                    pages: point.pages.clone(),
-                };
-                lineage.landed(point, made);
                 self.tally.count("commits made", 1);
-                (true, None)
+                match synced {
+                    Some(Ok(())) => self.tally.count("commits synced", 1),
+                    Some(Err(error)) => self.tolerate_error(lineage, "the sync of a commit", error),
+                    None => {}
+                }
+                None
             }
             Committed::No(reason) => {
-                observer.expecting(|expect| expect.attempt = None);
+                lineage.gone();
                 self.tally.count("commits that failed", 1);
                 self.tolerate_error(lineage, "a commit", reason);
-                (false, None)
+                None
             }
-            Committed::InDoubt(_) => {
+            Committed::InDoubt(reason) => {
                 self.tally.count("commits left in doubt", 1);
-                (false, Some("a commit was left in doubt"))
+                self.in_doubt(lineage, "a commit", reason);
+                Some("a commit was left in doubt")
             }
             Committed::Broken(reason) => {
                 self.session_fault(lineage, reason);
-                (false, Some("a commit was not installed"))
+                Some("a commit was not installed")
             }
+        }
+    }
+
+    /// The log cannot say whether an item is in it: the file layer's
+    /// doing, and so a violation where no fault was injected.
+    fn in_doubt(&mut self, lineage: &Lineage, what: &str, reason: String) {
+        if !lineage.excused() {
+            let said = format!("{what} was left in doubt with no fault injected: {reason}");
+            self.session_fault(lineage, said);
         }
     }
 
@@ -976,42 +1044,37 @@ impl Run {
         what: &Reclaim,
     ) -> Option<&'static str> {
         let before = lineage.history.last().clone();
-        let observer = lineage.observer.clone();
-        let mut attempt = None;
-        let stepped = session.reclaim_step(page, what, &mut || {
-            let pages = model::reclaim(&before.pages, page, what.slots());
-            attempt = Some(attempting(&observer, before.version, pages));
-        });
-        let attempt = match attempt.transpose() {
-            Ok(attempt) => attempt,
-            Err(misfit) => {
-                self.session_fault(lineage, misfit.to_string());
-                return Some("the model did not take a step");
+        let (mut attempt, mut misfit) = (None, None);
+        let stepped = session.reclaim_step(page, what, &mut |item| {
+            if let Item::Appending(_) = item {
+                match model::reclaim(&before.pages, page, what.slots()) {
+                    Ok(pages) => attempt = Some(lineage.attempting(before.version, pages)),
+                    Err(error) => misfit = Some(error),
+                }
             }
-        };
+            lineage.told(&mut attempt, item);
+        });
+        if let Some(misfit) = misfit {
+            self.session_fault(lineage, misfit.to_string());
+            return Some("the model did not take a step");
+        }
         match stepped {
-            Stepped::Yes { end } => {
-                let point = attempt.expect("the record was appended");
-                let made = Point {
-                    end: Some(end),
-                    ..(*point).clone()
-                };
-                lineage.landed(point, made);
+            Stepped::Yes { .. } => {
                 self.tally.count("reclaiming steps made", 1);
                 None
             }
             Stepped::Refused(_) => {
-                observer.expecting(|expect| expect.attempt = None);
                 self.tally.count("reclaiming steps refused", 1);
                 None
             }
             Stepped::No(reason) => {
-                observer.expecting(|expect| expect.attempt = None);
+                lineage.gone();
                 self.tolerate_error(lineage, "a reclaiming step", reason);
                 None
             }
-            Stepped::InDoubt(_) => {
+            Stepped::InDoubt(reason) => {
                 self.tally.count("steps left in doubt", 1);
+                self.in_doubt(lineage, "a reclaiming step", reason);
                 Some("a reclaiming step was left in doubt")
             }
             Stepped::Broken(reason) => {
@@ -1031,18 +1094,39 @@ impl Run {
         }
     }
 
-    /// The states that `plans` leave of the crash `taken`. The first plan
-    /// is the one with no unsynced change. The point it recovers to is one
-    /// that the durable part of the file system holds, so no state of this
-    /// crash or of a later one is before it, whatever the log has
-    /// reported.
+    /// The states that `plans` leave of the crash `taken`, each held to
+    /// what was expected of the store when the image was taken, and two of
+    /// them to more:
+    ///
+    /// - The first plan is the one with no unsynced change. The point it
+    ///   recovers to is one that the durable part of the file system
+    ///   holds, so no state of this crash or of a later one is before it,
+    ///   whatever the log has reported.
+    /// - The plan that keeps every change whole and in order leaves what a
+    ///   process that is killed leaves: the files as the session sees
+    ///   them. The store is then where an open with no crash finds it, at
+    ///   the last point or at the item that is being appended, and at no
+    ///   point before.
     fn check_image(&mut self, lineage: &mut Lineage, mut taken: Taken, plans: Vec<CrashPlan>) {
         taken.expect.floor = taken.expect.floor.max(lineage.durable);
+        let whole = taken.image.keep_all();
+        let killed = Expect {
+            floor: taken.expect.latest,
+            ..taken.expect.clone()
+        };
         for (turn, plan) in plans.into_iter().enumerate() {
             if self.done() {
                 return;
             }
-            let landing = self.check_plan(lineage, &taken, plan);
+            let expect = match plan == whole {
+                true => &killed,
+                false => &taken.expect,
+            };
+            self.tally.count(
+                "states that a killed process leaves",
+                u64::from(plan == whole),
+            );
+            let landing = self.check_plan(lineage, &taken, expect, plan);
             if let (0, Some(Landing::Point(at))) = (turn, landing) {
                 self.tally.count(
                     "floors raised by a durable state",
@@ -1054,12 +1138,13 @@ impl Run {
         }
     }
 
-    /// One state: the one `plan` leaves of the crash `taken`. Returns
-    /// where it landed, if that is where it may be.
+    /// One state: the one `plan` leaves of the crash `taken`, held to
+    /// `expect`. Returns where it landed, if that is where it may be.
     fn check_plan(
         &mut self,
         lineage: &mut Lineage,
         taken: &Taken,
+        expect: &Expect,
         plan: CrashPlan,
     ) -> Option<Landing> {
         self.tally.count("crash plans", 1);
@@ -1074,17 +1159,17 @@ impl Run {
                 lineage.settled.iter().find(same).map(|(_, at)| *at)
             };
             let landing = match landing {
-                Landing::Attempt(point) if !landing.allowed(&taken.expect) => {
+                Landing::Attempt(point) if !landing.allowed(expect) => {
                     settled(point).map_or(landing.clone(), Landing::Point)
                 }
                 other => other.clone(),
             };
-            if !landing.allowed(&taken.expect) {
+            if !landing.allowed(expect) {
                 let said = format!(
                     "a state that recovers to {} is left where points {} to {} are expected",
                     where_landed(&landing),
-                    taken.expect.floor,
-                    taken.expect.latest
+                    expect.floor,
+                    expect.latest
                 );
                 let violation = Violation::new(Kind::NotCommitted, said);
                 self.found(lineage, violation, Some((taken.boundary, &plan)));
@@ -1100,11 +1185,8 @@ impl Run {
         self.digest.u64(fingerprint);
         // The tuning of a recovery goes by turns as well.
         let tuning = tuning_of(fingerprint >> 7);
-        if self.faults != Faults::None && (fingerprint >> 19) % 4 == 0 {
-            self.recover_with_faults(lineage, taken, &plan, &state, &tuning);
-        }
         let checked = no_panic("the recovery of a crash state", || {
-            check_state(&state, &lineage.history, &taken.expect, &tuning)
+            check_state(&state, &lineage.history, expect, &tuning)
         });
         let recovered = match checked {
             Ok(recovered) => recovered,
@@ -1114,17 +1196,36 @@ impl Run {
                 return None;
             }
         };
-        self.record(lineage, taken, &recovered);
+        self.record(lineage, expect, &recovered);
         let Recovered { landing, pages, .. } = recovered;
         lineage.seen.insert(fingerprint, landing.clone());
 
-        let again = self.shape.again_one_in;
         let landed = match &landing {
             Landing::NoStore => None,
             Landing::Point(at) => Some(lineage.history.point(*at).version),
             Landing::Attempt(point) => Some(point.version),
         };
-        if let Some(landed) = landed.filter(|_| again > 0 && (fingerprint >> 11) % again == 0) {
+        // The same state once more, as the crash left it, recovered with
+        // the run's faults.
+        if self.faults != Faults::None && (fingerprint >> 19).is_multiple_of(4) {
+            let other = (taken.image.recover(&plan)).expect("a plan of the image fits it");
+            let odds = self.faults.odds();
+            let faulted = no_panic("a recovery with faults injected", || {
+                check_with_faults(&other, odds, &tuning, landed, &pages)
+            });
+            match faulted {
+                Ok(Faulted::Returned) => {
+                    let name = "recoveries with faults that returned a store";
+                    self.tally.count(name, 1);
+                }
+                Ok(Faulted::Failed) => self.tally.count("recoveries with faults that failed", 1),
+                Ok(Faulted::NoStore) => {}
+                Err(violation) => self.found(lineage, violation, Some((taken.boundary, &plan))),
+            }
+        }
+        let again = self.shape.again_one_in;
+        let chosen = |_: &u64| again > 0 && (fingerprint >> 11).is_multiple_of(again);
+        if let Some(landed) = landed.filter(chosen) {
             self.tally.count("states recovered again", 1);
             let other = tuning_of((fingerprint >> 7) + 1);
             let again = no_panic("the second recovery of a crash state", || {
@@ -1138,59 +1239,8 @@ impl Run {
         Some(landing)
     }
 
-    /// A recovery of `state` that the run's faults are injected into. If
-    /// it returns a store, the store is at a point it may be at, at one
-    /// with itself and sound to the checker. If it fails, it says that the
-    /// file layer failed and not that the store is damaged.
-    ///
-    /// Either way it leaves `state` as a recovery that met faults leaves a
-    /// file system: the caller recovers that again with no fault, and what
-    /// it lands on then is what the state is held to.
-    fn recover_with_faults(
-        &mut self,
-        lineage: &Lineage,
-        taken: &Taken,
-        plan: &CrashPlan,
-        state: &SimVfs,
-        tuning: &Tuning,
-    ) {
-        let odds = self.faults.odds();
-        let recovered = no_panic("a recovery with faults injected", || {
-            state.set_faults(odds);
-            let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
-            let opened = Session::open(vfs, db_dir(), tuning);
-            state.set_faults(FaultOdds::NONE);
-            let session = match opened {
-                Ok(session) => session,
-                Err(OpenError::NoStore) => return Ok(None),
-                Err(OpenError::Failed { damage: false, .. }) => {
-                    return Ok(Some("recoveries with faults that failed"));
-                }
-                Err(error @ OpenError::Failed { damage: true, .. }) => {
-                    let said = format!("a recovery that only faults were injected into: {error}");
-                    return Err(Violation::new(Kind::NotRecovered, said));
-                }
-            };
-            let not_sound = |error| Violation::new(Kind::Inconsistent, error);
-            let ids = expected_ids(&lineage.history, &taken.expect);
-            let pages = session.read(&ids).map_err(not_sound)?;
-            (lineage.history)
-                .find(&taken.expect, session.latest().get(), &pages)
-                .map_err(|mismatch| Violation::new(Kind::NotCommitted, mismatch.to_string()))?;
-            session.verify().map_err(not_sound)?;
-            Ok(Some("recoveries with faults that returned a store"))
-        });
-        state.set_faults(FaultOdds::NONE);
-        match recovered {
-            Ok(Some(counted)) => self.tally.count(counted, 1),
-            Ok(None) => {}
-            Err(violation) => self.found(lineage, violation, Some((taken.boundary, plan))),
-        }
-    }
-
-    fn record(&mut self, lineage: &Lineage, taken: &Taken, recovered: &Recovered) {
+    fn record(&mut self, lineage: &Lineage, expect: &Expect, recovered: &Recovered) {
         let tally = &mut self.tally;
-        let expect = &taken.expect;
         match &recovered.landing {
             Landing::NoStore => {
                 self.digest.u64(u64::MAX - 1);
@@ -1397,7 +1447,7 @@ impl Report {
 
 impl fmt::Display for Report {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let last = self.first_seed + self.runs.saturating_sub(1);
+        let last = (self.first_seed).wrapping_add(self.runs.saturating_sub(1));
         writeln!(
             f,
             "{} runs (seeds {} to {last}), {} distinct crash states recovered, {} violations, \
@@ -1548,7 +1598,7 @@ mod tests {
             "the run panicked: the store gave up"
         );
         assert_eq!(report.tally.get("violations"), 1);
-        let clean = caught(7, || RunReport::default());
+        let clean = caught(7, RunReport::default);
         assert!(clean.violations.is_empty());
     }
 
@@ -1649,55 +1699,74 @@ mod tests {
                 every_plan += usize::from(every.len() > 1);
                 all.push(plans);
             }
+            // The first is the durable state, and what a killed process
+            // leaves is among them.
+            let whole = taken.image.keep_all();
             for plans in all {
                 assert_eq!(plans[0], durable, "boundary {}", taken.boundary);
+                assert!(plans.contains(&whole), "boundary {}", taken.boundary);
             }
         }
         assert!(every_plan > 0);
     }
 
-    #[test]
-    fn no_state_is_before_the_point_a_durable_state_recovered_to() {
+    /// A lineage of two commits, with an image from between them: the
+    /// first commit is in the log and not synced then, and the second is
+    /// synced.
+    fn two_commits() -> (Run, Lineage, Taken) {
         let (mut run, mut lineage) = begun();
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
         let early = lineage.observer.now();
+        assert_eq!((lineage.history.latest(), lineage.durable), (1, 0));
+        assert_eq!((early.expect.floor, early.expect.latest), (0, 1));
         let op = commit(&mut lineage, true);
         assert!(run.step(&mut lineage, op));
         assert!(run.violations.is_empty(), "{:?}", run.violations);
-        // The commit was synced, and the state with no unsynced change
-        // recovered to it.
-        assert_eq!((lineage.history.latest(), lineage.durable), (1, 1));
+        // The second commit was synced, and the state with no unsynced
+        // change recovered to it.
+        assert_eq!((lineage.history.latest(), lineage.durable), (2, 2));
+        assert_eq!(run.tally.get("commits synced"), 1);
+        (run, lineage, early)
+    }
 
-        // The state from before the commit, as a later crash would leave
-        // it if the store took back what was durable. The log is taken to
-        // have reported nothing: the floor of the image is the first
-        // point.
-        let later = || Taken {
+    /// The image `early` as a crash after the second commit would leave
+    /// it, if the store took back what it had written. The log is taken to
+    /// have reported nothing.
+    fn later(early: &Taken) -> Taken {
+        Taken {
             image: early.image.clone(),
             expect: Expect {
-                latest: 1,
+                latest: 2,
                 ..early.expect.clone()
             },
             boundary: early.boundary,
-        };
-        assert_eq!(early.expect.floor, 0);
+        }
+    }
+
+    #[test]
+    fn no_state_is_before_the_point_a_durable_state_recovered_to() {
+        let (mut run, mut lineage, early) = two_commits();
         let plan = early.image.lose_all();
+        assert_ne!(plan, early.image.keep_all());
         lineage.durable = 0;
-        run.check_image(&mut lineage, later(), vec![plan.clone()]);
+        run.check_image(&mut lineage, later(&early), vec![plan.clone()]);
         assert!(run.violations.is_empty(), "{:?}", run.violations);
-        lineage.durable = 1;
-        run.check_image(&mut lineage, later(), vec![plan]);
+        assert_eq!(lineage.durable, 0);
+
+        lineage.durable = 2;
+        run.check_image(&mut lineage, later(&early), vec![plan.clone()]);
         let found = run.violations.first().expect("a violation");
         assert_eq!(found.violation.kind, Kind::NotCommitted);
         assert_eq!(found.boundary, Some(early.boundary));
         assert!(
-            found.violation.detail.contains("point 0") && found.violation.detail.contains("1 to 1"),
+            found.violation.detail.contains("point 0") && found.violation.detail.contains("2 to 2"),
             "{found}"
         );
 
         // The same of a state that is recovered for the first time.
         lineage.seen.clear();
-        let plan = early.image.lose_all();
-        run.check_image(&mut lineage, later(), vec![plan]);
+        run.check_image(&mut lineage, later(&early), vec![plan]);
         assert_eq!(run.violations.len(), 2);
         let found = &run.violations[1];
         assert_eq!(found.violation.kind, Kind::NotCommitted);
@@ -1708,30 +1777,91 @@ mod tests {
     }
 
     #[test]
-    fn an_error_is_forgiven_for_a_fault_of_its_own_session_only() {
+    fn a_crash_that_loses_nothing_leaves_the_store_at_its_last_point() {
+        let (mut run, mut lineage, early) = two_commits();
+        lineage.durable = 0;
+        let plans = || vec![early.image.lose_all(), early.image.keep_all()];
+        // As the image was taken, one commit was made: the state with
+        // every change is at it.
+        let then = Taken {
+            image: early.image.clone(),
+            expect: early.expect.clone(),
+            boundary: early.boundary,
+        };
+        run.check_image(&mut lineage, then, plans());
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(lineage.durable, 0);
+        // With two commits made it is a point short, although the log has
+        // reported nothing durable.
+        run.check_image(&mut lineage, later(&early), plans());
+        assert_eq!(run.violations.len(), 1, "{:?}", run.violations);
+        let found = &run.violations[0];
+        assert_eq!(found.violation.kind, Kind::NotCommitted);
+        assert!(
+            found.violation.detail.contains("point 1") && found.violation.detail.contains("2 to 2"),
+            "{found}"
+        );
+        assert!(run.tally.get("states that a killed process leaves") >= 2);
+
+        // The same of a state that is recovered for the first time.
+        lineage.seen.clear();
+        lineage.durable = 0;
+        run.check_image(&mut lineage, later(&early), plans());
+        assert_eq!(run.violations.len(), 2, "{:?}", run.violations);
+        let found = &run.violations[1];
+        assert_eq!(found.violation.kind, Kind::NotCommitted);
+        assert!(
+            found.violation.detail.contains("which was durable"),
+            "{found}"
+        );
+    }
+
+    #[test]
+    fn an_error_is_a_faults_in_its_own_operation_or_after_one_that_lasts() {
+        use lignin_io::{Create, OpenMode};
+
         let (mut run, mut lineage) = begun();
         let fs = lineage.observer.fs().clone();
-        assert!(!lineage.faulted());
+        let vfs = lineage.observer.vfs();
+        let open = |name: &str| {
+            let path = std::path::Path::new(name);
+            vfs.open(path, OpenMode::Append(Create::New))
+                .expect("opened")
+        };
+        // What `Run::make` does when an operation begins.
+        let begin = |lineage: &mut Lineage| lineage.op_before = fs.stats().faults;
+        let failed = |run: &mut Run, lineage: &Lineage| {
+            run.tolerate_error(lineage, "a call", "it failed".to_string());
+            (run.tally.get("errors after a fault"), run.violations.len())
+        };
+        assert!(!lineage.excused());
+
+        // A write that fails, in a file that is neither the log's nor the
+        // manifest: an error of the same operation is the fault's, and one
+        // of the next operation is a violation.
+        let (written, synced) = (open("/written"), open("/synced"));
         fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
-        let op = commit(&mut lineage, false);
-        assert!(run.step(&mut lineage, op));
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
-        assert_eq!(fs.stats().faults, 1);
-        assert_eq!(run.tally.get("commits made"), 0);
-        if lineage.session.as_ref().is_some_and(|_| lineage.faulted()) {
-            // The session went on: its errors are the fault's until the
-            // store is opened again.
-            assert!(run.tally.get("errors after a fault") > 0);
-            assert!(run.step(&mut lineage, Op::Kill));
-        }
-        assert!(!lineage.faulted());
-        // An error of the session that the recovery began is a violation.
-        run.tolerate_error(&lineage, "a call", "it failed".to_string());
-        let found = run.violations.first().expect("a violation");
+        assert!(written.append(b"block").is_err());
+        assert_eq!(failed(&mut run, &lineage), (1, 0));
+        begin(&mut lineage);
+        assert!(!lineage.excused());
+        assert_eq!(failed(&mut run, &lineage), (1, 1));
+        let found = &run.violations[0];
         assert_eq!(found.violation.kind, Kind::Session);
         assert_eq!(
             found.violation.detail,
             "a call failed with no fault injected: it failed"
         );
+
+        // A sync that fails lasts: the errors of the operations after it
+        // are the fault's, until the store is opened again.
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
+        assert!(synced.sync_data().is_err());
+        begin(&mut lineage);
+        assert!(lineage.excused());
+        assert_eq!(failed(&mut run, &lineage), (2, 1));
+        assert!(run.step(&mut lineage, Op::Kill));
+        assert!(!lineage.excused());
+        assert_eq!(failed(&mut run, &lineage), (2, 2));
     }
 }

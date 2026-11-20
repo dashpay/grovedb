@@ -94,18 +94,49 @@ impl fmt::Debug for Cell {
 /// What a page says.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Page {
-    /// A tree page: its cells by slot.
-    Tree(BTreeMap<u16, Cell>),
-    /// A flat leaf: its entries by key.
-    Flat(BTreeMap<Vec<u8>, Value>),
+    /// A tree page.
+    Tree {
+        /// Its cells by slot.
+        cells: BTreeMap<u16, Cell>,
+        /// How many cells have left the page since it was made
+        /// (`tree-page.md` TP7): a handle on a cell is good for as long as
+        /// this has not moved.
+        departures: u64,
+        /// The version of the commit that last changed the page
+        /// (`transactions.md` PV1). A page step changes how the page is
+        /// stored and bears no version.
+        born: u64,
+    },
+    /// A flat leaf.
+    Flat {
+        /// Its entries by key.
+        entries: BTreeMap<Vec<u8>, Value>,
+        /// The version of the commit that last changed the page.
+        born: u64,
+    },
 }
 
 impl Page {
+    /// A tree page that the commit of `born` makes with `cells`.
+    pub fn tree(cells: BTreeMap<u16, Cell>, born: u64) -> Self {
+        Self::Tree {
+            cells,
+            departures: 0,
+            born,
+        }
+    }
+
     /// How many values the page has out of line.
     pub fn values_out(&self) -> usize {
         match self {
-            Self::Tree(cells) => cells.values().filter(|cell| cell.value.is_out()).count(),
-            Self::Flat(entries) => entries.values().filter(|value| value.is_out()).count(),
+            Self::Tree { cells, .. } => cells.values().filter(|cell| cell.value.is_out()).count(),
+            Self::Flat { entries, .. } => entries.values().filter(|value| value.is_out()).count(),
+        }
+    }
+
+    fn born(&mut self) -> &mut u64 {
+        match self {
+            Self::Tree { born, .. } | Self::Flat { born, .. } => born,
         }
     }
 }
@@ -246,33 +277,55 @@ fn misfit<T>(what: impl fmt::Display) -> Result<T, Misfit> {
     Err(Misfit(what.to_string()))
 }
 
-fn tree_of(pages: &mut Pages, page: PageId) -> Result<&mut BTreeMap<u16, Cell>, Misfit> {
+/// The cells of the tree page `page`, and the count of those that left.
+fn tree_of(
+    pages: &mut Pages,
+    page: PageId,
+) -> Result<(&mut BTreeMap<u16, Cell>, &mut u64), Misfit> {
     match pages.get_mut(&page).map(Arc::make_mut) {
-        Some(Page::Tree(cells)) => Ok(cells),
-        Some(Page::Flat(_)) => misfit(format!("page {page} is a flat leaf")),
+        Some(Page::Tree {
+            cells, departures, ..
+        }) => Ok((cells, departures)),
+        Some(Page::Flat { .. }) => misfit(format!("page {page} is a flat leaf")),
         None => misfit(format!("page {page} is not in use")),
     }
 }
 
 fn flat_of(pages: &mut Pages, page: PageId) -> Result<&mut BTreeMap<Vec<u8>, Value>, Misfit> {
     match pages.get_mut(&page).map(Arc::make_mut) {
-        Some(Page::Flat(entries)) => Ok(entries),
-        Some(Page::Tree(_)) => misfit(format!("page {page} is a tree page")),
+        Some(Page::Flat { entries, .. }) => Ok(entries),
+        Some(Page::Tree { .. }) => misfit(format!("page {page} is a tree page")),
         None => misfit(format!("page {page} is not in use")),
     }
 }
 
+/// Takes the cell in `slot` out of the tree page `page`: a departure.
+fn remove_cell(pages: &mut Pages, page: PageId, slot: u16) -> Result<(), Misfit> {
+    let (cells, departures) = tree_of(pages, page)?;
+    if cells.remove(&slot).is_none() {
+        return misfit(format!("page {page} has no cell in slot {slot}"));
+    }
+    *departures += 1;
+    Ok(())
+}
+
 fn cell_of(pages: &mut Pages, page: PageId, slot: u16) -> Result<&mut Cell, Misfit> {
-    let cells = tree_of(pages, page)?;
+    let (cells, _) = tree_of(pages, page)?;
     match cells.get_mut(&slot) {
         Some(cell) => Ok(cell),
         None => misfit(format!("page {page} has no cell in slot {slot}")),
     }
 }
 
-/// What `pages` say once the commit of `changes` is made. `made` has the
-/// id of each page a change makes, in the order of those changes.
-pub fn apply(pages: &Pages, changes: &[Change], made: &[PageId]) -> Result<Pages, Misfit> {
+/// What `pages` say once the commit of `changes` is made, which makes
+/// `version`. `made` has the id of each page a change makes, in the order
+/// of those changes. Every page that a change names is born at `version`.
+pub fn apply(
+    pages: &Pages,
+    changes: &[Change],
+    made: &[PageId],
+    version: u64,
+) -> Result<Pages, Misfit> {
     let mut pages = pages.clone();
     let mut made = made.iter().copied();
     let mut next = |pages: &Pages| match made.next() {
@@ -281,28 +334,28 @@ pub fn apply(pages: &Pages, changes: &[Change], made: &[PageId]) -> Result<Pages
         None => misfit("a page is made and has no id"),
     };
     for change in changes {
+        if let Some(page) = change.page().and_then(|page| pages.get_mut(&page)) {
+            *Arc::make_mut(page).born() = version;
+        }
         match change {
             Change::NewTree { cells } => {
                 let id = next(&pages)?;
                 let cells: BTreeMap<u16, Cell> = cells.iter().cloned().collect();
-                pages.insert(id, Arc::new(Page::Tree(cells)));
+                pages.insert(id, Arc::new(Page::tree(cells, version)));
             }
             Change::NewFlat { entries } => {
                 let id = next(&pages)?;
                 let entries = entries.iter().cloned().collect();
-                pages.insert(id, Arc::new(Page::Flat(entries)));
+                let born = version;
+                pages.insert(id, Arc::new(Page::Flat { entries, born }));
             }
             Change::Insert { page, slot, cell } => {
-                let cells = tree_of(&mut pages, *page)?;
+                let (cells, _) = tree_of(&mut pages, *page)?;
                 if cells.insert(*slot, cell.clone()).is_some() {
                     return misfit(format!("slot {slot} of page {page} is taken"));
                 }
             }
-            Change::Remove { page, slot } => {
-                if tree_of(&mut pages, *page)?.remove(slot).is_none() {
-                    return misfit(format!("page {page} has no cell in slot {slot}"));
-                }
-            }
+            Change::Remove { page, slot } => remove_cell(&mut pages, *page, *slot)?,
             Change::Hash {
                 page,
                 slot,
@@ -360,7 +413,8 @@ pub fn apply(pages: &Pages, changes: &[Change], made: &[PageId]) -> Result<Pages
 }
 
 /// What `pages` say once a reclaiming step has taken the cells in `slots`
-/// out of the tree page `page`, or, with no slot, has freed the page.
+/// out of the tree page `page`, or, with no slot, has freed the page. The
+/// page that keeps cells is born when it was: a step is no commit.
 pub fn reclaim(pages: &Pages, page: PageId, slots: &[u16]) -> Result<Pages, Misfit> {
     let mut pages = pages.clone();
     if slots.is_empty() {
@@ -369,11 +423,8 @@ pub fn reclaim(pages: &Pages, page: PageId, slots: &[u16]) -> Result<Pages, Misf
         }
         return Ok(pages);
     }
-    let cells = tree_of(&mut pages, page)?;
     for slot in slots {
-        if cells.remove(slot).is_none() {
-            return misfit(format!("page {page} has no cell in slot {slot}"));
-        }
+        remove_cell(&mut pages, page, *slot)?;
     }
     Ok(pages)
 }
@@ -652,6 +703,12 @@ mod tests {
         PageId::new(raw).expect("a page id")
     }
 
+    /// The commit of version 1, where a test does not look at when a page
+    /// was born.
+    fn apply(pages: &Pages, changes: &[Change], made: &[PageId]) -> Result<Pages, Misfit> {
+        super::apply(pages, changes, made, 1)
+    }
+
     fn cell(key: &[u8], value: Value) -> Cell {
         Cell {
             key: key.to_vec(),
@@ -732,7 +789,7 @@ mod tests {
             &[],
         )
         .expect("fits");
-        let Page::Tree(cells) = &*changed[&page(1)] else {
+        let Page::Tree { cells, .. } = &*changed[&page(1)] else {
             panic!("a tree page");
         };
         assert_eq!(cells[&1].kv_hash, [9; 32]);
@@ -770,7 +827,7 @@ mod tests {
             entries: vec![(key.to_vec(), None)],
         };
         let rewritten = apply(&rewritten, &[keep(b"z")], &[]).expect("fits");
-        let Page::Flat(entries) = &*rewritten[&page(2)] else {
+        let Page::Flat { entries, .. } = &*rewritten[&page(2)] else {
             panic!("a flat leaf");
         };
         assert_eq!(entries.len(), 1);
@@ -895,10 +952,67 @@ mod tests {
         .expect("fits");
         let fewer = reclaim(&pages, page(4), &[2]).expect("fits");
         assert_eq!(
-            fewer[&page(4)],
-            Arc::new(Page::Tree([(1, cell(b"a", Value::Inline(vec![1])))].into()))
+            *fewer[&page(4)],
+            Page::Tree {
+                cells: [(1, cell(b"a", Value::Inline(vec![1])))].into(),
+                departures: 1,
+                born: 1,
+            }
         );
         assert!(reclaim(&fewer, page(4), &[]).expect("fits").is_empty());
+    }
+
+    #[test]
+    fn a_page_is_born_at_the_commit_that_changed_it_and_counts_the_cells_that_left() {
+        let cells = vec![
+            (1, cell(b"a", Value::Inline(vec![1]))),
+            (2, cell(b"b", Value::Inline(vec![2]))),
+            (3, cell(b"c", Value::Inline(vec![3]))),
+        ];
+        let made = [
+            Change::NewTree { cells },
+            Change::NewFlat { entries: vec![] },
+        ];
+        let ids = [page(1), page(2)];
+        let first = super::apply(&Pages::new(), &made, &ids, 4).expect("fits");
+        let look = |pages: &Pages| {
+            let born = |id| match &*pages[&page(id)] {
+                Page::Tree { born, .. } | Page::Flat { born, .. } => *born,
+            };
+            let Page::Tree { departures, .. } = &*pages[&page(1)] else {
+                panic!("a tree page");
+            };
+            (born(1), born(2), *departures)
+        };
+        assert_eq!(look(&first), (4, 4, 0));
+
+        // A commit bears the pages it changes and no other, and a cell
+        // that it removes has left. A cell that is changed, or put where
+        // one was, has not.
+        let remove = |slot| Change::Remove {
+            page: page(1),
+            slot,
+        };
+        let insert = Change::Insert {
+            page: page(1),
+            slot: 2,
+            cell: cell(b"d", Value::Inline(vec![4])),
+        };
+        let second = super::apply(&first, &[remove(2), insert, remove(3)], &[], 5).expect("fits");
+        assert_eq!(look(&second), (5, 4, 2));
+        let put = Change::Put {
+            page: page(2),
+            key: b"k".to_vec(),
+            value: Value::Inline(vec![]),
+        };
+        let third = super::apply(&second, &[put], &[], 6).expect("fits");
+        assert_eq!(look(&third), (5, 6, 2));
+
+        // A reclaiming step is no commit: the page is born when it was,
+        // and each cell it takes has left.
+        let stepped = reclaim(&third, page(1), &[1, 2]).expect("fits");
+        assert_eq!(look(&stepped), (5, 6, 4));
+        assert_ne!(stepped[&page(1)], third[&page(1)]);
     }
 
     /// A history of three commits and a reclaiming step after the second.
@@ -1062,12 +1176,16 @@ mod tests {
         assert!(said.contains("page 1 is missing") && said.contains("page 2 is missing"));
         assert!(difference(two, last).contains("is in use and should not be"));
         let mut changed = (**two).clone();
-        changed.insert(page(1), Arc::new(Page::Flat(BTreeMap::new())));
+        let empty = || {
+            Arc::new(Page::Flat {
+                entries: BTreeMap::new(),
+                born: 1,
+            })
+        };
+        changed.insert(page(1), empty());
         assert!(difference(&changed, two).contains("page 1 says"));
         // Many differences are cut short.
-        let many: Pages = (1..=9)
-            .map(|raw| (page(raw), Arc::new(Page::Flat(BTreeMap::new()))))
-            .collect();
+        let many: Pages = (1..=9).map(|raw| (page(raw), empty())).collect();
         assert!(difference(&many, &Pages::new()).ends_with("and 5 more"));
         assert_eq!(format!("{:?}", out(b"ab")), "out(2 bytes #b545986a)");
         assert!(format!("{:?}", Value::Inline(vec![1])).starts_with("inline(1 bytes"));

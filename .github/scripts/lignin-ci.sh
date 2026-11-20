@@ -257,8 +257,8 @@ miri)
     2:--full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
     *) fail "usage: lignin-ci.sh miri [--full]" ;;
     esac
-    # Every set runs, and every test of a set, whatever failed before it:
-    # one run shows every failure.
+    # Every set runs, and every test target of a set, whatever failed
+    # before it: one run shows the failures of every set.
     status=0
     for borrows in "${file_layer[@]}"; do
         say "Miri: the file layer ${borrows:-(Stacked Borrows)}"

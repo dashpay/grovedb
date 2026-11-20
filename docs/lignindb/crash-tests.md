@@ -22,7 +22,7 @@ cargo run --release -p lignin-testkit --bin lignin-crash -- planted
 
 A run is a function of its seed and of the options that shape it (`--faults`, `--ops`, `--lineages`, `--depth`, `--again`), on every machine: the workload, the faults, the crash states and the order they are recovered in. A campaign that found a violation prints the `seed` command that makes its run again. A campaign is a function of its options but for `--duration`. Runs are taken in in the order of their seeds whatever number of them is made at once (`--jobs`), and a campaign that is given `--points` ends with the first run that reaches them. A report has a digest of what was done, which two campaigns that did the same have in common.
 
-The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no disk and no scratch directory. A campaign of *n* crash states holds 8 *n* bytes for their fingerprints, and each run a few megabytes.
+The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no disk and no scratch directory. A campaign of *n* crash states holds a hash set of their *n* fingerprints of 8 bytes, and each run a few megabytes beside what its lineages have seen.
 
 ## What a run is made of
 
@@ -35,10 +35,11 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 | What a failed sync leaves | By the seed as well: lost, kept, or drawn (`SimConfig::unknown`), by turns. |
 | The sector size | 512 bytes for two runs in four, then 4096 and 128, by turns of twelve seeds. |
 | A crash image | The file system after one operation that changed what a crash can leave. A lineage has some six hundred. |
-| A crash state | What one crash plan leaves of an image: every plan where there are at most 48, and otherwise the two ends, the plans of a file system that writes in order with every tear of the first lost write, each change lost alone, each change applied late, and three drawn from the seed. |
-| A recovery | `lignin_store::recovery::recover` on the state, with the buffer pool, the window of the log reader and the number of pages a replay keeps by turns. Then every page, value, page id and count is read and held to the model, and the engine's physical invariant checker (`lignindb::verify`) is run over the store. |
-| Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is first recovered with the faults injected into the recovery, and what that recovery left is what is then recovered with no fault. |
-| The floor | No state is before the last commit the log had reported durable, nor before the point that the durable part of the same or an earlier image recovered to. |
+| A crash state | What one crash plan leaves of an image: every plan where there are at most 48. Of an image with more, a choice: the two ends, the plans of a file system that writes in order with the first lost write cut short after each number of its leading sectors, each change lost alone, each change applied late, and three drawn from the seed. After every operation the states of a crash at that moment are gone through once more, and held to what the operation left expected. |
+| A recovery | `lignin_store::recovery::recover` on the state, with the buffer pool, the window of the log reader and the number of pages a replay keeps by turns. Then every page, with the commit it was born at and the count of the cells that left it, every value, page id and count is read and held to the model, and the engine's physical invariant checker (`lignindb::verify`) is run over the store. |
+| Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is recovered once more on a copy of its own with the faults injected into the recovery: it returns the same store, or fails and is followed by a recovery with no fault that does. |
+| The floor | No state is before the last point at which a sync of the log or a recovery returned `Ok`, nor before the last commit the log had reported durable, nor before the point that the durable part of the same or an earlier image recovered to. |
+| A crash that loses nothing | The state with every unsynced change, which is what a killed process leaves, is at the last point or at the item that is being appended. |
 
 ## What it costs
 

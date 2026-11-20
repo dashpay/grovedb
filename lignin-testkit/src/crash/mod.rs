@@ -1,6 +1,7 @@
 //! Store crash tests (VER-03): the page store is crashed at every write
-//! boundary of random workloads, every state a crash can leave is
-//! recovered, and what the recovery lands on is held to a model.
+//! boundary of random workloads, the states that the campaign's crash
+//! plans leave of each crash are recovered, and what a recovery lands on
+//! is held to a model.
 //!
 //! The store is `lignin-store` behind its public API: the log, write-back,
 //! table checkpoints, recovery, the page ids and the value log. The file
@@ -42,7 +43,7 @@
 //!
 //! | Part | What it is |
 //! | --- | --- |
-//! | [`store::Session`] | An open store, and what `lignin-store` asks of its callers: the committer of `transactions.md` CM3, the keeper of the pins, the owners of values for the value log's cleaner, the regrouping of a page's values, and the page steps that take cells out of a page or free one. |
+//! | [`store::Session`] | An open store, and what `lignin-store` asks of its callers: the committer of `transactions.md` CM3, in the order of the engine's (`lignindb::commit`), with the sync of a commit before its version is published; the keeper of the pins, a writer's on the version it was begun at among them; the owners of values for the value log's cleaner; the regrouping of a page's values; and the page steps that take cells out of a page or free one. |
 //! | [`workload`] | The operations of a session, drawn from the seed: commits to tree pages and flat leaves with values in and out of line, write transactions that hold copies, reclaiming steps, passes, turns, table checkpoints, syncs and rolls of the log, cleaning of the value log, pins, kills and closes. |
 //! | [`model`] | What the pages say after each item of the log that changes them. It knows no frame, block or file. |
 //! | [`observe::Observer`] | The file layer of a run: it takes a crash image after every operation that changed what a crash can leave. |
@@ -56,13 +57,16 @@
 //! the file system at each boundary. A **crash state** is what one crash
 //! plan leaves of such an image: some of the unsynced changes, whole, torn
 //! at a sector or applied out of turn, on the durable state. For each
-//! image the campaign takes every plan when there are few, and otherwise
-//! the two ends, the plans of a file system that writes in order with
-//! every tear of the first lost write, each change lost alone, each change
-//! applied late, and a few drawn from the seed
-//! ([`campaign::RunShape`]). States are told apart by
-//! `SimVfs::fingerprint`, and **the crash points a campaign counts are the
-//! distinct states it recovered**.
+//! image the campaign takes every plan when there are at most 48. Of an
+//! image with more it takes a choice, and not every state that crash can
+//! leave: the two ends; the plans of a file system that writes in order,
+//! with the first lost write cut short after each number of its leading
+//! sectors (`CrashImage::prefixes`); each change lost alone; each change
+//! applied late; and a few drawn from the seed ([`campaign::RunShape`]). A
+//! tear that keeps sectors of a write and loses one before them is in a
+//! drawn plan or in none. States are told apart by `SimVfs::fingerprint`,
+//! and **the crash points a campaign counts are the distinct states it
+//! recovered**.
 //!
 //! A store that a crash left does not only recover: a few states of each
 //! lineage go on. The store is opened, a workload is run on it, and it is
@@ -85,6 +89,12 @@
 //!   feature bytes, value hash, key-value hash and value. A flat leaf is
 //!   its entries by key. The store has no roots: which pages a tree
 //!   reaches is the tree layer's to say, so every page in use is compared.
+//! - **When each page was born, and how many cells have left it.** A page
+//!   version is born at the commit that last changed the page
+//!   (`transactions.md` PV1), and a tree page counts the cells that were
+//!   taken out of it (`tree-page.md` TP7). Both are the workload's doing
+//!   and are compared: a handle on a cell goes by the count, and a page
+//!   step by the birth.
 //! - **The page ids.** An id is in use exactly when its page is read, and
 //!   the chain of a page that is not in use does not end in a block.
 //! - **The values.** A value is its bytes, wherever they lie: in the cell,
@@ -119,25 +129,44 @@
 //! it with no commit (`lignin_store::recovery`: a recovery lands on a
 //! commit "with every background change whose record the log holds"). A
 //! point is added when the append of its item has returned `Ok`: from then
-//! the commit has happened (`transactions.md` CM9).
+//! the commit has happened (`transactions.md` CM9). The session tells the
+//! model at that moment, and not when its call returns
+//! ([`store::Item`]): what it writes back after the append is crashed
+//! with the item a point already.
 //!
 //! **A recovered state is committed when it is a point**: the version the
 //! recovery landed on is the point's, and every page says what the point
 //! says ([`model::History::find`]). Which points a state may be is bounded
 //! on both sides ([`model::Expect`]):
 //!
-//! - **Not before the floor.** The floor is the later of two points.
-//!   One is what the log reported: the last point whose item ends at or
-//!   before the place the log had reported durable (`LogStore::durable`)
-//!   when the call that the image was taken in began, and after every
-//!   operation the state with no unsynced change is held to the floor as
-//!   that operation left it. The other is what the file system holds: the
-//!   point that the state with no unsynced change recovered to, of the
-//!   same image or of an earlier one of the same file system
-//!   (`Run::check_image`). What the durable part of the files recovers to
-//!   is lost by no crash from then on, whatever the log has reported: a
-//!   store that takes back a point that was durable is found even where
-//!   it had not said the point was.
+//! - **Not before the floor.** The floor is the latest of these points:
+//!   - *What the store was asked for.* The last point, once a sync of the
+//!     log has returned `Ok`, a commit's or one on its own, and once a
+//!     recovery has returned a store, which makes the log durable to its
+//!     end (`lignin_store::recovery`, step 9). The place the log reports
+//!     is not asked: a sync that returned `Ok` and left the last commit
+//!     to be lost is found whatever the log says of itself.
+//!   - *What the log reported.* The last point whose item ends at or
+//!     before the place the log had reported durable
+//!     (`LogStore::durable`) when the operation ended: write-back syncs
+//!     the log on its own.
+//!   - *What the files hold.* The point that the state with no unsynced
+//!     change recovered to, of the same image or of an earlier one of the
+//!     same file system (`Run::check_image`). What the durable part of
+//!     the files recovers to is lost by no crash from then on: a store
+//!     that takes back a point that was durable is found even where
+//!     nothing had said the point was.
+//!
+//!   An image carries the floor of the moment it was taken. After every
+//!   operation the states that a crash then can leave are gone through
+//!   once more, and held to what the operation made of the floor and of
+//!   its item.
+//! - **A crash that loses nothing loses no point.** The plan that keeps
+//!   every unsynced change, whole and in order, leaves the files as the
+//!   session sees them: what a process that is killed leaves. Of every
+//!   image, that state is at the last point, or at the item that is being
+//!   appended, and at no point before, as the store is when it is opened
+//!   again with no crash.
 //! - **Not after the last point**, but for one case: an item whose append
 //!   has begun and has not been reported as in the log or as out of it for
 //!   good. The model is told what that item makes of the pages before it
@@ -150,13 +179,17 @@
 //! | The append returned | The item |
 //! | --- | --- |
 //! | `Ok` | is a point. |
-//! | `NotAppended`, or any error that is not one of the two below | is no point. A state of a crash before the call returned may be at it: the model does not know then how the append ends. No state of a later crash may. |
-//! | `TakenBack`, and `LogStore::settle` then returned `Ok` | the same, with the settling as part of the call. |
-//! | `TakenBack` with a settling that failed, or `Unsettled` | may be in the log or not. The session publishes nothing more and the store is opened again, with no crash: it is then at the last point or at the item, and the model takes whichever the store has. A crash before that may leave either. |
+//! | `NotAppended`, or any error that is not one of the two below | is no point. A state of a crash before the append returned may be at it: the model does not know then how the append ends. No state of a later crash may. |
+//! | `TakenBack`, and `LogStore::settle` then returned `Ok` | the same, from the moment the settling returned. |
+//! | `TakenBack` with a settling that failed, or `Unsettled` | may be in the log or not. The session publishes nothing more and the store is opened again, with no crash: it is then at the last point or at the item, and the model takes whichever the store has. A crash before that may leave either. Where no fault was injected, an item in doubt is a violation. |
 //!
 //! **When a sync fails**, nothing that was not durable becomes durable in
-//! that session, so the floor stays where it was, and the commits after it
-//! are points that a crash may or may not keep. The changes that the
+//! that session, so the floor that the store was asked for and the one
+//! that the log reports stay where they were, and the commits after them
+//! are points that a crash may or may not keep. What the files hold can
+//! have moved all the same: a sync of the log's files that fails at the
+//! second has made the first durable, and the state with no unsynced
+//! change shows it. The changes that the
 //! failed sync left unknown are kept, lost or drawn by the file layer once
 //! a later sync of the same file succeeds (`SimConfig::unknown`). A store
 //! that keeps its rules makes no such sync, so the three settings recover
@@ -175,8 +208,8 @@
 //! | `NotRecovered` | A state that a crash left did not open, with no fault injected into the recovery. |
 //! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, or a finding of the engine's invariant checker. |
 //! | `NotCommitted` | It is at no point it may be at: below the floor, above the last, or with pages of no point. |
-//! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again. Each time it is at the same point. |
-//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, or a call failed where no fault had been injected since the store was opened. |
+//! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again; and in a run with faults, one in four is recovered once more with the faults injected. Each time it is at the same point, with the same pages. |
+//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, a call failed that no fault excuses, or the log left an item in doubt with no fault. |
 //! | `Panicked` | The store panicked over a state a crash left, or the run did: it is reported with its seed like the others. |
 //!
 //! # Faults
@@ -187,18 +220,32 @@
 //! ([`campaign::Faults`]). In those an error is counted and the session
 //! goes on, as the callers of the store do: a commit that failed is not a
 //! point, write-back is asked again, and a log that cannot say what it
-//! holds ends the session. An error is the fault's only in the session
-//! the fault was injected into: the store that a recovery returns owes
-//! nothing to the faults before it, and a call of it that fails with no
-//! new fault is a violation.
+//! holds ends the session.
+//!
+//! **An error is a fault's** when a fault was injected into the operation
+//! that failed, or, since the store was opened, into a call whose failure
+//! lasts for the session ([`observe::Observer::lasting_faults`]): a sync,
+//! which cannot be made good, so that the log makes nothing more durable
+//! and a segment keeps every table checkpoint from being installed
+//! (`lignin_store::wal`, "When the file layer fails", and
+//! `lignin_store::flush`, "When something fails"); and any call on a file
+//! of the log, whose failed append the
+//! log does not get over until it is opened again, or on the manifest,
+//! which can be left in doubt. A write or a read that fails in a segment,
+//! a value-log file or a table checkpoint fails the operation it was
+//! injected into and excuses no later one, and the store that a recovery
+//! returns owes nothing to the faults before it. Every other error is a
+//! violation, and so is a store that says it is damaged where only faults
+//! were injected.
 //!
 //! The states a crash leaves of those runs are recovered with no fault and
-//! held to the same rule. One in four is recovered with the faults first:
-//! a recovery that returns a store returns one at a point it may be at,
-//! at one with itself and sound to the checker, and one that fails says
-//! that the file layer failed, not that the store is damaged. What that
-//! recovery left is then what is recovered with no fault, so such a state
-//! is held to the rule as a recovery that met faults left it.
+//! held to the same rule. One in four is then recovered once more, on a
+//! copy of its own, with the faults injected (`check::check_with_faults`).
+//! A recovery is a function of the files it finds: one that the faults do
+//! not fail returns the store that the recovery with no fault returned,
+//! at the same version with the same pages; and one that they fail says
+//! that the file layer failed, and is followed by a recovery with no
+//! fault that returns that store (`lignin_store::recovery`, "Twice").
 //!
 //! # The campaign's own acceptance test
 //!
@@ -206,8 +253,10 @@
 //! ([`cli::DEFECTS`]): a file layer that reports a sync it did not make,
 //! of the log, of a segment, of a value-log file, of a table checkpoint,
 //! of the manifest and of a directory, and a model that is wrong by one
-//! hash. A defect counts as found by a run in which it did what it is
-//! planted to do ([`campaign::ACTED`]).
+//! hash. A defect counts as found by a violation of the kind it makes
+//! ([`cli::Defect`]), in a run in which it did what it is planted to do
+//! ([`campaign::ACTED`]), of a seed that gives no violation with no defect
+//! planted.
 //!
 //! # What is not in it
 //!

@@ -65,6 +65,22 @@ struct Watch {
     taken: Vec<Taken>,
     sabotage: Option<Sabotage>,
     lies: u64,
+    /// How many faults the file system had injected at the last call.
+    faults: u64,
+    /// How many of them went into a call whose failure lasts.
+    lasting: u64,
+}
+
+/// Whether a fault in a call on `path` lasts for the session of the store,
+/// whatever the call: the log's files, whose failed append the log does
+/// not get over until it is opened again (`lignin_store::wal`, "When the
+/// file layer fails"), and the manifest, which can be left in doubt. Any
+/// fault on them counts, a failed read among them: the log reads its file
+/// to find out what became of an append that failed.
+fn lasts(path: &Path) -> bool {
+    let manifest = |name: &std::ffi::OsStr| name.to_string_lossy().starts_with("MANIFEST");
+    path.components().any(|part| part.as_os_str() == "wal")
+        || path.file_name().is_some_and(manifest)
 }
 
 /// The file layer of an observed run. A clone is another handle on the
@@ -86,13 +102,15 @@ impl Observer {
     /// is told otherwise. What `fs` holds now is no boundary: the first
     /// image is taken after the next change.
     pub fn new(fs: SimVfs, expect: Expect) -> Self {
-        let changes = fs.stats().changes;
+        let stats = fs.stats();
         let watch = Watch {
-            changes,
+            changes: stats.changes,
             expect,
             taken: Vec::new(),
             sabotage: None,
             lies: 0,
+            faults: stats.faults,
+            lasting: 0,
         };
         Self {
             fs,
@@ -158,22 +176,41 @@ impl Observer {
         self.watch().lies
     }
 
-    fn after(&self) {
+    /// How many faults were injected into a call whose failure lasts for
+    /// the session of the store: a sync, of a file or of a directory, and
+    /// any call on a file of the log or on the manifest. A failed sync
+    /// cannot be made good (`lignin_io::vfs`): the log makes nothing more
+    /// durable in the session, a segment whose sync failed keeps every
+    /// table checkpoint from being installed (`lignin_store::flush`, "When
+    /// something fails"), and a name that a directory's sync left in doubt
+    /// stays so.
+    pub fn lasting_faults(&self) -> u64 {
+        self.watch().lasting
+    }
+
+    /// Looks at the file system after a call on `path`: a fault that was
+    /// injected into the call is counted, and an image is taken if the
+    /// call changed what a crash can leave.
+    fn after(&self, path: &Path, lasting: bool) {
         let mut watch = self.watch();
-        let changes = self.fs.stats().changes;
-        if changes != watch.changes {
-            watch.changes = changes;
+        let stats = self.fs.stats();
+        if stats.faults != watch.faults {
+            watch.faults = stats.faults;
+            watch.lasting += u64::from(lasting || lasts(path));
+        }
+        if stats.changes != watch.changes {
+            watch.changes = stats.changes;
             let taken = Taken {
                 image: self.fs.crash_image(),
                 expect: watch.expect.clone(),
-                boundary: changes,
+                boundary: stats.changes,
             };
             watch.taken.push(taken);
         }
     }
 
-    fn observed<T>(&self, result: io::Result<T>) -> io::Result<T> {
-        self.after();
+    fn observed<T>(&self, path: &Path, result: io::Result<T>) -> io::Result<T> {
+        self.after(path, false);
         result
     }
 
@@ -204,7 +241,7 @@ impl Observer {
 
 impl Vfs for Observer {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        let file = self.observed(self.fs.open(path, mode))?;
+        let file = self.observed(path, self.fs.open(path, mode))?;
         Ok(Box::new(ObservedFile {
             file,
             path: path.to_path_buf(),
@@ -214,38 +251,44 @@ impl Vfs for Observer {
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.observed(self.fs.rename(from, to))
+        self.observed(to, self.fs.rename(from, to))
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
-        self.observed(self.fs.hard_link(original, link))
+        self.observed(link, self.fs.hard_link(original, link))
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
-        self.observed(self.fs.remove_file(path))
+        self.observed(path, self.fs.remove_file(path))
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
-        self.observed(self.fs.create_dir(path))
+        self.observed(path, self.fs.create_dir(path))
     }
 
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
-        self.observed(self.fs.remove_dir(path))
+        self.observed(path, self.fs.remove_dir(path))
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        self.fs.read_dir(path)
+        self.observed(path, self.fs.read_dir(path))
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         if self.loses_dir_sync(path) {
             return Ok(());
         }
-        self.observed(self.fs.sync_dir(path))
+        let synced = self.fs.sync_dir(path);
+        self.after(path, true);
+        synced
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        self.observed(self.fs.lock(path))
+        self.observed(path, self.fs.lock(path))
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.observed(path, self.fs.lock_existing(path))
     }
 }
 
@@ -263,7 +306,9 @@ impl ObservedFile {
         if self.observer.loses_sync(&self.path, made) {
             return Ok(());
         }
-        self.observer.observed(sync(&*self.file))
+        let synced = sync(&*self.file);
+        self.observer.after(&self.path, true);
+        synced
     }
 }
 
@@ -275,15 +320,15 @@ impl fmt::Debug for ObservedFile {
 
 impl VfsFile for ObservedFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        self.file.read_at(buf, offset)
+        (self.observer).observed(&self.path, self.file.read_at(buf, offset))
     }
 
     fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        self.observer.observed(self.file.write_at(buf, offset))
+        (self.observer).observed(&self.path, self.file.write_at(buf, offset))
     }
 
     fn append(&self, buf: &[u8]) -> io::Result<u64> {
-        self.observer.observed(self.file.append(buf))
+        self.observer.observed(&self.path, self.file.append(buf))
     }
 
     fn sync_data(&self) -> io::Result<()> {
@@ -295,11 +340,11 @@ impl VfsFile for ObservedFile {
     }
 
     fn len(&self) -> io::Result<u64> {
-        self.file.len()
+        self.observer.observed(&self.path, self.file.len())
     }
 
     fn set_len(&self, len: u64) -> io::Result<()> {
-        self.observer.observed(self.file.set_len(len))
+        self.observer.observed(&self.path, self.file.set_len(len))
     }
 }
 
@@ -387,6 +432,47 @@ mod tests {
         let now = observer.now();
         assert_eq!(now.boundary, changes);
         assert!(!now.expect.created);
+    }
+
+    #[test]
+    fn a_fault_in_a_sync_in_the_log_or_in_the_manifest_lasts() {
+        use lignin_io::sim::{Fault, FaultRule, OpSet};
+
+        let observer = Observer::new(fs(), Expect::of_new_store());
+        let (fs, vfs) = (observer.fs().clone(), observer.vfs());
+        vfs.create_dir(Path::new("/db/wal")).expect("made");
+        let append = OpenMode::Append(Create::New);
+        let open = |path: &str| vfs.open(Path::new(path), append).expect("opened");
+        let (segment, log, manifest) =
+            (open("/db/seg"), open("/db/wal/1.log"), open("/db/MANIFEST"));
+        let fail = |ops: OpSet| fs.add_rule(FaultRule::new(Fault::Eio).on(ops));
+
+        // A write to a segment that fails is its call's and no more. A
+        // sync that fails lasts, of whatever file.
+        fail(OpSet::WRITES);
+        assert!(segment.append(b"block").is_err());
+        assert_eq!((fs.stats().faults, observer.lasting_faults()), (1, 0));
+        fail(OpSet::SYNCS);
+        assert!(segment.sync_data().is_err());
+        assert_eq!((fs.stats().faults, observer.lasting_faults()), (2, 1));
+
+        // A fault in the log lasts, whether it failed a write or a read,
+        // and so does one in the manifest and in the sync of a directory.
+        fail(OpSet::WRITES);
+        assert!(log.append(b"item").is_err());
+        assert_eq!(observer.lasting_faults(), 2);
+        fail(OpSet::READS);
+        assert!(log.len().is_err());
+        assert_eq!(observer.lasting_faults(), 3);
+        fail(OpSet::WRITES);
+        assert!(manifest.append(b"edit").is_err());
+        assert_eq!(observer.lasting_faults(), 4);
+        fail(OpSet::SYNCS);
+        assert!(vfs.sync_dir(Path::new("/db")).is_err());
+        assert_eq!((fs.stats().faults, observer.lasting_faults()), (6, 5));
+        // A call with no fault counts nothing.
+        vfs.create_dir(Path::new("/db/val")).expect("made");
+        assert_eq!((fs.stats().faults, observer.lasting_faults()), (6, 5));
     }
 
     #[test]

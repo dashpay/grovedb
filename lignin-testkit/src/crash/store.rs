@@ -15,7 +15,7 @@
 //! store whatever it holds.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
     fmt,
     path::{Path, PathBuf},
     sync::{
@@ -178,6 +178,9 @@ impl fmt::Display for OpenError {
 struct Versions {
     latest: AtomicU64,
     pin: AtomicU64,
+    /// The version a write transaction that holds copies was begun at: it
+    /// reads that version until it ends (`transactions.md` CM3).
+    writer: AtomicU64,
     epoch: AtomicU64,
 }
 
@@ -192,7 +195,11 @@ impl Versions {
 impl Pins for Versions {
     fn oldest_pin(&self) -> CommitVersion {
         let latest = self.latest.load(Ordering::SeqCst);
-        Self::version(self.pin.load(Ordering::SeqCst).min(latest))
+        let (snapshot, writer) = (
+            self.pin.load(Ordering::SeqCst),
+            self.writer.load(Ordering::SeqCst),
+        );
+        Self::version(snapshot.min(writer).min(latest))
     }
 
     fn next_epoch(&self) -> Epoch {
@@ -221,6 +228,26 @@ struct Held {
     pages: BTreeSet<PageId>,
 }
 
+/// What a session tells its caller of the item it appends to the log, at
+/// the moment the log decides it: whoever keeps a model of the store
+/// learns what a crash can leave from then on, before the session writes
+/// anything more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Item<'a> {
+    /// The item is written and is about to be appended: from here a crash
+    /// can leave it in the log. A commit names the ids of the pages it
+    /// makes, in the order of the changes that make them.
+    Appending(&'a [PageId]),
+    /// The append returned `Ok`: the item is in the log and ends here
+    /// (`transactions.md` CM9).
+    Appended(LogPlace),
+    /// The item is out of the log for good: no crash brings it back.
+    Gone,
+    /// The sync that the commit asked for returned `Ok`: the log is
+    /// durable to its end.
+    Synced,
+}
+
 /// What became of a commit.
 #[derive(Debug)]
 pub enum Committed {
@@ -234,6 +261,9 @@ pub enum Committed {
         /// The ids of the pages it made, in the order of the changes that
         /// made them.
         made: Vec<PageId>,
+        /// What the sync of the log came to, if the commit asked for one:
+        /// a commit whose sync failed is made and is not durable.
+        synced: Option<Result<(), String>>,
     },
     /// Its group is not in the log, and no crash brings it back. Nothing
     /// of it is left.
@@ -406,6 +436,7 @@ impl Session {
             versions: Versions {
                 latest: AtomicU64::new(report.landed.get()),
                 pin: AtomicU64::new(NO_PIN),
+                writer: AtomicU64::new(NO_PIN),
                 epoch: AtomicU64::new(0),
             },
             report,
@@ -439,6 +470,11 @@ impl Session {
     /// The place the log is known durable up to.
     pub fn durable(&self) -> Option<LogPlace> {
         self.log.durable().place
+    }
+
+    /// Where the log ends.
+    pub fn log_end(&self) -> Option<LogPlace> {
+        self.log.end()
     }
 
     /// Whether the log takes nothing more in this session: it cannot say
@@ -699,7 +735,8 @@ impl Session {
                 };
                 entries.insert(key.to_vec(), value);
             }
-            return Ok(Page::Flat(entries));
+            let born = frame.born().get();
+            return Ok(Page::Flat { entries, born });
         }
         let tree = TreePage::from_validated(frame, FRAME_FORMAT).map_err(text)?;
         tree.check(PAGE_SIZE).map_err(text)?;
@@ -732,7 +769,11 @@ impl Session {
                 },
             );
         }
-        Ok(Page::Tree(cells))
+        Ok(Page::Tree {
+            cells,
+            departures: tree.departures(),
+            born: frame.born().get(),
+        })
     }
 }
 
@@ -847,9 +888,12 @@ impl Session {
             owner: self.owner(),
             pages: BTreeSet::new(),
         };
+        let base = self.versions.latest.load(Ordering::SeqCst);
+        self.versions.writer.store(base, Ordering::SeqCst);
         for &page in pages {
             if let Err(error) = self.copy_of(&mut txn, page) {
                 self.give_up(&txn, &[]);
+                self.versions.writer.store(NO_PIN, Ordering::SeqCst);
                 return Err(error);
             }
         }
@@ -863,6 +907,7 @@ impl Session {
             return false;
         };
         self.give_up(&txn, &[]);
+        self.versions.writer.store(NO_PIN, Ordering::SeqCst);
         self.after();
         true
     }
@@ -917,14 +962,18 @@ impl Session {
     /// `held`, the transaction that holds copies commits, and the pages it
     /// copied and did not change are given up.
     ///
-    /// `appending` is called once the group is written and before it is
-    /// appended, with the ids of the pages the commit makes: from there a
-    /// crash can leave the commit in the log.
+    /// With `durable`, the log is synced for the commit where the engine's
+    /// committer syncs it: once the commit is installed and counted, and
+    /// before its version is published and anything is written back.
+    ///
+    /// `tell` is told what the log decides of the group, when it does
+    /// ([`Item`]).
     pub fn commit(
         &self,
         changes: &[Change],
         held: bool,
-        appending: &mut dyn FnMut(&[PageId]),
+        durable: bool,
+        tell: &mut dyn FnMut(Item<'_>),
     ) -> Committed {
         if let Err(error) = self.log_takes_a_group() {
             return Committed::No(format!("the log takes no group: {error}"));
@@ -940,12 +989,16 @@ impl Session {
             },
         };
         let mut made = Vec::new();
-        let committed = match self.commit_with(&mut txn, changes, &mut made, appending) {
+        let committed = match self.commit_with(&mut txn, changes, &mut made, durable, tell) {
             Ok(committed) => committed,
             Err(error) => Committed::No(error),
         };
         if !matches!(committed, Committed::Yes { .. }) {
             self.give_up(&txn, &made);
+        }
+        // The transaction has ended, and with it the pin on its base.
+        if held {
+            self.versions.writer.store(NO_PIN, Ordering::SeqCst);
         }
         self.after();
         committed
@@ -968,7 +1021,8 @@ impl Session {
         txn: &mut Held,
         changes: &'c [Change],
         made: &mut Vec<PageId>,
-        appending: &mut dyn FnMut(&[PageId]),
+        durable: bool,
+        tell: &mut dyn FnMut(Item<'_>),
     ) -> Result<Committed, String> {
         let latest = self.latest();
         let version = latest.next().ok_or("the versions are used up")?;
@@ -982,31 +1036,25 @@ impl Session {
                     id
                 }
             };
-            if !works.contains_key(&id) {
-                let copy = match change.makes_page() {
-                    true => self.pool.new_private(txn.owner, id).map_err(text)?,
-                    false => self.copy_of(txn, id)?,
-                };
-                if matches!(change, Change::NewTree { .. }) {
-                    let mut latch = copy.write().map_err(text)?;
-                    TreePageMut::init(&mut latch, PAGE_SIZE, id, 0).map_err(text)?;
-                }
-                let made = change.makes_page();
-                let changes = Vec::new();
-                works.insert(
-                    id,
-                    Work {
+            let work = match works.entry(id) {
+                btree_map::Entry::Occupied(work) => work.into_mut(),
+                btree_map::Entry::Vacant(place) => {
+                    let copy = match change.makes_page() {
+                        true => self.pool.new_private(txn.owner, id).map_err(text)?,
+                        false => self.copy_of(txn, id)?,
+                    };
+                    if matches!(change, Change::NewTree { .. }) {
+                        let mut latch = copy.write().map_err(text)?;
+                        TreePageMut::init(&mut latch, PAGE_SIZE, id, 0).map_err(text)?;
+                    }
+                    place.insert(Work {
                         copy,
-                        made,
-                        changes,
-                    },
-                );
-            }
-            works
-                .get_mut(&id)
-                .expect("just looked up")
-                .changes
-                .push(change);
+                        made: change.makes_page(),
+                        changes: Vec::new(),
+                    })
+                }
+            };
+            work.changes.push(change);
         }
 
         // The counts lock keeps the page steps and the marks out of the
@@ -1133,16 +1181,23 @@ impl Session {
         }
         group.finish();
 
-        appending(made);
+        tell(Item::Appending(made));
         let appended = match self.log.append_group(&at, &bytes) {
             Ok(appended) => appended,
             Err(error) => {
                 // The lock on the counts is given back before the log is
                 // asked to settle, which syncs.
                 drop(counts);
-                return Ok(self.not_appended(error));
+                return Ok(match self.settle_after(error) {
+                    Ok(reason) => {
+                        tell(Item::Gone);
+                        Committed::No(reason)
+                    }
+                    Err(reason) => Committed::InDoubt(reason),
+                });
             }
         };
+        tell(Item::Appended(appended.end));
         // Write-back is told before the first page is installed, and the
         // commit goes on whatever it answers.
         let told = self.wb().committed(version, appended.at, &bytes);
@@ -1158,10 +1213,10 @@ impl Session {
             }
         }
         for &page in txn.pages.iter() {
-            if let Some(copy) = self.pool.private(txn.owner, page) {
-                if let Err(error) = self.pool.discard(&copy) {
-                    return Ok(Committed::Broken(format!("page {page}: {error}")));
-                }
+            if let Some(copy) = self.pool.private(txn.owner, page)
+                && let Err(error) = self.pool.discard(&copy)
+            {
+                return Ok(Committed::Broken(format!("page {page}: {error}")));
             }
         }
         let mut change = ValueChange::new();
@@ -1169,11 +1224,18 @@ impl Session {
         if let Err(error) = counts.apply(&change, version) {
             return Ok(Committed::Broken(format!("the counts: {error}")));
         }
+        // The sync of the commit: before anything is published, and under
+        // no lock (CM7, and the engine's committer).
+        let synced = durable.then(|| self.wb().sync_log().map(drop).map_err(text));
+        if matches!(synced, Some(Ok(()))) {
+            tell(Item::Synced);
+        }
         self.versions.latest.store(version.get(), Ordering::SeqCst);
         Ok(Committed::Yes {
             version: version.get(),
             end: appended.end,
             made: made.clone(),
+            synced,
         })
     }
 
@@ -1201,14 +1263,6 @@ impl Session {
         }
         self.pool.free(page, version).map_err(text)?;
         self.allocator.free(page, version).map_err(text)
-    }
-
-    /// What a commit is whose append the log did not take (CM9).
-    fn not_appended(&self, error: LogError) -> Committed {
-        match self.settle_after(error) {
-            Ok(reason) => Committed::No(reason),
-            Err(reason) => Committed::InDoubt(reason),
-        }
     }
 
     /// Finds out what became of an item whose append failed with `error`,
@@ -1545,15 +1599,15 @@ impl Session {
     /// on the counts and the page's own, and the change is made only if the
     /// log took it.
     ///
-    /// `appending` is called once the record is written and before it is
-    /// appended: from there a crash can leave the step in the log.
+    /// `tell` is told what the log decides of the record, when it does
+    /// ([`Item`]).
     pub fn reclaim_step(
         &self,
         page: PageId,
         what: &Reclaim,
-        appending: &mut dyn FnMut(),
+        tell: &mut dyn FnMut(Item<'_>),
     ) -> Stepped {
-        match self.reclaim_with(page, what, appending) {
+        match self.reclaim_with(page, what, tell) {
             Ok(stepped) => stepped,
             Err(error) => Stepped::No(error),
         }
@@ -1563,7 +1617,7 @@ impl Session {
         &self,
         page: PageId,
         what: &Reclaim,
-        appending: &mut dyn FnMut(),
+        tell: &mut dyn FnMut(Item<'_>),
     ) -> Result<Stepped, String> {
         let refused = |why: &str| Ok(Stepped::Refused(format!("page {page}: {why}")));
         // A page that a writer holds is not looked at any closer.
@@ -1633,28 +1687,32 @@ impl Session {
         let mut record = Vec::new();
         write_reclaim(page, removed, freed, released.iter().copied(), &mut record).map_err(text)?;
 
-        appending();
+        tell(Item::Appending(&[]));
         let appended = match self.wb().append_change(&record) {
             Ok(appended) => appended,
             Err(error) => {
                 drop(step);
                 drop(counts);
                 return Ok(match self.settle_after(error) {
-                    Ok(reason) => Stepped::No(reason),
+                    Ok(reason) => {
+                        tell(Item::Gone);
+                        Stepped::No(reason)
+                    }
                     Err(reason) => Stepped::InDoubt(reason),
                 });
             }
         };
-        if let Some(blank) = after {
-            if let Err(refusal) = step.replace(&frame, blank) {
-                return Ok(Stepped::Broken(format!("page {page}: {refusal}")));
-            }
+        tell(Item::Appended(appended.end));
+        if let Some(blank) = after
+            && let Err(refusal) = step.replace(&frame, blank)
+        {
+            return Ok(Stepped::Broken(format!("page {page}: {refusal}")));
         }
         drop(step);
-        if let Some(version) = freed {
-            if let Err(error) = self.push_free(page, version) {
-                return Ok(Stepped::Broken(format!("page {page}: {error}")));
-            }
+        if let Some(version) = freed
+            && let Err(error) = self.push_free(page, version)
+        {
+            return Ok(Stepped::Broken(format!("page {page}: {error}")));
         }
         let mut change = ValueChange::new();
         released.iter().for_each(|&pointer| change.release(pointer));
@@ -1966,14 +2024,14 @@ mod tests {
 
     /// Commits `changes`, and returns the ids of the pages it made.
     fn commit(session: &Session, changes: &[Change]) -> Vec<PageId> {
-        match session.commit(changes, false, &mut |_| {}) {
+        match session.commit(changes, false, false, &mut |_| {}) {
             Committed::Yes { made, .. } => made,
             other => panic!("the commit was not made: {other:?}"),
         }
     }
 
     fn refused(session: &Session, changes: &[Change], held: bool) -> String {
-        match session.commit(changes, held, &mut |_| {}) {
+        match session.commit(changes, held, false, &mut |_| {}) {
             Committed::No(why) => why,
             other => panic!("the commit was not refused: {other:?}"),
         }
@@ -2019,7 +2077,8 @@ mod tests {
 
         fn apply(session: &Session, model: &mut Pages, changes: &[Change]) -> Vec<PageId> {
             let made = commit(session, changes);
-            *model = super::super::model::apply(model, changes, &made).expect("fits");
+            let version = session.latest().get();
+            *model = super::super::model::apply(model, changes, &made, version).expect("fits");
             assert_eq!(read(session), *model, "after {changes:?}");
             made
         }
@@ -2172,11 +2231,12 @@ mod tests {
         // The value of the held page waits, and a step on it is refused.
         session.pass().expect("a pass");
         assert_eq!(session.flush_stats().values_placed, 1);
-        let reclaimed = session.reclaim_step(tree, &Reclaim::Cells(vec![1]), &mut || {});
+        let reclaimed = session.reclaim_step(tree, &Reclaim::Cells(vec![1]), &mut |_| {});
         assert!(matches!(reclaimed, Stepped::Refused(_)), "{reclaimed:?}");
         let before = read(&session);
 
         // The held transaction commits a change to its page.
+        let mut told = Vec::new();
         let committed = session.commit(
             &[Change::Hash {
                 page: tree,
@@ -2185,11 +2245,26 @@ mod tests {
                 hash: [6; 32],
             }],
             true,
-            &mut |made| assert!(made.is_empty()),
+            false,
+            &mut |item| told.push(format!("{item:?}")),
         );
         assert!(
-            matches!(committed, Committed::Yes { version: 2, .. }),
+            matches!(
+                committed,
+                Committed::Yes {
+                    version: 2,
+                    synced: None,
+                    ..
+                }
+            ),
             "{committed:?}"
+        );
+        // The session said that the group was about to be appended, with
+        // no page made, and then where it ends.
+        assert_eq!(told.len(), 2, "{told:?}");
+        assert!(
+            told[0] == "Appending([])" && told[1].starts_with("Appended("),
+            "{told:?}"
         );
         assert!(!session.holds());
         assert_ne!(read(&session), before);
@@ -2204,13 +2279,101 @@ mod tests {
         assert_eq!(read(&session), before);
         // A held page that its commit does not change is given up.
         assert!(session.hold(&[tree, flat]).expect("copied"));
-        let committed = session.commit(&[Change::Free { page: flat }], true, &mut |_| {});
+        let committed = session.commit(&[Change::Free { page: flat }], true, false, &mut |_| {});
         assert!(matches!(committed, Committed::Yes { .. }), "{committed:?}");
         assert!(session.hold(&[tree]).expect("the page can be copied again"));
         assert!(session.hold(&[page(77)]).is_ok_and(|held| !held));
         assert!(session.release());
         assert!(session.hold(&[page(77)]).is_err());
         assert!(!session.holds());
+    }
+
+    #[test]
+    fn a_commit_that_asks_for_it_is_synced_before_it_is_published() {
+        let session = Session::open(new_store(), dir(), &Tuning::small()).expect("opened");
+        let mut told = Vec::new();
+        let entries = vec![(b"k".to_vec(), inline(b"v"))];
+        let committed = session.commit(&[Change::NewFlat { entries }], false, true, &mut |item| {
+            // The version is published last: not while the log says
+            // what became of the group, nor when it was synced.
+            assert_eq!(session.latest().get(), 0);
+            let durable = session.durable();
+            told.push(match item {
+                Item::Appending(made) => format!("appending {}", made.len()),
+                Item::Appended(end) => format!("appended, durable {}", durable >= Some(end)),
+                Item::Gone => "gone".to_string(),
+                Item::Synced => format!("synced, durable {}", durable == session.log_end()),
+            });
+        });
+        let Committed::Yes {
+            version: 1,
+            end,
+            synced: Some(Ok(())),
+            ..
+        } = committed
+        else {
+            panic!("the commit was not made and synced: {committed:?}");
+        };
+        assert_eq!(
+            told,
+            [
+                "appending 1",
+                "appended, durable false",
+                "synced, durable true"
+            ]
+        );
+        assert!(session.durable() >= Some(end));
+        assert_eq!(session.latest().get(), 1);
+    }
+
+    #[test]
+    fn a_writer_that_holds_copies_pins_the_version_it_was_begun_at() {
+        let session = Session::open(new_store(), dir(), &Tuning::small()).expect("opened");
+        let made = commit(
+            &session,
+            &[
+                Change::NewFlat { entries: vec![] },
+                Change::NewFlat { entries: vec![] },
+            ],
+        );
+        let (held, freed) = (made[0], made[1]);
+        let state = |session: &Session| {
+            let states = session.page_states();
+            let found = states.iter().find(|(page, _)| *page == freed);
+            found.map(|(_, state)| *state)
+        };
+        // A writer is begun at version 1, and a commit beside it frees a
+        // page at version 2: the writer can still read the page, so its id
+        // is not given out again.
+        assert!(session.hold(&[held]).expect("copied"));
+        commit(&session, &[Change::Free { page: freed }]);
+        assert_eq!(state(&session), Some(PageState::Retired));
+        let other = commit(&session, &[Change::NewFlat { entries: vec![] }])[0];
+        assert_ne!(other, freed);
+        // The writer ends, and with it the pin.
+        assert!(session.release());
+        assert_ne!(state(&session), Some(PageState::Retired));
+
+        // The same of a writer that commits.
+        let again = commit(&session, &[Change::NewFlat { entries: vec![] }])[0];
+        assert!(session.hold(&[held]).expect("copied"));
+        commit(&session, &[Change::Free { page: again }]);
+        let retired = |session: &Session| {
+            let states = session.page_states();
+            states
+                .iter()
+                .filter(|(_, state)| *state == PageState::Retired)
+                .count()
+        };
+        assert_eq!(retired(&session), 1);
+        let put = Change::Put {
+            page: held,
+            key: b"k".to_vec(),
+            value: inline(b"v"),
+        };
+        let committed = session.commit(&[put], true, false, &mut |_| {});
+        assert!(matches!(committed, Committed::Yes { .. }), "{committed:?}");
+        assert_eq!(retired(&session), 0);
     }
 
     #[test]
@@ -2314,30 +2477,47 @@ mod tests {
             (tree, Reclaim::Cells(vec![7])),
             (page(60), Reclaim::Page),
         ] {
-            let stepped = session.reclaim_step(id, &what, &mut || panic!("nothing is appended"));
+            let stepped = session.reclaim_step(id, &what, &mut |_| panic!("nothing is appended"));
             assert!(matches!(stepped, Stepped::Refused(_)), "{stepped:?}");
         }
-        let slot_zero = session.reclaim_step(tree, &Reclaim::Cells(vec![0]), &mut || {});
+        let slot_zero = session.reclaim_step(tree, &Reclaim::Cells(vec![0]), &mut |_| {});
         assert!(matches!(slot_zero, Stepped::No(_)), "{slot_zero:?}");
         session.pass().expect("a pass");
 
         // The cell with the placed value leaves, and its value is counted
         // out.
-        let mut told = 0;
-        let stepped = session.reclaim_step(tree, &Reclaim::Cells(vec![2]), &mut || told += 1);
-        assert!(matches!(stepped, Stepped::Yes { .. }), "{stepped:?}");
-        assert_eq!(told, 1);
+        let born = |session: &Session| match &*read(session)[&tree] {
+            Page::Tree { born, .. } | Page::Flat { born, .. } => *born,
+        };
+        let before = born(&session);
+        let mut told = Vec::new();
+        let stepped = session.reclaim_step(tree, &Reclaim::Cells(vec![2]), &mut |item| {
+            told.push(matches!(item, Item::Appending([]) | Item::Appended(_)));
+        });
+        let Stepped::Yes { end } = stepped else {
+            panic!("the step was not made: {stepped:?}");
+        };
+        // The session said that the record was about to be appended, and
+        // then where it ends.
+        assert_eq!(told, [true, true]);
+        assert!(session.log_end() >= Some(end));
         let pages = read(&session);
-        let Page::Tree(cells) = &*pages[&tree] else {
+        let Page::Tree {
+            cells, departures, ..
+        } = &*pages[&tree]
+        else {
             panic!("a tree page");
         };
         assert_eq!(cells.keys().copied().collect::<Vec<_>>(), [1]);
+        // The cell has left the page, which is born when it was: a step is
+        // no commit.
+        assert_eq!((*departures, born(&session)), (1, before));
 
         // The pages are freed once a later commit has made the latest
         // version: here one that makes a third page.
         let other = commit(&session, &[Change::NewFlat { entries: vec![] }])[0];
         for id in [tree, flat] {
-            let stepped = session.reclaim_step(id, &Reclaim::Page, &mut || {});
+            let stepped = session.reclaim_step(id, &Reclaim::Page, &mut |_| {});
             assert!(matches!(stepped, Stepped::Yes { .. }), "{stepped:?}");
         }
         let left: Vec<PageId> = read(&session).keys().copied().collect();
@@ -2476,6 +2656,7 @@ mod tests {
                 hash: [2; 32],
             }],
             &[],
+            session.latest().get(),
         )
         .expect("fits");
         assert_eq!(read(&session), after);

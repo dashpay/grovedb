@@ -252,7 +252,7 @@ impl Workload {
         }
         let free = u64::from(fresh && spare);
         match said {
-            Page::Tree(cells) => {
+            Page::Tree { cells, .. } => {
                 let slots: Vec<u16> = cells.keys().copied().collect();
                 let room = u64::from(slots.len() < self.shape.max_cells);
                 let some = u64::from(!slots.is_empty());
@@ -299,7 +299,7 @@ impl Workload {
                     _ => Change::Free { page },
                 }
             }
-            Page::Flat(entries) => {
+            Page::Flat { entries, .. } => {
                 let keys: Vec<&Vec<u8>> = entries.keys().collect();
                 let room = u64::from(keys.len() < self.shape.max_entries);
                 let some = u64::from(!keys.is_empty());
@@ -392,7 +392,7 @@ impl Workload {
             let fresh = !touched.contains(&page);
             let spare = scratch.len() >= 2;
             let change = self.change(page, &scratch[&page].clone(), fresh, spare);
-            scratch = apply(&scratch, std::slice::from_ref(&change), &[])
+            scratch = apply(&scratch, std::slice::from_ref(&change), &[], 0)
                 .expect("a change that was drawn for the page fits it");
             touched.insert(page);
             if matches!(change, Change::Rewrite { .. } | Change::Free { .. }) {
@@ -489,7 +489,7 @@ impl Workload {
             Kind::Reclaim => {
                 let page = free[self.rng.index(free.len())];
                 let what = match &*pages[&page] {
-                    Page::Tree(cells) if cells.len() >= 2 && self.rng.chance(2, 3) => {
+                    Page::Tree { cells, .. } if cells.len() >= 2 && self.rng.chance(2, 3) => {
                         let mut slots: Vec<u16> = cells.keys().copied().collect();
                         self.rng.shuffle(&mut slots);
                         slots.truncate(self.rng.between(1, slots.len() as u64 - 1) as usize);
@@ -562,7 +562,7 @@ mod tests {
                         assert!(touched.all(|page| !held.contains(&page)));
                     }
                     assert!(!changes.is_empty());
-                    pages = apply(&pages, changes, &made).expect("the changes fit");
+                    pages = apply(&pages, changes, &made, 0).expect("the changes fit");
                 }
                 Op::Hold(held_pages) => {
                     assert!(held.is_none() && !held_pages.is_empty());
@@ -578,7 +578,9 @@ mod tests {
                     };
                     pages = super::super::model::reclaim(&pages, *page, &slots).expect("fits");
                     match (what, pages.get(page).map(|page| &**page)) {
-                        (Reclaim::Cells(_), Some(Page::Tree(cells))) => assert!(!cells.is_empty()),
+                        (Reclaim::Cells(_), Some(Page::Tree { cells, .. })) => {
+                            assert!(!cells.is_empty())
+                        }
                         (Reclaim::Page, None) => {}
                         (what, left) => panic!("{what:?} left {left:?}"),
                     }
@@ -596,8 +598,8 @@ mod tests {
             assert!(pages.len() <= shape.max_pages + shape.max_changes as usize);
             for page in pages.values() {
                 match &**page {
-                    Page::Tree(cells) => assert!(cells.len() <= shape.max_cells),
-                    Page::Flat(entries) => assert!(entries.len() <= shape.max_entries),
+                    Page::Tree { cells, .. } => assert!(cells.len() <= shape.max_cells),
+                    Page::Flat { entries, .. } => assert!(entries.len() <= shape.max_entries),
                 }
             }
             all.push(op);
