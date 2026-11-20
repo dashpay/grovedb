@@ -31,6 +31,42 @@ fn hash_of(parts: &[&[u8]]) -> Hash {
     hash
 }
 
+/// The rules that make the hashes of the nodes of these tests: what the
+/// check of a store that is dropped recomputes them by (`crate::verify`).
+struct TestRules;
+
+impl lignin_tree::hash::HashRules for TestRules {
+    fn value_hash(
+        &mut self,
+        _: lignin_tree::node::NodeRef<'_>,
+        value: &[u8],
+        _: &[Option<Hash>],
+    ) -> Result<Hash, lignin_tree::hash::Refusal> {
+        Ok(hash_of(&[value]))
+    }
+
+    fn kv_hash(
+        &mut self,
+        key: &[u8],
+        value_hash: &Hash,
+    ) -> Result<Hash, lignin_tree::hash::Refusal> {
+        Ok(hash_of(&[key, value_hash]))
+    }
+
+    fn node_hash(
+        &mut self,
+        node: lignin_tree::node::NodeRef<'_>,
+    ) -> Result<Hash, lignin_tree::hash::Refusal> {
+        let none = [0u8; 32];
+        let child = |side| node.link(side).map_or(&none, |link| link.hash);
+        Ok(hash_of(&[
+            node.kv_hash(),
+            child(lignin_format::tree_page::Side::Left),
+            child(lignin_format::tree_page::Side::Right),
+        ]))
+    }
+}
+
 /// A link of a node record of the tests.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Link {

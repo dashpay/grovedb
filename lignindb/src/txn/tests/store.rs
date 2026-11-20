@@ -1,16 +1,19 @@
 //! A page store on disk with what a write transaction needs around it that
 //! is not built yet: the open of the engine (TXN-07), reduced to making the
-//! stores, the log and the first commit, and the check of the committed
-//! tree pages (VER-07). The subtree directory is the real one
-//! (`lignin_tree::directory`), and so is the commit (`crate::commit`).
+//! stores, the log and the first commit. The subtree directory is the real
+//! one (`lignin_tree::directory`), and so is the commit (`crate::commit`).
+//!
+//! A store is checked by the physical invariant checker (`crate::verify`)
+//! when it is dropped, in a debug build: [`Db::verify`] is the check, and
+//! the end of this file says when it is left out.
 
 #![allow(dead_code)]
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError,
     },
 };
@@ -47,6 +50,7 @@ use crate::{
     commit::{CommitError, CommitState, Committer, Published},
     snapshot::{ReadPath, Reclaim, Versions},
     txn::{path::Store, Batch, Commits, KeySet, Keyspaces, Subtree, TxnError, WritePath, WriteTxn},
+    verify::{self, Finding, Grove, Options, Place, Report, Rule, Scope},
 };
 
 pub const SIZE: PageSize = PageSize::MIN;
@@ -198,6 +202,13 @@ pub struct Db {
     directory: OnceLock<FlatTree>,
     flat_drops: OnceLock<FlatDrops>,
     used: Mutex<BTreeSet<PageId>>,
+    /// Whether the store is left out of the check that its drop makes.
+    unchecked: AtomicBool,
+    /// The rules that the check of its drop recomputes the hashes by, where
+    /// they are not those of the model of these tests.
+    hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
+    /// Whether the check of its drop recomputes no hash.
+    unhashed: AtomicBool,
     _dir: Option<tempfile::TempDir>,
 }
 
@@ -239,6 +250,11 @@ pub struct Swept {
     /// still there.
     pub waiting: bool,
 }
+
+/// The guard of a check that runs when nothing else does.
+struct AtRest;
+
+impl lignin_tree::OperationGuard for AtRest {}
 
 struct Hook(Arc<Db>);
 
@@ -327,6 +343,11 @@ impl Db {
             directory: OnceLock::new(),
             flat_drops: OnceLock::new(),
             used: Mutex::new(BTreeSet::new()),
+            // A store on files that a test may fail or cut is checked by
+            // the test that knows what it did to them.
+            unchecked: AtomicBool::new(keep.is_none()),
+            hash_rules: Mutex::new(None),
+            unhashed: AtomicBool::new(false),
             _dir: keep,
         });
         let versions = Versions::with_reclaim(CommitVersion::EMPTY, Box::new(Hook(db.clone())));
@@ -418,6 +439,79 @@ impl Db {
         self.commits.record(commit, Default::default());
         versions.publish(commit).expect("the first version");
         drop(lock);
+    }
+
+    /// Commits by hand what `write` does to the flat pages of the latest
+    /// version, as the first commit of a store is made: for a test that
+    /// writes what no write transaction would. Nothing else commits
+    /// meanwhile, and `write` gives no value out of line.
+    pub fn commit_flat(
+        &self,
+        versions: &Versions,
+        write: impl FnOnce(&mut crate::txn::FlatWriter<'_, '_>),
+    ) -> CommitVersion {
+        let guard = versions.guard();
+        let base = self.committed(&guard, versions.latest());
+        let mut pages = Private::new(base, &self.pool, WritePath::next_owner(), &self.ids);
+        write(&mut pages);
+
+        let lock = self.committing.lock();
+        let counts = self.values.step().expect("the counts");
+        let at = self.log.next_group().expect("a place");
+        let commit = at.version();
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(commit, at.address(), &mut bytes).expect("a group");
+        pages.log_values(&mut group).expect("no value");
+        let mut changed = BTreeSet::new();
+        let written: BTreeSet<PageId> = pages.written().collect();
+        let freed: BTreeSet<PageId> = pages.freed().collect();
+        for page in written.union(&freed) {
+            if freed.contains(page) {
+                group.freed(*page).expect("a freed page");
+            } else if pages.log_page(*page, &mut group).expect("a run") {
+                changed.insert(*page);
+            }
+        }
+        assert!(pages.released().is_empty(), "a value was released");
+        group.finish();
+        let appended = self.log.append_group(&at, &bytes).expect("it is appended");
+        (self.write_back(versions))
+            .committed(commit, appended.at, &bytes)
+            .expect("write-back is told");
+        let parts = pages.into_parts();
+        for (copy, created) in parts.written {
+            let page = copy.page();
+            if !changed.contains(&page) {
+                self.pool.discard(&copy).expect("it is discarded");
+                continue;
+            }
+            drop(self.pool.install(&copy, commit).expect("it installs"));
+            if created {
+                self.ids.publish(page).expect("it is private");
+                locked(&self.used).insert(page);
+            }
+        }
+        for copy in parts.freed {
+            let page = copy.page();
+            self.pool.discard(&copy).expect("it is discarded");
+            match self
+                .table
+                .push(page, lignin_store::table::Link::free(commit))
+            {
+                Ok(()) | Err(lignin_store::table::LinkError::AlreadyFree) => {}
+                Err(error) => panic!("the free link of {page}: {error}"),
+            }
+            self.pool.free(page, commit).expect("it is freed");
+            self.ids.free(page, commit).expect("it is live");
+        }
+        for page in parts.unused {
+            self.ids.release(page).expect("it is private");
+        }
+        drop(counts);
+        self.commits.record(commit, Default::default());
+        versions.publish(commit).expect("the next version");
+        drop(lock);
+        commit
     }
 
     pub fn keyspaces(&self) -> Keyspaces {
@@ -734,163 +828,195 @@ impl Db {
             .unwrap_or(&0)
     }
 
-    /// Checks the committed tree pages at `at`, as the physical invariant
-    /// checker will (`tree-layout.md` section 16, VER-07): the directory
-    /// passes its own check, every Merk in use that has a root is a search
-    /// tree of cells that are each reached once, its entry names the key of
-    /// its root, every stored address names a cell, the key length in a link
-    /// is its child's, the fragment-root marks are what the pointers imply,
-    /// and no page holds a cell that nothing reaches but what a dropped Merk
-    /// left. Returns the keys of every Merk that has a node, in order.
+    /// Checks the committed version `at` with the physical invariant
+    /// checker (`crate::verify`), as a reader of that version: the pages,
+    /// the Merks from their roots, the directory against the cells, the
+    /// flat keyspaces and the values, with the hashes recomputed by the
+    /// rules of the store ([`Self::check_hashes_by`]). The version is sound
+    /// ([`Self::unsound`]) and has no cell that nothing reaches. Returns the
+    /// keys of every Merk in use that has a node, in order.
+    ///
+    /// The caller runs no reclaimer meanwhile. What is of the latest moment
+    /// and of no version, the page ids, the counts of live values and the
+    /// page table, is checked where the store is still: when it is dropped,
+    /// and by [`Self::verify_still`].
     pub fn check_trees(
         &self,
         versions: &Versions,
         at: CommitVersion,
     ) -> BTreeMap<Subtree, Vec<Vec<u8>>> {
-        let guard = versions.guard();
-        let pages = self.committed(&guard, at);
-        let loader = self.loader();
-        let lease = Lease::take();
-        let mut buffers = LoadBuffers::new();
-        let mut reached: HashMap<CellAddress, Subtree> = HashMap::new();
-        // Every pointer a cell stores: from, to.
-        let mut pointers: Vec<(CellAddress, CellAddress)> = Vec::new();
-        let mut keys = BTreeMap::new();
-        let directory = self.directory_at(&pages);
-        let census = directory.check(&pages).expect("the directory is sound");
-        *locked(&self.counts.census) = (census.live, census.left_over, census.dropped);
-        let mut all = Vec::new();
-        let mut entries = directory.entries();
-        while let Some((prefix, entry)) = entries.next(&pages).expect("an entry") {
-            if let Some(root) = entry.root().filter(|_| directory.is_live(&entry)) {
-                all.push((Subtree::new(prefix), root.address, root.key.to_vec()));
-            }
-        }
-        let root_of: HashMap<CellAddress, Subtree> = all
-            .iter()
-            .map(|(subtree, root, _)| (*root, *subtree))
-            .collect();
-        assert_eq!(root_of.len(), all.len(), "two Merks with one root");
-        // What the dropped Merks left: their cells stay until they are
-        // reclaimed, and nothing in use reaches them.
-        let mut left: Vec<CellAddress> = Vec::new();
-        let mut drops = directory.drops();
-        while let Some(dropped) = drops.next(&pages).expect("a dropped Merk") {
-            left.extend(dropped.root);
-        }
+        let report = self.verify_by_own_rules(at, Scope::Reader);
+        assert!(
+            self.unsound(&report).is_empty() && report.more_findings == 0,
+            "version {at} is not sound:\n{report}"
+        );
+        assert_eq!(
+            report.unreached.cells, 0,
+            "a cell that nothing reaches at {at}:\n{report}"
+        );
+        let census = &report.census;
+        *locked(&self.counts.census) =
+            (census.merks, census.left_over_entries, census.dropped_merks);
+        // The pointers of the hosts: those the directory names, and those
+        // of the Merks that stand alone ([`Self::unsound`]).
+        let alone = (report.findings.iter()).filter(|finding| finding.rule == Rule::HostUnnamed);
+        let hosted = census.hosted_roots + alone.count() as u64;
+        self.counts.hosted.store(hosted, Ordering::Relaxed);
 
-        let live = (all.iter()).map(|(subtree, root, key)| (*subtree, *root, Some(key)));
-        let gone = left
-            .iter()
-            .map(|root| (Subtree::new([0xdd; 32]), *root, None));
-        for (subtree, root, root_key) in live.chain(gone) {
-            let (subtree, root) = (&subtree, &root);
-            let mut order = Vec::new();
-            // A cell with the bounds its key lies between.
-            let mut stack = vec![(*root, None::<Vec<u8>>, None::<Vec<u8>>, None::<u8>)];
-            while let Some((address, low, high, key_len)) = stack.pop() {
-                let frame = loader
-                    .get(address.page(), at, &mut buffers)
-                    .unwrap_or_else(|error| panic!("{address} of {subtree} at {at}: {error}"));
+        let (loader, lease, mut buffers) = (self.loader(), Lease::take(), LoadBuffers::new());
+        let mut keys = BTreeMap::new();
+        for (subtree, root) in self.roots(versions, at) {
+            let (mut order, mut next) = (Vec::new(), vec![root]);
+            while let Some(address) = next.pop() {
+                let frame = (loader.get(address.page(), at, &mut buffers)).expect("a page");
                 let page = NodePage::open(&frame, lease).expect("a tree page");
-                let node = page
-                    .node(address.slot())
-                    .unwrap_or_else(|| panic!("no cell at {address} of {subtree}"));
-                assert!(
-                    reached.insert(address, *subtree).is_none(),
-                    "{address} is reached twice"
-                );
-                let key = node.key().to_vec();
-                assert!(
-                    low.as_ref().is_none_or(|low| *low < key),
-                    "order in {subtree}"
-                );
-                assert!(
-                    high.as_ref().is_none_or(|high| key < *high),
-                    "order in {subtree}"
-                );
-                if let Some(len) = key_len {
-                    assert_eq!(len as usize, key.len(), "the key length in a link");
-                }
-                if let Some(root_key) = root_key.filter(|_| address == *root) {
-                    assert_eq!(&key, root_key, "the root key in the entry of {subtree}");
-                }
-                for (side, low, high) in [
-                    (Side::Left, low.clone(), Some(key.clone())),
-                    (Side::Right, Some(key.clone()), high.clone()),
-                ] {
-                    if let Some(link) = node.link(side) {
-                        pointers.push((address, link.child));
-                        stack.push((link.child, low, high, Some(link.child_key_len)));
-                    }
-                }
-                for hosted in node.hosted_roots().flatten() {
-                    match root_key {
-                        Some(_) => assert!(
-                            root_of.contains_key(&hosted),
-                            "a host in {subtree} points at {hosted}, which is the root of no Merk"
-                        ),
-                        // What a dropped Merk left has the Merks below it.
-                        None => stack.push((hosted, None, None, None)),
-                    }
-                    pointers.push((address, hosted));
-                }
-                order.push(key);
+                let node = page.node(address.slot()).expect("a cell");
+                order.push(node.key().to_vec());
+                let links = [Side::Left, Side::Right].map(|side| node.link(side));
+                next.extend(links.into_iter().flatten().map(|link| link.child));
             }
             order.sort();
-            if root_key.is_some() {
-                keys.insert(*subtree, order);
-            }
+            keys.insert(subtree, order);
         }
-
-        let hosted = pointers.iter().filter(|(_, to)| root_of.contains_key(to));
-        self.counts
-            .hosted
-            .store(hosted.count() as u64, Ordering::Relaxed);
-        // The marks, and the cells that nothing reaches and no dropped Merk
-        // left.
-        let named: BTreeSet<CellAddress> = pointers
-            .iter()
-            .filter(|(from, to)| from.page() == to.page())
-            .map(|(_, to)| *to)
-            .collect();
-        // Every tree page the version has, reached or not: a page that was
-        // freed or made later is not loaded at it, and a flat page is no
-        // tree page.
-        let visited: BTreeSet<PageId> = reached.keys().map(|address| address.page()).collect();
-        let pages: Vec<PageId> = locked(&self.used).iter().copied().collect();
-        let mut checked = BTreeSet::new();
-        for id in pages {
-            let Ok(frame) = loader.get(id, at, &mut buffers) else {
-                continue;
-            };
-            let Ok(page) = NodePage::open(&frame, lease) else {
-                continue;
-            };
-            checked.insert(id);
-            for node in page.nodes() {
-                let address = node.address();
-                assert!(
-                    reached.contains_key(&address),
-                    "the cell at {address} is in no Merk at {at}"
-                );
-                assert_eq!(
-                    node.is_fragment_root(),
-                    !named.contains(&address),
-                    "the fragment-root mark of {address}"
-                );
-            }
-        }
-        assert!(
-            visited.is_subset(&checked),
-            "a page that a Merk reaches is not among the pages of the store"
-        );
         keys
     }
 
     /// The oldest pinned version, as a reclaimer is told.
     pub fn oldest_pin(&self, versions: &Versions) -> CommitVersion {
         versions.oldest_pin()
+    }
+
+    /// Runs the physical invariant checker (`crate::verify`) on the
+    /// version `at` of this store, with `rules` to recompute the hashes by,
+    /// or none of them with `None`.
+    ///
+    /// With [`Scope::Still`] the caller vouches that nothing writes to the
+    /// store meanwhile and that `at` is its latest version.
+    pub fn verify(
+        &self,
+        at: CommitVersion,
+        scope: Scope,
+        rules: Option<&mut dyn HashRules>,
+    ) -> Report {
+        self.verify_with(at, scope, rules, Some(self.flat_drops()))
+    }
+
+    /// As [`Self::verify`], with the keyspace of the pages that lazy range
+    /// deletes left as the store is said to keep it: `None` is a store
+    /// that does not name it to the checker.
+    pub fn verify_with(
+        &self,
+        at: CommitVersion,
+        scope: Scope,
+        rules: Option<&mut dyn HashRules>,
+        flat_drops: Option<FlatDrops>,
+    ) -> Report {
+        let columns = self.keyspaces().columns();
+        let store = verify::Store {
+            loader: self.loader(),
+            table: &self.table,
+            segments: &self.segments,
+            values: &self.values,
+            page_size: SIZE,
+            ids: Some(&self.ids),
+            grove: Grove::Directory {
+                tree: self.directory(),
+                columns: &columns,
+            },
+            flat_drops,
+            flat: &[],
+            values_counted: true,
+        };
+        verify::check(&store, &AtRest, Options::new(at, scope), rules)
+    }
+
+    /// Runs the checker on the latest version of this store, which is
+    /// still, with the hashes recomputed by the rules of the store.
+    pub fn verify_still(&self) -> Report {
+        self.verify_by_own_rules(self.commits.newest(), Scope::Still)
+    }
+
+    /// Runs the checker with the rules that the hashes of this store's
+    /// nodes are made by: those that were given ([`Self::check_hashes_by`]),
+    /// or none ([`Self::unhashed`]). With none given, the tests of this
+    /// crate use the rules of their model ([`Rules`]), and the tests of
+    /// another crate, whose nodes have the hashes of their own rules, have
+    /// no hash recomputed.
+    fn verify_by_own_rules(&self, at: CommitVersion, scope: Scope) -> Report {
+        let calls = AtomicU64::new(0);
+        let mut model = Rules(&calls);
+        let mut given = locked(&self.hash_rules);
+        let rules: Option<&mut dyn HashRules> = match given.as_mut() {
+            _ if self.unhashed.load(Ordering::Relaxed) => None,
+            Some(rules) => Some(rules.as_mut()),
+            None if cfg!(test) => Some(&mut model),
+            None => None,
+        };
+        self.verify(at, scope, rules)
+    }
+
+    /// Leaves the store out of the check that its drop makes: for a test
+    /// that damages its store, or leaves it in the middle of something.
+    pub fn unchecked(&self) {
+        self.unchecked.store(true, Ordering::Relaxed);
+    }
+
+    /// The rules that the check at the drop of this store recomputes the
+    /// hashes by: for a store whose nodes were not written with the hashes
+    /// of the model of these tests ([`Rules`]).
+    pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
+        *locked(&self.hash_rules) = Some(rules);
+    }
+
+    /// Has the check at the drop of this store recompute no hash: for a
+    /// test that states hashes which no rule makes.
+    pub fn unhashed(&self) {
+        self.unhashed.store(true, Ordering::Relaxed);
+    }
+
+    /// The findings of `report` that say this store is unsound.
+    ///
+    /// One finding is the fixture's own doing and is left out. The Merks
+    /// that every store of the tests has from its first commit stand alone
+    /// ([`ENTERED`]): their entries name no host, and tests let a node host
+    /// one of them all the same, which an engine never does
+    /// ([`Rule::HostUnnamed`]).
+    pub fn unsound<'r>(&self, report: &'r Report) -> Vec<&'r Finding> {
+        let stands_alone = |finding: &Finding| match finding.place {
+            Place::Merk(prefix) if finding.rule == Rule::HostUnnamed => {
+                prefix[0] < ENTERED && prefix == [prefix[0]; 32]
+            }
+            _ => false,
+        };
+        (report.findings.iter())
+            .filter(|finding| !stands_alone(finding))
+            .collect()
+    }
+}
+
+/// The physical invariant checker runs after every test, in a debug build:
+/// a store that is dropped is still, and is checked at its latest version.
+///
+/// It is left out for a store that a test took out ([`Db::unchecked`]), for
+/// one on files that the test chose ([`Db::on`] with no directory to keep),
+/// and where the test is failing already. The hashes are recomputed by the
+/// rules of the store ([`Db::check_hashes_by`], [`Db::unhashed`]). What
+/// counts as unsound is [`Db::unsound`].
+#[cfg(debug_assertions)]
+impl Drop for Db {
+    fn drop(&mut self) {
+        if std::thread::panicking() || self.unchecked.load(Ordering::Relaxed) {
+            return;
+        }
+        if self.keyspaces.get().is_none() || self.directory.get().is_none() {
+            return;
+        }
+        let at = self.commits.newest();
+        let report = self.verify_by_own_rules(at, Scope::Still);
+        assert!(
+            self.unsound(&report).is_empty() && report.more_findings == 0,
+            "the store of a test is left unsound at version {at}:\n{report}"
+        );
     }
 }
 

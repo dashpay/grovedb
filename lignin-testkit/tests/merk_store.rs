@@ -114,6 +114,7 @@ use lignindb::{
         testing::{Db, Outcome},
         Subtree, WriteTxn,
     },
+    verify::Scope,
 };
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
@@ -173,6 +174,9 @@ struct Tally {
     /// RocksDB, and the bytes they loaded.
     reads_charged: u64,
     bytes_loaded: u64,
+    /// The cells of the Merks in use that the physical invariant checker
+    /// walked in the store as the replay left it.
+    checked: u64,
 }
 
 impl Tally {
@@ -191,6 +195,7 @@ impl Tally {
         self.committed_bytes_loaded += other.committed_bytes_loaded;
         self.reads_charged += other.reads_charged;
         self.bytes_loaded += other.bytes_loaded;
+        self.checked += other.checked;
     }
 }
 
@@ -953,6 +958,20 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         replay.compare_all(&committed, &reader, block, grove);
     }
 
+    // The store as the replay leaves it passes the physical invariant
+    // checker (`lignindb::verify`): the pages, the trees, the directory
+    // against the cells, the values, the page ids and the page table. No
+    // hash is recomputed here: the rules that make Merk's hashes for every
+    // kind of tree are the hash bridge's (MERK-02).
+    let report = lignin.verify(versions.latest(), Scope::Still, None);
+    let unsound = lignin.unsound(&report);
+    assert!(
+        unsound.is_empty() && report.more_findings == 0,
+        "{}: the store is not sound: {unsound:?}",
+        spec.name
+    );
+    replay.tally.checked += report.census.live_cells;
+
     // Of the values it was handed, the store wrote exactly those whose
     // bytes it did not hold, and kept the others. Handed every node as
     // written, that is every value that did not change.
@@ -1055,5 +1074,6 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             tally.reads_charged > tally.nodes && tally.bytes_loaded > 100_000_000,
             "{tally:?}"
         );
+        assert!(tally.checked > 10_000, "{tally:?}");
     }
 }
