@@ -57,10 +57,7 @@ use lignin_store::{
     segment::{read_manifest, SegmentStoreError},
     wal::{LogError, SyncPolicy},
 };
-use lignin_tree::{
-    flat::FlatTree,
-    value::{RegroupPolicy, Regrouping},
-};
+use lignin_tree::value::{RegroupPolicy, Regrouping};
 
 use super::*;
 use crate::{
@@ -254,36 +251,9 @@ pub(super) fn tick(db: &Db) -> Result<Tick, FlushError> {
 /// The physical check of a database in which nothing runs, with every
 /// stored hash made again by the rules of the tests' model.
 pub(super) fn check_still(db: &Db) -> verify::Report {
-    let shared = &*db.shared;
-    let store = &*shared.store;
-    let catalog = store.catalog();
-    let columns = catalog.keyspaces.columns();
-    let beside = [FlatTree::open(lignin_format::PageId::MIN, store.config())];
-    let view = verify::Store {
-        loader: store.loader(),
-        table: &store.table,
-        segments: &store.segments,
-        values: &store.values,
-        page_size: store.page_size,
-        ids: Some(&store.ids),
-        grove: verify::Grove::Directory {
-            tree: catalog.directory,
-            columns: &columns,
-        },
-        flat_drops: Some(catalog.flat_drops),
-        flat: &beside,
-        values_counted: true,
-    };
-    let guard = shared.versions.guard();
-    let at = guard.latest();
+    let at = db.shared.versions.latest();
     let calls = AtomicU64::new(0);
-    let mut rules = Rules(&calls);
-    verify::check(
-        &view,
-        &guard,
-        verify::Options::new(at, verify::Scope::Still),
-        Some(&mut rules),
-    )
+    db.check(at, verify::Scope::Still, Some(&mut Rules(&calls)))
 }
 
 /// Fails if the checker finds anything in a store at rest.

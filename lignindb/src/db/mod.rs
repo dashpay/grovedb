@@ -187,7 +187,9 @@
 //! removal leaves that was cut short after its mark went and before the
 //! directory itself did is a place. What a creation of a
 //! checkpoint left with a directory of a store's files in it gets no
-//! database either ([`OpenError::NoManifest`]). What such a creation left
+//! database either, where it has no manifest
+//! ([`OpenError::NoManifest`]); with its manifest it is a database, and
+//! is opened. What such a creation left
 //! empty, or with its lock file alone, the open cannot tell from a place
 //! and makes a database in: a checkpoint is to be built under another
 //! name and renamed into place, so that a cut creation leaves nothing
@@ -415,8 +417,9 @@
 //! engine knows no Merk rule.
 //!
 //! In any build, [`Db::verify`] checks the latest version as a reader
-//! sees it, beside writers and with the reclaiming held back for the
-//! run, and [`Db::close_and_verify`] closes and returns the report of
+//! sees it, beside writers, at a version it pins under the commit lock
+//! with the reclaiming held back for the run, and
+//! [`Db::close_and_verify`] closes and returns the report of
 //! the full check with no panic: a tool that checks a database calls
 //! these.
 //!
@@ -932,21 +935,38 @@ impl Db {
     /// `rules` are the functions that make the hashes of the nodes; with
     /// `None` no stored hash is recomputed.
     ///
-    /// **The reclaiming of what drops left is held back for the run**,
-    /// from before the version is pinned until the check has ended. A
-    /// step of the reclaimer takes cells and records out of the newest
-    /// version of a page, and a Merk goes in several steps on several
-    /// pages. A pinned version reads such a step on the pages that no
-    /// later commit wrote and not on the others, so a check of a sound
-    /// store beside a reclaiming can find a flat record whose entry is
-    /// gone, which is also what damage looks like. With no step made
-    /// during the run, the version that was the latest when it was pinned
-    /// is as every reader of it found it. A round that is due waits and
-    /// goes on when the check has ended, and so does a call of
-    /// [`Self::reclaim`]: for as long as a check takes, the pages and
-    /// values of dropped subtrees are given back later. A second check on
-    /// demand waits for the first. No commit, no reader, and neither
-    /// write-back nor the cleaner is held back.
+    /// **The version is pinned under the commit lock, with the reclaiming
+    /// of what drops left held back, and the reclaiming stays held back
+    /// until the check has ended.** A step of the reclaimer takes cells
+    /// and records out of the newest version of a page, and a Merk goes
+    /// in several steps on several pages. A version reads such a step on
+    /// the pages of which it is the newest version and not on the
+    /// others, so a check of a sound store beside a reclaiming can find a
+    /// flat record whose entry is gone, which is also what damage looks
+    /// like. Under the commit lock no commit has installed pages that it
+    /// has not published: the pinned version is the newest of every
+    /// page, and it has every step that was made. None is made during
+    /// the run, so the version is checked as every reader of it found it.
+    ///
+    /// The pin waits for a commit that is being made, and nothing waits
+    /// for the check but this: a round of the reclaiming that is due goes
+    /// on when the check has ended, and so does a call of
+    /// [`Self::reclaim`], so for as long as a check takes the pages and
+    /// values of dropped subtrees are given back later; and a second
+    /// check on demand waits for the first. The commit lock is given
+    /// back once the version is pinned: commits and readers go on beside
+    /// the check, and so do write-back and the cleaner, for whom the
+    /// check is one reader more. What they may give back only when no
+    /// reader needs it (the links of a chain, a file that was emptied)
+    /// waits for the check's pin and its operation guard as for any
+    /// reader's.
+    ///
+    /// `rules` are called with the reclaiming held back, so they call
+    /// neither this function nor [`Self::reclaim`] on this handle.
+    ///
+    /// In a session that has ended ([`Self::reopen`]) it checks what the
+    /// readers of that session read on: the latest version that was
+    /// published.
     ///
     /// What a store keeps beside its pages (the page ids, the counts of
     /// live values, the page table against its segments) can be compared
@@ -954,16 +974,27 @@ impl Db {
     pub fn verify(&self, rules: Option<&mut dyn HashRules>) -> verify::Report {
         let shared = &*self.shared;
         // Every round of the reclaiming is made under this lock. It is
-        // taken before the pin and given back after it, so no step is
-        // made from the moment the version is the latest one to the end
-        // of the check.
+        // taken before the pin and given back after the check, so no step
+        // is made from the pin to the end of the check.
         let _held_back = lock(&shared.store.reclaiming);
-        let pin = shared.versions.pin();
+        // The pin is taken under the commit lock: no commit has installed
+        // pages that it has not published, so the version is the newest
+        // of every page, and every step the reclaimer has made is in it.
+        // The order is the one a round of the reclaiming has when it
+        // loads the directory again: its lock, then the commit lock.
+        let pin = {
+            let _commit = shared.store.committing.lock();
+            let pin = shared.versions.pin();
+            #[cfg(test)]
+            store::at_verify(store::VerifyStage::Pinned);
+            pin
+        };
         #[cfg(test)]
-        if let Some(beside) = store::ONCE_PINNED.with(|hook| hook.borrow_mut().take()) {
-            beside();
-        }
-        self.check(pin.version(), verify::Scope::Reader, rules)
+        store::at_verify(store::VerifyStage::Reading);
+        let report = self.check(pin.version(), verify::Scope::Reader, rules);
+        #[cfg(test)]
+        store::at_verify(store::VerifyStage::Checked);
+        report
     }
 
     /// Leaves this handle out of the check that a close makes in a debug

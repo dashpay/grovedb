@@ -563,14 +563,37 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
+/// Where a check on demand ([`Db::verify`](super::Db::verify)) is when it
+/// runs what a test gave it.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum VerifyStage {
+    /// It has just pinned its version and still holds what it pinned it
+    /// under.
+    Pinned,
+    /// It has pinned its version and has not read a page yet.
+    Reading,
+    /// The checker has returned, and the check has not.
+    Checked,
+}
+
 #[cfg(test)]
 thread_local! {
-    /// What a test has run once, when a check on demand on this thread
-    /// ([`Db::verify`](super::Db::verify)) has pinned its version and has
-    /// not read a page yet: a commit and a reclaiming that come behind the
-    /// pin.
-    pub(super) static ONCE_PINNED: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+    /// What a test has run at each stage of a check on demand on this
+    /// thread.
+    pub(super) static AT_VERIFY: std::cell::RefCell<Option<Box<dyn FnMut(VerifyStage)>>> =
         const { std::cell::RefCell::new(None) };
+}
+
+/// Runs what a test gave for `stage`, if it gave something.
+#[cfg(test)]
+pub(super) fn at_verify(stage: VerifyStage) {
+    if let Some(mut hook) = AT_VERIFY.with(|hook| hook.borrow_mut().take()) {
+        // The hook is out of its place while it runs: what it does can
+        // come here again.
+        hook(stage);
+        AT_VERIFY.with(|place| *place.borrow_mut() = Some(hook));
+    }
 }
 
 impl StepLog for Steps<'_> {

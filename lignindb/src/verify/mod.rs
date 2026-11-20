@@ -150,7 +150,7 @@
 //! - **The caller holds an operation guard** for the whole run, and gives
 //!   a version it has pinned, or the latest version read under the guard
 //!   (`transactions.md` PN5), behind which no reclaimer has worked (the
-//!   fourth point). A run reads every page, so it is one long
+//!   fourth point says when that is). A run reads every page, so it is one long
 //!   operation: it holds back the reuse of page ids and the deletion of
 //!   files for as long as it takes.
 //! - **[`Scope::Still`] is a promise.** Nothing commits, no page step is
@@ -169,17 +169,19 @@
 //!   records out of the newest version of a page (`lignin_tree::drop`),
 //!   and a Merk goes in several steps on several pages. So a run beside
 //!   one can read the record of a dropped Merk and then find its cells
-//!   gone, and reports that. And a version that is not the latest any
-//!   more reads a step on the pages that no later commit wrote and not on
-//!   the others: after a step it can hold a flat record whose entry is
-//!   gone ([`Rule::FlatRecordWithoutEntry`]), with every read of it right
-//!   and no byte wrong. **A pinned version is sound to check only if no
-//!   step of the reclaimer was made since it stopped being the latest**,
-//!   and [`Scope::Reader`] counts on the caller for that as
-//!   [`Scope::Still`] does. Whoever runs background work holds the
-//!   reclaimer back from before the version is pinned, while it is the
-//!   latest, until the run has ended: the engine's check on demand does
-//!   (`Db::verify`). Write-back and the cleaner may run under
+//!   gone, and reports that. And a version reads a step only on the pages
+//!   of which it is the newest version: once a later commit has installed
+//!   a page, published or not, a step on that page is not in the version,
+//!   and a step on another page is. Such a version can hold a flat record
+//!   whose entry is gone ([`Rule::FlatRecordWithoutEntry`]), with every
+//!   read of it right and no byte wrong. **A version is sound to check
+//!   only if no step of the reclaimer was made since a later commit
+//!   first installed a page**, and [`Scope::Reader`] counts on the caller
+//!   for that as [`Scope::Still`] does. A caller has it by pinning the
+//!   latest version under the commit lock, where no commit is between
+//!   its installs and its publication, with the reclaimer held back from
+//!   before that until the run has ended: the engine's check on demand
+//!   does (`Db::verify`). Write-back and the cleaner may run under
 //!   [`Scope::Reader`]: what a run reads of one cell, it reads from one
 //!   frame, and a value that the cleaner moved is read whole under the
 //!   pointer that the frame holds, the old one or the new: the file that
@@ -329,7 +331,8 @@ pub enum Scope {
 pub struct Options {
     /// The version to check: one the caller has pinned, or the latest
     /// version read under its guard, and one that no reclaimer of dropped
-    /// subtrees has worked behind since it was the latest.
+    /// subtrees has worked behind (the [module documentation](self), "What
+    /// the callers do").
     pub at: CommitVersion,
     /// How much of the store the run may look at.
     pub scope: Scope,

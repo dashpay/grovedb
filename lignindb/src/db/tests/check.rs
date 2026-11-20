@@ -199,18 +199,21 @@ fn the_physical_checker_reads_an_open_database() {
     assert!(report.is_sound(), "{report}");
 }
 
-/// A check on demand holds the reclaiming back while it reads (D-183): a
-/// reclaiming that comes due once the check has pinned its version waits
-/// for the end of the check. That the check takes hold before it pins is
-/// in the code and not in this test. A Merk that hosts another is
-/// dropped, and once the check has pinned that version a commit writes
-/// the leaf of the column that holds a record of the hosted Merk. A
-/// reclaiming from then on takes that record out of the leaf's newest
-/// version, which the pinned version does not read, and the hosted
-/// Merk's entry out of the directory's page, which it does read: the
-/// check would find a flat record with no entry in a sound store. The
-/// reclaiming that comes due here waits, the check finds nothing, and the
-/// reclaiming is made when the check has ended.
+/// A check on demand pins its version under the commit lock with the
+/// reclaiming held back (D-193), and holds the reclaiming back until the
+/// checker has returned (D-183). Three looks at the check show it: at the
+/// pin neither lock is free; a reclaiming that comes due once the version
+/// is pinned waits; and when the checker has returned it waits still,
+/// with nothing reclaimed.
+///
+/// A Merk that hosts another is dropped, and once the check has pinned
+/// that version a commit writes the leaf of the column that holds a
+/// record of the hosted Merk. A reclaiming from then on takes that record
+/// out of the leaf's newest version, which the pinned version does not
+/// read, and the hosted Merk's entry out of the directory's page, which
+/// it does read: the check would find a flat record with no entry in a
+/// sound store. The check finds nothing, and the reclaiming is made when
+/// the check has ended.
 ///
 /// The background threads are ended, so the lock of the reclaiming is
 /// held by the check or by nobody when it is asked for, and the
@@ -223,7 +226,7 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
         sync::TryLockError,
     };
 
-    use crate::db::store::ONCE_PINNED;
+    use crate::db::store::{VerifyStage, AT_VERIFY};
 
     let dir = temp();
     let db = Arc::new(Db::open(dir.path(), &options()).expect("a new database"));
@@ -265,41 +268,67 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
         }
         panic!("the drop is not reclaimed: {}", db.stats());
     }
-    let held_back = Rc::new(Cell::new(None));
-    let due = Rc::new(RefCell::new(None));
-    let (store, held, waits) = (db.clone(), held_back.clone(), due.clone());
-    ONCE_PINNED.with(|hook| {
-        *hook.borrow_mut() = Some(Box::new(move || {
-            Writes {
-                records: vec![(Column::Aux, beside, b"more".to_vec(), vec![9; 40])],
-                ..Writes::default()
-            }
-            .commit(&store);
-            assert!(store.version() > dropped_at);
-            let asked = store.shared.store.reclaiming.try_lock();
-            let free = !matches!(asked, Err(TryLockError::WouldBlock));
-            drop(asked);
-            held.set(Some(!free));
-            match free {
-                // Nothing holds the reclaiming back: it is made here,
-                // behind the pin and before the check reads a page.
-                true => reclaim(&store),
-                false => *waits.borrow_mut() = Some(thread::spawn(move || reclaim(&store))),
-            }
+    // Whether the reclaiming is held: by the check, since nothing else
+    // of this test holds it when it is asked.
+    fn held_back(db: &Db) -> bool {
+        let asked = db.shared.store.reclaiming.try_lock();
+        matches!(asked, Err(TryLockError::WouldBlock))
+    }
+    // What each look found: the commit lock and the reclaiming at the
+    // pin; the reclaiming before the first read; the reclaiming, and how
+    // many Merks were reclaimed, when the checker had returned.
+    let looks = Rc::new(RefCell::new(Vec::new()));
+    let due = Rc::new(Cell::new(None));
+    let (store, looked, waits) = (db.clone(), looks.clone(), due.clone());
+    AT_VERIFY.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |stage| {
+            let held = held_back(&store);
+            let found = match stage {
+                VerifyStage::Pinned => {
+                    let committing = store.shared.store.committing.try_lock().is_none();
+                    format!("pinned: commit lock {committing}, reclaiming {held}")
+                }
+                VerifyStage::Reading => {
+                    Writes {
+                        records: vec![(Column::Aux, beside, b"more".to_vec(), vec![9; 40])],
+                        ..Writes::default()
+                    }
+                    .commit(&store);
+                    assert!(store.version() > dropped_at);
+                    let reclaiming = store.clone();
+                    match held {
+                        // Nothing holds the reclaiming back: it is made
+                        // here, behind the pin and before the check
+                        // reads a page.
+                        false => reclaim(&store),
+                        true => waits.set(Some(thread::spawn(move || reclaim(&reclaiming)))),
+                    }
+                    format!("reading: reclaiming {held}")
+                }
+                VerifyStage::Checked => {
+                    let merks = store.stats().reclaimed.merks;
+                    format!("checked: reclaiming {held}, {merks} reclaimed")
+                }
+            };
+            looked.borrow_mut().push(found);
         }));
     });
     let report = db.verify(None);
+    AT_VERIFY.with(|hook| hook.borrow_mut().take());
     assert!(report.is_sound(), "{report}");
     assert_eq!(report.census.merks, 1, "{report}");
     assert_eq!(
-        held_back.get(),
-        Some(true),
-        "the reclaiming was free while the check ran"
+        *looks.borrow(),
+        [
+            "pinned: commit lock true, reclaiming true",
+            "reading: reclaiming true",
+            "checked: reclaiming true, 0 reclaimed",
+        ]
     );
 
     // The reclaiming goes on when the check has ended, and leaves
     // nothing: the next check reads a version with it made.
-    let waited = due.borrow_mut().take().expect("a reclaiming that waited");
+    let waited = due.take().expect("a reclaiming that waited");
     waited.join().expect("the reclaiming is made");
     let stats = db.stats();
     let reclaimed = &stats.reclaimed;
@@ -312,4 +341,61 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
     let report = db.verify(None);
     assert!(report.is_sound(), "{report}");
     assert_eq!(report.unreached.cells, 0, "{report}");
+}
+
+/// A session that the store has ended (OPS-08): a sync of the log was
+/// refused, and the session takes no commit any more. Its readers read
+/// on, and a check on demand reads as they do: the latest version that
+/// was published, which is sound. The close makes no check of it in a
+/// debug build, whatever the close itself returns: what such a session
+/// leaves is the next recovery's to make whole, and the next session is
+/// checked like any other.
+#[test]
+fn a_session_that_the_store_ended_is_checked_on_demand_and_not_at_its_close() {
+    use lignin_io::sim::{Event, Fault, FaultRule, OpKind, OpSet};
+    use lignin_store::wal::SyncPolicy;
+
+    use super::full::Session;
+    use crate::backup::tests::world::{first, next};
+
+    let mut session = Session::new(31, SyncPolicy::Never, true);
+    assert!(session.open());
+    session.write("w1", first, false);
+    assert!(!session.ticks("t1"));
+    session.write("w2", next, false);
+    let db = session.db.take().expect("the session");
+    let before = db.verify(None);
+    assert!(before.is_sound(), "{before}");
+
+    let mut appends = session.fs.trace().into_iter().rev();
+    let log = appends.find_map(|event| match event {
+        Event::Op(op) if op.kind == OpKind::Append && op.path.contains("/wal/") => Some(op.path),
+        _ => None,
+    });
+    let log = log.expect("the log was appended to");
+    let refusing = FaultRule::new(Fault::Enospc).on(OpSet::SYNCS).at(&log);
+    session.fs.add_rule(refusing);
+    let refused = db.shared.write_back().sync_log();
+    refused.expect_err("the sync is refused");
+    session.fs.clear_rules();
+    assert!(db.reopen().is_some(), "the session has ended");
+
+    let report = db.verify(None);
+    assert!(report.is_sound(), "{report}");
+    assert_eq!(report.census, before.census, "{report}");
+
+    // The store is spoiled as only a still check finds it: a close that
+    // checked would panic here in a debug build.
+    spoil(&db);
+    let version = db.version();
+    let closed = db.close();
+    println!("the close of the session that has ended: {closed:?}");
+
+    session.options.create_if_missing = false;
+    let db = Db::open("/db", &session.options).expect("the next session");
+    assert_eq!(db.reopen(), None);
+    assert_eq!(db.version(), version);
+    let report = db.close_and_verify(None).expect("the close");
+    assert!(report.is_sound(), "{report}");
+    assert_eq!(report.census.live_cells, before.census.live_cells);
 }
