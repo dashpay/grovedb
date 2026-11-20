@@ -58,10 +58,24 @@ fn a_close_that_is_asked_gives_the_report_of_a_still_store() {
 fn a_check_on_demand_reads_what_a_reader_sees() {
     let dir = temp();
     let db = used(&dir);
+    // A writer with a Merk of its own that is not committed: the check
+    // reads the latest version, which has none of it.
     let txn = db.begin();
+    {
+        let scope = txn.scope().expect("a scope");
+        let writes = Writes {
+            enter: vec![(subtree(7), None)],
+            merks: vec![(subtree(7), Merk::sized(b'k', 5, 20))],
+            ..Writes::default()
+        };
+        let applied = writes.with(|batch| scope.apply(batch));
+        applied.expect("the batch is applied");
+        scope.merge();
+    }
     let report = db.verify(None);
     assert!(sound(&report), "{report}");
     assert_eq!(report.census.live_cells, 20, "{report}");
+    db.rollback(&txn).expect("the transaction is rolled back");
     drop(txn);
 
     spoil(&db);
@@ -106,7 +120,9 @@ fn a_close_of_an_unsound_store_panics_in_a_debug_build() {
 }
 
 /// A session that ended for writes is not checked at its close: what it
-/// leaves is the next recovery's to make whole.
+/// leaves is the next recovery's to make whole. The close itself does
+/// its work, so it is the session's end for writes that leaves the check
+/// out.
 #[test]
 fn a_session_that_ended_for_writes_is_not_checked_at_its_close() {
     let dir = temp();
@@ -118,5 +134,5 @@ fn a_session_that_ended_for_writes_is_not_checked_at_its_close() {
     drop(commit);
     assert!(db.reopen().is_some());
     spoil(&db);
-    drop(db);
+    db.close().expect("the session ends");
 }
