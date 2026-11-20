@@ -39,7 +39,7 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 | A recovery | `lignin_store::recovery::recover` on the state, with the buffer pool, the window of the log reader and the number of pages a replay keeps by turns. Then every page, with the commit it was born at and the count of the cells that left it, every value, page id and count is read and held to the model, the engine's physical invariant checker (`lignindb::verify`) is run over the store, and the store's directories hold no file that its manifest does not name. |
 | Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is recovered once more on a copy of its own with the faults injected into the recovery: it returns the same store, or fails and is followed by a recovery with no fault that does. |
 | The floor | No state is before the last point at which a sync of the log or a recovery returned `Ok`, nor before the last commit the log had reported durable, nor before the point that the durable part of the same or an earlier image recovered to. |
-| A crash that loses nothing | The state with every unsynced change, which is what a killed process leaves, is at the last point or at the item that is being appended. |
+| A crash that loses nothing | The state with every unsynced change, which is what a killed process leaves absent a failed write-back (`lignin_io::vfs`, "Durability"), is at the last point or at the item that is being appended. |
 
 ## What it costs
 

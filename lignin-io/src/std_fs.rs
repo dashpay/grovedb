@@ -44,6 +44,10 @@
 //! on macOS that call replaces a directory only if it has no entries, and
 //! refuses to move a directory into itself.
 //!
+//! [`Vfs::sync_dir`] and a [`SyncItem::Dir`] open their path before they look
+//! at what it names. Where it names a FIFO, that open waits until the FIFO
+//! has a writer, and only then does the call fail with `NotADirectory`.
+//!
 //! # A set synced together
 //!
 //! On Linux [`Vfs::sync_together`] makes the single calls of its items one

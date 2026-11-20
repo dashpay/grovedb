@@ -900,8 +900,9 @@ decodes to the longest valid prefix of whole groups.
 **LG31. Why that prefix is the right one under the file layer's crash
 model.** The model (`lignin_io::vfs`): storage writes a sector whole or not
 at all and damages no other byte; of the bytes that were not synced a
-crash keeps any part, each where it was written; and bytes under a length
-that survived without them read as zeros.
+crash keeps any part, each where it was written; and where a length
+survived without the bytes written below it, the file keeps what it held
+there and reads as zeros where it held nothing.
 
 - *A byte of a log file is what was appended there, or zero.* File space
   is never used twice and a file is never appended to by a later session
