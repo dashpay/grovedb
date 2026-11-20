@@ -774,16 +774,9 @@ fn a_step_that_the_log_refuses_is_made_again() {
 /// it at the read. A read that the reclaimer makes inside a page step is
 /// passed over: it holds the lock on the counts of values there, which a
 /// commit waits for, so no commit lands at such a read. Whether a read is
-/// one of those is asked first, by a thread that takes that lock and
-/// gives it back. The first read of a reclaiming is made before any step,
-/// and is not asked about: a commit lands there in every run.
-///
-/// That question is answered within 200 ms or taken as a yes, so on a
-/// slow machine fewer reads get their commit, and the test can then pass
-/// without the schedule that shows a defect of the walk. A question with
-/// no wait is VER-05's to give this test (D-160). The two schedules are
-/// made with no timing in the tree layer's own tests
-/// (`lignin_tree::drop`, `under_the_walk_to_it`).
+/// one of those is asked of the lock itself, with no wait
+/// (`ValueStore::try_step`): at every other read the commit lands,
+/// however slow the machine is, and the test says at how many.
 #[test]
 fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
@@ -841,14 +834,9 @@ fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
                 }
                 // Whether the lock on the counts is free: this thread, the
                 // reclaimer's, holds it or nobody does.
-                let (free, answer) = mpsc::channel();
-                let asked = store.clone();
-                let asking = thread::spawn(move || {
-                    drop(asked.shared.store.values.step());
-                    let _ = free.send(());
-                });
-                let in_a_step =
-                    at_read > 1 && answer.recv_timeout(Duration::from_millis(200)).is_err();
+                let free = (store.shared.store.values.try_step()).expect("the value log");
+                let in_a_step = free.is_none();
+                drop(free);
                 if !in_a_step {
                     let (done, landed) = mpsc::channel();
                     let store = store.clone();
@@ -863,9 +851,6 @@ fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
                     writer.join().expect("the commits are made");
                     told.set(true);
                 }
-                // Left to end by itself where the lock is held: it ends
-                // when the step does.
-                drop(asking);
             }));
         });
         let mut rounds = 0;
@@ -910,5 +895,8 @@ fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
         );
     }
     println!("a commit landed at {landed} reads of the reclaimer");
-    assert!(landed >= 1, "no commit landed at the first read");
+    // The first read of a reclaiming is made before any page step, and
+    // the reads of the walk to a record's leaf are made before the step
+    // that takes the record out.
+    assert!(landed >= 2, "a commit landed at {landed} reads");
 }

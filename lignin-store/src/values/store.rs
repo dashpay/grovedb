@@ -8,6 +8,7 @@ use std::{
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
+        TryLockError,
     },
 };
 
@@ -793,6 +794,24 @@ impl ValueStore {
     pub fn step(&self) -> Result<CountStep<'_>, ValueStoreError> {
         self.check_writable()?;
         Ok(self.count_step())
+    }
+
+    /// [`Self::step`] if nobody holds the lock on the counts now, and
+    /// `None` if someone does, the calling thread included. It never
+    /// waits.
+    ///
+    /// It is the question of a test that lets a commit in at one moment
+    /// of some background work: a commit takes this lock for the place of
+    /// its group, so none lands at a moment at which a page step holds
+    /// it, and the test can know that without waiting to see.
+    pub fn try_step(&self) -> Result<Option<CountStep<'_>>, ValueStoreError> {
+        self.check_writable()?;
+        let counts = match self.counts.try_lock() {
+            Ok(counts) => counts,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return Ok(None),
+        };
+        Ok(Some(CountStep { counts }))
     }
 
     pub(super) fn count_step(&self) -> CountStep<'_> {
