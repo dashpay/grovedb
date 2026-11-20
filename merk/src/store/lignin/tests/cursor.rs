@@ -175,7 +175,10 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
 }
 
 /// Makes one call, and returns what it answered and what it charged.
-fn act<'db, S: NodeStore<'db>>(merk: &mut Merk<S>, act: &Act) -> (String, OperationCost) {
+pub(super) fn act<'db, S: NodeStore<'db>>(
+    merk: &mut Merk<S>,
+    act: &Act,
+) -> (String, OperationCost) {
     let mut cost = OperationCost::default();
     let answer = match act {
         Act::Apply(batch) => {
@@ -253,6 +256,20 @@ pub(super) struct Both<'a, 't, 's> {
 }
 
 impl Both<'_, '_, '_> {
+    /// A deferred context of the Merk on RocksDB, which stages in `batch`.
+    pub(super) fn rocks_context<'b>(
+        &'b self,
+        batch: &'b StorageBatch,
+    ) -> <RocksDbStorage as Storage<'b>>::BatchTransactionalStorageContext {
+        self.rocks
+            .get_transactional_storage_context(
+                SubtreePath::empty(),
+                Some(batch),
+                self.rocks_transaction,
+            )
+            .unwrap()
+    }
+
     /// Makes `calls` on a Merk on a deferred handle of each engine and
     /// applies what they staged. The answers, the cost of every call and
     /// the cost of the batch are the same on both, and are returned.
