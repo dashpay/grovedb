@@ -15,6 +15,7 @@ mod recovered;
 mod regroup;
 mod stats;
 mod threads;
+mod trim;
 mod values;
 
 use std::{
@@ -834,6 +835,12 @@ impl Db {
     /// How many values the value log counts as live.
     pub(crate) fn live_values(&self) -> u64 {
         self.values.counts().iter().map(|count| count.values).sum()
+    }
+
+    /// How many blocks write-back has reported dead.
+    pub(crate) fn dead_blocks(&self) -> u64 {
+        let dead = self.state.dead_space();
+        dead.values().map(|dead| dead.blocks).sum()
     }
 
     pub(crate) fn stats(&self) -> FlushStats {

@@ -17,6 +17,7 @@ use super::{
     page::{ChainBuffers, PendingCell},
 };
 use crate::{
+    alloc::Epoch,
     segment::SegmentWriter,
     table::{CheckpointInfo, Link, LogPlace},
     values::{ValueHold, ValueWriter},
@@ -237,6 +238,18 @@ pub(super) struct Ready {
     pub(super) _hold: ValueHold,
 }
 
+/// A page that got a base image and waits until its chain may be trimmed
+/// at that image's version.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Untrimmed {
+    /// The version of the newest image the page got. A trim below it
+    /// leaves links that a later trim removes.
+    pub(super) newest: CommitVersion,
+    /// The version the chain was trimmed at last since the page waits, if
+    /// it was: a trim at that version again removes nothing.
+    pub(super) trimmed_at: Option<CommitVersion>,
+}
+
 /// What one pass uses and the next pass uses again. Its lock makes passes
 /// one at a time.
 #[derive(Debug, Default)]
@@ -246,9 +259,17 @@ pub(super) struct Files {
     /// the blocks behind what was synced stay readable in this session.
     pub(super) failed: Vec<SegmentWriter>,
     pub(super) values: Option<ValueWriter>,
-    /// Pages that got a base image, with its version: their older links
-    /// are trimmed once no reader can ask for a version before it.
-    pub(super) untrimmed: BTreeMap<PageId, CommitVersion>,
+    /// Pages that got a base image: the links older than an image are
+    /// trimmed once no reader can ask for a version before it.
+    pub(super) untrimmed: BTreeMap<PageId, Untrimmed>,
+    /// Answers about the oldest pinned version, each with the epoch that
+    /// was started once it was given: no version pin is below it, and it
+    /// waits for the operations that held a guard when that epoch began.
+    pub(super) trim_bounds: VecDeque<(Epoch, CommitVersion)>,
+    /// The highest of those answers whose operations have ended: neither
+    /// a version pin nor a running operation reads below it. Chains are
+    /// trimmed at this version.
+    pub(super) trim_at: Option<CommitVersion>,
     pub(super) chain: ChainBuffers,
     pub(super) links: Vec<Link>,
     pub(super) image: Vec<u8>,
