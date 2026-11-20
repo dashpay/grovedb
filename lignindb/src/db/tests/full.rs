@@ -695,7 +695,7 @@ impl Session {
         self.after_step();
     }
 
-    /// Ends the session by the steps of [`Db::close`]: the two threads end
+    /// Ends the session by the steps of [`Db::close`]: the threads end
     /// after the turn they are in, and then the close finishes what it
     /// can. The session is asked whether it has ended between the two.
     /// Asked while its threads run, it can say nothing and its close can

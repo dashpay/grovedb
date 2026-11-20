@@ -5,6 +5,7 @@ use std::{fmt, sync::Arc, time::Duration};
 use lignin_format::PageSize;
 use lignin_io::{StdVfs, Vfs};
 use lignin_store::{
+    cleaner::CleanerConfig,
     flush::FlushConfig,
     recovery::{RecoveryOptions, DEFAULT_POOL_CAPACITY},
     wal::{LogOptions, SyncPolicy},
@@ -74,6 +75,17 @@ pub struct Options {
     /// before committers are slowed. `None` is [`FlushConfig::new`] of the
     /// page size.
     pub flush: Option<FlushConfig>,
+    /// The policy of the cleaner, which moves what is live out of
+    /// segments and value-log files that are mostly dead and gives the
+    /// files back: the share of dead bytes it works towards in the
+    /// segments ([`CleanerConfig::target_dead_percent`]) and in the value
+    /// log ([`CleanerConfig::value_dead_percent`]), and its throttle, the
+    /// bytes one pass may copy ([`CleanerConfig::max_pass_bytes`]) and the
+    /// sleep between two passes ([`CleanerConfig::idle`]). `None` is
+    /// [`CleanerConfig::new`], with which dead space stays below 20 bytes
+    /// in a hundred under a steady load. None of it changes what a reader
+    /// is given.
+    pub cleaner: Option<CleanerConfig>,
     /// How long the reclaiming thread sleeps when nobody wakes it. A
     /// reclaim that a reader held back, and a step of the reclaimer that a
     /// write transaction held back, are tried again after this long at
@@ -115,6 +127,7 @@ impl Default for Options {
             sync: SyncPolicy::Never,
             log_file_len: None,
             flush: None,
+            cleaner: None,
             idle: Self::DEFAULT_IDLE,
             vfs: Arc::new(StdVfs),
         }
@@ -130,6 +143,7 @@ impl fmt::Debug for Options {
             .field("sync", &self.sync)
             .field("log_file_len", &self.log_file_len)
             .field("flush", &self.flush)
+            .field("cleaner", &self.cleaner)
             .field("idle", &self.idle)
             .finish_non_exhaustive()
     }

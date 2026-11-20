@@ -8,7 +8,9 @@ use std::{
 };
 
 use lignin_format::{CommitVersion, PageSize};
-use lignin_store::{flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError};
+use lignin_store::{
+    cleaner::CleanerError, flush::FlushError, recovery::RecoveryError, segment::SegmentStoreError,
+};
 
 use crate::commit::{CommitError, Failure, Published, Stopped};
 
@@ -514,6 +516,10 @@ pub enum DbError {
     /// manifest had been left in doubt and the manifest could not be
     /// opened again.
     Flush(FlushError),
+    /// The cleaner could not close the files it was moving blocks and
+    /// values into. What it had moved stands, and the rest of the close
+    /// was made.
+    Clean(CleanerError),
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.
     Panicked(&'static str),
@@ -531,6 +537,7 @@ impl fmt::Display for DbError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Flush(source) => write!(f, "write-back: {source}"),
+            Self::Clean(source) => write!(f, "the cleaner: {source}"),
             Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
             Self::Removed { dir } => write!(
                 f,
@@ -546,6 +553,7 @@ impl Error for DbError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Flush(source) => Some(source),
+            Self::Clean(source) => Some(source),
             Self::Panicked(_) | Self::Removed { .. } => None,
         }
     }

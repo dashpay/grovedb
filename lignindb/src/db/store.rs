@@ -14,6 +14,7 @@ use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
     alloc::PageAllocator,
     cache::BufferPool,
+    cleaner::{Cleaner, CleanerError, CleanerState},
     flush::{FlushError, FlushState, Stores, WriteBack},
     load::PageLoader,
     recovery::RecoveryReport,
@@ -108,7 +109,9 @@ pub(super) struct Troubles {
     pub(super) write_back: AtomicU64,
     /// Calls of the reclaimer that failed.
     pub(super) reclaim: AtomicU64,
-    /// The last of either, as text.
+    /// Passes of the cleaner that failed.
+    pub(super) cleaner: AtomicU64,
+    /// The last of these, as text.
     pub(super) last: Mutex<Option<String>>,
     /// Why the session takes no write any more: the first reason that was
     /// seen where the session is answered for ([`Store::refusal`]), the
@@ -121,6 +124,11 @@ impl Troubles {
     pub(super) fn write_back_failed(&self, error: &FlushError) {
         self.write_back.fetch_add(1, Ordering::Relaxed);
         *lock(&self.last) = Some(format!("write-back: {error}"));
+    }
+
+    pub(super) fn cleaner_failed(&self, error: &CleanerError) {
+        self.cleaner.fetch_add(1, Ordering::Relaxed);
+        *lock(&self.last) = Some(format!("the cleaner: {error}"));
     }
 
     pub(super) fn reclaim_failed(&self, error: &dyn std::fmt::Display) {
@@ -145,6 +153,8 @@ pub(super) struct Store {
     pub(super) manifest: Mutex<ManifestStore>,
     /// What write-back keeps of the session, as recovery made it.
     pub(super) flush: FlushState,
+    /// What the cleaner keeps of the session between its passes.
+    pub(super) cleaner: CleanerState,
     /// The counts of the store.
     pub(super) stats: Stats,
     /// The key sets of the session's commits.
@@ -452,6 +462,14 @@ impl Shared {
             true => self.write_back().settle_manifest(),
             false => Ok(()),
         }
+    }
+
+    /// The cleaner of the session, to stop its loop and to close its
+    /// files. The loop itself runs with a view of write-back that has the
+    /// tree layer's word on the values of a page.
+    pub(super) fn cleaner(&self) -> Cleaner<'_> {
+        let store = &*self.store;
+        Cleaner::new(self.write_back(), &store.cleaner).with_stats(&store.stats)
     }
 
     /// The write path: what a write transaction is begun from.

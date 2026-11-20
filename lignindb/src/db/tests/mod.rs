@@ -5,6 +5,7 @@
 mod backup;
 mod beside;
 mod check;
+mod clean;
 mod ended;
 mod filling;
 mod full;
@@ -846,8 +847,10 @@ pub(super) fn halt_background(db: &Db) {
     let threads = crate::db::store::lock(&db.threads).take();
     let threads = threads.expect("the threads of the database");
     db.shared.store.signal.stop();
+    db.shared.cleaner().stop();
     db.shared.write_back().stop();
     threads.reclaim.join().expect("the reclaimer ends");
+    threads.cleaner.join().expect("the cleaner ends");
     threads.write_back.join().expect("write-back ends");
 }
 

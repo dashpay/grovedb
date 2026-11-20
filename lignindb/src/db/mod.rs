@@ -268,7 +268,7 @@
 //!
 //! # Background work
 //!
-//! Two threads belong to an open database, and both end with its handle.
+//! Three threads belong to an open database, and all end with its handle.
 //!
 //! - **Write-back** ([`lignin_store::flush`]): page versions go from the
 //!   buffer pool to segments, values that commits carried in their groups
@@ -290,8 +290,15 @@
 //!   When a reclaiming is done, the handle on the directory of the latest
 //!   version is loaded again, under the commit lock, so that the id of the
 //!   Merk leaves the handles.
+//! - **The cleaner** ([`lignin_store::cleaner`]): live blocks are moved
+//!   out of segments that are mostly dead, and live values out of such
+//!   files of the value log, and the files are given back, by the policy
+//!   in [`Options::cleaner`]. The pointers to moved values are rewritten
+//!   in page steps of the tree layer's owners of values. A close ends its
+//!   loop and has it close the files that took its copies, before
+//!   write-back's last checkpoint names them.
 //!
-//! An error of either changes nothing that is committed. It is counted
+//! An error of any of them changes nothing that is committed. It is counted
 //! and kept as text ([`DbStats::background`]).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
@@ -305,7 +312,7 @@
 //!
 //! **A close writes only into a directory that is this database's
 //! still** (P-18). Platform removes the directory of a checkpoint while
-//! its handle is open. A close ends the two threads first and then looks:
+//! its handle is open. A close ends the three threads first and then looks:
 //! the lock file in the directory has to be the file this handle's guard
 //! is on (`VfsLock::is_at`), and the manifest has to be the one this
 //! session wrote last. Where one of the two fails, or cannot be found
@@ -446,16 +453,17 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
+    cleaner::{BothOwners, Cleaner, CleanerStats},
     flush::{Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
     table::LogDurable,
 };
 use lignin_tree::{
-    flat::FlatTree,
+    flat::{FlatOwners, FlatTree},
     hash::{HashRules, Refusal},
     node::NodeRef,
-    value::{RegroupPolicy, Regrouping},
+    value::{RegroupPolicy, Regrouping, TreeOwners},
 };
 
 use self::store::{lock, Shared};
@@ -491,7 +499,9 @@ pub struct Background {
     pub write_back_errors: u64,
     /// Calls of the reclaimer that failed.
     pub reclaim_errors: u64,
-    /// The last of either, as text.
+    /// Passes of the cleaner that failed. Its loop goes on after one.
+    pub cleaner_errors: u64,
+    /// The last of these, as text.
     pub last_error: Option<String>,
 }
 
@@ -556,6 +566,9 @@ pub struct DbStats {
     pub opening: Opening,
     /// What the reclaiming of dropped subtrees has done, and what waits.
     pub reclaimed: ReclaimStats,
+    /// What the cleaner has moved and given back in this session
+    /// (`lignin_store::cleaner`).
+    pub cleaner: CleanerStats,
     /// Page ids that reclaims gave back to the allocator.
     pub ids_released: u64,
     /// Version pins and operation guards that are held.
@@ -594,6 +607,15 @@ impl fmt::Display for DbStats {
         )?;
         writeln!(
             f,
+            "cleaner: {} blocks moved and {} segments dropped, {} values moved and {} value-log \
+             files dropped",
+            self.cleaner.blocks_moved,
+            self.cleaner.segments_dropped,
+            self.cleaner.values_moved,
+            self.cleaner.value_files_dropped
+        )?;
+        writeln!(
+            f,
             "readers: {} pins, {} guards, {} directory handles kept",
             self.pins, self.guards, self.directories
         )?;
@@ -607,10 +629,11 @@ impl fmt::Display for DbStats {
     }
 }
 
-/// The two threads of an open database.
+/// The three threads of an open database.
 struct Threads {
     write_back: JoinHandle<()>,
     reclaim: JoinHandle<()>,
+    cleaner: JoinHandle<()>,
 }
 
 /// An open database. See the [module documentation](self).
@@ -721,12 +744,24 @@ impl Db {
                 return Err(error);
             }
         };
+        let cleaning = shared.clone();
+        let cleaner = match spawn("lignindb-cleaner", move || clean(&cleaning)) {
+            Ok(cleaner) => cleaner,
+            Err(error) => {
+                shared.store.signal.stop();
+                shared.write_back().stop();
+                let _ = reclaim.join();
+                let _ = write_back.join();
+                return Err(error);
+            }
+        };
         opening.threads = started.elapsed();
         Ok(Self {
             shared,
             threads: Mutex::new(Some(Threads {
                 write_back,
                 reclaim,
+                cleaner,
             })),
             created: opened.created,
             opening,
@@ -948,14 +983,17 @@ impl Db {
             return Ok(false);
         };
         let shared = &*self.shared;
-        // Both threads end after the turn they are in, which is still
-        // made as any turn of the session was.
+        // Each thread ends after the turn it is in, which is still made
+        // as any turn of the session was.
         shared.store.signal.stop();
+        shared.cleaner().stop();
         shared.write_back().stop();
         let reclaimed = threads.reclaim.join();
+        let cleaned = threads.cleaner.join();
         let written = threads.write_back.join();
         let finished = self.finish();
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
+        cleaned.map_err(|_| DbError::Panicked("cleaner"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
         finished.map(|()| true)
     }
@@ -984,10 +1022,13 @@ impl Db {
             });
         }
         // The reclaimings that hold cells first: their steps go to the log
-        // that the finish makes durable.
+        // that the finish makes durable. Then the cleaner closes the files
+        // that took its copies, so that the manifest of write-back's
+        // finish names them as they are.
         shared.finish_reclaiming();
+        let cleaned = shared.cleaner().finish();
         shared.write_back().finish()?;
-        Ok(())
+        cleaned.map_err(DbError::Clean)
     }
 
     /// The directory of the database.
@@ -1221,6 +1262,7 @@ impl Db {
             recovery: store.recovery,
             opening: self.opening,
             reclaimed: *lock(&store.reclaimed),
+            cleaner: store.cleaner.stats(),
             ids_released: store.ids_released.load(Ordering::Relaxed),
             pins: shared.versions.pins_held(),
             guards: shared.versions.guards_held(),
@@ -1228,6 +1270,7 @@ impl Db {
             background: Background {
                 write_back_errors: troubles.write_back.load(Ordering::Relaxed),
                 reclaim_errors: troubles.reclaim.load(Ordering::Relaxed),
+                cleaner_errors: troubles.cleaner.load(Ordering::Relaxed),
                 last_error: lock(&troubles.last).clone(),
             },
             reopen: store.refusal(),
@@ -1378,13 +1421,12 @@ fn spawn(name: &str, work: impl FnOnce() + Send + 'static) -> Result<JoinHandle<
     builder.spawn(work).map_err(OpenError::Thread)
 }
 
-/// The background loop of write-back, for as long as the session lives
-/// (`lignin_store::flush`). Its view of the store has the tree layer's
-/// word on the values of a page: their scan order, and the regrouping
-/// before a base image. The page steps of a regrouping append their
-/// records through a view that has no such word, since the two refer to
-/// each other.
-fn write_back(shared: &Shared) {
+/// Runs `work` with the view of write-back that the background threads
+/// use. It has the tree layer's word on the values of a page: their scan
+/// order, and the regrouping before a base image. The page steps of a
+/// regrouping append their records through a view that has no such word,
+/// since the two refer to each other.
+fn with_page_values<R>(shared: &Shared, work: impl FnOnce(WriteBack<'_>) -> R) -> R {
     let store = &*shared.store;
     let plain = shared.write_back();
     let regrouping = Regrouping::new(
@@ -1399,6 +1441,36 @@ fn write_back(shared: &Shared) {
         page_values: Some(&regrouping),
         ..plain.stores()
     };
-    let write_back = WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain);
-    write_back.run(|error| store.troubles.write_back_failed(&error));
+    work(WriteBack::new(stores, &store.flush, store.page_size).unwrap_or(plain))
+}
+
+/// The background loop of write-back, for as long as the session lives
+/// (`lignin_store::flush`).
+fn write_back(shared: &Shared) {
+    let troubles = &shared.store.troubles;
+    with_page_values(shared, |write_back| {
+        write_back.run(|error| troubles.write_back_failed(&error));
+    });
+}
+
+/// The background loop of the cleaner, for as long as the session lives
+/// (`lignin_store::cleaner`): a pass over the segments and one over the
+/// value log, again and again. The owners of values are the tree layer's,
+/// made on this thread: the cells of tree pages and the entries of flat
+/// leaves, whose pointers a pass over the value log rewrites in page
+/// steps. The table checkpoints it asks for make passes of write-back,
+/// so it has the view that write-back's own thread has.
+fn clean(shared: &Shared) {
+    let store = &*shared.store;
+    let owners = BothOwners(
+        TreeOwners::new(store.loader(), &store.pool, store.page_size, shared.steps()),
+        FlatOwners::new(store.loader(), &store.pool, store.config(), shared.steps()),
+    );
+    with_page_values(shared, |write_back| {
+        let cleaner = Cleaner::new(write_back, &store.cleaner).with_stats(&store.stats);
+        cleaner.run(
+            |cleaner| cleaner.pass_values(&owners),
+            |error| store.troubles.cleaner_failed(&error),
+        );
+    });
 }
