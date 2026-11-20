@@ -480,7 +480,9 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         let staging = staged.storage;
 
         // The change set says that the Merk had no node before it, and a
-        // store that is told so reads no node of the Merk to apply it.
+        // store that is told so reads no node of the Merk to apply it. The
+        // moves of a cursor return a cost and no result: a cursor that
+        // failed says so by its status.
         let mut cursor = self.merk.storage.cursor();
         cursor.seek_to_first().unwrap();
         let holds_a_node = cursor.valid().unwrap();
