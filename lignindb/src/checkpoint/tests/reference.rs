@@ -30,6 +30,7 @@
 //! | `LIGNIN_TXN06_FRAMES` | how many pages the buffer pool of the store, and of each checkpoint that is opened, has room for: 16,384 unless set, which is 128 MiB. A pool is made empty and whole by an open, so its size is in the time of one. |
 //! | `LIGNIN_TXN06_NO_LIMITS` | the times are printed and not held to the limits: on a disk whose syncs take seconds they measure the disk |
 //! | `LIGNIN_TXN06_OPEN_ONLY` | a checkpoint that is opened is not read: the difference between a run with opens and one without is then what the opens cost, as `perf stat` counts it |
+//! | `LIGNIN_TXN06_DURABLE` | the log is made durable before each checkpoint, outside its time, as it is where every commit syncs the log: the creation then asks for no sync of the log |
 
 use std::{
     any::Any,
@@ -610,6 +611,7 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let warm = number("LIGNIN_TXN06_WARM", WARM_BLOCKS);
     let limits = std::env::var_os("LIGNIN_TXN06_NO_LIMITS").is_none();
     let reads = std::env::var_os("LIGNIN_TXN06_OPEN_ONLY").is_none();
+    let durable_first = std::env::var_os("LIGNIN_TXN06_DURABLE").is_some();
     let frames = number("LIGNIN_TXN06_FRAMES", 16_384) as usize;
     let options = LogOptions {
         target_file_len: number(
@@ -706,6 +708,9 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
         }
         let target = targets.join(format!("{}-{index}", versions.latest()));
         let held = db.write_back(&versions).log_held();
+        if durable_first {
+            (db.write_back(&versions).sync_log()).expect("the log is made durable");
+        }
         let before = counts.read();
         let (created, took, on_cpu) = timed(|| checkpointer(&db, &versions).create(&target));
         let created = created.expect("a checkpoint");
