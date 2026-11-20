@@ -886,8 +886,7 @@ fn the_frames_of_a_large_pool_are_mapped_zeroed_and_side_by_side() {
 }
 
 /// Where a build maps, the frames are a mapping from a megabyte of them
-/// on, and the allocator's below that: a small pool is zeroed when it is
-/// made, which costs next to nothing, and has no mapping to itself.
+/// on, and the allocator's below that.
 #[test]
 fn a_pool_maps_its_frames_from_a_megabyte_of_them() {
     let len = PageSize::MIN.get();

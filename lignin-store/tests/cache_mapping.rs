@@ -1,21 +1,25 @@
 //! The frames of a large pool are a mapping of the pool's own on Linux
-//! (x86-64 and AArch64) and on macOS: there while the pool lives, and gone
-//! when it is dropped.
+//! (x86-64 and AArch64) and on macOS, with 64-bit pointers: there while
+//! the pool lives, and gone when it is dropped.
 //!
 //! On Linux the test reads the ranges of addresses the process has mapped,
 //! and looks for the frames' own range among them. Between the drop of the
-//! pool and that reading it allocates nothing and opens nothing: the file
-//! is open and the buffer is there before. On macOS, which has no such
-//! list, it reads the size of the process's address space through `ps`,
-//! which is a looser test.
+//! pool and the end of the reading that follows, its thread allocates
+//! nothing and opens nothing: the file is open and the buffer is there
+//! before. On macOS it reads no list of ranges but the size of the
+//! process's address space, through `ps`. That is a looser test, in which
+//! every other change of the address space counts as well.
 //!
-//! It is the one test of its file, so that its thread is the only one of
-//! the process that maps or allocates while it measures. Miri has neither
-//! thing to read, and does not report a mapping that is never unmapped.
+//! It is the one test of its file, so that no other test's thread maps or
+//! allocates while it measures. Miri reads neither thing, and does not
+//! report a mapping that is never unmapped.
 
 #![cfg(not(miri))]
 
-use std::{fs::File, io::Read};
+use std::{
+    fs::File,
+    io::{ErrorKind, Read},
+};
 
 use lignin_format::PageSize;
 use lignin_store::cache::{Blank, BufferPool, PoolConfig};
@@ -33,51 +37,55 @@ const MAPS: bool = cfg!(all(
     ),
 ));
 
-/// The ranges of addresses a process has mapped, on Linux: read from an
-/// open file into a buffer that is long enough, with no allocation.
-struct Mappings {
+/// The ranges of addresses in the text of `/proc/self/maps`. Each line
+/// begins with two addresses in hexadecimal and a hyphen between them. The
+/// rest of a line can be a path that is not text.
+fn ranges(text: &[u8]) -> Vec<(u64, u64)> {
+    text.split(|&byte| byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .map(|line| {
+            let range = line.split(|&byte| byte == b' ').next().expect("a range");
+            let range = std::str::from_utf8(range).expect("two addresses");
+            let (start, end) = range.split_once('-').expect("two addresses");
+            let address = |text| u64::from_str_radix(text, 16).expect("an address");
+            (address(start), address(end))
+        })
+        .collect()
+}
+
+/// A reading of `/proc/self/maps` that is made ready before it is taken:
+/// the file is open and the buffer is there, so that taking it allocates
+/// nothing and opens nothing.
+struct Reading {
     file: File,
     text: Vec<u8>,
     len: usize,
 }
 
-impl Mappings {
-    fn ready() -> Self {
+impl Reading {
+    fn ready(room: usize) -> Self {
         Self {
             file: File::open("/proc/self/maps").expect("the mappings"),
-            text: vec![0; 1 << 20],
+            text: vec![0; room],
             len: 0,
         }
     }
 
-    fn read(&mut self) {
+    /// Reads the file to its end. The buffer has to be longer than the
+    /// text: the test fails if it is not.
+    fn take(&mut self) -> &[u8] {
         loop {
-            let read = self
-                .file
-                .read(&mut self.text[self.len..])
-                .expect("the mappings");
+            let read = match self.file.read(&mut self.text[self.len..]) {
+                Ok(read) => read,
+                Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+                Err(error) => panic!("the mappings: {error}"),
+            };
             if read == 0 {
-                return;
+                return &self.text[..self.len];
             }
             self.len += read;
             assert!(self.len < self.text.len(), "the buffer holds the mappings");
         }
-    }
-
-    /// Each line begins with two addresses in hexadecimal and a hyphen
-    /// between them. The rest of a line can be a path that is not text.
-    fn ranges(&self) -> Vec<(u64, u64)> {
-        self.text[..self.len]
-            .split(|&byte| byte == b'\n')
-            .filter(|line| !line.is_empty())
-            .map(|line| {
-                let range = line.split(|&byte| byte == b' ').next().expect("a range");
-                let range = std::str::from_utf8(range).expect("two addresses");
-                let (start, end) = range.split_once('-').expect("two addresses");
-                let address = |text| u64::from_str_radix(text, 16).expect("an address");
-                (address(start), address(end))
-            })
-            .collect()
     }
 }
 
@@ -112,9 +120,13 @@ fn address_space() -> u64 {
 #[test]
 fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
     // What the two readings of the ranges are judged by.
-    let ranges = [(10, 20), (20, 30), (40, 50)];
-    assert!(covers(&ranges, 12, 30) && !covers(&ranges, 12, 31) && !covers(&ranges, 5, 15));
-    assert!(touches(&ranges, 29, 35) && !touches(&ranges, 30, 40));
+    let sample = [(10, 20), (20, 30), (40, 50)];
+    assert!(covers(&sample, 12, 30) && !covers(&sample, 12, 31) && !covers(&sample, 5, 15));
+    assert!(touches(&sample, 29, 35) && !touches(&sample, 30, 40));
+    assert_eq!(
+        ranges(b"a-14 r-xp /\xff\n14-1e rw-p\n"),
+        [(10, 20), (20, 30)]
+    );
 
     let config = PoolConfig {
         page_size: PageSize::MIN,
@@ -126,7 +138,6 @@ fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
         return;
     }
     let linux = cfg!(target_os = "linux");
-    let (mut living, mut gone) = (linux.then(Mappings::ready), linux.then(Mappings::ready));
     let before = (!linux).then(address_space);
 
     let pool = BufferPool::new(config).expect("holds frames");
@@ -144,17 +155,22 @@ fn the_frames_of_a_large_pool_are_mapped_while_it_lives_and_unmapped_with_it() {
     blanks[0].fill(7);
     drop(blanks);
 
-    if let (Some(living), Some(gone)) = (&mut living, &mut gone) {
-        living.read();
-        // Nothing is allocated or opened from here to the second reading.
+    if linux {
+        // The first reading allocates as it needs. The second is taken
+        // into a buffer that is made before the pool is dropped, with
+        // twice the room the first took and 64 KiB more.
+        let living = std::fs::read("/proc/self/maps").expect("the mappings");
+        let mut gone = Reading::ready(2 * living.len() + (1 << 16));
+        // This thread allocates and opens nothing from here to the end of
+        // the second reading.
         drop(pool);
-        gone.read();
+        let gone = gone.take();
         assert!(
-            covers(&living.ranges(), start, start + mapped),
+            covers(&ranges(&living), start, start + mapped),
             "the frames are mapped while the pool lives"
         );
         assert!(
-            !touches(&gone.ranges(), start, start + mapped),
+            !touches(&ranges(gone), start, start + mapped),
             "and no part of them once it is dropped"
         );
     } else {

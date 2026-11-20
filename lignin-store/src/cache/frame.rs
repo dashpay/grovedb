@@ -1318,9 +1318,9 @@ impl ChainWrite<'_> {
 /// A block of frames is asked for with an alignment of 4,096 bytes,
 /// whatever the size of a store's pages, each of which is a multiple of
 /// that. So every frame of a store's pages starts at a multiple of 4,096
-/// bytes, and that is all that is promised of where it starts. A frame
-/// length that is no multiple of 4,096, which only tests have, is aligned
-/// to 64 bytes.
+/// bytes, and that is all that is promised of where it starts. A block of
+/// frames whose length is no multiple of 4,096, which only tests have, is
+/// asked for with an alignment of 64 bytes.
 fn layout(frame_len: usize, count: usize) -> Result<Layout, CacheError> {
     let align = if frame_len.is_multiple_of(4096) {
         4096
@@ -1393,7 +1393,7 @@ mod mapping {
 
     /// A mapping of memory that is no file's, which this value made and
     /// asks the system to unmap when it is dropped. The system gives such
-    /// memory zeroed, so nothing is written to make it.
+    /// memory zeroed, and this value writes none of it.
     pub(super) struct Mapped {
         start: NonNull<u8>,
         len: usize,
@@ -1480,8 +1480,8 @@ mod mapping {
                 fn munmap(addr: *mut c_void, len: usize) -> c_int;
             }
             // SAFETY: `start` and `len` are the whole of the mapping that
-            // `new` made, which only this value unmaps, and it does so
-            // once. Whoever holds this value keeps no pointer into the
+            // `new` made. Only this value asks for it to be unmapped, and
+            // it asks once. Whoever holds this value keeps no pointer into the
             // mapping in use beyond its drop (the arena drops its headers
             // first).
             let refused = unsafe { munmap(self.start.as_ptr().cast(), self.len) };
@@ -1636,9 +1636,9 @@ impl Arena {
         if last >= NO_INDEX - 1 {
             return Err(CacheError::CapacityTooLarge);
         }
-        // Each of these owns what it holds, and the headers stay a box
-        // until all of them are made: a panic on the way frees what was
-        // made before it.
+        // Each of these owns what it holds, and the headers are owned by
+        // the collection they are made in: a panic on the way drops what
+        // was made before it.
         let lanes = Lanes::new(Lanes::count_for(count));
         let dead = Padded(Mutex::new(None));
         let mapped = (may_map && layout.size() >= Self::MAPPED_FROM)
@@ -1824,7 +1824,7 @@ impl Arena {
 impl Drop for Arena {
     fn drop(&mut self) {
         let headers = ptr::slice_from_raw_parts_mut(self.frames.as_ptr(), self.count);
-        // SAFETY: `frames` and `count` are the boxed slice that `new` turned
+        // SAFETY: `frames` and `count` are the boxed slice that `make` turned
         // into a raw pointer, and the arena is its only owner. Nothing can
         // follow a pointer to a header any more: a pin borrows the arena.
         drop(unsafe { Box::from_raw(headers) });
@@ -1887,9 +1887,9 @@ mod tests {
         drop(frames);
     }
 
-    /// A mapping the system cannot give is `None`: no address space holds a
-    /// block of this size. Miri has no address space of its own to refuse
-    /// from, and stops when it is asked for so much.
+    /// A mapping of the largest size a layout can have is `None`: where
+    /// this file maps, the system refuses it, and elsewhere no mapping is
+    /// ever made. Miri stops when it is asked for a mapping of that size.
     #[cfg_attr(miri, ignore = "Miri stops on a mapping that is too large")]
     #[test]
     fn a_mapping_the_system_refuses_is_none() {

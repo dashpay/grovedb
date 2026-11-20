@@ -259,11 +259,12 @@ impl BufferPool {
 
     /// A pool of as many frames as `config.capacity` bytes hold.
     ///
-    /// The fixed part ([`Self::fixed_memory`]) is asked for here: of the
-    /// allocator, or, for a megabyte of frames or more, of the system as a
-    /// mapping ([`Self::mapped_memory`] says on which systems). The pool
-    /// allocates another frame only when it needs one while no frame can
-    /// be evicted, and gives that back as soon as the frame could be.
+    /// The fixed part ([`Self::fixed_memory`]) is asked for here. Its
+    /// frames are asked of the allocator or, a megabyte of them or more, of
+    /// the system as a mapping ([`Self::mapped_memory`] says on which
+    /// systems), and the rest of it of the allocator. The pool allocates
+    /// another frame only when it needs one and finds none that it can
+    /// evict, and gives that back as soon as the frame could be.
     pub fn new(config: PoolConfig) -> Result<Self, CacheError> {
         let frame_len = config.page_size.get();
         let fits = |count: usize| {

@@ -6,10 +6,10 @@
 //! thread, every allocation and the bytes that are allocated now.
 //!
 //! The frames of a pool that has a megabyte of them or more are not the
-//! allocator's on Linux (x86-64 and AArch64) and on macOS, unless the
-//! system refuses: they are a mapping of the pool's own. For such a pool
-//! the allocator's count is of everything else, and the pool says how long
-//! its mapping is.
+//! allocator's on Linux (x86-64 and AArch64) and on macOS, with 64-bit
+//! pointers, unless the system refuses: they are a mapping of the pool's
+//! own. For such a pool the allocator's count is of everything else, and
+//! the pool says how long its mapping is.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},

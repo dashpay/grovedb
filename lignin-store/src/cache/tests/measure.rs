@@ -10,7 +10,7 @@
 //! | --- | --- | --- |
 //! | `POOL_MIB` | 128 | the configured size of the pool; with 0 no pool is made |
 //! | `PAGE` | 32768 | the page size in bytes |
-//! | `ROUNDS` | 5 | `making_a_pool`: how many pools are made, one after the other |
+//! | `ROUNDS` | 5 | `making_a_pool`: how many pools are made, one after the other, and one at the least |
 //! | `PASSES` | 2 | `loading_into_frames`: how often every frame is loaded into |
 //! | `HITS` | 1 | `loading_into_frames`: how often every page in the pool is then read |
 //!
@@ -59,7 +59,7 @@ fn making_a_pool() {
         return;
     };
     let (mut made, mut dropped) = (Vec::new(), Vec::new());
-    for round in 1..=setting("ROUNDS", 5) {
+    for round in 1..=setting("ROUNDS", 5).max(1) {
         let before = resident();
         let start = Instant::now();
         let pool = BufferPool::new(config).expect("holds frames");
