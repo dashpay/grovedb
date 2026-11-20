@@ -1393,6 +1393,18 @@ fn a_directory_whose_own_check_fails_is_compared_all_the_same() {
     assert_eq!(census.dropped_merks, sound.dropped_merks);
     assert_eq!(census.live_cells, sound.live_cells);
     assert_eq!(census.hosted_roots, sound.hosted_roots);
+
+    // A flat record under a prefix with no entry is still found.
+    store.write_flat(|pages| {
+        let key = [&prefix(NEVER)[..], b"orphan"].concat();
+        (store.db.keyspaces().aux.put(pages, &key, b"a record")).expect("a put");
+    });
+    let report = store.check();
+    assert_eq!(
+        report.rules(),
+        [Rule::Directory, Rule::FlatRecordWithoutEntry],
+        "{report}"
+    );
 }
 
 /// Whether a finding of `report` says `words`.
