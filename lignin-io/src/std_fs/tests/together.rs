@@ -44,6 +44,18 @@ fn ino(file: &File) -> u64 {
     file.metadata().unwrap().ino()
 }
 
+/// The tests that take a turn for a set of their own take it one at a
+/// time, so that what one of them sees of [`SYNC_TURNS`] is its own set's
+/// doing and not another test's. A set that another test syncs through
+/// [`StdVfs`] on a file system that shares a flush is not kept out.
+static ONE_SET_AT_A_TIME: Mutex<()> = Mutex::new(());
+
+fn one_set_at_a_time() -> MutexGuard<'static, ()> {
+    ONE_SET_AT_A_TIME
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
 /// Whether a set has the turn, so that no sync that is made alone can begin.
 fn a_set_has_the_turn() -> bool {
     let tried = SYNC_TURNS.try_read();
@@ -190,6 +202,7 @@ fn a_set_of_nine_is_nine_calls_and_one_flush_where_a_flush_is_shared() {
 
 #[test]
 fn the_flush_of_a_set_is_asked_on_its_last_item() {
+    let _alone = one_set_at_a_time();
     let (_, root, _dir) = setup();
     let (first, last) = (written(&root.join("first")), written(&root.join("last")));
     let asked = RefCell::new(Vec::new());
@@ -220,6 +233,7 @@ fn the_flush_of_a_set_is_asked_on_its_last_item() {
 
 #[test]
 fn a_failed_flush_of_a_set_stops_every_handle_that_waited_for_it() {
+    let _alone = one_set_at_a_time();
     let (vfs, root, _dir) = setup();
     let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
     let outside = written(&root.join("outside"));
@@ -250,6 +264,7 @@ fn a_failed_flush_of_a_set_stops_every_handle_that_waited_for_it() {
 /// either.
 #[test]
 fn a_sync_that_fails_before_the_turn_of_its_set_fails_the_set() {
+    let _alone = one_set_at_a_time();
     let (_, root, _dir) = setup();
     let files = ["a", "b"].map(|name| written(&root.join(name)));
     let asked = Cell::new(0);
@@ -307,6 +322,7 @@ impl std::error::Error for Told {}
 /// on record.
 #[test]
 fn a_set_has_the_turn_from_its_first_hand_over_to_the_record_of_its_failed_flush() {
+    let _alone = one_set_at_a_time();
     let (_, root, _dir) = setup();
     let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
     let outside = written(&root.join("outside"));
@@ -329,12 +345,12 @@ fn a_set_has_the_turn_from_its_first_hand_over_to_the_record_of_its_failed_flush
     std::thread::scope(|scope| {
         let beside = RefCell::new(Vec::new());
         let hand_over = |_: &File| {
-            assert!(a_set_has_the_turn());
+            assert!(turns.get() == 1 && a_set_has_the_turn());
             handed_over.set(handed_over.get() + 1);
             Ok(())
         };
         let flush = |_: &File| {
-            assert!(a_set_has_the_turn());
+            assert!(turns.get() == 1 && a_set_has_the_turn());
             assert_eq!(handed_over.get(), 5);
             let of_the_set = || files[1].sync_using(|_| Ok(()));
             let of_another = || {
@@ -376,6 +392,7 @@ fn a_set_has_the_turn_from_its_first_hand_over_to_the_record_of_its_failed_flush
 /// for, and left alone by one that failed after its own had been made.
 #[test]
 fn two_sets_with_a_handle_in_common_do_not_mix() {
+    let _alone = one_set_at_a_time();
     for the_first_fails in [false, true] {
         let (_, root, _dir) = setup();
         let [a, b, c] = ["a", "b", "c"].map(|name| written(&root.join(name)));
@@ -508,6 +525,7 @@ fn a_stopped_handle_fails_a_set_before_its_file_system_is_asked() {
 
 #[test]
 fn a_failed_sync_of_one_item_stops_that_handle_and_the_set() {
+    let _alone = one_set_at_a_time();
     for shared in [false, true] {
         let (_, root, _dir) = setup();
         let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
@@ -574,6 +592,7 @@ fn a_handle_whose_sync_failed_fails_the_set_it_is_in() {
 
 #[test]
 fn a_file_of_another_file_layer_in_a_set_is_synced_by_its_own_call() {
+    let _alone = one_set_at_a_time();
     let (vfs, root, _dir) = setup();
     let own = written(&root.join("own"));
     let sim = SimVfs::new(SimConfig::new(1));
@@ -615,6 +634,7 @@ fn a_file_of_another_file_layer_in_a_set_is_synced_by_its_own_call() {
 #[test]
 #[cfg_attr(miri, ignore = "Miri has no inode numbers")]
 fn a_set_is_flushed_once_for_each_file_system_that_shares_a_flush() {
+    let _alone = one_set_at_a_time();
     let (_, root, _dir) = setup();
     let dirs = ["one", "two", "alone"].map(|name| root.join(name));
     for dir in &dirs {
