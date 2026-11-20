@@ -1872,8 +1872,9 @@ impl LogStore {
     /// sync and the sync of `wal/` are one set with the sync of the
     /// manifest's temporary file ([`Vfs::sync_together`]), ahead of the
     /// rename. Once the set has been made the file is one of the log's
-    /// files. If the set fails, the file is given up and removed, as a
-    /// file is whose creation failed: the log needs another
+    /// files. If the set fails, the file is given up, as a file is whose
+    /// creation failed: it is removed, or left for the next open to
+    /// remove if it cannot be, and the log needs another
     /// ([`Self::create`]), under the next id.
     ///
     /// After [`LogError::NotDeleted`] the new manifest is in force. After

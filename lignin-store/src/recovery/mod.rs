@@ -270,12 +270,14 @@
 //! Where the checkpoint could not cover those commits, or something
 //! still held their files, a recovery reads them as well.
 //!
-//! **A segment is read only where a link of the page table points**: one
-//! block, at the offset and of the length the link gives, checked by its
-//! own frame ([`PageLoader`]). A recovery reads no footer of a sealed
-//! segment and walks no segment block by block, so nothing in it rests
-//! on what a footer's index says of a block (S16 of
-//! `segment-manifest.md`).
+//! **Of a segment a recovery reads the file header, and the blocks that
+//! links of the page table point to.** The header is read, and the file
+//! measured, where the segment is opened, which is done for every
+//! segment the manifest names. A block is read where a link points: at
+//! the offset and of the length the link gives, checked by its own frame
+//! ([`PageLoader`]). A recovery reads no footer of a sealed segment and
+//! walks no segment block by block, so nothing in it rests on what a
+//! footer's index says of a block (S16 of `segment-manifest.md`).
 //!
 //! **What it makes durable does not grow with the log.** A recovery of a
 //! store that a session closed makes five syncs, in three calls of the
