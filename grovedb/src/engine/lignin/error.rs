@@ -11,31 +11,19 @@ use grovedb_storage::{
 use lignin_tree::directory::DirectoryError;
 use lignindb::{
     commit::{CommitError as Commit, Failure},
-    db::{DbError, OpenError, WriteError},
+    db::WriteError,
     savepoint::SavepointError,
-    snapshot::ReadError,
     txn::TxnError,
 };
 
-fn failed(error: impl std::fmt::Display) -> Error {
+/// An error of the engine that the seam has no class for, by its words.
+pub(super) fn failed(error: impl std::fmt::Display) -> Error {
     Error::StorageError(format!("lignindb: {error}"))
 }
 
 /// What the engine does not do, or not yet.
 pub(super) fn not_supported(what: &str) -> Error {
     Error::NotSupported(format!("lignindb: {what}"))
-}
-
-pub(super) fn open_error(error: OpenError) -> Error {
-    failed(error)
-}
-
-pub(super) fn db_error(error: DbError) -> Error {
-    failed(error)
-}
-
-pub(super) fn read_error(error: ReadError) -> Error {
-    failed(error)
 }
 
 pub(super) fn txn_error(error: TxnError) -> Error {
@@ -61,7 +49,12 @@ pub(super) fn write_error(error: WriteError) -> Error {
     match error {
         WriteError::Commit(Commit::Conflict) => Error::Commit(CommitError::Conflict),
         WriteError::Commit(Commit::NotDurable { .. }) => Error::Commit(CommitError::NotDurable),
-        WriteError::Commit(Commit::Unsettled { .. }) => Error::Commit(CommitError::Unsettled),
+        // A commit that halted the session is not published, and the next
+        // open recovers it if its bytes survive: whether it happened is
+        // settled there.
+        WriteError::Commit(Commit::Unsettled { .. } | Commit::Halted { .. }) => {
+            Error::Commit(CommitError::Unsettled)
+        }
         WriteError::Commit(Commit::ScopesOpen) => Error::WriteScope(WriteScopeError::ScopesOpen),
         WriteError::Commit(Commit::Refused(error) | Commit::Failed(Failure::Txn(error))) => {
             txn_error(error)

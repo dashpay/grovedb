@@ -1063,23 +1063,35 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     assert_eq!(format!("{moving:?}"), "LigninSubtreeMove");
     drop((batch, tx));
 
-    // An indexed tree keeps more than one Merk under its element.
+    // An indexed tree keeps more than one Merk under its element: the
+    // write that would enter its Merks is refused, and nothing of it is
+    // kept.
     let db = GroveDb::from_engine(engine);
+    let v = version();
     let indexed = Element::empty_provable_count_indexed_tree();
-    (db.insert(ROOT, b"indexed", indexed, None, None, version()))
+    (db.insert(ROOT, b"indexed", indexed, None, None, v))
         .unwrap()
         .expect("the element alone is a value of the root Merk");
+    let root_before = db.root_hash(None, v).unwrap().expect("a root");
     let below = db
-        .insert(
+        .insert_into_count_indexed_tree(
             [b"indexed".as_slice()].as_ref(),
             b"k",
-            Element::new_item(b"v".to_vec()),
+            Element::empty_provable_count_tree(),
             None,
-            None,
-            version(),
+            v,
         )
         .unwrap();
-    assert!(below.is_err(), "an indexed tree was written into");
+    let error = below.expect_err("an indexed tree was written into");
+    not_supported(&error, matches!(error, Error::NotSupported(_)));
+    assert_eq!(db.root_hash(None, v).unwrap().expect("a root"), root_before);
+    let tx = db.engine().start_read_transaction();
+    let primary = db.engine().subtree(path![b"indexed"].into(), None, &tx);
+    assert_eq!(
+        primary.unwrap().entry().expect("the directory answers"),
+        None
+    );
+    drop(tx);
 
     // A checkpoint is opened as a database, and none is made for it.
     let nowhere = dir.path().join("no checkpoint");
@@ -1164,6 +1176,17 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         Some(CommitError::Conflict)
     );
     assert_eq!(class(WriteError::Commit(Commit::NotFinalized)), None);
+    // A commit that halted the session is settled by the next open, as
+    // one that the log could not settle.
+    let (_dir, halted) = engine();
+    let halted = Commit::Halted {
+        version: halted.database().version(),
+        source: lignindb::commit::Failure::PlaceLost,
+    };
+    assert_eq!(
+        class(WriteError::Commit(halted)),
+        Some(CommitError::Unsettled)
+    );
     assert_eq!(
         named(error::write_error(WriteError::Commit(Commit::ScopesOpen))),
         scopes_open
@@ -1192,4 +1215,140 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
     std::fs::write(dir.path().join("CURRENT"), b"MANIFEST-000001\n").expect("a file");
     let refused = LigninEngine::open(dir.path()).expect_err("a directory of RocksDB");
     assert!(named(refused).contains("lignindb"));
+}
+
+#[test]
+fn a_tree_that_holds_elements_is_not_deleted_yet_and_stays_whole() {
+    let v = version();
+    let grove = Grove::<LigninEngine>::new();
+    grove.insert(A, b"a1", None);
+    let root_before = grove.db.root_hash(None, v).unwrap().expect("a root");
+    let options = crate::operations::delete::DeleteOptions {
+        allow_deleting_non_empty_trees: true,
+        deleting_non_empty_trees_returns_error: false,
+        ..Default::default()
+    };
+    // Its nodes are no flat records, and the removal of the records of
+    // its keyspace says so.
+    let deleted = (grove.db).delete(ROOT, A, Some(options), None, v).unwrap();
+    let refused = deleted.expect_err("a tree with elements");
+    assert!(refused.to_string().contains("lignindb"), "{refused}");
+    let root = grove.db.root_hash(None, v).unwrap().expect("a root");
+    assert_eq!(root, root_before);
+    assert!(grove.finds(A, b"a1", None));
+    // A tree that nothing was written into is deleted as on RocksDB.
+    let rocks_like = {
+        let other = Grove::<LigninEngine>::new();
+        other.insert(A, b"a1", None);
+        (other.db.delete(ROOT, B, None, None, v))
+            .unwrap()
+            .expect("an empty tree");
+        other.db.root_hash(None, v).unwrap().expect("a root")
+    };
+    (grove.db.delete(ROOT, B, None, None, v))
+        .unwrap()
+        .expect("an empty tree");
+    assert_eq!(
+        grove.db.root_hash(None, v).unwrap().expect("a root"),
+        rocks_like
+    );
+    let Grove { dir, db } = grove;
+    drop(db);
+    check(dir.path());
+}
+
+#[test]
+fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
+    let (_dir, engine) = engine();
+    let db = GroveDb::from_engine(engine);
+    let v = version();
+    for (name, element) in [
+        (b"tree", Element::empty_tree()),
+        (b"item", Element::new_item(b"no tree".to_vec())),
+    ] {
+        (db.insert(ROOT, name, element, None, None, v))
+            .unwrap()
+            .expect("an element under the root");
+    }
+    let engine = db.engine();
+    let entry_of = |path: &[&[u8]]| {
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree(path.into(), None, &tx).unwrap();
+        handle.entry().expect("the directory answers")
+    };
+    let write = |path: &[&[u8]]| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree(path.into(), Some(&batch), &tx).unwrap();
+        (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        let applied = engine.apply_batch(batch, &tx).unwrap();
+        applied.and_then(|_| engine.commit_transaction(tx).unwrap())
+    };
+
+    // Under an element that is no tree the directory keeps no tree type,
+    // and the subtree is no Merk that opens.
+    write(path![b"item"]).expect("a record under an item");
+    let entry = entry_of(path![b"item"]).expect("entered");
+    assert!(entry.tree_type.is_empty() && entry.tree_type().is_err());
+    assert_eq!(entry.host.expect("a host").key, b"item");
+    // A subtree and one below it that one batch writes first: the outer
+    // one is entered before the inner one, whatever the order of their
+    // prefixes, and the inner one under an element that is not there has
+    // no tree type.
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    for path in [path![b"tree", b"x"], path![b"tree"], path![b"tree", b"y"]] {
+        let handle = engine.subtree(path.into(), Some(&batch), &tx).unwrap();
+        (handle.meta().put(b"k", b"v", None).unwrap()).expect("staging");
+    }
+    let applied = engine.apply_batch(batch, &tx).unwrap();
+    applied.expect("the subtrees are entered in the order of their hosts");
+    engine.commit_transaction(tx).unwrap().expect("a commit");
+    let outer = entry_of(path![b"tree"]).expect("entered");
+    assert_eq!(
+        outer.tree_type().expect("a tree type"),
+        grovedb_merk::TreeType::NormalTree
+    );
+    for inner in [b"x", b"y"] {
+        let entry = entry_of(path![b"tree", inner]).expect("entered");
+        assert!(entry.tree_type.is_empty());
+        let host = entry.host.expect("a host");
+        assert_eq!(
+            (host.subtree, host.key.as_slice()),
+            (build_prefix(path![b"tree"].into()).unwrap(), &inner[..])
+        );
+    }
+
+    // A handle by prefix names the element its subtree is entered under,
+    // so a write through it says the same host as one by path.
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let prefix = build_prefix(path![b"tree"].into()).unwrap();
+    let by_prefix = engine.subtree_by_prefix(prefix, Some(&batch), &tx).unwrap();
+    let host = by_prefix.subtree().host.clone().expect("a host");
+    assert_eq!((host.subtree, host.key.as_slice()), ([0; 32], &b"tree"[..]));
+    // With no batch it writes nothing, and names none.
+    let reader = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+    assert_eq!(reader.subtree().host, None);
+    // A subtree that is not entered has no host to name.
+    let nowhere = engine
+        .subtree_by_prefix([7; 32], Some(&batch), &tx)
+        .unwrap();
+    assert_eq!(nowhere.subtree().host, None);
+    drop((by_prefix, reader, nowhere));
+    drop((batch, tx));
+
+    // The root Merk is entered again by the first write that finds it
+    // gone: a wipe of the database underneath, with no engine beside it.
+    engine.database().wipe().expect("a wipe");
+    assert_eq!(entry_of(&[]), None);
+    (db.insert(ROOT, b"again", Element::empty_tree(), None, None, v))
+        .unwrap()
+        .expect("an element under the root");
+    let root = entry_of(&[]).expect("the root is entered");
+    assert_eq!(
+        (root.tree_type().expect("a tree type"), root.host),
+        (grovedb_merk::TreeType::NormalTree, None)
+    );
 }

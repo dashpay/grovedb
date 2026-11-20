@@ -32,6 +32,16 @@
 //! the element at the last segment of the path its handle was opened by.
 //! A tree that nothing was ever written into is therefore in no directory,
 //! and reads as the empty tree it is.
+//!
+//! # What it does not do yet
+//!
+//! Each is refused with `Error::NotSupported` and changes nothing: a
+//! checkpoint of an open database (GROVE-08), the move of a subtree
+//! (GROVE-03), a write into an indexed tree, whose element hosts more
+//! than one Merk (GROVE-04), and the removal of the records that a flat
+//! drop left (GROVE-05). The delete of a tree that holds elements is
+//! refused by its handle (`FlatStore::clear` of the node store), and a
+//! subtree is not dropped when its element goes (GROVE-05).
 
 mod enter;
 mod error;
@@ -70,7 +80,7 @@ use lignindb::{
     Db, Options,
 };
 
-use self::error::{merk_error, not_supported, read_error, txn_error, write_error};
+use self::error::{failed, merk_error, not_supported, txn_error, write_error};
 use super::{Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup};
 
 /// The subtree at the root of a grove: the one with the empty path.
@@ -93,7 +103,7 @@ impl LigninEngine {
 
     /// Opens the database at `path` with `options`.
     pub fn open_with<P: AsRef<Path>>(path: P, options: &Options) -> Result<Self, Error> {
-        Self::new(Db::open(path, options).map_err(error::open_error)?)
+        Self::new(Db::open(path, options).map_err(failed)?)
     }
 
     /// The LigninDB database underneath.
@@ -109,7 +119,7 @@ impl LigninEngine {
         let entered = {
             let snapshot = self.db.snapshot();
             let operation = snapshot.operation();
-            let opened = operation.open(root).map_err(read_error)?;
+            let opened = operation.open(root).map_err(failed)?;
             opened.is_some()
         };
         if !entered {
@@ -344,29 +354,29 @@ fn named<'b, B: AsRef<[u8]> + 'b>(
     })
 }
 
-impl LigninEngine {
-    /// The subtree with `prefix` as a handle names it: with the element
-    /// that hosts it where a write through the handle has to say so, read
-    /// from the subtree directory as the transaction has it.
-    fn named_by_prefix(prefix: SubtreePrefix, view: Option<LigninView<'_>>) -> LigninSubtree {
-        let alone = LigninSubtree::alone(prefix);
-        let Some(view) = view else {
-            return alone;
-        };
-        let entry = LigninNodeStore::read_only(view, alone.clone()).entry();
-        match entry.ok().flatten().and_then(|entry| entry.host) {
-            // An element that hosts more than one Merk is said with every
-            // one of them, which only its element names (GROVE-04).
-            Some(host) if host.position == 0 => LigninSubtree {
-                prefix,
-                host: Some(LigninHost {
-                    subtree: host.subtree,
-                    key: host.key,
-                    hosted: vec![prefix],
-                }),
-            },
-            _ => alone,
-        }
+/// The subtree with `prefix` as a handle names it: with the element that
+/// hosts it where a write through the handle has to say so, read from the
+/// subtree directory as the transaction has it. A read that the
+/// transaction refuses names no host, and the handle's own reads and
+/// writes meet the refusal.
+fn named_by_prefix(prefix: SubtreePrefix, view: Option<LigninView<'_>>) -> LigninSubtree {
+    let alone = LigninSubtree::alone(prefix);
+    let Some(view) = view else {
+        return alone;
+    };
+    let entry = LigninNodeStore::read_only(view, alone.clone()).entry();
+    match entry.ok().flatten().and_then(|entry| entry.host) {
+        // An element that hosts more than one Merk is said with every
+        // one of them, which only its element names (GROVE-04).
+        Some(host) if host.position == 0 => LigninSubtree {
+            prefix,
+            host: Some(LigninHost {
+                subtree: host.subtree,
+                key: host.key,
+                hosted: vec![prefix],
+            }),
+        },
+        _ => alone,
     }
 }
 
@@ -399,7 +409,7 @@ impl Engine for LigninEngine {
     }
 
     fn flush(&self) -> Result<(), Error> {
-        self.db.flush().map(|_| ()).map_err(error::db_error)
+        self.db.flush().map(|_| ()).map_err(failed)
     }
 
     fn wipe(&self) -> Result<(), Error> {
@@ -530,7 +540,7 @@ impl Engine for LigninEngine {
         transaction: &'a LigninTransaction<'_>,
     ) -> CostContext<LigninNodeStore<'a>> {
         let view = transaction.view();
-        let subtree = Self::named_by_prefix(prefix, batch.map(|_| view));
+        let subtree = named_by_prefix(prefix, batch.map(|_| view));
         LigninNodeStore::deferred(view, subtree, batch).wrap_with_cost(OperationCost::default())
     }
 
@@ -551,7 +561,7 @@ impl Engine for LigninEngine {
         transaction: &'a LigninTransaction<'_>,
     ) -> CostContext<LigninNodeStore<'a>> {
         let view = transaction.view();
-        let subtree = Self::named_by_prefix(prefix, Some(view));
+        let subtree = named_by_prefix(prefix, Some(view));
         LigninNodeStore::immediate(view, subtree).wrap_with_cost(OperationCost::default())
     }
 
@@ -579,7 +589,13 @@ impl Engine for LigninEngine {
         transaction: &LigninTransaction<'_>,
     ) -> CostResult<LigninApplied, Error> {
         let view = transaction.view();
-        match enter::owed(view, &group.parts) {
+        // A snapshot refuses the writes itself, and is asked for nothing
+        // before it does.
+        let enters = match transaction.is_snapshot_read() {
+            true => Ok(Vec::new()),
+            false => enter::owed(view, &group.parts),
+        };
+        match enters {
             Ok(enters) => LigninSettled::apply(group.parts, view, &enters).map_err(merk_error),
             Err(error) => Err(error).wrap_with_cost(OperationCost::default()),
         }

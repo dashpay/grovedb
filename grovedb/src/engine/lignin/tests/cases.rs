@@ -66,27 +66,21 @@ impl<E: Engine> Raw<E> {
             .engine
             .immediate_subtree(SubtreePath::<[u8; 0]>::empty(), transaction)
             .unwrap();
+        fn on<S: FlatStore, T>(
+            keyspace: &S,
+            call: impl FnOnce(&dyn Fn(&[u8]) -> Option<Vec<u8>>, &dyn Fn(&[u8], Option<&[u8]>)) -> T,
+        ) -> T {
+            call(
+                &|key| keyspace.get(key).unwrap().expect("a read"),
+                &|key, value| match value {
+                    Some(value) => keyspace.put(key, value, None).unwrap().expect("a put"),
+                    None => keyspace.delete(key, None).unwrap().expect("a delete"),
+                },
+            )
+        }
         match space {
-            Space::Aux => {
-                let keyspace = root.aux();
-                call(
-                    &|key| keyspace.get(key).unwrap().expect("a read"),
-                    &|key, value| match value {
-                        Some(value) => keyspace.put(key, value, None).unwrap().expect("a put"),
-                        None => keyspace.delete(key, None).unwrap().expect("a delete"),
-                    },
-                )
-            }
-            Space::Meta => {
-                let keyspace = root.meta();
-                call(
-                    &|key| keyspace.get(key).unwrap().expect("a read"),
-                    &|key, value| match value {
-                        Some(value) => keyspace.put(key, value, None).unwrap().expect("a put"),
-                        None => keyspace.delete(key, None).unwrap().expect("a delete"),
-                    },
-                )
-            }
+            Space::Aux => on(&root.aux(), call),
+            Space::Meta => on(&root.meta(), call),
         }
     }
 
