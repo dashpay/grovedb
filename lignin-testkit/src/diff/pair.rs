@@ -650,13 +650,12 @@ pub(crate) mod testing {
         }
     }
 
-    /// A directory for the databases of a test: in memory where the machine
-    /// has such a directory. A shrinking runs its stream dozens of times,
-    /// and on a busy disk each run of them takes a minute.
+    /// A directory for the databases of a test, in the temporary directory:
+    /// whoever runs the tests says with `TMPDIR` where that is. A shrinking
+    /// runs its stream dozens of times, and on a busy disk each run of them
+    /// takes a minute.
     pub(crate) fn scratch() -> tempfile::TempDir {
-        tempfile::tempdir_in("/dev/shm")
-            .or_else(|_| tempfile::tempdir())
-            .expect("a directory")
+        tempfile::tempdir().expect("a directory")
     }
 
     /// The bytes the last of `ops` adds, on a fresh database.

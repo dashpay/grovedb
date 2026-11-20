@@ -582,21 +582,14 @@ impl Db {
         Self::with(FlushConfig::new(Self::SIZE))
     }
 
-    /// A new store in a directory of its own, in memory where there is
-    /// such a place: the syncs of a store are most of what these tests
-    /// would wait for.
+    /// A new store in a directory of its own.
     pub(super) fn with(config: FlushConfig) -> Self {
         Self::with_log(config, LogOptions::default())
     }
 
     /// A new store whose log is written as `log` says.
     pub(super) fn with_log(config: FlushConfig, log: LogOptions) -> Self {
-        let memory = Path::new("/dev/shm");
-        let dir = match memory.is_dir() {
-            true => tempfile::tempdir_in(memory),
-            false => tempfile::tempdir(),
-        }
-        .expect("a directory");
+        let dir = tempfile::tempdir().expect("a directory");
         let path = dir.path().to_path_buf();
         let mut db = Self::create(Arc::new(StdVfs), &path, config, log);
         db._dir = Some(dir);

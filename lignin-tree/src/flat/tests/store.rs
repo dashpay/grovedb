@@ -87,14 +87,7 @@ pub(crate) struct Db {
 impl Db {
     pub(crate) fn new() -> Self {
         let size = PageSize::MIN;
-        // In memory where there is such a place: the syncs of a store are
-        // most of what these tests would wait for.
-        let memory = std::path::Path::new("/dev/shm");
-        let dir = match memory.is_dir() {
-            true => tempfile::tempdir_in(memory),
-            false => tempfile::tempdir(),
-        };
-        let dir = dir.expect("a directory");
+        let dir = tempfile::tempdir().expect("a directory");
         let vfs: Arc<dyn Vfs> = Arc::new(StdVfs);
         let empty = Manifest::new(size, Default::default(), None, Vec::new()).expect("a manifest");
         let mut manifest = ManifestStore::create(vfs, dir.path(), empty).expect("a store");

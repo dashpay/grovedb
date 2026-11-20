@@ -73,8 +73,7 @@ fn pick<'a>(rng: &mut SimRng, from: &[&'a str]) -> &'a str {
 #[test]
 fn random_operations_end_as_they_do_on_the_operating_system() {
     for seed in 0..40 {
-        let in_memory = tempfile::tempdir_in("/dev/shm");
-        let dir = in_memory.or_else(|_| tempfile::tempdir()).unwrap();
+        let dir = tempfile::tempdir().unwrap();
         let (real, real_root) = (StdVfs, dir.path());
         let (fs, sim_root) = (sim(seed), p("/"));
         let mut rng = SimRng::new(seed);
