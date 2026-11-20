@@ -471,7 +471,7 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
-    cleaner::{BothOwners, Cleaner, CleanerStats},
+    cleaner::{BothOwners, CleanerStats},
     flush::{Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
@@ -880,6 +880,12 @@ impl Db {
     /// any more. A close does not wait for it: what it holds back from
     /// being reclaimed is reclaimed by the next session.
     pub fn close(self) -> Result<(), DbError> {
+        self.shut_and_check()
+    }
+
+    /// Ends the session and, where this call ended it, makes the check of
+    /// a debug build.
+    fn shut_and_check(&self) -> Result<(), DbError> {
         if self.shut()? {
             self.check_at_close();
         }
@@ -1010,9 +1016,7 @@ impl Db {
         let shared = &*self.shared;
         // Each thread ends after the turn it is in, which is still made
         // as any turn of the session was.
-        shared.store.signal.stop();
-        shared.cleaner().stop();
-        shared.write_back().stop();
+        shared.stop_background();
         let reclaimed = threads.reclaim.join();
         let cleaned = threads.cleaner.join();
         let written = threads.write_back.join();
@@ -1435,9 +1439,7 @@ impl Drop for Db {
         // The error a close returns is dropped here: a handle whose
         // directory was removed under it closes without a word (P-18).
         // The check of a debug build is made as at a close.
-        if let Ok(true) = self.shut() {
-            self.check_at_close();
-        }
+        let _ = self.shut_and_check();
     }
 }
 
@@ -1493,8 +1495,7 @@ fn clean(shared: &Shared) {
         FlatOwners::new(store.loader(), &store.pool, store.config(), shared.steps()),
     );
     with_page_values(shared, |write_back| {
-        let cleaner = Cleaner::new(write_back, &store.cleaner).with_stats(&store.stats);
-        cleaner.run(
+        shared.cleaner_on(write_back).run(
             |cleaner| cleaner.pass_values(&owners),
             |error| store.troubles.cleaner_failed(&error),
         );

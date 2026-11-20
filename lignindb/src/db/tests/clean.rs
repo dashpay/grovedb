@@ -17,22 +17,9 @@ fn policy() -> CleanerConfig {
     }
 }
 
-/// Waits until the cleaner's counts are as `done` says, and says what
-/// they are if that takes more than a minute.
+/// Waits until the cleaner's counts are as `done` says.
 fn cleaned(db: &Db, what: &str, done: impl Fn(&CleanerStats) -> bool) {
-    let began = Instant::now();
-    loop {
-        let stats = db.stats();
-        if done(&stats.cleaner) {
-            return;
-        }
-        assert!(
-            began.elapsed() < Duration::from_secs(60),
-            "{what}: {:?}\n{stats}",
-            stats.cleaner
-        );
-        std::thread::sleep(Duration::from_millis(5));
-    }
+    stats_until(db, what, |stats| &stats.cleaner, done);
 }
 
 /// The policy that the options give is the session's, and with none given

@@ -466,10 +466,23 @@ impl Shared {
 
     /// The cleaner of the session, to stop its loop and to close its
     /// files. The loop itself runs with a view of write-back that has the
-    /// tree layer's word on the values of a page.
+    /// tree layer's word on the values of a page ([`Self::cleaner_on`]).
     pub(super) fn cleaner(&self) -> Cleaner<'_> {
-        let store = &*self.store;
-        Cleaner::new(self.write_back(), &store.cleaner).with_stats(&store.stats)
+        self.cleaner_on(self.write_back())
+    }
+
+    /// The cleaner of the session over `write_back`, with the store's
+    /// counts.
+    pub(super) fn cleaner_on<'a>(&'a self, write_back: WriteBack<'a>) -> Cleaner<'a> {
+        Cleaner::new(write_back, &self.store.cleaner).with_stats(&self.store.stats)
+    }
+
+    /// Tells the three background threads to end after the turn each is
+    /// in.
+    pub(super) fn stop_background(&self) {
+        self.store.signal.stop();
+        self.cleaner().stop();
+        self.write_back().stop();
     }
 
     /// The write path: what a write transaction is begun from.

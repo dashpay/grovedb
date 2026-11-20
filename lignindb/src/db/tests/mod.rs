@@ -788,16 +788,27 @@ pub(super) fn checked(db: &Db) -> crate::verify::Report {
 /// Waits until the reclaiming of `db` is as `done` says, and says what it
 /// is and what the store holds if that takes more than a minute.
 pub(super) fn reclaimed(db: &Db, what: &str, done: impl Fn(&ReclaimStats) -> bool) {
+    stats_until(db, what, |stats| &stats.reclaimed, done);
+}
+
+/// Waits until a part of the counts of `db` is as `done` says, and says
+/// what it is and what the store holds if that takes more than a minute.
+pub(super) fn stats_until<T: std::fmt::Debug>(
+    db: &Db,
+    what: &str,
+    part: impl Fn(&crate::db::DbStats) -> &T,
+    done: impl Fn(&T) -> bool,
+) {
     let began = Instant::now();
     loop {
         let stats = db.stats();
-        if done(&stats.reclaimed) {
+        if done(part(&stats)) {
             return;
         }
         assert!(
             began.elapsed() < Duration::from_secs(60),
             "{what}: {:?}\n{stats}",
-            stats.reclaimed
+            part(&stats)
         );
         std::thread::sleep(Duration::from_millis(2));
     }
@@ -814,16 +825,14 @@ impl Drop for Ending<'_> {
     }
 }
 
-/// Ends the two background threads of `db` and leaves the handle open: a
+/// Ends the background threads of `db` and leaves the handle open: a
 /// session in which nothing is written back and nothing is reclaimed but
 /// what the test asks for, and one that ends, when the handle is dropped,
 /// as a process that is killed ends.
 pub(super) fn halt_background(db: &Db) {
     let threads = crate::db::store::lock(&db.threads).take();
     let threads = threads.expect("the threads of the database");
-    db.shared.store.signal.stop();
-    db.shared.cleaner().stop();
-    db.shared.write_back().stop();
+    db.shared.stop_background();
     threads.reclaim.join().expect("the reclaimer ends");
     threads.cleaner.join().expect("the cleaner ends");
     threads.write_back.join().expect("write-back ends");

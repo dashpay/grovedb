@@ -4,11 +4,6 @@
 use lignin_store::{cache::CacheError, flush::FlushError};
 
 use super::*;
-use crate::verify::Report;
-
-fn sound(report: &Report) -> bool {
-    report.is_sound()
-}
 
 /// A database with two Merks, one of them dropped and reclaimed.
 fn used(dir: &tempfile::TempDir) -> Db {
@@ -41,7 +36,7 @@ fn spoil(db: &Db) {
 fn a_close_that_is_asked_gives_the_report_of_a_still_store() {
     let dir = temp();
     let report = used(&dir).close_and_verify(None).expect("the close");
-    assert!(sound(&report), "{report}");
+    assert!(report.is_sound(), "{report}");
     assert_eq!(report.census.live_cells, 20, "{report}");
 
     let db = Db::open(dir.path(), &options()).expect("the database is opened again");
@@ -73,13 +68,13 @@ fn a_check_on_demand_reads_what_a_reader_sees() {
         scope.merge();
     }
     let report = db.verify(None);
-    assert!(sound(&report), "{report}");
+    assert!(report.is_sound(), "{report}");
     assert_eq!(report.census.live_cells, 20, "{report}");
     db.rollback(&txn).expect("the transaction is rolled back");
     drop(txn);
 
     spoil(&db);
-    assert!(sound(&db.verify(None)));
+    assert!(db.verify(None).is_sound());
     db.unchecked_at_close();
     db.close().expect("the session ends");
 }
@@ -109,7 +104,7 @@ fn a_close_of_an_unsound_store_panics_in_a_debug_build() {
         );
         // The session ended all the same, and the lock is free.
         let db = Db::open(dir.path(), &options()).expect("the database is opened again");
-        assert!(sound(&db.verify(None)));
+        assert!(db.verify(None).is_sound());
     }
 
     let dir = temp();
