@@ -5,7 +5,7 @@ use ed::{Decode, Encode};
 use grovedb_version::version::GroveVersion;
 
 #[cfg(feature = "minimal")]
-use super::TreeNode;
+use super::{TreeNode, VALUE_ABSENT};
 use crate::tree::kv::ValueDefinedCostType;
 #[cfg(feature = "minimal")]
 use crate::{
@@ -55,6 +55,7 @@ impl TreeNode {
     #[inline]
     /// Encode
     pub fn encode(&self) -> Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encode(&self.inner).unwrap()
     }
@@ -62,6 +63,7 @@ impl TreeNode {
     #[inline]
     /// Encode to destination writer
     pub fn encode_into(&self, dest: &mut Vec<u8>) {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encode_into(&self.inner, dest).unwrap()
     }
@@ -69,6 +71,7 @@ impl TreeNode {
     #[inline]
     /// Return length of encoding
     pub fn encoding_length(&self) -> usize {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         // operation is infallible so it's ok to unwrap
         Encode::encoding_length(&self.inner).unwrap()
     }

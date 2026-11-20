@@ -37,6 +37,7 @@ where
         to_delete.state_root(None);
         cost_return_on_error!(&mut cost, self.storage.commit(to_delete));
         self.tree.set(None);
+        self.paid_nodes.clear();
         Ok(()).wrap_with_cost(cost)
     }
 }

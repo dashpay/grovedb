@@ -113,6 +113,13 @@ pub struct NodeMarks {
     /// The feature type was replaced in place since the node was loaded or
     /// last committed, with no value put on the node.
     pub(crate) feature_type_changed: bool,
+    /// The node was read without its value
+    /// ([`NodeStore::fetch_node_without_value`](crate::store::NodeStore::fetch_node_without_value)):
+    /// the value it holds is empty and is not the node's, until
+    /// [`NodeStore::load_node_value`](crate::store::NodeStore::load_node_value)
+    /// has read it. Such a node is of a walk that only reads
+    /// ([`RefWalker::values_on_demand`]) and is never in the tree of a Merk.
+    pub(crate) value_absent: bool,
 }
 
 #[cfg(feature = "minimal")]
@@ -147,19 +154,25 @@ impl Decode for NodeMarks {
 impl Terminated for NodeMarks {}
 
 #[cfg(feature = "minimal")]
+const VALUE_ABSENT: &str = "the value of a node that was read without it";
+
+#[cfg(feature = "minimal")]
 impl TreeNodeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         self.kv.value
     }
 
     /// Get the value as owned of the key value struct
     pub fn value_as_owned_with_feature(self) -> (Vec<u8>, TreeFeatureType) {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         (self.kv.value, self.kv.feature_type)
     }
 
     /// Get the value as slice of the key value struct
     pub fn value_as_slice(&self) -> &[u8] {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         self.kv.value.as_slice()
     }
 
@@ -249,6 +262,50 @@ impl TreeNode {
             old_value: Some(old_value),
             known_storage_cost: None,
         }
+    }
+
+    /// A node that was read without its value, for a walk that only reads
+    /// ([`RefWalker::values_on_demand`]): its key, its hashes, its feature
+    /// type and its links. The value it holds is empty until
+    /// [`Self::put_read_value`]; [`Self::value_absent`] says so.
+    ///
+    /// It has no mutation baseline, so a commit would take it for a new
+    /// node: it must never reach one, nor be put in the tree of a Merk.
+    pub(crate) fn new_without_value(
+        key: Vec<u8>,
+        kv_hash: CryptoHash,
+        value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+        left: Option<Link>,
+        right: Option<Link>,
+    ) -> Self {
+        Self {
+            inner: Box::new(TreeNodeInner {
+                marks: NodeMarks {
+                    value_absent: true,
+                    ..NodeMarks::default()
+                },
+                left,
+                right,
+                kv: KV::from_fields(key, Vec::new(), kv_hash, value_hash, feature_type),
+            }),
+            old_value: None,
+            known_storage_cost: None,
+        }
+    }
+
+    /// Whether the node was read without its value and the value has not
+    /// been read since.
+    #[inline]
+    pub fn value_absent(&self) -> bool {
+        self.inner.marks.value_absent
+    }
+
+    /// Gives a node that was read without its value the value that was
+    /// read for it.
+    pub(crate) fn put_read_value(&mut self, value: Vec<u8>) {
+        self.inner.kv.value = value;
+        self.inner.marks.value_absent = false;
     }
 
     /// the node type
@@ -673,18 +730,21 @@ impl TreeNode {
     /// Returns the root node's value as a ref.
     #[inline]
     pub fn value_ref(&self) -> &Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         self.inner.kv.value.as_ref()
     }
 
     /// Returns the root node's value as a ref.
     #[inline]
     pub fn value_mut_ref(&mut self) -> &mut Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         &mut self.inner.kv.value
     }
 
     /// Returns the root node's value as a slice.
     #[inline]
     pub fn value_as_slice(&self) -> &[u8] {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         self.inner.kv.value_as_slice()
     }
 
@@ -2275,6 +2335,35 @@ impl TreeNode {
             aggregate_data: *aggregate_data,
         });
         Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Places `tree`, the node the `Link::Reference` on the given side
+    /// points to, in the child slot, as [`Self::load`] places the node it
+    /// fetched.
+    pub(crate) fn put_fetched_child(&mut self, left: bool, tree: TreeNode) -> Result<(), Error> {
+        let Some(Link::Reference {
+            child_heights,
+            hash,
+            aggregate_data,
+            ..
+        }) = self.link(left)
+        else {
+            return Err(Error::CorruptedState(
+                "Expected Link::Reference for a fetched child",
+            ));
+        };
+        debug_assert_eq!(
+            tree.key(),
+            self.link(left).map(Link::key).unwrap_or_default()
+        );
+        let loaded = Link::Loaded {
+            tree,
+            hash: *hash,
+            child_heights: *child_heights,
+            aggregate_data: *aggregate_data,
+        };
+        *self.slot_mut(left) = Some(loaded);
+        Ok(())
     }
 }
 

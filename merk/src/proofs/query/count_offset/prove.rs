@@ -81,6 +81,7 @@ where
 
         let mut cost = OperationCost::default();
         let mut ops = LinkedList::new();
+        self.values_on_demand();
         let mut state = EmitState {
             offset_remaining: offset,
             limit_remaining: limit,
@@ -122,6 +123,7 @@ where
     ) -> CostResult<ProverCountOffsetResult, Error> {
         let mut cost = OperationCost::default();
         let mut ops = LinkedList::new();
+        self.values_on_demand();
         let state = cost_return_on_error!(
             &mut cost,
             self.walk_local_count_offset_page(

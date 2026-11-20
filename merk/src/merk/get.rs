@@ -8,6 +8,18 @@ use crate::{
     CryptoHash, Error, Merk, TreeFeatureType,
 };
 
+/// Where a walk over the nodes a Merk was charged for and did not keep
+/// ended ([`Merk::walk_paid_nodes`]).
+enum PaidWalk {
+    /// At the node of the key, which the link points to.
+    Node(Link),
+    /// At a node with no child on the side of the key: the key has no node.
+    NoChild,
+    /// At a child that a Merk which keeps what it fetches has not in
+    /// memory.
+    NotInMemory,
+}
+
 impl<'db, S> Merk<S>
 where
     S: NodeStore<'db>,
@@ -390,6 +402,16 @@ where
 
                 let maybe_child = link.tree();
                 match maybe_child {
+                    None if self.paid_nodes.contains(link.key()) => {
+                        break match self.walk_paid_nodes(link, key, grove_version) {
+                            Ok(PaidWalk::Node(_)) => Ok(true).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NoChild) => Ok(false).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NotInMemory) => {
+                                self.has_node_direct(key, value_defined_cost_fn, grove_version)
+                            }
+                            Err(e) => Err(e).wrap_with_cost(Default::default()),
+                        };
+                    }
                     None => {
                         // fetch from RocksDB
                         break self.has_node_direct(key, value_defined_cost_fn, grove_version);
@@ -453,6 +475,27 @@ where
 
                 let maybe_child = link.tree();
                 match maybe_child {
+                    None if self.paid_nodes.contains(link.key()) => {
+                        let node = match self.walk_paid_nodes(link, key, grove_version) {
+                            Ok(PaidWalk::Node(link)) => self.fetch_paid_node(&link, grove_version),
+                            Ok(PaidWalk::NoChild) => {
+                                return Ok(None).wrap_with_cost(Default::default())
+                            }
+                            Ok(PaidWalk::NotInMemory) => {
+                                break self.get_node_direct_fn(
+                                    key,
+                                    f,
+                                    value_defined_cost_fn,
+                                    grove_version,
+                                );
+                            }
+                            Err(e) => Err(e),
+                        };
+                        break match node {
+                            Ok(node) => f(&node).map(|x| Ok(Some(x))),
+                            Err(e) => Err(e).wrap_with_cost(Default::default()),
+                        };
+                    }
                     None => {
                         // fetch from RocksDB
                         break self.get_node_direct_fn(
@@ -466,6 +509,38 @@ where
                 }
             }
         })
+    }
+
+    /// Goes on from `link` towards `key` with a walk that
+    /// [`Self::get_node_fn`] and [`Self::has_node`] make over the nodes in
+    /// memory, where `link` points to a node that a walk was charged for
+    /// and did not keep in the tree ([`PaidNodes`](super::source::PaidNodes)).
+    ///
+    /// A Merk that keeps such nodes walks them in memory: the walk is free
+    /// while it stays on them, and ends at the node of the key, at a side
+    /// with no child, or at a child that is not in memory, which its
+    /// caller then reads by key and is charged for. This does the same,
+    /// and reads from the store, at no charge, the nodes that Merk has in
+    /// memory.
+    fn walk_paid_nodes(
+        &self,
+        link: &Link,
+        key: &[u8],
+        grove_version: &GroveVersion,
+    ) -> Result<PaidWalk, Error> {
+        let mut link = link.clone();
+        loop {
+            if key == link.key() {
+                return Ok(PaidWalk::Node(link));
+            }
+            let fetched = self.storage.fetch_node_without_value(&link, grove_version);
+            let node = fetched.value?;
+            link = match node.link(key < node.key()) {
+                None => return Ok(PaidWalk::NoChild),
+                Some(child) if self.paid_nodes.contains(child.key()) => child.clone(),
+                Some(_) => return Ok(PaidWalk::NotInMemory),
+            };
+        }
     }
 
     /// Execute an `AggregateCountOnRange` query without producing a proof,

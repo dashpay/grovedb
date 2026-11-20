@@ -27,6 +27,7 @@ where
             storage,
             merk_type,
             meta_cache: Default::default(),
+            paid_nodes: Default::default(),
             tree_type,
         }
     }
@@ -47,6 +48,7 @@ where
             merk_type: StandaloneMerk,
             tree_type,
             meta_cache: Default::default(),
+            paid_nodes: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -69,6 +71,7 @@ where
             merk_type: BaseMerk,
             tree_type,
             meta_cache: Default::default(),
+            paid_nodes: Default::default(),
         };
 
         merk.load_base_root(value_defined_cost_fn, grove_version)
@@ -92,6 +95,7 @@ where
             merk_type: LayeredMerk,
             tree_type,
             meta_cache: Default::default(),
+            paid_nodes: Default::default(),
         };
 
         merk.load_root(value_defined_cost_fn, grove_version)
