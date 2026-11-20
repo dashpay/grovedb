@@ -12,7 +12,7 @@
 //! | --- | --- | --- |
 //! | the block writer | One write transaction after another. Each has two scopes that are open at once, one of them on a second thread for as long as the scopes last; now and then a scope that is rolled back, a scope that is refused for an overlap, a savepoint that is rolled back to, and a rollback of the whole transaction. It writes Merks of its own, generations of subtrees that it enters and drops, and keys that the other writer writes too. | 7a, 8a, 8b, 9, 10, 12 to 14 |
 //! | the writer with no transaction | One batch after another, each a commit ([`Db::write`]), beside the open block transaction. Every few commits it makes a checkpoint, opens it as a database, reads all of it and deletes it. | 7b, 8b, 12, 15, 18, 20 |
-//! | the reader | Snapshots of three ages, and operations that pin nothing. Each look compares whole subtrees with the model. Every few looks the physical invariant checker reads a pinned version as a reader, with the reclaimer of dropped subtrees held back for the run. | 1 to 6 |
+//! | the reader | Snapshots of three ages, and operations that pin nothing. Each look compares whole subtrees with the model. Every few looks the physical invariant checker reads the latest version as a reader, with the reclaimer of dropped subtrees held back from the moment the version is pinned to the end of the run. | 1 to 6 |
 //! | the cleaner | [`Cleaner::run`], as the engine will run it once it is wired into [`Db`]: the segments, and the value log with the owners of values of both kinds. | 5, 10, 14, 17, 19, 20 |
 //! | write-back, the reclaimer | The engine's own threads, with small files and low bounds, so that committers are slowed (FL5), table checkpoints are taken and log files go all the time. | 4, 9, 13, 16, 17 |
 //!
@@ -672,15 +672,20 @@ fn reader(run: &Run<'_>) {
 
         if looks % VERIFY_EVERY == 0 {
             // The checker reads a pinned version as a reader, beside the
-            // writers, write-back and the cleaner. The reclaimer of what
-            // drops left takes cells out of the pages of the version
-            // itself, so it is held back for the run (`crate::verify`).
-            let (snapshot, _) = held[(looks / VERIFY_EVERY) as usize % AGES.len()]
-                .as_ref()
-                .expect("a snapshot is held");
+            // writers, write-back and the cleaner. A step of the reclaimer
+            // of what drops left changes the newest version of one page,
+            // and a version sees that change only where no later commit
+            // wrote the page. So a version that a step is made behind can
+            // hold the flat record of a reclaimed Merk in one page and no
+            // entry for the Merk in another, which no reader comes to and
+            // the checker reports. The version is therefore pinned with
+            // the reclaimer held back, and the reclaimer stays held back
+            // for the run (`crate::verify`).
             let reclaiming = lock(&db.shared.store.reclaiming);
+            let snapshot = db.snapshot();
             let report = verify(db, Scope::Reader, snapshot.version());
             drop(reclaiming);
+            drop(snapshot);
             sound(&report, "a pinned version is not sound for a reader");
             add(&tally.verifies, 1);
         }
