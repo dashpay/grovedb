@@ -649,9 +649,11 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
 /// order do not wait for each other, nor a handle that is in a list twice
 /// for itself.
 fn flush_for(group: &Waiting<'_>, flush: FileCall<'_>) -> io::Result<()> {
-    let address = |handle: &&StdFile| std::ptr::from_ref::<StdFile>(handle).addr();
+    fn address(handle: &StdFile) -> usize {
+        std::ptr::from_ref(handle).addr()
+    }
     let mut handles = group.handles.clone();
-    handles.sort_by_key(address);
+    handles.sort_by_key(|handle| address(handle));
     handles.dedup_by_key(|handle| address(handle));
     let mut failures = Vec::with_capacity(handles.len());
     for handle in handles {

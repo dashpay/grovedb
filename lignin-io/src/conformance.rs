@@ -90,6 +90,8 @@ macro_rules! conformance_tests {
             lock_existing_makes_no_file,
             #[cfg_attr($host_files_under_miri, ignore = "Miri has no inode numbers")]
             a_guard_says_whether_its_file_is_at_a_path,
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no inode numbers")]
+            a_guard_goes_with_its_directory_when_that_is_renamed,
             locks_on_different_files_are_independent,
             one_thread_wins_a_contended_lock,
             a_file_is_replaced_by_write_sync_rename_sync_dir,
@@ -1025,6 +1027,37 @@ pub(crate) fn a_guard_says_whether_its_file_is_at_a_path(vfs: &dyn Vfs, root: &P
     assert_fails(vfs.lock(&aside), ErrorKind::WouldBlock);
     drop(guard);
     drop(vfs.lock(&aside).unwrap());
+}
+
+pub(crate) fn a_guard_goes_with_its_directory_when_that_is_renamed(vfs: &dyn Vfs, root: &Path) {
+    let (dir, moved, aside) = (root.join("db"), root.join("moved"), root.join("aside"));
+    let lock_in = |dir: &Path| dir.join("LOCK");
+    vfs.create_dir(&dir).unwrap();
+    let guard = vfs.lock(&lock_in(&dir)).unwrap();
+
+    vfs.rename(&dir, &moved).unwrap();
+    assert!(guard.is_at(&lock_in(&moved)).unwrap());
+    assert!(!guard.is_at(&lock_in(&dir)).unwrap());
+    assert_fails(vfs.lock(&lock_in(&moved)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock_existing(&lock_in(&dir)), ErrorKind::NotFound);
+
+    // Another directory takes the name. Its lock file is another file,
+    // which the guard keeps nobody out of.
+    vfs.create_dir(&dir).unwrap();
+    let second = vfs.lock(&lock_in(&dir)).unwrap();
+    assert!(second.is_at(&lock_in(&dir)).unwrap() && !guard.is_at(&lock_in(&dir)).unwrap());
+    assert!(guard.is_at(&lock_in(&moved)).unwrap() && !second.is_at(&lock_in(&moved)).unwrap());
+
+    // The two directories change places, and each guard is where its
+    // file is.
+    vfs.rename(&dir, &aside).unwrap();
+    vfs.rename(&moved, &dir).unwrap();
+    assert!(guard.is_at(&lock_in(&dir)).unwrap() && second.is_at(&lock_in(&aside)).unwrap());
+    assert_fails(vfs.lock(&lock_in(&dir)), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock_existing(&lock_in(&aside)), ErrorKind::WouldBlock);
+    drop(guard);
+    drop(vfs.lock_existing(&lock_in(&dir)).unwrap());
+    assert_fails(vfs.lock(&lock_in(&aside)), ErrorKind::WouldBlock);
 }
 
 pub(crate) fn locks_on_different_files_are_independent(vfs: &dyn Vfs, root: &Path) {

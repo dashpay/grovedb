@@ -3,6 +3,11 @@
 
 use std::{
     cell::{Cell, RefCell},
+    fmt,
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
     time::{Duration, Instant},
 };
 
@@ -221,49 +226,77 @@ fn a_sync_that_fails_while_its_handle_waits_for_the_flush_fails_the_set() {
     assert!(is_stopped(&files[0]) && !is_stopped(&files[1]));
 }
 
+fn is_held(file: &StdFile) -> bool {
+    let tried = file.sync_failure.try_lock();
+    matches!(tried, Err(std::sync::TryLockError::WouldBlock))
+}
+
+/// The failure of a flush, which counts how often its text was made and
+/// how often every one of `files` was held when it was.
+#[derive(Debug)]
+struct Told {
+    files: Arc<[StdFile; 3]>,
+    made: Arc<AtomicUsize>,
+    made_with_all_held: Arc<AtomicUsize>,
+}
+
+impl fmt::Display for Told {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.made.fetch_add(1, Ordering::Relaxed);
+        if self.files.iter().all(is_held) {
+            self.made_with_all_held.fetch_add(1, Ordering::Relaxed);
+        }
+        f.write_str("the flush failed")
+    }
+}
+
+impl std::error::Error for Told {}
+
 /// While the flush is made, and until its failure is on record, every handle
-/// that waits for it is held: a sync of one of them on another thread waits,
-/// and cannot return `Ok` in between. A handle that is in the list twice,
-/// and lists in two orders, are held without waiting for themselves.
+/// that waits for it is held: the record has the failure's text, which is
+/// made with all of them held, and a sync of one of them on another thread
+/// waits and then fails. It cannot return `Ok` in between. A handle that is
+/// in the list twice is held once.
 #[test]
 fn the_handles_of_a_set_are_held_from_the_flush_to_the_record_of_its_failure() {
     let (_, root, _dir) = setup();
-    let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
+    let files = Arc::new(["a", "b", "c"].map(|name| written(&root.join(name))));
     let outside = written(&root.join("outside"));
-    let held = |file: &StdFile| {
-        let tried = file.sync_failure.try_lock();
-        matches!(tried, Err(std::sync::TryLockError::WouldBlock))
-    };
-    let fails = Cell::new(false);
-    let flush = |_: &File| {
-        assert!(files.iter().all(held));
-        assert!(!held(&outside));
-        match fails.get() {
-            true => Err(full()),
-            false => Ok(()),
-        }
-    };
-    let set = sharing(&|_| Ok(()), &flush);
-    let in_one_order = [
+    let items = [
         SyncItem::Data(&files[0]),
         SyncItem::Data(&files[1]),
         SyncItem::All(&files[2]),
         SyncItem::Data(&files[0]),
     ];
-    let in_another = [
-        SyncItem::Data(&files[2]),
-        SyncItem::Data(&files[1]),
-        SyncItem::Data(&files[0]),
-    ];
 
-    sync_together_using(&in_one_order, &set).unwrap();
-    sync_together_using(&in_another, &set).unwrap();
-    assert!(!files.iter().any(held));
+    let flush = |_: &File| {
+        assert!(files.iter().all(is_held) && !is_held(&outside));
+        Ok(())
+    };
+    sync_together_using(&items, &sharing(&|_| Ok(()), &flush)).unwrap();
+    assert!(!files.iter().any(is_held));
 
-    fails.set(true);
-    let error = sync_together_using(&in_one_order, &set).unwrap_err();
-    assert_eq!(error.kind(), ErrorKind::StorageFull);
-    assert!(!files.iter().any(held));
+    let (made, made_with_all_held) = (Arc::default(), Arc::default());
+    std::thread::scope(|scope| {
+        let beside = Cell::new(None);
+        let flush = |_: &File| {
+            assert!(files.iter().all(is_held));
+            beside.set(Some(scope.spawn(|| files[1].sync_using(|_| Ok(())))));
+            Err(io::Error::other(Told {
+                files: Arc::clone(&files),
+                made: Arc::clone(&made),
+                made_with_all_held: Arc::clone(&made_with_all_held),
+            }))
+        };
+        sync_together_using(&items, &sharing(&|_| Ok(()), &flush)).unwrap_err();
+        let (made, held) = (&made, &made_with_all_held);
+        let (made, held): (usize, usize) =
+            (made.load(Ordering::Relaxed), held.load(Ordering::Relaxed));
+        assert!(made > 0 && made == held, "{held} of {made}");
+        let beside = beside.take().unwrap().join().unwrap().unwrap_err();
+        assert_eq!(beside.kind(), ErrorKind::Other);
+    });
+    assert!(!files.iter().any(is_held));
     assert!(files.iter().all(is_stopped));
     assert!(!is_stopped(&outside));
 }

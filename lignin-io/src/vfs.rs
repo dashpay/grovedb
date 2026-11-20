@@ -8,8 +8,9 @@
 //!
 //! A directory maps names to files, and several names may refer to one file
 //! (hard links). A handle refers to the file, not to the name it was opened
-//! by: it keeps working after that name is renamed or removed. A file's bytes
-//! are freed when its last name and its last handle are gone.
+//! by: it keeps working after that name is renamed or removed, and after a
+//! directory above it is renamed. A file's bytes are freed when its last
+//! name and its last handle are gone.
 //!
 //! Paths are passed to the backend as they are. Build them by joining file
 //! names onto a root directory.
@@ -135,6 +136,9 @@
 //!   the lock file is removed, or its directory is removed and made
 //!   again, or a copy of the directory is put in its place, the guard is
 //!   still held and keeps nobody out of the file that has the name now.
+//!   When the lock file or a directory above it is renamed
+//!   ([`Vfs::rename`]), the guard goes with the file: it is held under the
+//!   new path, and the old one is free for whatever is put there.
 //!   [`VfsLock::is_at`] says whether a path names the guard's file. It
 //!   compares the two files, by device and inode number where an operating
 //!   system has them, and takes no lock and writes nothing.
@@ -273,13 +277,15 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>>;
 
     /// Gives the file or the directory named `from` the name `to` and
-    /// removes the name `from`. A directory moves with everything in it, and
-    /// the handles of the files in it keep working.
+    /// removes the name `from`. A directory moves with everything in it: the
+    /// handles of the files in it keep working, and a guard on a lock file
+    /// in it is held on that file under its new path
+    /// ([`VfsLock::is_at`]).
     ///
     /// What `to` named is replaced atomically: at every moment `to` names
     /// what it named before or what was renamed. After a crash it names what
     /// was renamed, or it is as a crash just before the rename would have
-    /// left it, which is what it named before if that was durable. A file
+    /// left it, which is what it named before if that name was durable. A file
     /// replaces a file. A directory replaces a directory that has no entries,
     /// and no other. If `from` and `to` are the same name, or two names of
     /// one file, nothing changes and both names stay.
@@ -381,8 +387,9 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// the guard is dropped or its process ends.
     ///
     /// The lock file stays in place afterwards, with any content it had.
-    /// Removing or renaming it while anything may still lock it breaks the
-    /// exclusion. Keep it for locking: whether it can be locked while it is
+    /// Removing or renaming it, or renaming a directory above it, while
+    /// anything may still lock it by this path breaks the exclusion. Keep it
+    /// for locking: whether it can be locked while it is
     /// open for writing, or opened for writing while it is locked, is not
     /// specified.
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>>;
@@ -470,9 +477,9 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
 /// A held lock from [`Vfs::lock`]. Dropping it releases the lock.
 pub trait VfsLock: fmt::Debug + Send + Sync {
     /// Whether the file this guard is on is the file that `path` names
-    /// now. It is not once the lock file was removed, or another file was
-    /// put under its name: the directory was removed and made again, or a
-    /// copy of it took its place. A path that names nothing, or whose
+    /// now. It is not once the lock file was removed or renamed away, or
+    /// another file was put under its name: the directory was renamed away,
+    /// or removed and made again, or a copy of it took its place. A path that names nothing, or whose
     /// directory is gone, is answered with `false`.
     ///
     /// The guard stays as it is, and nothing is written. Whoever is about
