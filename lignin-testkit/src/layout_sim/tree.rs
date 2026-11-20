@@ -375,6 +375,10 @@ pub struct ChangeSet {
     pub roots_changed: Vec<MerkId>,
     /// The Merks that came into being.
     pub merks_created: Vec<MerkId>,
+    /// The nodes whose element became a tree of another type and hosts the
+    /// Merks it hosted: a conversion in place. Its Merks can stand at
+    /// other positions than before.
+    pub retyped: Vec<NodeId>,
     /// How many Merks were dropped, the ones inside a dropped Merk
     /// included.
     pub merks_dropped: u32,
