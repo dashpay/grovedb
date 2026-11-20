@@ -45,8 +45,9 @@
 #   lignin-ci.sh schedules [POINTS]       one step of the engine's background
 #                                         work, a reader or an open of a
 #                                         checkpoint against commits let in at
-#                                         each of its points: at every point,
-#                                         or at no more than POINTS of a step
+#                                         one of its points: each sweep at
+#                                         every point, or at no more than
+#                                         POINTS where it samples them
 #   lignin-ci.sh stress SECONDS           the engine's stress test: readers,
 #                                         writers, write-back, the reclaimer,
 #                                         the cleaner and checkpoints at once
@@ -58,9 +59,9 @@
 # (default nightly-2026-02-24), everything else on the one
 # rust-toolchain.toml names.
 # Test databases go to the temporary directory: TMPDIR says where. `test`,
-# `schedules`, `stress` and `tsan` raise the limit of open files, whose
-# default of 256 on macOS is less than the RocksDB databases of the test
-# kit's tests hold at once, and less than the engine's stress test does.
+# `stress` and `tsan` raise the limit of open files, whose default of 256 on
+# macOS is less than the RocksDB databases of the test kit's tests hold at
+# once, and less than the engine's stress test does.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
@@ -433,10 +434,12 @@ schedules)
     points=${2:-all}
     [[ $points == all || $points =~ ^[1-9][0-9]*$ ]] ||
         fail "usage: lignin-ci.sh schedules [POINTS]"
-    raise_open_files
     export LIGNIN_SCHEDULE_POINTS=$points
     say "the schedules of the engine, $points points of each step"
-    cargo test -p lignindb --lib db::tests::schedules:: -- --nocapture
+    sweeps=(cargo test -p lignindb --lib db::tests::schedules::)
+    found=$("${sweeps[@]}" -- --list)
+    grep -q ': test$' <<<"$found" || fail "no test of lignindb is a schedule"
+    "${sweeps[@]}" -- --nocapture
     ;;
 
 stress | tsan)
@@ -450,19 +453,18 @@ stress | tsan)
     export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
     export CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true
     export LIGNIN_STRESS_SECONDS=$seconds
+    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/$1
     long=(-p lignindb --release --lib db::tests::stress::an_hour_of_stress)
     if [ "$1" = stress ]; then
-        export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/stress
         say "the stress test of the engine for $seconds s"
         cargo test "${long[@]}" -- --ignored --nocapture
         exit
     fi
     # ThreadSanitizer needs the standard library built with it, which
-    # asks for a target by name. A report of a data race ends the test
-    # binary with a failure.
+    # asks for a target by name. A test binary in which it reported a data
+    # race ends with a failure, whatever its tests said.
     host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
     [ -n "$host" ] || fail "the toolchain $nightly names no host"
-    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/tsan
     export RUSTFLAGS="${RUSTFLAGS:-} -Zsanitizer=thread"
     sanitized() { cargo "+$nightly" test -Zbuild-std --target "$host" "$@"; }
     while read -r crate tests; do
