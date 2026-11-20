@@ -42,7 +42,8 @@ per owner.
 
 1. **`load`.** The contract set-up block is applied untimed. The million
    creates follow, through `workload::apply`, one write transaction per
-   block. Bulk load, and every count row averaged over the load.
+   block. Bulk load, and every count and measured row averaged over the
+   load.
 2. **`at-size`.** The size on disk right after the load.
 3. **`warm`.** Untimed warm-up reads, then the timed reads:
    - point gets of random documents;
@@ -197,17 +198,22 @@ A row holds:
 - the ratio to RocksDB in the same run;
 - its source.
 
-`lignin-bench compare` refuses two runs of different workloads, GroveVersions
-or row units. It reports each row's change, and for time rows the change in
-instructions per sample. It counts count, measured and time rows apart;
-count rows are the ones two runs of one commit agree on exactly.
+`lignin-bench compare` refuses two runs of different workloads, GroveVersions,
+row units, or a row that is a time row in one run and not in the other. It
+reports each row's change, and for time rows the change in instructions per
+sample. It counts count, measured and time rows apart; count rows are the
+ones two runs of one commit agree on exactly. A report from before the
+measured kind still reads back, and against a newer report its rows are
+compared as the newer one classes them; a binary from before it cannot read
+a newer report.
 
 ## RocksDB baseline and the plan's recorded values
 
-These are the count rows of the reference run, on `feat/LigninDB` at
-564bb7bf with this harness. Every run on both machines gives the same
-values, except the background-write rows and the size, which follow
-compaction timing. Values are per state transition, averaged over the load
+These are the count and measured rows of the reference run, on
+`feat/LigninDB` at 564bb7bf with this harness. Every run on both machines
+gives the same count rows. The measured rows (bytes logged, physical bytes,
+size on disk) differ between runs, bytes logged only below the precision
+shown. Values are per state transition, averaged over the load
 of one million documents.
 
 | Row | Measured | Plan | Difference |

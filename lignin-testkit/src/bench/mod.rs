@@ -182,7 +182,8 @@ pub const STACK_BYTES: usize = 64 << 20;
 /// For each engine, in a fresh database:
 ///
 /// 1. `load`: the contract set-up block (untimed), then `documents`
-///    creates. Bulk load, and every count row averaged over the load.
+///    creates. Bulk load, and every count and measured row averaged over
+///    the load.
 /// 2. At size: `size_on_disk`, warm reads after warm-up reads, the proof
 ///    sizes (the first proof of each kind is verified against the root
 ///    hash), checkpoints, a flush, the size and checkpoints again, reopens,

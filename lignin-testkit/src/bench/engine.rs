@@ -25,6 +25,12 @@
 //! | `keyed_lookups` | not available | searches by key the tree counted |
 //! | `hashes` | not available | hashes the tree counted |
 //!
+//! The rows from `node_records`, `node_record_bytes`, `other_records`,
+//! `other_record_bytes`, `keyed_lookups` and `hashes` are count rows, held
+//! to equality between two runs of one commit, so those fields count only
+//! the work of the writes themselves, never a background job's. The rows
+//! from `log_bytes`, `flush_bytes` and `compaction_bytes` are measured rows.
+//!
 //! [`Engine::node_anatomy`] is RocksDB's alone: it splits the whole node
 //! records RocksDB is handed into keys, values, hashes and links, which is
 //! the rewrite LigninDB exists to remove. LigninDB leaves it `None`.
@@ -92,7 +98,9 @@ pub trait Engine: Sized {
 
     /// Waits until the engine's background work (RocksDB: flushes and
     /// compactions; LigninDB: the flusher and the cleaner) is idle, so a
-    /// size on disk does not depend on when a background job ran.
+    /// size on disk or a phase's background bytes depend less on when a
+    /// background job ran. They still do: their rows are
+    /// [`RowKind::Measured`](super::RowKind::Measured).
     fn wait_for_background(&mut self) -> Result<(), BenchError>;
 
     /// The engine's running totals since it was opened.

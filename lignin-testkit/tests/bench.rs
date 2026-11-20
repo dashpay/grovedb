@@ -101,8 +101,8 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     let create = engine.row("wall_per_transition", "create").unwrap();
     assert_eq!(create.samples.len(), 10, "one sample per block");
     assert!(create.recorded.is_some() && create.ratio_to_recorded.is_some());
-    if first.method.perf_instructions {
-        assert!(create.instructions_per_sample.unwrap() > 1_000.0);
+    if let Some(instructions) = create.instructions_per_sample {
+        assert!(instructions > 1_000.0);
     }
     if first.method.thread_cpu_time {
         assert!(create.cpu_per_sample.unwrap() > 0.0);
@@ -178,9 +178,12 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         ]
         .iter()
         .any(|prefix| row.id.starts_with(prefix));
-        if follows_the_schedule {
-            assert_eq!(row.kind, RowKind::Measured, "{} in {}", row.id, row.phase);
-        }
+        let expected = match row.kind {
+            RowKind::Time => RowKind::Time,
+            _ if follows_the_schedule => RowKind::Measured,
+            _ => RowKind::Count,
+        };
+        assert_eq!(row.kind, expected, "{} in {}", row.id, row.phase);
     }
 
     let agreements = compare(&first, &second);

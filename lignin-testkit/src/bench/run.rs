@@ -3,16 +3,18 @@
 //! The run applies [`Documents`] in this order and measures as it goes:
 //!
 //! 1. **Load** (`load`): the contract set-up block, untimed, then
-//!    `documents` creates, 20 per block. Bulk load, and every count row
-//!    averaged over the whole load.
+//!    `documents` creates, 20 per block. Bulk load, and every count and
+//!    measured row averaged over the whole load.
 //! 2. **At size** (`at-size`, `warm`, `cold`): the size on disk, warm point
 //!    gets and proofs, checkpoints, a flush, reopens, then cold reads.
 //! 3. **Writes at size** (`create`, `update`, `delete`): `measured_creates`
 //!    more creates, then `updates` replacements and `deletes` deletions,
 //!    with per-block samples.
 //!
-//! Every count row comes from the engine's [`Counters`](super::Counters) or
-//! GroveDB's `OperationCost`; every time row from `Instant` around the
+//! Every count and measured row comes from the engine's
+//! [`Counters`](super::Counters), GroveDB's `OperationCost`, the serialized
+//! sizes of what is written, proof lengths, file lengths or `/proc`; every
+//! time row from `Instant` around the
 //! engine call alone, with the engine's bookkeeping (`settle`, `counters`)
 //! outside.
 //!

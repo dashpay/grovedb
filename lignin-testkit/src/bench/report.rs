@@ -189,9 +189,10 @@ impl RowKind {
         (self == RowKind::Time) == (other == RowKind::Time)
     }
 
-    /// Of two runs' kinds for one row, the one the comparison holds it to.
+    /// Of two runs' kinds for one row, the one the comparison holds it to;
+    /// the first run's where the two are not [`RowKind::same_family`].
     fn looser(self, other: RowKind) -> RowKind {
-        if other == RowKind::Measured {
+        if other == RowKind::Measured && self.same_family(other) {
             other
         } else {
             self
@@ -210,10 +211,10 @@ pub struct Row {
     pub phase: String,
     /// The unit of `value` and `samples`.
     pub unit: String,
-    /// Count or time.
+    /// Count, measured or time.
     pub kind: RowKind,
-    /// The value: a total divided by its count for count rows, the median
-    /// of `samples` for time rows.
+    /// The value: a total divided by its count for count and measured
+    /// rows, the median of `samples` for time rows and proof sizes.
     pub value: f64,
     /// The samples behind `value`, in the order taken.
     pub samples: Vec<f64>,
@@ -484,7 +485,8 @@ pub struct Agreement {
     pub id: String,
     /// The row's phase.
     pub phase: String,
-    /// Count or time.
+    /// The looser of the two runs' kinds: measured if either run has the
+    /// row as measured.
     pub kind: RowKind,
     /// The unit.
     pub unit: String,
@@ -866,6 +868,10 @@ mod tests {
         assert_eq!(compare(&older, &newer)[0].kind, RowKind::Measured);
         assert_eq!(compare(&newer, &older)[0].kind, RowKind::Measured);
         assert_eq!(compare(&older, &older)[0].kind, RowKind::Count);
+        assert_eq!(
+            compare(&of_kind(RowKind::Time), &newer)[0].kind,
+            RowKind::Time
+        );
         assert_eq!(
             comparable(&newer, &of_kind(RowKind::Time))
                 .unwrap_err()
