@@ -61,8 +61,11 @@ When `develop` was merged up to `2cfc1ce1`, every trace of both scales came
 out as it was but for its `engine` line again. That range is one commit,
 #1063:
 
-- It adds `GroveDb::convert_to_big_sum_tree`, on grove version 5. No
-  workload converts a tree yet.
+- It adds `GroveDb::convert_to_big_sum_tree`, on grove version 5: a tree
+  that keeps a 64-bit sum becomes, in place, the tree that keeps it in 128
+  bits. `conversions` converts trees of each of the seven types and goes on
+  using them, and the `legacy-convert-…` cases hold every way a conversion
+  is refused. Both were added afterwards, recorded from the same pin.
 - It changes what `GroveDb::reconcile_indexed_tree_secondaries` writes on
   grove version 5 when the rankings of the tree are damaged: every row it
   removes leaves storage, a row no tree links is removed or written again,
@@ -288,8 +291,8 @@ version the stream was generated for. Such a proof is verified with
 against the streams: a step has a proof exactly when its read is one of
 these.
 
-The standard scale is 380 traces and 229,526 steps in 5.8 MB: for each
-grove version the 31 workloads of the suite, `suite` and 44 hand-written
+The standard scale is 430 traces and 235,858 steps in 6.6 MB: for each
+grove version the 32 workloads of the suite, `suite` and 53 hand-written
 cases. On the machine it was recorded on (28 cores, shared), recording it
 takes under a minute in a release build and the replay test about a minute
 in a debug build, eight traces at a time.
@@ -353,10 +356,10 @@ digest` checkpoints in their place.
 
 ## Older grove versions: the hand-written cases
 
-BASE-01's generators steer around thirteen behaviours of older grove versions
-so that every stream applies and every read marked as proven proves. A node
-on such a version may have done exactly these things, so the corpus records
-them, as the engine returns them, on every grove version. Each case is a
+BASE-01's generators steer around fourteen behaviours, most of them of
+older grove versions, so that every stream applies and every read marked as
+proven proves. A node may have done exactly these things, so the corpus
+records them, as the engine returns them, on every grove version. Each case is a
 few operations on an empty database (`lignin-testkit::golden::legacy`),
 recorded in full. The numbers are the tally of the trace: operations that
 failed / reads that could not be proved / proofs that do not verify. A case
@@ -595,10 +598,22 @@ answers: a cursor over the subtree shows the record, the tree and its root
 hash do not have it. The repair of grove version 5 removes such records
 (GroveDB #1063). No stream or case runs it on a tree that holds one yet.
 
-The other half of what was seen in a generated stream (BASE-01, `wide-ranks`
-on grove version 4: a ranking that lacks the row of an entry a batch
-wrote) is not in the case. Batches that insert, replace and delete entries
-of such trees left their rankings in step when it was looked for.
+What was seen in a generated stream and reported as the other half
+(BASE-01, `wide-ranks` on grove version 4: a ranking that lacks the row of
+an entry a batch wrote) is this half seen from another side. The stream was
+generated again as it was then, with batches writing entries, for 400 seeds
+at three sizes, with its repairs and without them, and every ranking of
+every tree was compared with the tree's entries after every commit
+(`tests/ranking_drift.rs`). No ranking lacked a row, ranked a key at
+another count or sum than its element has, or returned fewer entries than
+keys. Nearly every stream left rows behind (1,190 of 1,200 without the
+repairs, 1,165 with them). A row left behind sits in the ranking before the
+entries that rank after it, so the rank of a key comes out one too high and
+a page begins one row late: that is what the model of that stream reported.
+Shrunk, such a stream is eight operations: the removal, through the method
+of the tree, of the entry at the root of a tree of five entries, two of
+them written by a batch of the same block. That is the removal this case
+holds.
 
 `golden::legacy`'s tests run every case on every grove version and check
 these numbers, and `tests/golden.rs` checks that no other trace of the
@@ -612,6 +627,75 @@ and the repair of `indexed-writes` (steps 14 and 16) cost on grove version 4
 what they cost on grove version 5, and the repair frees nothing: that
 stream does not hold the drift, and `ranking-drift` is where the corpus
 holds it knowingly.
+
+**14. A conversion that is refused** (GroveDB #1063).
+`GroveDb::convert_to_big_sum_tree` turns a `SumTree`, a `CountSumTree`, a
+`ProvableSumTree`, a `ProvableCountSumTree`, a
+`ProvableCountProvableSumTree`, a `ProvableSumIndexedTree` or a
+`ProvableCountProvableSumIndexedTree` into the tree that holds the same
+children with the sum in 128 bits. Grove version 5 has the operation;
+grove versions 1 to 4 refuse every call (`VersionError`). A generated
+stream holds no operation that fails, so `conversions` holds the
+conversions that are accepted and these cases every way one is refused,
+each next to the conversion that is accepted once the reason is gone. In
+every case some conversions run in the transaction of the block and some
+are given no transaction, which GroveDB then runs in one of its own and
+commits. GroveDB has no batch operation that converts.
+
+| Case | What grove version 5 refuses | v1, v2, v3 | v4 | v5 |
+| --- | --- | --- | --- | --- |
+| `convert-twice` | a second conversion of each of the seven trees, in the same block, in a later one and given no transaction (`InvalidInput`: the tree has no counterpart any more) | 25 / 0 / 0 | 25 / 0 / 0 | 18 / 0 / 0 |
+| `convert-without-a-counterpart` | the four trees that keep no sum, the six whose sum has 128 bits as created, an item, a reference and a sum item (`InvalidInput`) | 19 / 0 / 0 | 19 / 0 / 0 | 14 / 0 / 0 |
+| `convert-what-is-not-there` | a key that is not stored (`PathKeyNotFound`), a subtree that does not exist (`InvalidParentLayerPath`), a path through an item or a sum item (`CorruptedPath`), a key or a path segment of 256 bytes (`InvalidInput`) | 12 / 0 / 0 | 12 / 0 / 0 | 10 / 0 / 0 |
+| `convert-before-its-parent` | a tree whose parent adds its sum to a 64-bit sum: inside a sum tree, and as an entry of a tree ranking by a 64-bit sum (`InvalidInput`) | 16 / 2 / 0 | 16 / 2 / 0 | 5 / 0 / 0 |
+| `convert-with-a-wide-child` | a tree that holds a tree with a 128-bit sum, which would add its sum once the tree is converted (`InvalidInput`) | 8 / 0 / 0 | 8 / 0 / 0 | 3 / 0 / 0 |
+| `convert-claimed-sum` | a tree inserted with a sum and no children, whose element names a sum the tree does not have (`InvalidInput`) | 6 / 0 / 0 | 6 / 0 / 0 | 4 / 0 / 0 |
+| `convert-key-too-long-to-rank` | an indexed tree with a key of 240 bytes, which the axis of 128-bit sums does not rank (`NotSupported`) | 8 / 3 / 0 | 7 / 2 / 0 | 2 / 0 / 0 |
+| `convert-rows-of-both-signs` | nothing | 15 / 9 / 0 | 10 / 4 / 0 | 0 / 0 / 0 |
+
+What the cases show beside the refusals:
+
+- A refused conversion writes nothing: the step keeps the root hash of the
+  step before it, and its cost is what was read to refuse it.
+- The parent first. `convert-before-its-parent` converts the child its
+  parent leaves out of the sum (`NotSummed`) while the parent is a
+  `SumTree`, then the parents, then the other children; the sums then pass
+  an `i64` in the trees and in the ranking.
+- A tree ranking by count alone converts with a key of 247 bytes: it gains
+  no axis of 128-bit sums.
+- `convert-rows-of-both-signs` has no refusal on grove version 5. Its two
+  indexed trees hold rows that, removed one at a time, would pass through
+  a total no `i64` holds. Every ranking is read and proven before the
+  conversion and after it, on the axis of 128-bit sums that replaces the
+  axis of sums, and the trees then take entries past an `i64` at either
+  end.
+- On grove versions 1 to 4 the numbers above also count what follows from
+  the refusals: the trees with a 128-bit sum that those versions do not
+  create, the sums that overflow a tree that was not converted
+  (`MerkError::Overflow`), the entries the methods of a 128-bit tree
+  refuse, and the reads on the axis of 128-bit sums.
+
+A conversion given no transaction while the transaction of the block holds
+a write is not in a case. Every write reaches the root tree, so the two
+transactions have then written the same nodes whatever trees they wrote:
+on RocksDB the conversion is applied at once and the commit of the block
+fails with RocksDB's `Busy` (`StorageError::RocksDBError`). That is the
+conflict of two transactions and not a behaviour of the conversion. The
+stream and the cases give no transaction to a conversion only where the
+block's transaction holds no write. The differential fuzzer does not keep
+to that: a mutation can move such a conversion, and the blocks of several
+streams are dealt into one database, where a stream cut short leaves its
+last writes pending for whatever is dealt next.
+
+**With it: an empty indexed tree as a row of a proven query.**
+`empty-indexed-tree-row` proves every row of three trees that each hold an
+empty indexed tree, before the indexed tree has an entry and after. On
+grove versions 1 and 2 the proof of the empty tree as a row is built with
+another value hash than the verifier works out, and does not verify
+(0 / 0 / 3 on both). With an entry in the tree it verifies, as does
+everything from grove version 3. `conversions` creates empty indexed trees
+before it fills them, and reads the tree that holds them without a proof
+on those two versions.
 
 ### Excluded: the deletes that panic
 
