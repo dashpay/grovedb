@@ -416,13 +416,16 @@ impl std::ops::AddAssign for Read {
     }
 }
 
+/// Keys with the value the history has under each.
+type Valued = Vec<(Vec<u8>, std::sync::Arc<Val>)>;
+
 /// What the history has of one subtree at one version.
 pub(in crate::db::tests) struct Expected {
     subtree: Subtree,
     version: u64,
     entered: bool,
-    nodes: Vec<(Vec<u8>, std::sync::Arc<Val>)>,
-    flat: Vec<(Column, Vec<(Vec<u8>, std::sync::Arc<Val>)>)>,
+    nodes: Valued,
+    flat: Vec<(Column, Valued)>,
 }
 
 impl Expected {

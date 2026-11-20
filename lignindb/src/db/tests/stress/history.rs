@@ -64,10 +64,10 @@ impl State {
     }
 
     fn end(&mut self, version: u64, unit: Unit, key: &[u8]) {
-        if let Some(life) = self.records.get_mut(&(unit, key.to_vec())) {
-            if life.last().is_some_and(|(_, value)| value.is_some()) {
-                life.push((version, None));
-            }
+        if let Some(life) = self.records.get_mut(&(unit, key.to_vec()))
+            && life.last().is_some_and(|(_, value)| value.is_some())
+        {
+            life.push((version, None));
         }
     }
 

@@ -115,7 +115,7 @@ use crate::{
         tests::model::{OwnedBatch, OwnedSubtree, Val, Write},
         Unit,
     },
-    verify::Scope,
+    verify::{Rule, Scope},
 };
 
 /// Where a burst of commits is let into a step: at the `at`th point that
@@ -545,7 +545,7 @@ fn block(
     drops: bool,
 ) -> (usize, usize) {
     let mut pieces = vec![writer.documents(number as usize % Writer::MERKS)];
-    if number % 2 == 0 {
+    if number.is_multiple_of(2) {
         pieces.push(writer.generation());
     }
     if drops && writer.generations() > GENERATIONS {
@@ -795,10 +795,11 @@ fn act(
         // walks do beside a commit is told apart from what they do beside
         // a pass of write-back, which the blocks bring.
         let alone = step == Step::Reclaim && burst != Burst::Blocks;
-        if step != Step::WriteBack && !alone {
-            if let Err(error) = write_back.pass() {
-                failed.push(format!("a pass of write-back beside the step: {error}"));
-            }
+        if step != Step::WriteBack
+            && !alone
+            && let Err(error) = write_back.pass()
+        {
+            failed.push(format!("a pass of write-back beside the step: {error}"));
         }
     }
     lock(errors).extend(failed);
@@ -1280,6 +1281,159 @@ fn a_checkpoint_sampled_right_after_the_log_turned_to_a_new_file_opens() {
     let read = compare_all(&opened, &history);
     assert_eq!(read.nodes, writer.crowded() as u64);
     opened.close().expect("the checkpoint is closed");
+}
+
+/// What a commit writes behind a pinned version, in
+/// [`a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Behind {
+    /// No commit is made.
+    Nothing,
+    /// One record of a column, in the leaf that holds the flat record of
+    /// the Merk below the dropped one.
+    Column,
+    /// One entry of the subtree directory.
+    Directory,
+}
+
+/// A database in which a Merk that hosts another, which has a flat record,
+/// was dropped by the latest commit, with its model and nothing reclaimed.
+fn dropped_just_now() -> (Db, History) {
+    let fs = SimVfs::new(SimConfig::new(11));
+    let db = Db::open("/db", &options(Arc::new(fs))).expect("a new database");
+    halt_background(&db);
+    let history = History::new(1);
+    let mut writer = Writer::new(1, 11);
+    let mut first = OwnedBatch::default();
+    first.subtrees.push(OwnedSubtree::Enter(shared(), None));
+    first.subtrees.extend(writer.enters());
+    record(&db, &history, &first);
+    for _ in 0..2 {
+        let generation = writer.generation();
+        commit(&db, &history, &mut writer, vec![generation]);
+    }
+    let dropped = writer.drop_oldest().expect("a generation is entered");
+    commit(&db, &history, &mut writer, vec![dropped]);
+    (db, history)
+}
+
+/// Commits `batch` with no transaction, and tells the model.
+fn record(db: &Db, history: &History, batch: &OwnedBatch) {
+    let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
+    let Ok(Committed::Published(published)) = committed else {
+        panic!("a commit with no transaction: {committed:?}");
+    };
+    history.commit(published.version.get(), batch.writes());
+}
+
+/// The commit of `behind`.
+fn commit_behind(db: &Db, history: &History, behind: Behind) {
+    let mut batch = OwnedBatch::default();
+    match behind {
+        Behind::Nothing => return,
+        Behind::Column => {
+            let unit = Unit::new(Column::Aux, shared());
+            let value = Val::Flat(vec![7; 20]);
+            batch
+                .records
+                .push(Write::Put(unit, b"more".to_vec(), value));
+        }
+        Behind::Directory => {
+            let empty = Subtree::new([9; 32]);
+            batch.subtrees.push(OwnedSubtree::Enter(empty, None));
+        }
+    }
+    record(db, history, &batch);
+}
+
+/// Reclaims everything that was dropped, with a commit now and then: a
+/// page that the latest commit wrote is freed after the next one.
+fn reclaim_all(db: &Db, history: &History) {
+    for round in 1u32..400 {
+        if db.reclaim().waiting == 0 {
+            return;
+        }
+        if round.is_multiple_of(4) {
+            tick(db, history, round);
+        }
+    }
+    panic!("the drop is not reclaimed: {:?}", db.stats().reclaimed);
+}
+
+/// Reads every subtree of the version of `snapshot` and compares it with
+/// the model.
+fn reads_what_the_model_has(db: &Db, history: &History, snapshot: &Snapshot<'_>) {
+    let at = snapshot.version().get();
+    let state = history.through(at);
+    let mut subtrees = state.subtrees();
+    subtrees.push(shared());
+    let expected: Vec<Expected> = (subtrees.into_iter())
+        .map(|subtree| Expected::of(&state, subtree, at))
+        .collect();
+    drop(state);
+    let operation = snapshot.operation();
+    for expected in &expected {
+        expected.check(db, &operation);
+    }
+}
+
+/// **The physical checker reads a pinned version soundly where no step of
+/// the reclaimer was made since the version was pinned as the latest**
+/// (D-183). A step of the reclaimer changes the newest version of one
+/// page, and a pinned version sees that change only where no later commit
+/// wrote the page. So a reclaiming behind a pinned version can show the
+/// checker one half of what it took out.
+///
+/// The state: a Merk that hosts another was dropped by the latest commit.
+/// That version is pinned, a commit writes behind it, and the drop is
+/// reclaimed.
+///
+/// - **With the reclaimer not held back**, and a commit that wrote the
+///   leaf which holds the flat record of the Merk below: the checker at
+///   the pinned version finds that record under a prefix with no entry.
+///   The record went from the leaf's newer version, which the pinned
+///   version does not read, and the entry from the directory's page, which
+///   it does. The pinned version reads as the model has it all the same,
+///   and the latest version is sound.
+/// - **With the reclaimer held back from the pin to the end of the
+///   check**, which a thread that reclaims beside the check waits for: the
+///   checker finds nothing, whatever the commit wrote, and the drop is
+///   reclaimed afterwards.
+#[test]
+fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on() {
+    let (db, history) = dropped_just_now();
+    let pinned = db.snapshot();
+    let before = verify(&db, Scope::Reader, pinned.version());
+    assert!(before.is_sound(), "{before}");
+    commit_behind(&db, &history, Behind::Column);
+    reclaim_all(&db, &history);
+    let report = verify(&db, Scope::Reader, pinned.version());
+    assert!(
+        report.findings.len() == 1 && report.has(Rule::FlatRecordWithoutEntry),
+        "{report}"
+    );
+    reads_what_the_model_has(&db, &history, &pinned);
+    let latest = db.snapshot();
+    let at_latest = verify(&db, Scope::Reader, latest.version());
+    assert!(at_latest.is_sound(), "{at_latest}");
+    drop((pinned, latest));
+
+    for behind in [Behind::Nothing, Behind::Column, Behind::Directory] {
+        let (db, history) = dropped_just_now();
+        let held_back = lock(&db.shared.store.reclaiming);
+        let pinned = db.snapshot();
+        commit_behind(&db, &history, behind);
+        thread::scope(|threads| {
+            let beside = threads.spawn(|| reclaim_all(&db, &history));
+            let report = verify(&db, Scope::Reader, pinned.version());
+            assert_eq!(db.stats().reclaimed.merks, 0, "{behind:?}");
+            assert!(report.is_sound(), "{behind:?}: {report}");
+            drop(held_back);
+            beside.join().expect("the drop is reclaimed");
+        });
+        assert_eq!(db.stats().reclaimed.merks, 1, "{behind:?}");
+        reads_what_the_model_has(&db, &history, &pinned);
+    }
 }
 
 macro_rules! schedules {
