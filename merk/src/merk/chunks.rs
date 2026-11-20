@@ -205,13 +205,19 @@ where
         let chunk = self
             .merk
             .walk(|maybe_walker| match maybe_walker {
-                Some(mut walker) => walker.traverse_and_build_chunk_with_features(
-                    &traversal_instructions,
-                    chunk_height,
-                    tree_type,
-                    true,
-                    grove_version,
-                ),
+                Some(mut walker) => {
+                    // Only the values a chunk emits are read: the nodes on
+                    // the way to it are not in it, and the nodes below its
+                    // depth give a hash.
+                    walker.values_on_demand();
+                    walker.traverse_and_build_chunk_with_features(
+                        &traversal_instructions,
+                        chunk_height,
+                        tree_type,
+                        true,
+                        grove_version,
+                    )
+                }
                 None => Err(Error::ChunkingError(ChunkError::EmptyTree(
                     "cannot create chunk producer for empty Merk",
                 )))
