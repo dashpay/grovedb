@@ -296,6 +296,20 @@ impl<'s> WriteBack<'s> {
     /// The manifest, settled: if a replacement left it in doubt, it is
     /// opened again first, and every store is told of the manifest that is
     /// in force.
+    ///
+    /// **Each of the four stores is told whatever another one answers.**
+    /// The manifest is settled once it has been opened again, and the next
+    /// call finds nothing in doubt and tells nobody: a store that was left
+    /// out because one before it could not delete a file would go on from
+    /// the manifest of before the doubt until a replacement of its own.
+    /// The call returns the first error once all four have been told. A
+    /// store that answers that a file was not deleted has heard, and
+    /// tries the deletion again when it is told the next time. One that
+    /// refuses because it is read-only or of another directory has not,
+    /// and refuses its own replacements as well.
+    ///
+    /// If the manifest cannot be opened again, the call ends with that
+    /// error, no store is told, and the doubt stays for the next call.
     pub(crate) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
         let mut manifest = lock(self.stores.manifest);
         if manifest.manifest().is_err() {
@@ -308,10 +322,14 @@ impl<'s> WriteBack<'s> {
                 checkpoints,
                 ..
             } = self.stores;
-            segments.manifest_replaced(&manifest)?;
-            values.manifest_replaced(&manifest)?;
-            log.manifest_replaced(&manifest)?;
-            checkpoints.manifest_replaced(&manifest)?;
+            let told_segments = segments.manifest_replaced(&manifest);
+            let told_values = values.manifest_replaced(&manifest);
+            let told_log = log.manifest_replaced(&manifest);
+            let told_checkpoints = checkpoints.manifest_replaced(&manifest);
+            told_segments?;
+            told_values?;
+            told_log?;
+            told_checkpoints?;
         }
         Ok(manifest)
     }
