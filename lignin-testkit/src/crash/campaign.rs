@@ -73,7 +73,10 @@ impl Faults {
         match self {
             Self::None => FaultOdds::NONE,
             Self::Syncs => FaultOdds {
-                eio: Chance::one_in(40),
+                // A session makes few syncs, five where it opens a store
+                // that was closed, so the odds are those of a session
+                // that meets a failed sync now and then.
+                eio: Chance::one_in(16),
                 eio_ops: OpSet::SYNCS,
                 ..FaultOdds::NONE
             },
