@@ -11,9 +11,8 @@
 //! The checker changes nothing and takes no lock of the store. It reads as
 //! any reader does: pages through the store's loader at the version it is
 //! given, under the operation guard of its caller. It knows no Merk rule:
-//! the functions that make a hash are given to it
-//! ([`HashRules`](lignin_tree::hash::HashRules)), as they are to the tree
-//! layer.
+//! the functions that make a hash are given to it ([`HashRules`]), as
+//! they are to the tree layer.
 //!
 //! No example runs here: a [`Store`] is made of the structures of an open
 //! store, which the engine's open makes (TXN-07). The tests make one over
