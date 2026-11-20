@@ -675,8 +675,9 @@ impl Db {
     /// # }
     /// ```
     ///
-    /// The same with the close before the cursor is dropped does not
-    /// compile (`db` is moved while it is borrowed):
+    /// The same with the cursor dropped after the transaction and the
+    /// close does not compile: the cursor borrows the transaction, which
+    /// borrows the handle, so neither is given up while the cursor lives.
     ///
     /// ```compile_fail,E0505
     /// use lignindb::{
@@ -700,6 +701,7 @@ impl Db {
     /// })?;
     /// let parked = scope.parked_merk_cursor(subtree)?;
     /// scope.merge();
+    /// drop(txn);
     /// db.close()?;
     /// drop(parked);
     /// # Ok(())

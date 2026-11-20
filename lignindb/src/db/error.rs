@@ -249,7 +249,7 @@ impl fmt::Display for OpenError {
                 f,
                 "{} was changed while it was being opened: the database that was seen there \
                  is gone, or the lock file that was taken is not the one at the path any \
-                 more. Nothing is opened or made there",
+                 more. No database is opened or made there",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(

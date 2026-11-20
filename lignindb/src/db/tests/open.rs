@@ -344,10 +344,21 @@ fn entries_that_are_not_the_engines_are_left_alone() {
         "state_sync_restore_in_progress",
         "wal.bak",
     ];
+    // Only these are read: a session that is open removes files of its
+    // own while the directory is walked.
     let foreign = |dir: &Path| {
-        let mut image = image(dir);
-        image.retain(|path, _| names.iter().any(|name| path.starts_with(name)));
-        image
+        let mut found = BTreeMap::new();
+        for name in names {
+            let at = dir.join(name);
+            if at.is_dir() {
+                found.insert(PathBuf::from(name), None);
+                let below = image(&at).into_iter();
+                found.extend(below.map(|(path, bytes)| (Path::new(name).join(path), bytes)));
+            } else {
+                found.insert(PathBuf::from(name), Some(fs::read(&at).expect("a file")));
+            }
+        }
+        found
     };
     let before = foreign(path);
     assert_eq!(before.len(), 8);
