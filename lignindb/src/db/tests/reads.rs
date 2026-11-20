@@ -238,6 +238,22 @@ fn a_reader_walks_the_records_of_a_column_across_its_operations() {
     assert_eq!(walk.key(), Some(b"a".as_slice()));
     walk.prev(&before.operation()).expect("a move");
     assert_eq!(walk.key(), None);
+
+    // The cursor is of its version: an operation of a later one is
+    // refused, and the cursor stays where it was.
+    walk.seek_to_first(&before.operation()).expect("a move");
+    let later = db.snapshot();
+    let refused = walk.next(&later.operation()).expect_err("a later version");
+    assert!(
+        matches!(refused, ReadError::OtherVersion { .. }),
+        "{refused}"
+    );
+    assert!(refused.to_string().contains("flat records"));
+    assert!(std::error::Error::source(&refused).is_none());
+    let refused = walk.value(&later.operation(), &mut Vec::new());
+    assert!(matches!(refused, Err(ReadError::OtherVersion { .. })));
+    assert_eq!(walk.key(), Some(b"a".as_slice()));
+    assert_eq!(value(&walk), Some(b"1".to_vec()));
 }
 
 #[test]

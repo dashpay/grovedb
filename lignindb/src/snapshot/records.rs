@@ -49,6 +49,15 @@ pub enum ReadError {
     Node(NodeError),
     /// A cursor over the nodes of a Merk did not move.
     Cursor(CursorError),
+    /// A cursor over flat records was given an operation of another
+    /// version than the one it was made at, or of another database. The
+    /// cursor is as it was.
+    OtherVersion {
+        /// The version the cursor was made at.
+        made_at: CommitVersion,
+        /// The version of the operation that was given.
+        given_at: CommitVersion,
+    },
     /// The engine keeps no handle on the subtree directory for the version
     /// that is read. It keeps one for every version that is pinned, and
     /// for the latest version of an operation under its guard
@@ -68,6 +77,13 @@ impl fmt::Display for ReadError {
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
             Self::Node(error) => write!(f, "node: {error}"),
             Self::Cursor(error) => write!(f, "cursor: {error}"),
+            Self::OtherVersion { made_at, given_at } => write!(
+                f,
+                "a cursor over flat records made at version {} was given an operation at \
+                 version {}, or one of another database",
+                made_at.get(),
+                given_at.get()
+            ),
             Self::NotKept { at } => write!(
                 f,
                 "no handle on the subtree directory is kept for version {}",
@@ -80,7 +96,7 @@ impl fmt::Display for ReadError {
 impl Error for ReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NoRecords | Self::NotKept { .. } => None,
+            Self::NoRecords | Self::NotKept { .. } | Self::OtherVersion { .. } => None,
             Self::Directory(error) => Some(error),
             Self::Flat(error) => Some(error),
             Self::Node(error) => Some(error),
@@ -334,6 +350,8 @@ impl Opened<'_, '_> {
         let tree = self.records.keyspaces.of(column);
         RecordWalk {
             cursor: tree.cursor_within(self.subtree.as_bytes()),
+            database: self.operation.database,
+            at: self.operation.at(),
         }
     }
 }
@@ -342,12 +360,14 @@ impl Opened<'_, '_> {
 /// reader keeps from one operation to the next ([`Opened::record_walk`]).
 ///
 /// It holds no page between two calls. Each call is given the operation it
-/// is made in, which has to read the version the cursor was made at: the
-/// operations of one snapshot do. The cursor does not check it, as a
-/// [`NodeWalk`](super::NodeWalk) does: what a call with an operation of
-/// another version reads is not defined.
+/// is made in, which has to read the version of the database that the
+/// cursor was made at: the operations of one snapshot do. A call with
+/// another is refused ([`ReadError::OtherVersion`]), and the cursor stays
+/// as it was.
 pub struct RecordWalk {
     cursor: flat::Cursor,
+    database: u64,
+    at: CommitVersion,
 }
 
 macro_rules! record_moves {
@@ -358,7 +378,7 @@ macro_rules! record_moves {
             operation: &Operation<'_>,
             $($key: &[u8],)?
         ) -> Result<(), ReadError> {
-            let records = operation.records.ok_or(ReadError::NoRecords)?;
+            let records = self.records_of(operation)?;
             let pages = operation.flat_pages(&records);
             Ok(self.cursor.$name(&pages $(, $key)?)?)
         }
@@ -366,6 +386,18 @@ macro_rules! record_moves {
 }
 
 impl RecordWalk {
+    /// The records of `operation`, if it reads what the cursor was made
+    /// on.
+    fn records_of<'o>(&self, operation: &Operation<'o>) -> Result<Records<'o>, ReadError> {
+        if (operation.database, operation.at()) != (self.database, self.at) {
+            return Err(ReadError::OtherVersion {
+                made_at: self.at,
+                given_at: operation.at(),
+            });
+        }
+        operation.records.ok_or(ReadError::NoRecords)
+    }
+
     record_moves! {
         /// Goes to the first key at or after `key`.
         seek(key);
@@ -391,7 +423,7 @@ impl RecordWalk {
     /// Appends the value under the key the cursor stands on to `out`, and
     /// says whether it stands on one.
     pub fn value(&self, operation: &Operation<'_>, out: &mut Vec<u8>) -> Result<bool, ReadError> {
-        let records = operation.records.ok_or(ReadError::NoRecords)?;
+        let records = self.records_of(operation)?;
         Ok(self.cursor.value(&operation.flat_pages(&records), out)?)
     }
 }
