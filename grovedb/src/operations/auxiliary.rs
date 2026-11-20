@@ -176,6 +176,10 @@ impl<E: Engine> GroveDb<E> {
             entries.push((key, value.to_vec()));
             iter.next().unwrap_add_cost(&mut cost);
         }
+        // A walk that failed has not come to every key.
+        if let Err(error) = iter.status() {
+            return Err(error.into()).wrap_with_cost(cost);
+        }
 
         Ok(entries).wrap_with_cost(cost)
     }

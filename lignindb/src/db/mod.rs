@@ -355,6 +355,7 @@ use lignin_store::{
     table::LogDurable,
 };
 use lignin_tree::{
+    flat::FlatTree,
     hash::{HashRules, Refusal},
     node::NodeRef,
     value::{RegroupPolicy, Regrouping},
@@ -370,6 +371,7 @@ use crate::{
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
     txn::{Batch, KeySet, Keyspaces, Subtree, SubtreeWrite, TxnError, WriteTxn},
+    verify,
 };
 
 /// What a [`Db::flush`] made durable.
@@ -1014,6 +1016,42 @@ impl Db {
     /// nothing else has to.
     pub fn reclaim(&self) -> Round {
         self.shared.reclaim_round(false)
+    }
+
+    /// Runs the physical checker on the latest version of the database
+    /// ([`crate::verify::check`]): every rule of the layout that a store
+    /// keeps, and with `rules` every stored hash, made again.
+    ///
+    /// Under [`verify::Scope::Reader`] it may run beside writers. Under
+    /// [`verify::Scope::Still`] the caller vouches for what that scope
+    /// asks: nothing commits meanwhile, no write transaction holds a page
+    /// id, and write-back is at rest, as in a database that was just
+    /// opened after a close. The reclaiming of what drops left is held
+    /// back for the run under either scope.
+    pub fn check(&self, scope: verify::Scope, rules: Option<&mut dyn HashRules>) -> verify::Report {
+        let shared = &*self.shared;
+        let store = &*shared.store;
+        let catalog = store.catalog();
+        let _reclaiming = lock(&store.reclaiming);
+        let guard = shared.versions.guard();
+        let columns = catalog.keyspaces.columns();
+        let parts = verify::Store {
+            loader: store.loader(),
+            table: &store.table,
+            segments: &store.segments,
+            values: &store.values,
+            page_size: store.page_size,
+            ids: Some(&store.ids),
+            grove: verify::Grove::Directory {
+                tree: catalog.directory,
+                columns: &columns,
+            },
+            flat_drops: Some(catalog.flat_drops),
+            flat: &[FlatTree::open(open::CATALOG_PAGE, store.config())],
+            values_counted: true,
+        };
+        let options = verify::Options::new(guard.latest(), scope);
+        verify::check(&parts, &guard, options, rules)
     }
 
     /// The entries of the database directory that are not the engine's,

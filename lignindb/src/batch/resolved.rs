@@ -102,6 +102,16 @@ pub struct Resolved<C> {
     enters: Vec<Subtree>,
 }
 
+/// A staged write as the outcome it is for its key.
+fn written(write: &Write) -> Written<'_> {
+    match write {
+        Write::Record(value) => Written::Record(value),
+        Write::Node { node, .. } => Written::Node(node),
+        Write::Remove { node: false, .. } => Written::Removed,
+        Write::Remove { node: true, .. } => Written::NodeRemoved,
+    }
+}
+
 impl<C> fmt::Debug for Resolved<C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Resolved")
@@ -162,6 +172,17 @@ impl<C> Resolved<C> {
         })
     }
 
+    /// The subtrees the batch enters, in the order they are entered.
+    pub fn enters(&self) -> &[Subtree] {
+        &self.enters
+    }
+
+    /// What the batch holds for `key` in the data column of `subtree`, or
+    /// `None` if it holds no outcome for it.
+    pub fn held(&self, subtree: Subtree, key: &[u8]) -> Option<Written<'_>> {
+        (self.staged.held(subtree, key)).map(|entry| written(&entry.write))
+    }
+
     /// How many keys the batch holds an outcome for.
     pub fn len(&self) -> usize {
         self.staged.count()
@@ -182,12 +203,7 @@ impl<C> Resolved<C> {
                 keys.iter().map(move |(key, entry)| Outcome {
                     unit: Unit::new(*column, *subtree),
                     key,
-                    write: match &entry.write {
-                        Write::Record(value) => Written::Record(value),
-                        Write::Node { node, .. } => Written::Node(node),
-                        Write::Remove { node: false, .. } => Written::Removed,
-                        Write::Remove { node: true, .. } => Written::NodeRemoved,
-                    },
+                    write: written(&entry.write),
                     tag: &entry.tag,
                 })
             })

@@ -9,10 +9,12 @@
 #                                    whole number above 0)
 #   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
 #                                    machine (ARGS follow `cargo test`), then
-#                                    those of Merk's node store on LigninDB
+#                                    those of Merk's node store on LigninDB and
+#                                    of GroveDB's LigninDB engine
 #   lignin-ci.sh features            the feature sets that must build apart:
-#                                    GroveDB with no engine, Merk on each engine
-#                                    alone, the engine crates on their own
+#                                    GroveDB with no engine and on each engine
+#                                    alone, Merk on each engine alone, the
+#                                    engine crates on their own
 #   lignin-ci.sh docs                rustdoc with warnings denied, for the
 #                                    crates whose documentation builds clean
 #   lignin-ci.sh loom                the loom models
@@ -169,19 +171,25 @@ test)
     say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
     status=0
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@" || status=$?
-    # Merk's node store on LigninDB is LigninDB code in grovedb-merk, behind
-    # its feature lignin_storage. It runs whether or not the crates passed.
-    store=(-p grovedb-merk --features lignin_storage --lib store::lignin)
-    say "cargo test ${store[*]}"
-    if ! found=$(cargo test "${store[@]}" -- --list); then
-        printf 'lignin-ci: the tests of grovedb-merk with lignin_storage do not build\n' >&2
-        status=1
-    elif grep -q ': test$' <<<"$found"; then
-        cargo test "${store[@]}" || status=$?
-    else
-        printf 'lignin-ci: no test of grovedb-merk matches store::lignin\n' >&2
-        status=1
-    fi
+    # Merk's node store on LigninDB and GroveDB's LigninDB engine are
+    # LigninDB code in grovedb-merk and in grovedb, each behind the feature
+    # lignin_storage of its crate. They run whether or not the crates passed.
+    while read -r package filter; do
+        beside=(-p "$package" --features lignin_storage --lib "$filter")
+        say "cargo test ${beside[*]}"
+        if ! found=$(cargo test "${beside[@]}" -- --list); then
+            printf 'lignin-ci: the tests of %s with lignin_storage do not build\n' "$package" >&2
+            status=1
+        elif grep -q ': test$' <<<"$found"; then
+            cargo test "${beside[@]}" || status=$?
+        else
+            printf 'lignin-ci: no test of %s matches %s\n' "$package" "$filter" >&2
+            status=1
+        fi
+    done <<'BESIDE'
+grovedb-merk store::lignin
+grovedb engine::lignin
+BESIDE
     exit "$status"
     ;;
 
@@ -196,6 +204,17 @@ features)
     cargo check -p grovedb --no-default-features --features engine_generic
     cargo test -p grovedb --no-default-features --features estimated_costs --lib --tests
     cargo test -p grovedb-merk --no-default-features --features minimal --lib
+
+    say "GroveDB on LigninDB alone: no RocksDB among its crates"
+    build_of normal,build grovedb --no-default-features --features lignin_storage |
+        refuse 'rocksdb' "RocksDB is among the crates of GroveDB on LigninDB"
+    cargo check -p grovedb --no-default-features --features lignin_storage
+    cargo check -p grovedb --no-default-features --features lignin_storage --lib --tests
+
+    say "GroveDB on RocksDB alone: no LigninDB among its crates"
+    build_of normal,build grovedb --no-default-features --features rocksdb_storage |
+        refuse '^lignin' "LigninDB is among the crates of GroveDB on RocksDB"
+    cargo check -p grovedb --no-default-features --features rocksdb_storage
 
     say "Merk on LigninDB alone: no RocksDB among its crates"
     build_of normal,build grovedb-merk --no-default-features --features lignin_storage |

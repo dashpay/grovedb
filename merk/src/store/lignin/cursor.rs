@@ -7,7 +7,7 @@ use grovedb_costs::{CostContext, CostsExt};
 use grovedb_storage::Error as StorageError;
 
 use super::{
-    access::{Access, Prefix, Seek, StoredNode, Walk},
+    access::{Access, Failure, Prefix, Seek, StoredNode, Walk},
     hash, node_inner, MODEL,
 };
 use crate::{store::NodeCursor, Error};
@@ -45,7 +45,7 @@ pub struct LigninCursor<'db> {
     on_key: bool,
     /// The record under the key, once it was asked for.
     record: OnceCell<Option<Vec<u8>>>,
-    failure: RefCell<Option<String>>,
+    failure: RefCell<Option<Failure>>,
 }
 
 impl std::fmt::Debug for LigninCursor<'_> {
@@ -71,7 +71,7 @@ impl<'db> LigninCursor<'db> {
     pub(super) fn open(access: &'db (dyn Access + 'db), subtree: &Prefix) -> Self {
         let (walk, failure) = match access.cursor(subtree) {
             Ok(walk) => (Some(RefCell::new(walk)), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(error.into())),
         };
         Self {
             walk,
@@ -80,6 +80,28 @@ impl<'db> LigninCursor<'db> {
             record: OnceCell::new(),
             failure: RefCell::new(failure),
         }
+    }
+
+    /// Points the cursor at the Merk of the subtree `prefix`, in the
+    /// committed state it has read from since it was opened
+    /// (`engine.md`, "One state across subtrees"). It stands on no node
+    /// then. A cursor that cannot be pointed elsewhere, as the cursor of a
+    /// write transaction, stands on no node either, and
+    /// [`NodeCursor::status`] says why.
+    pub fn retarget(mut self, prefix: &Prefix) -> Self {
+        self.key.clear();
+        self.on_key = false;
+        self.record = OnceCell::new();
+        if let Some(walk) = self.walk.as_mut() {
+            match walk.get_mut().retarget(prefix) {
+                Ok(()) => *self.failure.get_mut() = None,
+                Err(error) => {
+                    self.walk = None;
+                    *self.failure.get_mut() = Some(error.into());
+                }
+            }
+        }
+        self
     }
 
     /// Moves the cursor. A seek starts again after a failure, and a step
@@ -97,7 +119,7 @@ impl<'db> LigninCursor<'db> {
                 }
                 Err(error) => {
                     self.on_key = false;
-                    *self.failure.get_mut() = Some(error.to_string());
+                    *self.failure.get_mut() = Some(error.into());
                 }
             }
         }
@@ -114,7 +136,7 @@ impl<'db> LigninCursor<'db> {
         let mut walk = self.walk.as_ref()?.borrow_mut();
         let read = walk.node().and_then(|node| node.map(record).transpose());
         read.unwrap_or_else(|error| {
-            *self.failure.borrow_mut() = Some(error.to_string());
+            *self.failure.borrow_mut() = Some(error.into());
             None
         })
     }
@@ -168,7 +190,7 @@ impl NodeCursor for LigninCursor<'_> {
     fn status(&self) -> Result<(), StorageError> {
         match &*self.failure.borrow() {
             None => Ok(()),
-            Some(failure) => Err(StorageError::StorageError(failure.clone())),
+            Some(failure) => Err(failure.error()),
         }
     }
 }

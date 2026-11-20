@@ -221,6 +221,7 @@
 
 mod error;
 mod kept;
+mod nodes;
 mod read;
 mod records;
 mod slots;
@@ -232,6 +233,7 @@ mod tests;
 
 pub use error::{PublishError, SnapshotError};
 pub use kept::Directories;
+pub use nodes::NodeWalk;
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
-pub use records::{Kept, Opened, ReadError, RecordCursor};
+pub use records::{Kept, Opened, ReadError, RecordCursor, RecordWalk};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};

@@ -5,8 +5,10 @@
 //! savepoints, write scopes, handles to subtrees, the batch of writes that
 //! spans subtrees, checkpoints, flush and wipe. `GroveDb<E>` is generic over
 //! it, and `RocksDbEngine` is the engine it uses unless another is named.
-//! `RocksDbEngine` is compiled with the `rocksdb_storage` feature. Without
-//! it, `GroveDb` with no engine named is on `NoEngine`, which is none.
+//! `RocksDbEngine` is compiled with the `rocksdb_storage` feature, and
+//! `LigninEngine` with `lignin_storage`. With the second and without the
+//! first, `GroveDb` with no engine named is on LigninDB. With neither it is
+//! on `NoEngine`, which is none.
 //!
 //! A subtree handle is a [`SubtreeHandle`]: the `NodeStore` a Merk runs on,
 //! the `FlatStore` of the subtree's data keyspace, and the handles of its aux
@@ -14,6 +16,8 @@
 //!
 //! The contract is written out in `docs/lignindb/engine.md`.
 
+#[cfg(feature = "lignin_storage")]
+pub mod lignin;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb;
 #[cfg(all(test, feature = "rocksdb_storage"))]
@@ -33,6 +37,8 @@ use grovedb_storage::{
     Error, FlatStore,
 };
 
+#[cfg(feature = "lignin_storage")]
+pub use self::lignin::LigninEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use self::rocksdb::RocksDbEngine;
 
@@ -45,7 +51,7 @@ pub use self::rocksdb::RocksDbEngine;
 /// Write `GroveDb`, not `GroveDb<NoEngine>`: this type is gone as soon as
 /// any crate of a build turns an engine on, and `GroveDb` is then on that
 /// engine.
-#[cfg(not(feature = "rocksdb_storage"))]
+#[cfg(not(any(feature = "rocksdb_storage", feature = "lignin_storage")))]
 pub enum NoEngine {}
 
 /// The engine [`GroveDb`](crate::GroveDb) runs on where none is named.
@@ -58,6 +64,10 @@ pub type DefaultEngine = RocksDbEngine;
 /// The engine the test suite of this build runs on.
 #[cfg(all(feature = "rocksdb_storage", test))]
 pub type DefaultEngine = crate::tests::SuiteEngine;
+/// The engine [`GroveDb`](crate::GroveDb) runs on where none is named, in
+/// a build that has the LigninDB engine and not the RocksDB engine.
+#[cfg(all(feature = "lignin_storage", not(feature = "rocksdb_storage")))]
+pub type DefaultEngine = LigninEngine;
 
 /// The error of a node store call that GroveDB makes itself, where it used to
 /// call the storage context: an error of the storage stays

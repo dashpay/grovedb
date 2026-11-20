@@ -10,7 +10,9 @@ use std::{
 
 use grovedb_costs::OperationCost;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
+use grovedb_storage::{
+    error::WriteScopeError, rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch,
+};
 use grovedb_version::version::GroveVersion;
 use lignin_tree::{
     hash::{HashRules, Refusal},
@@ -26,10 +28,13 @@ use lignindb::{
 };
 
 use super::{
-    access::{Access, Child, Location, Prefix, StoredNode, Walk, Write, Written},
+    access::{
+        Access, BatchPart, Child, Location, Prefix, StoredNode, SubtreeChange, Walk, Write, Written,
+    },
+    flat::{FlatAccess, FlatWalk},
     hash::MerkHashRules,
-    LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore, LigninSubtree,
-    LigninWriter, Mode,
+    tree_type_bytes, LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore,
+    LigninOutcome, LigninSettled, LigninSubtree, LigninView, LigninWriter, Mode,
 };
 use crate::{
     cost_model::Keyspace,
@@ -40,6 +45,7 @@ use crate::{
 
 mod cursor;
 mod proof;
+mod views;
 
 pub(super) const NO_VALUE_DEFINED_COST: Option<
     fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
@@ -788,20 +794,19 @@ fn a_deferred_handle_reads_nothing_that_is_staged() {
     }
     assert_eq!(transaction.stats().writes, 0);
 
-    // A second change set of the Merk has no place in the batch.
+    // A second change set of the Merk joins the batch, which holds one
+    // outcome for each key: inside one operation the put of a node stands
+    // against a delete of it.
     let again = LigninNodeStore::deferred(&writer, ROOT, Some(&staged));
     let mut change_set = again.change_set();
     change_set.delete_node(&be(1), None);
-    let refused = again.commit(change_set).unwrap().unwrap_err();
-    assert!(refused
-        .to_string()
-        .contains("a change set of this Merk already"));
+    again.commit(change_set).unwrap().unwrap();
 
     let root = merk.root_key();
     drop(merk);
     let shown = format!("{staged:?}");
     assert!(
-        shown.contains("LigninBatch") && shown.contains("nodes: 2"),
+        shown.contains("LigninBatch") && shown.contains("written: 1"),
         "{shown}"
     );
     staged.apply(&writer).unwrap().unwrap();
@@ -1283,33 +1288,34 @@ fn a_handle_that_only_reads_refuses_every_write() {
     // The scope writes a node, the root key and an aux record of the
     // subtree, and holds those three units from then on. A read of one of
     // them from outside is refused. A read that was not performed is a
-    // storage error, which names the unit, and is charged as a lookup that
-    // found nothing.
+    // storage error, the overlap of two write scopes, and is charged as a
+    // lookup that found nothing.
     commit(&writer, &ROOT, &mut None, &[basic(2, b"v")]);
     let holder = LigninNodeStore::immediate(&writer, ROOT);
     holder.set_root_key(Some(b"k")).unwrap().unwrap();
     let mut change_set = holder.change_set();
     change_set.put_aux_record(b"k", b"aux", None).unwrap();
     holder.commit(change_set).unwrap().unwrap();
-    let not_read = |cost: OperationCost, error: Error, column: &str| {
+    let not_read = |cost: OperationCost, error: Error| {
         assert_eq!(cost, seek);
-        assert!(matches!(error, Error::StorageError(_)), "{error:?}");
-        let text = error.to_string();
-        assert!(text.contains("another open scope"), "{text}");
-        assert!(text.contains(&format!("holds {column} of 0000")), "{text}");
+        let overlap = grovedb_storage::Error::WriteScope(WriteScopeError::Overlap);
+        assert!(
+            matches!(&error, Error::StorageError(error) if error.to_string() == overlap.to_string()),
+            "{error:?}"
+        );
     };
     let read = outside.get_node(&be(1), NO_VALUE_DEFINED_COST, version());
-    not_read(read.cost, read.value.unwrap_err(), "data");
+    not_read(read.cost, read.value.unwrap_err());
     let read = outside.get_node_for_read(&be(1));
-    not_read(read.cost, read.value.unwrap_err(), "data");
+    not_read(read.cost, read.value.unwrap_err());
     let read = outside.has_node(&be(1));
-    not_read(read.cost, read.value.unwrap_err(), "data");
+    not_read(read.cost, read.value.unwrap_err());
     let read = outside.root_key();
-    not_read(read.cost, read.value.unwrap_err(), "roots");
+    not_read(read.cost, read.value.unwrap_err());
     let read = outside.get_aux_record(b"k");
-    not_read(read.cost, read.value.unwrap_err(), "aux");
+    not_read(read.cost, read.value.unwrap_err());
     let read = outside.fetch_node(&link, NO_VALUE_DEFINED_COST.as_ref(), version());
-    not_read(read.cost, read.value.unwrap_err(), "data");
+    not_read(read.cost, read.value.unwrap_err());
     // A unit that the scope does not hold is read from outside as before:
     // another column of the subtree, and another subtree.
     let read = outside.get_meta_record(b"k");
@@ -1439,6 +1445,24 @@ impl Access for Unsteady<'_> {
 
     fn apply(&self, write: &Write) -> Result<Written, Error> {
         self.under.apply(write)
+    }
+
+    fn apply_parts(
+        &self,
+        parts: &[&dyn BatchPart],
+        enters: &[(usize, SubtreeChange)],
+    ) -> Result<Vec<Written>, Error> {
+        self.under.apply_parts(parts, enters)
+    }
+}
+
+impl FlatAccess for Unsteady<'_> {
+    fn records<'a>(
+        &'a self,
+        keyspace: Keyspace,
+        subtree: &Prefix,
+    ) -> Result<Box<dyn FlatWalk + 'a>, Error> {
+        self.under.records(keyspace, subtree)
     }
 }
 

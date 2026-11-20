@@ -8,6 +8,7 @@
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
+use grovedb_storage::{error::WriteScopeError, Error as StorageError};
 use lignin_format::tree_page::{HashField, Side};
 use lignin_tree::{directory::DirectoryError, hash::Stale, node::NodeHandle, value::ValueBuf};
 use lignindb::txn::{
@@ -17,6 +18,7 @@ use lignindb::txn::{
 };
 
 use super::{
+    change_set::node_put,
     feature::{decode_aggregate, decode_feature, Tp12},
     refused, LigninEntry, LigninHosted,
 };
@@ -30,6 +32,12 @@ pub(super) type Prefix = [u8; 32];
 /// names that cell, and finds the node by its key otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Location(NodeHandle);
+
+impl Location {
+    pub(super) const fn handle(self) -> NodeHandle {
+        self.0
+    }
+}
 
 /// A link of a node as it is stored.
 #[derive(Clone, Debug, PartialEq)]
@@ -151,8 +159,8 @@ pub(super) struct RecordChange {
     pub(super) value: Option<Vec<u8>>,
 }
 
-/// What a write does to a subtree as a whole: to its entry in the subtree
-/// directory.
+/// What a write does to a subtree as a whole, beside what its batch says of
+/// it: to its entry in the subtree directory.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum SubtreeChange {
     /// The subtree is entered, with no node.
@@ -165,8 +173,6 @@ pub(super) enum SubtreeChange {
         /// hosts.
         host: Option<(Prefix, Vec<u8>, u8)>,
     },
-    /// The subtree is dropped, with every subtree below it.
-    Drop(Prefix),
 }
 
 /// The writes of one operation: what it does to whole subtrees, the change
@@ -177,19 +183,6 @@ pub(super) struct Write {
     pub(super) subtrees: Vec<SubtreeChange>,
     pub(super) merks: Vec<MerkChange>,
     pub(super) records: Vec<RecordChange>,
-}
-
-impl Write {
-    /// Whether the Merk under `subtree` has no node before this write: the
-    /// write enters its subtree. What the transaction holds under the
-    /// prefix until then goes with a drop, which is applied before any
-    /// change set, so no value of it is kept.
-    fn is_fresh(&self, subtree: &Prefix) -> bool {
-        self.subtrees.iter().any(|change| match change {
-            SubtreeChange::Enter { subtree: at, .. } => at == subtree,
-            SubtreeChange::Drop(_) => false,
-        })
-    }
 }
 
 /// What the application of a [`Write`] reports.
@@ -236,10 +229,56 @@ pub(super) trait Walk: Send {
     /// with the key of each child in its link. `None` if the transaction
     /// has deleted the node since the cursor came to its key.
     fn node(&mut self) -> Result<Option<StoredNode>, Error>;
+
+    /// Points the cursor at the Merk of `subtree`, in the committed state
+    /// it has read from since it was opened. It stands on no node then.
+    ///
+    /// A cursor of a snapshot does this. A cursor of a write transaction
+    /// is refused: the transaction has no way to point the committed side
+    /// of a cursor at another Merk under the pin it holds.
+    fn retarget(&mut self, _subtree: &Prefix) -> Result<(), Error> {
+        Err(Error::NotSupported(
+            "lignindb: a cursor of a write transaction is not pointed at another subtree"
+                .to_owned(),
+        ))
+    }
 }
 
-/// One writer's view of a LigninDB transaction, as the store uses it.
-pub(super) trait Access: Sync {
+/// Why a cursor stands on nothing, kept so that its status gives the error
+/// again, with the class it had: a refusal of a write scope and a limit of
+/// the engine as what they are, and anything else by its words.
+#[derive(Clone, Debug)]
+pub(super) enum Failure {
+    Scope(WriteScopeError),
+    NotSupported(String),
+    Words(String),
+}
+
+impl From<Error> for Failure {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::StorageError(StorageError::WriteScope(error)) => Self::Scope(error),
+            Error::StorageError(StorageError::NotSupported(what)) | Error::NotSupported(what) => {
+                Self::NotSupported(what)
+            }
+            error => Self::Words(error.to_string()),
+        }
+    }
+}
+
+impl Failure {
+    pub(super) fn error(&self) -> StorageError {
+        match self {
+            Self::Scope(error) => StorageError::WriteScope(*error),
+            Self::NotSupported(what) => StorageError::NotSupported(what.clone()),
+            Self::Words(words) => StorageError::StorageError(words.clone()),
+        }
+    }
+}
+
+/// One writer's view of a LigninDB transaction, as the store uses it, or a
+/// reader's view of one committed version.
+pub(super) trait Access: Sync + super::flat::FlatAccess {
     /// A cursor over the nodes of `subtree`, which stands on no node yet.
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error>;
 
@@ -285,6 +324,26 @@ pub(super) trait Access: Sync {
     /// Applies `write` to the transaction as one operation: all of it or
     /// nothing.
     fn apply(&self, write: &Write) -> Result<Written, Error>;
+
+    /// Applies the batches of `parts` to the transaction, one operation
+    /// each and in their order, and all of them or none. `enters` are
+    /// subtrees that are entered with them, each with the part it is
+    /// entered by, besides those the part enters itself.
+    fn apply_parts(
+        &self,
+        parts: &[&dyn BatchPart],
+        enters: &[(usize, SubtreeChange)],
+    ) -> Result<Vec<Written>, Error>;
+}
+
+/// A batch that is handed to a transaction as it stands when it is asked
+/// for: the batch of an operation, resolved.
+pub(super) trait BatchPart {
+    /// Calls `run` with the batch, and returns what it returns.
+    fn with_batch(
+        &self,
+        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
+    ) -> Result<Written, Error>;
 }
 
 /// A read or a write the transaction did not perform. Every failure of the
@@ -298,11 +357,16 @@ pub(super) fn fault(error: TxnError) -> Error {
         TxnError::Directory(DirectoryError::TooDeep) => {
             Error::NotSupported(format!("lignindb: {error}"))
         }
+        // A claim of another open scope is what stood in the way, and
+        // is named so through every seam (`engine.md`, "Write scopes").
+        TxnError::ScopeOverlap { .. } => {
+            Error::StorageError(StorageError::WriteScope(WriteScopeError::Overlap))
+        }
         error => refused(&error.to_string()),
     }
 }
 
-fn column(keyspace: Keyspace) -> Column {
+pub(super) fn column(keyspace: Keyspace) -> Column {
     match keyspace {
         Keyspace::Data => Column::Data,
         Keyspace::Aux => Column::Aux,
@@ -328,7 +392,7 @@ fn stored_link(link: LinkView<'_>) -> Result<StoredLink, Error> {
     })
 }
 
-fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Error> {
+pub(super) fn stored_node(view: &NodeView<'_>, with_value: bool) -> Result<StoredNode, Error> {
     let value = match with_value {
         false => None,
         true => Some(view.value(&mut ValueBuf::new()).map_err(fault)?.to_vec()),
@@ -451,7 +515,7 @@ impl Walk for ScopeWalk<'_, '_, '_> {
 
 /// The reads a write transaction offers outside any scope and a scope
 /// offers inside it, under one name.
-trait Reads {
+pub(super) trait Reads {
     fn node<R>(
         &self,
         subtree: Subtree,
@@ -646,16 +710,15 @@ struct Held {
 /// states a value or leaves a hash stale. The bytes of a value are
 /// compared, never a hash: a stored value can change while no hash does
 /// (`node-store.md`, "Errors").
-fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodeWrite) -> Result<Held, Error> {
-    let stated = match &node.value {
-        ValueWrite::Stated(stated) => Some(stated.as_slice()),
-        ValueWrite::Kept => None,
+fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodePut<'_>) -> Result<Held, Error> {
+    let stated = match node.value {
+        ValuePut::Value(stated) => Some(stated),
+        ValuePut::Keep => None,
     };
     if stated.is_none() && node.stale.is_empty() {
         return Ok(Held::default());
     }
-    let hint = node.hint.map(|Location(handle)| handle);
-    Reads::node(scope, subtree, &node.key, hint, |view| {
+    Reads::node(scope, subtree, node.key, node.at, |view| {
         let Some(view) = view else {
             return Ok(Held::default());
         };
@@ -681,35 +744,57 @@ fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodeWrite) -> Result<Hel
 /// A link as the transaction is handed it. For a hash the write leaves
 /// stale, `held` has the bytes the cell has there, which are stated again
 /// so that the write changes none of them (`NodePut::stale`).
-fn link_put<'a>(link: &'a Option<LinkWrite>, held: &'a Option<CryptoHash>) -> Option<LinkPut<'a>> {
-    link.as_ref().map(|link| LinkPut {
-        key: &link.key,
-        hash: held.as_ref().unwrap_or(&link.hash),
-        heights: link.heights,
-        aggregate: link.aggregate.as_slice(),
+fn link_put<'a>(link: Option<LinkPut<'a>>, held: &'a Option<CryptoHash>) -> Option<LinkPut<'a>> {
+    link.map(|link| LinkPut {
+        hash: held.as_ref().unwrap_or(link.hash),
+        ..link
     })
 }
 
-fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
-    let mut written = Written::default();
+fn subtree_write(change: &SubtreeChange) -> SubtreeWrite<'_> {
+    match change {
+        SubtreeChange::Enter {
+            subtree,
+            tree_type,
+            host,
+        } => SubtreeWrite::Enter {
+            subtree: Subtree::new(*subtree),
+            tree_type,
+            host: host.as_ref().map(|(subtree, key, position)| HostPut {
+                subtree: Subtree::new(*subtree),
+                key,
+                position: *position,
+            }),
+        },
+    }
+}
 
-    // A stated value that the transaction holds already is kept where it
-    // is, so that a value is written only when it changed. A hash that is
-    // left stale keeps the bytes it has. A node that keeps its value names
-    // the read the value is kept from: the store's own read of the node
-    // where Merk says the value is unchanged, and the comparing read here,
-    // which is of exactly the bytes that are kept.
-    let mut keep = Vec::with_capacity(write.merks.len());
-    for merk in &write.merks {
-        let subtree = Subtree::new(merk.subtree);
-        let fresh = write.is_fresh(&merk.subtree);
+/// Applies `batch` to the transaction of `scope` as one operation.
+///
+/// A stated value that the transaction holds already is kept where it is,
+/// so that a value is written only when it changed, and a hash that is
+/// left stale keeps the bytes it has. A node that keeps its value names
+/// the read the value is kept from: the store's own read of the node
+/// where Merk says the value is unchanged, and the comparing read here,
+/// which is of exactly the bytes that are kept. A Merk whose subtree the
+/// batch enters has no node before the write, whatever the transaction
+/// holds under its prefix until then: nothing of it is read.
+pub(super) fn apply_batch(scope: &Scope<'_, '_>, batch: &Batch<'_>) -> Result<Written, Error> {
+    let mut written = Written::default();
+    let fresh = |subtree: Subtree| {
+        let enters = |write: &SubtreeWrite<'_>| write.enters() && write.subtree() == subtree;
+        batch.subtrees.iter().any(enters)
+    };
+    let mut keep = Vec::with_capacity(batch.merks.len());
+    for merk in batch.merks {
+        let fresh = fresh(merk.subtree);
         let mut kept = Vec::with_capacity(merk.nodes.len());
-        for node in &merk.nodes {
+        for node in merk.nodes {
             let held = match fresh {
                 true => Held::default(),
-                false => held(scope, subtree, node)?,
+                false => held(scope, merk.subtree, node)?,
             };
-            if matches!(node.value, ValueWrite::Stated(_)) {
+            if matches!(node.value, ValuePut::Value(_)) {
                 match held.value {
                     true => written.values_kept += 1,
                     false => written.values_written += 1,
@@ -719,7 +804,55 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
         }
         keep.push(kept);
     }
+    let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter().zip(&keep))
+        .map(|(merk, keep)| {
+            let puts = (merk.nodes.iter().zip(keep)).map(|(node, keep)| NodePut {
+                left: link_put(node.left, &keep.links[0]),
+                right: link_put(node.right, &keep.links[1]),
+                value: match keep.value {
+                    true => ValuePut::Keep,
+                    false => node.value,
+                },
+                at: match (node.value, keep.value) {
+                    (ValuePut::Value(_), true) => keep.read,
+                    _ => node.at,
+                },
+                ..*node
+            });
+            puts.collect()
+        })
+        .collect();
+    let merks: Vec<MerkWrite<'_>> = (batch.merks.iter().zip(&nodes))
+        .map(|(merk, nodes)| MerkWrite { nodes, ..*merk })
+        .collect();
+    let applied = scope
+        .apply(&Batch {
+            merks: &merks,
+            ..*batch
+        })
+        .map_err(fault)?;
 
+    // The handles come in the order of the batch: the nodes of the first
+    // Merk, then those of the second. A transaction that serves its records
+    // by key reports none.
+    let mut handles = applied.nodes.into_iter().map(Location);
+    written.locations = (batch.merks.iter())
+        .map(|merk| handles.by_ref().take(merk.nodes.len()).collect())
+        .collect();
+    Ok(written)
+}
+
+/// A link of a written node as the transaction is handed it.
+pub(super) fn link_of(link: &Option<LinkWrite>) -> Option<LinkPut<'_>> {
+    link.as_ref().map(|link| LinkPut {
+        key: &link.key,
+        hash: &link.hash,
+        heights: link.heights,
+        aggregate: link.aggregate.as_slice(),
+    })
+}
+
+fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
     let hosted: Vec<Vec<Option<Vec<Subtree>>>> = (write.merks.iter())
         .map(|merk| {
             let lists = merk.nodes.iter().map(|node| {
@@ -729,31 +862,15 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
             lists.collect()
         })
         .collect();
-    let nodes: Vec<Vec<NodePut<'_>>> = (write.merks.iter().zip(&keep).zip(&hosted))
-        .map(|((merk, keep), hosted)| {
-            let puts =
-                (merk.nodes.iter().zip(keep).zip(hosted)).map(|((node, keep), hosted)| NodePut {
-                    key: &node.key,
-                    feature: node.feature.as_slice(),
-                    value_hash: &node.value_hash,
-                    kv_hash: &node.kv_hash,
-                    left: link_put(&node.left, &keep.links[0]),
-                    right: link_put(&node.right, &keep.links[1]),
-                    hosted: match hosted {
-                        None => Hosted::Keep,
-                        Some(hosted) => Hosted::Set(hosted),
-                    },
-                    value: match (&node.value, keep.value) {
-                        (ValueWrite::Stated(stated), false) => ValuePut::Value(stated),
-                        _ => ValuePut::Keep,
-                    },
-                    at: match (&node.value, keep.value) {
-                        (ValueWrite::Kept, _) => node.read.map(|Location(handle)| handle),
-                        (ValueWrite::Stated(_), true) => keep.read,
-                        (ValueWrite::Stated(_), false) => node.hint.map(|Location(handle)| handle),
-                    },
-                    stale: node.stale,
-                });
+    let nodes: Vec<Vec<NodePut<'_>>> = (write.merks.iter().zip(&hosted))
+        .map(|(merk, hosted)| {
+            let puts = (merk.nodes.iter().zip(hosted)).map(|(node, hosted)| NodePut {
+                hosted: match hosted {
+                    None => Hosted::Keep,
+                    Some(hosted) => Hosted::Set(hosted),
+                },
+                ..node_put(node)
+            });
             puts.collect()
         })
         .collect();
@@ -783,44 +900,81 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
             }
         })
         .collect();
-
-    let subtrees: Vec<SubtreeWrite<'_>> = (write.subtrees.iter())
-        .map(|change| match change {
-            SubtreeChange::Enter {
-                subtree,
-                tree_type,
-                host,
-            } => SubtreeWrite::Enter {
-                subtree: Subtree::new(*subtree),
-                tree_type,
-                host: host.as_ref().map(|(subtree, key, position)| HostPut {
-                    subtree: Subtree::new(*subtree),
-                    key,
-                    position: *position,
-                }),
-            },
-            SubtreeChange::Drop(subtree) => SubtreeWrite::Drop {
-                subtree: Subtree::new(*subtree),
-            },
-        })
-        .collect();
-
-    let applied = scope
-        .apply(&Batch {
+    let subtrees: Vec<SubtreeWrite<'_>> = write.subtrees.iter().map(subtree_write).collect();
+    apply_batch(
+        scope,
+        &Batch {
             records: &records,
             merks: &merks,
             subtrees: &subtrees,
-        })
-        .map_err(fault)?;
+        },
+    )
+}
 
-    // The handles come in the order of the batch: the nodes of the first
-    // Merk, then those of the second. A transaction that serves its records
-    // by key reports none.
-    let mut handles = applied.nodes.into_iter().map(Location);
-    written.locations = (write.merks.iter())
-        .map(|merk| handles.by_ref().take(merk.nodes.len()).collect())
-        .collect();
+/// Applies the batches of `parts` through `scope`, in their order, each
+/// with the subtrees of `enters` that are entered by it.
+fn apply_parts(
+    scope: &Scope<'_, '_>,
+    parts: &[&dyn BatchPart],
+    enters: &[(usize, SubtreeChange)],
+) -> Result<Vec<Written>, Error> {
+    if enters.iter().any(|(part, _)| *part >= parts.len()) {
+        return Err(refused("subtrees were to be entered with no batch"));
+    }
+    let mut written = Vec::with_capacity(parts.len());
+    for (at, part) in parts.iter().enumerate() {
+        let enters: Vec<SubtreeWrite<'_>> = (enters.iter())
+            .filter(|(part, _)| *part == at)
+            .map(|(_, change)| subtree_write(change))
+            .collect();
+        written.push(part.with_batch(&mut |batch| {
+            if enters.is_empty() {
+                return apply_batch(scope, batch);
+            }
+            let subtrees = with_enters(batch.subtrees, &enters);
+            apply_batch(
+                scope,
+                &Batch {
+                    subtrees: &subtrees,
+                    ..*batch
+                },
+            )
+        })?);
+    }
     Ok(written)
+}
+
+/// The subtree writes of a batch with `enters` among them: what leaves
+/// first, as the batch has it, and then every enter after the enter of the
+/// subtree its host is in, and otherwise in the order they came.
+fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec<SubtreeWrite<'a>> {
+    let (mut ordered, entered): (Vec<_>, Vec<_>) =
+        (own.iter().chain(enters).copied()).partition(|write| !write.enters());
+    // The subtree that the host of an entered subtree is in, if that one
+    // is entered here too.
+    let above = |subtree: &Subtree| {
+        let host = entered.iter().find_map(|write| match write {
+            SubtreeWrite::Enter {
+                subtree: entered,
+                host,
+                ..
+            } if entered == subtree => host.as_ref().map(|host| host.subtree),
+            _ => None,
+        })?;
+        let enters_it = |write: &SubtreeWrite<'_>| matches!(write, SubtreeWrite::Enter { subtree, .. } if *subtree == host);
+        entered.iter().any(enters_it).then_some(host)
+    };
+    let depth = |write: &SubtreeWrite<'_>| match write {
+        SubtreeWrite::Enter { subtree, .. } => {
+            let hosts = std::iter::successors(Some(*subtree), above);
+            hosts.take(entered.len()).count()
+        }
+        SubtreeWrite::Drop { .. } | SubtreeWrite::Clear { .. } => 0,
+    };
+    let mut by_depth: Vec<_> = entered.iter().map(|write| (depth(write), write)).collect();
+    by_depth.sort_by_key(|(depth, _)| *depth);
+    ordered.extend(by_depth.into_iter().map(|(_, write)| *write));
+    ordered
 }
 
 /// One writer's part of a LigninDB write transaction: the scope it writes
@@ -852,7 +1006,7 @@ impl<'t, 's> LigninWriter<'t, 's> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn scope(&self) -> MutexGuard<'_, Scope<'t, 's>> {
+    pub(super) fn scope(&self) -> MutexGuard<'_, Scope<'t, 's>> {
         // A scope holds no state of its own that a panic could leave half
         // made: the transaction puts its frames right by itself (WT10).
         self.scope.lock().unwrap_or_else(PoisonError::into_inner)
@@ -866,12 +1020,17 @@ impl std::fmt::Debug for LigninWriter<'_, '_> {
 }
 
 /// What reads for an [`Access`], and how it takes a write.
-trait Reader: Sync {
+pub(super) trait Reader: Sync {
     type Reads: Reads;
 
     fn reading<T>(&self, read: impl FnOnce(&Self::Reads) -> T) -> T;
 
-    fn write(&self, write: &Write) -> Result<Written, Error>;
+    /// Makes the writes of `write` through a scope: all of them or none.
+    fn writing<T>(
+        &self,
+        parts: usize,
+        write: impl FnOnce(&Scope<'_, '_>) -> Result<T, Error>,
+    ) -> Result<T, Error>;
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError>;
 }
@@ -883,8 +1042,22 @@ impl<'t, 's> Reader for LigninWriter<'t, 's> {
         read(&self.scope())
     }
 
-    fn write(&self, write: &Write) -> Result<Written, Error> {
-        apply(&self.scope(), write)
+    fn writing<T>(
+        &self,
+        parts: usize,
+        write: impl FnOnce(&Scope<'_, '_>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        // The scope is the writer's, and lives on: it is not rolled back
+        // for one write that failed, so only what is one operation of the
+        // transaction is all or nothing through it (WT10).
+        if parts > 1 {
+            return Err(Error::NotSupported(
+                "lignindb: batches that were settled apart are not applied together through a \
+                 write scope"
+                    .to_owned(),
+            ));
+        }
+        write(&self.scope())
     }
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
@@ -896,8 +1069,12 @@ impl<'t, 's> Reader for LigninWriter<'t, 's> {
     }
 }
 
-/// A write transaction read outside any scope: what a handle that only
-/// reads is opened on.
+/// A write transaction read outside any scope, and written through a scope
+/// that is opened for one write and merged when it is made
+/// (`transactions.md` SC1): what the handles of a transaction that has no
+/// writer of its own are opened on. No scope of it is open between two
+/// writes, so a savepoint, a rollback and the commit find the transaction
+/// with every scope closed (SC8).
 impl Reader for WriteTxn<'_> {
     type Reads = Self;
 
@@ -905,8 +1082,22 @@ impl Reader for WriteTxn<'_> {
         read(self)
     }
 
-    fn write(&self, _write: &Write) -> Result<Written, Error> {
-        Err(refused("a write through a handle that only reads"))
+    fn writing<T>(
+        &self,
+        _parts: usize,
+        write: impl FnOnce(&Scope<'_, '_>) -> Result<T, Error>,
+    ) -> Result<T, Error> {
+        let scope = self.scope().map_err(fault)?;
+        match write(&scope) {
+            Ok(written) => {
+                scope.merge();
+                Ok(written)
+            }
+            Err(error) => {
+                scope.rollback();
+                Err(error)
+            }
+        }
     }
 
     fn walk<'a>(&'a self, subtree: Subtree) -> Result<Box<dyn Walk + 'a>, TxnError> {
@@ -914,7 +1105,7 @@ impl Reader for WriteTxn<'_> {
     }
 }
 
-impl<A: Reader> Access for A {
+impl<A: Reader + super::flat::FlatAccess> Access for A {
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
         self.walk(Subtree::new(*subtree)).map_err(fault)
     }
@@ -960,6 +1151,14 @@ impl<A: Reader> Access for A {
     }
 
     fn apply(&self, write: &Write) -> Result<Written, Error> {
-        self.write(write)
+        self.writing(1, |scope| apply(scope, write))
+    }
+
+    fn apply_parts(
+        &self,
+        parts: &[&dyn BatchPart],
+        enters: &[(usize, SubtreeChange)],
+    ) -> Result<Vec<Written>, Error> {
+        self.writing(parts.len(), |scope| apply_parts(scope, parts, enters))
     }
 }

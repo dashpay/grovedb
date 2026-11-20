@@ -840,6 +840,39 @@ fn an_entered_subtree_has_the_element_that_hosts_it_as_its_host() {
     assert_eq!(resolved(batch).subtrees, ["enter 3 as t at 254 of 1/h"]);
 }
 
+#[test]
+fn a_resolved_batch_says_what_it_enters_and_what_it_holds_for_a_key() {
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(B)]);
+    batch.enter(subtree(B), b"tree");
+    batch.enter(subtree(D), b"alone");
+    put(&batch, A, &leaf(b"h", b"element"), true);
+    put(&batch, A, &leaf(b"gone", b"1"), true);
+    batch.put(unit(Column::Data, D), b"entry", b"1", ());
+    batch.delete(unit(Column::Data, D), b"none", ());
+    batch.put(unit(Column::Aux, A), b"aux", b"1", ());
+    batch.next_operation();
+    batch.delete_node(subtree(A), b"gone", ());
+    let resolved = batch.resolve().expect("no call is refused");
+
+    // Neither is under a subtree the batch enters: the order they were
+    // made in.
+    assert_eq!(resolved.enters(), [subtree(B), subtree(D)]);
+    let held = |name: u8, key: &[u8]| resolved.held(subtree(name), key);
+    let value = |name: u8, key: &[u8]| match held(name, key) {
+        Some(Written::Node(node)) => node.value.as_deref().map(<[u8]>::to_vec),
+        other => panic!("no node is held: {other:?}"),
+    };
+    assert_eq!(value(A, b"h").as_deref(), Some(&b"element"[..]));
+    assert!(matches!(held(A, b"gone"), Some(Written::NodeRemoved)));
+    assert!(matches!(held(D, b"entry"), Some(Written::Record(b"1"))));
+    assert!(matches!(held(D, b"none"), Some(Written::Removed)));
+    // Only the data column is looked in, and only the subtree named.
+    assert!(held(A, b"aux").is_none());
+    assert!(held(B, b"h").is_none());
+    assert!(held(C, b"h").is_none());
+}
+
 /// Stages a write in every column of `name`, and a node with a root.
 fn fill(batch: &StagedBatch, name: u8, value: &[u8]) {
     for column in [Column::Aux, Column::Roots, Column::Meta] {

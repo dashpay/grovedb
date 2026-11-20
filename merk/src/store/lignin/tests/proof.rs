@@ -696,6 +696,24 @@ impl Access for Refusing<'_> {
     fn apply(&self, write: &Write) -> Result<Written, Error> {
         self.under.apply(write)
     }
+
+    fn apply_parts(
+        &self,
+        parts: &[&dyn BatchPart],
+        enters: &[(usize, SubtreeChange)],
+    ) -> Result<Vec<Written>, Error> {
+        self.under.apply_parts(parts, enters)
+    }
+}
+
+impl FlatAccess for Refusing<'_> {
+    fn records<'a>(
+        &'a self,
+        keyspace: Keyspace,
+        subtree: &Prefix,
+    ) -> Result<Box<dyn FlatWalk + 'a>, Error> {
+        self.under.records(keyspace, subtree)
+    }
 }
 
 /// A call as the message of an assertion names it.

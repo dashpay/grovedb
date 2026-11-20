@@ -11,18 +11,24 @@
 //!
 //! # Handles
 //!
-//! A handle is of one subtree ([`LigninSubtree`]) inside one transaction,
-//! in one of three modes:
+//! A handle is of one subtree ([`LigninSubtree`]), opened on a view
+//! ([`LigninView`]) in one of three modes:
 //!
 //! | Handle | Reads | Writes |
 //! | --- | --- | --- |
-//! | [`LigninNodeStore::deferred`] | the transaction's view; nothing that is staged | staged in the [`LigninBatch`] it was opened with, or refused with none |
-//! | [`LigninNodeStore::immediate`] | the transaction's view, its own writes included | applied to the transaction at once, each commit as a write of its own |
-//! | [`LigninNodeStore::read_only`] | the transaction's view from outside every scope; a read of a unit that an open scope holds for writing is refused | refused |
+//! | [`LigninNodeStore::deferred`] | its view; nothing that is staged | staged in the [`LigninBatch`] it was opened with, or refused with none |
+//! | [`LigninNodeStore::immediate`] | its view, its own writes included | applied at once, each commit as a write of its own |
+//! | [`LigninNodeStore::read_only`] | its view | refused |
 //!
-//! The first two read and write through a [`LigninWriter`], which is the
-//! write scope of one writer (`transactions.md` SC1). A handle and a Merk on
-//! it are `Send`.
+//! A view is a write transaction, read from outside every scope and
+//! written through a scope of one write; a [`LigninWriter`], which is the
+//! write scope of one writer (`transactions.md` SC1); or a
+//! [`LigninSnapshot`], which reads one version and refuses every write.
+//! `view` has the table. A handle and a Merk on it are `Send`.
+//!
+//! A handle is also the flat keyspace of its subtree's data, for a tree
+//! that keeps no Merk there, and hands out the aux and the meta keyspace
+//! ([`LigninKeyspace`], `flat`).
 //!
 //! # Reads
 //!
@@ -138,32 +144,36 @@
 //! - **The clear of a subtree**, which the transaction offers beside the
 //!   drop. What a clear takes is GROVE-05's to state. Until then a Merk
 //!   loses its nodes one by one, by key, as on RocksDB.
-//! - **Reads through a snapshot** (GROVE-01).
 
 mod access;
 mod change_set;
 mod cursor;
 mod directory;
 mod feature;
+mod flat;
 pub mod hash;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod open_tests;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
+mod view;
 
 use std::{cell::RefCell, collections::HashMap, fmt};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
-use lignindb::txn::WriteTxn;
 
 use self::access::{Access, Child, Location, StoredLink, StoredNode};
 pub use self::{
     access::LigninWriter,
-    change_set::{LigninApplied, LigninBatch, LigninChangeSet, PreparedNode},
+    change_set::{
+        LigninApplied, LigninBatch, LigninChangeSet, LigninOutcome, LigninSettled, PreparedNode,
+    },
     cursor::LigninCursor,
     directory::{tree_type_bytes, tree_type_from_bytes, LigninEntry, LigninHosted},
+    flat::{LigninFlatCursor, LigninKeyspace},
+    view::{LigninSnapshot, LigninView},
 };
 use super::{NodeChange, NodeStore};
 use crate::{
@@ -324,24 +334,24 @@ impl<'db> LigninNodeStore<'db> {
     /// until the batch is applied, and it reads none of them before. With
     /// no batch it refuses every write.
     pub fn deferred(
-        writer: &'db LigninWriter<'_, '_>,
+        view: impl Into<LigninView<'db>>,
         subtree: LigninSubtree,
         batch: Option<&'db LigninBatch>,
     ) -> Self {
-        Self::new(writer, subtree, Mode::Deferred(batch))
+        Self::new(view.into().0, subtree, Mode::Deferred(batch))
     }
 
     /// An immediate handle of `subtree`: it writes to the transaction at
     /// once and reads its own writes.
-    pub fn immediate(writer: &'db LigninWriter<'_, '_>, subtree: LigninSubtree) -> Self {
-        Self::new(writer, subtree, Mode::Immediate)
+    pub fn immediate(view: impl Into<LigninView<'db>>, subtree: LigninSubtree) -> Self {
+        Self::new(view.into().0, subtree, Mode::Immediate)
     }
 
-    /// A handle of `subtree` that only reads, on the transaction itself and
-    /// outside every scope. A read of a unit that an open scope holds for
-    /// writing is refused (`transactions.md` SC3).
-    pub fn read_only(transaction: &'db WriteTxn<'_>, subtree: LigninSubtree) -> Self {
-        Self::new(transaction, subtree, Mode::ReadOnly)
+    /// A handle of `subtree` that only reads. On a write transaction it
+    /// reads from outside every scope, and a read of a unit that an open
+    /// scope holds for writing is refused (`transactions.md` SC3).
+    pub fn read_only(view: impl Into<LigninView<'db>>, subtree: LigninSubtree) -> Self {
+        Self::new(view.into().0, subtree, Mode::ReadOnly)
     }
 
     /// The subtree the handle is of.
@@ -353,9 +363,9 @@ impl<'db> LigninNodeStore<'db> {
     /// subtree, so that the handle finds them without a lookup by key.
     pub fn take_locations(&self, applied: &LigninApplied) {
         let mut hints = self.hints.borrow_mut();
-        for (key, location) in applied.locations(&self.subtree.prefix) {
-            hints.insert(key.clone(), *location);
-        }
+        applied.locations(&self.subtree.prefix, |key, location| {
+            hints.insert(key.to_vec(), location);
+        });
     }
 
     fn read_cost(&self, found: Option<usize>) -> OperationCost {
@@ -471,7 +481,8 @@ impl<'db> LigninNodeStore<'db> {
         key: &[u8],
         value: Option<&[u8]>,
     ) -> CostResult<(), Error> {
-        let change_set = LigninChangeSet::of_record(self.subtree.clone(), keyspace, key, value);
+        let subtree = self.subtree.clone();
+        let change_set = LigninChangeSet::of_record(subtree, keyspace, key, value, None);
         self.submit(change_set, "a write", false)
     }
 
@@ -534,7 +545,9 @@ const _: fn() = || {
     moved::<LigninChangeSet>();
     moved::<LigninCursor<'static>>();
     moved::<LigninBatch>();
+    moved::<LigninSettled>();
     moved::<LigninWriter<'static, 'static>>();
+    moved::<LigninSnapshot<'static>>();
 };
 
 impl<'db> NodeStore<'db> for LigninNodeStore<'db> {

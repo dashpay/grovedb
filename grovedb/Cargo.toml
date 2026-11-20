@@ -29,6 +29,8 @@ grovedb-bulk-append-tree = { version = "6.1.1", path = "../grovedb-bulk-append-t
 grovedb-private-document-store = { version = "6.1.1", path = "../grovedb-private-document-store", optional = true, default-features = false }
 grovedb-dense-fixed-sized-merkle-tree = { version = "6.1.1", path = "../grovedb-dense-fixed-sized-merkle-tree", optional = true, default-features = false }
 grovedb-query = { version = "6.1.1", path = "../grovedb-query" }
+lignindb = { version = "6.1.1", path = "../lignindb", optional = true }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree", optional = true }
 
 axum = { workspace = true, optional = true }
 bincode = { workspace = true }
@@ -107,6 +109,16 @@ rocksdb_storage = [
     "engine_generic",
     "grovedb-storage/rocksdb_storage",
     "grovedb-merk/rocksdb_storage",
+]
+# The LigninDB engine: `LigninEngine` (`grovedb::engine::lignin`). It is in
+# no other feature and not among the defaults: a build that does not ask for
+# it has none of the LigninDB crates. With this feature and without
+# `rocksdb_storage`, `GroveDb` with no engine named is on LigninDB.
+lignin_storage = [
+    "engine_generic",
+    "grovedb-merk/lignin_storage",
+    "dep:lignindb",
+    "dep:lignin-tree",
 ]
 # Everything of GroveDB that is written for any storage engine: `GroveDb<E>`
 # and its operations, batches, proofs and state sync, and the estimated
