@@ -189,6 +189,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod backup;
 pub mod batch;
 pub mod checkpoint;
 pub mod commit;
