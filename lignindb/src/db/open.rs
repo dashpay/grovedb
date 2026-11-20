@@ -228,6 +228,11 @@ pub(super) struct Opened {
 /// for once more with the database in view, since another open can have
 /// made the database, lock file first, between the first ask and the look.
 ///
+/// **The lock file's name is durable before a database's manifest is
+/// made.** A new database gets its first manifest only after the
+/// directory was synced with the lock file in it, so no power cut leaves a
+/// manifest without the lock file that `NoLockFile` asks for.
+///
 /// The lock file is made only where a database is to be made and no look
 /// of this open found one: in a directory with nothing of any engine in it
 /// and no lock file, right after a look that found it so. What such an
@@ -352,6 +357,15 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
         // is another directory: no database is made in it.
         Found::Nothing { .. } if seen.get() => return Err(replaced()),
         Found::Nothing { .. } => {
+            // The name of the lock file is made durable before a manifest
+            // can be. The manifest's name is synced with the directory
+            // after it is installed, and a power cut before that sync
+            // has ended can keep that name and lose an older one: a
+            // database with no lock file, which no open takes. The lock
+            // file can be one that this open made, or one that an open
+            // which failed left with its name not synced.
+            vfs.sync_dir(dir)
+                .map_err(OpenError::io("sync the directory", dir))?;
             let size = options.page_size.unwrap_or(PageSize::DEFAULT);
             let empty = Manifest::new(size, Default::default(), None, Vec::new())
                 .map_err(OpenError::create("the first manifest"))?;

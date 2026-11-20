@@ -764,6 +764,12 @@ fn a_step_that_the_log_refuses_is_made_again() {
 /// the dropped Merk's own record it reported that no such Merk was
 /// dropped.
 ///
+/// Afterwards a writer enters Merks of the same shape, each after a
+/// reclaim round that gives pages and cells back, and every such commit
+/// is taken. Where one of them puts a root in a cell that a left-behind
+/// root record names, it is refused (`RootTaken`); where none does, the
+/// checker finds the record.
+///
 /// The commit is made on a thread of its own, and the reclaimer waits for
 /// it at the read. A read that the reclaimer makes inside a page step is
 /// passed over: it holds the lock on the counts of values there, which a
@@ -771,6 +777,13 @@ fn a_step_that_the_log_refuses_is_made_again() {
 /// one of those is asked first, by a thread that takes that lock and
 /// gives it back. The first read of a reclaiming is made before any step,
 /// and is not asked about: a commit lands there in every run.
+///
+/// That question is answered within 200 ms or taken as a yes, so on a
+/// slow machine fewer reads get their commit, and the test can then pass
+/// without the schedule that shows a defect of the walk. A question with
+/// no wait is VER-05's to give this test (D-160). The two schedules are
+/// made with no timing in the tree layer's own tests
+/// (`lignin_tree::drop`, `under_the_walk_to_it`).
 #[test]
 fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
     use std::{cell::Cell, rc::Rc, sync::mpsc};
@@ -875,6 +888,20 @@ fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
             "read {at_read}: {:?}",
             stats.background
         );
+        // The writer's side: Merks of the same shape are entered, each
+        // after a reclaim round that gives pages and cells back. A root
+        // record that was left behind names such a cell, and a commit
+        // that puts a root there is refused for it (`RootTaken`).
+        for again in 0..8 {
+            db.reclaim();
+            let (outer, inner) = (numbered(40_000 + again), numbered(50_000 + again));
+            Writes {
+                enter: vec![(outer, None), (inner, Some((outer, host.to_vec())))],
+                merks: vec![(inner, small()), (outer, small().hosting(host, inner))],
+                ..Writes::default()
+            }
+            .commit(&db);
+        }
         db.finish().expect("the store is written back");
         let report = checked(&db);
         assert!(

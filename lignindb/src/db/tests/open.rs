@@ -1094,6 +1094,88 @@ fn the_errors_say_what_failed() {
         .contains("a commit outside the transaction"));
 }
 
+/// The power is cut at every point of the creation of a database at which
+/// a cut can leave something else than the point before. In each of the
+/// states of the cut that are tried, the next open takes the directory:
+/// it opens the database that is there, or makes one. In particular no
+/// cut leaves a manifest without the lock file, which every open would
+/// refuse (`NoLockFile`): the lock file's name is synced before the
+/// manifest is installed.
+///
+/// The states that are tried: nothing kept that was not synced, all of
+/// it, all of it up to each operation, each change of a name alone with
+/// what it builds on, and four states drawn from the seed. The changes of
+/// names alone are every way a later name can survive an earlier one;
+/// the contents of files are not gone through.
+///
+/// The creation begins in no directory, and in one that an open which
+/// failed left with a lock file whose name is not synced: the name is
+/// made durable for that one too.
+#[test]
+fn a_power_cut_at_any_point_of_a_creation_leaves_a_directory_that_opens() {
+    use lignin_io::sim::{CrashPlan, CrashPoint};
+
+    for left_over in [false, true] {
+        let (mut cuts, mut states, mut made_anew) = (0, 0, 0);
+        for cut in 1.. {
+            let fs = SimVfs::new(SimConfig::new(77));
+            let creating = Options {
+                vfs: Arc::new(fs.clone()),
+                ..options()
+            };
+            if left_over {
+                fs.create_dir(Path::new("/db")).expect("a directory");
+                fs.sync_dir(Path::new("/")).expect("its name is synced");
+                drop(fs.lock(Path::new("/db/LOCK")).expect("a lock file"));
+            }
+            fs.crash_at(CrashPoint::AfterChange(fs.stats().changes + cut));
+            let created = Db::open("/db", &creating);
+            if !fs.is_powered_off() {
+                // The whole creation was made before the cut.
+                assert!(created.expect("a new database").created());
+                break;
+            }
+            drop(created);
+            cuts += 1;
+
+            let image = fs.crash_image();
+            let mut plans = vec![image.lose_all(), image.keep_all()];
+            plans.extend((0..=image.ops()).map(|op| image.keep_through(op)));
+            plans.extend((0..image.names().len()).map(|name| CrashPlan {
+                names: vec![name],
+                changes: image.keep_all().changes,
+            }));
+            plans.extend((0..4).map(|draw| image.sample(draw)));
+            plans.dedup();
+            for (index, plan) in plans.iter().enumerate() {
+                let context = format!(
+                    "left over {left_over}, a cut after change {cut}, crash plan {index} ({plan:?})"
+                );
+                let left = image
+                    .recover(plan)
+                    .unwrap_or_else(|error| panic!("{context}: no such state: {error:?}"));
+                states += 1;
+                let options = Options {
+                    vfs: Arc::new(left),
+                    ..options()
+                };
+                let db = Db::open("/db", &options)
+                    .unwrap_or_else(|error| panic!("{context}: the next open: {error}"));
+                made_anew += u32::from(db.created());
+                plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+                db.close()
+                    .unwrap_or_else(|error| panic!("{context}: the close: {error}"));
+            }
+        }
+        println!(
+            "left over {left_over}: {cuts} cuts, {states} states, {made_anew} of them with a \
+             database made anew"
+        );
+        assert!(cuts > 10, "a creation of {cuts} changes");
+        assert!(made_anew > 0 && made_anew < states);
+    }
+}
+
 /// An open that the file layer fails, at each of its file operations in
 /// turn, reports a typed error and makes no handle; the open after it,
 /// with the file layer whole, has the database: a new one that is made,
