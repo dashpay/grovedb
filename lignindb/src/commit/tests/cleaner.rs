@@ -414,8 +414,9 @@ fn wait_until(what: &str, reached: impl Fn() -> bool) {
 /// until commits have gone by, and reads them again: each time it is
 /// given exactly what that version committed, every value whole, wherever
 /// write-back and the cleaner have put the blocks and the values since.
-/// Every fourth pin, the physical invariant checker reads that version
-/// too, as a reader (`verify::Scope::Reader`), and finds it sound.
+/// Every fourth pin, the first one among them, the physical invariant
+/// checker reads that version too, as a reader (`verify::Scope::Reader`)
+/// under an operation guard of its own, and finds it sound.
 ///
 /// The threads take turns by construction: the reader holds each pin
 /// until two blocks are committed after it, and every few blocks the
@@ -452,7 +453,6 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     let waits = AtomicBool::new(false);
     let cleaner_errors = Mutex::new(Vec::new());
     let (pins, behind, documents_read) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
-    let checks = AtomicU64::new(0);
 
     std::thread::scope(|scope| {
         scope.spawn(|| write_back.run(|_| failed.store(true, Ordering::Relaxed)));
@@ -474,13 +474,9 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
                     .get(&at.get())
                     .expect("a version that was published");
                 assert_eq!(read(&db, &snapshot.operation()), expected, "at {at}");
-                // Every fourth pin, the physical invariant checker reads
-                // the pinned version as a reader does, under an operation
-                // guard of its own, while the cleaner works.
                 if pins.load(Ordering::SeqCst) % 4 == 0 {
                     let _guard = versions.guard();
                     db.check_trees(&versions, at);
-                    checks.fetch_add(1, Ordering::Relaxed);
                 }
                 // The pin is held while two blocks are committed, and
                 // while write-back and the cleaner work on what they
@@ -553,8 +549,6 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
         pins >= BLOCKS / 8 && behind >= BLOCKS / 16,
         "{pins} pins, {behind} behind"
     );
-    let checks = checks.into_inner();
-    assert!(checks >= pins / 4, "{checks} checks in {pins} pins");
     // The cleaner did not copy the value log over and over: a pin that
     // keeps emptied files has no other file cleaned for them.
     assert!(

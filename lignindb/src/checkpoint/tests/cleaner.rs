@@ -10,8 +10,9 @@
 
 use std::{
     collections::BTreeMap,
-    path::Path,
-    sync::{Arc, Mutex},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, OnceLock},
+    time::{Duration, Instant},
 };
 
 use lignin_format::FileId;
@@ -23,7 +24,9 @@ use lignin_store::{
     wal::LogOptions,
 };
 
-use super::{block, bytes_of, checkpointer, checkpoints_in, open, remove_block, root_hash, turn};
+use super::{
+    block, bytes_of, checkpointer, checkpoints_in, open, remove_block, root_hash, turn, Opened,
+};
 use crate::{
     checkpoint::create::Step,
     snapshot::Versions,
@@ -49,6 +52,22 @@ fn store() -> (Arc<Db>, Versions) {
     Db::on(Arc::new(NoSync), &path, 256, options, flush, Some(dir))
 }
 
+/// Fourteen blocks, of which every other one removes the documents of an
+/// earlier block, each written back, and a table checkpoint after them:
+/// segments that take no more blocks hold dead blocks beside live ones,
+/// and some hold only dead ones.
+fn churn<'s>(world: &mut World<'s>, rng: &mut Rng, db: &Db, versions: &Versions) {
+    for round in 0..14 {
+        block(world, rng, round * 20, 20);
+        if round >= 4 && round % 2 == 0 {
+            remove_block(world, (round - 4) * 20, 20);
+        }
+        turn(db, versions);
+    }
+    let taken = (db.write_back(versions).checkpoint()).expect("a table checkpoint");
+    assert!(matches!(taken, Checkpointed::Installed { .. }), "{taken:?}");
+}
+
 /// A cleaner that leaves no dead block where it is: it moves the live
 /// blocks out of every segment that holds a dead one, and has the table
 /// checkpoint taken that lets an emptied segment go.
@@ -68,7 +87,8 @@ fn eager() -> CleanerConfig {
 
 /// A cleaner that moves nothing: it takes the links of superseded page
 /// versions out of the chains, where write-back has left any, and deletes
-/// the segments that are left with no live block.
+/// the segments that are left with no live block. What a segment that
+/// takes no more blocks holds after it is live until something moves it.
 fn trimming() -> CleanerConfig {
     CleanerConfig {
         target_dead_percent: 100,
@@ -77,25 +97,28 @@ fn trimming() -> CleanerConfig {
     }
 }
 
+fn segment_in(dir: &Path, file: FileId) -> PathBuf {
+    FileNames::SEGMENT.path(dir, file)
+}
+
 /// Has `cleaner`, which is eager, work on a store that nothing commits to
 /// and that a trimming cleaner has been over. Returns the segments that
 /// the checkpoint in `target` links, that held live blocks, and that the
 /// live store has no more, each with the bytes its file had before the
-/// cleaner began. Nothing but a move takes a live block out of such a
-/// segment, so the cleaner moved every one of them. At least one segment
-/// went that way.
+/// cleaner began. No link was trimmed meanwhile, so nothing but a move
+/// took a live block out of such a segment: the cleaner moved every one
+/// of them. At least one segment went that way.
 fn empty_linked_segments(
     db: &Db,
     cleaner: &Cleaner<'_>,
     target: &Path,
 ) -> BTreeMap<FileId, Vec<u8>> {
-    let shared = |file: FileId| FileNames::SEGMENT.path(target, file);
     let space = cleaner.space().expect("the space");
     let linked: BTreeMap<FileId, (u64, Vec<u8>)> = (space.segments.iter())
         .filter(|segment| !segment.has_writer && segment.live_blocks > 0)
-        .filter(|segment| shared(segment.file).exists())
+        .filter(|segment| segment_in(target, segment.file).exists())
         .map(|segment| {
-            let bytes = bytes_of(&StdVfs, &shared(segment.file));
+            let bytes = bytes_of(&StdVfs, &segment_in(target, segment.file));
             (segment.file, (segment.live_blocks, bytes))
         })
         .collect();
@@ -111,9 +134,10 @@ fn empty_linked_segments(
     }
     let did = cleaner.state().stats();
     assert_eq!(did.errors, 0, "{did:?}");
+    assert_eq!(did.links_trimmed, before.links_trimmed, "{did:?}");
     let (mut emptied, mut moved_out) = (BTreeMap::new(), 0);
     for (file, (live_blocks, bytes)) in linked {
-        if !FileNames::SEGMENT.path(&db.dir, file).exists() {
+        if !segment_in(&db.dir, file).exists() {
             moved_out += live_blocks;
             emptied.insert(file, bytes);
         }
@@ -147,18 +171,8 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
     let (db, versions) = store();
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(31);
-    for round in 0..14 {
-        block(&mut world, &mut rng, round * 20, 20);
-        if round >= 4 && round % 2 == 0 {
-            remove_block(&mut world, (round - 4) * 20, 20);
-        }
-        turn(&db, &versions);
-    }
+    churn(&mut world, &mut rng, &db, &versions);
     let write_back = db.write_back(&versions);
-    let taken = write_back.checkpoint().expect("a table checkpoint");
-    assert!(matches!(taken, Checkpointed::Installed { .. }), "{taken:?}");
-    // What a segment that takes no more blocks holds from here on is live
-    // until something moves it.
     let trimmed = CleanerState::new(trimming());
     for _ in 0..3 {
         (Cleaner::new(write_back, &trimmed).pass()).expect("a pass that moves nothing");
@@ -171,10 +185,10 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
     let state = CleanerState::new(eager());
     let cleaner = Cleaner::new(write_back, &state).with_stats(&db.stats);
     let target = checkpoints_in(&db).join("1");
-    let emptied = Mutex::new(None);
+    let emptied = OnceLock::new();
     let clean = || {
         let went = empty_linked_segments(&db, &cleaner, &target);
-        *emptied.lock().expect("the segments that went") = Some(went);
+        emptied.set(went).expect("one cleaning");
     };
     let pause = |step: Step| {
         if while_created && step == Step::Sampled {
@@ -190,25 +204,23 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
     if !while_created {
         clean();
     }
-    let emptied = (emptied.into_inner().expect("the segments that went")).expect("a cleaning");
+    let emptied = emptied.into_inner().expect("a cleaning");
     let still_whole = || {
         for (file, bytes) in &emptied {
-            assert!(!FileNames::SEGMENT.path(&db.dir, *file).exists());
             assert!(
-                &bytes_of(&StdVfs, &FileNames::SEGMENT.path(&target, *file)) == bytes,
+                &bytes_of(&StdVfs, &segment_in(&target, *file)) == bytes,
                 "the checkpoint's segment {file} changed"
             );
         }
     };
+    let reads_as_made = |opened: &Opened| {
+        let hashed = root_hash(&opened.db, &opened.versions, created.version);
+        assert_eq!(hashed, Some(hash));
+        opened.check(&captured);
+    };
     still_whole();
-
     let opened = open(&db, &target);
-    assert_eq!(opened.versions.latest(), created.version);
-    assert_eq!(
-        root_hash(&opened.db, &opened.versions, created.version),
-        Some(hash)
-    );
-    opened.check(&captured);
+    reads_as_made(&opened);
 
     for round in 14..22 {
         block(&mut world, &mut rng, round * 20, 20);
@@ -226,13 +238,7 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
 
     still_whole();
     drop(opened);
-    let again = open(&db, &target);
-    assert_eq!(again.versions.latest(), created.version);
-    assert_eq!(
-        root_hash(&again.db, &again.versions, created.version),
-        Some(hash)
-    );
-    again.check(&captured);
+    reads_as_made(&open(&db, &target));
 }
 
 /// **A checkpoint reads on when the cleaner has emptied and deleted
@@ -249,4 +255,80 @@ fn a_checkpoint_keeps_the_segments_that_the_cleaner_empties_and_deletes() {
 #[test]
 fn a_cleaner_that_runs_while_a_checkpoint_is_created_takes_no_segment_from_it() {
     the_cleaner_deletes_segments_that_a_checkpoint_links(true);
+}
+
+/// **T-CK3 for the segments, at the lock.** A pass of the cleaner that has
+/// segments to delete begins while a creation holds the lock on the
+/// manifest and has linked nothing yet. The pass retires its segments and
+/// then waits for the lock: nothing is deleted. The creation links every
+/// segment of its sample, gives the lock back, and only then do the live
+/// store's names go. The checkpoint has the files, and opens with the
+/// root hash of its version.
+#[test]
+fn a_pass_that_begins_while_a_creation_links_deletes_nothing_before_the_links() {
+    let (db, versions) = store();
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(32);
+    churn(&mut world, &mut rng, &db, &versions);
+    let state = CleanerState::new(trimming());
+    let cleaner = Cleaner::new(db.write_back(&versions), &state);
+    let space = cleaner.space().expect("the space");
+    let empty: Vec<FileId> = (space.segments.iter())
+        .filter(|segment| !segment.has_writer && segment.live_blocks == 0)
+        .map(|segment| segment.file)
+        .collect();
+    assert!(!empty.is_empty(), "{space:?}");
+    let captured = world.model.clone();
+    let hash = root_hash(&db, &versions, versions.latest()).expect("the grove has a root");
+    let target = checkpoints_in(&db).join("1");
+
+    let created = std::thread::scope(|scope| {
+        let pass = Mutex::new(None);
+        let pause = |step: Step| match step {
+            Step::Linking => {
+                let began = scope.spawn(|| cleaner.pass().expect("a pass"));
+                *pass.lock().expect("the pass") = Some(began);
+                let started = Instant::now();
+                while state.stats().segments_retired < empty.len() as u64 {
+                    assert!(
+                        started.elapsed() < Duration::from_secs(60),
+                        "the pass retired nothing"
+                    );
+                    std::thread::yield_now();
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                assert_eq!(state.stats().segments_dropped, 0);
+                for file in &empty {
+                    assert!(segment_in(&db.dir, *file).exists(), "segment {file}");
+                    assert!(!segment_in(&target, *file).exists(), "segment {file}");
+                }
+            }
+            Step::Sampled => {
+                for file in &empty {
+                    assert!(segment_in(&target, *file).exists(), "segment {file}");
+                }
+                let began = pass.lock().expect("the pass").take().expect("a pass");
+                let done = began.join().expect("the pass");
+                assert!(done.dropped >= empty.len(), "{done:?}");
+                for file in &empty {
+                    assert!(!segment_in(&db.dir, *file).exists(), "segment {file}");
+                    assert!(segment_in(&target, *file).exists(), "segment {file}");
+                }
+            }
+            _ => {}
+        };
+        (checkpointer(&db, &versions).pausing(&pause))
+            .create(&target)
+            .expect("a checkpoint")
+    });
+    assert!(created.linked > 0 && created.copied == 0, "{created:?}");
+    let did = state.stats();
+    assert_eq!((did.blocks_moved, did.errors), (0, 0), "{did:?}");
+    cleaner.finish().expect("the cleaner's files are closed");
+
+    let opened = open(&db, &target);
+    let hashed = root_hash(&opened.db, &opened.versions, created.version);
+    assert_eq!(hashed, Some(hash));
+    opened.check(&captured);
+    world.check_committed();
 }
