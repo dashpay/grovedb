@@ -47,15 +47,56 @@ impl Machine {
     }
 }
 
+/// The processor's name: on Linux the `model name` of `/proc/cpuinfo`. An
+/// aarch64 kernel writes no such line, only the processor's codes, so there
+/// it is `lscpu`'s model name, which knows the names of the codes, or the
+/// codes themselves.
 fn cpu_name() -> Option<String> {
-    if let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") {
-        return cpuinfo
-            .lines()
-            .find_map(|line| line.strip_prefix("model name"))
-            .and_then(|rest| rest.split_once(':'))
-            .map(|(_, name)| name.trim().to_string());
-    }
-    command_output("sysctl", &["-n", "machdep.cpu.brand_string"])
+    let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") else {
+        return command_output("sysctl", &["-n", "machdep.cpu.brand_string"]);
+    };
+    field(&cpuinfo, "model name")
+        .map(str::to_string)
+        .or_else(|| command_output("lscpu", &[]).and_then(|text| lscpu_model_name(&text)))
+        .or_else(|| arm_cpu_name(&cpuinfo))
+}
+
+/// The value of the first line `key: value` of `text`, if it is not empty.
+fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
+    text.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        let value = value.trim();
+        (name.trim() == key && !value.is_empty()).then_some(value)
+    })
+}
+
+/// `lscpu` writes `-` where it does not know the model.
+fn lscpu_model_name(text: &str) -> Option<String> {
+    field(text, "Model name")
+        .filter(|name| *name != "-")
+        .map(str::to_string)
+}
+
+/// The maker and part of an Arm processor, from the `CPU implementer` and
+/// `CPU part` lines of an aarch64 `/proc/cpuinfo` (written by `c_show` in the
+/// kernel's `arch/arm64/kernel/cpuinfo.c`), such as `Arm part 0xd0c` for a
+/// Neoverse N1.
+fn arm_cpu_name(cpuinfo: &str) -> Option<String> {
+    let implementer = field(cpuinfo, "CPU implementer")?;
+    let part = field(cpuinfo, "CPU part")?;
+    let code = u8::from_str_radix(implementer.strip_prefix("0x")?, 16).ok()?;
+    let maker = match code {
+        0x41 => "Arm",
+        0x42 => "Broadcom",
+        0x46 => "Fujitsu",
+        0x48 => "HiSilicon",
+        0x4e => "NVIDIA",
+        0x51 => "Qualcomm",
+        0x61 => "Apple",
+        0xc0 => "Ampere",
+        _ => return Some(format!("implementer {implementer} part {part}")),
+    };
+    Some(format!("{maker} part {part}"))
 }
 
 fn memory_bytes() -> Option<u64> {
@@ -429,6 +470,40 @@ mod tests {
             None
         );
         assert_eq!(parse_perf_csv(""), None);
+    }
+
+    #[test]
+    fn an_aarch64_cpu_is_named_by_its_codes() {
+        let neoverse_n1 = "processor\t: 0\nBogoMIPS\t: 243.75\nFeatures\t: fp asimd evtstrm \
+            aes pmull sha1 sha2 crc32 atomics fphp asimdhp cpuid asimdrdm lrcpc dcpop asimddp\n\
+            CPU implementer\t: 0x41\nCPU architecture: 8\nCPU variant\t: 0x3\n\
+            CPU part\t: 0xd0c\nCPU revision\t: 1\n\n";
+        assert_eq!(field(neoverse_n1, "model name"), None);
+        assert_eq!(arm_cpu_name(neoverse_n1).as_deref(), Some("Arm part 0xd0c"));
+        let unknown_maker = "CPU implementer\t: 0x99\nCPU part\t: 0x001\n";
+        assert_eq!(
+            arm_cpu_name(unknown_maker).as_deref(),
+            Some("implementer 0x99 part 0x001")
+        );
+        assert_eq!(arm_cpu_name("CPU implementer\t: 0x41\n"), None);
+        assert_eq!(
+            arm_cpu_name("CPU implementer\t: 41\nCPU part\t: 0xd0c\n"),
+            None
+        );
+        assert_eq!(arm_cpu_name(""), None);
+    }
+
+    #[test]
+    fn a_model_name_is_taken_from_cpuinfo_or_lscpu() {
+        let x86 = "processor\t: 0\nvendor_id\t: AuthenticAMD\n\
+            model name\t: AMD Ryzen AI Max+ 395\nflags\t\t: fpu vme\n";
+        assert_eq!(field(x86, "model name"), Some("AMD Ryzen AI Max+ 395"));
+        assert_eq!(field("model name\t:\n", "model name"), None);
+        let lscpu = "Architecture:             aarch64\n  CPU op-mode(s):         64-bit\n\
+            Vendor ID:                ARM\n  Model name:             Neoverse-N1\n";
+        assert_eq!(lscpu_model_name(lscpu).as_deref(), Some("Neoverse-N1"));
+        assert_eq!(lscpu_model_name("Model name: -\n"), None);
+        assert_eq!(lscpu_model_name("Vendor ID: ARM\n"), None);
     }
 
     #[test]
