@@ -1172,6 +1172,46 @@ fn a_snapshot_reads_its_version_after_a_commit_and_a_turn_of_write_back() {
     assert_eq!((read.nodes, read.absent), (CROWD, 0));
 }
 
+/// **A checkpoint that is sampled right after the log turned to a new file
+/// opens** (CK1, CK2): the log's newest file holds no item then, and the
+/// log is durable through the version, so the checkpoint's log ends where
+/// the durable log ends.
+///
+/// With the small log files of these tests the log turns every few
+/// commits, and the stress test meets this by chance.
+#[test]
+fn a_checkpoint_sampled_right_after_the_log_turned_to_a_new_file_opens() {
+    let fs = SimVfs::new(SimConfig::new(9));
+    let options = options(Arc::new(fs));
+    let db = Db::open("/db", &options).expect("a new database");
+    halt_background(&db);
+    let history = History::new(1);
+    let mut writer = Writer::new(1, 9);
+    let write_back = db.shared.write_back();
+    let mut turned = false;
+    for round in 0..200 {
+        let crowd = writer.crowd(4);
+        commit(&db, &history, &mut writer, vec![crowd]);
+        if write_back.roll_log().expect("the log is turned") {
+            turned = true;
+            println!("the log turned after {round} commits");
+            break;
+        }
+    }
+    assert!(turned, "the log never turned to a new file");
+    let committer = db.shared.committer();
+    let created = Checkpointer::new(&committer).create(Path::new(CHECKPOINT));
+    let created = created.unwrap_or_else(|error| panic!("the checkpoint: {error}"));
+    let opened = Db::open(CHECKPOINT, &options).unwrap_or_else(|error| {
+        let manifest = lignin_store::segment::read_manifest(&*options.vfs, Path::new(CHECKPOINT));
+        panic!("the checkpoint is opened: {error}\n{created:?}\n{manifest:#?}")
+    });
+    assert_eq!(opened.version(), created.version);
+    let read = compare_all(&opened, &history);
+    assert_eq!(read.nodes, writer.crowded() as u64);
+    opened.close().expect("the checkpoint is closed");
+}
+
 macro_rules! schedules {
     ($($name:ident: $step:ident, $burst:ident;)*) => {
         $(
