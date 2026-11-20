@@ -175,7 +175,10 @@ fn wander<'db, S: NodeStore<'db>>(store: &S, seed: u64, cost: &mut OperationCost
 }
 
 /// Makes one call, and returns what it answered and what it charged.
-fn act<'db, S: NodeStore<'db>>(merk: &mut Merk<S>, act: &Act) -> (String, OperationCost) {
+pub(super) fn act<'db, S: NodeStore<'db>>(
+    merk: &mut Merk<S>,
+    act: &Act,
+) -> (String, OperationCost) {
     let mut cost = OperationCost::default();
     let answer = match act {
         Act::Apply(batch) => {

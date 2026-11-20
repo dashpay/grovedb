@@ -12,7 +12,7 @@ use std::{
     path::Path,
     sync::{
         atomic::{AtomicU64, Ordering::Relaxed},
-        Arc,
+        Arc, Mutex,
     },
 };
 
@@ -24,7 +24,7 @@ use lignin_store::{flush::FlushConfig, wal::LogOptions};
 use lignindb::txn::testing::SIZE;
 
 use super::{
-    cursor::{walked, with_both, Act, Both},
+    cursor::{act, walked, with_both, Act, Both},
     *,
 };
 use crate::proofs::{encode_into, Decoder, Node, Op as ProofOp};
@@ -514,6 +514,31 @@ fn a_write_after_a_proof_costs_what_it_costs_on_rocksdb() {
     }
 }
 
+/// A node two levels below the root of the Merk on `store`, after the
+/// nodes on the way to it from the root, and the key of the node beside
+/// it: down the taller side, where a node that high has two children.
+fn way_down(store: &LigninNodeStore<'_>) -> (Vec<TreeNode>, Vec<u8>) {
+    let node = |key: &[u8]| {
+        let node = store.get_node(key, NO_VALUE_DEFINED_COST, version());
+        node.unwrap().unwrap().expect("a node that is linked")
+    };
+    let root_key = store.root_key().unwrap().unwrap().expect("a root");
+    let mut way = vec![node(&root_key)];
+    let mut sibling = None;
+    while way.len() < 3 {
+        let (below, beside) = {
+            let at = way.last().expect("a node");
+            let height = |left| at.link(left).map_or(0, Link::height);
+            let left = height(true) >= height(false);
+            let below = at.link(left).expect("a child on the taller side");
+            (node(below.key()), at.link(!left).map(Link::key))
+        };
+        sibling = beside.map(<[u8]>::to_vec);
+        way.push(below);
+    }
+    (way, sibling.expect("a node beside the target"))
+}
+
 /// The three ends of a read of the nodes in memory that comes to nodes a
 /// proof was charged for and did not keep: at the node of the key, at a
 /// side with no child, and at a child that is not in memory. The first
@@ -523,30 +548,8 @@ fn a_write_after_a_proof_costs_what_it_costs_on_rocksdb() {
 fn a_read_after_a_proof_walks_the_nodes_of_the_proof_as_if_they_were_kept() {
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
         with_both(tree_type, 0x0600_b000 + seed as u64, 4, &[], |both| {
-            let store = LigninNodeStore::deferred(both.writer, ROOT, None);
-            let node = |key: &[u8]| {
-                let node = store.get_node(key, NO_VALUE_DEFINED_COST, version());
-                node.unwrap().unwrap().expect("a node that is linked")
-            };
-            // A node two levels below the root, the way to it, and the
-            // node beside it: down the taller side, where a node that high
-            // has two children.
-            let root_key = store.root_key().unwrap().unwrap().expect("a root");
-            let mut way = vec![node(&root_key)];
-            let mut sibling = None;
-            while way.len() < 3 {
-                let (below, beside) = {
-                    let at = way.last().expect("a node");
-                    let height = |left| at.link(left).map_or(0, Link::height);
-                    let left = height(true) >= height(false);
-                    let below = at.link(left).expect("a child on the taller side");
-                    (node(below.key()), at.link(!left).map(Link::key))
-                };
-                sibling = beside.map(<[u8]>::to_vec);
-                way.push(below);
-            }
+            let (way, sibling) = way_down(&LigninNodeStore::deferred(both.writer, ROOT, None));
             let target = way[2].key().to_vec();
-            let sibling = sibling.expect("a node beside the target");
             // A key that no Merk of these tests holds: the proof that it
             // is not there walks to where it would be.
             let absent = [target.as_slice(), &[0xff; 3]].concat();
@@ -585,6 +588,230 @@ fn a_read_after_a_proof_walks_the_nodes_of_the_proof_as_if_they_were_kept() {
             // A handle that writes at once reads for nothing, on both
             // engines.
             both.immediate(&calls);
+        });
+    }
+}
+
+/// What a read says that [`Refusing`] refused.
+const REFUSED: &str = "the read of the node was refused";
+
+/// A transaction that refuses to read the node under one key for as long
+/// as it is told to, and counts the reads it refused.
+struct Refusing<'a> {
+    under: &'a dyn Access,
+    key: Mutex<Option<Vec<u8>>>,
+    refused: AtomicU64,
+}
+
+impl<'a> Refusing<'a> {
+    fn over(under: &'a dyn Access) -> Self {
+        Refusing {
+            under,
+            key: Mutex::new(None),
+            refused: AtomicU64::new(0),
+        }
+    }
+
+    /// Refuses every read of the node under `key` from here on, or none.
+    fn refuse(&self, key: Option<&[u8]>) {
+        *self.key.lock().expect("a lock that no thread left") = key.map(<[u8]>::to_vec);
+    }
+
+    /// How many reads were refused since this was last asked.
+    fn refused(&self) -> u64 {
+        self.refused.swap(0, Relaxed)
+    }
+}
+
+impl Access for Refusing<'_> {
+    fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
+        self.under.cursor(subtree)
+    }
+
+    fn node(
+        &self,
+        subtree: &Prefix,
+        key: &[u8],
+        hint: Option<Location>,
+        with_value: bool,
+    ) -> Result<Option<StoredNode>, Error> {
+        let refused = self
+            .key
+            .lock()
+            .expect("a lock that no thread left")
+            .as_deref()
+            == Some(key);
+        if refused {
+            self.refused.fetch_add(1, Relaxed);
+            return Err(Error::StorageError(grovedb_storage::Error::StorageError(
+                REFUSED.to_owned(),
+            )));
+        }
+        self.under.node(subtree, key, hint, with_value)
+    }
+
+    fn committed_node(&self, subtree: &Prefix, key: &[u8]) -> Result<Option<StoredNode>, Error> {
+        self.under.committed_node(subtree, key)
+    }
+
+    fn child(&self, subtree: &Prefix, parent: Location, left: bool) -> Result<Child, Error> {
+        self.under.child(subtree, parent, left)
+    }
+
+    fn record(
+        &self,
+        keyspace: Keyspace,
+        subtree: &Prefix,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        self.under.record(keyspace, subtree, key)
+    }
+
+    fn committed_record(
+        &self,
+        keyspace: Keyspace,
+        subtree: &Prefix,
+        key: &[u8],
+    ) -> Result<Option<Vec<u8>>, Error> {
+        self.under.committed_record(keyspace, subtree, key)
+    }
+
+    fn subtree(&self, subtree: &Prefix) -> Result<Option<LigninEntry>, Error> {
+        self.under.subtree(subtree)
+    }
+
+    fn apply(&self, write: &Write) -> Result<Written, Error> {
+        self.under.apply(write)
+    }
+}
+
+/// A Merk makes `proved`, which leaves it charged for nodes it does not
+/// hold, and then `call` while the store refuses to read the node under
+/// `refused`. What that call answered, what it was charged and how many
+/// reads were refused are returned.
+///
+/// Then the store answers again, and the Merk makes `call` once more and
+/// the calls of `then`: each answers and costs what it does on a Merk
+/// that made `proved` and met no refusal.
+fn refused_then_answered(
+    both: &Both<'_, '_, '_>,
+    proved: &[Act],
+    call: &Act,
+    refused: &[u8],
+    then: &[Act],
+) -> (String, OperationCost, u64) {
+    let tree_type = both.tree_type;
+    let refusing = Refusing::over(both.writer);
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::new(&refusing, ROOT, Mode::Deferred(Some(&staged)));
+    let mut merk = open(store, tree_type);
+    let unrefused = LigninBatch::new();
+    let store = LigninNodeStore::deferred(both.writer, ROOT, Some(&unrefused));
+    let mut expected = open(store, tree_type);
+
+    for call in proved {
+        assert_eq!(act(&mut merk, call), act(&mut expected, call));
+    }
+    refusing.refuse(Some(refused));
+    let (failed, cost) = act(&mut merk, call);
+    let refusals = refusing.refused();
+    refusing.refuse(None);
+    for call in std::iter::once(call).chain(then) {
+        assert_eq!(
+            act(&mut merk, call),
+            act(&mut expected, call),
+            "{tree_type:?}: {call:?} after a refused read"
+        );
+    }
+    assert_eq!(refusing.refused(), 0);
+    assert!(staged.is_empty() && unrefused.is_empty());
+    (failed, cost, refusals)
+}
+
+/// A Merk reads again, at no charge, a node that a proof was charged for
+/// and did not keep. Where the store refuses that read, the call ends with
+/// the store's error and is charged nothing, and the Merk is as it was:
+/// once the store answers, the same call and the calls after it answer and
+/// cost what they do on a Merk that met no refusal.
+///
+/// A read that is refused for a node the Merk was not charged for is
+/// charged as the store charges it.
+#[test]
+fn a_reread_that_the_store_refuses_fails_the_call_at_no_charge() {
+    for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
+        with_both(tree_type, 0x0600_c000 + seed as u64, 4, &[], |both| {
+            let (way, sibling) = way_down(&LigninNodeStore::deferred(both.writer, ROOT, None));
+            let (above, target) = (way[1].key().to_vec(), way[2].key().to_vec());
+            let absent = [target.as_slice(), &[0xff; 3]].concat();
+            let prove = |call: Call| Act::Prove(version(), call);
+            let point =
+                |key: &Vec<u8>| prove(Call::Query(vec![QueryItem::Key(key.clone())], None, true));
+            // The proof of the target is charged for the node above it and
+            // for the target, and keeps neither.
+            let proved = [point(&target)];
+            let then = [
+                prove(Call::Get(target.clone(), true)),
+                prove(Call::Exists(target.clone())),
+                point(&target),
+                prove(Call::Get(sibling.clone(), true)),
+                point(&absent),
+            ];
+            let refused_as = |failed: &str| {
+                failed.starts_with("Err(StorageError(StorageError(") && failed.contains(REFUSED)
+            };
+
+            // The callers that read such a node again: a proof; a read of
+            // the nodes in memory, which reads the nodes on its way
+            // without their values and the node of its key whole; the
+            // same walk for whether a key is there, which does not read
+            // the node of the key; and a read that keeps the nodes it
+            // fetches, as the walk of a write fetches them.
+            let callers = [
+                point(&target),
+                prove(Call::Get(target.clone(), true)),
+                prove(Call::Exists(target.clone())),
+                prove(Call::Observe(target.clone())),
+            ];
+            for call in &callers {
+                for refused in [&above, &target] {
+                    let (failed, cost, refusals) =
+                        refused_then_answered(both, &proved, call, refused, &then);
+                    let case = format!("{tree_type:?}: {call:?}");
+                    assert_eq!(cost, OperationCost::default(), "{case}");
+                    let unread =
+                        matches!(call, Act::Prove(_, Call::Exists(_))) && refused == &target;
+                    match unread {
+                        false => {
+                            assert!(refused_as(&failed), "{case}: {failed}");
+                            assert_eq!(refusals, 1, "{case}");
+                        }
+                        true => {
+                            assert_eq!(failed, "Ok(true), in 0 seeks", "{case}");
+                            assert_eq!(refusals, 0, "{case}");
+                        }
+                    }
+                }
+            }
+
+            // A Merk that was charged for neither node is charged for the
+            // read that failed what the store charges for it, and is
+            // charged for the node when the store answers.
+            let refusing = Refusing::over(both.writer);
+            let store = LigninNodeStore::new(&refusing, ROOT, Mode::Deferred(None));
+            let link = way[0].link(above.as_slice() < way[0].key());
+            let link = link.filter(|link| link.key() == above).expect("a link");
+            refusing.refuse(Some(&above));
+            let unread = store.fetch_node_without_value(link, version());
+            assert!(matches!(
+                &unread.value,
+                Err(Error::StorageError(grovedb_storage::Error::StorageError(text)))
+                    if text == REFUSED
+            ));
+            assert_ne!(unread.cost, OperationCost::default());
+            let (failed, cost, refusals) =
+                refused_then_answered(both, &[], &proved[0], &above, &then);
+            assert!(refused_as(&failed), "{tree_type:?}: {failed}");
+            assert_eq!((cost, refusals), (unread.cost, 1), "{tree_type:?}");
         });
     }
 }
