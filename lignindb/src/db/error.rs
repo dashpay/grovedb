@@ -65,7 +65,9 @@ pub enum OpenError {
         requested: PageSize,
     },
     /// Another handle has the database open, in this process or in
-    /// another (P-04).
+    /// another (P-04), or another open of the directory holds its lock
+    /// file at this moment: an open holds it from before its look under
+    /// the lock, also one that is then refused.
     Locked {
         /// The directory.
         dir: PathBuf,
@@ -103,36 +105,50 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
-    /// The directory holds a database of this engine and no lock file. A
-    /// database has its `LOCK` from the open that made it, and loses it
-    /// only by a copy that leaves it out. The open makes none in a
-    /// directory that holds a database: whoever copied it puts an empty
-    /// file named `LOCK` there.
+    /// A look of this open found a database of this engine in the
+    /// directory, and there was no lock file to lock, before that look
+    /// and after it. A database has its `LOCK` from the open that made
+    /// it: the file is missing where a copy left it out, or where someone
+    /// removed it. The open makes none where it found a database. With an
+    /// empty file named `LOCK` put there the database opens; whoever puts
+    /// it there has to know that no handle has the database open, since a
+    /// handle goes on holding a lock file whose name was removed.
     NoLockFile {
         /// The directory.
         dir: PathBuf,
     },
-    /// The directory held a database when the open began, and holds none
-    /// under the lock: someone removed it, or put another directory in its
-    /// place, during the open. No database is made where one was to be
-    /// opened, whatever [`Options::create_if_missing`] says, and nothing
-    /// was written.
+    /// The directory was removed, or another was put in its place, while
+    /// it was being opened. Either a look of this open found a database
+    /// and a later look, with the lock held or without, found none: no
+    /// database is made where one was seen, whatever
+    /// [`Options::create_if_missing`] says. Or the lock file that this
+    /// open took, with none made, is not the one at the path any more: the
+    /// directory at the path is not the one that was locked, whatever it
+    /// holds. No file was made and nothing was written.
     ///
     /// [`Options::create_if_missing`]: crate::Options::create_if_missing
     Replaced {
         /// The directory.
         dir: PathBuf,
     },
-    /// Another process wrote into the directory while a database was
-    /// being made in it: it was looked at and found to hold nothing of any
-    /// engine and no lock file, and under the lock it is one that is
-    /// refused. This open asked for the lock file to be made between the
-    /// two, so the directory may have gained an empty `LOCK`
-    /// ([`Self::left_untouched`] is false), which is left where it is,
-    /// because another opener may hold it. Nothing else was written.
+    /// The directory is refused under a lock whose file this open asked
+    /// to be made. A database was to be made in it: it was looked at and
+    /// found to hold nothing of any engine and no lock file, and under the
+    /// lock it is one that is refused, for the reason in `found`. Someone
+    /// changed it between the two: another process wrote into it, another
+    /// open made a database in it that this open's options do not fit, or
+    /// another directory was put in its place. Because the lock was asked
+    /// for with its file to be made, the directory may have gained an
+    /// empty `LOCK` ([`Self::left_untouched`] is false), which is left
+    /// where it is, because another opener may hold it. Nothing else was
+    /// written.
     ///
-    /// A directory that had its lock file is locked with none made, and
-    /// what it is refused for is reported as itself.
+    /// A directory that is written into while it is opened is not refused
+    /// for that alone: if another open made a database there meanwhile,
+    /// or someone put a database of this engine there, and this open's
+    /// options fit it, it is opened. And what a directory
+    /// is refused for under a lock that was taken through a lock file
+    /// which was there, with none made, is reported as itself.
     Changed {
         /// The directory.
         dir: PathBuf,
@@ -176,13 +192,17 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest or its lock file, or its pages are of another
-    /// size. Each of these was found with no file made: before the lock,
-    /// or under the lock of a lock file that was there. That holds for a
-    /// directory that nobody else changes while it is being opened, and
-    /// for one that is put in the place of a database during the open. A
-    /// directory with no lock file into which another process writes
-    /// while a database is being made in it is [`Self::Changed`].
+    /// lost its manifest or its lock file, its pages are of another size,
+    /// or it was removed or put in the place of another while it was
+    /// being opened ([`Self::Replaced`]). Each of these was found with no
+    /// file made: before the lock, or under the lock of a lock file that
+    /// was there. That holds for a directory that nobody else changes
+    /// while it is being opened, and for one that is put in the place of
+    /// a database during the open, up to the open's last question before
+    /// its first write (the documentation of [`crate::db`], "Where the
+    /// guarantee ends"). A directory with no lock file into which another
+    /// process writes while a database is being made in it is
+    /// [`Self::Changed`].
     pub const fn left_untouched(&self) -> bool {
         matches!(
             self,
@@ -221,14 +241,14 @@ impl fmt::Display for OpenError {
             ),
             Self::Replaced { dir } => write!(
                 f,
-                "{} held a database when the open began and holds none now: it was removed or \
-                 another directory was put in its place, and no database is made there",
+                "{} was removed, or another directory was put in its place, while it was \
+                 being opened: nothing is opened or made there",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
                 f,
-                "{} holds a database and no LOCK file: it was copied without it, and the file \
-                 is made in no directory that holds a database",
+                "{} holds a database and no LOCK file (a copy left it out, or it was \
+                 removed), and the file is made in no directory that holds a database",
                 dir.display()
             ),
             Self::PageSize {

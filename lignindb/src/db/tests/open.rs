@@ -648,13 +648,14 @@ fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_
 /// Two opens of a place for a new database. The first finds no lock file.
 /// Before it looks again, the second makes the database, lock file first.
 /// The first then finds a database with its lock file: held, if the
-/// second handle is open, and that is what it reports; free, if the second
-/// is closed, and then it opens the database that the second made. It
-/// does not take the database for one that was copied without its lock
-/// file.
+/// second handle is open, and that is what it reports, whatever the size
+/// of that database's pages; free, if the second is closed, and then it
+/// opens the database that the second made, or is refused for the size of
+/// its pages. It does not take the database for one that has lost its
+/// lock file.
 #[test]
 fn an_open_that_another_open_overtakes_is_locked_out_or_opens_its_database() {
-    for held in [true, false] {
+    for (held, fits) in [(true, true), (true, false), (false, true), (false, false)] {
         let dir = temp();
         let path = dir.path().join("db");
         let watched = Watched::default();
@@ -662,11 +663,19 @@ fn an_open_that_another_open_overtakes_is_locked_out_or_opens_its_database() {
             vfs: Arc::new(watched.clone()),
             ..options()
         };
+        let overtaking = Options {
+            page_size: Some(match fits {
+                true => PageSize::MIN,
+                false => PageSize::DEFAULT,
+            }),
+            ..options()
+        };
+        assert_eq!(first.page_size, Some(PageSize::MIN));
         let at = path.clone();
         let second = Arc::new(Mutex::new(None));
         let kept = second.clone();
         watched.after_the_next_lock_that_finds_no_file(move || {
-            let db = Db::open(&at, &options()).expect("the second open makes the database");
+            let db = Db::open(&at, &overtaking).expect("the second open makes the database");
             assert!(db.created());
             plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
             match held {
@@ -675,17 +684,21 @@ fn an_open_that_another_open_overtakes_is_locked_out_or_opens_its_database() {
             }
         });
         let opened = Db::open(&path, &first);
-        match held {
-            true => {
+        let what = format!("held {held}, fits {fits}");
+        match (held, fits) {
+            (true, _) => {
                 let error = opened.expect_err("the second handle is open");
-                assert!(matches!(&error, OpenError::Locked { dir } if *dir == path));
+                assert!(
+                    matches!(&error, OpenError::Locked { dir } if *dir == path),
+                    "{what}: {error:?}"
+                );
                 let other = second.lock().expect("the handle").take();
                 other
                     .expect("the hook ran")
                     .close()
                     .expect("its session ends");
             }
-            false => {
+            (false, true) => {
                 let db = opened.expect("the database of the second open");
                 assert!(!db.created());
                 assert_eq!(
@@ -693,8 +706,182 @@ fn an_open_that_another_open_overtakes_is_locked_out_or_opens_its_database() {
                     Some((10, vec![]))
                 );
             }
+            (false, false) => {
+                let error = opened.expect_err("pages of another size");
+                assert!(
+                    matches!(&error, OpenError::PageSize { .. }) && error.left_untouched(),
+                    "{what}: {error:?}"
+                );
+            }
         }
     }
+}
+
+/// An open of a place for a new database is overtaken by another, which
+/// makes the database and closes. The first open has seen that database
+/// when someone puts an empty directory, with a lock file of its own, in
+/// its place. The lock of that file is taken, and no database is made
+/// under it: once an open has seen a database it makes none. The
+/// directory is left byte for byte as it was put there.
+#[test]
+fn an_open_that_saw_a_database_makes_none_in_what_is_put_in_its_place() {
+    let dir = temp();
+    let path = dir.path().join("db");
+    fs::create_dir(&path).expect("an empty directory");
+    let watched = Watched::default();
+    let first = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let (at, hooks) = (path.clone(), watched.clone());
+    let put = Arc::new(Mutex::new(None));
+    let told = put.clone();
+    watched.after_the_next_lock_that_finds_no_file(move || {
+        let db = Db::open(&at, &options()).expect("the second open makes the database");
+        db.close().expect("its session ends");
+        // The first open looks next, and sees the database. Then it asks
+        // for the lock again.
+        hooks.at_the_next_lock(move || {
+            fs::remove_dir_all(&at).expect("the database is removed");
+            fs::create_dir(&at).expect("another directory in its place");
+            fs::write(at.join("LOCK"), b"theirs").expect("a lock file with content");
+            *told.lock().expect("the image") = Some(image(&at));
+        });
+    });
+    assert!(first.create_if_missing);
+    let error = Db::open(&path, &first).expect_err("the database is gone");
+    assert!(matches!(&error, OpenError::Replaced { dir } if *dir == path));
+    assert!(error.left_untouched() && error.source().is_none());
+    let put = (put.lock().expect("the image").take()).expect("both hooks ran");
+    assert_eq!(image(&path), put);
+    assert_eq!(watched.changes(), 0, "the open wrote");
+}
+
+/// An open has taken the lock of a database when someone moves that
+/// database away and puts another database of this engine at the path,
+/// with a lock file of its own. The open holds the lock of the first and
+/// would read and write the second. It asks its guard under the lock, and
+/// ends: the manifest of the second is not opened, a temporary file that
+/// an open would remove stays, and both databases are as they were. This
+/// holds for an open that began on the database, and for one that began
+/// on a place and found the database of another open at its second look.
+/// And it holds for a swap in the middle of the look under the lock, after
+/// the directory was listed: the guard is asked after the look, so what
+/// the look found is acted on only if it was the locked directory's.
+#[test]
+fn a_database_that_is_put_in_the_place_of_the_one_that_was_locked_is_not_opened() {
+    for (overtaken, in_the_look) in [(false, false), (true, false), (false, true), (true, true)] {
+        let dir = temp();
+        let (path, aside, other) = (
+            dir.path().join("db"),
+            dir.path().join("aside"),
+            dir.path().join("other"),
+        );
+        let theirs = Db::open(&other, &options()).expect("another database");
+        plant(&theirs, subtree(2), Merk::sized(b'k', 30, 40));
+        theirs.close().expect("its session ends");
+        let temporary = other.join(ManifestStore::TEMP_FILE_NAME);
+        fs::write(&temporary, b"of a manifest that was not installed").expect("a file");
+
+        let watched = Watched::default();
+        let opening = Options {
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let made = |at: &Path| {
+            let db = Db::open(at, &options()).expect("the database that is opened");
+            plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+            db.close().expect("its session ends");
+        };
+        let put = Arc::new(Mutex::new(None));
+        let told = put.clone();
+        let (at, to, from) = (path.clone(), aside.clone(), other.clone());
+        let swap = move || {
+            fs::rename(&at, &to).expect("the locked database is moved away");
+            fs::rename(&from, &at).expect("another is put in its place");
+            *told.lock().expect("the image") = Some(image(&at));
+        };
+        // Right after the lock is taken, or after the listing that the
+        // look under it begins with.
+        let hooks = watched.clone();
+        let swap = move || match in_the_look {
+            false => swap(),
+            true => hooks.after_the_next_listing(swap),
+        };
+        match overtaken {
+            false => {
+                made(&path);
+                watched.after_the_next_lock_that_is_taken(swap);
+            }
+            true => {
+                fs::create_dir(&path).expect("an empty directory");
+                let (at, hooks) = (path.clone(), watched.clone());
+                watched.after_the_next_lock_that_finds_no_file(move || {
+                    made(&at);
+                    hooks.after_the_next_lock_that_is_taken(swap);
+                });
+            }
+        }
+        let error = Db::open(&path, &opening).expect_err("another database is at the path");
+        let what = format!("overtaken {overtaken}, in the look {in_the_look}: {error:?}");
+        assert!(
+            matches!(&error, OpenError::Replaced { dir } if *dir == path),
+            "{what}"
+        );
+        assert!(error.left_untouched(), "{what}");
+        let put = (put.lock().expect("the image").take()).expect("the hook ran");
+        assert!(put.contains_key(Path::new(ManifestStore::TEMP_FILE_NAME)));
+        assert_eq!(image(&path), put, "{what}");
+        assert_eq!(watched.changes(), 0, "{what}: the open wrote");
+
+        // Each of the two is the database it was.
+        for (at, subtree, len) in [(&aside, subtree(1), 10), (&path, subtree(2), 30)] {
+            let db = Db::open(at, &options()).expect("the database opens");
+            let snapshot = db.snapshot();
+            assert_eq!(
+                seen(&snapshot.operation(), subtree, b"k"),
+                Some((len, vec![])),
+                "{what}"
+            );
+        }
+    }
+}
+
+/// A database is to be made in an empty directory. The open has made the
+/// lock file there and holds it when someone moves the directory away and
+/// puts another empty one at the path. No database is made in that one:
+/// it would have no lock file, and the lock that is held is of the other.
+/// The open asked for a lock file to be made, so it reports the directory
+/// as changed, and the one at the path stays empty.
+#[test]
+fn a_place_that_is_replaced_after_its_lock_file_was_made_gets_no_database() {
+    let dir = temp();
+    let (path, aside) = (dir.path().join("db"), dir.path().join("aside"));
+    fs::create_dir(&path).expect("an empty directory");
+    let watched = Watched::default();
+    let options = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let (at, to) = (path.clone(), aside.clone());
+    watched.after_the_next_lock_that_is_taken(move || {
+        fs::rename(&at, &to).expect("the locked directory is moved away");
+        fs::create_dir(&at).expect("another in its place");
+    });
+    let error = Db::open(&path, &options).expect_err("another directory is at the path");
+    let OpenError::Changed { dir: named, found } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(named, &path);
+    assert!(found.contains("put in its place"), "{found}");
+    assert!(!error.left_untouched());
+    assert!(
+        image(&path).is_empty(),
+        "the directory at the path gained a file"
+    );
+    let moved = image(&aside);
+    assert_eq!(moved.len(), 1, "{moved:?}");
+    assert_eq!(moved.get(Path::new("LOCK")), Some(&Some(Vec::new())));
 }
 
 /// A database that was copied without its lock file is refused and left

@@ -129,7 +129,7 @@
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
-//! | held a database when the open began, and holds none under the lock | [`OpenError::Replaced`] |
+//! | held a database at one look of the open and none at a later one, or is not the directory whose lock file the open took | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
 //! ([`OpenError::left_untouched`]): by reading alone before the lock, or
@@ -141,14 +141,32 @@
 //! for a directory that nobody else changes while it is being opened, and
 //! for one that is put in the place of a database during the open: the
 //! lock of a database is taken through the lock file that is there, a
-//! lock file is made in no directory that holds a database, and no
-//! database is made where the open first saw one. A directory
+//! lock file is made in no directory in which the open found a database,
+//! no database is made once a look of the open found one, and the open
+//! writes only after it found, under the lock, that the lock file at the
+//! path is the one it holds. A directory
 //! with no lock file into which another process writes during the open is
 //! refused as [`OpenError::Changed`] and may have gained an empty `LOCK`.
 //! No protocol closes that window against a process that does not take
 //! the lock, because the lock is the only thing two openers share and it
 //! has to be made before it can be held. The file is left where it is
-//! because another opener may hold it.
+//! because another opener may hold it. (`Changed` is what such a
+//! directory is refused as, if under the lock it is one that is refused.
+//! Two opens of an empty directory are not refused for each other: the
+//! second is locked out, or opens the database that the first made. And
+//! a database of this engine that someone puts into the directory in
+//! that window, without its lock file, is opened under the lock file
+//! that this open made: the open cannot tell it from one that another
+//! open made there.)
+//!
+//! **Where the guarantee ends.** The file layer names files by path. The
+//! last thing an open does before its first write is to ask, under the
+//! lock and after its look, whether the lock file at the path is the one
+//! it holds. A directory that is put at the path after that answer is
+//! written into as the database would have been: by the recovery of this
+//! open, and by the session after it. So nobody puts another directory at
+//! the path of a database that is being opened or is open, as with the
+//! close below.
 //!
 //! # A new database
 //!

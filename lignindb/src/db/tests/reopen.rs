@@ -46,7 +46,7 @@ fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> 
     let began = Instant::now();
     let db = Db::open(dir, options).expect("the database is opened again");
     let open_ms = began.elapsed().as_secs_f64() * 1e3;
-    let (_, _, reads, read_bytes, files) = vfs.take();
+    let (reads, read_bytes, files) = vfs.take();
     // The syncs of the open itself: those of this thread, which made it.
     // A turn of the threads it started is not the open's.
     let synced = vfs.take_synced();

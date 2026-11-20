@@ -47,8 +47,6 @@ type Change = Box<dyn FnOnce() + Send>;
 /// What a [`Watched`] file layer saw.
 #[derive(Default)]
 pub(super) struct Counts {
-    syncs: AtomicU64,
-    sync_nanos: AtomicU64,
     reads: AtomicU64,
     read_bytes: AtomicU64,
     opens: AtomicU64,
@@ -72,6 +70,10 @@ pub(super) struct Counts {
     at_lock: Mutex<Option<(bool, Change)>>,
     /// What is run, once, after a lock that makes no file found none.
     after_no_lock_file: Mutex<Option<Change>>,
+    /// What is run, once, after a lock was taken.
+    after_lock: Mutex<Option<Change>>,
+    /// What is run, once, after a directory was listed.
+    after_listing: Mutex<Option<Change>>,
 }
 
 impl fmt::Debug for Counts {
@@ -122,21 +124,17 @@ impl Watched {
         let began = Instant::now();
         let synced = sync();
         let took = began.elapsed();
-        self.0.syncs.fetch_add(1, Ordering::Relaxed);
-        (self.0.sync_nanos).fetch_add(took.as_nanos() as u64, Ordering::Relaxed);
         let record = (what, path.to_path_buf(), thread::current().id(), took);
         self.0.synced.lock().expect("the list").push(record);
         synced
     }
 
-    /// The counts since the last call: syncs, the milliseconds they took,
-    /// reads, the bytes they read, and files opened.
-    pub(super) fn take(&self) -> (u64, f64, u64, u64, u64) {
+    /// The counts since the last call: reads, the bytes they read, and
+    /// files opened.
+    pub(super) fn take(&self) -> (u64, u64, u64) {
         let take = |count: &AtomicU64| count.swap(0, Ordering::Relaxed);
         let counts = &self.0;
         (
-            take(&counts.syncs),
-            take(&counts.sync_nanos) as f64 / 1e6,
             take(&counts.reads),
             take(&counts.read_bytes),
             take(&counts.opens),
@@ -178,6 +176,28 @@ impl Watched {
         change: impl FnOnce() + Send + 'static,
     ) {
         *self.0.after_no_lock_file.lock().expect("the hook") = Some(Box::new(change));
+    }
+
+    /// Has `change` run after the next lock that is taken, with a file
+    /// made or with none, before its caller has the guard: a directory is
+    /// changed between an open's lock and its look under it.
+    pub(super) fn after_the_next_lock_that_is_taken(&self, change: impl FnOnce() + Send + 'static) {
+        *self.0.after_lock.lock().expect("the hook") = Some(Box::new(change));
+    }
+
+    /// Has `change` run after the next listing of a directory, before its
+    /// caller has the entries: a directory is changed in the middle of an
+    /// open's look at it, between the listing and the read of the
+    /// manifest.
+    pub(super) fn after_the_next_listing(&self, change: impl FnOnce() + Send + 'static) {
+        *self.0.after_listing.lock().expect("the hook") = Some(Box::new(change));
+    }
+
+    fn change_after_the_lock(&self) {
+        let change = self.0.after_lock.lock().expect("the hook").take();
+        if let Some(change) = change {
+            change();
+        }
     }
 
     /// The same, at the next lock that makes its file if it is missing.
@@ -364,7 +384,12 @@ impl Vfs for Watched {
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        StdVfs.read_dir(&self.at(path))
+        let entries = StdVfs.read_dir(&self.at(path));
+        let change = self.0.after_listing.lock().expect("the hook").take();
+        if let Some(change) = change {
+            change();
+        }
+        entries
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
@@ -375,6 +400,7 @@ impl Vfs for Watched {
         self.changed();
         self.change_at_the_lock(true);
         let lock = StdVfs.lock(&self.at(path))?;
+        self.change_after_the_lock();
         Ok(Box::new(WatchedLock(lock, self.clone())))
     }
 
@@ -387,7 +413,9 @@ impl Vfs for Watched {
                 change();
             }
         }
-        Ok(Box::new(WatchedLock(lock?, self.clone())))
+        let lock = lock?;
+        self.change_after_the_lock();
+        Ok(Box::new(WatchedLock(lock, self.clone())))
     }
 }
 
