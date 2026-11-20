@@ -27,11 +27,11 @@ fuzz_target!(|data: &[u8]| {
     };
     let size = input.page_size(1);
     let bytes = input.bytes;
-    if input.bit(3) {
-        if let Some(cell) = ok(TreeCell::decode(bytes, V1)) {
-            assert_eq!(cell.as_bytes(), bytes);
-            touch_cell(&cell);
-        }
+    if input.bit(3)
+        && let Some(cell) = ok(TreeCell::decode(bytes, V1))
+    {
+        assert_eq!(cell.as_bytes(), bytes);
+        touch_cell(&cell);
     }
     let Some(page) = ok(TreePage::decode(bytes, V1, size)) else {
         if let Some(page) = ok(TreePage::from_validated(bytes, V1)) {

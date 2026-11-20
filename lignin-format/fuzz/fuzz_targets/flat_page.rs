@@ -97,7 +97,7 @@ fn unchecked(page: FlatPage<'_>, probes: &[&[u8]]) {
 }
 
 fn checked(page: FlatPage<'_>, probes: &[&[u8]]) {
-    assert_eq!(page.is_empty(), page.len() == 0);
+    assert_eq!(page.is_empty(), matches!(page.len(), 0));
     match page {
         FlatPage::Leaf(leaf) => {
             assert_eq!(page.level(), 0);
