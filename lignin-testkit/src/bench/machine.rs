@@ -47,10 +47,10 @@ impl Machine {
     }
 }
 
-/// The processor's name: on Linux the `model name` of `/proc/cpuinfo`. An
-/// aarch64 kernel writes no such line, only the processor's codes, so there
-/// it is `lscpu`'s model name, which knows the names of the codes, or the
-/// codes themselves.
+/// The processor's name: on Linux the first non-empty `model name` of
+/// `/proc/cpuinfo`. An aarch64 kernel writes no such line for a 64-bit
+/// process, only the processor's codes, so there it is `lscpu`'s model name,
+/// which knows the names of the codes, or the codes themselves.
 fn cpu_name() -> Option<String> {
     let Ok(cpuinfo) = std::fs::read_to_string("/proc/cpuinfo") else {
         return command_output("sysctl", &["-n", "machdep.cpu.brand_string"]);
@@ -61,7 +61,7 @@ fn cpu_name() -> Option<String> {
         .or_else(|| arm_cpu_name(&cpuinfo))
 }
 
-/// The value of the first line `key: value` of `text`, if it is not empty.
+/// The first non-empty value of a line `key: value` of `text`.
 fn field<'a>(text: &'a str, key: &str) -> Option<&'a str> {
     text.lines().find_map(|line| {
         let (name, value) = line.split_once(':')?;
@@ -141,9 +141,12 @@ pub fn source_commit(dir: &Path) -> Option<String> {
     Some(if dirty { format!("{head}-dirty") } else { head })
 }
 
+/// What a command prints, in the C locale, whose labels are the ones parsed
+/// here (`lscpu` translates its own).
 fn command_output(program: &str, args: &[&str]) -> Option<String> {
     let output = Command::new(program)
         .args(args)
+        .env("LC_ALL", "C")
         .stderr(Stdio::null())
         .output()
         .ok()?;

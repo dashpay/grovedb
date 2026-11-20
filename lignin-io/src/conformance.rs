@@ -48,7 +48,7 @@ macro_rules! conformance_tests {
             read_at_stops_at_the_end_of_the_file,
             #[cfg_attr(
                 $host_files_under_miri,
-                ignore = "Miri reads at an offset by seeking the host's file"
+                ignore = "Miri's seek can fail past the largest file of the host's file system"
             )]
             read_at_just_below_the_largest_offset_reads_nothing,
             read_exact_at_needs_every_byte,
@@ -281,14 +281,17 @@ pub(crate) fn read_at_stops_at_the_end_of_the_file(vfs: &dyn Vfs, root: &Path) {
     assert_eq!(file.read_at(&mut [], 0).unwrap(), 0);
 }
 
-/// A read whose bytes would end at the largest offset a file can have reads
-/// nothing, on every file system: `pread` there is not an overflow, and a file
-/// system whose files end earlier (ext4's at 16 TiB) answers with no bytes.
+/// A read past the end of a 1,000-byte file, whose bytes would end at the
+/// largest offset a file can have (`i64::MAX`), reads nothing. The range does
+/// not overflow, so `pread` takes it, also on a file system whose files end
+/// earlier (ext4 with 4 KiB blocks at 16 TiB).
 ///
-/// Miri cannot run this on the host's files. It emulates `pread` as a seek, a
-/// read and a seek back, and a seek past the largest file of the file system
-/// fails with `EINVAL`: on GitHub's hosted runners, whose temporary directory
-/// is on ext4, the case failed under Miri alone.
+/// Under Miri the backend over host files skips this case, whatever the file
+/// system. Miri emulates `pread` as a seek, a read and a seek back, and on
+/// Linux a seek past the largest file of the file system fails with `EINVAL`
+/// where `pread` reads nothing; on tmpfs and btrfs, whose files reach
+/// `i64::MAX`, the seek succeeds. On GitHub's hosted x86_64 runner the case
+/// failed under Miri alone.
 pub(crate) fn read_at_just_below_the_largest_offset_reads_nothing(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
     write_new(vfs, &path, &bytes(1_000, 4));
