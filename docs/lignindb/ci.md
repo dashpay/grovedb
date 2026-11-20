@@ -100,7 +100,7 @@ Each of those jobs prints the runner's cores, memory, swap and free disk at its 
 
 The corpus from its pinned engine is what a sync with `develop` runs first (D-107): done every night, a recipe that has rotted is found the day it rots.
 
-The tests of a pull request run the engine's schedules too, as tests of `lignindb`: each sweep at twelve of its points at most, evenly spread (`LIGNIN_SCHEDULE_POINTS=all` runs every point, `=N` at most `N`; one sweep, whose points are few, always tries them all), and the short form of the stress test. The sanitizer's job runs the schedules as tests too, so each sweep tries its twelve points there, whatever the job of the schedules is given.
+The tests of a pull request run the engine's schedules too, as tests of `lignindb`: each sweep at twelve of its points at most, evenly spread (`LIGNIN_SCHEDULE_POINTS=all` runs every point, `=N` at most `N`; one sweep, whose points are few, always tries them all), and the short form of the stress test. The sanitizer's job runs the schedules as tests too, so there each sweep tries the points it tries with the crate's tests, whatever the job of the schedules is given.
 
 ## Crash simulation
 

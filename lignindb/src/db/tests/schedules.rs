@@ -1496,10 +1496,35 @@ fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() 
     });
     thread::scope(|threads| {
         let (db, history) = (&db, &history);
+        // Whatever fails here, every thread goes on and the scope ends: a
+        // commit that ends before its publication is seen, and the commit
+        // that waits is let go when this closure is left.
+        let go_on = go_on;
         let commit = threads.spawn(move || commit_behind(db, history, Behind::Column));
-        (at_publication.recv()).expect("the commit is before its publication");
+        while at_publication
+            .recv_timeout(Duration::from_millis(10))
+            .is_err()
+        {
+            assert!(
+                !commit.is_finished(),
+                "the commit ended and did not come to its publication"
+            );
+        }
         let before = db.version();
-        let round = db.reclaim();
+        // The round is made on a thread of its own: one that finished a
+        // reclaiming would ask for the commit lock, which the commit
+        // holds here, and wait for it.
+        let round = threads.spawn(move || db.reclaim());
+        let began = Instant::now();
+        while !round.is_finished() {
+            assert!(
+                began.elapsed() < Duration::from_secs(30),
+                "the round of the reclaimer inside the commit does not end: it waits for the \
+                 commit"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
+        let round = round.join().expect("a round of the reclaimer");
         let reclaimed = db.stats().reclaimed;
         assert_eq!((round.finished, round.waiting), (0, 1), "{round:?}");
         assert_eq!(
