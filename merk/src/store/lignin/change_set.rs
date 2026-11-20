@@ -21,7 +21,7 @@ use super::{
     record_len, refused, LigninHost, LigninSubtree, LigninWriter, MODEL,
 };
 use crate::{
-    cost_model::{BatchCharge, ImmediateBatchCharge, Keyspace},
+    cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
     merk::defaults::ROOT_KEY_KEY,
     store::{NodeChange, NodeChangeSet, NodeWriteCost},
     tree::TreeNode,
@@ -29,12 +29,12 @@ use crate::{
 };
 
 /// What the store keeps of a node between `prepare_node` and `put_node`:
-/// every part of it but the key, and the value only where it was written.
+/// every part of it but the key, the value only where it was written, and
+/// the record length its put is charged by (`cost-model.md` N1). A node
+/// that has no record length is not taken apart, and what is kept of it is
+/// why it has none.
 #[derive(Debug)]
-pub struct PreparedNode {
-    node: NodeWrite,
-    record_len: usize,
-}
+pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 
 fn link_write(link: &Link) -> LinkWrite {
     let heights = match link {
@@ -52,8 +52,10 @@ fn link_write(link: &Link) -> LinkWrite {
 }
 
 fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
-    PreparedNode {
-        node: NodeWrite {
+    // The length comes first: a link with no length, as one to a child that
+    // is modified and not committed, has no hash to give either.
+    PreparedNode(cost_model::node_record_len(MODEL, node).map(|record_len| {
+        let node = NodeWrite {
             key: node.key().to_vec(),
             feature: encode_feature(&node.feature_type()),
             value_hash: *node.value_hash(),
@@ -66,9 +68,9 @@ fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
             },
             hint: None,
             hosted: None,
-        },
-        record_len: node.encoding_length(),
-    }
+        };
+        (node, record_len)
+    }))
 }
 
 /// The sizes the cost rules take with a put of a node that is charged when
@@ -134,9 +136,13 @@ impl LigninChangeSet {
 
     /// A change set of one node, written outside a commit of its Merk. The
     /// root of the Merk is the node it was.
-    pub(super) fn of_node(subtree: LigninSubtree, node: &TreeNode, change: NodeChange) -> Self {
+    pub(super) fn of_node(
+        subtree: LigninSubtree,
+        node: &TreeNode,
+        change: NodeChange,
+    ) -> Result<Self, Error> {
         let mut change_set = Self::new(subtree, false);
-        let PreparedNode { node, record_len } = prepare(node, change);
+        let (node, record_len) = prepare(node, change).0?;
         change_set.nodes.push((
             node,
             PutSizes {
@@ -145,7 +151,7 @@ impl LigninChangeSet {
                 cost: None,
             },
         ));
-        change_set
+        Ok(change_set)
     }
 
     /// A change set of one record that is no node, written or removed with
@@ -268,10 +274,7 @@ impl NodeChangeSet for LigninChangeSet {
         prepared: PreparedNode,
         cost: Option<NodeWriteCost>,
     ) -> Result<(), Error> {
-        let PreparedNode {
-            mut node,
-            record_len,
-        } = prepared;
+        let (mut node, record_len) = prepared.0?;
         // The record key of the write is the key Merk puts the node under.
         node.key = key.to_vec();
         let (children, cost) = match cost {
@@ -409,8 +412,9 @@ struct Staged {
 /// Merk stands is the rule of the batch across subtrees (TXN-08), and until
 /// that exists a second one is refused. For a record that is no node the
 /// batch holds one outcome, by the rule of a storage batch inside one
-/// operation: a put stands against a delete of the same key, and otherwise
-/// the later write stands.
+/// operation: a put stands against whatever came before it, and a delete
+/// only where nothing is staged for its key. So of two puts the later
+/// stands, of two deletes the first, and a put against a delete.
 #[derive(Default)]
 pub struct LigninBatch {
     staged: Mutex<Staged>,
@@ -513,12 +517,11 @@ impl LigninBatch {
                 change.subtree,
                 change.key.clone(),
             );
-            // As in a storage batch, a put stands against a delete of the
-            // same key, in whichever order they came, and of two puts or
-            // two deletes the later stands.
-            let put_stands = change.value.is_none()
-                && (staged.records.get(&at)).is_some_and(|staged| staged.change.value.is_some());
-            if !put_stands {
+            // As in a storage batch within one operation, a put replaces
+            // what is staged for its key and a delete replaces nothing: the
+            // cost that is charged is the one given with the write that
+            // stands.
+            if change.value.is_some() || !staged.records.contains_key(&at) {
                 staged.records.insert(at, record);
             }
         }

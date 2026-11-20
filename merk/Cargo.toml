@@ -67,6 +67,9 @@ verify = ["ed", "blake3"]
 grovedbg = ["full"]
 
 [dev-dependencies]
+# The ledger of the cost model, which the tests of `store::lignin` hold the
+# store to.
+grovedb-costs = { version = "6.1.1", path = "../costs", features = ["cost-model-ledger"] }
 # For `test_utils` in a test build that has the feature off.
 rand = { workspace = true }
 lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }

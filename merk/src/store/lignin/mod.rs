@@ -66,11 +66,15 @@
 //!
 //! # Costs
 //!
-//! Every charge comes from the functions of
-//! [`cost_model`](crate::cost_model), with the sizes Merk's own record has:
-//! a read is charged the record length of the node it found, a staged write
-//! nothing until its batch is applied, and a batch as a storage batch is.
-//! MERK-03 holds the store to the corpus on this.
+//! Every charge comes from the functions of [`cost_model`], with the sizes
+//! Merk's own record has: a read is charged the record length of the node
+//! it found, once for the read however many cells served it, a staged
+//! write nothing until its batch is applied, and a batch as a storage
+//! batch is. The record length of a cell is measured from its sizes
+//! ([`cost_model::node_record_len_from_sizes`]), and that of a node Merk
+//! writes from the node ([`cost_model::node_record_len`]): no record is
+//! encoded for a charge. `docs/lignindb/cost-model.md`, section 15, has the
+//! call for each event and how the store is held to it.
 //!
 //! # What is not here
 //!
@@ -100,7 +104,6 @@ mod tests;
 
 use std::{cell::RefCell, collections::HashMap, fmt};
 
-use ed::Encode;
 use grovedb_costs::{CostContext, CostResult, CostsExt, OperationCost};
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
@@ -114,7 +117,7 @@ pub use self::{
 };
 use super::{NodeChange, NodeCursor, NodeStore};
 use crate::{
-    cost_model::{Keyspace, StorageCostModel},
+    cost_model::{self, Keyspace, StorageCostModel},
     merk::defaults::ROOT_KEY_KEY,
     tree::{
         kv::{ValueDefinedCostType, KV},
@@ -123,10 +126,9 @@ use crate::{
     Error, Link,
 };
 
-/// The version of the storage cost rules this store charges by. A handle is
-/// opened with no grove version, as a storage context is, so a grove
-/// version that charges by another has to reach here too.
-const MODEL: StorageCostModel = StorageCostModel::V0;
+/// The version of the storage cost rules this store charges by: the one
+/// every handle charges by, since a handle is opened with no grove version.
+const MODEL: StorageCostModel = cost_model::HANDLE_COST_MODEL;
 
 /// How many times a node is read again because a commit landed between the
 /// read of its cell and the read of a child's.
@@ -196,30 +198,19 @@ fn refused(what: &str) -> Error {
     Error::StorageError(StorageError::StorageError(format!("lignindb: {what}")))
 }
 
-fn link_len(link: &Option<StoredLink>) -> Result<Option<usize>, Error> {
-    let reference = link.as_ref().map(|link| Link::Reference {
-        hash: link.hash,
-        child_heights: link.heights,
-        key: vec![0; usize::from(link.key_len)],
-        aggregate_data: link.aggregate,
-    });
-    reference
-        .map(|link| link.encoding_length())
-        .transpose()
-        .map_err(Error::EdError)
-}
-
 /// The record length of a stored node: the bytes Merk's own record of it
 /// takes (`cost-model.md` N1). It is measured from the cell alone: a link
 /// holds the length of its child's key.
 fn record_len(node: &StoredNode) -> Result<usize, Error> {
-    let feature_len = node.feature.encoding_length().map_err(Error::EdError)?;
-    Ok(MODEL.node_record_len(
+    let child =
+        |link: &Option<StoredLink>| link.as_ref().map(|link| (link.key_len, link.aggregate));
+    cost_model::node_record_len_from_sizes(
+        MODEL,
         node.value_len as usize,
-        feature_len,
-        link_len(&node.left)?,
-        link_len(&node.right)?,
-    ))
+        &node.feature,
+        child(&node.left),
+        child(&node.right),
+    )
 }
 
 fn reference(link: Option<StoredLink>) -> Result<Option<Link>, Error> {
@@ -483,8 +474,10 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
-        let change_set = LigninChangeSet::of_node(self.subtree.clone(), node, change);
-        self.submit(change_set, "a write", false)
+        match LigninChangeSet::of_node(self.subtree.clone(), node, change) {
+            Ok(change_set) => self.submit(change_set, "a write", false),
+            Err(error) => Err(error).wrap_with_cost(MODEL.refused_write()),
+        }
     }
 
     fn root_key(&self) -> CostResult<Option<Vec<u8>>, Error> {
