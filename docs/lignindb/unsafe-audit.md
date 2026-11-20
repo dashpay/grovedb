@@ -45,7 +45,7 @@ Miri is `cargo +nightly-2026-02-24 miri` (the newest toolchain the project's mac
 | The file layer | `MIRIFLAGS=-Zmiri-disable-isolation cargo +nightly-2026-02-24 miri test -p lignin-io`, under both borrow models | Every test of `lignin-io` that Miri can run. Isolation is off because the tests of the std backend use real temporary directories. |
 | Another production platform | the first run and the file layer's with `--target aarch64-unknown-linux-gnu` | The same code as the other platform of DEC-06 compiles it. |
 
-Miri ignores the tests of `lignin-io` that need what it does not emulate: hard links, inode numbers, `/dev/full`, a second filesystem and spawned processes. Each has `#[cfg_attr(miri, ignore = "...")]` with the reason, and they run in every normal test run. `lignin-io` has no unsafe code, so what Miri checks there is `std`'s use of the system and the crate's threads.
+Miri ignores the tests of `lignin-io` that need what it does not emulate: hard links, inode numbers, `/dev/full`, a second filesystem, spawned processes, and a read at an offset beyond the largest file of the host's file system (Miri's `pread` is a seek, which fails there where `pread` reads nothing). Each has `#[cfg_attr(miri, ignore = "...")]` with the reason, and they run in every normal test run. `lignin-io` has no unsafe code, so what Miri checks there is `std`'s use of the system and the crate's threads.
 
 Results at the audited commit are in the task's report (the commands above, their test counts and their logs). The numbers of tests change as tests are added; what has to stay is "no error, none ignored" for the pool.
 
