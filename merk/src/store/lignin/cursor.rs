@@ -32,12 +32,12 @@ use crate::{store::NodeCursor, Error};
 ///   writer's handle it takes the writer's lock for that long.
 /// - **It is charged as a cursor of a storage context** (`cost-model.md`
 ///   C1 to C3), with the sizes Merk's record has.
-/// - **A call the transaction refuses leaves it on no key**, and
-///   [`NodeCursor::status`] gives the error until the cursor is sought
-///   again. A read of a record that fails leaves the cursor on its key,
-///   with no value, and so does a node with a hash that is not made yet,
-///   which has no record. A walk that ends is at the end of the nodes only
-///   if `status` says so.
+/// - **A move the transaction refuses leaves it on no key.** A read of a
+///   record that fails leaves the cursor on its key, with no value, and so
+///   does a node with a hash that is not made yet, which has no record.
+///   Either way [`NodeCursor::status`] gives the error until the cursor is
+///   sought again. A walk that ends is at the end of the nodes only if
+///   `status` says so.
 pub struct LigninCursor<'db> {
     walk: Option<RefCell<Box<dyn Walk + 'db>>>,
     /// The key the cursor stands on, where it stands on one.
