@@ -86,6 +86,7 @@ pub(in crate::batch) fn keyless_op_synthetic_key(op_index: usize, tree_key: &Key
 /// ops) — a user-supplied `MaxKeySize` key on a keyed op has no such
 /// structure, so callers must check the op type before trusting the result.
 #[cfg(feature = "engine_generic")]
+#[cfg_attr(not(feature = "estimated_costs"), allow(dead_code))]
 pub(in crate::batch) fn keyless_op_tree_key(key: &KeyInfo) -> Option<&[u8]> {
     match key {
         KeyInfo::MaxKeySize { unique_id, .. } => unique_id.get(8..),

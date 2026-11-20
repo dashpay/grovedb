@@ -86,18 +86,6 @@ fn walk_offset_path<E: Engine>(
     Ok(false).wrap_with_cost(cost)
 }
 
-/// A seam for landing a commit between reading the host element and loading
-/// its root.
-#[cfg(test)]
-mod test_hooks {
-    use std::cell::RefCell;
-
-    thread_local! {
-        pub(super) static AFTER_HOST_ELEMENT: RefCell<Option<Box<dyn FnOnce()>>> =
-            const { RefCell::new(None) };
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub(super) fn read_local_count_page<'db, E: Engine>(
     storage: &'db E,
@@ -245,6 +233,18 @@ pub(super) fn read_local_count_page<'db, E: Engine>(
         budget.rows,
     ))
     .wrap_with_cost(cost)
+}
+
+/// A seam for landing a commit between reading the host element and loading
+/// its root.
+#[cfg(test)]
+mod test_hooks {
+    use std::cell::RefCell;
+
+    thread_local! {
+        pub(super) static AFTER_HOST_ELEMENT: RefCell<Option<Box<dyn FnOnce()>>> =
+            const { RefCell::new(None) };
+    }
 }
 
 #[cfg(all(test, grovedb_test_engine))]

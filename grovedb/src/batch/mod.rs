@@ -829,6 +829,7 @@ impl GroveOp {
     /// non-exhaustive check, so the newly added
     /// `ReplaceAggregateIndexedTreeRootKeys` variant silently fell through
     /// to "doesn't mutate" and the outer's secondary stayed stale.
+    #[cfg_attr(not(feature = "estimated_costs"), allow(dead_code))]
     pub(crate) fn can_mutate_child_count(&self) -> bool {
         match self {
             // User-facing leaf-level mutations: insert/replace/patch
