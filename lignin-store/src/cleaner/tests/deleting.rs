@@ -113,7 +113,7 @@ fn a_segment_waits_for_the_operations_that_were_running_when_it_was_retired() {
     db.versions.hold_guard();
     let mut buf = Vec::new();
     let bytes = (db.segments.read(read, db.size.get(), &mut buf))
-        .and_then(|block| Ok(block.payload().expect("a payload").into_owned()))
+        .map(|block| block.payload().expect("a payload").into_owned())
         .expect("the block");
 
     // The cleaner moves every block it can, and retires the segments.
@@ -136,7 +136,7 @@ fn a_segment_waits_for_the_operations_that_were_running_when_it_was_retired() {
     });
     // The operation reads what it read before, from where it was.
     let again = (db.segments.read(read, db.size.get(), &mut buf))
-        .and_then(|block| Ok(block.payload().expect("a payload").into_owned()))
+        .map(|block| block.payload().expect("a payload").into_owned())
         .expect("the block is still there");
     assert_eq!(again, bytes);
     assert!(on_disk(&db, read.file));

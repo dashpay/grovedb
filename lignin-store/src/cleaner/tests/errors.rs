@@ -56,7 +56,7 @@ fn every_error_says_what_failed() {
             true,
         ),
         (
-            CleanerError::payload(page(7), at(3, 20))(truncated.clone()),
+            CleanerError::payload(page(7), at(3, 20))(truncated),
             "the block of page 7 at offset 20 of segment 3 is not what its tag says: ",
             true,
         ),
