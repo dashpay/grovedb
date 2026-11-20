@@ -813,19 +813,24 @@ fn a_frame_can_be_read_before_anything_is_written_to_it() {
     }
 }
 
-/// Whether this build maps the frames of a large pool: the systems whose
-/// call for a mapping `frame.rs` declares.
-const MAPS: bool = cfg!(any(
-    all(
-        target_os = "linux",
-        any(target_arch = "x86_64", target_arch = "aarch64")
+/// Whether this build maps the frames of a large pool: Linux on x86-64 and
+/// on AArch64, and macOS, each with 64-bit pointers. They are the systems
+/// whose call for a mapping `frame.rs` declares.
+const MAPS: bool = cfg!(all(
+    target_pointer_width = "64",
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        target_os = "macos",
     ),
-    target_os = "macos",
 ));
 
-/// A pool with a megabyte of frames or more does not write them when it is
-/// made: they are a mapping of the pool's own, which the system gives
-/// zeroed. They are aligned and zeroed as the frames of a small pool are,
+/// Where a build maps ([`MAPS`]), a pool with a megabyte of frames or more
+/// does not write them when it is made: they are a mapping of the pool's
+/// own, which the system gives zeroed. Elsewhere they are the allocator's.
+/// Either way they are aligned and zeroed as the frames of a small pool are,
 /// they lie side by side in one block, the first and the last of them can
 /// be written from end to end, and the pool counts them as its memory from
 /// the start. Miri fails this test if a frame is not zeroed or lies outside
@@ -875,9 +880,9 @@ fn the_frames_of_a_large_pool_are_mapped_zeroed_and_side_by_side() {
     check(&pool, 0);
 }
 
-/// The frames are a mapping from a megabyte of them on, and the
-/// allocator's below that: a small pool is zeroed when it is made, which
-/// costs next to nothing, and has no mapping to itself.
+/// Where a build maps, the frames are a mapping from a megabyte of them
+/// on, and the allocator's below that: a small pool is zeroed when it is
+/// made, which costs next to nothing, and has no mapping to itself.
 #[test]
 fn a_pool_maps_its_frames_from_a_megabyte_of_them() {
     let len = PageSize::MIN.get();

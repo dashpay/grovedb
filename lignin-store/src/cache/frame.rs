@@ -1335,7 +1335,8 @@ fn allocate(layout: Layout) -> NonNull<u8> {
 use mapping::Mapped;
 
 /// Memory that is a mapping of its own, on the systems whose call for one
-/// this file declares: Linux on x86-64 and on AArch64, and macOS.
+/// this file declares: Linux on x86-64 and on AArch64, and macOS, each with
+/// 64-bit pointers.
 ///
 /// The declarations of `mmap` and `munmap` and the numbers of their flags
 /// are those of these systems' C libraries, written out here because the
@@ -1343,10 +1344,11 @@ use mapping::Mapped;
 /// any other the type below has no value.
 #[cfg(any(
     all(
+        target_pointer_width = "64",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     ),
-    target_os = "macos",
+    all(target_pointer_width = "64", target_os = "macos"),
 ))]
 mod mapping {
     use std::{
@@ -1382,8 +1384,9 @@ mod mapping {
                 0x20
             };
             // SAFETY: `mmap` as POSIX has it and as the C library of each
-            // of these systems declares it. They are 64-bit systems, where
-            // `size_t` is `usize` and `off_t` is `i64`.
+            // of these systems declares it. The module is compiled for
+            // 64-bit pointers only, where `size_t` is `usize` and `off_t`
+            // is `i64` on each of them.
             unsafe extern "C" {
                 fn mmap(
                     addr: *mut c_void,
@@ -1413,7 +1416,8 @@ mod mapping {
             if start.addr() == usize::MAX {
                 return None;
             }
-            let start = NonNull::new(start.cast::<u8>())?;
+            let start = NonNull::new(start.cast::<u8>())
+                .expect("the system chooses the address, and never the address 0");
             let mapped = Self {
                 start,
                 len: layout.size(),
@@ -1458,10 +1462,11 @@ mod mapping {
 /// memory is mapped: the type has no value.
 #[cfg(not(any(
     all(
+        target_pointer_width = "64",
         target_os = "linux",
         any(target_arch = "x86_64", target_arch = "aarch64")
     ),
-    target_os = "macos",
+    all(target_pointer_width = "64", target_os = "macos"),
 )))]
 mod mapping {
     use std::{alloc::Layout, ptr::NonNull};
@@ -1804,10 +1809,14 @@ mod tests {
     }
 
     /// A mapping the system cannot give is `None`, and the arena then asks
-    /// the allocator: no address space holds a block of this size.
+    /// the allocator: no address space holds a block of this size. Miri has
+    /// no address space of its own to refuse from, and stops when it is
+    /// asked for so much.
+    #[cfg_attr(miri, ignore = "Miri stops on a mapping that is too large")]
     #[test]
     fn a_mapping_the_system_refuses_is_none() {
-        let layout = Layout::from_size_align(1 << 62, 4096).expect("a layout");
+        let most = (isize::MAX as usize - 4095) & !4095;
+        let layout = Layout::from_size_align(most, 4096).expect("a layout");
         assert!(Mapped::new(layout).is_none());
     }
 

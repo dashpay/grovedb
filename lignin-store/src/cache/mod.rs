@@ -262,15 +262,17 @@
 //!
 //! The headers, the table and the lanes are allocated and written then,
 //! and so are the frames of a pool that has less than a megabyte of them.
-//! On Linux (x86-64 and AArch64) and on macOS a megabyte of frames or more
-//! is not written when the pool is made: it is a mapping of the pool's own
-//! ([`BufferPool::mapped_memory`]), which the system gives zeroed and backs
-//! with memory as each of its pages is first used. Making the pool then
-//! costs by its headers and its table, and the first use of a frame takes
-//! the system's page faults. On any other system, and where the system
-//! refuses a mapping, those frames are the allocator's and are zeroed when
-//! the pool is made. Either way they are counted in the fixed memory from
-//! the start, used or not.
+//! On Linux (x86-64 and AArch64) and on macOS, with 64-bit pointers, a
+//! megabyte of frames or more is not written when the pool is made: it is
+//! a mapping of the pool's own ([`BufferPool::mapped_memory`]), which the
+//! system gives zeroed and backs with memory as each of its pages is first
+//! used. Making the pool then costs by its headers and its table, and the
+//! first use of a frame takes the system's page faults. If the system has
+//! promised more memory than it has, it finds that out at a frame's first
+//! use, not when the pool is made. On any other system, and where the
+//! system refuses a mapping, those frames are the allocator's and are
+//! zeroed when the pool is made. Either way they are counted in the fixed
+//! memory from the start, used or not.
 //!
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page

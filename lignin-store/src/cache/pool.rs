@@ -23,9 +23,9 @@ pub struct PoolConfig {
     /// The store's page size. A frame holds one page of it.
     pub page_size: PageSize,
     /// The memory the pool may use for what it caches, in bytes. It is
-    /// allocated when the pool is made, and it includes each frame's
-    /// header, the pool's table and its lanes: less than 512 bytes a frame
-    /// beside the page.
+    /// taken when the pool is made, and it includes each frame's header,
+    /// the pool's table and its lanes: less than 512 bytes a frame beside
+    /// the page.
     pub capacity: usize,
 }
 
@@ -365,12 +365,13 @@ impl BufferPool {
     /// The bytes of the fixed part that are a mapping of the pool's own and
     /// not the allocator's: all of its frames, or none.
     ///
-    /// On Linux (x86-64 and AArch64) and on macOS, the frames of a pool
-    /// that has a megabyte of them or more are such a mapping. The system
-    /// gives it zeroed and backs it with memory as each of its own pages is
-    /// first used, so making the pool writes none of its frames. These
-    /// bytes are part of [`Self::fixed_memory`] from the start, whether or
-    /// not they were used yet.
+    /// On Linux (x86-64 and AArch64) and on macOS, with 64-bit pointers,
+    /// the frames of a pool that has a megabyte of them or more are such a
+    /// mapping, unless the system refuses one. The system gives it zeroed
+    /// and backs it with memory as each of its own pages is first used, so
+    /// making the pool writes none of its frames. These bytes are part of
+    /// [`Self::fixed_memory`] from the start, whether or not they were used
+    /// yet.
     pub fn mapped_memory(&self) -> usize {
         self.arena.mapped()
     }
