@@ -10,7 +10,7 @@ use std::{
 use lignin_format::{FileHeader, FileId, FileKind, FormatVersion};
 use lignin_io::{Create, DirEntry, OpenMode, Vfs, VfsFile};
 
-use super::error::SegmentStoreError;
+use super::{error::SegmentStoreError, manifest::DirSync};
 
 /// Where the files of one numbered kind live and what they are called.
 ///
@@ -87,30 +87,43 @@ impl FileNames {
 }
 
 /// Lists the directory that holds the files of the kind `names` in the
-/// database directory `db`, and makes the directory's own name durable. The
-/// directory is created if it is missing.
+/// database directory `db`. The directory is created if it is missing, and
+/// its own name is durable when this returns: a manifest must not name a
+/// file in a directory that a crash can take away with everything in it.
 ///
-/// The database directory is synced whether or not this call created the
-/// directory. An earlier call may have created it and failed before the
-/// sync, and a manifest must not name a file in a directory that a crash can
-/// take away with everything in it.
+/// `dir_sync` is the
+/// [`ManifestStore::dir_sync`](super::ManifestStore::dir_sync) of the
+/// directory's manifest store. A directory that is there when that
+/// manifest store is opened has a durable name already, since the open
+/// syncs the database directory. So the database directory is synced here
+/// only where this session made a directory in it that no sync has covered:
+/// when this call creates the directory, and when an earlier call created
+/// one and failed before its sync.
 pub fn list_or_create_dir(
     vfs: &dyn Vfs,
     db: &Path,
     names: &FileNames,
+    dir_sync: &DirSync,
 ) -> Result<Vec<DirEntry>, SegmentStoreError> {
     let dir = names.dir(db);
+    let mut owed = dir_sync.owed();
     let entries = match vfs.read_dir(&dir) {
         Ok(entries) => entries,
         Err(error) if error.kind() == ErrorKind::NotFound => {
+            // A creation that fails may have made the directory all the
+            // same, so the sync is owed from here on.
+            *owed = true;
             vfs.create_dir(&dir)
                 .map_err(SegmentStoreError::io("create the directory", &dir))?;
             Vec::new()
         }
         Err(error) => return Err(SegmentStoreError::io("list", &dir)(error)),
     };
-    vfs.sync_dir(db)
-        .map_err(SegmentStoreError::io("sync the directory", db))?;
+    if *owed {
+        vfs.sync_dir(db)
+            .map_err(SegmentStoreError::io("sync the directory", db))?;
+        *owed = false;
+    }
     Ok(entries)
 }
 
@@ -131,11 +144,16 @@ pub fn create_file(
     names: &FileNames,
     id: FileId,
 ) -> Result<Box<dyn VfsFile>, SegmentStoreError> {
-    let path = names.path(db, id);
-    let file = vfs
-        .open(&path, OpenMode::Append(Create::New))
-        .map_err(SegmentStoreError::io("create", &path))?;
-    match write_header(vfs, &names.dir(db), &path, &*file, names.kind(), id) {
+    let (dir, path) = (names.dir(db), names.path(db, id));
+    let file = create_unsynced_file(vfs, db, names, id)?;
+    let synced = file
+        .sync_data()
+        .map_err(SegmentStoreError::io("sync", &path))
+        .and_then(|()| {
+            vfs.sync_dir(&dir)
+                .map_err(SegmentStoreError::io("sync the directory", &dir))
+        });
+    match synced {
         Ok(()) => Ok(file),
         Err(error) => {
             drop(file);
@@ -145,22 +163,42 @@ pub fn create_file(
     }
 }
 
-fn write_header(
+/// Creates file `id` of the kind `names` in the database directory `db`,
+/// with its file header, and returns it open for appending. Nothing is
+/// synced: neither the header nor the file's name is durable.
+///
+/// A manifest may name the file only once both are. Whoever has it named
+/// syncs the file's data and the directory of the kind before the rename
+/// that puts the manifest in force, and can do so in one set with the
+/// sync of the manifest's temporary file
+/// ([`ManifestStore::update_with`]). If the header cannot be appended the
+/// file is removed again.
+///
+/// [`ManifestStore::update_with`]: super::ManifestStore::update_with
+pub(crate) fn create_unsynced_file(
     vfs: &dyn Vfs,
-    dir: &Path,
-    path: &Path,
-    file: &dyn VfsFile,
-    kind: FileKind,
+    db: &Path,
+    names: &FileNames,
     id: FileId,
-) -> Result<(), SegmentStoreError> {
-    let header = FileHeader::new(kind, FormatVersion::CURRENT, id.get())
-        .map_err(SegmentStoreError::format(path, 0))?;
-    file.append(&header.encode())
-        .map_err(SegmentStoreError::io("append to", path))?;
-    file.sync_data()
-        .map_err(SegmentStoreError::io("sync", path))?;
-    vfs.sync_dir(dir)
-        .map_err(SegmentStoreError::io("sync the directory", dir))
+) -> Result<Box<dyn VfsFile>, SegmentStoreError> {
+    let path = names.path(db, id);
+    let file = vfs
+        .open(&path, OpenMode::Append(Create::New))
+        .map_err(SegmentStoreError::io("create", &path))?;
+    let appended = FileHeader::new(names.kind(), FormatVersion::CURRENT, id.get())
+        .map_err(SegmentStoreError::format(&path, 0))
+        .and_then(|header| {
+            file.append(&header.encode())
+                .map_err(SegmentStoreError::io("append to", &path))
+        });
+    match appended {
+        Ok(_) => Ok(file),
+        Err(error) => {
+            drop(file);
+            let _ = vfs.remove_file(&path);
+            Err(error)
+        }
+    }
 }
 
 pub(super) fn remove_if_present(vfs: &dyn Vfs, path: &Path) -> Result<(), SegmentStoreError> {

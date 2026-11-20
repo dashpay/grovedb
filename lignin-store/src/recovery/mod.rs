@@ -108,7 +108,7 @@
 //! | 6 | The pages that replay rebuilt and still keeps go into the buffer pool, each as the current version of its page, with the bytes of its pending values. | [`BufferPool::install`] |
 //! | 7 | The counts of the value log and the page ids of *Lr* are made. | [`ValueRecovery::finish`], [`alloc::Recovery::finish`] |
 //! | 8 | The manifest is replaced: it names every segment and value-log file of the earlier sessions closed. | [`SegmentStore::describe`], [`ValueStore::describe`], [`ManifestStore::update`] |
-//! | 9 | The log is made durable to its end and turned to the first file of this session, under a manifest that names every earlier log file closed where its last whole item ends. From here no later recovery reads a byte behind that end (DU3), and the counts that were recovered are durable. | [`LogStore::roll`], [`ValueStore::mark_durable`] |
+//! | 9 | The log is made durable to its end and turned to the first file of this session, under a manifest that names every earlier log file closed where its last whole item ends. From here no later recovery reads a byte behind that end (DU3), and the counts that were recovered are durable. The file the log turns to after that one is left to the session. | [`LogStore::begin`], [`ValueStore::mark_durable`] |
 //!
 //! **It lands on one committed version** (DU2): *Lr* is at or after the
 //! last commit that was durable and at or before the last one whose group
@@ -256,20 +256,69 @@
 //! was read once. Nothing is synced while the log is read, unless replay
 //! holds more pages than it keeps.
 //!
-//! **What it makes durable does not grow with the log.** A recovery
-//! replaces the manifest three times and creates two log files: one
-//! manifest closes the segments and the value-log files of the earlier
-//! sessions, one closes their log files and names this session's first,
-//! and one names the log file in reserve ([`LogStore::roll`]). A recovery
-//! that finds nothing to close replaces it twice. On a file system whose
-//! syncs are slow this is what a recovery waits for, and not the replay.
+//! **The first log file is read from its first item**, wherever in it the
+//! place of the checkpoint's sample is. The commits that the checkpoint
+//! does not cover can lie before that place, since a checkpoint taken
+//! while commits come in covers less than the log holds at its sample,
+//! and nothing durable says where the group of the first of them begins.
+//! A reader that began at the place would lose them, and would not see
+//! that it had unless a later group followed. What keeps the read short
+//! is the writer: write-back turns the log where a checkpoint begins
+//! ([`LogStore::rotate_early`]), so that the files with the commits the
+//! checkpoint covers can go when it is installed. The file a recovery
+//! starts in then holds what was logged while that checkpoint was taken.
+//! Where the checkpoint could not cover those commits, or something
+//! still held their files, a recovery reads them as well.
 //!
-//! Two things grow with what the last session left. The part of its last
-//! log file that no sync is known to cover is written again, at most one
-//! file of [`LogOptions::target_file_len`] bytes (see the log's "A file of
-//! an earlier session"). And the pages replay writes when it holds more
-//! than it keeps are appended to a segment, which is synced once when it
-//! is full and once when the log ends.
+//! **A segment is read only where a link of the page table points**: one
+//! block, at the offset and of the length the link gives, checked by its
+//! own frame ([`PageLoader`]). A recovery reads no footer of a sealed
+//! segment and walks no segment block by block, so nothing in it rests
+//! on what a footer's index says of a block (S16 of
+//! `segment-manifest.md`).
+//!
+//! **What it makes durable does not grow with the log.** A recovery of a
+//! store that a session closed makes five syncs, in three calls of the
+//! file layer, and each is there for something a later step rests on:
+//!
+//! | Call | What is synced | Why, and why here |
+//! | --- | --- | --- |
+//! | 1 | The database directory ([`ManifestStore::open`], which the caller makes). | The manifest that was found has to be the one a crash leaves before anything is done by it: an earlier session may have ended between the rename of a manifest and the sync of the directory, and the opens of the stores delete the files this manifest does not name. The same sync makes durable the name of every directory beside the manifest, so the stores sync nothing for a directory of theirs that is there. |
+//! | 2 | This session's first log file, `wal/`, and the temporary file of the manifest that names the log file, as one set ([`LogStore::begin`], [`Vfs::sync_together`]). | A manifest that names a file must not be in force before the file and its name are durable, and must not be in force before its own bytes are. None of the three has to come before another, so they are one set, and a file layer whose sync ends in a flush of the whole device makes that flush once. |
+//! | 3 | The database directory. | The manifest has its name by a rename, and the log turns to its file only once a crash cannot take the manifest that names it away. |
+//!
+//! One log file is created, and one manifest written. The file the log
+//! turns to after that is made by whoever turns the log in the session
+//! ([`WriteBack::roll_log`], and a table checkpoint for its own turn), so
+//! the open does not wait for it. On a file system whose syncs are slow
+//! these three calls are what a recovery waits for, and not the replay.
+//!
+//! Three things grow with what the last session left open, each with
+//! syncs of its own. If it left segments or value-log files that no
+//! manifest names closed, one manifest more closes them, before the
+//! log's: the temporary file and the database directory. The part of its
+//! last log file that no sync is known to cover is written again, at
+//! most one file of [`LogOptions::target_file_len`] bytes (see the log's
+//! "A file of an earlier session"): the new file and `wal/`. And the
+//! pages replay writes when it holds more than it keeps are appended to
+//! a segment that replay creates and has a manifest name, with the syncs
+//! of both, and that is synced when it is full and when the log ends.
+//!
+//! **What it deletes.** The opens of the stores remove the files that the
+//! manifest does not name. The log's first manifest of the session no
+//! longer names a log file of the earlier sessions that holds nothing of
+//! the log, and such a file is deleted once that manifest is in force:
+//! it is the only file a recovery drops, since recovery drops no segment
+//! and retires no value-log file. **A file that cannot be deleted fails
+//! the open**, whichever of the two steps meets it
+//! ([`LogError::NotDeleted`] where the manifest has just stopped naming
+//! the file, the store's I/O error where it finds the file unnamed). A
+//! recovery that fails returns no store, so no store is left with a
+//! manifest it was not told of, and what it made durable by then is a
+//! state the next recovery starts from. The next open meets the same
+//! file where it opens the log, which removes the log files its manifest
+//! does not name, and fails on it as well for as long as the file cannot
+//! be deleted.
 //!
 //! # What is refused
 //!
@@ -335,7 +384,11 @@
 //! [`TableCheckpoints::open`]: crate::table::TableCheckpoints::open
 //! [`PageTable::load`]: crate::table::PageTable::load
 //! [`LogStore::open`]: crate::wal::LogStore::open
-//! [`LogStore::roll`]: crate::wal::LogStore::roll
+//! [`LogStore::begin`]: crate::wal::LogStore::begin
+//! [`LogStore::rotate_early`]: crate::wal::LogStore::rotate_early
+//! [`LogError::NotDeleted`]: crate::wal::LogError::NotDeleted
+//! [`WriteBack::roll_log`]: crate::flush::WriteBack::roll_log
+//! [`Vfs::sync_together`]: lignin_io::Vfs::sync_together
 //! [`LogStore::appended`]: crate::wal::LogStore::appended
 //! [`ManifestStore::open`]: crate::segment::ManifestStore::open
 //! [`ManifestStore::create`]: crate::segment::ManifestStore::create
@@ -582,9 +635,12 @@ pub fn recover(
     manifest.update(|current| -> Result<_, RecoveryError> {
         Ok(values.describe(&segments.describe(current)?)?)
     })?;
+    // Neither store has a file to delete here: a recovery drops no
+    // segment and retires no value-log file. The log has, and an open
+    // that cannot delete it fails ("What it deletes").
     segments.manifest_replaced(&manifest)?;
     values.manifest_replaced(&manifest)?;
-    log.roll(&mut manifest)?;
+    log.begin(&mut manifest)?;
     values.mark_durable(values.applied())?;
 
     Ok(Recovered {

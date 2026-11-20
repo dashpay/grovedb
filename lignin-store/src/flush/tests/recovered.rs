@@ -269,8 +269,8 @@ fn a_crash_of_the_session_after_a_recovery_recovers_too() {
 /// leave is recovered, half of them with every rebuilt page kept in memory
 /// and half with a single page kept, and the power goes off after each
 /// change that the recovery makes to what a crash can leave: the segment
-/// it writes rebuilt pages to, the manifests that name it, the log file of
-/// the new session and the one in reserve. Every state the cut recovery
+/// it writes rebuilt pages to, the manifests that name it, and the log
+/// file of the new session. Every state the cut recovery
 /// can leave is recovered again, and lands on the version that a recovery
 /// which was not cut lands on, with the same pages.
 #[test]

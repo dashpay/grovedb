@@ -1152,6 +1152,153 @@ fn an_end_that_was_read_before_a_file_grew_does_not_open_the_log() {
 }
 
 #[test]
+fn a_log_that_begins_makes_one_file_durable_with_the_manifest_that_names_it() {
+    let mut std = StdDb::new(LogOptions::default());
+    let mut rng = Rng(36);
+    let first = std.db.commit(&mut rng).unwrap();
+    std.db.log.sync().unwrap();
+    std.db.log.commit(&mut std.db.manifest).unwrap();
+
+    // The next session: the log is opened where it ends, and begun.
+    let mut std = std.reopen(LogOptions::default());
+    assert!(std.db.log.begin(&mut std.db.manifest).unwrap());
+    let syncs = [Op::SyncData, Op::SyncAll, Op::SyncDir];
+    let calls = std.faulty.take_calls();
+    let synced: Vec<_> = calls.iter().filter(|(op, _)| syncs.contains(op)).collect();
+    let dir = std
+        .db
+        .dir
+        .file_name()
+        .unwrap()
+        .to_string_lossy()
+        .into_owned();
+    // The file of the earlier session that was made ready and never
+    // turned to holds nothing of the log, so this session's file is the
+    // third. It is synced with its name and with the manifest that names
+    // it, as one list, and then the manifest gets its name.
+    assert_eq!(
+        synced,
+        [
+            &(Op::SyncData, log_name(3)),
+            &(Op::SyncDir, "wal".to_owned()),
+            &(Op::SyncAll, ManifestStore::TEMP_FILE_NAME.to_owned()),
+            &(Op::SyncDir, dir),
+        ]
+    );
+    let renames = calls.iter().filter(|(op, _)| *op == Op::Rename).count();
+    assert_eq!(renames, 1, "one manifest");
+    assert_eq!(
+        std.db.named(),
+        [
+            log_file(1, FileState::Closed, first.end.offset()),
+            log_file(3, FileState::Open, HEADER),
+        ]
+    );
+
+    // The log takes items, and has no file to turn to until a roll makes
+    // one.
+    assert_eq!(std.db.log.end(), Some(place(3, FIRST)));
+    assert!(!std.db.log.has_file_ready());
+    let second = std.db.commit(&mut rng).unwrap();
+    assert!(!std.db.log.begin(&mut std.db.manifest).unwrap());
+    assert!(!std.db.log.has_file_ready());
+    assert!(!std.db.roll().unwrap());
+    assert!(std.db.log.has_file_ready());
+    assert_eq!(std.db.read().0, [first, second]);
+}
+
+#[test]
+fn an_early_turn_leaves_a_file_that_holds_a_commit_when_a_file_is_ready() {
+    let mut std = StdDb::new(LogOptions::default());
+    let mut rng = Rng(37);
+    let log = &std.db.log;
+    assert!(log.has_file_ready());
+    // A file with no commit in it is not left, whatever else it holds.
+    assert!(!log.rotate_early().unwrap());
+    let mark = std.db.mark(log.latest()).unwrap();
+    let change = std.db.change(&mut rng).unwrap();
+    assert!(!log.rotate_early().unwrap());
+    assert_eq!(log.end(), Some(change.end));
+
+    // With a commit it is, though it is far from full, and nothing is
+    // synced for the turn.
+    let first = std.db.commit(&mut rng).unwrap();
+    assert!(!log.is_due());
+    std.faulty.take_calls();
+    assert!(log.rotate_early().unwrap());
+    let calls = std.faulty.take_calls();
+    assert_eq!(calls, [(Op::Append, log_name(2))]);
+    assert_eq!(log.end(), Some(place(2, FIRST)));
+    assert!(!log.has_file_ready());
+
+    // With no file ready nothing is turned, and that is no error.
+    let second = std.db.commit(&mut rng).unwrap();
+    assert_eq!(second.at, place(2, FIRST));
+    assert!(!log.rotate_early().unwrap());
+    assert_eq!(log.end(), Some(second.end));
+    assert!(!std.db.roll().unwrap());
+    assert!(std.db.log.has_file_ready());
+    assert!(std.db.log.rotate_early().unwrap());
+    let third = std.db.commit(&mut rng).unwrap();
+    assert_eq!(third.at, place(3, FIRST));
+    assert_eq!(std.db.read().0, [mark, change, first, second, third]);
+}
+
+#[test]
+fn an_end_that_was_read_under_another_state_of_a_file_does_not_open_the_log() {
+    let mut rng = Rng(35);
+    let (bytes, ends, _) = crafted_file(1, LogStart::FIRST, 6, &mut rng);
+    let named_len = ends[3];
+    let under = |state| {
+        let ids = lignin_format::manifest::LastFileIds {
+            wal: Some(file_id(1)),
+            ..Default::default()
+        };
+        let named = vec![log_file(1, state, named_len)];
+        Manifest::new(PageSize::DEFAULT, ids, None, named).expect("a manifest")
+    };
+    let read_under = |vfs: &Arc<dyn Vfs>, state| {
+        LogReader::new(vfs.clone(), sim::db_dir(), &under(state))
+            .into_end()
+            .expect("the log reads")
+    };
+    let refused = |manifest: &ManifestStore, end: &LogEnd| {
+        let error = LogStore::open(manifest, end, LogOptions::default()).unwrap_err();
+        assert!(
+            matches!(error, LogError::WrongLogEnd { file } if file == file_id(1)),
+            "{error}"
+        );
+    };
+
+    // Read as closed, and named open now. The reader stopped at the valid
+    // length, and an open file has whole items behind it that are the
+    // log's: a log that opened there would name the file closed in front
+    // of them.
+    let (_fs, vfs) = crafted(&[(log_file(1, FileState::Open, named_len), &bytes)]);
+    let manifest = ManifestStore::open(vfs.clone(), sim::db_dir()).unwrap();
+    let as_closed = read_under(&vfs, FileState::Closed);
+    assert_eq!(as_closed.place(), Some(place(1, named_len)));
+    assert_eq!(as_closed.files()[0].named_state(), FileState::Closed);
+    refused(&manifest, &as_closed);
+    let as_named = read_under(&vfs, FileState::Open);
+    assert_eq!(as_named.place(), Some(place(1, bytes.len() as u64)));
+    LogStore::open(&manifest, &as_named, LogOptions::default()).unwrap();
+
+    // Read as open, and named closed now, with nothing behind the valid
+    // length: the two ends say the same of the log, and the end is still
+    // not one that was read by this manifest.
+    let whole = &bytes[..named_len as usize];
+    let (_fs, vfs) = crafted(&[(log_file(1, FileState::Closed, named_len), whole)]);
+    let manifest = ManifestStore::open(vfs.clone(), sim::db_dir()).unwrap();
+    let as_open = read_under(&vfs, FileState::Open);
+    assert_eq!(as_open.place(), Some(place(1, named_len)));
+    refused(&manifest, &as_open);
+    let as_named = read_under(&vfs, FileState::Closed);
+    assert_eq!(as_named.place(), as_open.place());
+    LogStore::open(&manifest, &as_named, LogOptions::default()).unwrap();
+}
+
+#[test]
 fn a_roll_makes_the_cut_for_an_append_that_fails_while_it_runs() {
     let mut std = StdDb::new(LogOptions::default());
     let mut rng = Rng(51);

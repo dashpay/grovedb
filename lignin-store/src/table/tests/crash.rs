@@ -207,7 +207,7 @@ fn a_database_goes_on_through_one_crash_after_another() {
     let mut tally = Tally::default();
     let mut installed = 0;
     let mut lost_commits = 0;
-    for seed in [31, 32, 33, 34] {
+    for seed in [34, 35, 36, 37] {
         let mut fs = sim_fs(SimConfig::new(seed));
         let mut run = Run::new(&fs, seed);
         for crash in 0..25 {

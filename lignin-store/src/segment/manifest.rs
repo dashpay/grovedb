@@ -2,16 +2,16 @@
 //! one or the new one.
 
 use std::{
-    io::ErrorKind,
+    io::{self, ErrorKind},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
 use lignin_format::{
     manifest::{FileState, LiveFile, Manifest},
     FileKind, PageSize,
 };
-use lignin_io::{Create, OpenMode, Vfs};
+use lignin_io::{Create, OpenMode, Vfs, VfsFile};
 
 use super::{
     error::{ManifestChange, SegmentStoreError},
@@ -43,6 +43,36 @@ pub fn read_manifest(vfs: &dyn Vfs, dir: &Path) -> Result<Manifest, SegmentStore
     Manifest::decode(&bytes).map_err(SegmentStoreError::format(&path, 0))
 }
 
+/// Whether a session has made a directory in its database directory whose
+/// name no sync of the database directory has made durable yet.
+///
+/// [`list_or_create_dir`](super::list_or_create_dir) keeps it: the stores
+/// of a database directory each have a directory in it, and each makes its
+/// own if it is missing. The [`ManifestStore`] of the directory has the
+/// one that all of them share ([`ManifestStore::dir_sync`]), and it starts
+/// with nothing owed, because a manifest store syncs the database
+/// directory when it is opened or created.
+#[derive(Debug, Clone)]
+pub struct DirSync {
+    owed: Arc<Mutex<bool>>,
+}
+
+impl DirSync {
+    /// The record of a database directory that was just synced.
+    pub(super) fn new() -> Self {
+        Self {
+            owed: Arc::default(),
+        }
+    }
+
+    /// Whether the sync is owed, for whoever lists or makes a directory:
+    /// one of them at a time, so that the sync one of them makes covers
+    /// every directory made before it.
+    pub(super) fn owed(&self) -> MutexGuard<'_, bool> {
+        self.owed.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+}
+
 /// The manifest of one database directory, and the only way to replace it.
 ///
 /// The manifest it holds is durable: a crash leaves that manifest or a
@@ -57,6 +87,7 @@ pub struct ManifestStore {
     dir: PathBuf,
     manifest: Manifest,
     in_doubt: bool,
+    dir_sync: DirSync,
 }
 
 impl ManifestStore {
@@ -88,12 +119,14 @@ impl ManifestStore {
             Err(error) if error.kind() == ErrorKind::NotFound => {}
             Err(error) => return Err(SegmentStoreError::io("open", &path)(error)),
         }
-        install(&*vfs, dir, &manifest).map_err(|(_, error)| error)?;
+        install(&*vfs, dir, &manifest, |temporary| temporary.sync_all())
+            .map_err(|(_, error)| error)?;
         Ok(Self {
             vfs,
             dir: dir.to_path_buf(),
             manifest,
             in_doubt: false,
+            dir_sync: DirSync::new(),
         })
     }
 
@@ -101,8 +134,10 @@ impl ManifestStore {
     ///
     /// It makes the manifest it finds durable first, since an earlier session
     /// may have ended between the rename of a replacement and the sync of the
-    /// directory. Then it removes the temporary file an interrupted
-    /// replacement can leave.
+    /// directory. That sync of the directory also makes durable the name of
+    /// every directory that is in it, which is why [`Self::dir_sync`] starts
+    /// with nothing owed. Then it removes the temporary file an
+    /// interrupted replacement can leave.
     pub fn open(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<Self, SegmentStoreError> {
         let manifest = read_manifest(&*vfs, dir)?;
         vfs.sync_dir(dir)
@@ -113,6 +148,7 @@ impl ManifestStore {
             dir: dir.to_path_buf(),
             manifest,
             in_doubt: false,
+            dir_sync: DirSync::new(),
         })
     }
 
@@ -124,6 +160,13 @@ impl ManifestStore {
     /// The database directory.
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Whether this session has made a directory in the database directory
+    /// whose name is not durable yet. It has made none when the manifest
+    /// store is opened or created, which syncs the database directory.
+    pub fn dir_sync(&self) -> &DirSync {
+        &self.dir_sync
     }
 
     /// The durable manifest: the one a crash now would leave.
@@ -183,17 +226,50 @@ impl ManifestStore {
     where
         E: From<SegmentStoreError>,
     {
-        let next = next(self.manifest()?)?;
-        Ok(self.replace(next)?)
+        self.update_with(next, |temporary| temporary.sync_all())
     }
 
-    fn replace(&mut self, next: Manifest) -> Result<(), SegmentStoreError> {
+    /// As [`Self::update`], with the sync of the new manifest's temporary
+    /// file left to `sync`, which is given that file and makes it durable
+    /// as [`VfsFile::sync_all`] does. It is called once, before the
+    /// rename, and not at all for a manifest equal to the current one.
+    ///
+    /// This is for a replacement that names a file for the first time.
+    /// Such a file and its name have to be durable before a manifest that
+    /// names the file is in force, which it can be from the rename on.
+    /// Neither has to be durable before the temporary file is. So `sync`
+    /// can make all of them durable in one set ([`Vfs::sync_together`],
+    /// with [`SyncItem::All`] of the temporary file among its items), and
+    /// where a sync ends in a flush of a whole device the set makes that
+    /// flush once.
+    ///
+    /// If `sync` fails, the replacement fails as it does when the sync of
+    /// the temporary file fails: the current manifest stays in force.
+    ///
+    /// [`SyncItem::All`]: lignin_io::SyncItem::All
+    pub(crate) fn update_with<E>(
+        &mut self,
+        next: impl FnOnce(&Manifest) -> Result<Manifest, E>,
+        sync: impl FnOnce(&dyn VfsFile) -> io::Result<()>,
+    ) -> Result<(), E>
+    where
+        E: From<SegmentStoreError>,
+    {
+        let next = next(self.manifest()?)?;
+        Ok(self.replace(next, sync)?)
+    }
+
+    fn replace(
+        &mut self,
+        next: Manifest,
+        sync: impl FnOnce(&dyn VfsFile) -> io::Result<()>,
+    ) -> Result<(), SegmentStoreError> {
         let current = self.manifest()?;
         if *current == next {
             return Ok(());
         }
         check_change(current, &next).map_err(SegmentStoreError::ManifestChange)?;
-        match install(&*self.vfs, &self.dir, &next) {
+        match install(&*self.vfs, &self.dir, &next, sync) {
             Ok(()) => {
                 self.manifest = next;
                 Ok(())
@@ -216,10 +292,12 @@ fn install(
     vfs: &dyn Vfs,
     dir: &Path,
     manifest: &Manifest,
+    sync: impl FnOnce(&dyn VfsFile) -> io::Result<()>,
 ) -> Result<(), (Reached, SegmentStoreError)> {
     let path = dir.join(ManifestStore::FILE_NAME);
     let temporary = dir.join(ManifestStore::TEMP_FILE_NAME);
-    write_temporary(vfs, &temporary, manifest).map_err(|error| (Reached::TemporaryFile, error))?;
+    write_temporary(vfs, &temporary, manifest, sync)
+        .map_err(|error| (Reached::TemporaryFile, error))?;
     vfs.rename(&temporary, &path)
         .map_err(SegmentStoreError::io("rename", &temporary))
         .and_then(|()| {
@@ -229,10 +307,13 @@ fn install(
         .map_err(|error| (Reached::Rename, error))
 }
 
+/// Writes `manifest` to the temporary file and has `sync` make it durable
+/// there.
 fn write_temporary(
     vfs: &dyn Vfs,
     temporary: &Path,
     manifest: &Manifest,
+    sync: impl FnOnce(&dyn VfsFile) -> io::Result<()>,
 ) -> Result<(), SegmentStoreError> {
     let bytes = manifest
         .encode()
@@ -244,8 +325,7 @@ fn write_temporary(
         .and_then(|file| {
             file.write_at(&bytes, 0)
                 .map_err(SegmentStoreError::io("write", temporary))?;
-            file.sync_all()
-                .map_err(SegmentStoreError::io("sync", temporary))
+            sync(&*file).map_err(SegmentStoreError::io("sync", temporary))
         });
     if written.is_err() {
         let _ = vfs.remove_file(temporary);

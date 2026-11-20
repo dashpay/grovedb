@@ -195,7 +195,8 @@ mod writer;
 pub(crate) mod tests;
 
 pub use error::{ManifestChange, SegmentStoreError};
+pub(crate) use files::create_unsynced_file;
 pub use files::{create_file, list_or_create_dir, FileNames};
-pub use manifest::{read_manifest, ManifestStore};
+pub use manifest::{read_manifest, DirSync, ManifestStore};
 pub use store::{BlockLocation, BlockWalk, Extent, SegmentStore};
 pub use writer::SegmentWriter;

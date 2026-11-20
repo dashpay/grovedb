@@ -21,7 +21,7 @@ use lignin_format::{
     },
     CommitVersion, FileHeader, FileId, FileKind, FormatError, FormatVersion, PageId,
 };
-use lignin_io::{Create, DirEntry, EntryKind, OpenMode, Vfs};
+use lignin_io::{Create, DirEntry, EntryKind, OpenMode, SyncItem, Vfs};
 
 use super::{
     error::LogError,
@@ -29,7 +29,7 @@ use super::{
     reader::{log_files, LogEnd},
 };
 use crate::{
-    segment::{create_file, list_or_create_dir, FileNames, ManifestStore},
+    segment::{create_unsynced_file, list_or_create_dir, FileNames, ManifestStore},
     table::LogDurable,
 };
 
@@ -292,6 +292,18 @@ pub(super) fn check_item(
     Ok(cursor)
 }
 
+/// Which file that still takes items a turn of the log leaves.
+#[derive(Debug, Clone, Copy)]
+enum Leave {
+    /// None: the log is turned only while it has no file that takes
+    /// items.
+    Nothing,
+    /// One that is full.
+    Full,
+    /// One that holds a commit group, full or not.
+    WithACommit,
+}
+
 /// What became of an append that the file layer failed.
 #[derive(Debug)]
 enum Settled {
@@ -426,6 +438,17 @@ impl Tail {
                 source: unsettled.error(),
             }),
             None => Ok(()),
+        }
+    }
+
+    /// Whether the file the log ends in takes items and holds a commit
+    /// group.
+    fn holds_a_commit(&self) -> bool {
+        match &self.active {
+            Some((file, _)) if !file.is_finished() => file
+                .start()
+                .is_some_and(|start| self.latest > start.after()),
+            _ => false,
         }
     }
 
@@ -616,12 +639,14 @@ impl LogStore {
     /// end, with nothing written to `wal/` since and the log files named
     /// as the reader's manifest named them: an end of another directory is
     /// refused ([`LogError::WrongDirectory`]), and so is an end of files
-    /// that are not what was read any more ([`LogError::WrongLogEnd`]). A
-    /// file that the manifest names open has to have the length it was
-    /// read with. A file that it names closed has to be as long as its
-    /// valid length, which is where the log ends in it, and may have grown
-    /// behind that: a database that shares the file as a hard link appends
-    /// to it, as the live database does to the last log file of a
+    /// that are not what was read any more, or that were read under
+    /// another valid length or another state than the manifest gives them
+    /// now ([`LogError::WrongLogEnd`]). A file that the manifest names
+    /// open has to have the length it was read with. A file that it names
+    /// closed has to be as long as its valid length, which is where the
+    /// log ends in it, and may have grown behind that: a database that
+    /// shares the file as a hard link appends to it, as the live database
+    /// does to the last log file of a
     /// checkpoint (CK5 of `transactions.md`). What the manifest says of
     /// the other kinds of files may have changed meanwhile, as it does
     /// when a recovery writes a segment while it reads the log.
@@ -645,8 +670,8 @@ impl LogStore {
     /// interrupted rewrite of a log file left is removed too. Other entries
     /// of `wal/` are left alone.
     ///
-    /// `wal/` is created if it is missing, and its name is made durable
-    /// either way.
+    /// `wal/` is created if it is missing, and its name is durable when
+    /// this returns ([`list_or_create_dir`]).
     pub fn open(
         manifest: &ManifestStore,
         end: &LogEnd,
@@ -676,6 +701,7 @@ impl LogStore {
             named.insert(id);
             if let Some(found) = read.remove(&id) {
                 let agrees = found.named_len() == file.valid_len()
+                    && found.named_state() == file.state()
                     && (file.state() == FileState::Open || found.valid_len() == file.valid_len());
                 if !agrees {
                     return Err(LogError::WrongLogEnd { file: id });
@@ -700,7 +726,7 @@ impl LogStore {
             .map_err(LogError::format(&FileNames::WAL.dir(&dir), 0))?;
 
         let last_id = current.last_file_ids().wal;
-        let entries = list_or_create_dir(&*vfs, &dir, &FileNames::WAL)?;
+        let entries = list_or_create_dir(&*vfs, &dir, &FileNames::WAL, manifest.dir_sync())?;
         remove_unnamed(&*vfs, &dir, &entries, &named, last_id)?;
 
         Ok(Self {
@@ -803,15 +829,17 @@ impl LogStore {
     /// Creates the file the log turns to next.
     ///
     /// The file is created under an id above every id used so far, with its
-    /// header, and both are durable when this returns. It takes no item
-    /// until a manifest names it: replace the manifest ([`Self::commit`])
-    /// and then turn the log ([`Self::rotate`]). [`Self::roll`] does the
-    /// three.
+    /// header. Nothing is synced here: the file and its name become durable
+    /// with the manifest that names it, in one set of syncs
+    /// ([`Self::commit`]). It takes no item until a manifest names it:
+    /// replace the manifest and then turn the log ([`Self::rotate`]).
+    /// [`Self::roll`] does the three.
     ///
-    /// The log has one such file at a time
-    /// ([`LogError::SpareExists`]). The file and its id enter the log in
-    /// one step, when the file is whole, so a manifest written before that
-    /// neither names the file nor records its id.
+    /// The log has one such file at a time ([`LogError::SpareExists`]).
+    /// The file and its id enter the log in one step, when the file is
+    /// durable, which is in [`Self::commit`]. A manifest that is made of
+    /// [`Self::describe`] before that neither names the file nor records
+    /// its id, whoever writes it.
     pub fn create(&self) -> Result<FileId, LogError> {
         let mut taken = lock(&self.creating);
         {
@@ -825,17 +853,10 @@ impl LogStore {
         let id = FileId::new(next).ok_or(LogError::FileIdsExhausted)?;
         *taken = Some(id);
 
-        let handle = create_file(&*self.vfs, &self.dir, &FileNames::WAL, id)?;
+        let handle = create_unsynced_file(&*self.vfs, &self.dir, &FileNames::WAL, id)?;
         let path = FileNames::WAL.path(&self.dir, id);
         let file = Arc::new(LogFile::created(id, path, handle));
-        self.tail().spare = Some((file.clone(), false));
-        let mut files = self.files_mut();
-        let entry = Entry {
-            file,
-            durable_len: HEADER_LEN,
-        };
-        files.live.insert(id, entry);
-        files.last_id = Some(id);
+        self.tail().spare = Some((file, false));
         Ok(id)
     }
 
@@ -865,20 +886,60 @@ impl LogStore {
     /// not turned ([`LogError::NotAppended`]), and the file it would have
     /// turned to is given up: create another one.
     pub fn rotate(&self) -> Result<bool, LogError> {
-        self.turn(true)
+        self.turn(Leave::Full)
     }
 
-    /// Turns the log to its next file if a turn is due. A file that still
-    /// takes items is turned away from, when it is full, only if
-    /// `from_a_file_that_takes_items` says so: that turn moves an end of
-    /// the log at which a commit may have asked for the place of its group.
-    fn turn(&self, from_a_file_that_takes_items: bool) -> Result<bool, LogError> {
+    /// Turns the log to its next file if the file it ends in holds a
+    /// commit group, whether or not that file is full, and if a file that a
+    /// durable manifest names is ready. Returns whether it turned.
+    ///
+    /// A table checkpoint asks for this where it begins
+    /// ([`WriteBack::checkpoint`](crate::flush::WriteBack::checkpoint)),
+    /// before the pass of write-back that it starts with. Every commit up
+    /// to that moment is then in a file before the one the log has turned
+    /// to, and the pass writes those commits back. Where it could write
+    /// them all, the checkpoint covers them, and the files before the turn
+    /// can be dropped once the checkpoint is in force: they go unless a
+    /// [`LogHold`] or a commit that is not covered still needs one of
+    /// them. A recovery from that checkpoint, which reads its first log
+    /// file from the first item, then reads what was logged while the
+    /// checkpoint was taken and nothing older.
+    ///
+    /// It is [`Self::rotate`] with another test for the file it leaves, and
+    /// is made where that one is: where no commit is between asking for
+    /// its place and appending its group. Nothing rests on this turn. With
+    /// no file ready, or with a file whose append failed and that
+    /// [`Self::roll`] has still to cut, it turns nothing and returns
+    /// `false`.
+    pub fn rotate_early(&self) -> Result<bool, LogError> {
+        self.turn_if_ready(Leave::WithACommit)
+    }
+
+    /// Whether the file the log ends in takes items and holds a commit
+    /// group: what [`Self::rotate_early`] turns away from.
+    pub fn holds_a_commit(&self) -> bool {
+        self.tail().holds_a_commit()
+    }
+
+    /// Whether the log has a file to turn to next that a durable manifest
+    /// names, so that a turn needs no sync and no manifest.
+    pub fn has_file_ready(&self) -> bool {
+        matches!(&self.tail().spare, Some((_, true)))
+    }
+
+    /// Turns the log to its next file if a turn is due. `leave` says which
+    /// file that still takes items is turned away from: such a turn moves
+    /// an end of the log at which a commit may have asked for the place of
+    /// its group.
+    fn turn(&self, leave: Leave) -> Result<bool, LogError> {
         let mut tail = self.tail();
         tail.check_settled()?;
         let due = match &tail.active {
-            Some((file, cursor)) if !file.is_finished() => {
-                from_a_file_that_takes_items && cursor.offset() >= self.options.target_file_len
-            }
+            Some((file, cursor)) if !file.is_finished() => match leave {
+                Leave::Nothing => false,
+                Leave::Full => cursor.offset() >= self.options.target_file_len,
+                Leave::WithACommit => tail.holds_a_commit(),
+            },
             Some((file, _)) if file.is_uncut() => {
                 return Err(LogError::CutNotDurable {
                     path: file.path().to_path_buf(),
@@ -1000,11 +1061,38 @@ impl LogStore {
     ///
     /// If it fails, it can be called again.
     pub fn roll(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
+        self.roll_until(manifest, true)
+    }
+
+    /// Makes the log durable and gives it a file that takes items if it
+    /// has none: [`Self::roll`] without the file to turn to after that.
+    /// Returns whether it turned.
+    ///
+    /// This is what a session calls before its first append when its open
+    /// is to cost as few syncs as it can, which [recovery](crate::recovery)
+    /// does: one file is created and one manifest written, where a roll
+    /// makes two of each. The log then has no file to turn to. The first
+    /// [`Self::roll`] makes one, and whoever keeps the log's files calls
+    /// that when a turn is due.
+    ///
+    /// If it fails, it can be called again.
+    pub fn begin(&self, manifest: &mut ManifestStore) -> Result<bool, LogError> {
+        self.roll_until(manifest, false)
+    }
+
+    /// [`Self::roll`], which with `leave_a_file_ready` goes on until the
+    /// log has a named file to turn to next, and without it ends as soon
+    /// as the log takes items.
+    fn roll_until(
+        &self,
+        manifest: &mut ManifestStore,
+        leave_a_file_ready: bool,
+    ) -> Result<bool, LogError> {
         self.check_same_dir(manifest)?;
         self.sync()?;
         let mut turned = false;
         for _ in 0..ROLL_ROUNDS {
-            turned |= self.turn_if_ready()?;
+            turned |= self.turn_if_ready(Leave::Nothing)?;
             let (spare, uncut, takes_items) = {
                 let tail = self.tail();
                 let uncut = matches!(&tail.active, Some((file, _)) if file.is_uncut());
@@ -1017,6 +1105,7 @@ impl LogStore {
                 // the next round turns to it, or says why it cannot.
                 Some(true) if !uncut => continue,
                 Some(_) => {}
+                None if takes_items && !leave_a_file_ready => return Ok(turned),
                 None => {
                     self.create()?;
                 }
@@ -1037,17 +1126,17 @@ impl LogStore {
         }
         // Something failed in every round. A last turn says what still
         // stands in the way, if it is not made.
-        self.turn(false)?;
+        self.turn(Leave::Nothing)?;
         if self.tail().active().is_ok() {
             return Ok(true);
         }
         Err(LogError::NoSpare)
     }
 
-    /// Turns the log if it has no file that takes items and has a file to
-    /// turn to.
-    fn turn_if_ready(&self) -> Result<bool, LogError> {
-        match self.turn(false) {
+    /// [`Self::turn`], with `false` where the log has no named file to
+    /// turn to or the cut of a failed append is not durable.
+    fn turn_if_ready(&self, leave: Leave) -> Result<bool, LogError> {
+        match self.turn(leave) {
             Err(
                 LogError::NoSpare | LogError::SpareNotNamed { .. } | LogError::CutNotDurable { .. },
             ) => Ok(false),
@@ -1653,7 +1742,7 @@ impl LogStore {
         Ok(taken)
     }
 
-    /// The files of the log, as a manifest written now would name them:
+    /// The files of the log, as [`Self::describe`] would name them now:
     /// each with its state and the length of it that is durable.
     pub fn files_named(&self) -> Result<Vec<LiveFile>, LogError> {
         self.files().named()
@@ -1668,18 +1757,34 @@ impl LogStore {
     /// and a file whose end is not synced yet. A file of the manifest that
     /// holds nothing of the log is not named. Everything else in `base` is
     /// kept.
+    ///
+    /// A file that [`Self::create`] made is not among the log's files
+    /// until [`Self::commit`] has made it durable: it is not named here,
+    /// and its id is not recorded.
     pub fn describe(&self, base: &Manifest) -> Result<Manifest, LogError> {
+        self.describe_with(base, None)
+    }
+
+    /// [`Self::describe`], with the file `new` named as well, which was
+    /// created and has not entered the log.
+    fn describe_with(&self, base: &Manifest, new: Option<&LogFile>) -> Result<Manifest, LogError> {
         let mut named: Vec<LiveFile> = base
             .files()
             .iter()
             .filter(|file| file.kind() != FileKind::Wal)
             .copied()
             .collect();
-        let last_id = {
+        let mut last_id = {
             let files = self.files();
             named.extend(files.named()?);
             files.last_id
         };
+        if let Some(new) = new {
+            let entry = LiveFile::new(FileKind::Wal, new.id(), FileState::Open, HEADER_LEN)
+                .map_err(LogError::format(new.path(), 0))?;
+            named.push(entry);
+            last_id = last_id.max(Some(new.id()));
+        }
         let mut last_file_ids = base.last_file_ids();
         last_file_ids.wal = last_file_ids.wal.max(last_id);
         Manifest::new(
@@ -1761,6 +1866,16 @@ impl LogStore {
     /// are now: [`ManifestStore::update`] with [`Self::describe`], then
     /// [`Self::manifest_replaced`].
     ///
+    /// **This is where a file that [`Self::create`] made enters the log.**
+    /// The manifest written here names that file as well, and the file is
+    /// made durable with its name before that manifest is in force: its
+    /// sync and the sync of `wal/` are one set with the sync of the
+    /// manifest's temporary file ([`Vfs::sync_together`]), ahead of the
+    /// rename. Once the set has been made the file is one of the log's
+    /// files. If the set fails, the file is given up and removed, as a
+    /// file is whose creation failed: the log needs another
+    /// ([`Self::create`]), under the next id.
+    ///
     /// After [`LogError::NotDeleted`] the new manifest is in force. After
     /// any other error [`ManifestStore::manifest`] tells where things
     /// stand: it gives the old manifest, and this call can be made again,
@@ -1768,7 +1883,68 @@ impl LogStore {
     /// manifest or the new one.
     pub fn commit(&self, manifest: &mut ManifestStore) -> Result<(), LogError> {
         self.check_same_dir(manifest)?;
-        manifest.update(|current| self.describe(current))?;
+        match self.new_file() {
+            Some(new) => self.name_new_file(manifest, &new)?,
+            None => manifest.update(|current| self.describe(current))?,
+        }
         self.manifest_replaced(manifest)
+    }
+
+    /// The file that was created and has not entered the log.
+    fn new_file(&self) -> Option<Arc<LogFile>> {
+        let (spare, _) = self.tail().spare.clone()?;
+        let entered = self.files().live.contains_key(&spare.id());
+        (!entered).then_some(spare)
+    }
+
+    /// Replaces the manifest with one that names the file `new` beside the
+    /// log's files, with the syncs that make `new` durable in the set that
+    /// makes the manifest's temporary file durable.
+    fn name_new_file(
+        &self,
+        manifest: &mut ManifestStore,
+        new: &Arc<LogFile>,
+    ) -> Result<(), LogError> {
+        let wal_dir = FileNames::WAL.dir(&self.dir);
+        // Whether the set of syncs was made, once it has been tried.
+        let mut made = None;
+        let updated = manifest.update_with(
+            |current| self.describe_with(current, Some(&**new)),
+            |temporary| {
+                let together = [
+                    SyncItem::Data(new.handle()),
+                    SyncItem::Dir(&wal_dir),
+                    SyncItem::All(temporary),
+                ];
+                let synced = self.vfs.sync_together(&together);
+                made = Some(synced.is_ok());
+                synced
+            },
+        );
+        match (made, &updated) {
+            // The syncs were made. Or no manifest had to be written,
+            // because the one in force names the file already, which a
+            // manifest does only behind those syncs.
+            (Some(true), _) | (None, Ok(())) => {
+                let mut files = self.files_mut();
+                let entry = Entry {
+                    file: new.clone(),
+                    durable_len: HEADER_LEN,
+                };
+                files.live.insert(new.id(), entry);
+                files.last_id = files.last_id.max(Some(new.id()));
+            }
+            // Each file of a set that failed is as after a failed sync:
+            // no later sync of this one vouches for its header.
+            (Some(false), _) => {
+                new.kill();
+                self.tail().spare = None;
+                let _ = self.vfs.remove_file(new.path());
+            }
+            // The replacement failed before its syncs. The file waits
+            // for the next one.
+            (None, Err(_)) => {}
+        }
+        updated
     }
 }

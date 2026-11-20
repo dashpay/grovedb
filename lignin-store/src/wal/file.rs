@@ -39,6 +39,7 @@ pub(super) struct LogFile {
 
 impl LogFile {
     /// A file this session created: its header, and nothing behind it.
+    /// Neither the header nor the file's name is durable yet.
     pub(super) fn created(id: FileId, path: PathBuf, handle: Box<dyn VfsFile>) -> Self {
         Self {
             id,
@@ -67,8 +68,9 @@ impl LogFile {
     ///   no end of the log, and a log that opened without it would name
     ///   the file closed in front of it.
     /// - A file named closed ends at its valid length for this database
-    ///   (LG32 of `log-format.md`). The caller has found that to be where
-    ///   the reader's log ends in it, and what lies behind that length is
+    ///   (LG32 of `log-format.md`). The reader was given those bytes and no
+    ///   more, which the caller has checked by the state the reader's
+    ///   manifest named the file in, and what lies behind that length is
     ///   not this database's. It can be another's, which shares the file
     ///   as a hard link and appends to it: a checkpoint's manifest names
     ///   the last log file of the live database closed (CK5 of
@@ -194,6 +196,11 @@ impl LogFile {
 
     pub(super) fn kill(&self) {
         self.dead.store(true, Ordering::Release);
+    }
+
+    /// The handle the file is appended to and synced through.
+    pub(super) fn handle(&self) -> &dyn VfsFile {
+        &*self.handle
     }
 
     pub(super) fn append(&self, bytes: &[u8]) -> io::Result<u64> {

@@ -261,15 +261,16 @@ pub struct TableCheckpoints {
 impl TableCheckpoints {
     /// Opens the checkpoints of the directory of `manifest`.
     ///
-    /// `table/` is created if it is missing, and its name is made durable
-    /// either way. Every file in it with a checkpoint's name that the
-    /// manifest does not name is removed: a crash can leave one that was
-    /// written and never named, or one that was replaced and not yet
-    /// deleted. Other entries of `table/` are left alone.
+    /// `table/` is created if it is missing, and its name is durable when
+    /// this returns ([`list_or_create_dir`]). Every file in it with a
+    /// checkpoint's name that the manifest does not name is removed: a
+    /// crash can leave one that was written and never named, or one that
+    /// was replaced and not yet deleted. Other entries of `table/` are
+    /// left alone.
     pub fn open(manifest: &ManifestStore) -> Result<Self, PageTableError> {
         let current = manifest.manifest()?;
         let (vfs, dir) = (manifest.vfs().clone(), manifest.dir().to_path_buf());
-        let on_disk = list_or_create_dir(&*vfs, &dir, &FileNames::PAGE_TABLE)?
+        let on_disk = list_or_create_dir(&*vfs, &dir, &FileNames::PAGE_TABLE, manifest.dir_sync())?
             .iter()
             .filter(|entry| entry.kind == EntryKind::File)
             .filter_map(|entry| FileNames::PAGE_TABLE.parse(&entry.name))

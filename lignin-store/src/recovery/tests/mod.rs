@@ -16,6 +16,7 @@ mod damage;
 mod errors;
 mod rules;
 mod shared;
+mod syncs;
 
 use std::{
     collections::BTreeMap,
@@ -678,15 +679,21 @@ impl<'d> Session<'d> {
     }
 
     /// Turns the log to its next file, as the committer does whose file is
-    /// full, and has the file after that made ready.
+    /// full, with what whoever keeps the log's files does around it: a
+    /// file is made ready before the turn, since a recovery leaves none,
+    /// and another one after it.
     fn turn(&mut self) {
         let store = &mut self.store;
         assert!(store.log.is_due(), "the file is not full");
+        let mut ready = || {
+            store
+                .log
+                .roll(&mut store.manifest)
+                .expect("a file is ready");
+        };
+        ready();
         assert!(store.log.rotate().expect("a turn"));
-        store
-            .log
-            .roll(&mut store.manifest)
-            .expect("a file is ready");
+        ready();
     }
 
     /// Ends the session as a process that is killed ends it: nothing more

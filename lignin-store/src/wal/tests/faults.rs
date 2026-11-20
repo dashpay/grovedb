@@ -831,7 +831,7 @@ fn a_turn_that_fails_leaves_the_log_where_it_was() {
 #[test]
 fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() {
     // A creation that fails takes its id with it for the session.
-    for op in [OpKind::Open, OpKind::Append, OpKind::SyncData] {
+    for op in [OpKind::Open, OpKind::Append] {
         let mut run = traced_run(9, 64, small_files(500));
         while !run.db.as_ref().unwrap().log.is_due() {
             run.append();
@@ -854,6 +854,78 @@ fn a_file_that_cannot_be_created_or_named_or_deleted_leaves_the_log_as_it_was() 
         run.append();
         run.restart();
     }
+
+    // A file that was created is made durable with the manifest that
+    // names it, in one set of syncs. Where its sync fails, no manifest
+    // names it: it is given up, and the next file takes the next id.
+    let mut run = traced_run(9, 64, small_files(500));
+    while !run.db.as_ref().unwrap().log.is_due() {
+        run.append();
+    }
+    let db = run.db.as_mut().unwrap();
+    assert!(db.log.rotate().unwrap());
+    run.fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::SyncData)
+            .at(wal_path(3)),
+    );
+    assert_eq!(db.log.create().unwrap(), file_id(3));
+    let error = db.log.commit(&mut db.manifest).unwrap_err();
+    assert!(matches!(error, LogError::Io { .. }), "{error}");
+    assert!(db.named().iter().all(|file| file.id() != file_id(3)));
+    assert!(!db.log.has_file_ready());
+    assert_eq!(db.log.create().unwrap(), file_id(4));
+    db.log.commit(&mut db.manifest).unwrap();
+    assert!(db.log.has_file_ready());
+    assert!(db.named().iter().all(|file| file.id() != file_id(3)));
+    assert!(run
+        .fs
+        .open(&wal_path(3), lignin_io::OpenMode::Read)
+        .is_err());
+    run.check_crash_states();
+    run.append();
+    run.restart();
+
+    // The syncs of a new file are made, and the rename of the manifest
+    // that names it fails: the manifest is in doubt, and when it is
+    // opened again the old one is in force. The file is durable and is
+    // one of the log's, so the next manifest names it.
+    let mut run = traced_run(12, 64, small_files(500));
+    while !run.db.as_ref().unwrap().log.is_due() {
+        run.append();
+    }
+    let manifest = sim::db_dir().join(ManifestStore::TEMP_FILE_NAME);
+    let db = run.db.as_mut().unwrap();
+    assert!(db.log.rotate().unwrap());
+    assert_eq!(db.log.create().unwrap(), file_id(3));
+    run.fs
+        .add_rule(FaultRule::new(Fault::Eio).on(OpKind::Rename).at(&manifest));
+    let error = db.log.commit(&mut db.manifest).unwrap_err();
+    assert!(matches!(error, LogError::Io { .. }), "{error}");
+    assert!(db.manifest.manifest().is_err(), "the manifest is in doubt");
+    db.manifest = ManifestStore::open(db.vfs.clone(), &db.dir).unwrap();
+    db.log.manifest_replaced(&db.manifest).unwrap();
+    assert!(db.named().iter().all(|file| file.id() != file_id(3)));
+    assert!(!db.log.has_file_ready());
+    assert!(matches!(
+        db.log.create(),
+        Err(LogError::SpareExists { file }) if file == file_id(3)
+    ));
+    db.log.commit(&mut db.manifest).unwrap();
+    assert!(db.log.has_file_ready());
+    assert!(db.named().contains(&log_file(3, FileState::Open, HEADER)));
+    run.check_crash_states();
+    while !run.db.as_ref().unwrap().log.is_due() {
+        run.append();
+    }
+    assert!(run.db.as_ref().unwrap().log.rotate().unwrap());
+    run.append();
+    assert_eq!(
+        run.db.as_ref().unwrap().log.end().unwrap().file(),
+        file_id(3)
+    );
+    run.check_crash_states();
+    run.restart();
 
     // A manifest that cannot be replaced.
     let mut run = traced_run(10, 64, small_files(500));

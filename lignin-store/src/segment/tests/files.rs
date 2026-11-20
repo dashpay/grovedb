@@ -123,41 +123,84 @@ fn no_other_spelling_names_a_file() {
 }
 
 #[test]
-fn a_directory_is_listed_made_if_missing_and_synced_either_way() {
+fn a_directory_is_listed_and_made_if_missing_and_synced_when_it_was_made() {
     for names in ALL {
         let dir = tempfile::tempdir().unwrap();
         let vfs = faulty_std();
         let kind_dir = dir_name(&names.dir(dir.path()));
+        let listed = (Op::ReadDir, kind_dir.clone());
         let synced = (Op::SyncDir, dir_name(dir.path()));
+        // What the manifest store of the directory would hand out: its
+        // open has synced the database directory.
+        let dir_sync = DirSync::new();
+        let list = || list_or_create_dir(&vfs, dir.path(), &names, &dir_sync);
 
-        assert_eq!(list_or_create_dir(&vfs, dir.path(), &names).unwrap(), []);
+        assert_eq!(list().unwrap(), []);
         assert_eq!(
             vfs.take_calls(),
             [
-                (Op::ReadDir, kind_dir.clone()),
+                listed.clone(),
                 (Op::CreateDir, kind_dir.clone()),
                 synced.clone(),
             ]
         );
 
+        // The directory is there, and its name is durable: nothing is
+        // synced for it again.
         create_file(&vfs, dir.path(), &names, id(3)).unwrap();
         vfs.take_calls();
-        let listed = list_or_create_dir(&vfs, dir.path(), &names).unwrap();
-        assert_eq!(names.parse(&listed[0].name), Some(id(3)));
-        assert_eq!(listed.len(), 1);
+        let entries = list().unwrap();
+        assert_eq!(names.parse(&entries[0].name), Some(id(3)));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(vfs.take_calls(), std::slice::from_ref(&listed));
+
+        vfs.fail(Op::ReadDir, &kind_dir);
+        assert_io(&list().unwrap_err(), "list", &kind_dir);
+        vfs.take_calls();
+    }
+}
+
+#[test]
+fn a_directory_whose_sync_failed_is_synced_by_the_next_listing() {
+    for names in ALL {
+        let dir = tempfile::tempdir().unwrap();
+        let vfs = faulty_std();
+        let kind_dir = dir_name(&names.dir(dir.path()));
+        let listed = (Op::ReadDir, kind_dir.clone());
+        let created = (Op::CreateDir, kind_dir.clone());
+        let synced = (Op::SyncDir, dir_name(dir.path()));
+        let dir_sync = DirSync::new();
+        let list = |kind: &FileNames| list_or_create_dir(&vfs, dir.path(), kind, &dir_sync);
+
+        // The directory is made and the sync of its name fails: the name
+        // is there and is not durable.
+        vfs.fail(Op::SyncDir, &synced.1);
+        assert_io(&list(&names).unwrap_err(), "sync the directory", &synced.1);
         assert_eq!(
             vfs.take_calls(),
-            [(Op::ReadDir, kind_dir.clone()), synced.clone()]
+            [listed.clone(), created.clone(), synced.clone()]
         );
+        // The next listing finds the directory and still owes the sync,
+        // and the one after that owes nothing.
+        assert_eq!(list(&names).unwrap(), []);
+        assert_eq!(vfs.take_calls(), [listed.clone(), synced.clone()]);
+        assert_eq!(list(&names).unwrap(), []);
+        assert_eq!(vfs.take_calls(), std::slice::from_ref(&listed));
 
-        for (op, on, expected_op) in [
-            (Op::ReadDir, &kind_dir, "list"),
-            (Op::SyncDir, &synced.1, "sync the directory"),
-        ] {
-            vfs.fail(op, on);
-            let error = list_or_create_dir(&vfs, dir.path(), &names).unwrap_err();
-            assert_io(&error, expected_op, on);
-        }
+        // A creation that fails may have made the directory all the same,
+        // so the sync is owed after it as well, and the listing of another
+        // kind's directory makes it.
+        let other = ALL.into_iter().find(|other| *other != names).unwrap();
+        let other_dir = dir_name(&other.dir(dir.path()));
+        vfs.fail(Op::CreateDir, &other_dir);
+        assert_io(
+            &list(&other).unwrap_err(),
+            "create the directory",
+            &other_dir,
+        );
+        vfs.take_calls();
+        assert_eq!(list(&names).unwrap(), []);
+        assert_eq!(vfs.take_calls(), [listed, synced]);
     }
 }
 
