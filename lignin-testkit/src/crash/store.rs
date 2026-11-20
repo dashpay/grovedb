@@ -16,7 +16,7 @@
 
 use std::{
     collections::{btree_map, BTreeMap, BTreeSet, VecDeque},
-    fmt,
+    fmt, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
@@ -34,7 +34,7 @@ use lignin_format::{
         write_reclaim, FlatChange, FlatRun, FlatRunWriter, GroupWriter, LogPlace, Removed,
         ValueMove,
     },
-    CellAddress, CommitVersion, FileId, FormatError, PageId, PageSize, SlotId,
+    CellAddress, CommitVersion, FileId, FileKind, FormatError, PageId, PageSize, SlotId,
 };
 use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
@@ -47,7 +47,7 @@ use lignin_store::{
     },
     load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
     recovery::{recover, Recovered, RecoveryOptions, RecoveryReport},
-    segment::{ManifestStore, SegmentStore, SegmentStoreError},
+    segment::{FileNames, ManifestStore, SegmentStore, SegmentStoreError},
     table::{Link, LinkError, LinkKind, PageTable, TableCheckpoints},
     values::{
         OwnersError, PointerRewrite, Refusal, Rewrite, ValueChange, ValueHold, ValueOwners,
@@ -510,6 +510,43 @@ impl Session {
     /// What write-back has done in this session.
     pub fn flush_stats(&self) -> FlushStats {
         self.flush.stats()
+    }
+
+    /// The files in the directories of the log, the segments, the value
+    /// log and the table checkpoints that the manifest in force does not
+    /// name. A store leaves none behind for good: a file it has dropped
+    /// and could not remove goes with a later call, and what a session
+    /// left is removed by the recovery of the next
+    /// (`lignin_store::recovery`, step 2).
+    pub fn strays(&self) -> Result<Vec<PathBuf>, String> {
+        let manifest = lock(&self.manifest);
+        let manifest = manifest.manifest().map_err(text)?;
+        let table = manifest.table_checkpoint();
+        let named = |kind: FileKind, id: FileId| match kind {
+            FileKind::PageTable => table.is_some_and(|table| table.file() == id),
+            _ => (manifest.files().iter()).any(|file| file.kind() == kind && file.id() == id),
+        };
+        let mut strays = Vec::new();
+        for names in [
+            FileNames::WAL,
+            FileNames::SEGMENT,
+            FileNames::VALUE_LOG,
+            FileNames::PAGE_TABLE,
+        ] {
+            let dir = names.dir(&self.dir);
+            let entries = match self.vfs.read_dir(&dir) {
+                Ok(entries) => entries,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(format!("{}: {error}", dir.display())),
+            };
+            for entry in entries {
+                let id = names.parse(&entry.name);
+                if !id.is_some_and(|id| named(names.kind(), id)) {
+                    strays.push(dir.join(&entry.name));
+                }
+            }
+        }
+        Ok(strays)
     }
 
     /// Whether a write transaction holds private copies.

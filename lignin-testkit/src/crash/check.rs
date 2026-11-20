@@ -171,6 +171,7 @@ pub fn check_state(
     session
         .verify()
         .map_err(|error| Violation::new(Kind::Inconsistent, error))?;
+    tidy(&session, Kind::Inconsistent)?;
     let landed = session.latest().get();
     let landing = history
         .find(expect, landed, &pages)
@@ -182,6 +183,29 @@ pub fn check_state(
     })
 }
 
+/// A store that a recovery with no fault returned has no file among those
+/// of its log, its segments, its value log and its table checkpoints that
+/// the manifest in force does not name ([`Session::strays`]): whatever an
+/// earlier session dropped and could not remove, or made and never named,
+/// the recovery has removed.
+fn tidy(session: &Session, kind: Kind) -> Result<(), Violation> {
+    let strays = session
+        .strays()
+        .map_err(|error| Violation::new(kind, error))?;
+    match strays.first() {
+        Some(stray) => {
+            let said = format!(
+                "{} is in the store's directory after a recovery, and the manifest in force \
+                 does not name it ({} such files)",
+                stray.display(),
+                strays.len()
+            );
+            Err(Violation::new(kind, said))
+        }
+        None => Ok(()),
+    }
+}
+
 /// Holds a state that recovered once, to version `landed` with `pages`, to
 /// what the store promises of the recoveries after it
 /// (`lignin_store::recovery`, "Twice"):
@@ -191,7 +215,8 @@ pub fn check_state(
 ///   killed process is, changed nothing that the next one starts from
 /// - the session that follows writes everything back, takes its table
 ///   checkpoint and ends, and the store then opens with nothing to
-///   replay, to the same version and pages, read from the segments
+///   replay, to the same version and pages, read from the segments, and
+///   with no file that its manifest does not name
 pub fn check_again(
     state: &SimVfs,
     again: &Tuning,
@@ -216,6 +241,7 @@ pub fn check_again(
 
     let third = opened(state, again, Kind::NotTheSame)?.ok_or_else(gone)?;
     same(&third, landed, pages, "the store that was closed")?;
+    tidy(&third, Kind::NotTheSame)?;
     let report = third.report();
     if report.commits != 0 || third.log_held() != 0 {
         let said = format!(
@@ -360,6 +386,38 @@ mod tests {
     fn said<T: fmt::Debug>(checked: Result<T, Violation>) -> (Kind, String) {
         let violation = checked.expect_err("a violation");
         (violation.kind, violation.detail)
+    }
+
+    #[test]
+    fn a_file_that_the_manifest_does_not_name_is_told() {
+        let (fs, _, _) = killed();
+        let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+        // A file that an earlier session left with no name in the
+        // manifest: the recovery removes it.
+        let left = db_dir().join("seg/00000077.seg");
+        let create = OpenMode::Write(Create::New);
+        drop(vfs.open(&left, create).expect("made"));
+        let session = Session::open(vfs.clone(), db_dir(), &Tuning::small()).expect("opened");
+        assert_eq!(session.strays(), Ok(Vec::new()));
+        assert_eq!(tidy(&session, Kind::Inconsistent), Ok(()));
+        assert!(vfs.open(&left, OpenMode::Read).is_err());
+
+        // One that is there once the recovery has returned, of any kind
+        // and under any name, is a violation.
+        let strays = ["wal/00000091.log", "val/notes.txt", "table/00000092.pt"];
+        for name in strays {
+            drop(vfs.open(&db_dir().join(name), create).expect("made"));
+        }
+        let found = session.strays().expect("listed");
+        let expected: Vec<_> = strays.iter().map(|name| db_dir().join(name)).collect();
+        assert_eq!(found, expected);
+        let (kind, detail) = said(tidy(&session, Kind::Inconsistent));
+        assert_eq!(kind, Kind::Inconsistent);
+        assert!(
+            detail.starts_with("/db/wal/00000091.log is in the store's directory after a recovery")
+                && detail.ends_with("(3 such files)"),
+            "{detail}"
+        );
     }
 
     #[test]

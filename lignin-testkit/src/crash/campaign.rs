@@ -27,8 +27,8 @@ use std::{
 use lignin_format::{wal::LogPlace, PageId};
 use lignin_io::{
     sim::{
-        Chance, CrashImage, CrashPlan, Fault, FaultOdds, FaultRule, OpSet, SimConfig, SimVfs,
-        UnknownFate,
+        Chance, CrashImage, CrashPlan, Fault, FaultOdds, FaultRule, OpKind, OpSet, SimConfig,
+        SimVfs, UnknownFate,
     },
     Vfs,
 };
@@ -603,6 +603,9 @@ impl Run {
         self.end_session(&mut lineage);
         self.tally.count(ACTED, lineage.observer.lies());
         self.tally.count("faults injected", fs.stats().faults);
+        let removals = lineage.observer.removals_failed();
+        self.tally
+            .count("removals of a file that a fault failed", removals);
         self.digest.u64(fs.trace_digest());
         if lineage.depth < self.shape.depth {
             self.waiting.append(&mut lineage.kept);
@@ -968,6 +971,10 @@ impl Run {
                 return Some("the store was closed and opened again");
             }
             Op::FailNext => fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES)),
+            Op::FailRemoval => {
+                let removals = OpSet::of(&[OpKind::RemoveFile]);
+                fs.add_rule(FaultRule::new(Fault::Eio).on(removals));
+            }
             Op::DiskFull => {
                 fs.add_rule(FaultRule::new(Fault::Enospc).forever());
                 lineage.full = true;

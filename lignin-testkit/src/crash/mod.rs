@@ -97,6 +97,11 @@
 //!   step by the birth.
 //! - **The page ids.** An id is in use exactly when its page is read, and
 //!   the chain of a page that is not in use does not end in a block.
+//! - **The files.** The directories of the log, the segments, the value
+//!   log and the table checkpoints hold no file that the manifest in force
+//!   does not name ([`store::Session::strays`]): a file that an earlier
+//!   session dropped and could not remove, or made and never named, is
+//!   gone once a recovery with no fault has returned.
 //! - **The values.** A value is its bytes, wherever they lie: in the cell,
 //!   with the frame of its page while it is pending, or in the value log.
 //!   Each is read, and has the length its cell says. Whether a value is in
@@ -206,7 +211,7 @@
 //! | [`check::Kind`] | What was found |
 //! | --- | --- |
 //! | `NotRecovered` | A state that a crash left did not open, with no fault injected into the recovery. |
-//! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, or a finding of the engine's invariant checker. |
+//! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, a file that the manifest does not name, or a finding of the engine's invariant checker. |
 //! | `NotCommitted` | It is at no point it may be at: below the floor, above the last, or with pages of no point. |
 //! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again; and in a run with faults, one in four is recovered once more with the faults injected. Each time it is at the same point, with the same pages. |
 //! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, a call failed that no fault excuses, or the log left an item in doubt with no fault. |
@@ -216,8 +221,11 @@
 //!
 //! Two runs in four inject no fault: a call that fails there is a
 //! violation. One in four fails syncs, and one in four fails every kind of
-//! operation, leaves appends torn and fills the device for a while
-//! ([`campaign::Faults`]). In those an error is counted and the session
+//! operation, leaves appends torn, fills the device for a while, and has
+//! the workload fail the next write or the next removal of a file, so that
+//! a file the store has dropped stays behind wherever the store removes
+//! one: at a replacement of the manifest, at the settling of a manifest in
+//! doubt, at a close ([`campaign::Faults`], [`workload::Op::FailRemoval`]). In those an error is counted and the session
 //! goes on, as the callers of the store do: a commit that failed is not a
 //! point, write-back is asked again, and a log that cannot say what it
 //! holds ends the session.

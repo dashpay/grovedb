@@ -70,6 +70,10 @@ pub enum Op {
     /// The next operation of the file layer that changes a file fails,
     /// once.
     FailNext,
+    /// The next removal of a file fails, once: of a log file, a segment,
+    /// a value-log file or a table checkpoint that the store has dropped,
+    /// wherever the store removes it.
+    FailRemoval,
     /// The device is full from here on.
     DiskFull,
     /// The device has room again.
@@ -99,6 +103,7 @@ impl Op {
             Self::Kill => "kill",
             Self::Close => "close",
             Self::FailNext => "fail next write",
+            Self::FailRemoval => "fail next removal",
             Self::DiskFull => "disk full",
             Self::DiskFree => "disk free",
         }
@@ -422,6 +427,7 @@ impl Workload {
             Kill,
             Close,
             FailNext,
+            FailRemoval,
             DiskFull,
             DiskFree,
         }
@@ -458,6 +464,7 @@ impl Workload {
             (2, Kind::Kill),
             (1, Kind::Close),
             (3 * u64::from(faulty), Kind::FailNext),
+            (3 * u64::from(faulty), Kind::FailRemoval),
             (u64::from(faulty && !full), Kind::DiskFull),
             (8 * u64::from(full), Kind::DiskFree),
         ]);
@@ -507,6 +514,7 @@ impl Workload {
             Kind::Kill => Op::Kill,
             Kind::Close => Op::Close,
             Kind::FailNext => Op::FailNext,
+            Kind::FailRemoval => Op::FailRemoval,
             Kind::DiskFull => Op::DiskFull,
             Kind::DiskFree => Op::DiskFree,
         }
@@ -683,6 +691,7 @@ mod tests {
             "kill",
             "close",
             "fail next write",
+            "fail next removal",
             "disk full",
             "disk free",
         ];

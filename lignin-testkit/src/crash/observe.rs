@@ -69,6 +69,8 @@ struct Watch {
     faults: u64,
     /// How many of them went into a call whose failure lasts.
     lasting: u64,
+    /// How many removals of a file a fault failed.
+    removals: u64,
 }
 
 /// Whether a sync that fails of the file at `path` lasts for the session of
@@ -122,6 +124,7 @@ impl Observer {
             lies: 0,
             faults: stats.faults,
             lasting: 0,
+            removals: 0,
         };
         Self {
             fs,
@@ -198,6 +201,12 @@ impl Observer {
         self.watch().lasting
     }
 
+    /// How many removals of a file a fault failed: the file stays, and the
+    /// store removes it later or its next session does.
+    pub fn removals_failed(&self) -> u64 {
+        self.watch().removals
+    }
+
     /// Looks at the file system after a call on `path`, a sync of that
     /// file if `synced`: a fault that was injected into the call is
     /// counted, and an image is taken if the call changed what a crash can
@@ -270,7 +279,12 @@ impl Vfs for Observer {
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
-        self.observed(path, self.fs.remove_file(path))
+        let before = self.fs.stats().faults;
+        let removed = self.fs.remove_file(path);
+        if self.fs.stats().faults > before {
+            self.watch().removals += 1;
+        }
+        self.observed(path, removed)
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
@@ -475,9 +489,16 @@ mod tests {
         assert!(manifest.sync_all().is_err());
         fail(OpSet::SYNCS);
         assert!(vfs.sync_dir(Path::new("/db/wal")).is_err());
+        assert_eq!(observer.removals_failed(), 0);
         fail(OpSet::NAMES);
         assert!(vfs.remove_file(Path::new("/db/wal/1.log")).is_err());
         assert_eq!(counts(), (6, 0));
+        // The removal that failed is counted, and the one that is made
+        // again is not.
+        assert_eq!(observer.removals_failed(), 1);
+        vfs.remove_file(Path::new("/db/wal/1.log"))
+            .expect("removed");
+        assert_eq!(observer.removals_failed(), 1);
 
         // What lasts: the sync of a file of the log, and of a segment.
         let (log, segment) = (open("/db/wal/2.log"), open("/db/seg/1.seg"));
