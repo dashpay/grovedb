@@ -236,8 +236,12 @@
 //!   item (`transactions.md` CM9 item 5).
 //!
 //! What else a fault leaves, the store gets over in the session: a file
-//! whose append or creation failed is given up for another, a deletion is
-//! made again, and a manifest that could not be replaced stays in force.
+//! whose append or creation failed is given up for another, and a
+//! deletion is made again. A manifest whose replacement failed before its
+//! rename is still in force. One whose replacement failed in the rename
+//! or in the sync of the directory is in doubt: the next call that needs
+//! the manifest opens it again and finds the old one or the new one,
+//! whole (`lignin_store::segment`, "When the file layer fails").
 //! The store that a recovery returns owes nothing to the faults before
 //! it. A store that says it is damaged where only faults were injected is
 //! a violation as well.

@@ -101,7 +101,7 @@ The corpus from its pinned engine is what a sync with `develop` runs first (D-10
 
 Crashes are simulated on the file layer of IO-02 (`lignin_io::sim`), which needs no disk.
 
-- **With the crates' tests, on all three platforms:** every state a crash can leave of the log (`lignin-format/tests/wal_crash.rs`), crashes during write-back and recovery at chosen points of scripted sessions (`lignin-store/src/flush/tests/crash.rs`, the recovery tests), and the short form of the store crash campaign (`lignin-testkit/tests/crash.rs`): twelve runs of random workloads with every kind of injected faults, about eleven thousand crash states, and the eight planted defects, each of which the campaign has to find.
+- **With the crates' tests, on all three platforms:** every state a crash can leave of the log (`lignin-format/tests/wal_crash.rs`), crashes during write-back and recovery at chosen points of scripted sessions (`lignin-store/src/flush/tests/crash.rs`, the recovery tests), and the short form of the store crash campaign (`lignin-testkit/tests/crash.rs`): twelve runs of random workloads with every kind of injected faults, about fifteen thousand crash states, and the eight planted defects, each of which the campaign has to find.
 - **Every night:** the campaign itself, `lignin-crash` ([`crash-tests.md`](crash-tests.md)). A run that finds a violation names its seed, and `lignin-crash seed --seed N` makes that run again on any machine.
 
 Gate M2 asks for one million crash points: `lignin-crash run --seed 1 --points 1000000` is that run, on any machine. The nightly run is five times that, from other seeds each night.

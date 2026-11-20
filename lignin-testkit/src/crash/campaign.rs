@@ -1906,31 +1906,60 @@ mod tests {
     fn the_log_takes_no_item_after_an_append_that_failed_until_it_is_rolled() {
         let (mut run, mut lineage) = begun();
         let fs = lineage.observer.fs().clone();
-        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
-        let op = commit(&mut lineage, false);
-        assert!(run.step(&mut lineage, op));
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
-        assert_eq!((fs.stats().faults, run.tally.get("commits made")), (1, 0));
-        // The append failed in the log, which no sync of it did.
-        assert_eq!(lineage.observer.lasting_faults(), 0);
+        let page = || Op::Commit {
+            changes: vec![Change::NewFlat { entries: vec![] }],
+            durable: false,
+        };
+        let counts = |run: &Run| {
+            let made = run.tally.get("commits made");
+            (
+                made,
+                run.tally.get("errors after a fault"),
+                run.violations.len(),
+            )
+        };
         let takes = |lineage: &Lineage| {
             let session = lineage.session.as_ref().expect("a session");
             session.log_takes_items()
         };
+        // Two commits, each of a page: a step can free the first page once
+        // the second commit has made a later version.
+        assert!(run.step(&mut lineage, page()));
+        assert!(run.step(&mut lineage, page()));
+        let first = *(lineage.history.point(1).pages.keys().next()).expect("a page");
+        assert_eq!(counts(&run), (2, 0, 0));
+
+        // The append of a third commit fails. Its error is its own
+        // fault's, and the log takes no item from here on.
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
+        assert!(run.step(&mut lineage, page()));
+        assert_eq!((fs.stats().faults, counts(&run)), (1, (2, 1, 0)));
+        assert_eq!(lineage.observer.lasting_faults(), 0);
         assert!(!takes(&lineage));
-        // An operation that begins now finds the log so, and an error of
-        // it is the fault's.
-        assert!(run.step(&mut lineage, Op::Pass));
+
+        // A step whose record the log does not take: the error is that
+        // fault's still, with no fault injected into the step.
+        let free = Op::Reclaim {
+            page: first,
+            what: Reclaim::Page,
+        };
+        assert!(run.step(&mut lineage, free));
         assert!(lineage.rolling && lineage.excused());
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
-        // Once the log is rolled it takes items again, and a commit is
-        // made with nothing to excuse.
-        assert!(run.step(&mut lineage, Op::RollLog));
+        assert_eq!((fs.stats().faults, counts(&run)), (1, (2, 2, 0)));
+        assert_eq!(run.tally.get("reclaiming steps made"), 0);
+        assert_eq!(run.tally.get("reclaiming steps refused"), 0);
+        assert_eq!(lineage.history.latest(), 2);
+
+        // A commit rolls the log before it asks for its place, and is
+        // made. From the next operation on nothing is excused: an error is
+        // a violation.
+        assert!(run.step(&mut lineage, page()));
         assert!(takes(&lineage));
-        let op = commit(&mut lineage, false);
-        assert!(run.step(&mut lineage, op));
+        assert_eq!(counts(&run), (3, 2, 0));
+        assert!(run.step(&mut lineage, Op::Pass));
         assert!(!lineage.rolling && !lineage.excused());
-        assert_eq!(run.tally.get("commits made"), 1);
-        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        run.tolerate_error(&lineage, "a call", "it failed".to_string());
+        assert_eq!(counts(&run), (3, 2, 1));
+        assert_eq!(run.violations[0].violation.kind, Kind::Session);
     }
 }

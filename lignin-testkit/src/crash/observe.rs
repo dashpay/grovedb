@@ -192,7 +192,8 @@ impl Observer {
     /// Every other fault fails the call it was injected into, and what it
     /// leaves the store gets over in the same session: a file whose append
     /// or creation failed is given up for another, a deletion is made
-    /// again, a manifest that could not be replaced stays in force.
+    /// again, and a manifest whose replacement was left in doubt is opened
+    /// again by the next call that needs it.
     pub fn lasting_faults(&self) -> u64 {
         self.watch().lasting
     }

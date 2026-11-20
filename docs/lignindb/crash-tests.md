@@ -34,7 +34,7 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 | The faults of a run | By its seed: none for two seeds in four, failing syncs for one, and for one every kind of failure, torn appends, a write that fails when the workload says so and a device that is full for a while. |
 | What a failed sync leaves | By the seed as well: lost, kept, or drawn (`SimConfig::unknown`), by turns. |
 | The sector size | 512 bytes for two runs in four, then 4096 and 128, by turns of twelve seeds. |
-| A crash image | The file system after one operation that changed what a crash can leave. A lineage has some six hundred. |
+| A crash image | The file system after one operation that changed what a crash can leave. A lineage has some seven hundred. |
 | A crash state | What one crash plan leaves of an image: every plan where there are at most 48. Of an image with more, a choice: the two ends, the plans of a file system that writes in order with the first lost write cut short after each number of its leading sectors, each change lost alone, each change applied late, and three drawn from the seed. After every operation the states of a crash at that moment are gone through once more, and held to what the operation left expected. |
 | A recovery | `lignin_store::recovery::recover` on the state, with the buffer pool, the window of the log reader and the number of pages a replay keeps by turns. Then every page, with the commit it was born at and the count of the cells that left it, every value, page id and count is read and held to the model, and the engine's physical invariant checker (`lignindb::verify`) is run over the store. |
 | Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is recovered once more on a copy of its own with the faults injected into the recovery: it returns the same store, or fails and is followed by a recovery with no fault that does. |
@@ -43,7 +43,7 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 
 ## What it costs
 
-On the project's Linux machine (28 threads, shared with other work, at a load of 70 to 130), one thread recovers about two thousand distinct crash states a second, and a run of the default shape has forty to fifty thousand of them: twenty to thirty seconds a run. A million crash states are some twenty-five runs. The short form that runs with the crates' tests (`lignin-testkit/tests/crash.rs`) is twelve runs of two lineages of ten operations, about eleven thousand states.
+On the project's Linux machine (28 threads, shared with other work, at a load of 70 to 130), four threads recover 2,500 to 4,500 distinct crash states a second between them, and a run of the default shape has forty to sixty thousand: about a minute of one thread. A million crash states are some twenty-five runs. The short form that runs with the crates' tests (`lignin-testkit/tests/crash.rs`) is twelve runs of two lineages of ten operations, about fifteen thousand states.
 
 ## Reading a violation
 
