@@ -847,6 +847,47 @@ fn a_database_that_is_put_in_the_place_of_the_one_that_was_locked_is_not_opened(
     }
 }
 
+/// An open has taken the lock of a database when someone removes the
+/// lock file and puts another there. The directory is the same, and the
+/// lock that the open holds is of a file with no name: another open can
+/// take the one that is there now. The open ends with nothing written,
+/// and says what it found.
+#[test]
+fn a_database_whose_lock_file_is_replaced_under_the_open_is_not_opened() {
+    let dir = temp();
+    let path = dir.path().join("db");
+    let db = Db::open(&path, &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+    db.close().expect("the session ends");
+
+    let watched = Watched::default();
+    let opening = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let at = path.clone();
+    let put = Arc::new(Mutex::new(None));
+    let told = put.clone();
+    watched.after_the_next_lock_that_is_taken(move || {
+        fs::remove_file(at.join("LOCK")).expect("the lock file is removed");
+        fs::write(at.join("LOCK"), b"").expect("another is put there");
+        *told.lock().expect("the image") = Some(image(&at));
+    });
+    let error = Db::open(&path, &opening).expect_err("the lock file is another");
+    assert!(matches!(&error, OpenError::Replaced { dir } if *dir == path));
+    assert!(error.left_untouched());
+    assert!(error.to_string().contains("its lock file"), "{error}");
+    let put = (put.lock().expect("the image").take()).expect("the hook ran");
+    assert_eq!(image(&path), put);
+    assert_eq!(watched.changes(), 0, "the open wrote");
+
+    let db = Db::open(&path, &options()).expect("the database opens");
+    assert_eq!(
+        seen(&db.snapshot().operation(), subtree(1), b"k"),
+        Some((10, vec![]))
+    );
+}
+
 /// A database is to be made in an empty directory. The open has made the
 /// lock file there and holds it when someone moves the directory away and
 /// puts another empty one at the path. No database is made in that one:

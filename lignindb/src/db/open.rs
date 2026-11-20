@@ -193,10 +193,12 @@ pub(super) struct Opened {
 /// looked at is the one that is locked, and what the look found is acted
 /// on: a database with pages of the size that is asked for is opened, and
 /// a place for a new database gets its first manifest. If it is not, the
-/// directory at the path is another one than the one that was locked,
-/// whatever it holds, and the open ends with nothing written
-/// ([`OpenError::Replaced`]). The file layer names files by path, so this
-/// is the last moment the open can tell the two apart (the module
+/// lock that is held is not the lock of what is at the path: another
+/// directory was put there, the directory was removed, or its lock file
+/// alone was removed or replaced, and another open can hold the one that
+/// is there now. Whatever the directory holds, the open ends with
+/// nothing written ([`OpenError::Replaced`]). The file layer names files
+/// by path, so this is the last moment the open can tell (the module
 /// documentation, "Where the guarantee ends").
 ///
 /// **What the open sees before the lock decides how the lock is asked
@@ -328,8 +330,9 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
     // Under the lock nothing else makes or replaces a manifest in the
     // directory that is locked. That is the directory that is looked at
     // here if the lock file at the path is, after the look, the one that
-    // is held; if it is another, or none, the directory at the path is
-    // not the one that was locked, and nothing is written.
+    // is held. If it is another, or none, the directory or its lock file
+    // was replaced or removed: the lock that is held is not the lock of
+    // what is at the path, and nothing is written.
     let found = look(&**vfs, dir).map_err(changed)?;
     match lock.is_at(&lock_path) {
         Ok(true) => {}

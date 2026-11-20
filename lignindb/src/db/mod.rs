@@ -129,7 +129,7 @@
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
-//! | held a database at one look of the open and none at a later one, or is not the directory whose lock file the open took | [`OpenError::Replaced`] |
+//! | held a database at one look of the open and none at a later one, or has another lock file than the one the open took, or none | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
 //! ([`OpenError::left_untouched`]): by reading alone before the lock, or

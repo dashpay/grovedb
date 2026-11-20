@@ -117,14 +117,16 @@ pub enum OpenError {
         /// The directory.
         dir: PathBuf,
     },
-    /// The directory was removed, or another was put in its place, while
-    /// it was being opened. Either a look of this open found a database
-    /// and a later look, with the lock held or without, found none: no
+    /// The directory, or its lock file, was removed or replaced while it
+    /// was being opened. Either a look of this open found a database and
+    /// a later look, with the lock held or without, found none: no
     /// database is made where one was seen, whatever
     /// [`Options::create_if_missing`] says. Or the lock file that this
-    /// open took, with none made, is not the one at the path any more: the
-    /// directory at the path is not the one that was locked, whatever it
-    /// holds. No file was made and nothing was written.
+    /// open took, with none made, is not the one at the path any more:
+    /// another directory was put at the path, or the directory is the
+    /// same and its lock file was removed or another put there. The lock
+    /// that is held is then not the lock of what is at the path, whatever
+    /// that holds. No file was made and nothing was written.
     ///
     /// [`Options::create_if_missing`]: crate::Options::create_if_missing
     Replaced {
@@ -137,7 +139,8 @@ pub enum OpenError {
     /// lock it is one that is refused, for the reason in `found`. Someone
     /// changed it between the two: another process wrote into it, another
     /// open made a database in it that this open's options do not fit, or
-    /// another directory was put in its place. Because the lock was asked
+    /// another directory was put in its place, or the lock file that was
+    /// made was removed or replaced. Because the lock was asked
     /// for with its file to be made, the directory may have gained an
     /// empty `LOCK` ([`Self::left_untouched`] is false), which is left
     /// where it is, because another opener may hold it. Nothing else was
@@ -241,8 +244,9 @@ impl fmt::Display for OpenError {
             ),
             Self::Replaced { dir } => write!(
                 f,
-                "{} was removed, or another directory was put in its place, while it was \
-                 being opened: nothing is opened or made there",
+                "{} was removed, or another directory was put in its place, or its lock file \
+                 was removed or replaced, while it was being opened: nothing is opened or \
+                 made there",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
