@@ -115,7 +115,10 @@ test)
     # its feature lignin_storage. It runs whether or not the crates passed.
     store=(-p grovedb-merk --features lignin_storage --lib store::lignin)
     say "cargo test ${store[*]}"
-    if found=$(cargo test "${store[@]}" -- --list) && grep -q ': test$' <<<"$found"; then
+    if ! found=$(cargo test "${store[@]}" -- --list); then
+        printf 'lignin-ci: the tests of grovedb-merk with lignin_storage do not build\n' >&2
+        status=1
+    elif grep -q ': test$' <<<"$found"; then
         cargo test "${store[@]}" || status=$?
     else
         printf 'lignin-ci: no test of grovedb-merk matches store::lignin\n' >&2
