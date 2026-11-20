@@ -221,6 +221,8 @@ fn lock_existing_makes_no_file_when_the_lock_file_goes_while_it_is_locked() {
     let mut attempts = 0;
     let gone = StdLock::acquire(&path, false, || {
         attempts += 1;
+        // A second time here would be a file that was made again.
+        assert_eq!(attempts, 1, "the lock file was made");
         fs::remove_file(&path).unwrap();
     });
     assert_eq!(gone.unwrap_err().kind(), ErrorKind::NotFound);
