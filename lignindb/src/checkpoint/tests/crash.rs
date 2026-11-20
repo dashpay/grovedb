@@ -333,12 +333,13 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
         failed += 1;
         // Nothing has the name of the target, nothing is left under the
         // name the checkpoint was built under, and the live store is as it
-        // was and goes on (CK10). One failure leaves the directory that
+        // was and goes on (CK10). Two failures leave the directory that
         // was built in, with its lock file: where the creation has the
-        // lock and cannot see what the directory holds, it removes nothing
-        // from it. A deletion ends that.
+        // lock and cannot look at the directory, in the one above it or
+        // in itself, it removes nothing from it. A deletion ends that.
         let built = building(&made.target);
-        if matches!(&error, CheckpointError::Io { action: "list", path, .. } if *path == built) {
+        let listing = matches!(&error, CheckpointError::Io { action: "list", .. });
+        if listing && !gone(&made.fs, &built) {
             let names: Vec<_> = (made.fs.read_dir(&built).expect("the directory"))
                 .into_iter()
                 .map(|entry| entry.name)
@@ -374,12 +375,14 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
             (first, Err(second)) => panic!("{context}: {first}, and then {second}"),
         }
     }
-    // A listing fails for an error of the device, and not for a full disk.
-    assert_eq!(
-        lock_left,
-        usize::from(matches!(fault, Fault::Eio)),
-        "{fault:?}"
-    );
+    // A listing fails for an error of the device, and not for a full disk:
+    // the two listings that a creation makes under the lock it has just
+    // taken.
+    let listings = match fault {
+        Fault::Eio => 2,
+        _ => 0,
+    };
+    assert_eq!(lock_left, listings, "{fault:?}");
     (failed, sync_failed)
 }
 

@@ -22,7 +22,7 @@ use crate::commit::Stopped;
 #[derive(Debug)]
 pub enum CheckpointError {
     /// The target is there already, as a directory or as anything else.
-    /// Nothing was touched (P-14 of `platform-requirements.md`).
+    /// Nothing of it was touched (P-14 of `platform-requirements.md`).
     TargetExists {
         /// The target.
         target: PathBuf,
@@ -49,9 +49,11 @@ pub enum CheckpointError {
         /// The directory that is being built in.
         dir: PathBuf,
     },
-    /// The directory the checkpoint was built in was not at its path
-    /// when the creation looked for it, right before the rename: somebody
-    /// removed it, or put another directory there. Nothing was given the
+    /// The directory the checkpoint was built in was not found as the
+    /// creation built it when it looked, right before the rename: at its
+    /// path a directory of its own with the creation's lock file, holding
+    /// what the creation put into it and nothing else. Somebody removed
+    /// or replaced it, or changed what is in it. Nothing was given the
     /// name of the target.
     Replaced {
         /// The directory the checkpoint was built in.
@@ -181,8 +183,8 @@ impl fmt::Display for CheckpointError {
             ),
             Self::Replaced { dir } => write!(
                 f,
-                "{} is not the directory the checkpoint was built in any more, and nothing was \
-                 renamed",
+                "{} is not the directory the checkpoint was built in any more, or does not hold \
+                 what was put into it, and nothing was renamed",
                 dir.display()
             ),
             Self::CarriedName { name } => write!(

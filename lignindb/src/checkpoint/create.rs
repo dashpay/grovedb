@@ -105,7 +105,8 @@ pub(super) enum Step {
     /// the holds are given back, and the manifest is not written.
     Secured,
     /// Everything in the directory is durable, and so is the name it is
-    /// built under. Nothing has the name of the target.
+    /// built under. The creation has put nothing under the name of the
+    /// target.
     Settled,
 }
 
