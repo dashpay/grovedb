@@ -822,3 +822,33 @@ fn a_host_of_a_merk_that_stands_alone_is_the_fixtures_own() {
     }
     store.db.unchecked();
 }
+
+/// The checker reads the tree pages through the tree layer's own trait, and
+/// changes none: a write, a new page and a freed page are refused.
+#[test]
+fn the_checker_changes_no_page() {
+    use lignin_tree::{
+        fragment::{FragmentError, Pages},
+        node::Lease,
+    };
+
+    use crate::verify::read::{Frames, TreeRead};
+
+    let store = plant();
+    let root = store.root(BIG);
+    let page = root.page();
+    let frames = Frames::new(store.db.loader(), store.latest());
+    let mut pages = TreeRead::new(frames, Lease::take());
+    let found = pages.read(page, |page| page.node(root.slot()).is_some());
+    assert!(found.expect("the page is read"));
+    let refused = [
+        pages.write(page, |_| Ok(())).expect_err("no write"),
+        pages.create().map(|_| ()).expect_err("no new page"),
+        pages.free(page).expect_err("no page is freed"),
+    ];
+    for error in refused {
+        assert!(matches!(error, FragmentError::Pages(_)), "{error}");
+        let said = "the invariant checker changes no page";
+        assert!(error.to_string().contains(said), "{error}");
+    }
+}
