@@ -891,7 +891,7 @@ fn apply_parts(
         // wherever they stand in it, so the enters of the caller go with
         // the batch's own subtree writes.
         written.push(part.with_batch(&mut |batch| {
-            let mut subtrees: Vec<SubtreeWrite<'_>> = enters.drain(..).collect();
+            let mut subtrees = std::mem::take(&mut enters);
             subtrees.extend_from_slice(batch.subtrees);
             apply_batch(
                 scope,
