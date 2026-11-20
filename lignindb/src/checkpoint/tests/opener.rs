@@ -16,19 +16,18 @@
 
 use std::{
     collections::BTreeMap,
-    io::ErrorKind,
     path::{Path, PathBuf},
     sync::Arc,
 };
 
 use lignin_format::CommitVersion;
-use lignin_io::{sim::SimVfs, Vfs};
+use lignin_io::sim::SimVfs;
 use lignin_store::{flush::FlushConfig, wal::LogOptions};
 
 use super::{
     building, checkpointer,
-    crash::{plans, Files},
-    sim, Meddling, DIR, NO_CATCH_UP,
+    crash::{plans, Files, Left},
+    gone, sim, DIR, NO_CATCH_UP,
 };
 use crate::{
     checkpoint,
@@ -115,14 +114,7 @@ fn engine_made(seed: u64) -> (SimVfs, Records, CommitVersion) {
 /// look for the keyspaces where the tests' own stores have them, and this
 /// one has the engine's. The engine reads what it holds, below.
 fn store_of(fs: &SimVfs, files: Files) -> (Arc<Db>, Versions) {
-    let plain: Arc<dyn Vfs> = Arc::new(fs.clone());
-    let vfs: Arc<dyn Vfs> = match files {
-        Files::Linked => plain,
-        Files::Copied => {
-            let under = Path::new(DIR).join("checkpoints");
-            Arc::new(Meddling::no_links(plain, under, ErrorKind::CrossesDevices))
-        }
-    };
+    let vfs = files.on(Arc::new(fs.clone()));
     let (like, _) = Db::new(16);
     let (options, flush) = (LogOptions::default(), FlushConfig::new(SIZE));
     let (db, versions, _) =
@@ -168,17 +160,6 @@ fn opens_as_the_checkpoint(
         .unwrap_or_else(|error| panic!("{context}: the close: {error}"));
 }
 
-/// How many states had the checkpoint at the target, and how many had
-/// nothing there.
-#[derive(Debug, Default)]
-struct Seen {
-    whole: usize,
-    nothing: usize,
-    /// States with something under the name the checkpoint was built
-    /// under.
-    built: usize,
-}
-
 fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
     let (fs, records, version) = engine_made(91);
     // Each cut begins from a copy of the file system as the engine left
@@ -210,7 +191,7 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
     drop((db, versions));
     opens_as_the_checkpoint(&whole, &target, version, &records, "no cut");
 
-    let mut seen = Seen::default();
+    let mut seen = Left::default();
     for cut in 1..=ops {
         let fs = copy();
         let (db, versions, target, began) = begin(&fs);
@@ -231,18 +212,14 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
                 continue;
             };
             let context = format!("{files:?}, cut {cut} of {ops}, crash plan {index}");
-            seen.built += usize::from(state.read_dir(&building(&target)).is_ok());
-            match state.read_dir(&target) {
+            seen.built += usize::from(!gone(&state, &building(&target)));
+            if gone(&state, &target) {
                 // What was at that name before: nothing.
-                Err(error) => {
-                    assert_eq!(error.kind(), ErrorKind::NotFound, "{context}: {error}");
-                    assert!(created.is_err(), "{context}: the checkpoint is gone");
-                    seen.nothing += 1;
-                }
-                Ok(_) => {
-                    opens_as_the_checkpoint(&state, &target, version, &records, &context);
-                    seen.whole += 1;
-                }
+                assert!(created.is_err(), "{context}: the checkpoint is gone");
+                seen.none += 1;
+            } else {
+                opens_as_the_checkpoint(&state, &target, version, &records, &context);
+                seen.whole += 1;
             }
             if index < 2 {
                 // What is left goes with a deletion of the target, and
@@ -251,7 +228,7 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
                     Ok(()) | Err(checkpoint::CheckpointError::NotADirectory { .. }) => {}
                     Err(error) => panic!("{context}: the deletion: {error}"),
                 }
-                assert!(state.read_dir(&building(&target)).is_err(), "{context}");
+                assert!(gone(&state, &building(&target)), "{context}");
                 let made = crate::Db::open(&target, &options(&state))
                     .unwrap_or_else(|error| panic!("{context}: a new database: {error}"));
                 assert!(made.created(), "{context}");
@@ -259,7 +236,7 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
         }
     }
     assert!(
-        seen.whole > 0 && seen.nothing > 0 && seen.built > 0,
+        seen.whole > 0 && seen.none > 0 && seen.built > 0,
         "{files:?}: {seen:?}"
     );
 }

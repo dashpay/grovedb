@@ -118,9 +118,9 @@ pub enum CheckpointError {
     },
     /// The path names no directory of its own in the directory above it:
     /// nothing, a file, or a link to a directory, which is not followed.
-    /// [`delete`](super::delete) was given it and found nothing that a
-    /// creation left beside it, or it is the name a creation was to build
-    /// under. Nothing was removed.
+    /// [`delete`](super::delete) was given it, and where nothing has the
+    /// name, nothing that a creation left was beside it either; or it is
+    /// the name a creation was to build under. Nothing was removed.
     NotADirectory {
         /// The path.
         dir: PathBuf,

@@ -56,7 +56,7 @@ pub(super) fn parent_of(path: &Path) -> Option<&Path> {
 /// The directory a checkpoint at `target` is built in: beside `target`,
 /// under its name with [`CREATING_SUFFIX`] added. `None` for a path with
 /// no name of its own.
-fn building_of(target: &Path) -> Option<PathBuf> {
+pub(super) fn building_of(target: &Path) -> Option<PathBuf> {
     let mut name = target.file_name()?.to_os_string();
     name.push(CREATING_SUFFIX);
     Some(target.with_file_name(name))
@@ -195,6 +195,15 @@ impl Target {
     /// in it. Only a directory of its own is taken so: what a link of that
     /// name leads to is not looked into
     /// ([`CheckpointError::NotADirectory`]).
+    ///
+    /// **The directory is looked at under its lock, whoever made it.** One
+    /// that this call has just made is empty until its lock file is in it,
+    /// and a rename replaces an empty directory: another creation of the
+    /// same target, which fails at that moment, can give its own directory
+    /// the name back onto this one. So a directory that holds anything but
+    /// its lock file once the lock is had is taken over like one that was
+    /// there. From the lock on, the directory has an entry, and no rename
+    /// replaces it.
     pub(super) fn make(vfs: Arc<dyn Vfs>, target: &Path) -> Result<Self, CheckpointError> {
         let (Some(parent), Some(dir)) = (parent_of(target), building_of(target)) else {
             return Err(CheckpointError::NoParent {
@@ -224,7 +233,10 @@ impl Target {
                 return Err(CheckpointError::io("lock", &lock_path)(error));
             }
         };
-        if !made {
+        let entries = vfs
+            .read_dir(&dir)
+            .map_err(CheckpointError::io("list", &dir))?;
+        if !made || entries.iter().any(|entry| entry.name != LOCK_FILE_NAME) {
             take_over(&*vfs, parent, &dir)?;
         }
         Ok(Self {
@@ -427,14 +439,12 @@ impl Target {
     pub(super) fn place(&mut self) -> Result<(), CheckpointError> {
         Self::refuse_taken(&*self.vfs, &self.target)?;
         let lock_path = self.dir.join(LOCK_FILE_NAME);
-        match self.lock.is_at(&lock_path) {
-            Ok(true) => {}
-            Ok(false) => {
-                return Err(CheckpointError::Replaced {
-                    dir: self.dir.clone(),
-                });
-            }
-            Err(error) => return Err(CheckpointError::io("look at", &lock_path)(error)),
+        let here =
+            (self.lock.is_at(&lock_path)).map_err(CheckpointError::io("look at", &lock_path))?;
+        if !here {
+            return Err(CheckpointError::Replaced {
+                dir: self.dir.clone(),
+            });
         }
         (self.vfs.rename(&self.dir, &self.target)).map_err(|error| match error.kind() {
             ErrorKind::DirectoryNotEmpty | ErrorKind::NotADirectory => {
@@ -512,15 +522,7 @@ impl Target {
 fn take_over(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<(), CheckpointError> {
     vfs.sync_dir(parent)
         .map_err(CheckpointError::io("sync the directory", parent))?;
-    let entries = vfs
-        .read_dir(building)
-        .map_err(CheckpointError::io("list", building))?;
-    for entry in entries {
-        if entry.name != LOCK_FILE_NAME {
-            remove_entry(vfs, &building.join(&entry.name), entry.kind)?;
-        }
-    }
-    Ok(())
+    remove_all_in(vfs, building, &[LOCK_FILE_NAME])
 }
 
 /// Removes the directory `building`, which has a name that a creation
@@ -528,10 +530,7 @@ fn take_over(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<(), Checkp
 /// whether there was such a directory. Of one whose lock is held nothing
 /// is touched ([`CheckpointError::Creating`]). What has the name and is no
 /// directory of its own is left alone.
-fn remove_leftover(vfs: &dyn Vfs, building: &Path) -> Result<bool, CheckpointError> {
-    let Some(parent) = parent_of(building) else {
-        return Ok(false);
-    };
+fn remove_leftover(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<bool, CheckpointError> {
     if kind_of(vfs, parent, building)? != Some(EntryKind::Dir) {
         return Ok(false);
     }
@@ -561,14 +560,23 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
             .remove_file(path)
             .map_err(CheckpointError::io("remove", path));
     }
-    let entries = vfs
-        .read_dir(path)
-        .map_err(CheckpointError::io("list", path))?;
-    for entry in entries {
-        remove_entry(vfs, &path.join(&entry.name), entry.kind)?;
-    }
+    remove_all_in(vfs, path, &[])?;
     vfs.remove_dir(path)
         .map_err(CheckpointError::io("remove the directory", path))
+}
+
+/// Removes everything that the directory `dir` holds but the entries
+/// named in `kept`.
+fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), CheckpointError> {
+    let entries = vfs
+        .read_dir(dir)
+        .map_err(CheckpointError::io("list", dir))?;
+    for entry in entries {
+        if !kept.iter().any(|name| entry.name == *name) {
+            remove_entry(vfs, &dir.join(&entry.name), entry.kind)?;
+        }
+    }
+    Ok(())
 }
 
 /// Deletes the checkpoint in the directory `dir` of `vfs`: the directory
@@ -585,8 +593,9 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// open: see the [module documentation](super) for what that handle does
 /// then.
 ///
-/// This call is the careful way. Of what has the name `dir` it removes
-/// nothing unless
+/// This call is the careful way. What has the name `dir` goes only if
+/// all of this holds, unless the name is one that creations build under
+/// ([`CREATING_SUFFIX`]), which the end of this text is about:
 ///
 /// - `dir` is a directory of its own in the directory above it, and not a
 ///   link to one ([`CheckpointError::NotADirectory`]): a link is not
@@ -612,8 +621,9 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// the first file removed. So if the removal is cut short, by an error or
 /// by the power, the directory either opens as the whole checkpoint it
 /// was, with every file that anybody put beside it, or it has no manifest
-/// and opens as nothing. When the call returns `Ok`, the removal is
-/// durable.
+/// and opens as nothing. It has the name `dir` then, or, if a creation
+/// had not made that name durable, the name it was built under, with
+/// everything in it. When the call returns `Ok`, the removal is durable.
 ///
 /// **What a deletion leaves that was cut short is finished by the next
 /// call**: a directory with the renamed manifest, whatever else it holds.
@@ -626,44 +636,48 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 /// went.
 ///
 /// **What a creation of a checkpoint at `dir` left beside it goes too**:
-/// the directory it built in ([`CREATING_SUFFIX`]), with everything in it,
-/// under that directory's lock. It goes once `dir` is deleted: an error of
-/// its removal is then returned though `dir` is gone, and one whose lock
-/// is held is left alone with no error. It goes as well where nothing has
-/// the name of `dir`: the call then returns `Ok` if there was such a
-/// directory, and [`CheckpointError::Creating`] for one whose lock is
-/// held. Given such a directory as `dir`, the call removes it in the same
-/// way.
+/// the directory it built in ([`CREATING_SUFFIX`]), with everything in it
+/// and whatever it holds, under that directory's lock.
+///
+/// - Where `dir` was deleted, it goes afterwards. An error of its removal
+///   is then returned though `dir` is gone. One whose lock is held is left
+///   alone with no error: if a creation is building in it, a checkpoint
+///   can get the name of `dir` again.
+/// - Where nothing has the name of `dir`, the call returns `Ok` if there
+///   was such a directory, and [`CheckpointError::Creating`] for one whose
+///   lock is held.
+/// - Where `dir` is refused, it is not looked for, and stays.
+/// - Given such a directory as `dir`, the call removes it in the same
+///   way, or fails with [`CheckpointError::NotADirectory`] if there is
+///   none.
 pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     let not_a_directory = || CheckpointError::NotADirectory {
         dir: dir.to_path_buf(),
     };
-    if is_building(dir) {
-        return match remove_leftover(vfs, dir)? {
-            true => Ok(()),
-            false => Err(not_a_directory()),
-        };
-    }
     let Some(parent) = parent_of(dir) else {
         return Err(not_a_directory());
     };
-    let left = |vfs| match building_of(dir) {
-        Some(building) => remove_leftover(vfs, &building),
+    let found = |left: bool| match left {
+        true => Ok(()),
+        false => Err(not_a_directory()),
+    };
+    if is_building(dir) {
+        return found(remove_leftover(vfs, parent, dir)?);
+    }
+    let left = || match building_of(dir) {
+        Some(building) => remove_leftover(vfs, parent, &building),
         None => Ok(false),
     };
     match kind_of(vfs, parent, dir)? {
         Some(EntryKind::Dir) => {
             delete_database(vfs, dir, parent)?;
-            match left(vfs) {
+            match left() {
                 Ok(_) | Err(CheckpointError::Creating { .. }) => Ok(()),
                 Err(error) => Err(error),
             }
         }
         Some(_) => Err(not_a_directory()),
-        None => match left(vfs)? {
-            true => Ok(()),
-            false => Err(not_a_directory()),
-        },
+        None => found(left()?),
     }
 }
 
@@ -801,12 +815,7 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     // below.
     remove(ManifestStore::FILE_NAME)?;
     sync()?;
-    let kept = [DELETING_FILE_NAME, LOCK_FILE_NAME];
-    for entry in list()? {
-        if !kept.iter().any(|name| entry.name == *name) {
-            remove_entry(vfs, &dir.join(&entry.name), entry.kind)?;
-        }
-    }
+    remove_all_in(vfs, dir, &[DELETING_FILE_NAME, LOCK_FILE_NAME])?;
     // The renamed manifest goes last, and only once every other removal is
     // durable: what a power cut leaves is known by it for what it is, or
     // is empty. The lock file goes before it for that reason. An open of

@@ -294,8 +294,9 @@
 //! `tests/opener.rs` open the states that such cuts leave with the
 //! engine's open.
 //!
-//! **What a cut leaves is under the other name**: a part of a checkpoint,
-//! or a whole one that did not get its name. A directory of that name is
+//! **What a cut leaves that is not at the target is under the other
+//! name**: a part of a checkpoint, or a whole one that did not get its
+//! name. A directory of that name is
 //! no database to open. It holds links to the live database's files, and
 //! so the space of those that the live database deletes, until it is
 //! removed: by the next creation at the same target, which empties it and
@@ -323,7 +324,9 @@
 //! creation had taken it, it removes nothing it did not make: such a file
 //! stays, and the directory with it, as what a creation left. Where the
 //! file layer fails a removal too, or fails the making of a file without
-//! saying whether it made it, what stays is under the other name as well.
+//! saying whether it made it, what stays is under the other name as well,
+//! and so is a directory that could not be listed once its lock was
+//! taken.
 //!
 //! **What a creation put into its directory is removed only once that
 //! directory has not the name of the target and cannot come back with
@@ -342,7 +345,11 @@
 //! - Whoever empties a directory that it found under the other name
 //!   syncs the directory above first, under the directory's lock, which
 //!   settles which of the two names it has. A power cut can keep what is
-//!   removed from a directory and lose a rename of it.
+//!   removed from a directory and lose a rename of it. A creation finds
+//!   such a directory also where it has just made its own: one that
+//!   another creation of the same target renamed back onto it. So it
+//!   looks under the lock, and takes over whatever holds more than a lock
+//!   file.
 //!
 //! An error of the catch-up of step 2 does not fail the creation: it is
 //! reported in [`Created::catch_up`], and the checkpoint's first open
@@ -407,15 +414,16 @@
 //! live database knows of it. A caller that removes the directory itself
 //! does as well as [`delete`] (P-18), which is the careful way:
 //!
-//! - It removes nothing of a path that is no directory of its own, of a
-//!   directory that is no database of this engine, or of one that a handle
-//!   has open. A database is known by a manifest of this engine in a file
-//!   of the directory's own, under the manifest's name or the renamed
-//!   one's, and not by a name. What the other of the two names holds then
-//!   goes with the rest. An empty directory, and
-//!   the empty lock file of one that holds nothing else, it removes
-//!   whatever they were: nothing is lost with them, and a deletion that
-//!   was cut short can leave both.
+//! - What has the name it is given goes only if that is a directory of
+//!   its own, a database of this engine, and one that no handle has open.
+//!   A database is known by a manifest of this engine in a file of the
+//!   directory's own, under the manifest's name or the renamed one's, and
+//!   not by a name. What the other of the two names holds then goes with
+//!   the rest. An empty directory, and the empty lock file of one that
+//!   holds nothing else, it removes whatever they were: nothing is lost
+//!   with them, and a deletion that was cut short can leave both. A
+//!   directory whose name is one that creations build under is not held
+//!   to this: the last point here.
 //! - **It makes the directory stop being a database before it removes a
 //!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], nothing
 //!   is left under the manifest's own name, durably, and then everything
@@ -425,8 +433,10 @@
 //!   and not a file that the engine or Platform keeps beside them (P-17),
 //!   which it would not. A second call finishes what it leaves.
 //! - **It removes what a creation at that target left beside it**
-//!   ("Durability, and a creation that fails"), and, given a directory of
-//!   that kind itself, removes that.
+//!   ("Durability, and a creation that fails"), once the target is
+//!   deleted or where nothing has its name, and, given a directory of
+//!   that kind itself, removes that: with whatever it holds, unless its
+//!   lock is held.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the
