@@ -362,15 +362,17 @@ impl<'s> WriteBack<'s> {
             Ok(durable) => durable,
             Err(error) => {
                 // The sync's error is the one the caller hears, whatever
-                // becomes of the checkpoint that was written. It is
-                // deleted under the manifest as it is once a doubt was
-                // settled, whatever a store answered the settling. Only
-                // while the manifest is still in doubt, because it could
-                // not be opened again, is the deletion refused: the file
-                // then stays, named by no manifest, until the store is
-                // opened again. No log is held for it, and the session
-                // installs no checkpoint after a log that could not be
-                // made durable.
+                // becomes of the checkpoint that was written. Its deletion
+                // is tried under the manifest as it is once a doubt was
+                // settled, whatever a store answered the settling. If the
+                // file cannot be removed then, the removal is tried again
+                // when the table checkpoints next hear of a manifest, in
+                // this session or as the store is opened. While the manifest
+                // is still in doubt, because it could not be opened again,
+                // the deletion is refused: the file stays, named by no
+                // manifest, until the store is opened again. No log is
+                // held for it, and the session installs no checkpoint
+                // after a log that could not be made durable.
                 drop(self.manifest());
                 let _ = checkpoints.discard(info, &lock(self.stores.manifest));
                 return Err(error);

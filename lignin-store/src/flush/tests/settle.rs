@@ -494,6 +494,7 @@ fn a_checkpoint_to_give_up(
 fn a_checkpoint_given_up_for_the_log_ends_with_the_logs_error_and_is_deleted() {
     let (fs, db) = store(ONE_LOG_FILE);
     let (in_force, before) = a_checkpoint_to_give_up(&fs, &db);
+    let written = db.stats().checkpoint_bytes;
 
     let error = db.wb().checkpoint().expect_err("the log is not durable");
     assert!(
@@ -502,6 +503,7 @@ fn a_checkpoint_given_up_for_the_log_ends_with_the_logs_error_and_is_deleted() {
     );
     assert!(!in_doubt(&db));
     assert_eq!(db.state.in_force(), in_force);
+    assert!(db.stats().checkpoint_bytes > written, "one was written");
     assert_eq!(table_files(&db), before, "the checkpoint's file is deleted");
 }
 
@@ -552,6 +554,7 @@ fn a_checkpoint_given_up_for_the_log_is_deleted_when_the_manifest_can_be_had() {
     let (in_force, before) = (db.state.in_force(), table_files(&db));
     db.commit(&[hash((1, 1), 2)]);
     fail_the_syncs_of_the_log(&fs, &db);
+    let written = db.stats().checkpoint_bytes;
 
     let error = db.wb().checkpoint().expect_err("the log is not durable");
     assert!(
@@ -559,6 +562,7 @@ fn a_checkpoint_given_up_for_the_log_is_deleted_when_the_manifest_can_be_had() {
         "{error}"
     );
     assert_eq!(db.state.in_force(), in_force);
+    assert!(db.stats().checkpoint_bytes > written, "one was written");
     assert_eq!(table_files(&db), before, "the checkpoint's file is deleted");
 }
 

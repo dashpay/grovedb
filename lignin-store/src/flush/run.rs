@@ -256,10 +256,16 @@ impl WriteBack<'_> {
     /// settled with such an answer. Only a manifest that is still in doubt,
     /// because it could not be opened again, is replaced by none of them.
     ///
-    /// A manifest that a close could not write, or a session that was
-    /// killed, leaves the value log's file named as one that is still
-    /// written and the log named short of its end. The next session's
-    /// recovery reads both to their ends, and lands on the same commit.
+    /// A replacement of the close that fails can leave an earlier
+    /// manifest in force, as a session that is killed does: one that
+    /// names the value log's file as one that is still written, and the
+    /// log's last file open and short of its end. The next session's
+    /// recovery takes a value-log file at the length its manifest gives
+    /// it, which covers every value a page points to, since a value is
+    /// covered by a manifest before a page is given its pointer. It reads
+    /// a log file that is named open past the named length, up to the
+    /// first item that is not whole, and lands on the last commit whose
+    /// group lies whole before that item.
     pub fn finish(&self) -> Result<Checkpointed, FlushError> {
         let checkpointed = self.checkpoint();
         let closed = self.close();
