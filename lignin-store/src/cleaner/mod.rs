@@ -336,10 +336,11 @@
 //! that waits is.
 //!
 //! A move is refused while a write transaction holds a private copy of
-//! the page (PV7), and the copy that was appended for it is dead. A file
-//! of which a cleaning moved nothing for that reason is left alone for a
-//! few passes, so that a long transaction does not have its values
-//! appended again ten times a second.
+//! the page (PV7), and the copy that was appended for it is dead. After a
+//! cleaning that moved nothing for that reason no file is cleaned for a
+//! few passes, and that file is left alone for longer, so that a long
+//! transaction does not have its values appended again ten times a
+//! second and the files after it have their turn.
 //!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the
@@ -353,12 +354,15 @@
 //!
 //! # The throttle
 //!
-//! A pass over the segments moves at most
-//! [`CleanerConfig::max_pass_bytes`] and reads the page table a few times
-//! at most, a pass over the value log cleans one file, and the loop
+//! A pass over the segments writes at most
+//! [`CleanerConfig::max_pass_bytes`] and one block more, counting the
+//! copies whose links were gone when they were to be switched, and reads
+//! the page table a few times at most. A pass over the value log cleans
+//! one file, and the loop
 //! sleeps [`CleanerConfig::idle`] between two turns. A pass that finds
-//! the store as the pass before left it, with no segment waiting, reads
-//! nothing. The bytes the cleaner writes are counted for the store
+//! the store as the pass before left it, with no segment waiting, does
+//! not read the page table: it looks at a few counts and at the list of
+//! segments. The bytes the cleaner writes are counted for the store
 //! ([`Stats::count_cleaner_bytes`]).
 //!
 //! What the target costs is the other side of it: the lower
@@ -393,7 +397,8 @@
 //!
 //! | What fails | What is left |
 //! | --- | --- |
-//! | The read of a live block, or its payload | The block and its link, as they were. The segment is left alone until the store is opened again ([`CleanerError::Block`], [`CleanerStats::segments_unreadable`]): it can never be emptied, so moving the rest of it would gain nothing. |
+//! | A live block that is damaged: its checksum, its frame or its payload | The block and its link, as they were. The segment is left alone until the store is opened again ([`CleanerError::Block`], [`CleanerError::Payload`], [`CleanerStats::segments_unreadable`]): it can never be emptied, so moving the rest of it would gain nothing. |
+//! | A read of a live block that the file layer failed | The block and its link, as they were. The pass ends with the error, and a later pass reads the block again: nothing says that the block is damaged. |
 //! | An append to the cleaner's segment, or its sealing | What the segment holds is synced, and the next copy goes to a new segment. The block that was being moved is where it was. |
 //! | A sync of the cleaner's segment | Links point to copies that cannot be made durable. The segment's writer is kept, so that they stay readable, and write-back installs no table checkpoint until the store is opened again, so no segment that a recovery needs is deleted ([`CleanerError::SegmentNotDurable`]). |
 //! | The manifest that stops naming a dropped segment | The segment is out of the store. Its file is deleted by a later replacement of the manifest or by the next session. |

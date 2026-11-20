@@ -345,10 +345,10 @@ fn the_segment_being_filled_is_sealed_when_too_much_of_it_is_dead() {
     db.check_cold();
 }
 
-/// A pass that finds the store as the pass before left it reads nothing,
-/// and a change wakes it.
+/// A pass that finds the store as the pass before left it does not read
+/// the page table, and a change wakes it.
 #[test]
-fn a_pass_over_a_store_that_has_not_changed_reads_nothing() {
+fn a_pass_over_a_store_that_has_not_changed_does_not_read_the_table() {
     let db = churned(13);
     let state = CleanerState::new(eager());
     let cleaner = Cleaner::new(db.wb(), &state);

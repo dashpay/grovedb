@@ -178,6 +178,7 @@ pub(super) fn settle(cleaner: &Cleaner<'_>) -> Pass {
         all.blocks_moved += pass.blocks_moved;
         all.bytes_moved += pass.bytes_moved;
         all.blocks_lost += pass.blocks_lost;
+        all.bytes_lost += pass.bytes_lost;
         all.retired += pass.retired;
         all.dropped += pass.dropped;
         all.checkpoints += pass.checkpoints;

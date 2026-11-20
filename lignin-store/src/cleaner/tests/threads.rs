@@ -275,7 +275,12 @@ fn the_cleaner_runs_beside_commits_write_back_and_a_reader_with_a_pin() {
                 }
                 (Some(_), _) => hash(at(1), round as u8),
             };
-            db.commit(&[op]);
+            // A write transaction reads the pages it copies in an
+            // operation of its own: the segments it reads from are not
+            // deleted under it.
+            crate::flush::Published::guarded(&db.versions, &mut || {
+                db.commit(std::slice::from_ref(&op));
+            });
             wb.place_ready().expect("placed");
             wb.wait_for_room().expect("room");
             // The threads take turns by construction: every few commits

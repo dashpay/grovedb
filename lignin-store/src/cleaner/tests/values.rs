@@ -314,19 +314,20 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
     assert_eq!(state.stats().value_bytes_copied, cleaned.copied_bytes);
     assert!(cleaned.copied_bytes > 400);
 
-    // While the copy is held, the file is left alone for a few passes:
-    // each try would append the value again.
-    for _ in 1..crate::cleaner::values::BUSY_PASSES {
+    // While the copy is held, no file is cleaned for a few passes, and
+    // this one is left alone for longer: each try would append the value
+    // again.
+    let (pause, file_pause) = {
+        use crate::cleaner::values::{BUSY_FILE_PASSES, BUSY_PASSES};
+        (BUSY_PASSES, BUSY_FILE_PASSES)
+    };
+    assert!(pause < file_pause);
+    for _ in 1..file_pause {
         let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
         assert!(pass.cleaned.is_none(), "{pass:?}");
     }
     assert_eq!(state.stats().value_bytes_copied, cleaned.copied_bytes);
-    let again = cleaner.pass_values(&Cells(&db)).expect("a pass");
-    let (tried, busy) = again.cleaned.expect("the file is tried again");
-    assert_eq!((tried, busy.moved, busy.busy), (file, 0, 1));
-    for _ in 1..crate::cleaner::values::BUSY_PASSES {
-        cleaner.pass_values(&Cells(&db)).expect("a pass");
-    }
+    assert_eq!(state.stats().value_files_cleaned, 1);
 
     txn.roll_back();
     // The file goes, and so does the one that took the copy nobody

@@ -32,10 +32,15 @@ const MAX_TOKENS: usize = 8;
 /// else tells the cleaner of that.
 const ASK_AGAIN_AFTER: u32 = 16;
 
-/// For how many passes a file is left alone after a cleaning that moved
-/// nothing, because write transactions held copies of the pages of its
-/// values. Each try appends those values again, and the copies are dead.
+/// For how many passes no file is cleaned after a cleaning that moved
+/// nothing, because write transactions held copies of the pages of the
+/// file's values. Each try appends those values again, and the copies are
+/// dead: the next file may be held by the same transactions.
 pub(super) const BUSY_PASSES: u64 = 8;
+
+/// For how many passes that file itself is left alone: longer, so that
+/// the files after it have their turn before it is tried again.
+pub(super) const BUSY_FILE_PASSES: u64 = 4 * BUSY_PASSES;
 
 /// The bytes of the values of a value-log file: what follows its header.
 fn value_bytes(file: &LiveFile) -> u64 {
@@ -170,12 +175,12 @@ impl<'s> Cleaner<'s> {
             count(&counters.values_left, cleaned.gone + cleaned.busy);
             count(&counters.value_bytes_copied, cleaned.copied_bytes);
             self.wrote(cleaned.copied_bytes);
-            match cleaned.moved == 0 && cleaned.busy != 0 {
-                true => drop(
-                    work.busy_files
-                        .insert(file, work.value_passes + BUSY_PASSES),
-                ),
-                false => drop(work.busy_files.remove(&file)),
+            if cleaned.moved == 0 && cleaned.busy != 0 {
+                let now = work.value_passes;
+                work.busy_files.insert(file, now + BUSY_FILE_PASSES);
+                work.values_busy_until = now + BUSY_PASSES;
+            } else {
+                work.busy_files.remove(&file);
             }
         }
 
@@ -228,11 +233,15 @@ impl<'s> Cleaner<'s> {
     /// counted, they would have file after file cleaned for nothing while
     /// a pin keeps them.
     ///
-    /// A file whose last cleaning moved nothing, because write
-    /// transactions held copies of the pages of its values, is passed
-    /// over for a few passes, and the next one is taken.
+    /// After a cleaning that moved nothing, because write transactions
+    /// held copies of the pages of the file's values, no file is cleaned
+    /// for a few passes, and that file is passed over for longer: the
+    /// next one is taken first.
     fn worst_value_file(&self, work: &mut Work) -> Result<Option<FileId>, CleanerError> {
         let values = self.stores().values;
+        if work.value_passes < work.values_busy_until {
+            return Ok(None);
+        }
         let cleanable = values.cleanable(0);
         let dead_of = |len: u64, live: u64| len.saturating_sub(live);
         let (mut dead, mut all) = (0u64, 0u64);
@@ -302,17 +311,18 @@ impl<'s> Cleaner<'s> {
             values, versions, ..
         } = self.stores();
         let oldest_guard = versions.oldest_guard();
+        let before = pass.dropped.len();
         while let Some((retired, _)) = work
             .value_tokens
             .pop_front_if(|(_, epoch)| *epoch <= oldest_guard)
         {
             pass.dropped.extend(values.drop_empty(retired)?);
         }
-        if !pass.dropped.is_empty() {
-            count(
-                &self.state.counters.value_files_dropped,
-                pass.dropped.len() as u64,
-            );
+        // A pass looks twice: only what this look dropped is counted, and
+        // named no more.
+        let dropped = (pass.dropped.len() - before) as u64;
+        if dropped != 0 {
+            count(&self.state.counters.value_files_dropped, dropped);
             match values.commit(&mut *self.write_back.manifest()?) {
                 // The new manifest is in force, and a later replacement
                 // deletes the file.

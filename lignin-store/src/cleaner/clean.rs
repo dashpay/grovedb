@@ -39,6 +39,9 @@ pub struct Pass {
     pub bytes_moved: u64,
     /// Blocks that were copied and whose link was gone by then.
     pub blocks_lost: u64,
+    /// The bytes their copies take. They are written like the copies of
+    /// moved blocks, and count against the throttle as those do.
+    pub bytes_lost: u64,
     /// Segments that the pass retired: the page table points into them no
     /// more.
     pub retired: usize,
@@ -199,7 +202,9 @@ impl<'s> Cleaner<'s> {
     ///
     /// One pass runs at a time, and a second call waits for the first. A
     /// pass that finds the store as the pass before left it, with no
-    /// segment waiting, reads nothing.
+    /// segment waiting, does not read the page table: it looks at the
+    /// counts of the table and of write-back, the oldest pin, and which
+    /// segments there are and which have a writer.
     ///
     /// Whatever it returns, what it did stands, and it can be called
     /// again.
@@ -225,12 +230,14 @@ impl<'s> Cleaner<'s> {
             ..
         } = self.stores();
         let written = self.write_back.state().stats();
+        let extents = segments.extents();
         Seen {
             links: table.links(),
             pages: table.pages(),
             blocks_written: written.base_blocks + written.delta_blocks + written.links_refused,
             oldest_pin: versions.oldest_pin(),
-            segments: segments.extents().len(),
+            segments: extents.len(),
+            writers: extents.iter().filter(|extent| extent.has_writer).count(),
         }
     }
 
@@ -582,7 +589,7 @@ impl<'s> Cleaner<'s> {
             if work.unreadable.contains(&from.file) {
                 continue;
             }
-            if pass.bytes_moved >= self.state.config.max_pass_bytes {
+            if pass.bytes_moved + pass.bytes_lost >= self.state.config.max_pass_bytes {
                 pass.more = true;
                 break;
             }
@@ -595,6 +602,7 @@ impl<'s> Cleaner<'s> {
                 }
                 Ok(Moved::Lost(to)) => {
                     pass.blocks_lost += 1;
+                    pass.bytes_lost += u64::from(to.len);
                     count(&counters.blocks_lost, 1);
                     count(&counters.bytes_lost, u64::from(to.len));
                 }
@@ -883,7 +891,8 @@ pub(super) struct Chosen {
 /// segments that wait to be deleted already, is no more than the share at
 /// which a checkpoint is asked for
 /// ([`CleanerConfig::checkpoint_dead_percent`]). With nothing waiting, one
-/// segment is chosen whatever its size.
+/// segment is chosen whatever its size. A segment that does not fit is
+/// passed over for one further down that does.
 ///
 /// `out` are the segments that are retired, or were when `space` was
 /// read. They are left out of the sums, and so are the segments that
@@ -925,20 +934,23 @@ pub(super) fn victims(
         other_share.cmp(&one_share).then(one.file.cmp(&other.file))
     });
     let mut chosen = Chosen::default();
-    let mut waits = waiting;
+    let (mut waits, mut left_out) = (waiting, false);
     for segment in candidates {
         if !is_over(dead, all, config.target_dead_percent) {
             break;
         }
         let with_it = waits.saturating_add(segment.block_bytes);
         if waits != 0 && is_over(with_it, total, config.checkpoint_dead_percent) {
-            chosen.no_room = chosen.segments.is_empty();
-            break;
+            // It does not fit beside what waits. A smaller one further
+            // down may.
+            left_out = true;
+            continue;
         }
         chosen.segments.push(segment.file);
         dead -= segment.dead_bytes();
         all -= segment.dead_bytes();
         waits = with_it;
     }
+    chosen.no_room = left_out && chosen.segments.is_empty();
     chosen
 }

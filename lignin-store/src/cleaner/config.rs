@@ -51,8 +51,9 @@ pub struct CleanerConfig {
     /// it is not held to the target.
     pub min_segment_len: u64,
     /// The throttle: the most bytes of blocks, as they are stored, that
-    /// one pass moves. With [`Self::idle`] it bounds what the cleaner
-    /// writes in a second.
+    /// one pass writes, and one block more: a pass stops moving once it
+    /// has written that many. With [`Self::idle`] it bounds what the
+    /// cleaner writes in a second.
     pub max_pass_bytes: u64,
     /// The length at which the segment that takes the moved blocks is
     /// sealed and the next one begun.
@@ -74,9 +75,15 @@ impl CleanerConfig {
     /// in it, and none before it holds 64 KiB; move at most 8 MiB in a
     /// pass, into segments of 64 MiB; sleep 100 ms between passes.
     ///
-    /// With these, the dead space of a store with no reader on an old
-    /// version stays below 20 in a hundred: 14 that the cleaner leaves,
-    /// and at most 4 more in what was emptied and waits to be deleted.
+    /// With these, the dead space of a store stays below 20 in a hundred
+    /// under a steady load of commits, as read after a pass of the
+    /// cleaner: 14 that the cleaner leaves, and at most 4 more in what
+    /// was emptied and waits to be deleted. That is for a store with no
+    /// reader on an old version, no operation and no checkpoint of the
+    /// database that keeps files for long, and blocks that are large
+    /// against [`Self::min_segment_len`]. What a burst of commits kills
+    /// faster than [`Self::max_pass_bytes`] and [`Self::idle`] let the
+    /// cleaner move shows until the cleaner has caught up.
     pub const fn new() -> Self {
         Self {
             target_dead_percent: DEFAULT_TARGET_DEAD_PERCENT,

@@ -230,17 +230,23 @@ fn a_round_chooses_no_more_than_can_wait_to_be_deleted() {
         pinned_bytes: 0,
         retired: false,
     };
-    // Ten segments of 1000 bytes. Of 10,000 bytes 3,450 are dead: 700 in
-    // the first, 50 fewer in each one up to the sixth, none in the rest.
+    // Ten segments of 1000 bytes: 700 bytes are dead in the first, 50
+    // fewer in each one up to the sixth, none in the rest. And one of 400
+    // bytes, half of it dead. Of 10,400 bytes 3,650 are dead.
     let live = |raw: u32| match raw {
         1..=6 => 250 + 50 * u64::from(raw),
         _ => 1000,
     };
+    let mut segments: Vec<SegmentSpace> = (1..=10).map(|raw| segment(raw, live(raw))).collect();
+    segments.push(SegmentSpace {
+        block_bytes: 400,
+        ..segment(11, 200)
+    });
     let space = Space {
-        segments: (1..=10).map(|raw| segment(raw, live(raw))).collect(),
+        segments,
         oldest_pin: None,
     };
-    assert_eq!((space.block_bytes(), space.dead_bytes()), (10_000, 3450));
+    assert_eq!((space.block_bytes(), space.dead_bytes()), (10_400, 3650));
     let none = BTreeSet::new();
     let chosen = |target, room, waiting| {
         let config = CleanerConfig {
@@ -252,20 +258,23 @@ fn a_round_chooses_no_more_than_can_wait_to_be_deleted() {
         let files: Vec<u32> = chosen.segments.iter().map(|file| file.get()).collect();
         (files, chosen.no_room)
     };
-    // With room for everything: the five worst, after which 450 bytes of
-    // 7,000 are dead.
+    // With room for everything: the five worst, after which 650 bytes of
+    // 7,400 are dead.
     assert_eq!(chosen(10, 100, 0), (vec![1, 2, 3, 4, 5], false));
-    // 2,500 bytes may wait: two segments, and a third would be too many.
-    assert_eq!(chosen(10, 25, 0), (vec![1, 2], false));
-    // 1,000 wait already: one more.
-    assert_eq!(chosen(10, 25, 1000), (vec![1], false));
-    // 2,000 wait already: none, and that is why.
-    assert_eq!(chosen(10, 25, 2000), (vec![], true));
+    // 2,600 bytes may wait: two of the large ones, and then the small one,
+    // which fits where a third large one does not.
+    assert_eq!(chosen(10, 25, 0), (vec![1, 2, 11], false));
+    // 1,000 wait already: one large one, and the small one.
+    assert_eq!(chosen(10, 25, 1000), (vec![1, 11], false));
+    // 2,000 wait already: no large one fits, and the small one does.
+    assert_eq!(chosen(10, 25, 2000), (vec![11], false));
+    // 2,400 wait already: none fits, and that is why none is chosen.
+    assert_eq!(chosen(10, 25, 2400), (vec![], true));
     // Nothing waits, and no segment fits: one is taken all the same.
     assert_eq!(chosen(10, 5, 0), (vec![1], false));
     // Within the target nothing is chosen, whatever room there is.
-    assert_eq!(chosen(35, 100, 0), (vec![], false));
-    assert_eq!(chosen(35, 25, 2000), (vec![], false));
+    assert_eq!(chosen(36, 100, 0), (vec![], false));
+    assert_eq!(chosen(36, 25, 2400), (vec![], false));
 }
 
 /// A sealed segment whose footer cannot be read is accounted for by the

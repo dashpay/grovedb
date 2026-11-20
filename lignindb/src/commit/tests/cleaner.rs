@@ -342,6 +342,12 @@ fn run(blocks: u64, from: u64, cleaned: bool) -> Measured {
     );
     if cleaned {
         assert!(did.blocks_moved > 0 && did.segments_dropped > 0, "{did:?}");
+        // The value log is held to its bound by cleaning as well: values
+        // die when a page is split and its cells are carried.
+        assert!(
+            did.values_moved > 0 && did.value_files_dropped > 0,
+            "{did:?}"
+        );
     }
     check_whole(&world, &db, &versions);
     let operation_said = {

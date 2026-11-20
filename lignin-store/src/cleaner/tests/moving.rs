@@ -157,6 +157,45 @@ fn a_block_that_loses_its_link_while_it_is_copied_is_not_brought_back() {
     db.check_cold();
 }
 
+/// A copy whose link was gone when it was to be switched was written all
+/// the same, and counts against the throttle: a pass does not go on
+/// copying because its copies come to nothing.
+#[test]
+fn a_copy_whose_link_is_gone_counts_against_the_throttle() {
+    let db = std::sync::Arc::new(churned(13));
+    db.versions.pin(db.latest());
+    for round in 14..=16 {
+        churn(&db, round);
+    }
+    // Fewer bytes than the smallest block: one copy to a pass.
+    let state = CleanerState::new(CleanerConfig {
+        max_pass_bytes: 40,
+        ..moving_only()
+    });
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let raced = db.clone();
+    let mut copied = 0;
+    let meanwhile = super::super::state::AtSwitch(Box::new(move |id, _| {
+        copied += 1;
+        assert_eq!(copied, 1, "a second block was copied in the pass");
+        raced.versions.unpin();
+        for byte in 51..=53 {
+            raced.commit(&[hash((id.get(), 1), byte)]);
+            raced.wb().pass().expect("a pass");
+        }
+    }));
+    *state.at_switch.lock().expect("the hook") = Some(meanwhile);
+    let pass = cleaner.pass().expect("a pass");
+    *state.at_switch.lock().expect("the hook") = None;
+    assert_eq!((pass.blocks_lost, pass.blocks_moved), (1, 0), "{pass:?}");
+    assert!(pass.bytes_lost > 40 && pass.more, "{pass:?}");
+    assert_eq!(state.stats().bytes_lost, pass.bytes_lost);
+    // The passes after it finish the work.
+    let done = settle(&cleaner);
+    assert!(done.blocks_moved > 0, "{done:?}");
+    db.check_cold();
+}
+
 /// The throttle: a pass moves no more bytes than it may, says that more
 /// is to do, and the passes after it finish.
 #[test]

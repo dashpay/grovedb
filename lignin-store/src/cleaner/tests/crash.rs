@@ -57,7 +57,7 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// script's and of the cleaner's asking, between which segments wait.
 pub(super) fn life() -> Vec<Act> {
     use Act::{Clean, CleanValues, Store};
-    vec![
+    let mut acts = vec![
         Store(commit(&[
             insert((1, 1), b"a", long(1, 400)),
             insert((1, 2), b"b", long(2, 400)),
@@ -92,7 +92,12 @@ pub(super) fn life() -> Vec<Act> {
         Store(Step::Hold(3)),
         CleanValues,
         Store(Step::Release),
-        CleanValues,
+    ];
+    // The file is left alone for a while after a move that was put off.
+    // The passes in between change nothing, and the one after them makes
+    // the move.
+    acts.extend((0..crate::cleaner::values::BUSY_FILE_PASSES).map(|_| CleanValues));
+    acts.extend([
         Store(commit(&[hash((3, 1), 5)])),
         Store(Step::Pass),
         Clean,
@@ -106,7 +111,8 @@ pub(super) fn life() -> Vec<Act> {
         Store(Step::Pass),
         Clean,
         CleanValues,
-    ]
+    ]);
+    acts
 }
 
 /// A new store on `fs` whose value-log files are full after two values.
@@ -279,6 +285,79 @@ fn clean_on(state: &SimVfs, ran: &Ran, sequels: &mut Sequels, tally: &mut Tally)
     sequels.moved += stats.blocks_moved;
     sequels.trimmed += stats.links_trimmed;
     check(&Ran::of(state, &db), &SECOND, tally);
+}
+
+/// The replay that these tests check crash images with keeps a page whose
+/// id was freed after the version a table checkpoint covers and given to
+/// a new page that the checkpoint's copy of the table already has
+/// (`page-table.md` K3). The chain holds what the freeing commit did, and
+/// more, so the free is not replayed over the new page.
+///
+/// A checkpoint copies the table after it has fixed the version it
+/// covers. A commit that frees a page, one that makes a page under its
+/// id, and a pass of write-back can all come in between, and with the
+/// threads of these tests they do.
+#[test]
+fn a_page_made_again_before_a_checkpoint_copied_its_chain_recovers_as_the_new_page() {
+    use crate::table::{CountSample, ValueCount};
+
+    let fs = sim_fs(SimConfig::new(31));
+    let db = new_store(&fs);
+    db.commit(&[
+        insert((1, 1), b"a", inline(b"the first page")),
+        insert((2, 1), b"b", inline(b"beside it")),
+    ]);
+    db.wb().pass().expect("a pass");
+
+    // A checkpoint fixes the version it covers, samples the counts and
+    // writes its mark.
+    let covers = db.latest();
+    let step = db.values.step().expect("the counts");
+    let counts = step.counts();
+    let place = db.log.append_mark(covers).expect("a mark").end;
+    drop(step);
+
+    // Before it copies the table, the page is freed, its id is given to
+    // a new page, and write-back links the block of the new page.
+    let freed = db.commit(&[free(1)]);
+    db.commit(&[insert((1, 1), b"c", inline(b"the second page"))]);
+    db.wb().pass().expect("a pass");
+    let newest = db.table.newest(page(1)).expect("the new page has a link");
+    assert!(
+        newest.version > freed && newest.location().is_some(),
+        "{newest:?}"
+    );
+
+    let sample = CountSample {
+        place: Some(place),
+        counts: (counts.iter())
+            .map(|count| ValueCount {
+                file: count.file,
+                values: count.values,
+                bytes: count.bytes,
+                miscounted: count.miscounted,
+            })
+            .collect(),
+    };
+    let info = (db.checkpoints)
+        .write(&db.table, covers, &sample, || db.log.end())
+        .expect("the copy of the table");
+    assert!(info.covers() < freed);
+    let durable = db.wb().sync_log().expect("the log is durable");
+    {
+        let mut manifest = db.manifest.lock().expect("the manifest");
+        (db.checkpoints)
+            .install(&info, durable, &mut manifest, &db.segments)
+            .expect("the checkpoint is named");
+    }
+
+    // Every state a crash leaves now recovers from that checkpoint, to
+    // the new page.
+    let mut tally = Tally::default();
+    check(&Ran::of(&fs, &db), &PLANS, &mut tally);
+    assert!(tally.states > 0, "{tally:?}");
+    // Each of them replayed commits on the checkpoint.
+    assert_eq!(tally.replayed, tally.states, "{tally:?}");
 }
 
 /// A few states of each crash, for a second session.
