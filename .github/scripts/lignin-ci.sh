@@ -455,24 +455,23 @@ stress | tsan)
     export LIGNIN_STRESS_SECONDS=$seconds
     export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/$1
     long=(-p lignindb --release --lib db::tests::stress::an_hour_of_stress)
-    if [ "$1" = stress ]; then
-        say "the stress test of the engine for $seconds s"
-        cargo test "${long[@]}" -- --ignored --nocapture
-        exit
-    fi
-    # ThreadSanitizer needs the standard library built with it, which
-    # asks for a target by name. A test binary in which it reported a data
-    # race ends with a failure, whatever its tests said.
-    host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
-    [ -n "$host" ] || fail "the toolchain $nightly names no host"
-    export RUSTFLAGS="${RUSTFLAGS:-} -Zsanitizer=thread"
-    sanitized() { cargo "+$nightly" test -Zbuild-std --target "$host" "$@"; }
-    while read -r crate tests; do
-        say "ThreadSanitizer: cargo test -p $crate --release --lib $tests"
-        found=$(sanitized -p "$crate" --release --lib "$tests" -- --list)
-        grep -q ': test$' <<<"$found" || fail "no test of $crate matches $tests"
-        sanitized -p "$crate" --release --lib "$tests"
-    done <<'THREADED'
+    runner=(cargo test)
+    under=
+    if [ "$1" = tsan ]; then
+        # ThreadSanitizer needs the standard library built with it, which
+        # asks for a target by name. A test binary in which it reported a
+        # data race ends with a failure, whatever its tests said.
+        host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
+        [ -n "$host" ] || fail "the toolchain $nightly names no host"
+        export RUSTFLAGS="${RUSTFLAGS:-} -Zsanitizer=thread"
+        runner=(cargo "+$nightly" test -Zbuild-std --target "$host")
+        under="ThreadSanitizer: "
+        while read -r crate tests; do
+            say "ThreadSanitizer: cargo test -p $crate --release --lib $tests"
+            found=$("${runner[@]}" -p "$crate" --release --lib "$tests" -- --list)
+            grep -q ': test$' <<<"$found" || fail "no test of $crate matches $tests"
+            "${runner[@]}" -p "$crate" --release --lib "$tests"
+        done <<'THREADED'
 lignin-store cache::tests::
 lignindb snapshot::tests::
 lignindb scope::tests::
@@ -482,8 +481,11 @@ lignindb db::tests::reclaim::
 lignindb db::tests::kept::
 lignindb commit::tests::cleaner::the_cleaner_runs_beside
 THREADED
-    say "ThreadSanitizer: the stress test of the engine for $seconds s"
-    sanitized "${long[@]}" -- --ignored --nocapture
+    fi
+    say "${under}the stress test of the engine for $seconds s"
+    found=$("${runner[@]}" "${long[@]}" -- --ignored --list)
+    grep -q ': test$' <<<"$found" || fail "no test of lignindb is the long stress test"
+    "${runner[@]}" "${long[@]}" -- --ignored --nocapture
     ;;
 
 *)
