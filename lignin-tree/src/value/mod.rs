@@ -197,8 +197,13 @@
 //! So **every value pointer a cell stops holding is reported in the same
 //! commit**: it is in the commit's group as a released pointer, and it
 //! leaves the count of its file with the commit. A commit acquires no
-//! pointer. A value it wrote is counted by the page step of write-back
-//! that places it (PV6, FL7).
+//! pointer for a value that this type holds. A value it wrote is counted
+//! by the page step of write-back that places it (PV6, FL7). The values of
+//! a bulk load are not held here: its cells are written with pointers, and
+//! what its commit does with them is the engine's (`transactions.md` LD5).
+//! A pointer that such a load of the same scope gave a cell, and that the
+//! cell stopped holding before the commit, is reported here like any
+//! other; the engine leaves it out of the group, since no count had it.
 //!
 //! # Reading
 //!
@@ -360,6 +365,6 @@ pub use error::ValueError;
 pub use order::{scan_order, Locality, RegroupPolicy};
 pub use owners::{Grouped, Regrouped, TreeOwners};
 pub use policy::InlinePolicy;
-pub use read::{read_value, ValueBuf, ValueSource};
+pub use read::{read_placed, read_value, ValueBuf, ValueSource};
 pub use regroup::Regrouping;
 pub use write::{ScopeReader, TreeValues};

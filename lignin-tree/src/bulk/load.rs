@@ -4,7 +4,7 @@ use std::vec::Drain;
 
 use lignin_format::{
     tree_page::{CellContent, CellValue, Hash, HashField, Side, TreeCell, TreeLink, TreePage},
-    value_log::PendingValue,
+    value_log::{PendingValue, ValuePlace},
     CellAddress, PageId, SlotId,
 };
 use lignin_store::load::FRAME_FORMAT;
@@ -138,6 +138,9 @@ struct Open {
     hash: Hash,
     key_len: u8,
     pending: Option<PendingValue>,
+    /// What the cell holds in the place of its value, once its piece goes
+    /// into a page ([`LoadValues::place`]).
+    place: Option<ValuePlace>,
     left: Option<Child>,
     right: Option<Child>,
     hosted: Box<[Option<Child>]>,
@@ -514,6 +517,7 @@ impl Loader {
             hash,
             key_len: node.key.len() as u8,
             pending,
+            place: None,
             left,
             right,
             hosted: hosted.into(),
@@ -689,7 +693,8 @@ impl Loader {
             filling.used += node.size as usize;
             self.counters.cell_bytes += u64::from(node.size);
             if let Some(pending) = node.pending {
-                values.placed(pending, filling.page);
+                let place = values.place(pending, filling.page);
+                node.place = Some(place.map_err(LoadError::Value)?);
                 self.counters.values += 1;
                 self.counters.value_bytes += u64::from(pending.value_len());
             }
@@ -718,7 +723,11 @@ impl Loader {
                     left: link(Side::Left, node.left),
                     right: link(Side::Right, node.right),
                     hosted_roots: roots,
-                    value: cell.value(),
+                    value: match node.place {
+                        Some(ValuePlace::Placed(pointer)) => CellValue::OutOfLine(pointer),
+                        Some(ValuePlace::Pending(pending)) => CellValue::Pending(pending),
+                        None => cell.value(),
+                    },
                     fragment_root: index == root,
                 })?;
                 if handle.address() != node.at {

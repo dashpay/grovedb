@@ -2,7 +2,11 @@
 
 use std::fmt;
 
-use lignin_format::{tree_page::Hash, value_log::PendingValue, CellAddress, PageId};
+use lignin_format::{
+    tree_page::Hash,
+    value_log::{PendingValue, ValuePlace},
+    CellAddress, PageId,
+};
 
 use crate::{
     fragment::{ValueWrite, Values},
@@ -118,14 +122,31 @@ pub struct LoadedPage {
 /// The values of the cells a load builds.
 ///
 /// A load gives every value to [`Self::hold`] when its node arrives, and
-/// says with [`Values::placed`] which page owns a value out of line, when
-/// the node's cell goes into its page. It calls nothing else of
+/// asks [`Self::place`] what the cell of a value out of line holds when
+/// the node's cell goes into its page, which by default says with
+/// [`Values::placed`] which page owns the value. It calls nothing else of
 /// [`Values`].
 pub trait LoadValues: Values {
     /// Takes the value of a node that is being loaded. Returns `None` for
     /// a value that is stored in its cell, and for one out of line what
     /// stands in the cell until the value has its place.
     fn hold(&mut self, value: &[u8]) -> Result<Option<PendingValue>, Refusal>;
+
+    /// Says what the cell of the value `pending`, which [`Self::hold`]
+    /// took, is written with when it goes into `page`. A load calls this
+    /// once for each value out of line, right before it writes the
+    /// fragment the cell is in, and writes the cell with what it returns.
+    ///
+    /// The default leaves the pending value in the cell and tells
+    /// [`Values::placed`], so the value waits for its commit as that of any
+    /// write does. A load that puts its values into the value log as their
+    /// cells get their pages appends the value for `page` here and returns
+    /// the pointer: the cell holds it from its first write on. A place of
+    /// another length than the value is refused by the page.
+    fn place(&mut self, pending: PendingValue, page: PageId) -> Result<ValuePlace, Refusal> {
+        self.placed(pending, page);
+        Ok(ValuePlace::Pending(pending))
+    }
 }
 
 impl LoadValues for TreeValues {
