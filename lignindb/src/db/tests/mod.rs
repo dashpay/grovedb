@@ -13,6 +13,8 @@ mod reads;
 mod reclaim;
 mod reopen;
 mod room;
+mod schedules;
+mod stress;
 mod wipe;
 mod writes;
 
