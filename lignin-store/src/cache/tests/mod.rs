@@ -1,6 +1,8 @@
 mod basic;
 mod errors;
 mod flush;
+#[cfg(not(loom))]
+mod measure;
 mod model;
 mod private;
 mod races;

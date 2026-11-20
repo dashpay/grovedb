@@ -10,8 +10,9 @@
 //!   no documentation test
 //! - every library forbids unsafe code, the two that may hold some deny it,
 //!   and the one `allow` is the one on the buffer pool's `frame` module
-//! - every unsafe block and `unsafe impl` has a `SAFETY:` comment directly
-//!   above it, and every `unsafe fn` a `# Safety` section
+//! - every unsafe block, `unsafe impl` and `unsafe extern` block has a
+//!   `SAFETY:` comment directly above it, and every `unsafe fn` a
+//!   `# Safety` section
 //! - the unsafe code of the buffer pool is, site for site, what the audit's
 //!   inventory lists, and every test the inventory names exists and is not
 //!   ignored
@@ -432,8 +433,12 @@ enum Kind {
     Block,
     Impl,
     Fn,
-    /// Anything else the keyword can open: an `extern` block, a trait, an
-    /// attribute. No audited file has one.
+    /// An `unsafe extern` block: the declarations of functions that are
+    /// defined outside the crate, which the compiler takes on trust. An
+    /// `unsafe extern fn` is a function ([`Kind::Fn`]).
+    Extern,
+    /// Anything else the keyword can open: a trait, an attribute. No
+    /// audited file has one.
     Other,
 }
 
@@ -524,10 +529,18 @@ fn sites(source: &str) -> Vec<Site> {
     for (at, (token, line)) in tokens.iter().enumerate() {
         match token {
             Token::Word(word) if word == "unsafe" => {
-                let kind = match tokens.get(at + 1).map(|(next, _)| next) {
-                    Some(Token::Punct('{')) => Kind::Block,
-                    Some(Token::Word(next)) if next == "impl" => Kind::Impl,
+                // The name of an ABI is a string, which is blanked: what
+                // follows `extern` is the brace of a block of declarations
+                // or the `fn` of a function.
+                let after_abi = match tokens.get(at + 1) {
+                    Some((Token::Word(next), _)) if next == "extern" => at + 2,
+                    _ => at + 1,
+                };
+                let kind = match tokens.get(after_abi).map(|(next, _)| next) {
+                    Some(Token::Punct('{')) if after_abi == at + 1 => Kind::Block,
+                    Some(Token::Punct('{')) => Kind::Extern,
                     Some(Token::Word(next)) if next == "fn" => Kind::Fn,
+                    Some(Token::Word(next)) if next == "impl" && after_abi == at + 1 => Kind::Impl,
                     _ => Kind::Other,
                 };
                 let of = scopes.iter().rev().find_map(|scope| match scope {
@@ -535,7 +548,7 @@ fn sites(source: &str) -> Vec<Site> {
                     _ => None,
                 });
                 let function = if kind == Kind::Fn {
-                    match tokens.get(at + 2) {
+                    match tokens.get(after_abi + 1) {
                         Some((Token::Word(function), _)) => Some(function.clone()),
                         _ => Some(String::new()),
                     }
@@ -611,8 +624,9 @@ fn sites(source: &str) -> Vec<Site> {
 
 /// What is wrong with the comments of a source's unsafe code. Nothing, if:
 ///
-/// - every block and `unsafe impl` has a comment directly above its line,
-///   with only attributes between, one of whose lines begins `// SAFETY:`
+/// - every block, `unsafe impl` and `unsafe extern` block has a comment
+///   directly above its line, with only attributes between, one of whose
+///   lines begins `// SAFETY:`
 /// - every `unsafe fn` that is not a trait's method has a `# Safety`
 ///   heading in the documentation directly above it
 /// - no two of them share a line, and so a comment
@@ -639,7 +653,7 @@ fn undocumented(source: &str) -> Vec<String> {
         .filter(|site| {
             let alone = taken.insert(site.line);
             let documented = match site.kind {
-                Kind::Block | Kind::Impl => above(site.line)
+                Kind::Block | Kind::Impl | Kind::Extern => above(site.line)
                     .iter()
                     .any(|comment| comment.starts_with("// SAFETY:")),
                 Kind::Fn => {
@@ -821,6 +835,7 @@ fn keys(sites: &[Site]) -> Vec<String> {
                 Kind::Block => format!("{} | block {count}", site.name),
                 Kind::Fn => format!("{} | unsafe fn", site.name),
                 Kind::Impl => format!("{} | unsafe impl", site.name),
+                Kind::Extern => format!("{} | unsafe extern", site.name),
                 Kind::Other => format!("{} | other", site.name),
             }
         })
@@ -1329,6 +1344,25 @@ fn far_from_its_comment() {
 
 /// # Safety is named in passing, with no section.
 unsafe fn loosely_documented() {}
+
+fn calls_out() {
+    // SAFETY: a comment on declarations.
+    unsafe extern "C" {
+        fn declared(len: usize) -> i32;
+    }
+    // SAFETY: a comment.
+    unsafe { declared(0) };
+}
+
+unsafe trait Trusted {}
+
+/// # Safety
+///
+/// A section.
+unsafe extern "C" fn exported() {}
+
+// SAFETY: a comment is not the section a function needs.
+unsafe extern "C" fn exported_with_a_comment() {}
 "##;
     let found = sites(source);
     assert_eq!(
@@ -1345,12 +1379,17 @@ unsafe fn loosely_documented() {}
             "Counting::alloc | block 1",
             "free | unsafe fn",
             "free_block | block 1",
-            " | other",
+            " | unsafe extern",
             "two_on_a_line | block 1",
             "two_on_a_line | block 2",
             "under_a_string | block 1",
             "far_from_its_comment | block 1",
             "loosely_documented | unsafe fn",
+            "calls_out | unsafe extern",
+            "calls_out | block 1",
+            " | other",
+            "exported | unsafe fn",
+            "exported_with_a_comment | unsafe fn",
         ]
     );
     assert!(sites("fn a_raw_name(r#unsafe: u8) -> u8 { r#unsafe }").is_empty());
@@ -1366,11 +1405,13 @@ unsafe fn loosely_documented() {}
             "line 43: Impl impl GlobalAlloc for Counting",
             "line 46: Block Counting::alloc",
             "line 50: Fn free",
-            "line 58: Other ",
+            "line 58: Extern ",
             "line 62: Block two_on_a_line",
             "line 69: Block under_a_string",
             "line 75: Block far_from_its_comment",
             "line 79: Fn loosely_documented",
+            "line 90: Other ",
+            "line 98: Fn exported_with_a_comment",
         ]
     );
 }

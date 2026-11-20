@@ -255,10 +255,28 @@
 //!
 //! # Memory
 //!
-//! The configured size is allocated when the pool is made: the frames,
-//! their headers, the table and the lanes ([`BufferPool::fixed_memory`]).
+//! The pool asks for its memory when it is made: as many whole frames as
+//! the configured size holds, their headers, the table and the lanes
+//! ([`BufferPool::fixed_memory`]). What it counts is the bytes it asks for.
+//! The allocator and the system may each take more for a request, which is
+//! not counted: the system takes a mapping in whole pages of its own size.
 //! On Linux and on Apple's systems no lock of the pool adds to it: none is
 //! allocated when it is first taken.
+//!
+//! The headers, the table and the lanes are allocated and written then.
+//! The frames are asked for zeroed, and the pool does not write them when
+//! it is made. A pool with less than a megabyte of frames asks the
+//! allocator for them. On Linux (x86-64 and AArch64) and on macOS, with
+//! 64-bit pointers, a pool with a megabyte of frames or more asks the
+//! system instead, for a mapping of its own
+//! ([`BufferPool::mapped_memory`]), which the system gives zeroed. On any
+//! other system, and where the system refuses a mapping, those frames are
+//! the allocator's too. Either way the frames are counted in the fixed
+//! memory from the start, used or not. What zeroed memory costs its giver,
+//! and when, is not the pool's to say.
+//!
+//! Every frame starts at a multiple of 4,096 bytes.
+//!
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page
 //! version that has no pin, chosen by a clock that passes over a frame once
@@ -335,7 +353,8 @@
 //! # Unsafe code
 //!
 //! The pool's unsafe code is in `cache/frame.rs` and nowhere else: the
-//! allocation of the frames, the walk of a reader that holds no lock, and
+//! allocation and the mapping of the frames, the walk of a reader that
+//! holds no lock, and
 //! the access to a frame's bytes through a pin, a latch or an owner. The
 //! rules that make it sound are at the top of that file, and what they rest
 //! on is kept inside it and in `cache/lanes.rs`, which has no unsafe code:

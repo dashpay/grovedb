@@ -4,6 +4,12 @@
 //!
 //! The test binary runs under an allocator that counts, for the calling
 //! thread, every allocation and the bytes that are allocated now.
+//!
+//! The frames of a pool that has a megabyte of them or more are not the
+//! allocator's on Linux (x86-64 and AArch64) and on macOS, with 64-bit
+//! pointers, unless the system refuses: they are a mapping of the pool's
+//! own. For such a pool the allocator's count is of everything else, and
+//! the pool says how long its mapping is.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -236,6 +242,67 @@ fn the_pool_allocates_its_configured_size_and_the_frames_that_are_pinned() {
     drop(copies);
     assert_eq!(pool.overflow_frames(), 0);
     assert_eq!(used(&pool), pool.fixed_memory());
+
+    drop(pool);
+    assert_eq!(allocated(), before, "the pool gave everything back");
+}
+
+/// Whether this build maps the frames of a large pool: Linux on x86-64 and
+/// on AArch64, and macOS, each with 64-bit pointers.
+const MAPS: bool = cfg!(all(
+    target_pointer_width = "64",
+    any(
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        ),
+        target_os = "macos",
+    ),
+));
+
+/// A pool with a megabyte of frames or more: where a build maps
+/// ([`MAPS`]), its frames are a mapping and the allocator gives the rest.
+///
+/// What is measured: the bytes the allocator gave, counted at the
+/// allocator, and the length the pool says it mapped are together
+/// `fixed_memory()`, exactly, and stay so while pages go through the pool.
+/// The mapping is all of the frames or none of them. That it is there
+/// while the pool lives and gone when the pool is dropped is the test of
+/// `cache_mapping.rs`.
+#[test]
+fn a_large_pool_allocates_its_fixed_memory_less_the_frames_it_maps() {
+    let capacity = if cfg!(miri) { 2 << 20 } else { 64 << 20 };
+    let before = allocated();
+    let pool = BufferPool::new(PoolConfig {
+        page_size: PageSize::new(PAGE_SIZE).expect("a page size"),
+        capacity,
+    })
+    .expect("holds frames");
+    let used = |_: &BufferPool| (allocated() - before) as usize;
+    let frames = pool.frames() * PAGE_SIZE;
+    assert!(frames >= 1 << 20, "{frames} bytes of frames");
+    let mapped = pool.mapped_memory();
+    assert_eq!(mapped, if MAPS { frames } else { 0 });
+
+    assert_eq!(used(&pool) + mapped, pool.fixed_memory());
+    assert!(pool.fixed_memory() <= pool.capacity());
+    assert_eq!(pool.memory(), pool.fixed_memory());
+
+    // Pages go through the pool, more of them than it has frames where
+    // that is not too slow, and it takes nothing more.
+    let pages = if cfg!(miri) {
+        16
+    } else {
+        pool.frames() as u32 + 16
+    };
+    for raw in 1..=pages {
+        let found = fetch(&pool, raw);
+        assert_eq!((found[0], found[PAGE_SIZE - 1]), (raw as u8, raw as u8));
+        drop(found);
+        assert_eq!(used(&pool) + mapped, pool.fixed_memory());
+    }
+    assert_eq!(pool.overflow_frames(), 0);
+    assert_eq!(pool.mapped_memory(), mapped);
 
     drop(pool);
     assert_eq!(allocated(), before, "the pool gave everything back");

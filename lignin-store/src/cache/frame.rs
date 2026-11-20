@@ -1313,6 +1313,14 @@ impl ChainWrite<'_> {
     }
 }
 
+/// The layout of `count` frames of `frame_len` bytes side by side.
+///
+/// A block of frames is asked for with an alignment of 4,096 bytes,
+/// whatever the size of a store's pages, each of which is a multiple of
+/// that. So every frame of a store's pages starts at a multiple of 4,096
+/// bytes, and that is all that is promised of where it starts. A block of
+/// frames whose length is no multiple of 4,096, which only tests have, is
+/// asked for with an alignment of 64 bytes.
 fn layout(frame_len: usize, count: usize) -> Result<Layout, CacheError> {
     let align = if frame_len.is_multiple_of(4096) {
         4096
@@ -1332,19 +1340,236 @@ fn allocate(layout: Layout) -> NonNull<u8> {
     NonNull::new(memory).unwrap_or_else(|| alloc::handle_alloc_error(layout))
 }
 
+/// A block from the allocator, asked for zeroed, which this value gives back
+/// when it is dropped.
+struct Allocated {
+    start: NonNull<u8>,
+    layout: Layout,
+}
+
+impl Allocated {
+    fn new(layout: Layout) -> Self {
+        Self {
+            start: allocate(layout),
+            layout,
+        }
+    }
+}
+
+impl Drop for Allocated {
+    fn drop(&mut self) {
+        // SAFETY: `start` was allocated with `layout` in `new`, and only
+        // this value frees it, once. Whoever holds this value keeps no
+        // pointer into the block in use beyond its drop (the arena drops
+        // its headers first).
+        unsafe { alloc::dealloc(self.start.as_ptr(), self.layout) };
+    }
+}
+
+use mapping::Mapped;
+
+/// Memory that is a mapping of its own, on the systems whose call for one
+/// this file declares: Linux on x86-64 and on AArch64, and macOS, each with
+/// 64-bit pointers.
+///
+/// The declarations of `mmap` and `munmap` and the numbers of their flags
+/// are those of these systems' C libraries, written out here because the
+/// crate depends on no binding to them. No other system is guessed at: on
+/// any other the type below has no value.
+#[cfg(any(
+    all(
+        target_pointer_width = "64",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_pointer_width = "64", target_os = "macos"),
+))]
+mod mapping {
+    use std::{
+        alloc::Layout,
+        ffi::{c_int, c_void},
+        ptr::{self, NonNull},
+    };
+
+    /// A mapping of memory that is no file's, which this value made and
+    /// asks the system to unmap when it is dropped. The system gives such
+    /// memory zeroed, and this value writes none of it.
+    pub(super) struct Mapped {
+        start: NonNull<u8>,
+        len: usize,
+    }
+
+    impl Mapped {
+        /// A mapping of `layout.size()` bytes for reading and writing, or
+        /// `None` if the system refuses one.
+        ///
+        /// A mapping starts at a multiple of the system's page size, which
+        /// is at least 4,096 bytes on these systems and so at least the
+        /// alignment of any block of frames (`layout`).
+        pub(super) fn new(layout: Layout) -> Option<Self> {
+            const PROT_READ: c_int = 1;
+            const PROT_WRITE: c_int = 2;
+            const MAP_PRIVATE: c_int = 2;
+            const MAP_ANONYMOUS: c_int = if cfg!(target_os = "macos") {
+                0x1000
+            } else {
+                0x20
+            };
+            // SAFETY: `mmap` as POSIX has it and as the C library of each
+            // of these systems declares it. The module is compiled for
+            // 64-bit pointers only, where `size_t` is `usize` and `off_t`
+            // is `i64` on each of them.
+            unsafe extern "C" {
+                fn mmap(
+                    addr: *mut c_void,
+                    len: usize,
+                    prot: c_int,
+                    flags: c_int,
+                    fd: c_int,
+                    offset: i64,
+                ) -> *mut c_void;
+            }
+            assert!(layout.size() > 0, "a frame has at least one byte");
+            // SAFETY: a new mapping of no file, private to the process, at
+            // an address the system chooses. It takes the place of no
+            // memory that anything has, and the call reads and writes none.
+            let start = unsafe {
+                mmap(
+                    ptr::null_mut(),
+                    layout.size(),
+                    PROT_READ | PROT_WRITE,
+                    MAP_PRIVATE | MAP_ANONYMOUS,
+                    -1,
+                    0,
+                )
+            };
+            // The call's answer for a refusal is the address of all ones
+            // (`MAP_FAILED`).
+            if start.addr() == usize::MAX {
+                return None;
+            }
+            let start = NonNull::new(start.cast::<u8>())
+                .expect("the system chooses the address, and never the address 0");
+            let mapped = Self {
+                start,
+                len: layout.size(),
+            };
+            assert!(
+                start.addr().get().is_multiple_of(layout.align()),
+                "a mapping starts at a multiple of the system's page size"
+            );
+            Some(mapped)
+        }
+
+        /// The first byte of the mapping. A pointer made from it is good
+        /// for `len` bytes until this value is dropped.
+        pub(super) fn start(&self) -> NonNull<u8> {
+            self.start
+        }
+
+        pub(super) fn len(&self) -> usize {
+            self.len
+        }
+    }
+
+    impl Drop for Mapped {
+        fn drop(&mut self) {
+            // SAFETY: `munmap` as POSIX has it and as the C library of each
+            // of these systems declares it.
+            unsafe extern "C" {
+                fn munmap(addr: *mut c_void, len: usize) -> c_int;
+            }
+            // SAFETY: `start` and `len` are the whole of the mapping that
+            // `new` made. Only this value asks for it to be unmapped, and
+            // it asks once. Whoever holds this value keeps no pointer into the
+            // mapping in use beyond its drop (the arena drops its headers
+            // first).
+            let refused = unsafe { munmap(self.start.as_ptr().cast(), self.len) };
+            // The system can refuse: Linux does when the range is the
+            // middle of one of its own mappings, which it has joined with
+            // a neighbour, and the process is at its limit of mappings.
+            // The mapping then stays the process's until the process ends,
+            // which loses memory and breaks no rule. A build with debug
+            // assertions stops on a refusal that the system reports.
+            debug_assert_eq!(refused, 0, "the system unmaps a mapping");
+        }
+    }
+}
+
+/// On a system whose call for a mapping this file does not declare, no
+/// memory is mapped: the type has no value.
+#[cfg(not(any(
+    all(
+        target_pointer_width = "64",
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    all(target_pointer_width = "64", target_os = "macos"),
+)))]
+mod mapping {
+    use std::{alloc::Layout, ptr::NonNull};
+
+    pub(super) enum Mapped {}
+
+    impl Mapped {
+        pub(super) fn new(_: Layout) -> Option<Self> {
+            None
+        }
+
+        pub(super) fn start(&self) -> NonNull<u8> {
+            match *self {}
+        }
+
+        pub(super) fn len(&self) -> usize {
+            match *self {}
+        }
+    }
+}
+
+/// The block of an arena's frames, owned. When this value is dropped the
+/// block goes back the way it was come by: to the allocator, or, a mapping,
+/// to the system, which is asked to unmap it.
+enum Block {
+    /// From the allocator, which was asked for it zeroed.
+    Allocated(Allocated),
+    /// A mapping of the arena's own, which the system gives zeroed.
+    Mapped(Mapped),
+}
+
+impl Block {
+    /// The first byte of the block. A pointer made from it is good for the
+    /// block's length until this value is dropped.
+    fn start(&self) -> NonNull<u8> {
+        match self {
+            Block::Allocated(allocated) => allocated.start,
+            Block::Mapped(mapped) => mapped.start(),
+        }
+    }
+}
+
 /// The fixed part of the pool: `count` frames of `frame_len` bytes in one
 /// block of memory, with their headers.
 ///
 /// The headers are a boxed slice that the arena holds as a raw pointer, so
 /// that every pointer to a header comes from that one pointer and stays good
 /// for as long as the arena lives.
+///
+/// The block is zeroed either way it is come by, because a frame's bytes
+/// are handed out as a slice before anything is written to them. A block
+/// of [`Arena::MAPPED_FROM`] bytes or more is a mapping of its own where
+/// the system has one for this file ([`Mapped`]): the system gives it
+/// zeroed, so the arena does not write its frames to make them. A smaller
+/// block, and every block on another system or where the system refuses a
+/// mapping, is the allocator's, which is asked for it zeroed.
 pub(super) struct Arena {
     /// A number no other arena of the process has: its frames carry it.
     id: u64,
     frames: NonNull<Frame>,
     count: usize,
-    memory: NonNull<u8>,
-    layout: Layout,
+    /// The block of the frames. The arena's drop frees the headers, which
+    /// point into it, and this value is dropped after that, with the
+    /// arena's fields.
+    block: Block,
     frame_len: usize,
     /// Where the pins that are not counted are announced (A6).
     lanes: Lanes,
@@ -1359,8 +1584,10 @@ pub(super) struct Arena {
 // addresses they have, and that thread may use and drop them: a header
 // holds atomics, a lock, attached values (shared buffers that any thread
 // may drop) and a pointer into the block, and none of these is bound to
-// the thread that made it. The lanes and the list of dead frames are
-// atomics and a lock around a pointer that is only an address.
+// the thread that made it. Neither is the block: the allocator takes a
+// block back on any thread, and a mapping is the process's and is unmapped
+// on any. The lanes and the list of dead frames are atomics and a lock
+// around a pointer that is only an address.
 unsafe impl Send for Arena {}
 // SAFETY: what the arena holds itself is never changed, is atomic or is
 // behind a lock, and its headers are shared as frames are (`Sync for
@@ -1380,10 +1607,26 @@ impl Arena {
     /// The bytes one frame costs beside its page: its header.
     pub(super) const HEADER_LEN: usize = size_of::<Frame>();
 
+    /// The bytes of frames from which an arena's block is a mapping of its
+    /// own, where the system has one for this file. A smaller block is the
+    /// allocator's, which is asked for it zeroed.
+    pub(super) const MAPPED_FROM: usize = 1 << 20;
+
     /// The arena, and each of its frames, owned.
     pub(super) fn new(
         count: usize,
         frame_len: usize,
+    ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
+        Self::make(count, frame_len, true)
+    }
+
+    /// As [`Self::new`]. Without `may_map` the system is not asked for a
+    /// mapping, and the arena does what it does when the system refuses
+    /// one: a test's way to that.
+    fn make(
+        count: usize,
+        frame_len: usize,
+        may_map: bool,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
         static ARENAS: plain::AtomicU64 = plain::AtomicU64::new(1);
@@ -1393,12 +1636,26 @@ impl Arena {
         if last >= NO_INDEX - 1 {
             return Err(CacheError::CapacityTooLarge);
         }
-        let memory = allocate(layout);
+        // Each of these owns what it holds, and the headers are owned by
+        // the collection they are made in: a panic on the way drops what
+        // was made before it.
+        let lanes = Lanes::new(Lanes::count_for(count));
+        let dead = Padded(Mutex::new(None));
+        let mapped = (may_map && layout.size() >= Self::MAPPED_FROM)
+            .then(|| Mapped::new(layout))
+            .flatten();
+        let block = match mapped {
+            Some(mapped) => Block::Mapped(mapped),
+            None => Block::Allocated(Allocated::new(layout)),
+        };
+        let start = block.start();
         let headers: Box<[Frame]> = (0..=last)
             .map(|index| {
-                // SAFETY: `index * frame_len` is below the size of the block
-                // that `memory` points to, so the result is inside it.
-                let bytes = unsafe { memory.add(index as usize * frame_len) };
+                // SAFETY: `start` is the start of a block of `layout.size()`
+                // bytes, from the allocator or a mapping, and
+                // `index * frame_len` is below that size, so the result is
+                // inside the block.
+                let bytes = unsafe { start.add(index as usize * frame_len) };
                 Frame::new(bytes, frame_len, id, index)
             })
             .collect();
@@ -1408,11 +1665,10 @@ impl Arena {
             id,
             frames,
             count,
-            memory,
-            layout,
+            block,
             frame_len,
-            lanes: Lanes::new(Lanes::count_for(count)),
-            dead: Padded(Mutex::new(None)),
+            lanes,
+            dead,
         };
         // By A3: nothing has seen these frames yet.
         let owned = (0..count)
@@ -1435,6 +1691,15 @@ impl Arena {
 
     pub(super) fn frame_len(&self) -> usize {
         self.frame_len
+    }
+
+    /// The bytes of the arena's block that are a mapping of its own: all of
+    /// its frames, or none.
+    pub(super) fn mapped(&self) -> usize {
+        match &self.block {
+            Block::Allocated(_) => 0,
+            Block::Mapped(mapped) => mapped.len(),
+        }
     }
 
     /// The lanes of the pool: its announcements, and its threads' counts.
@@ -1559,13 +1824,12 @@ impl Arena {
 impl Drop for Arena {
     fn drop(&mut self) {
         let headers = ptr::slice_from_raw_parts_mut(self.frames.as_ptr(), self.count);
-        // SAFETY: `frames` and `count` are the boxed slice that `new` turned
+        // SAFETY: `frames` and `count` are the boxed slice that `make` turned
         // into a raw pointer, and the arena is its only owner. Nothing can
         // follow a pointer to a header any more: a pin borrows the arena.
         drop(unsafe { Box::from_raw(headers) });
-        // SAFETY: `memory` was allocated with `layout` in `new`, and the
-        // headers that pointed into it are gone.
-        unsafe { alloc::dealloc(self.memory.as_ptr(), self.layout) };
+        // The block's value is dropped with the arena's fields, which is
+        // after this and so after the headers.
     }
 }
 
@@ -1604,6 +1868,35 @@ mod tests {
             .cloned()
             .or_else(|| payload.downcast_ref::<&str>().map(|text| text.to_string()))
             .expect("a panic with a message")
+    }
+
+    /// An arena that gets no mapping for a block that could be one, as
+    /// when the system refuses, asks the allocator for the block, and its
+    /// frames are zeroed and aligned as those of any arena.
+    #[test]
+    fn an_arena_that_gets_no_mapping_takes_its_block_from_the_allocator() {
+        let (count, frame_len) = (Arena::MAPPED_FROM / 8_192, 8_192);
+        let (arena, frames) = Arena::make(count, frame_len, false).expect("an arena");
+        assert_eq!(arena.mapped(), 0);
+        assert_eq!(frames.len(), count);
+        for frame in [&frames[0], &frames[count - 1]] {
+            assert_eq!(frame.bytes().len(), frame_len);
+            assert!(frame.bytes().iter().all(|&byte| byte == 0));
+            assert!(frame.bytes().as_ptr().addr().is_multiple_of(4096));
+        }
+        drop(frames);
+    }
+
+    /// A mapping of the largest size a layout with an alignment of 4,096
+    /// bytes can have is `None`: where this file maps, the system refuses
+    /// it, and elsewhere no mapping is ever made. Miri stops when it is
+    /// asked for a mapping of that size.
+    #[cfg_attr(miri, ignore = "Miri stops on a mapping that is too large")]
+    #[test]
+    fn a_mapping_the_system_refuses_is_none() {
+        let most = (isize::MAX as usize - 4095) & !4095;
+        let layout = Layout::from_size_align(most, 4096).expect("a layout");
+        assert!(Mapped::new(layout).is_none());
     }
 
     /// The frames of a chain are owned by whoever empties it because their

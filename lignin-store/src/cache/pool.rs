@@ -22,10 +22,10 @@ use crate::alloc::Epoch;
 pub struct PoolConfig {
     /// The store's page size. A frame holds one page of it.
     pub page_size: PageSize,
-    /// The memory the pool may use for what it caches, in bytes. It is
-    /// allocated when the pool is made, and it includes each frame's
-    /// header, the pool's table and its lanes: less than 512 bytes a frame
-    /// beside the page.
+    /// The memory the pool may ask for, for what it caches, in bytes. What
+    /// it asks for when it is made ([`BufferPool::fixed_memory`]) is as many
+    /// whole frames as this holds, with each frame's header, the pool's
+    /// table and its lanes: less than 512 bytes a frame beside the page.
     pub capacity: usize,
 }
 
@@ -259,9 +259,12 @@ impl BufferPool {
 
     /// A pool of as many frames as `config.capacity` bytes hold.
     ///
-    /// All of that memory is allocated here. The pool allocates more only
-    /// for a frame that it needs while no frame can be evicted, and gives
-    /// that back as soon as the frame could be.
+    /// The fixed part ([`Self::fixed_memory`]) is asked for here. Its
+    /// frames are asked of the allocator or, a megabyte of them or more, of
+    /// the system as a mapping ([`Self::mapped_memory`] says on which
+    /// systems), and the rest of it of the allocator. The pool allocates
+    /// another frame only when it needs one and finds none that it can
+    /// evict, and gives that back as soon as the frame could be.
     pub fn new(config: PoolConfig) -> Result<Self, CacheError> {
         let frame_len = config.page_size.get();
         let fits = |count: usize| {
@@ -336,7 +339,11 @@ impl BufferPool {
         self.capacity
     }
 
-    /// The bytes the fixed part takes. It is at most [`Self::capacity`].
+    /// The bytes the fixed part takes: what the pool asked the allocator
+    /// and the system for when it was made. It is at most
+    /// [`Self::capacity`]. The allocator and the system may each take more
+    /// than they are asked for, which is not counted: the system rounds a
+    /// mapping ([`Self::mapped_memory`]) up to its own page size.
     pub fn fixed_memory(&self) -> usize {
         Self::cost(
             self.arena.len(),
@@ -359,6 +366,20 @@ impl BufferPool {
         self.fixed_memory()
             + self.turnover.overflow.get() * self.overflow_cost()
             + self.turnover.attached.get()
+    }
+
+    /// The bytes of the fixed part that the pool asked the system for, as
+    /// a mapping of its own, and not the allocator: all of its frames, or
+    /// none.
+    ///
+    /// On Linux (x86-64 and AArch64) and on macOS, with 64-bit pointers,
+    /// the frames of a pool that has a megabyte of them or more are such a
+    /// mapping, unless the system refuses one. The system gives a mapping
+    /// zeroed, so the pool does not write its frames when it is made. These
+    /// bytes are part of [`Self::fixed_memory`] from the start, whether or
+    /// not a frame was used yet.
+    pub fn mapped_memory(&self) -> usize {
+        self.arena.mapped()
     }
 
     /// The bytes one frame beside the fixed part takes.
