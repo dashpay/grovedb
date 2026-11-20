@@ -42,9 +42,16 @@
 #                                         defects it must find, then the
 #                                         campaign; ARGS follow
 #                                         `lignin-crash run`
+#   lignin-ci.sh stress SECONDS           the engine's stress test: readers,
+#                                         writers, write-back, the reclaimer,
+#                                         the cleaner and checkpoints at once
+#   lignin-ci.sh tsan SECONDS             the same under ThreadSanitizer, with
+#                                         the threaded tests of the buffer
+#                                         pool and of the engine
 #
-# Miri and cargo-fuzz run on the toolchain $LIGNIN_NIGHTLY (default
-# nightly-2026-02-24), everything else on the one rust-toolchain.toml names.
+# Miri, cargo-fuzz and ThreadSanitizer run on the toolchain $LIGNIN_NIGHTLY
+# (default nightly-2026-02-24), everything else on the one
+# rust-toolchain.toml names.
 # Test databases go to the temporary directory: TMPDIR says where. `test`
 # raises the limit of open files, whose default of 256 on macOS is less than
 # the RocksDB databases of the test kit's tests hold at once.
@@ -264,6 +271,7 @@ loom)
 lignin-store cache::tests::races
 lignindb scope::tests::model
 lignindb snapshot::tests::loom
+lignindb models::
 MODELS
     ;;
 
@@ -408,6 +416,48 @@ miri-schedules)
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-many-seeds=0..$seeds $borrows" \
             cargo "+$nightly" miri test -p lignin-store --lib cache::tests::races
     done
+    ;;
+
+stress | tsan)
+    seconds=${2:-}
+    [[ $seconds =~ ^[1-9][0-9]*$ ]] || fail "usage: lignin-ci.sh $1 SECONDS"
+    # An optimised build with the assertions of a debug build, in a
+    # directory of its own: the profile is not the one of a release.
+    export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
+    export CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true
+    export LIGNIN_STRESS_SECONDS=$seconds
+    long=(-p lignindb --release --lib db::tests::stress::an_hour_of_stress)
+    if [ "$1" = stress ]; then
+        export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/stress
+        say "the stress test of the engine for $seconds s"
+        cargo test "${long[@]}" -- --ignored --nocapture
+        exit
+    fi
+    # ThreadSanitizer needs the standard library built with it, which
+    # asks for a target by name. A report of a data race ends the test
+    # binary with a failure.
+    host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
+    [ -n "$host" ] || fail "the toolchain $nightly names no host"
+    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/tsan
+    export RUSTFLAGS="${RUSTFLAGS:-} -Zsanitizer=thread"
+    sanitized() { cargo "+$nightly" test -Zbuild-std --target "$host" "$@"; }
+    while read -r crate tests; do
+        say "ThreadSanitizer: cargo test -p $crate --release --lib $tests"
+        found=$(sanitized -p "$crate" --release --lib "$tests" -- --list)
+        grep -q ': test$' <<<"$found" || fail "no test of $crate matches $tests"
+        sanitized -p "$crate" --release --lib "$tests"
+    done <<'THREADED'
+lignin-store cache::tests::
+lignindb snapshot::tests::
+lignindb scope::tests::
+lignindb models::
+lignindb db::tests::schedules::
+lignindb db::tests::reclaim::
+lignindb db::tests::kept::
+lignindb commit::tests::cleaner::the_cleaner_runs_beside
+THREADED
+    say "ThreadSanitizer: the stress test of the engine for $seconds s"
+    sanitized "${long[@]}" -- --ignored --nocapture
     ;;
 
 *)

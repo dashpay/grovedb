@@ -194,6 +194,8 @@ pub mod batch;
 pub mod checkpoint;
 pub mod commit;
 pub mod db;
+#[cfg(test)]
+mod models;
 pub mod options;
 pub mod savepoint;
 pub mod scope;
