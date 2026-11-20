@@ -36,6 +36,13 @@
 //!    compared, as a record, with RocksDB's. Equal records from the root
 //!    down are an equal tree shape, and the root hash is a function of the
 //!    root's record.
+//!
+//!    In the traces of `MOVED_BY_A_CONVERSION` a conversion to a 128-bit
+//!    sum changes the places of the Merks an element hosts, and the
+//!    directory keeps the places they were entered at (MERK-09, D-135).
+//!    There the checker must find exactly the hosts the replay itself sees
+//!    out of place, each as a host that does not point at the root its
+//!    Merk's entry names, and nothing else.
 //! 6. Write-back then puts every page version of the commit into a
 //!    segment, and the pages are loaded from there by a buffer pool that
 //!    has never held them. The hashes of the pages that were loaded again
@@ -81,7 +88,7 @@
 mod hashes;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicUsize, Ordering},
@@ -119,12 +126,15 @@ use grovedb_storage::{
     FlatStore, Storage, StorageBatch,
 };
 use grovedb_version::version::GroveVersion;
-use lignin_format::{CellAddress, CommitVersion};
+use lignin_format::{tree_page::Side, CellAddress, CommitVersion};
 use lignin_store::load::LoadBuffers;
 use lignin_testkit::{
     golden::plan::{plan, Planned, Scale},
     layout_sim::{ChangeSet, Grove, MerkId, Observer},
-    workload::apply::Transactions,
+    workload::{
+        apply::Transactions,
+        op::{Op, Write},
+    },
 };
 use lignin_tree::node::{Lease, NodePage};
 use lignindb::{
@@ -133,7 +143,7 @@ use lignindb::{
         testing::{Db, Outcome},
         Subtree, WriteTxn,
     },
-    verify::Scope,
+    verify::{Place, Report, Rule, Scope},
 };
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
@@ -153,6 +163,54 @@ struct Entered {
 /// The subtrees entered under the elements of one Merk, by the key of the
 /// element.
 type Hosted = HashMap<Vec<u8>, Vec<Prefix>>;
+
+/// The traces in which a conversion moves hosted Merks, each with the
+/// findings of the checker in the store its replay leaves (MERK-09, D-135).
+///
+/// GroveDB #1063 keeps a converted element's axes in tag order, so count,
+/// sum, average (0, 1, 2) becomes count, average, big sum (0, 2, 3). The
+/// subtree directory keeps the position a subtree was entered at, and
+/// nothing in `lignindb::txn` moves it.
+const MOVED_BY_A_CONVERSION: &[(&str, usize)] = &[
+    ("v5/conversions.trace", 12),
+    ("v5/legacy-convert-rows-of-both-signs.trace", 2),
+    ("v5/legacy-convert-twice.trace", 2),
+    ("v5/suite.trace", 12),
+];
+
+/// A host with a Merk at another position than it was entered at, where
+/// that Merk or the one now at the position has a root.
+struct Displaced {
+    /// The cell of the host.
+    cell: CellAddress,
+    /// The positions at which the entry of one Merk meets the pointer to
+    /// another, where either has a root.
+    findings: usize,
+    /// The Merks with a root that stand at the position of another.
+    pointers: u64,
+}
+
+/// Holds `report` to the hosts `displaced` and nothing else: every finding
+/// is that a host does not point at the root its Merk's entry names, and
+/// each of the hosts has as many as [`Displaced::findings`] says.
+fn only_displaced(report: &Report, displaced: &[Displaced]) {
+    assert!(
+        displaced.is_empty() || !report.findings.is_empty(),
+        "the directory now follows a conversion's order: remove MOVED_BY_A_CONVERSION (MERK-09)"
+    );
+    let mut found: HashMap<Place, usize> = HashMap::new();
+    for finding in &report.findings {
+        assert_eq!(finding.rule, Rule::HostPointer, "{finding}");
+        *found.entry(finding.place).or_default() += 1;
+    }
+    let expected: HashMap<Place, usize> = (displaced.iter())
+        .map(|host| (Place::Cell(host.cell), host.findings))
+        .collect();
+    assert!(
+        found == expected && report.more_findings == 0,
+        "the hosts a conversion moved are {expected:?}:\n{report}"
+    );
+}
 
 /// The stack of the thread a trace is replayed on: GroveDB recurses.
 const STACK_BYTES: usize = 64 << 20;
@@ -548,6 +606,10 @@ struct Replay<'a> {
     /// The subtrees entered under each element, by the subtree of the
     /// element.
     under: HashMap<Prefix, Hosted>,
+    /// In a trace of [`MOVED_BY_A_CONVERSION`], the elements its
+    /// conversions wrote, by the subtree of the element. Empty in any other
+    /// trace.
+    converted: HashSet<(Prefix, Vec<u8>)>,
     tally: Tally,
 }
 
@@ -560,6 +622,49 @@ impl Replay<'_> {
         for prefix in below.into_values().flatten() {
             self.forget(prefix);
         }
+    }
+
+    /// The hosts with a Merk that has a root at another position than the
+    /// replay entered it at, or with the root of another Merk at its own,
+    /// each with its cell as `reader` has it. Each is an element that a
+    /// conversion wrote.
+    fn displaced(&self, reader: &WriteTxn<'_>, grove: &Grove) -> Vec<Displaced> {
+        let mut displaced = Vec::new();
+        for (subtree, under) in &self.under {
+            let merk = self.entered[subtree].merk;
+            for (key, entered) in under {
+                let now = grove.find(merk, key).map(|now| &grove.node(now).hosted);
+                let now = now.into_iter().flatten().map(|now| grove.merk(*now));
+                let (mut findings, mut pointers) = (0, 0);
+                for (was, now) in entered.iter().zip(now) {
+                    if *was == now.prefix {
+                        continue;
+                    }
+                    let was = grove.merk(self.entered[was].merk);
+                    findings += usize::from(was.root.is_some() || now.root.is_some());
+                    pointers += u64::from(was.root.is_some());
+                }
+                if findings == 0 {
+                    continue;
+                }
+                assert!(
+                    self.converted.contains(&(*subtree, key.clone())),
+                    "the Merks under {key:?} changed places, and no conversion wrote it"
+                );
+                let cell = reader
+                    .node(Subtree::new(*subtree), key, |node| {
+                        node.and_then(|node| node.handle())
+                    })
+                    .expect("the host is read")
+                    .expect("a committed node has a place");
+                displaced.push(Displaced {
+                    cell: cell.address(),
+                    findings,
+                    pointers,
+                });
+            }
+        }
+        displaced
     }
 
     /// Says to `batch` which subtrees the operation dropped and which it
@@ -910,6 +1015,50 @@ impl<'a> Committed<'a> {
         }
     }
 
+    /// As [`Self::check`], of a store in which the checker finds the hosts
+    /// `displaced` and nothing else ([`MOVED_BY_A_CONVERSION`]). A pointer
+    /// of theirs that stands at the position of another Merk is no pointer
+    /// the checker counts.
+    fn check_displaced(
+        db: &'a Db,
+        versions: &Versions,
+        grove_version: &GroveVersion,
+        displaced: &[Displaced],
+    ) -> Self {
+        let at = versions.latest();
+        let mut rules = MerkHashRules::for_check(grove_version);
+        let report = db.verify(at, Scope::Reader, Some(&mut rules));
+        only_displaced(&report, displaced);
+        assert_eq!(
+            report.unreached.cells, 0,
+            "a cell that nothing reaches at {at}:\n{report}"
+        );
+        let roots = db.roots(versions, at);
+        let (loader, lease, mut buffers) = (db.loader(), Lease::take(), LoadBuffers::new());
+        let mut reached = BTreeMap::new();
+        for (subtree, root) in &roots {
+            let (mut keys, mut next) = (Vec::new(), vec![*root]);
+            while let Some(address) = next.pop() {
+                let frame = (loader.get(address.page(), at, &mut buffers)).expect("a page");
+                let page = NodePage::open(&frame, lease).expect("a tree page");
+                let node = page.node(address.slot()).expect("a cell");
+                keys.push(node.key().to_vec());
+                let links = [Side::Left, Side::Right].map(|side| node.link(side));
+                next.extend(links.into_iter().flatten().map(|link| link.child));
+            }
+            keys.sort();
+            reached.insert(*subtree, keys);
+        }
+        let moved: u64 = displaced.iter().map(|host| host.pointers).sum();
+        Self {
+            db,
+            at,
+            reached,
+            roots,
+            pointers: report.census.hosted_roots + moved,
+        }
+    }
+
     /// The roots the cell at `host` points at, by the position of the Merk
     /// among those its node hosts.
     fn hosted_roots(&self, host: CellAddress) -> Vec<Option<CellAddress>> {
@@ -951,8 +1100,14 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
             },
         )]),
         under: HashMap::new(),
+        converted: HashSet::new(),
         tally: Tally::default(),
     };
+    let mut listed = MOVED_BY_A_CONVERSION.iter();
+    let moved = listed
+        .find(|(file, _)| *file == planned.file)
+        .map(|(_, findings)| *findings);
+    let mut displaced = Vec::new();
 
     let mut observer = Observer::new(spec.grove_version);
     let mut transactions = Transactions::new(&db);
@@ -972,6 +1127,14 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
                 continue;
             }
             let (block, grove) = (transactions.block(), observer.grove());
+            if let (Some(_), Op::Write(Write::ConvertToBigSumTree { path, key, .. })) = (moved, &op)
+            {
+                let mut merks = grove.merks().filter(|(_, merk)| merk.live);
+                let (_, merk) = merks
+                    .find(|(_, merk)| merk.path.as_ref() == Some(path))
+                    .expect("a conversion that wrote has its tree");
+                replay.converted.insert((merk.prefix, key.clone()));
+            }
             replay.write(&writer, &mirror_transaction, block, grove, &changes);
             if replay.tally.writes.is_multiple_of(COMMIT_EVERY) {
                 ended = false;
@@ -985,9 +1148,15 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         // with no cost is charged from.
         (mirror.commit_transaction(mirror_transaction).unwrap()).expect("the mirror commits");
 
-        let committed = Committed::check(&lignin, &versions);
         let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
+        let committed = match moved {
+            None => Committed::check(&lignin, &versions),
+            Some(_) => {
+                displaced = replay.displaced(&reader, grove);
+                Committed::check_displaced(&lignin, &versions, spec.grove_version, &displaced)
+            }
+        };
         let before = replay.tally.compared;
         replay.compare_all(&committed, &reader, block, grove);
         let compared = replay.tally.compared - before;
@@ -1022,19 +1191,42 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         });
     }
 
-    // The store as the replay leaves it passes the physical invariant
-    // checker (`lignindb::verify`): the pages, the trees, the directory
-    // against the cells, the values, the page ids and the page table, and
-    // the hashes of every cell of a Merk in use, recomputed by Merk's
-    // rules.
+    // The store as the replay leaves it is run through the physical
+    // invariant checker (`lignindb::verify`): the pages, the trees, the
+    // directory against the cells, the values, the page ids and the page
+    // table, and the hashes of every cell of a Merk in use, recomputed by
+    // Merk's rules. It passes, but for a trace of `MOVED_BY_A_CONVERSION`:
+    // there the report must hold the findings of the hosts a conversion
+    // moved, at least one, and no other.
     let mut rules = MerkHashRules::for_check(spec.grove_version);
     let report = lignin.verify(versions.latest(), Scope::Still, Some(&mut rules));
-    let unsound = lignin.unsound(&report);
-    assert!(
-        unsound.is_empty() && report.more_findings == 0,
-        "{}: the store is not sound: {unsound:?}",
-        spec.name
-    );
+    match moved {
+        None => {
+            let unsound = lignin.unsound(&report);
+            assert!(
+                unsound.is_empty() && report.more_findings == 0,
+                "{}: the store is not sound: {unsound:?}",
+                spec.name
+            );
+        }
+        // The check of a store that is dropped would find the same hosts.
+        Some(findings) => {
+            only_displaced(&report, &displaced);
+            assert!(
+                !report.findings.is_empty(),
+                "{}: no conversion moves a hosted Merk: remove the trace from \
+                 MOVED_BY_A_CONVERSION (MERK-09)",
+                spec.name
+            );
+            assert_eq!(
+                report.findings.len(),
+                findings,
+                "{}: the findings in the store the replay leaves",
+                spec.name
+            );
+            lignin.unchecked();
+        }
+    }
     assert_eq!(report.census.hashed_cells, report.census.live_cells);
     replay.tally.checked += report.census.live_cells;
 
@@ -1107,6 +1299,13 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             traces.push((planned.clone(), Kinds::Widest));
         }
         traces.push((planned, Kinds::Narrowest));
+    }
+    for (file, _) in MOVED_BY_A_CONVERSION {
+        let replayed = traces.iter().any(|(planned, _)| planned.file == *file);
+        assert!(
+            only.is_some() || replayed,
+            "{file} is no trace of the corpus"
+        );
     }
     let (tally, mut failed) = replay_all(&traces, jobs());
     println!("{} replays: {tally:?}", traces.len());

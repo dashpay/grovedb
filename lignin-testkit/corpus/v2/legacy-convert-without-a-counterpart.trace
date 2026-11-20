@@ -1,0 +1,207 @@
+lignin-golden-trace 1
+name legacy-convert-without-a-counterpart
+seed 0x0
+grove-version 2
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-convert-without-a-counterpart
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c884cr697e
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 117, 109, 115], element: sum_tree: None 0 })
+  cost seeks=5 loaded=150 added=124 replaced=77 removed=- hashes=9 sinsemilla=0
+  root ae4385276d28b4bc97fbc7c6864a50b7a0fb2932cebe52f2132fa5fad5ad5ebc
+c57a6r3562
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], element: sum_item: 4 })
+  cost seeks=8 loaded=313 added=164 replaced=164 removed=- hashes=15 sinsemilla=0
+  root 1062d35faeda91f773aafe5715fd99f4f1085ee34ef2abb52290e4cd357daa6d
+c91a4rb30c
+  step 3
+  # Write(Insert { path: [[116, 111, 112]], key: [116, 114, 101, 101], element: tree: None })
+  cost seeks=7 loaded=228 added=115 replaced=164 removed=- hashes=11 sinsemilla=0
+  root 156798f98424b87150f31702ec31a8b89e027bfc6de76f2b42a7d669adf74439
+c3311r184d
+  step 4
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116], element: count_tree: None 0 })
+  cost seeks=7 loaded=268 added=126 replaced=164 removed=- hashes=11 sinsemilla=0
+  root 3ec3500b9cd28a47eaa0fd4cd2adc3526f396633b6da4257cce9c062f14fd967
+c1596rd151
+  step 5
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116], element: provable_count_tree: None 0 })
+  cost seeks=10 loaded=380 added=167 replaced=252 removed=- hashes=12 sinsemilla=0
+  root 90bc1a48702fcb683a7a39f2852d182fe0fed2d9ede8fb4311fe5de5de500368
+c1df8r3357
+  step 6
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 })
+  cost seeks=12 loaded=501 added=143 replaced=349 removed=- hashes=16 sinsemilla=0
+  root 1b89712f312de2159abf532deeab82276976ae5cbeec4a5b41dba146c7a7a88b
+c6a03re2ff
+  step 7
+  # Write(Insert { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109], element: big_sum_tree: None 0 })
+  cost seeks=14 loaded=622 added=137 replaced=446 removed=- hashes=17 sinsemilla=0
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+ccb94e02b4re2ff
+  step 8
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109], element: count_big_sum_tree: Nonecount: 0, sum 0 })
+  # failed: grove unknown version on insert Element::CountBigSumTree, received: 0, expected one of: [1]
+  cost seeks=3 loaded=230 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+ccb94e02b4re2ff
+  step 9
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], element: provable_big_sum_tree: None 0 })
+  # failed: grove unknown version on insert Element::ProvableBigSumTree, received: 0, expected one of: [1]
+  cost seeks=3 loaded=230 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+ccb94e02b4re2ff
+  step 10
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], element: provable_count_provable_big_sum_tree: Nonecount: 0, sum 0 })
+  # failed: grove unknown version on insert Element::ProvableCountProvableBigSumTree, received: 0, expected one of: [1]
+  cost seeks=3 loaded=230 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+ccb94e02b4re2ff
+  step 11
+  # Write(Insert { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_big_sum_indexed_tree: primary=None, secondary=None, sum: 0 })
+  # failed: grove unknown version on insert Element::ProvableBigSumIndexedTree, received: 0, expected one of: [1]
+  cost seeks=3 loaded=230 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+ccb94e02b4re2ff
+  step 12
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_count_provable_big_sum_indexed_tree: primary=None, count: 0, sum: 0, axes: [(0, None), (2, None), (3, None)] })
+  # failed: grove unknown version on insert Element::ProvableCountProvableBigSumIndexedTree, received: 0, expected one of: [1]
+  cost seeks=3 loaded=230 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root 0547a9d9415bcf395d1473e54f4d9505a3505602bb460b899d5fa68c7dcdeb15
+cc305r4536
+  step 13
+  # Write(Insert { path: [[116, 111, 112]], key: [105, 116, 101, 109], element: item: [hex: 6e6f2074726565, str: no tree] })
+  cost seeks=12 loaded=551 added=153 replaced=358 removed=- hashes=14 sinsemilla=0
+  root 30be3c2fe2674bc4bd001397e889a9de4cc4ed29a3eec9fd0b88600740644682
+cf875rf924
+  step 14
+  # Write(Insert { path: [[116, 111, 112]], key: [114, 101, 102, 101, 114, 101, 110, 99, 101], element: ref })
+  cost seeks=15 loaded=898 added=162 replaced=358 removed=- hashes=17 sinsemilla=0
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7ddrf924
+  step 15
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 16
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [116, 114, 101, 101], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 17
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 18
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 19
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 20
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 21
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [105, 116, 101, 109], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 22
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], own_transaction: false })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7ddrf924
+  step 23
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 24
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 25
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 26
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 27
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 28
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 29
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [114, 101, 102, 101, 114, 101, 110, 99, 101], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb7dde02b4rf924
+  step 30
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], own_transaction: true })
+  # failed: grove unknown version on convert_to_big_sum_tree, received: 0, expected one of: [1]
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed VersionError::UnknownVersionMismatch
+  root d790439bba93e18f22225e9daa157811affd5b3a926fe69319cd8436b2505825
+cb70av0338
+  step 31
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=3 loaded=393 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 040101610800
+stream 32 0f108b05fbfcca7300dda7d4574dd214661f88386fc107427ae2314aad2353fb
+tally failed=19 unproved=0 unverified=0
+end 32 a4951f5f2afe13f32bc227e1c17e8ce435a618c562312c319fdd6d190cee8ba3

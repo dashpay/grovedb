@@ -1,0 +1,514 @@
+lignin-golden-trace 1
+name conversions
+seed 0x1
+grove-version 4
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload conversions
+cccd5r02aa
+  step 0
+  # Write(Insert { path: [], key: [99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], element: tree: None })
+  cost seeks=3 loaded=0 added=129 replaced=0 removed=- hashes=3 sinsemilla=0
+  root 533d0d2ddb850c8106417544b6653b830c250e39aeb3952cb5678838452cee09
+cb7ddr02aa
+  step 1
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 533d0d2ddb850c8106417544b6653b830c250e39aeb3952cb5678838452cee09
+caf6fr7d46
+cc485ra29b
+c4e99rfb7e
+c2e2areb97
+c7955rffc3
+cfc70re95d
+cbbb5r3a1e
+  step 8
+  # Batch([InsertOnly { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0]], key: [99, 111, 117, 110, 116, 45, 115, 117, 109], element: count_sum_tree: Nonecount: 0, sum 0 }, InsertOnly { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 115, 117, 109], element: pr… (481 characters)
+  cost seeks=16 loaded=719 added=308 replaced=502 removed=- hashes=31 sinsemilla=0
+  root f5323619579a92a236d0458c568e17acca406cb27811309c0ba09a40ca41af78
+cb7ddr3a1e
+c8ad8v6e6fqdedfpbb8b
+  step 10
+  # Read(Query(Query { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: None, left_to_right: true, raw: true }))
+  cost seeks=15 loaded=2398 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 7
+  row 636f6e76657273696f6e73/7200000000 636f756e742d73756d 0700000000
+  row 636f6e76657273696f6e73/7200000000 636f756e742d73756d2d696e6465786564 17000000030000010002000103000001
+  row 636f6e76657273696f6e73/7200000000 70726f7661626c652d636f756e742d70726f7661626c652d73756d 1400000000
+  row 636f6e76657273696f6e73/7200000000 70726f7661626c652d636f756e742d73756d 0a0000000103000001
+  row 636f6e76657273696f6e73/7200000000 70726f7661626c652d73756d 1300000103000001
+  row 636f6e76657273696f6e73/7200000000 73756d 04000000
+  row 636f6e76657273696f6e73/7200000000 73756d2d696e6465786564 150000000103000001
+  prove-cost seeks=12 loaded=1160 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  proof 554 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b810105720000000000fb019b0409636f756e742d73756d00050700000000849a3674c22af2908edf3bd6b34be4c83c63df7dda8411bdd1ccd582d16c727a0411636f756e742d73756d2d696e6465786564001017000000030000010002000103000001256421a8a62dca9698f7247cbd5fcccb2469712eed9e62a74acd564448d2b81610041b70726f7661626c652d636f756e742d70726f7661626c652d73756d0005140000000076474869f7a231e51583eebe09662d20f4365bdd1f393e7b7b0fae3b21a14cc810041270726f7661626c652d636f756e742d73756d00090a00000001030000017376bd22134dafdf848fb224d5eec34f03ea4ca43b4a74b7539e266772e0f4c511040c70726f7661626c652d73756d00081300000103000001e8823479ad09df97e0a10d2752bb7975fbba1bf580f3557b787f920a12a3fd1a10040373756d0004040000008024fe55f0add01bab3aab8026626664141804450aa5efcee35fe964b5d93ac1040b73756d2d696e64657865640009150000000103000001fb787a630a73ff748b8cb63ba6ed47d50fa106279d9845067b5244654a840f38111100
+  verification verified
+cf5c8v7cd9
+  step 11
+  # Read(ItemValues { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0]], query: SizedQuery { query: Query { items: [Key([99, 111, 117, 110, 116, 45, 115, 117, 109]), Key([99, 111, 117, 110, 116, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]), Key([112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97,… (944 characters)
+  cost seeks=20 loaded=2441 added=0 replaced=0 removed=- hashes=14 sinsemilla=0
+  result item-values-or-sums
+  values 7
+  item count-and-sum 0 0
+  item count-and-sum 0 0
+  item count-and-sum 0 0
+  item count-and-sum 0 0
+  item sum 0
+  item sum 0
+  item sum 0
+  skipped 0
+c8d16va637
+  step 12
+  # Read(Get { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0]], key: [115, 117, 109] })
+  cost seeks=3 loaded=374 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 04000000
+c95dbvbb7cq8201pecd2
+  step 13
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [115, 117, 109]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, … (462 characters)
+  cost seeks=1 loaded=288 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 0
+  skipped 0
+  prove-cost seeks=7 loaded=629 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  proof 286 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b8101057200000000009101a7572d548288aaad3b916a4ae3bf7a56946b8dcf355aeb46ce348b8ad5ad760f0280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a0010040373756d0004040000008024fe55f0add01bab3aab8026626664141804450aa5efcee35fe964b5d93ac101e21e64e229cd0d693ba786169517c392a33093d203e3323bf3cb49d1462e63c6111100
+  verification verified
+c47b7va0d1
+c95dbvbb7cqd4d3p2edc
+c1a52vacd9
+c95dbvbb7cq3d5cp9740
+ca45fvbbbcqec59p85d8
+  step 18
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [112, 114, 111, 118, 97, 98, 108, 101, 45, 115, 117, 109]], query: SizedQuery { query: Query { items: [AggregateSumOnRange(RangeToInclusive(..=[97, 0, 0, 0, 0]))], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, … (549 characters)
+  cost seeks=1 loaded=99 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-sum
+  sum 0
+  prove-cost seeks=7 loaded=610 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 281 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b8101057200000000007c01a7572d548288aaad3b916a4ae3bf7a56946b8dcf355aeb46ce348b8ad5ad760f040c70726f7661626c652d73756d00081300000103000001e8823479ad09df97e0a10d2752bb7975fbba1bf580f3557b787f920a12a3fd1a1001cba6eb0f7ecb362ea78d7d7a00a4cd88f1594195c8187fc46ee0669653d7cb7011010c70726f7661626c652d73756d000000
+  verification verified
+c6a5av8026
+c95dbvbb7cqd1f9p81bc
+cd8bavc53cq2ca2pde00
+  step 21
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 115, 117, 109]], query: SizedQuery { query: Query { items: [AggregateCountOnRange(RangeAfter([97, 0, 0, 0, 0]..))], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_su… (572 characters)
+  cost seeks=1 loaded=114 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count
+  count 0
+  prove-cost seeks=9 loaded=880 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 362 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b810105720000000000c7018148110b636428fbac1a22e45a4b57e9c6fae7dc7edeb0663f8ecd3c066351d7026f0310363f0a53d31ecd3dc0635cb843ec3fddb88cb14be0d94408d32b31cf8610041270726f7661626c652d636f756e742d73756d00090a00000001030000017376bd22134dafdf848fb224d5eec34f03ea4ca43b4a74b7539e266772e0f4c5110280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a001001cba6eb0f7ecb362ea78d7d7a00a4cd88f1594195c8187fc46ee0669653d7cb7011011270726f7661626c652d636f756e742d73756d000000
+  verification verified
+ccde7v69c0
+c95dbvbb7cqf251p6226
+c03dav5265qc6f6pc1ac
+  step 24
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97, 98, 108, 101, 45, 115, 117, 109]], query: SizedQuery { query: Query { items: [AggregateCountAndSumOnRange(RangeToInclusive(..=[97, 0, 0, 0, 0]))], default_subquery_branch: SubqueryBranch … (627 characters)
+  cost seeks=1 loaded=119 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  result aggregate-count-and-sum
+  count 0
+  sum 0
+  prove-cost seeks=8 loaded=809 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 376 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b810105720000000000cc018148110b636428fbac1a22e45a4b57e9c6fae7dc7edeb0663f8ecd3c066351d7041b70726f7661626c652d636f756e742d70726f7661626c652d73756d0005140000000076474869f7a231e51583eebe09662d20f4365bdd1f393e7b7b0fae3b21a14cc810010c1b0d4a1524ceb515f8a89cc9a51accd6496f5eedb781b2ba12d14bfe5672a4110280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a001001cba6eb0f7ecb362ea78d7d7a00a4cd88f1594195c8187fc46ee0669653d7cb7011011b70726f7661626c652d636f756e742d70726f7661626c652d73756d000000
+  verification verified
+c6a5avda3c
+c95dbvbb7cq684fp1c9d
+cea77vdec3q93f4pd0cb
+  step 27
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read… (601 characters)
+  cost seeks=12 loaded=1207 added=0 replaced=0 removed=- hashes=7 sinsemilla=0
+  result axis-entries
+  axis sum
+  entries 0
+  skipped 0
+  prove-cost seeks=13 loaded=1136 added=0 replaced=0 removed=- hashes=9 sinsemilla=0
+  proof 352 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b8101057200000000009e01a7572d548288aaad3b916a4ae3bf7a56946b8dcf355aeb46ce348b8ad5ad760f0280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a001002b12e26ed7fe5658c39b874cfdce4b1c9acefd888425cfb623bd73bafa74f02b0040b73756d2d696e64657865640009150000000103000001fb787a630a73ff748b8cb63ba6ed47d50fa106279d9845067b5244654a840f381111010b73756d2d696e64657865640726010000000000000000000000000000000000000000000000000000000000000000000000000000
+  verification verified
+cea77va38fq93f4pd0cb
+  step 28
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read… (599 characters)
+  cost seeks=12 loaded=1207 added=0 replaced=0 removed=- hashes=7 sinsemilla=0
+  result axis-keys
+  axis sum
+  keys 0
+  skipped 0
+  prove-cost seeks=13 loaded=1136 added=0 replaced=0 removed=- hashes=9 sinsemilla=0
+  proof 352 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b8101057200000000009e01a7572d548288aaad3b916a4ae3bf7a56946b8dcf355aeb46ce348b8ad5ad760f0280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a001002b12e26ed7fe5658c39b874cfdce4b1c9acefd888425cfb623bd73bafa74f02b0040b73756d2d696e64657865640009150000000103000001fb787a630a73ff748b8cb63ba6ed47d50fa106279d9845067b5244654a840f381111010b73756d2d696e64657865640726010000000000000000000000000000000000000000000000000000000000000000000000000000
+  verification verified
+c8d73v2c52q8b80pd0cb
+c4694v8045q93f4pd0cb
+  step 30
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 0], [115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read… (650 characters)
+  cost seeks=11 loaded=919 added=0 replaced=0 removed=- hashes=7 sinsemilla=0
+  result axis-aggregate
+  metric population
+  value 0
+  prove-cost seeks=13 loaded=1136 added=0 replaced=0 removed=- hashes=9 sinsemilla=0
+  proof 352 010038040b636f6e76657273696f6e730009020105720000000000ade3deac054f2593f239ce211bdfe4e911ca7ed10fffcdf15112743088082cfa010b636f6e76657273696f6e73003904057200000000001002010c70726f7661626c652d73756d0023bf14c347cbcba9a6b7f619b9611edd5ac25c0f86f677f9c0653f6fa1803b8101057200000000009e01a7572d548288aaad3b916a4ae3bf7a56946b8dcf355aeb46ce348b8ad5ad760f0280e0958bdbb259db5df2c848d7f6fb38920eb64109b9018efd83db5dfe339a001002b12e26ed7fe5658c39b874cfdce4b1c9acefd888425cfb623bd73bafa74f02b0040b73756d2d696e64657865640009150000000103000001fb787a630a73ff748b8cb63ba6ed47d50fa106279d9845067b5244654a840f381111010b73756d2d696e64657865640726010000000000000000000000000000000000000000000000000000000000000000000000000000
+  verification verified
+c0520v657d
+c95dbvbb7cqe758pca70
+c908fvdec3qf52ap298f
+c908fve77aqf52ap938c
+c908fva38fqf52ap298f
+c908fv2c52qa8d1p298f
+cff5cv8045qf52ap298f
+c3817r610e
+c2757rda9b
+c3d52r6d82
+c0a95r392e
+c5948raeaa
+cb4e7r69e4
+c121cr23c8
+c0924ra89d
+c14aer9731
+  step 46
+  # Write(IndexedInsert { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 1], [115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]], key: [97, 0, 0, 0, 7], element: sum_item: -306524, tree: Sum })
+  cost seeks=28 loaded=1528 added=381 replaced=519 removed=- hashes=42 sinsemilla=0
+  root b74da45f047bd9b6c5d768e2b5d6c90508875af8fbff5b5e81b061acf6d37635
+c220dr5851
+c103ar8a90
+c4b36r1af2
+cb7ddr1af2
+ca5cavda1aq629dpcd2a
+c3bb4v88ca
+cea5cv0e16
+cd482v6f84qf91fp4b99
+c5768v3c96
+ca12ev5139q4afcpc10e
+c644bv5b22
+ccd4fvf34bqb8fdpcd62
+c1d4bvbbbcqb8fdpa8b0
+c07a2ve361
+cc81bv0aa4q3c43p5584
+c6108vc53cq3c43p45ac
+c6d71v1787
+cc81bv5ed1q07d4p98c0
+c1e99v643eq07d4pbb60
+c7562vef77
+cd482vc6e8qf5dbp6bdb
+c7150v574cq6674p662e
+ce86cv2f3fqe62dp24dd
+c7150v43e2q008cp662e
+c8e82vb812qd431p11e5
+  step 71
+  # Read(PathQuery { query: PathQuery { path: [[99, 111, 110, 118, 101, 114, 115, 105, 111, 110, 115], [114, 0, 0, 0, 1], [115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read… (607 characters)
+  cost seeks=14 loaded=1362 added=0 replaced=0 removed=- hashes=9 sinsemilla=0
+  result axis-rank
+  rank 0
+  prove-cost seeks=23 loaded=2283 added=0 replaced=0 removed=- hashes=22 sinsemilla=0
+  proof 487 010038040b636f6e76657273696f6e7300090201057200000000008c0d986228cb023cc4f60b4295122033e5d0a4eb7df054a98adedfdecad7e70b010b636f6e76657273696f6e73005b0239649d2af0b452fb46460029eb48d0a29afd041dcd510d1da718d0972234adc104057200000001001002010c70726f7661626c652d73756d00aa44cc1229b6cdff4df5d41de285c7f2735c23d7f89dbd7dbc9a3ecf908626fd110105720000000100b201b48a7df14edd944f97dcaf99fd97274083a3b7235b85eff7ead4406b780ccc7b02094f5f82bd32548d7cc14c0612d9fee365831766f755500d4d1c3717d98182e310020b219e2dbcb3f302c8da6f4b70685eb80ee659f96e730f420356ea53e51dea13040b73756d2d696e6465786564001d1501056100000007010d7ffffffffffb52a46100000007fc00095ab7008c8b78a3c7bf3b03dee5fdd2e01c2c6283bbfe7ef9c760fc460a210c0754614e1111010b73756d2d696e6465786564077701000033b158106c3414c34463b3c59a0bbc7c7f0a1705a1780e576bf844212fe78e5a010046070d7ffffffffffb52a46100000007001012060561000000070101fc00095ab7002a613e970c68cfd0a3520c0505818d51d2a4df30326563122707445f07610b1c0801b7b52501010703fc00095ab7000000
+  verification verified
+cd078v9d73q7461pa4b8
+cbaa2v97b5
+c814evda50qa179p5726
+c0dd0v5680qba7dp9a32
+c08d9v606eqba7dpdb46
+c72ffv7eedqba7dp9a32
+c0dd0v3f81q708ep9a32
+cbdb0vb812qd3e7p2627
+c1f01v9d73q44fbp86b6
+c6d9eref4c
+cb0b6re862
+cfeb1rd0ca
+c415fr16c9
+c7eccrb901
+c84earc4c4
+ccfcfrc6c0
+c4530ra533
+c1622r68b5
+c94b7r6282
+cb45crf49e
+cee8fr7fbd
+cf498r45c3
+c1617rc2c9
+c5d45r292e
+cf278rf123
+c2188rd4dc
+cd68crccd7
+c2833r4438
+c02car1de1
+c4786rce25
+c4f87r6855
+c663ar0de5
+c6f1crd018
+c9cf8r0f8e
+c2660ra6b7
+c5e4br2e22
+ca493raf10
+caa1ar30a0
+c773arc495
+c120br327b
+c6232r0360
+c4f76r8828
+c4ee2rf8d9
+c10ddrf48a
+c89aerceea
+ca076r950e
+c9eear1590
+cb952r7db2
+cb014r4533
+c2696r92e3
+c8a90rbb73
+c4c1er389e
+c988bra4b0
+cf33ard962
+c572frf65d
+c3329r4201
+cbbcdr7ce7
+c2fd5r3a3a
+c49c3rb8a6
+c18c7r5f25
+c933drf584
+c26f5r43ea
+c697dr7bc8
+c0dc1r6d6a
+c8c4br7f8f
+c3fcdrb330
+cfc08raecc
+c8862r09b2
+c7389rfb77
+cd316rcbe0
+c1a64r8623
+c0e93rd409
+ccf2cr86e1
+cd5f6rbf7f
+c564dre36f
+ce4c2rf061
+c7060ref20
+cb9acr7c09
+c0e09rc043
+cf9cfrfe52
+c38a9rfb1b
+c05a8rf7de
+cbc67re170
+c6f93rcd6e
+cbf56re9af
+cd385r320b
+c8aaar54fe
+c87c8re4f4
+cb7ddre4f4
+cbcfevca3dqd930p8e60
+c980avb9f3
+cea5cv7ecb
+cce0ev255dq65e1pf716
+c3823v7f04
+c3ef7v2926q6a4bp0753
+c07a2v2893
+c4d91vdfc6qbbfcp054b
+ca5ffv4336
+c3ef7v6fbdq07f0pa2a0
+c644bv8534
+c1cacv1ce3q00a0pc525
+c07a2v4efa
+c3ef7vcb59q5702pbaa9
+c1b0bvfad7qfed7pad67
+c5155vbeab
+cc861vdf5bq1d81p71f9
+c75a3v8baf
+c3ef7v8bb5q78e3p6773
+c6d2bvbf66q43bcp9b0e
+c6d71vdb61
+ccb4dvff95q45aap67c5
+cf97dv8ddf
+c3ef7v3d5dq727epf53c
+ca3d7veaebq87a5p3b9d
+c7cbevc9f4
+c1b98v024fq1548p1616
+c5155v6127
+c3ef7vc514qaacapadb2
+c9852vda32qdd6bp240c
+c37davb30eqdd6bp240c
+c9852v4a82q1d06p4ba3
+cbbd1va533q22ebpf413
+cd3d0vd418qde1bp0346
+ce22fv1b3c
+ccc07va99eqec19pa921
+cedfbv4007
+c24eava1d6q9583p5683
+cfb33v2a81qcce1pd502
+c8bd1vedb8q6163pf03c
+c7776v8bb5q921fp9153
+cff2cvf2d3q9fa2pad15
+caf97va533q4d39p3dac
+c5232v54ecq24d3pd412
+c31a8re2fe
+c2026r6384
+c5261r8740
+cb151rf0ef
+ca249r30ea
+cafafrac2d
+cb7ddrac2d
+c9af8v9d49qe42dpc9dd
+cd66dv7cd9
+caa97va637
+c95dbvbb7cqdcd1p0bdd
+c252eva0d1
+c95dbvbb7cq25dep522c
+c729dvf285
+c95dbvbb7cq6c3bp86ee
+c134bvbbbcqc55dp8673
+c2d62v8ebf
+c95dbvbb7cq6aebpb5bd
+cd8bavc53cqd473p12c5
+c252ev69c0
+c95dbvbb7cq25dep58b2
+c03dav5265q577dp9f35
+ca9ffv6d8d
+c95dbvbb7cq9cffp2fe7
+c6951vdec3q20dap8848
+c6951va38fq20dap8848
+c6951v2c52qcea8p8848
+ca687v8045q20dap8848
+c13fdvfeab
+c95dbvbb7cq17e2pb8e7
+c4ad5vdec3qd444p01eb
+c4ad5v7bdcqd444p3fb2
+c7c05va38fqd444p01eb
+c3fd8v2c52q6e4cp01eb
+c339av8045qd444p01eb
+ccaddr1726
+c68ear64c1
+c2ca7r9abb
+cfcfdre117
+c43eer089e
+c3e7ar93b4
+cd393r8b30
+c663er1aed
+c0030rc645
+c4f86re8f9
+cb7ddre8f9
+c634av75acqf4e4p792f
+c4daavc23d
+c44f4v4ea8
+ccd4fv08edq993fp68c4
+c6ad4v583a
+cc81bvd404q1694p07d6
+cb756v0013
+cd482vd17cqa822p20f1
+c27ffvb984qa822p7e83
+cd2f7v8c3b
+c1523vaf75qbc88p7a13
+cf250v35d4qbc88p3087
+c6ad4vfd85
+cc81bvd411qc635pe58e
+c9892v2d8dqc635pa7eb
+c24b5v3ef5
+ccd4fvb442q7f6ep2acf
+cfbd2vbba7q3dd2p0c62
+c57fav2f3fq9cd8pf2b1
+cfbd2v07daq4360p0c62
+c89abvb812q3affp4eda
+c0c6fv9d73q1ba3p0845
+cbbe0v28b8
+c5fddv2f7dq1d41pcd18
+c0e2fvc0a7q4ae8p241a
+c9db1v1994q4ae8pa9d1
+c7dd4va287q4ae8p241a
+c05e6v2c52qac4cpab65
+ceb32vb812qbe42p4e40
+c0e4dv8045qf084pab65
+c339drb3b9
+c739cr1fdd
+c7a8br0c9e
+c4257r70e2
+c57f3rff57
+c5114rc416
+c1db1rd3ae
+cb027rf32d
+c11c8r2713
+c3260r8145
+c2878r060e
+c66cbr9fc0
+cb8e3rd2a2
+c1521rc0f2
+cc053r4f35
+ca7fbrffc8
+ce0f6rf0e6
+c6a64r25bf
+cb23frd80a
+cc550r32e6
+c130er33a8
+c5b4ar6128
+ca68drdd2f
+c49d7rb7d0
+c4d9fr96cc
+cf042r45db
+c82dar1e2d
+cfcd5r9619
+c6a3brffa1
+c5111r4f3b
+ca363re382
+c2a9fr5453
+cb15ardbad
+c996cr9a69
+c0ecer50ad
+cad45r3096
+cfd52ra8a4
+c8ab1r87e4
+c5916rbe68
+c9c61r0f32
+c6a2arf608
+c54dar5035
+c94b2r8294
+c639dr41bd
+c258erd46e
+cbe13r89a5
+c18f7ra7ac
+cddc2r0c68
+c0968raf86
+c4a8cr3315
+c3482r4e01
+c329er6359
+c0c7ar82b7
+c24e5r59bf
+c1194rc63d
+cf0c2r890e
+c47ber49f5
+c6815r650b
+cfc89r458b
+c7678r69e8
+c2cabr9a74
+cb7ddr9a74
+c2afcvf853qb176p0482
+ce6bdv6ffc
+c761fva166
+c01eavfe21q7f58p6216
+c3e7cv34a9
+c3ef7vfd88q796ap7fb2
+c6ad4v479f
+cf5f3v5161q08acp70d3
+c5155v9e54
+c3ef7vc13dqaa4fp3f1b
+c5768v4298
+c17dbv27a2q2ff9p74d7
+cd53dv9a1f
+c3ef7v513aq6ac2p51a3
+cbfd4vbbbcq4549pb503
+c9dbfv92bf
+caa00v9d4cqf8cep9fb0
+cadd6v0626
+c3ef7v758cqdf0dp4c34
+cc001vdd75qdbd6p67c6
+cc5c9v77c5
+cb9f6vf05dq53fap10d2
+c01afvc13b
+c3ef7v440bqbf57pb890
+c1fa6v3cfeqc409pbff1
+c1b18vd338
+c86eev2db2q1e50p2a13
+c5155v3e67
+c3ef7vd3efq4173pd881
+cb140v959bqd5a0p95e1
+c21b8v52d3qd5a0p95e1
+cbde7v2c52q8821p8613
+c4fbdv3511qec5fp884c
+c8d64v8045q0400p1c05
+c744av4f29
+c17cev6184q789bp27a9
+c24e5v3328
+c24eav9f34q9583p1701
+c03c0v90ceq8e53p9988
+c3469v05f6q9d1ep1380
+c1ff1vcb96qba82p53ce
+c03c0vc16fqcfc5pbdef
+c7220v1c72qc268p2047
+c1306vb849qd48cp20a9
+stream 387 4a1cf4242bf7e92f095dfc043b0a8bc21d715f23e8e23b8f3654a50e1f60d600
+tally failed=0 unproved=0 unverified=0
+end 387 6c08c21d018dc7e1517d4adb78f8e73d2015d2023f274da0a0e42d28761c6aab

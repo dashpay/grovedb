@@ -27,8 +27,9 @@
 //!   state Drive's callbacks leave them in, trees deleted with what they
 //!   hold by the transaction that filled or rewrote them, ledgers in the
 //!   trees whose total is a 128-bit sum, indexed trees that rank their
-//!   entries by such a sum, and pages of an index under a limit of the
-//!   query node that walks its keys.
+//!   entries by such a sum, pages of an index under a limit of the query
+//!   node that walks its keys, and trees converted in place to the ones
+//!   with a 128-bit sum.
 //!
 //! Between them they produce the GroveDB operations that reach storage in a
 //! way of their own ([`coverage::Operation`]): patch, move, partial batches,
@@ -43,7 +44,9 @@
 //! frees by owner and epoch. The last workloads reach what GroveDB gained
 //! after the first corpus was recorded: the indexed trees with a 128-bit
 //! sum, written through their own methods and read in the order of their
-//! sums, and a limit of a query node on a layer that has subqueries.
+//! sums, a limit of a query node on a layer that has subqueries, and the
+//! conversion of a tree that keeps a 64-bit sum into the one that keeps it
+//! in 128 bits.
 //!
 //! [`Workload`] lists them all. [`apply()`] turns an operation into GroveDB
 //! calls, [`coverage`] reports which element types, tree types and
@@ -145,11 +148,14 @@ pub struct Features {
     /// The read of an indexed tree in the order of its 128-bit sums.
     pub big_sum_axis: bool,
     /// A batch that writes entries of an indexed tree leaves the secondary
-    /// trees in step with them. On grove versions 1 to 4 the batch reads
-    /// an entry from storage while its own writes are pending, so the row
-    /// of an entry it deletes can stay and the row of one it inserts can
-    /// be missing, and the rankings then differ from the entries.
+    /// trees in step with them. On grove versions 1 to 4 a removal reads
+    /// the entry back from storage while the writes of its operation are
+    /// pending, so the row of a removed entry can stay, and the rankings
+    /// then hold a row more than the tree has entries: a read of the
+    /// entries fails on it, or ranks what follows it one place late.
     pub indexed_batches_in_step: bool,
+    /// `GroveDb::convert_to_big_sum_tree`.
+    pub convert_to_big_sum_tree: bool,
 }
 
 impl Features {
@@ -173,6 +179,7 @@ impl Features {
         big_sum_tree_twins: true,
         big_sum_axis: true,
         indexed_batches_in_step: true,
+        convert_to_big_sum_tree: true,
     };
 
     /// What `grove_version` stores.
@@ -213,6 +220,7 @@ impl Features {
             big_sum_tree_twins: insert.big_sum_tree_twins_creation >= 1,
             big_sum_axis: grovedb.operations.indexed_axis.big_sum_axis >= 1,
             indexed_batches_in_step: grovedb.apply_batch.indexed_mirror_entry_read >= 1,
+            convert_to_big_sum_tree: insert.convert_to_big_sum_tree >= 1,
         }
     }
 
@@ -384,6 +392,8 @@ pub enum Workload {
     WideRanks(adversarial::WideRanks),
     /// [`adversarial::CappedLayers`].
     CappedLayers(adversarial::CappedLayers),
+    /// [`adversarial::Conversions`].
+    Conversions(adversarial::Conversions),
 }
 
 impl Workload {
@@ -483,6 +493,10 @@ impl Workload {
                 features,
                 ..Default::default()
             }),
+            Workload::Conversions(adversarial::Conversions {
+                features,
+                ..Default::default()
+            }),
         ]
     }
 
@@ -520,6 +534,7 @@ impl Workload {
             Workload::WideSums(_) => "wide-sums",
             Workload::WideRanks(_) => "wide-ranks",
             Workload::CappedLayers(_) => "capped-layers",
+            Workload::Conversions(_) => "conversions",
         }
     }
 
@@ -557,6 +572,7 @@ impl Workload {
             Workload::WideSums(workload) => workload.stream(seed),
             Workload::WideRanks(workload) => workload.stream(seed),
             Workload::CappedLayers(workload) => workload.stream(seed),
+            Workload::Conversions(workload) => workload.stream(seed),
         }
     }
 }

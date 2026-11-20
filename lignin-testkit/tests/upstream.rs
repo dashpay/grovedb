@@ -16,16 +16,16 @@ use grovedb::{
         proof::{indexed_axis::AxisEntries, VerifiedPathQuery},
         QueryItemOrSumReturnType,
     },
-    query_result_type::PathKeyElementTrio,
-    AxisAggregateValue, AxisKeys, AxisProjection, AxisQuery, AxisTraversal, Element, GroveDb,
-    PathQuery, PathQueryRun, PathQueryShape,
+    query_result_type::{PathKeyElementTrio, QueryResultElements},
+    AggregateKind, AxisAggregateValue, AxisKeys, AxisProjection, AxisQuery, AxisTraversal, Element,
+    GroveDb, PathQuery, PathQueryRun, PathQueryShape,
 };
 use grovedb_merk::proofs::query::{AggregateFold, IndexAxis};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 use lignin_testkit::workload::{
-    adversarial::{CappedLayers, WideRanks},
-    BatchOp, Coverage, Features, IndexedTree, Op, Operation, Outcome, Read, StreamDigest,
-    Transactions, Write,
+    adversarial::{CappedLayers, Conversions, WideRanks},
+    BatchOp, Coverage, Features, Fetch, IndexedTree, Op, Operation, Outcome, Read, StreamDigest,
+    TransactionOp, Transactions, Write,
 };
 
 const SEEDS: [u64; 4] = [1, 0x4C49_474E_494E, 2, 3];
@@ -59,10 +59,17 @@ fn below(path: &[Vec<u8>], key: &[u8]) -> Path {
     path
 }
 
+/// What the trees of a stream hold, by the path of each.
+type Held = BTreeMap<Path, BTreeMap<Vec<u8>, Element>>;
+
 /// The trees a stream wrote, as the elements it wrote into them.
 #[derive(Default)]
 struct Trees {
-    held: BTreeMap<Path, BTreeMap<Vec<u8>, Element>>,
+    held: Held,
+    /// What was held at the last commit.
+    committed: Held,
+    /// What was held at each savepoint of the open transaction.
+    savepoints: Vec<Held>,
 }
 
 impl Trees {
@@ -106,7 +113,31 @@ impl Trees {
             Op::Write(Write::IndexedDelete { path, key, .. }) => {
                 return Some(self.remove(path, key));
             }
-            Op::Write(Write::ReconcileIndexed { .. }) | Op::Commit | Op::Read(_) => {}
+            // A converted tree holds what it held, and its element is the
+            // one with a 128-bit sum.
+            Op::Write(Write::ConvertToBigSumTree { path, key, .. }) => {
+                let element = self
+                    .held
+                    .get_mut(path)
+                    .and_then(|tree| tree.get_mut(key))
+                    .unwrap_or_else(|| panic!("{op:?} converts what is not held"));
+                *element =
+                    widened(element).unwrap_or_else(|| panic!("{op:?} converts {element:?}"));
+            }
+            Op::Write(Write::ReconcileIndexed { .. })
+            | Op::Read(_)
+            | Op::Transaction(TransactionOp::BlockRead(_)) => {}
+            Op::Commit => self.savepoints.clear(),
+            Op::Transaction(TransactionOp::SetSavepoint) => {
+                self.savepoints.push(self.held.clone());
+            }
+            Op::Transaction(TransactionOp::RollbackToSavepoint) => {
+                self.held = self.savepoints.pop().expect("a savepoint to return to");
+            }
+            Op::Transaction(TransactionOp::Rollback) => {
+                self.held = self.committed.clone();
+                self.savepoints.clear();
+            }
             Op::Batch(ops) => {
                 for op in ops {
                     match op {
@@ -121,6 +152,9 @@ impl Trees {
                 }
             }
             other => panic!("the model does not follow {other:?}"),
+        }
+        if matches!(op, Op::Commit) || op.commits_by_itself() {
+            self.committed = self.held.clone();
         }
         None
     }
@@ -147,12 +181,23 @@ impl Trees {
             Element::Tree(..) | Element::Item(..) | Element::Reference(..) => (1, 0),
             Element::SumTree(..)
             | Element::BigSumTree(..)
+            | Element::ProvableSumTree(..)
+            | Element::ProvableBigSumTree(..)
             | Element::ProvableSumIndexedTree(..)
             | Element::ProvableBigSumIndexedTree(..) => (1, inside().1),
             Element::CountSumTree(..)
             | Element::CountBigSumTree(..)
+            | Element::ProvableCountSumTree(..)
+            | Element::ProvableCountProvableSumTree(..)
+            | Element::ProvableCountProvableBigSumTree(..)
             | Element::ProvableCountProvableSumIndexedTree(..)
             | Element::ProvableCountProvableBigSumIndexedTree(..) => inside(),
+            Element::CountTree(..) => (inside().0, 0),
+            // A wrapper leaves what it holds out of the count, the sum or
+            // both of the tree it is in.
+            Element::NonCounted(inner) => (0, self.adds(path, key, inner).1),
+            Element::NotSummed(inner) => (self.adds(path, key, inner).0, 0),
+            Element::NotCountedOrSummed(_) => (0, 0),
             other => panic!("the model does not follow {other:?}"),
         }
     }
@@ -161,16 +206,41 @@ impl Trees {
     /// tree with the totals of what it holds, anything else as written.
     fn stored(&self, path: &[Vec<u8>], key: &[u8]) -> Option<Element> {
         let element = self.held.get(path)?.get(key)?.clone();
-        let (count, sum) = self.total(&below(path, key));
+        Some(self.with_totals(&below(path, key), element))
+    }
+
+    /// `element`, the tree at `tree`, with the totals of what it holds.
+    fn with_totals(&self, tree: &[Vec<u8>], element: Element) -> Element {
+        let (count, sum) = self.total(tree);
         let narrow = || i64::try_from(sum).expect("a narrow total fits an i64");
-        Some(match element {
+        let wrapped = |inner: Box<Element>| Box::new(self.with_totals(tree, *inner));
+        match element {
+            Element::NonCounted(inner) => Element::NonCounted(wrapped(inner)),
+            Element::NotSummed(inner) => Element::NotSummed(wrapped(inner)),
+            Element::NotCountedOrSummed(inner) => Element::NotCountedOrSummed(wrapped(inner)),
             Element::SumTree(_, _, flags) => Element::SumTree(None, narrow(), flags),
             Element::BigSumTree(_, _, flags) => Element::BigSumTree(None, sum, flags),
+            Element::CountTree(_, _, flags) => Element::CountTree(None, count, flags),
             Element::CountSumTree(_, _, _, flags) => {
                 Element::CountSumTree(None, count, narrow(), flags)
             }
             Element::CountBigSumTree(_, _, _, flags) => {
                 Element::CountBigSumTree(None, count, sum, flags)
+            }
+            Element::ProvableSumTree(_, _, flags) => {
+                Element::ProvableSumTree(None, narrow(), flags)
+            }
+            Element::ProvableBigSumTree(_, _, flags) => {
+                Element::ProvableBigSumTree(None, sum, flags)
+            }
+            Element::ProvableCountSumTree(_, _, _, flags) => {
+                Element::ProvableCountSumTree(None, count, narrow(), flags)
+            }
+            Element::ProvableCountProvableSumTree(_, _, _, flags) => {
+                Element::ProvableCountProvableSumTree(None, count, narrow(), flags)
+            }
+            Element::ProvableCountProvableBigSumTree(_, _, _, flags) => {
+                Element::ProvableCountProvableBigSumTree(None, count, sum, flags)
             }
             Element::ProvableSumIndexedTree(_, _, _, flags) => {
                 Element::ProvableSumIndexedTree(None, None, narrow(), flags)
@@ -185,7 +255,7 @@ impl Trees {
                 Element::ProvableCountProvableBigSumIndexedTree(None, count, sum, axes, flags)
             }
             other => other,
-        })
+        }
     }
 
     /// `ranked`, keys of the tree at `path`, each with the element GroveDB
@@ -233,6 +303,67 @@ impl Trees {
     }
 }
 
+/// What a conversion makes of a tree, as the plan of the operation states
+/// it: each of the seven types becomes the type of the same name with a
+/// 128-bit sum, a `ProvableCountSumTree` the one whose sum is provable too,
+/// and the sum axis of an indexed tree the big sum axis. The tree keeps its
+/// count, its sum, its flags and its wrapper. None for any other element.
+fn widened(element: &Element) -> Option<Element> {
+    let wide = |sum: &i64| i128::from(*sum);
+    Some(match element {
+        Element::NonCounted(inner) => Element::NonCounted(Box::new(widened(inner)?)),
+        Element::NotSummed(inner) => Element::NotSummed(Box::new(widened(inner)?)),
+        Element::NotCountedOrSummed(inner) => {
+            Element::NotCountedOrSummed(Box::new(widened(inner)?))
+        }
+        Element::SumTree(root, sum, flags) => {
+            Element::BigSumTree(root.clone(), wide(sum), flags.clone())
+        }
+        Element::CountSumTree(root, count, sum, flags) => {
+            Element::CountBigSumTree(root.clone(), *count, wide(sum), flags.clone())
+        }
+        Element::ProvableSumTree(root, sum, flags) => {
+            Element::ProvableBigSumTree(root.clone(), wide(sum), flags.clone())
+        }
+        Element::ProvableCountSumTree(root, count, sum, flags)
+        | Element::ProvableCountProvableSumTree(root, count, sum, flags) => {
+            Element::ProvableCountProvableBigSumTree(root.clone(), *count, wide(sum), flags.clone())
+        }
+        Element::ProvableSumIndexedTree(primary, secondary, sum, flags) => {
+            Element::ProvableBigSumIndexedTree(
+                primary.clone(),
+                secondary.clone(),
+                wide(sum),
+                flags.clone(),
+            )
+        }
+        Element::ProvableCountProvableSumIndexedTree(primary, count, sum, axes, flags) => {
+            // The axes stay in the order of their tags, and the big sum
+            // axis has the highest.
+            let mut axes: Vec<(u8, Option<Vec<u8>>)> = axes
+                .iter()
+                .map(|(tag, root)| {
+                    let tag = if *tag == IndexAxis::Sum.tag() {
+                        IndexAxis::BigSum.tag()
+                    } else {
+                        *tag
+                    };
+                    (tag, root.clone())
+                })
+                .collect();
+            axes.sort_by_key(|(tag, _)| *tag);
+            Element::ProvableCountProvableBigSumIndexedTree(
+                primary.clone(),
+                *count,
+                wide(sum),
+                axes,
+                flags.clone(),
+            )
+        }
+        _ => return None,
+    })
+}
+
 /// The scale of the fixed-point average an indexed tree ranks by.
 const AVERAGE_SCALE: i128 = 10_000_000_000_000_000_000;
 
@@ -255,10 +386,26 @@ fn without_root_keys(element: Element) -> Element {
     let rootless = |axes: Vec<(u8, Option<Vec<u8>>)>| -> Vec<(u8, Option<Vec<u8>>)> {
         axes.into_iter().map(|(axis, _)| (axis, None)).collect()
     };
+    let unwrapped = |inner: Box<Element>| Box::new(without_root_keys(*inner));
     match element {
+        Element::NonCounted(inner) => Element::NonCounted(unwrapped(inner)),
+        Element::NotSummed(inner) => Element::NotSummed(unwrapped(inner)),
+        Element::NotCountedOrSummed(inner) => Element::NotCountedOrSummed(unwrapped(inner)),
         Element::Tree(_, flags) => Element::Tree(None, flags),
         Element::SumTree(_, sum, flags) => Element::SumTree(None, sum, flags),
         Element::BigSumTree(_, sum, flags) => Element::BigSumTree(None, sum, flags),
+        Element::CountTree(_, count, flags) => Element::CountTree(None, count, flags),
+        Element::ProvableSumTree(_, sum, flags) => Element::ProvableSumTree(None, sum, flags),
+        Element::ProvableBigSumTree(_, sum, flags) => Element::ProvableBigSumTree(None, sum, flags),
+        Element::ProvableCountSumTree(_, count, sum, flags) => {
+            Element::ProvableCountSumTree(None, count, sum, flags)
+        }
+        Element::ProvableCountProvableSumTree(_, count, sum, flags) => {
+            Element::ProvableCountProvableSumTree(None, count, sum, flags)
+        }
+        Element::ProvableCountProvableBigSumTree(_, count, sum, flags) => {
+            Element::ProvableCountProvableBigSumTree(None, count, sum, flags)
+        }
         Element::CountSumTree(_, count, sum, flags) => {
             Element::CountSumTree(None, count, sum, flags)
         }
@@ -820,6 +967,445 @@ fn layer_rows(
     (walk.rows, walk.layers_cut)
 }
 
+/// The seven types `GroveDb::convert_to_big_sum_tree` converts, by the name
+/// of the element. None for any other element.
+fn convertible(element: &Element) -> Option<&'static str> {
+    Some(match element.underlying() {
+        Element::SumTree(..) => "SumTree",
+        Element::CountSumTree(..) => "CountSumTree",
+        Element::ProvableSumTree(..) => "ProvableSumTree",
+        Element::ProvableCountSumTree(..) => "ProvableCountSumTree",
+        Element::ProvableCountProvableSumTree(..) => "ProvableCountProvableSumTree",
+        Element::ProvableSumIndexedTree(..) => "ProvableSumIndexedTree",
+        Element::ProvableCountProvableSumIndexedTree(..) => "ProvableCountProvableSumIndexedTree",
+        _ => return None,
+    })
+}
+
+const CONVERTIBLE: [&str; 7] = [
+    "SumTree",
+    "CountSumTree",
+    "ProvableSumTree",
+    "ProvableCountSumTree",
+    "ProvableCountProvableSumTree",
+    "ProvableSumIndexedTree",
+    "ProvableCountProvableSumIndexedTree",
+];
+
+/// How much a tree holds when it is converted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Filled {
+    Empty,
+    OneNode,
+    /// Eight nodes or more, which no Merk holds in fewer than four levels.
+    Levels,
+    Other,
+}
+
+/// What [`the_converted_trees_hold_what_was_written`] saw and checked.
+#[derive(Debug, Default)]
+struct ConversionsSeen {
+    /// The trees of the rounds that were converted: the type, and whether
+    /// GroveDB was given no transaction.
+    converted: BTreeSet<(&'static str, bool)>,
+    /// The same trees by how much they held.
+    filled: BTreeSet<(&'static str, Filled)>,
+    /// Every conversion, the trees inside other trees included.
+    conversions: u64,
+    /// How many trees were converted with the largest `i64` as their sum,
+    /// and with the smallest.
+    at_the_largest: u64,
+    at_the_smallest: u64,
+    /// How many indexed trees were converted with entries of both signs.
+    ranked_both_signs: u64,
+    /// How many conversions a rollback undid.
+    undone: u64,
+    /// How many trees with a 64-bit sum were left as entries of a
+    /// converted indexed tree.
+    narrow_in_wide_rankings: u64,
+    /// How many trees were read with a sum above the `i64` range, and
+    /// below it.
+    above: u64,
+    below: u64,
+    elements: u64,
+    /// How many trees were read as stored and came in a wrapper.
+    read_in_a_wrapper: u64,
+    rows: u64,
+    values_or_sums: u64,
+    aggregates: u64,
+    big_sums: u64,
+    ranks: RanksChecked,
+}
+
+impl ConversionsSeen {
+    /// Counts the conversion of the tree at `key` in `path`, as the model
+    /// holds it before.
+    fn conversion(&mut self, trees: &Trees, path: &[Vec<u8>], key: &[u8], alone: bool) {
+        self.conversions += 1;
+        let element = &trees.held[path][key];
+        let name = convertible(element).expect("a stream converts one of the seven");
+        let inside = below(path, key);
+        let nodes = trees.entries(&inside).count();
+        let sum = trees.total(&inside).1;
+        self.at_the_largest += u64::from(sum == i128::from(i64::MAX));
+        self.at_the_smallest += u64::from(sum == i128::from(i64::MIN));
+        if name.ends_with("IndexedTree") {
+            let sums: Vec<i128> = trees
+                .entries(&inside)
+                .map(|(key, element)| trees.adds(&inside, key, element).1)
+                .collect();
+            let both = sums.iter().any(|sum| *sum > 0) && sums.iter().any(|sum| *sum < 0);
+            self.ranked_both_signs += u64::from(both);
+        }
+        // The trees of a round are in the tree of the round.
+        if path.len() == 2 && path[1].starts_with(b"r") {
+            self.converted.insert((name, alone));
+            let filled = match nodes {
+                0 => Filled::Empty,
+                1 => Filled::OneNode,
+                8.. => Filled::Levels,
+                _ => Filled::Other,
+            };
+            self.filled.insert((name, filled));
+        }
+    }
+}
+
+/// The count and the sum of the keys of the tree at `path` that are in
+/// `range`.
+fn total_in(trees: &Trees, path: &[Vec<u8>], range: &grovedb::QueryItem) -> (u64, i128) {
+    trees
+        .entries(path)
+        .filter(|(key, _)| range.contains(key))
+        .fold((0, 0), |(count, sum), (key, element)| {
+            let (counted, summed) = trees.adds(path, key, element);
+            (count + counted, sum + summed)
+        })
+}
+
+/// The number `GroveDb::query_item_value_or_sum` returns for a tree.
+fn value_or_sum(context: &str, element: Element) -> QueryItemOrSumReturnType {
+    use QueryItemOrSumReturnType::*;
+    let narrow = |sum: i128| i64::try_from(sum).expect("a narrow total fits an i64");
+    let (count, sum) = (
+        element.count_value_or_default(),
+        element.big_sum_value_or_default(),
+    );
+    match element {
+        Element::SumTree(..)
+        | Element::ProvableSumTree(..)
+        | Element::ProvableSumIndexedTree(..) => SumValue(narrow(sum)),
+        Element::BigSumTree(..)
+        | Element::ProvableBigSumTree(..)
+        | Element::ProvableBigSumIndexedTree(..) => BigSumValue(sum),
+        Element::CountSumTree(..)
+        | Element::ProvableCountSumTree(..)
+        | Element::ProvableCountProvableSumTree(..)
+        | Element::ProvableCountProvableSumIndexedTree(..) => CountSumValue(count, narrow(sum)),
+        Element::CountBigSumTree(..)
+        | Element::ProvableCountProvableBigSumTree(..)
+        | Element::ProvableCountProvableBigSumIndexedTree(..) => CountBigSumValue(count, sum),
+        other => panic!("{context}\nreads {other:?} as a number"),
+    }
+}
+
+/// The rows a read returned, without the root keys of the trees among
+/// them.
+fn rows_without_root_keys(elements: QueryResultElements) -> Vec<PathKeyElementTrio> {
+    elements
+        .to_path_key_elements()
+        .into_iter()
+        .map(|(path, key, element)| (path, key, without_root_keys(element)))
+        .collect()
+}
+
+/// Every row of the tree at `path`, as stored.
+fn every_row(trees: &Trees, path: &[Vec<u8>]) -> Vec<PathKeyElementTrio> {
+    trees
+        .entries(path)
+        .map(|(key, _)| {
+            let element = trees.stored(path, key).expect("a held key");
+            (path.to_vec(), key.clone(), element)
+        })
+        .collect()
+}
+
+fn check_conversion_read(
+    context: &str,
+    trees: &Trees,
+    read: &Read,
+    outcome: Outcome,
+    seen: &mut ConversionsSeen,
+) {
+    match (read, outcome) {
+        (Read::Get { path, key }, Outcome::Element(element)) => {
+            if element.is_any_tree() {
+                let sum = element.underlying().big_sum_value_or_default();
+                seen.above += u64::from(sum > i128::from(i64::MAX));
+                seen.below += u64::from(sum < i128::from(i64::MIN));
+            }
+            // `get` returns a tree without the wrapper it is stored in.
+            assert_eq!(
+                Some(without_root_keys(element)),
+                trees.stored(path, key).map(Element::into_underlying),
+                "{context}"
+            );
+            seen.elements += 1;
+        }
+        (
+            Read::Fetch {
+                path,
+                key,
+                fetch: Fetch::Raw,
+                ..
+            },
+            Outcome::Element(element),
+        ) => {
+            let stored = trees.stored(path, key);
+            assert_eq!(Some(without_root_keys(element)), stored, "{context}");
+            seen.read_in_a_wrapper += u64::from(matches!(
+                stored,
+                Some(
+                    Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+                )
+            ));
+        }
+        (Read::Query(query), Outcome::Rows(rows)) => {
+            assert!(
+                matches!(
+                    query.items.as_slice(),
+                    [lignin_testkit::workload::QueryItem::RangeFull]
+                ) && query.limit.is_none()
+                    && query.subquery_path.is_none(),
+                "{context}\nselects more than every row of one tree"
+            );
+            assert_eq!(
+                rows_without_root_keys(rows),
+                every_row(trees, &query.path),
+                "{context}"
+            );
+            seen.rows += 1;
+        }
+        (
+            Read::Rows { query, raw: true },
+            Outcome::Run(PathQueryRun::Elements { elements, .. }),
+        ) => {
+            assert_eq!(
+                query.query.query,
+                grovedb::Query::new_range_full(),
+                "{context}\nselects more than every row of one tree"
+            );
+            assert_eq!(
+                rows_without_root_keys(elements),
+                every_row(trees, &query.path),
+                "{context}"
+            );
+            seen.rows += 1;
+        }
+        (
+            Read::ItemValues {
+                query,
+                or_sums: true,
+            },
+            Outcome::ItemValuesOrSums { values, .. },
+        ) => {
+            // The values come in the order of the keys.
+            let mut keys: Vec<&Vec<u8>> = query
+                .query
+                .query
+                .items
+                .iter()
+                .map(|item| match item {
+                    grovedb::QueryItem::Key(key) => key,
+                    other => panic!("{context}\n{other:?} is not a key"),
+                })
+                .collect();
+            keys.sort_unstable();
+            let expected: Vec<_> = keys
+                .into_iter()
+                .map(|key| {
+                    let element = trees.stored(&query.path, key).expect("a held tree");
+                    value_or_sum(context, element)
+                })
+                .collect();
+            assert_eq!(values, expected, "{context}");
+            seen.values_or_sums += 1;
+        }
+        (
+            Read::BigSum {
+                query,
+                with_count,
+                per_key: false,
+            },
+            Outcome::BigSum { count, sum },
+        ) => {
+            let Ok(PathQueryShape::AggregateLeaf { kind, inner }) = query.classify() else {
+                panic!("{context}\nis no aggregate over one range");
+            };
+            assert!(
+                matches!(
+                    (*with_count, kind),
+                    (false, AggregateKind::Sum) | (true, AggregateKind::CountAndSum)
+                ),
+                "{context}\nasks for another aggregate than its reader returns"
+            );
+            let (expected_count, expected_sum) = total_in(trees, &query.path, inner);
+            assert_eq!(
+                (count, sum),
+                (with_count.then_some(expected_count), expected_sum),
+                "{context}"
+            );
+            seen.big_sums += 1;
+        }
+        (Read::PathQuery { query, .. }, Outcome::Run(run)) => {
+            let Ok(PathQueryShape::AggregateLeaf { kind, inner }) = query.classify() else {
+                return check_rank_query(context, trees, query, run, &mut seen.ranks);
+            };
+            let (count, sum) = total_in(trees, &query.path, inner);
+            let narrow = i64::try_from(sum).expect("a narrow total fits an i64");
+            let expected = match kind {
+                AggregateKind::Count => PathQueryRun::AggregateCount(count),
+                AggregateKind::Sum => PathQueryRun::AggregateSum(narrow),
+                AggregateKind::CountAndSum => {
+                    PathQueryRun::AggregateCountAndSum { count, sum: narrow }
+                }
+            };
+            assert_eq!(format!("{run:?}"), format!("{expected:?}"), "{context}");
+            seen.aggregates += 1;
+        }
+        (read, outcome) => panic!("{context}\n{read:?} returned {outcome:?}"),
+    }
+}
+
+/// The trees of `conversions` hold what the stream wrote into them before
+/// and after they are converted, and every reader returns what the model
+/// holds: the elements with their sums in 64 and then in 128 bits, the rows,
+/// the sums and counts of ranges of keys, and the rankings. Where the grove
+/// version converts, each of the seven types is converted in the block and
+/// given no transaction, while empty, with one node and with a Merk of four
+/// levels or more.
+#[test]
+fn the_converted_trees_hold_what_was_written() {
+    on_every_grove_version(|grove_version| {
+        let version = grove_version.protocol_version;
+        let features = Features::for_grove_version(grove_version);
+        let workload = Conversions {
+            features,
+            ..Conversions::default()
+        };
+        let mut seen = ConversionsSeen::default();
+        for seed in SEEDS {
+            let (_dir, db) = open();
+            let mut transactions = Transactions::new(&db);
+            let mut trees = Trees::default();
+            let mut in_block: Vec<(Path, Vec<u8>)> = Vec::new();
+            for (index, op) in workload.stream(seed).enumerate() {
+                let context =
+                    format!("conversions on grove v{version}, seed {seed}: op {index}\n{op:?}");
+                if let Op::Write(Write::ConvertToBigSumTree {
+                    path,
+                    key,
+                    own_transaction,
+                }) = &op
+                {
+                    seen.conversion(&trees, path, key, *own_transaction);
+                }
+                let outcome = transactions
+                    .apply(&op, grove_version)
+                    .unwrap()
+                    .unwrap_or_else(|error| panic!("{context}\nrefused: {error:?}"));
+                if let Some(held) = trees.record(&op) {
+                    assert!(
+                        matches!(outcome, Outcome::Flag(deleted) if deleted == held),
+                        "{context}\nreturned {outcome:?}"
+                    );
+                    continue;
+                }
+                // The conversions of the open block, and those of them a
+                // rollback takes back: the tree is again one that converts.
+                match &op {
+                    Op::Write(Write::ConvertToBigSumTree {
+                        path,
+                        key,
+                        own_transaction: false,
+                    }) => in_block.push((path.clone(), key.clone())),
+                    Op::Commit => in_block.clear(),
+                    Op::Transaction(
+                        TransactionOp::Rollback | TransactionOp::RollbackToSavepoint,
+                    ) => {
+                        let before = in_block.len();
+                        in_block
+                            .retain(|(path, key)| convertible(&trees.held[path][key]).is_none());
+                        seen.undone += (before - in_block.len()) as u64;
+                    }
+                    _ => {}
+                }
+                let read = match &op {
+                    Op::Read(read) | Op::Transaction(TransactionOp::BlockRead(read)) => read,
+                    _ => continue,
+                };
+                check_conversion_read(&context, &trees, read, outcome, &mut seen);
+            }
+            seen.narrow_in_wide_rankings += trees
+                .held
+                .iter()
+                .filter(|(path, tree)| {
+                    let ranks_wide = path.split_last().is_some_and(|(key, parent)| {
+                        matches!(
+                            trees.held.get(parent).and_then(|tree| tree.get(key)),
+                            Some(
+                                Element::ProvableBigSumIndexedTree(..)
+                                    | Element::ProvableCountProvableBigSumIndexedTree(..)
+                            )
+                        )
+                    });
+                    ranks_wide && tree.values().any(|entry| convertible(entry).is_some())
+                })
+                .count() as u64;
+        }
+        println!("conversions on grove v{version}: {seen:?}");
+        assert!(seen.elements > 0 && seen.rows > 0 && seen.values_or_sums > 0);
+        assert!(seen.ranks.rows > 0 && seen.aggregates > 0);
+        assert_eq!(seen.ranks.pages > 0, features.read_modes);
+        if !features.convert_to_big_sum_tree {
+            assert_eq!((seen.conversions, seen.big_sums), (0, 0));
+            return;
+        }
+        let rounds = u64::from(workload.rounds);
+        for name in CONVERTIBLE {
+            for alone in [false, true] {
+                assert!(
+                    seen.converted.contains(&(name, alone)),
+                    "no {name} is converted with alone = {alone}"
+                );
+            }
+            for filled in [Filled::Empty, Filled::OneNode, Filled::Levels] {
+                assert!(
+                    seen.filled.contains(&(name, filled)),
+                    "no {name} is converted {filled:?}"
+                );
+            }
+        }
+        assert_eq!(seen.undone, SEEDS.len() as u64 * rounds);
+        for (what, times) in [
+            ("converted at the largest i64", seen.at_the_largest),
+            ("converted at the smallest i64", seen.at_the_smallest),
+            ("ranked both signs when converted", seen.ranked_both_signs),
+            ("read with a sum above an i64", seen.above),
+            ("read with a sum below an i64", seen.below),
+            ("read as a 128-bit sum of a range", seen.big_sums),
+            ("ranked past an i64", seen.ranks.ranked_past_an_i64),
+            ("read in its wrapper", seen.read_in_a_wrapper),
+            (
+                "left with a 64-bit sum in a converted ranking",
+                seen.narrow_in_wide_rankings,
+            ),
+        ] {
+            assert!(times > 0, "no tree is {what}");
+        }
+    });
+}
+
 /// How many pages a round of `capped-layers` reads.
 const CAPPED_PAGES_PER_ROUND: u64 = 7;
 
@@ -1307,4 +1893,122 @@ fn a_limit_over_keys_without_documents_is_proven_as_it_is_read_from_grove_versio
             vec![Some(true), Some(true)],
         ]
     );
+}
+
+const CONVERSIONS_GROUP: &str = "conversions to a 128-bit sum";
+
+/// The digest of [`one_conversion_of_each_kind`].
+const PINNED_CONVERSION_KINDS: &str =
+    "a1b2019dc9c002613f3e477aa7764c00ed669e721c49edf2bcff51648e248680";
+
+/// A stream that converts one tree of each of the seven types, four in
+/// the block and three given no transaction.
+fn one_conversion_of_each_kind() -> Vec<Op> {
+    let top = path(&[b"top"]);
+    let insert = |key: &[u8], element: Element| {
+        Op::Write(Write::Insert {
+            path: top.clone(),
+            key: key.to_vec(),
+            element,
+        })
+    };
+    let trees: [(&[u8], Element); 7] = [
+        (b"a", Element::empty_sum_tree()),
+        (b"b", Element::empty_count_sum_tree()),
+        (b"c", Element::empty_provable_sum_tree()),
+        (b"d", Element::empty_provable_count_sum_tree()),
+        (b"e", Element::empty_provable_count_provable_sum_tree()),
+        (b"f", Element::empty_provable_sum_indexed_tree()),
+        (
+            b"g",
+            Element::empty_provable_count_provable_sum_indexed_tree(vec![
+                (IndexAxis::Count.tag(), None),
+                (IndexAxis::Sum.tag(), None),
+            ])
+            .expect("canonical axes"),
+        ),
+    ];
+    let convert = |key: &[u8], own_transaction: bool| {
+        Op::Write(Write::ConvertToBigSumTree {
+            path: top.clone(),
+            key: key.to_vec(),
+            own_transaction,
+        })
+    };
+    let mut ops = vec![Op::Write(Write::Insert {
+        path: Vec::new(),
+        key: b"top".to_vec(),
+        element: Element::empty_tree(),
+    })];
+    ops.extend(trees.iter().map(|(key, tree)| insert(key, tree.clone())));
+    ops.push(Op::Commit);
+    ops.extend(trees[4..].iter().map(|(key, _)| convert(key, true)));
+    ops.extend(trees[..4].iter().map(|(key, _)| convert(key, false)));
+    ops.push(Op::Commit);
+    ops
+}
+
+/// The canonical encoding of a conversion: the bytes are pinned, and a
+/// conversion in the block encodes differently from one given no
+/// transaction. The stream holds every operation of the group and applies
+/// on the latest grove version.
+#[test]
+fn the_conversion_has_a_pinned_encoding() {
+    let ops = one_conversion_of_each_kind();
+    let mut encodings = BTreeSet::new();
+    for op in &ops {
+        let mut bytes = Vec::new();
+        op.encode(&mut bytes);
+        assert!(
+            encodings.insert(bytes) || matches!(op, Op::Commit),
+            "two operations encode as {op:?}"
+        );
+    }
+    let convert = |own_transaction| {
+        let op = Op::Write(Write::ConvertToBigSumTree {
+            path: path(&[b"top"]),
+            key: b"a".to_vec(),
+            own_transaction,
+        });
+        StreamDigest::of([&op]).hex()
+    };
+    assert_ne!(convert(false), convert(true));
+    let digest = StreamDigest::of(&ops);
+    assert_eq!(digest.ops(), ops.len() as u64);
+    assert_eq!(digest.hex(), PINNED_CONVERSION_KINDS);
+
+    let of_the_group = |operations: &[Operation]| -> Vec<Operation> {
+        operations
+            .iter()
+            .copied()
+            .filter(|operation| operation.group() == CONVERSIONS_GROUP)
+            .collect()
+    };
+    let produced: Vec<Operation> = Coverage::of(&ops).operations().iter().copied().collect();
+    assert_eq!(of_the_group(&produced), of_the_group(Operation::ALL));
+    assert_eq!(of_the_group(Operation::ALL).len(), 9);
+
+    let (_dir, db) = open();
+    let mut transactions = Transactions::new(&db);
+    for op in &ops {
+        transactions
+            .apply(op, GroveVersion::latest())
+            .unwrap()
+            .unwrap_or_else(|error| panic!("{op:?}\nrefused: {error:?}"));
+    }
+    for key in [b"a", b"b", b"c", b"d", b"e", b"f", b"g"] {
+        let element = db
+            .get(
+                [b"top".as_slice()].as_ref(),
+                key,
+                None,
+                GroveVersion::latest(),
+            )
+            .unwrap()
+            .expect("a converted tree");
+        assert!(
+            element.big_sum_counterpart().is_none() && element.is_any_tree(),
+            "{element:?} is not converted"
+        );
+    }
 }

@@ -4,9 +4,11 @@
 //! recorder, a replayer and a benchmark all drive the database the same way.
 //! Block handling stays with the caller: [`apply`] runs inside the
 //! transaction it is given and reports [`Outcome::EndOfBlock`] for
-//! [`Op::Commit`] without committing anything. The one operation that does
-//! not run inside it is [`Op::FlushPendingDrops`], which GroveDB only offers
-//! on the database itself.
+//! [`Op::Commit`] without committing anything. Two operations do not run
+//! inside it: [`Op::FlushPendingDrops`], which GroveDB only offers on the
+//! database itself, and a [`Write::ConvertToBigSumTree`] that asks for a
+//! transaction of its own, which GroveDB is given none for and commits by
+//! itself.
 //!
 //! The caller owns its transactions, so four outcomes ask it to act:
 //!
@@ -1429,6 +1431,18 @@ fn apply_write<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine>(
         }
         Write::ReconcileIndexed { path } => db
             .reconcile_indexed_tree_secondaries(path.as_slice(), transaction, grove_version)
+            .map_ok(written),
+        Write::ConvertToBigSumTree {
+            path,
+            key,
+            own_transaction,
+        } => db
+            .convert_to_big_sum_tree(
+                path.as_slice(),
+                key,
+                if *own_transaction { None } else { transaction },
+                grove_version,
+            )
             .map_ok(written),
         Write::CommitmentInsert {
             path,

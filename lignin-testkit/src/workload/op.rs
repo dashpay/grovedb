@@ -318,6 +318,24 @@ pub enum Write {
         /// [`Write::DeleteUpTree`].
         stop_path_height: Option<u16>,
     },
+    /// `GroveDb::convert_to_big_sum_tree`: a tree that keeps a 64-bit sum
+    /// becomes the tree that holds the same children with the sum in 128
+    /// bits, in place.
+    ConvertToBigSumTree {
+        /// The subtree that holds the tree.
+        path: Path,
+        /// The key of the tree.
+        key: Vec<u8>,
+        /// Whether GroveDB is given no transaction and converts in one of
+        /// its own, which it commits. The block's transaction is left as
+        /// it is ([`Op::keeps_transaction`]), and what the conversion
+        /// wrote is committed state at once. A stream puts such a
+        /// conversion only where the block's transaction holds no write
+        /// ([`Op::follows_a_commit`]): beside a write of the block, to
+        /// whatever tree, the two transactions have both written the root
+        /// tree, and the commit of the block fails.
+        own_transaction: bool,
+    },
 }
 
 /// The types of indexed tree, each written through methods of its own.
@@ -933,10 +951,25 @@ impl Op {
         ops.iter().chain(add_on)
     }
 
-    /// Whether the op reads or reclaims committed state and leaves the open
-    /// transaction as it is: a read or [`Op::FlushPendingDrops`].
+    /// Whether the op works on committed state and leaves the open
+    /// transaction as it is: a read, [`Op::FlushPendingDrops`] or a write
+    /// GroveDB commits by itself ([`Op::commits_by_itself`]).
     pub fn follows_a_commit(&self) -> bool {
-        matches!(self, Op::Read(_) | Op::FlushPendingDrops)
+        matches!(self, Op::Read(_) | Op::FlushPendingDrops) || self.commits_by_itself()
+    }
+
+    /// Whether the op is a write GroveDB is given no transaction for: it
+    /// runs in a transaction GroveDB opens and commits, beside the block's
+    /// transaction. The one such op is a [`Write::ConvertToBigSumTree`] in
+    /// a transaction of its own.
+    pub fn commits_by_itself(&self) -> bool {
+        matches!(
+            self,
+            Op::Write(Write::ConvertToBigSumTree {
+                own_transaction: true,
+                ..
+            })
+        )
     }
 
     /// Whether the open transaction holds no write once the op is applied:
@@ -951,20 +984,23 @@ impl Op {
 
     /// Whether the op leaves the writes of the open transaction as they
     /// are: a read of any kind, [`Op::FlushPendingDrops`], a savepoint
-    /// being set or the snapshot being opened or closed.
+    /// being set, the snapshot being opened or closed, or a write GroveDB
+    /// commits by itself ([`Op::commits_by_itself`]), which changes the
+    /// committed state under the transaction and not the transaction.
     pub fn keeps_transaction(&self) -> bool {
-        matches!(
-            self,
-            Op::Read(_)
-                | Op::FlushPendingDrops
-                | Op::Transaction(
-                    TransactionOp::SetSavepoint
-                        | TransactionOp::OpenSnapshot
-                        | TransactionOp::CloseSnapshot
-                        | TransactionOp::SnapshotRead(_)
-                        | TransactionOp::BlockRead(_)
-                )
-        )
+        self.commits_by_itself()
+            || matches!(
+                self,
+                Op::Read(_)
+                    | Op::FlushPendingDrops
+                    | Op::Transaction(
+                        TransactionOp::SetSavepoint
+                            | TransactionOp::OpenSnapshot
+                            | TransactionOp::CloseSnapshot
+                            | TransactionOp::SnapshotRead(_)
+                            | TransactionOp::BlockRead(_)
+                    )
+            )
     }
 }
 
@@ -1124,6 +1160,16 @@ impl Write {
                 put_path(out, path);
                 put_bytes(out, key);
                 put_stop_height(out, *stop_path_height);
+            }
+            Write::ConvertToBigSumTree {
+                path,
+                key,
+                own_transaction,
+            } => {
+                out.push(18);
+                put_path(out, path);
+                put_bytes(out, key);
+                out.push(u8::from(*own_transaction));
             }
         }
     }

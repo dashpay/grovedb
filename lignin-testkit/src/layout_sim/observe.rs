@@ -21,6 +21,20 @@
 //! reads again each record that carries a referrer list and that the walk
 //! did not report.
 //!
+//! Another is the feature of a node, the aggregate it keeps of its
+//! subtree, where the type of the tree does not hash it: the sum of a
+//! `SumTree`, the count and the sum of a `CountSumTree`. A conversion to
+//! the tree with a 128-bit sum writes every record of such a tree again
+//! with the feature of the new type, and leaves every hash as it was. The
+//! element that hosts the tree changes its type with it. So when an
+//! element is a tree of another type than it was, the walk of the Merks it
+//! hosts does not stop at a child whose hash in the link is the one the
+//! mirror has: it reads the record. It stops, as everywhere, at a record
+//! that is the one the mirror read, which the root of a secondary Merk the
+//! conversion left alone is. The Merks are the ones the element hosted
+//! before: a conversion keeps each where it is, and names the axis of
+//! sums of an indexed tree anew.
+//!
 //! A node is found deleted when it was the child of a changed node and the
 //! walk did not meet it again anywhere in its tree.
 //!
@@ -31,7 +45,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use grovedb::{Element, GroveDb, Transaction};
+use grovedb::{Element, GroveDb, Transaction, TreeType};
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     tree::{kv::ValueDefinedCostType, Link, TreeNode},
@@ -71,6 +85,8 @@ pub struct Observer {
     observations: u32,
     /// The nodes whose element carries a referrer list.
     with_referrer_list: BTreeSet<NodeId>,
+    /// The type of the tree each node hosts, for the nodes that host one.
+    tree_types: HashMap<NodeId, TreeType>,
 }
 
 impl Observer {
@@ -81,6 +97,7 @@ impl Observer {
             grove_version,
             observations: 0,
             with_referrer_list: BTreeSet::new(),
+            tree_types: HashMap::new(),
         }
     }
 
@@ -108,6 +125,8 @@ impl Observer {
             transaction,
             grove: &mut self.grove,
             with_referrer_list: &mut self.with_referrer_list,
+            tree_types: &mut self.tree_types,
+            every_record: false,
             grove_version: self.grove_version,
             observation: self.observations,
             changes: ChangeSet::default(),
@@ -120,6 +139,9 @@ impl Observer {
             old_roots,
             ..
         } = walk;
+        for gone in changes.removed.iter().chain(&changes.dropped) {
+            self.tree_types.remove(gone);
+        }
         changes.finish(&mut self.grove, &old_roots);
         changes
     }
@@ -270,6 +292,11 @@ struct Walk<'a, 'db> {
     transaction: &'db Transaction<'db>,
     grove: &'a mut Grove,
     with_referrer_list: &'a mut BTreeSet<NodeId>,
+    tree_types: &'a mut HashMap<NodeId, TreeType>,
+    /// Whether the walk reads the record of a node whose hash is the one
+    /// the mirror has: set while it walks the Merks of a tree whose type
+    /// changed.
+    every_record: bool,
     grove_version: &'static GroveVersion,
     observation: u32,
     changes: ChangeSet,
@@ -352,7 +379,8 @@ impl<'db> Walk<'_, 'db> {
         candidates: &mut Vec<NodeId>,
     ) -> NodeId {
         let existing = self.grove.find(merk, key);
-        if let (Some(id), Some(hash)) = (existing, link_hash)
+        if !self.every_record
+            && let (Some(id), Some(hash)) = (existing, link_hash)
             && self.grove.node(id).node_hash == *hash
         {
             let node = self.grove.node_mut(id);
@@ -541,6 +569,34 @@ impl<'db> Walk<'_, 'db> {
         }
         let roots = hosted_roots(&element);
         let mut hosted = self.grove.node(id).hosted.clone();
+        let tree_type = element.tree_type();
+        let was = match tree_type {
+            Some(tree_type) => self.tree_types.insert(id, tree_type),
+            None => self.tree_types.remove(&id),
+        };
+        let retyped = was.is_some() && tree_type.is_some() && was != tree_type;
+        if retyped {
+            // The Merks of a converted tree are the ones it had, each in
+            // the storage namespace it was in, under the axes the element
+            // names now.
+            let namespace = |axis: Option<u8>| axis.map(axis_storage_tag);
+            let kept: Vec<Option<MerkId>> = roots
+                .iter()
+                .map(|(axis, _)| {
+                    hosted
+                        .iter()
+                        .copied()
+                        .find(|merk| namespace(self.grove.merk(*merk).axis) == namespace(*axis))
+                })
+                .collect();
+            if hosted.len() == roots.len() && kept.iter().all(Option::is_some) {
+                hosted = kept.into_iter().flatten().collect();
+                for (merk, (axis, _)) in hosted.iter().zip(&roots) {
+                    self.grove.merk_mut(*merk).axis = *axis;
+                }
+                self.grove.node_mut(id).hosted = hosted.clone();
+            }
+        }
         let same_trees = hosted.len() == roots.len()
             && hosted
                 .iter()
@@ -579,9 +635,11 @@ impl<'db> Walk<'_, 'db> {
             }
             self.grove.node_mut(id).hosted = hosted.clone();
         }
+        let every_record = std::mem::replace(&mut self.every_record, retyped);
         for (hosted, (_, root_key)) in hosted.into_iter().zip(roots) {
             self.merk(hosted, root_key.as_deref());
         }
+        self.every_record = every_record;
     }
 }
 
