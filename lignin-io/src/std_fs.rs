@@ -1,15 +1,17 @@
 //! The [`Vfs`] backend over the operating system's files.
 //!
 //! It is compiled for Linux and macOS only, the platforms LigninDB supports.
-//! It is written against `std` alone, so it holds no `unsafe` code and no
-//! code of its own that differs between the two: `std` picks the system
-//! call. What runs on each:
+//! It holds no `unsafe` code. Its system calls are `std`'s, and `std` picks
+//! them for each platform, but for one that `std` does not have: the plain
+//! `fsync` of macOS, which [`Vfs::sync_together`] needs there and which comes
+//! from `rustix`. What runs on each:
 //!
 //! | Operation | Linux | macOS |
 //! | --- | --- | --- |
 //! | [`VfsFile::sync_all`] | `fsync` | `fcntl(F_FULLFSYNC)` |
 //! | [`VfsFile::sync_data`] | `fdatasync` | `fcntl(F_FULLFSYNC)` |
 //! | [`Vfs::sync_dir`] | `fsync` on the directory, opened read-only | `fcntl(F_FULLFSYNC)` on the directory, opened read-only |
+//! | [`Vfs::sync_together`] | the three calls above, one for each item, in the order of the list | `fsync` on each file and each directory of the list, then `fcntl(F_FULLFSYNC)` once for each file system they are on |
 //! | [`Vfs::lock`] | `flock(LOCK_EX \| LOCK_NB)` | the same |
 //! | [`Vfs::hard_link`] | `linkat` | the same |
 //! | [`Vfs::rename`] | `rename` | the same |
@@ -37,8 +39,100 @@
 //! buffer, and it never overwrites: the descriptor is `O_APPEND`, so the
 //! system places the bytes at the end of the file whatever this backend
 //! believes the length to be.
+//!
+//! [`Vfs::rename`] is `rename` for a directory as for a file. On Linux and
+//! on macOS that call replaces a directory only if it has no entries, and
+//! refuses to move a directory into itself.
+//!
+//! # A set synced together
+//!
+//! On Linux [`Vfs::sync_together`] makes the single calls of its items one
+//! after another: `fdatasync` or `fsync` for a file, `fsync` for a directory.
+//! Each is a whole sync when it returns, so what is durable, and when, is
+//! what the single calls give.
+//!
+//! On macOS the items of the list that are on an APFS volume share a flush:
+//! `fsync` is called for each of them, and then `fcntl(F_FULLFSYNC)` once
+//! for each volume, on the last item of the list that is on it. A volume is
+//! told by the device number of the open file (`st_dev`), and APFS by the
+//! name of the file system that `fstatfs` gives. An item on any other file
+//! system is synced by its single call, with a full flush of its own, and so
+//! is a file of the list that another file layer opened.
+//!
+//! That one full flush is enough on APFS rests on three things.
+//!
+//! - **What Apple says of the two calls.** `fsync(2)` on macOS: it "causes
+//!   all modified data and attributes of fildes to be moved to a permanent
+//!   storage device", but "the drive itself may not physically write the data
+//!   to the platters for quite some time". `fcntl(2)` on macOS, under
+//!   `F_FULLFSYNC`: "Does the same thing as fsync(2) then asks the drive to
+//!   flush all buffered data to the permanent storage device (arg is
+//!   ignored). As this drains the entire queue of the device and acts as a
+//!   barrier, data that had been fsync'd on the same device before is
+//!   guaranteed to be persisted when this call returns. This is currently
+//!   implemented on HFS, MS-DOS (FAT), Universal Disk Format (UDF) and APFS
+//!   file systems." Under `F_BARRIERFSYNC` the same page gives the pattern
+//!   for a set: "fsync(2) each FD and issue a single barrier". Both pages
+//!   are quoted as macOS 27.0.1 has them.
+//! - **What APFS saves.** It is not published as source. Apple's reference
+//!   for it says that a container, which holds the volumes of one partition,
+//!   is saved as a whole: "At the end of each transaction, new state is
+//!   saved by writing a checkpoint", and a checkpoint whose writing was
+//!   interrupted "is ignored the next time the device is mounted, rolling the
+//!   file system back to the last valid state" (Apple File System Reference,
+//!   2020-06-22, "Container" and "About Apple File System").
+//! - **What the device holds afterwards.** The experiment of
+//!   `std_fs/tests/device_probe.rs` makes one change of every kind the
+//!   contract has on a disk image (an append, a write past the end, a growth
+//!   and a cut of the length, an overwrite, new directories, a file made, a
+//!   file and a directory renamed, a hard link, a removal), syncs them, and
+//!   mounts a copy of the image file that is taken as the sync returns. On an
+//!   APFS image on macOS 27.0.1 the copy has every one of the changes after
+//!   `fsync` of each item and one `F_FULLFSYNC` on the last, and none of them
+//!   after the `fsync` calls alone: a plain `fsync` there leaves the names
+//!   and the lengths in memory, and it is the full flush that writes the
+//!   checkpoint, with everything in it, whichever item it is asked on.
+//!
+//! HFS+ is why the flush is shared on APFS only, and not wherever
+//! `F_FULLFSYNC` works. In the HFS+ source, a write past the end of a file,
+//! or a growth of its length, leaves a range that is not yet written and a
+//! time until which it need not be (`hfs_readwrite.c`, `c_zftimeout`). A
+//! plain `fsync` within that time does not fill the range (`hfs_fsync` in
+//! `core/hfs_vnops.c`), and the length it puts on record ends where the
+//! range begins ("Trim cf_size to first invalid range",
+//! `hfs_prepare_fork_for_update`). `F_FULLFSYNC` on that file fills the
+//! range and records the whole length. It then flushes the journal of the
+//! whole volume and the cache of the device: "the journal_flush or
+//! hfs_metasync_all will push out all of the metadata changes", as a comment
+//! in `hfs_fsync` has it. So on HFS+ one `F_FULLFSYNC` after an `fsync` of
+//! each item makes durable the shorter length that the `fsync` recorded.
+//! The experiment shows it on an HFS+ image: a file written 1 MiB past its
+//! start is empty in the copy, and a file grown to 3 MiB has 16 KiB.
+//! `F_FULLFSYNC` is thus not everywhere `fsync` and then a flush, whatever
+//! the manual page says, and this backend shares a flush only on the file
+//! system on which the experiment finds the set whole.
+//!
+//! Other storage engines do not share a flush. On macOS RocksDB and LevelDB
+//! call `F_FULLFSYNC` for every sync of a file and of a directory, and LMDB
+//! for every sync. SQLite and PostgreSQL call it only where they are asked
+//! to (`PRAGMA fullfsync`, `wal_sync_method = fsync_writethrough`), and
+//! SQLite syncs a directory with `fsync` alone. Git does share one: with
+//! `core.fsyncMethod=batch` it calls `fsync` for each new object file and
+//! then `F_FULLFSYNC` once, on a file it makes for that, and its
+//! documentation expects this to be "as safe as `fsync` on macOS for repos
+//! stored on HFS+ or APFS filesystems".
+//!
+//! Three limits. The flush is made for each volume, not once for a list,
+//! because Apple's sentence is about "the same device" and the volume is
+//! what an open file tells of its device: two volumes of one APFS container
+//! get a flush each. A volume on which `F_FULLFSYNC` fails cannot be synced
+//! by this call either. And the experiment shows what a set's calls have
+//! written to the device when they return, not that the device keeps it
+//! through a power cut: that the flush makes it so is Apple's statement,
+//! and no test of this crate cuts the power.
 
 use std::{
+    any::Any,
     fs::{self, File, OpenOptions, TryLockError},
     io::{self, ErrorKind, Write},
     os::unix::fs::{FileExt, MetadataExt},
@@ -46,7 +140,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
-use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
+use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, SyncItem, Vfs, VfsFile, VfsLock};
 
 const MAX_FILE_LEN: u64 = i64::MAX as u64;
 
@@ -106,15 +200,11 @@ impl Vfs for StdVfs {
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        let dir = File::open(path)?;
-        if !dir.metadata()?.is_dir() {
-            return Err(path_error(
-                ErrorKind::NotADirectory,
-                path,
-                "is not a directory",
-            ));
-        }
-        dir.sync_all()
+        open_dir(path)?.sync_all()
+    }
+
+    fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
+        sync_together_using(items, &SYSTEM)
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
@@ -197,17 +287,21 @@ impl StdFile {
         })
     }
 
-    fn sync_using(&self, sync: fn(&File) -> io::Result<()>) -> io::Result<()> {
+    fn sync_using(&self, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
         let mut failure = guard(&self.sync_failure)?;
         if let Some(failure) = &*failure {
             return Err(io::Error::other(failure.clone()));
         }
-        sync(&self.file).inspect_err(|error| {
-            *failure = Some(format!(
-                "an earlier sync of this file failed ({error}), so this handle can no longer make \
-                 it durable"
-            ));
-        })
+        sync(&self.file).inspect_err(|error| *failure = Some(failed_sync(error)))
+    }
+
+    /// Stops the handle's syncs after a flush failed that its bytes were
+    /// waiting for. A handle that an earlier operation panicked on is
+    /// stopped already.
+    fn flush_failed(&self, error: &io::Error) {
+        if let Ok(mut failure) = self.sync_failure.lock() {
+            failure.get_or_insert_with(|| failed_sync(error));
+        }
     }
 
     fn append_using(
@@ -333,6 +427,223 @@ impl Drop for StdFile {
             unlock_now(&self.file);
         }
     }
+}
+
+fn failed_sync(error: &io::Error) -> String {
+    format!(
+        "an earlier sync of this file failed ({error}), so this handle can no longer make it \
+         durable"
+    )
+}
+
+fn open_dir(path: &Path) -> io::Result<File> {
+    let dir = File::open(path)?;
+    if !dir.metadata()?.is_dir() {
+        return Err(path_error(
+            ErrorKind::NotADirectory,
+            path,
+            "is not a directory",
+        ));
+    }
+    Ok(dir)
+}
+
+/// Which single sync an item of a set stands for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Member {
+    Data,
+    All,
+    Dir,
+}
+
+type OfMember<'a> = &'a dyn Fn(&File, Member) -> io::Result<()>;
+type OfFile<'a> = &'a dyn Fn(&File) -> io::Result<()>;
+type FileSystemOf<'a> = &'a dyn Fn(&File) -> io::Result<Option<u64>>;
+
+/// How a set is made durable.
+#[derive(Clone, Copy)]
+struct SetSync<'a> {
+    /// The whole sync of one item, as its single call makes it.
+    alone: OfMember<'a>,
+    /// How the items on one file system share a flush, where they can.
+    shared: Option<SharedFlush<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct SharedFlush<'a> {
+    /// The file system an open file or directory is on, if the items on it
+    /// can share a flush. An item on any other is synced alone.
+    file_system: FileSystemOf<'a>,
+    /// Hands one item to its device: its sync but for the flush.
+    hand_over: OfFile<'a>,
+    /// The flush. Asked on one item, it makes durable what was handed over
+    /// of every item on that item's file system.
+    flush: OfFile<'a>,
+}
+
+impl<'a> SetSync<'a> {
+    /// The flush `file` can share, with the file system it is shared on.
+    fn shared_on(&self, file: &File) -> io::Result<Option<(u64, &SharedFlush<'a>)>> {
+        let Some(shared) = &self.shared else {
+            return Ok(None);
+        };
+        let file_system = (shared.file_system)(file)?;
+        Ok(file_system.map(|file_system| (file_system, shared)))
+    }
+}
+
+/// On Linux each item is synced by its single call.
+#[cfg(target_os = "linux")]
+const SYSTEM: SetSync<'static> = SetSync {
+    alone: &sync_alone,
+    shared: None,
+};
+
+/// On macOS the items on one APFS volume are handed to the device with
+/// `fsync` and share one `fcntl(F_FULLFSYNC)`. The module documentation says
+/// what that rests on, and why an item on another file system is synced
+/// alone.
+#[cfg(target_os = "macos")]
+const SYSTEM: SetSync<'static> = SetSync {
+    alone: &sync_alone,
+    shared: Some(SharedFlush {
+        file_system: &apfs_volume,
+        hand_over: &hand_to_device,
+        flush: &full_flush,
+    }),
+};
+
+fn sync_alone(file: &File, member: Member) -> io::Result<()> {
+    match member {
+        Member::Data => file.sync_data(),
+        Member::All | Member::Dir => file.sync_all(),
+    }
+}
+
+/// The volume `file` is on, by its device number, if it is an APFS volume.
+#[cfg(target_os = "macos")]
+fn apfs_volume(file: &File) -> io::Result<Option<u64>> {
+    let on = rustix::fs::fstatfs(file)?;
+    let kind = on.f_fstypename.iter().take_while(|byte| **byte != 0);
+    if !kind.map(|byte| *byte as u8).eq(*b"apfs") {
+        return Ok(None);
+    }
+    Ok(Some(file.metadata()?.dev()))
+}
+
+/// `fsync`, which `std` does not call on macOS.
+#[cfg(target_os = "macos")]
+fn hand_to_device(file: &File) -> io::Result<()> {
+    loop {
+        match rustix::fs::fsync(file) {
+            Err(rustix::io::Errno::INTR) => {}
+            done => return done.map_err(io::Error::from),
+        }
+    }
+}
+
+/// `fcntl(F_FULLFSYNC)`, which is what `std` syncs a file with on macOS.
+#[cfg(target_os = "macos")]
+fn full_flush(file: &File) -> io::Result<()> {
+    file.sync_all()
+}
+
+/// The items of a set on one file system, which wait for its flush.
+struct Waiting<'a> {
+    file_system: u64,
+    /// The handles among them, whose syncs stop if the flush fails.
+    handles: Vec<&'a StdFile>,
+    /// The last of them, which the flush is asked on.
+    last: Last<'a>,
+}
+
+enum Last<'a> {
+    Handle(&'a File),
+    Dir(File),
+}
+
+impl Last<'_> {
+    fn file(&self) -> &File {
+        match self {
+            Self::Handle(file) => file,
+            Self::Dir(dir) => dir,
+        }
+    }
+}
+
+fn wait<'a>(
+    waiting: &mut Vec<Waiting<'a>>,
+    file_system: u64,
+    handle: Option<&'a StdFile>,
+    last: Last<'a>,
+) {
+    let on_it = |group: &Waiting<'_>| group.file_system == file_system;
+    let at = match waiting.iter().position(on_it) {
+        Some(at) => {
+            waiting[at].last = last;
+            at
+        }
+        None => {
+            waiting.push(Waiting {
+                file_system,
+                handles: Vec::new(),
+                last,
+            });
+            waiting.len() - 1
+        }
+    };
+    waiting[at].handles.extend(handle);
+}
+
+fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<()> {
+    let mut waiting = Vec::new();
+    for item in items {
+        let (member, file) = match *item {
+            SyncItem::Data(file) => (Member::Data, file),
+            SyncItem::All(file) => (Member::All, file),
+            SyncItem::Dir(path) => {
+                let dir = open_dir(path)?;
+                match set.shared_on(&dir)? {
+                    Some((file_system, shared)) => {
+                        (shared.hand_over)(&dir)?;
+                        wait(&mut waiting, file_system, None, Last::Dir(dir));
+                    }
+                    None => (set.alone)(&dir, Member::Dir)?,
+                }
+                continue;
+            }
+        };
+        let any: &dyn Any = file;
+        let Some(handle) = any.downcast_ref::<StdFile>() else {
+            // A file of another file layer: that layer's own call syncs it
+            // whole, so it waits for no flush of this one.
+            match member {
+                Member::Data => file.sync_data()?,
+                Member::All | Member::Dir => file.sync_all()?,
+            }
+            continue;
+        };
+        match set.shared_on(&handle.file)? {
+            Some((file_system, shared)) => {
+                handle.sync_using(shared.hand_over)?;
+                let last = Last::Handle(&handle.file);
+                wait(&mut waiting, file_system, Some(handle), last);
+            }
+            None => handle.sync_using(|file| (set.alone)(file, member))?,
+        }
+    }
+    let Some(shared) = &set.shared else {
+        return Ok(());
+    };
+    for group in &waiting {
+        if let Err(error) = (shared.flush)(group.last.file()) {
+            for handle in &group.handles {
+                handle.flush_failed(&error);
+            }
+            return Err(error);
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug)]

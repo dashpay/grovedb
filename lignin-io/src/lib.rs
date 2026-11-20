@@ -23,4 +23,4 @@ pub mod vfs;
 pub use sim::SimVfs;
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 pub use std_fs::StdVfs;
-pub use vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile, VfsLock};
+pub use vfs::{Create, DirEntry, EntryKind, OpenMode, SyncItem, Vfs, VfsFile, VfsLock};

@@ -328,6 +328,7 @@ impl Names {
     fn record(&mut self, op: u64, effects: Vec<(Name, Option<Named>)>) {
         let removed_dir = match (&effects[..], self.now.get(&effects[0].0)) {
             ([(_, None)], Some(Named::Dir(dir))) => Some(*dir),
+            ([(_, Some(Named::Dir(_))), _], Some(Named::Dir(replaced))) => Some(*replaced),
             _ => None,
         };
         for (name, named) in &effects {
@@ -357,22 +358,26 @@ impl Names {
         })
     }
 
-    /// The operations that made `dir` and every directory above it.
-    fn made_above(&self, mut dir: u64) -> Vec<u64> {
+    /// The operations that gave `dir`, and every directory above it, the
+    /// names they had before operation `op`: of each, the last that made it
+    /// or renamed it.
+    fn placed_above(&self, mut dir: u64, op: u64) -> Vec<u64> {
         let mut ops = Vec::new();
         while dir != 0 {
-            let makes_it = |made: &&Made| made.effects[0].1 == Some(Named::Dir(dir));
-            let made = self.made.iter().find(makes_it).unwrap();
-            ops.push(made.op);
-            dir = made.effects[0].0 .0;
+            let places_it =
+                |made: &&Made| made.op < op && made.effects[0].1 == Some(Named::Dir(dir));
+            let placed = self.made.iter().rev().find(places_it).unwrap();
+            ops.push(placed.op);
+            dir = placed.effects[0].0 .0;
         }
         ops
     }
 
     /// Whether no change in `kept` is there without the changes it builds
     /// on: the earlier changes of its names, for the removal of a directory
-    /// the changes that emptied it, and for a rename the creation of the
-    /// directories of its names.
+    /// and for a rename that replaces one the changes that emptied it, and
+    /// for a rename what gave the directories of its names, and those above
+    /// them, the names they had when it was made.
     fn holds_together(&self, kept: &BTreeSet<u64>) -> bool {
         let is_kept = |made: &Made| kept.contains(&made.op);
         self.made.iter().filter(|made| is_kept(made)).all(|made| {
@@ -391,10 +396,10 @@ impl Names {
                 .removed_dir
                 .is_none_or(|dir| earlier().filter(|other| is_in(other, dir)).all(is_kept));
             let dirs = !made.rename
-                || made
-                    .effects
-                    .iter()
-                    .all(|((dir, _), _)| self.made_above(*dir).iter().all(|op| kept.contains(op)));
+                || made.effects.iter().all(|((dir, _), _)| {
+                    let placed = self.placed_above(*dir, made.op);
+                    placed.iter().all(|op| kept.contains(op))
+                });
             names && emptied && dirs
         })
     }
@@ -433,19 +438,37 @@ impl Names {
 #[test]
 fn changes_of_names_leave_exactly_the_states_the_documentation_allows() {
     const FILES: [&str; 6] = ["/a", "/b", "/d/a", "/d/b", "/e/a", "/d/e/a"];
-    const DIRS: [&str; 4] = ["/", "/d", "/e", "/d/e"];
+    const DIRS: [&str; 6] = ["/", "/d", "/e", "/d/e", "/e/d", "/d/e/d"];
 
-    let mut compared = 0;
+    let (mut compared, mut renamed_dirs) = (0, 0);
     for seed in 0..SCRIPTS {
         let mut rng = SimRng::new(seed);
         let fs = sim(seed);
         let mut names = Names::default();
         let file = |rng: &mut SimRng| FILES[rng.below(FILES.len() as u64) as usize];
         let dir = |rng: &mut SimRng| DIRS[rng.below(DIRS.len() as u64) as usize];
+        for path in ["/d", "/e"] {
+            let op = fs.stats().ops + 1;
+            fs.create_dir(p(path)).unwrap();
+            let tag = names.tag();
+            names.record(op, vec![(names.name(path), Some(Named::Dir(tag)))]);
+        }
 
         for _ in 0..if cfg!(miri) { 16 } else { 40 } {
             let op = fs.stats().ops + 1;
-            match rng.below(16) {
+            match rng.below(26) {
+                16..=25 => {
+                    let below_the_root = |rng: &mut SimRng| DIRS[1 + rng.below(5) as usize];
+                    let (from, to) = (below_the_root(&mut rng), below_the_root(&mut rng));
+                    if fs.rename(p(from), p(to)).is_ok() {
+                        let (from, to) = (names.name(from), names.name(to));
+                        let moved = names.now[&from];
+                        if names.now.get(&to) != Some(&moved) {
+                            names.record(op, vec![(to, Some(moved)), (from, None)]);
+                            renamed_dirs += 1;
+                        }
+                    }
+                }
                 0..=3 => {
                     let path = file(&mut rng);
                     let Ok(created) = fs.open(p(path), OpenMode::Write(Create::New)) else {
@@ -554,15 +577,21 @@ fn changes_of_names_leave_exactly_the_states_the_documentation_allows() {
         assert_eq!(tree(&kept_all), names.after_a_crash_that_keeps(&everything));
     }
     assert!(compared * 2 >= SCRIPTS, "{compared} of {SCRIPTS}");
+    assert!(
+        renamed_dirs >= SCRIPTS / 2,
+        "{renamed_dirs} directories renamed, {compared} scripts compared"
+    );
 }
 
 /// "A crash keeps a rename whole or not at all", as it shows from outside: a
-/// file whose name is durable, and that is renamed and never removed or
-/// replaced, has a name in every state a crash can leave.
+/// file whose name is durable, and that is renamed, by its own name or with
+/// a directory above it, and never removed or replaced, has a name in every
+/// state a crash can leave.
 #[test]
 fn a_file_that_is_only_renamed_has_a_name_after_every_crash() {
     const FILES: [&str; 7] = ["/a", "/b", "/c", "/d/a", "/d/b", "/e/a", "/d/e/a"];
-    const DIRS: [&str; 4] = ["/", "/d", "/e", "/d/e"];
+    const DIRS: [&str; 6] = ["/", "/d", "/e", "/d/e", "/e/d", "/d/e/d"];
+    let mut renamed_dirs = 0;
 
     for seed in 0..SCRIPTS {
         let mut rng = SimRng::new(seed);
@@ -570,8 +599,13 @@ fn a_file_that_is_only_renamed_has_a_name_after_every_crash() {
         let file = |rng: &mut SimRng| p(FILES[rng.below(FILES.len() as u64) as usize]);
         let dir = |rng: &mut SimRng| p(DIRS[rng.below(DIRS.len() as u64) as usize]);
         let mut files = 0;
+        fs.create_dir(p("/d")).unwrap();
+        fs.create_dir(p("/e")).unwrap();
         for _ in 0..if cfg!(miri) { 20 } else { 50 } {
-            match rng.below(10) {
+            match rng.below(14) {
+                10..=13 => {
+                    renamed_dirs += u64::from(fs.rename(dir(&mut rng), dir(&mut rng)).is_ok())
+                }
                 0 | 1 => {
                     if let Ok(created) = fs.open(file(&mut rng), OpenMode::Write(Create::New)) {
                         files += 1;
@@ -611,4 +645,8 @@ fn a_file_that_is_only_renamed_has_a_name_after_every_crash() {
             );
         }
     }
+    assert!(
+        renamed_dirs >= SCRIPTS / 2,
+        "{renamed_dirs} directories renamed"
+    );
 }

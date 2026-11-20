@@ -61,8 +61,8 @@ impl Cell {
     }
 }
 
-/// A directory, with the name it has in the directory above it. A directory
-/// is never renamed, so it keeps that name for as long as it exists.
+/// A directory, with the name operations see it under in the directory above
+/// it: the one it was made with, or the one its last rename gave it.
 #[derive(Clone, Debug)]
 pub(super) struct Dir {
     pub(super) cells: BTreeMap<OsString, Cell>,
@@ -103,6 +103,12 @@ struct Handle {
 /// A change of names that is not durable yet. It becomes durable once every
 /// directory in `waiting` was synced, or with a later change that builds on
 /// it.
+///
+/// `removed` is the directory the change took away: the one a `remove_dir`
+/// removed, or the empty one a rename replaced. `placed` is for a rename:
+/// the changes, unsynced when it was made, that had put the directories its
+/// two names are in, and every directory above them, under the names they
+/// had then.
 #[derive(Clone, Debug)]
 pub(super) struct NameOp {
     kind: NameChangeKind,
@@ -110,6 +116,7 @@ pub(super) struct NameOp {
     to: Option<Arc<str>>,
     file: Option<FileId>,
     removed: Option<DirId>,
+    placed: Vec<u64>,
     waiting: Vec<DirId>,
     cells: Vec<(DirId, OsString)>,
 }
@@ -117,12 +124,22 @@ pub(super) struct NameOp {
 /// The unsynced changes of names in `kept`, with every change they build on.
 ///
 /// This is the rule of the contract. A change builds on the earlier changes
-/// of the names it touches. The removal of a directory builds on the changes
-/// that emptied it. A rename builds on the creation of the directories its
-/// two names are in and of every directory above them. Without the changes
-/// it builds on, a kept change would leave a rename half done: a later change
-/// of one of its names would act as if the file had moved, while the other
-/// name showed that it had not.
+/// of the names it touches. The removal of a directory, and a rename that
+/// replaces an empty one, builds on the changes that emptied it. A rename
+/// builds on what gave the directories its two names are in, and every
+/// directory above them, the names they had when it was made: the creation
+/// of each, or its last rename. Without the changes it builds on, a kept
+/// change would leave a rename half done: a later change of one of its names
+/// would act as if the file had moved, while the other name showed that it
+/// had not. And a rename kept without the one that had moved a directory
+/// above it could put a directory into itself.
+///
+/// With them, every kept rename finds its two names, and the directories
+/// above them up to the root, as it found them when it was made. So it moves
+/// what it moved then, to where it moved it then: no directory goes into
+/// itself or gets a second name, and what the kept changes leave is a tree.
+/// A kept change of another kind, in a directory whose own name is lost, is
+/// lost with that directory.
 pub(super) fn with_what_they_build_on(
     dirs: &BTreeMap<DirId, Dir>,
     ops: &BTreeMap<u64, NameOp>,
@@ -142,23 +159,8 @@ pub(super) fn with_what_they_build_on(
         if let Some(removed) = op.removed {
             queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
         }
-        if op.kind != NameChangeKind::Rename {
-            continue;
-        }
-        for (dir, _) in &op.cells {
-            let mut dir = *dir;
-            while let Some((above, name)) = &dirs[&dir].name {
-                let made = |(_, node): &&(u64, Option<Node>)| *node == Some(Node::Dir(dir));
-                queue.extend(
-                    dirs[above].cells[name]
-                        .pending
-                        .iter()
-                        .find(made)
-                        .map(|made| made.0),
-                );
-                dir = *above;
-            }
-        }
+        let unsynced = |placed: &&u64| ops.contains_key(placed);
+        queue.extend(op.placed.iter().filter(unsynced));
     }
     closed
 }
@@ -434,28 +436,56 @@ impl State {
         }
     }
 
+    /// The unsynced changes that put `dir`, and every directory above it,
+    /// under the names they have now.
+    fn placed(&self, mut dir: DirId, placed: &mut Vec<u64>) {
+        while let Some((above, name)) = &self.dirs[&dir].name {
+            placed.extend(self.dirs[above].cells[name].unsynced().last());
+            dir = *above;
+        }
+    }
+
+    /// Whether `dir` is `in_dir` or a directory below it.
+    fn is_within(&self, mut dir: DirId, in_dir: DirId) -> bool {
+        while dir != in_dir {
+            match &self.dirs[&dir].name {
+                Some((above, _)) => dir = *above,
+                None => return false,
+            }
+        }
+        true
+    }
+
     /// Puts a change of names on record. `named` is the file or the
-    /// directory whose name it changed.
+    /// directory whose name it changed, and `removed` the directory it took
+    /// away, if it did.
     fn name_op(
         &mut self,
         op: &mut Op,
         kind: NameChangeKind,
         named: Node,
+        removed: Option<DirId>,
         cells: Vec<(DirId, OsString)>,
     ) {
         let mut waiting: Vec<DirId> = cells.iter().map(|(dir, _)| *dir).collect();
         waiting.dedup();
-        let (file, removed) = match named {
-            Node::File(file) => (Some(file), None),
-            Node::Dir(dir) if kind == NameChangeKind::RemoveDir => (None, Some(dir)),
-            Node::Dir(_) => (None, None),
+        let file = match named {
+            Node::File(file) => Some(file),
+            Node::Dir(_) => None,
         };
+        let mut placed = Vec::new();
+        if kind == NameChangeKind::Rename {
+            for dir in &waiting {
+                self.placed(*dir, &mut placed);
+            }
+        }
         let name_op = NameOp {
             kind,
             path: op.path.clone(),
             to: op.to.clone(),
             file,
             removed,
+            placed,
             waiting,
             cells,
         };
@@ -478,12 +508,8 @@ impl State {
         }
         let file = self.add_file(Arc::default());
         self.bind(dir, &name, Some(Node::File(file)), op.number);
-        self.name_op(
-            op,
-            NameChangeKind::Create,
-            Node::File(file),
-            vec![(dir, name)],
-        );
+        let cells = vec![(dir, name)];
+        self.name_op(op, NameChangeKind::Create, Node::File(file), None, cells);
         Ok(file)
     }
 
@@ -719,27 +745,56 @@ impl State {
             let (from_dir, from_name) = state.parent(from, &op.path, ErrorKind::IsADirectory)?;
             let shown = op.to.clone().unwrap_or_default();
             let (to_dir, to_name) = state.parent(to, &shown, ErrorKind::IsADirectory)?;
-            let file = match state.now(from_dir, &from_name) {
-                Some(Node::File(file)) => file,
-                Some(Node::Dir(_)) => {
-                    return Err(refuse(ErrorKind::IsADirectory, &op.path, "is a directory"));
-                }
-                None => return Err(refuse(ErrorKind::NotFound, &op.path, "does not exist")),
+            let Some(moved) = state.now(from_dir, &from_name) else {
+                return Err(refuse(ErrorKind::NotFound, &op.path, "does not exist"));
             };
-            match state.now(to_dir, &to_name) {
-                Some(Node::Dir(_)) => {
+            let there = state.now(to_dir, &to_name);
+            if there == Some(moved) {
+                return Ok(());
+            }
+            let replaced = match (moved, there) {
+                (Node::File(_), Some(Node::Dir(_))) => {
                     return Err(refuse(ErrorKind::IsADirectory, &shown, "is a directory"));
                 }
-                Some(Node::File(other)) if other == file => return Ok(()),
-                _ => {}
-            }
+                (Node::Dir(dir), _) if state.is_within(to_dir, dir) => {
+                    return Err(refuse(
+                        ErrorKind::InvalidInput,
+                        &shown,
+                        "is in the directory that is renamed",
+                    ));
+                }
+                (Node::Dir(_), Some(Node::File(_))) => {
+                    return Err(refuse(
+                        ErrorKind::NotADirectory,
+                        &shown,
+                        "is not a directory",
+                    ));
+                }
+                (Node::Dir(_), Some(Node::Dir(there))) => {
+                    if state.has_entries(there) {
+                        return Err(refuse(ErrorKind::DirectoryNotEmpty, &shown, "is not empty"));
+                    }
+                    Some(there)
+                }
+                _ => None,
+            };
             state.fail_point(op, true)?;
-            state.bind(to_dir, &to_name, Some(Node::File(file)), op.number);
+            state.bind(to_dir, &to_name, Some(moved), op.number);
             state.bind(from_dir, &from_name, None, op.number);
+            if let Node::Dir(dir) = moved {
+                state.dir_mut(dir).name = Some((to_dir, to_name.clone()));
+            }
             let cells = vec![(to_dir, to_name), (from_dir, from_name)];
-            state.name_op(op, NameChangeKind::Rename, Node::File(file), cells);
+            state.name_op(op, NameChangeKind::Rename, moved, replaced, cells);
             Ok(())
         })
+    }
+
+    fn has_entries(&self, dir: DirId) -> bool {
+        self.dirs[&dir]
+            .cells
+            .values()
+            .any(|cell| cell.now.is_some())
     }
 
     pub(super) fn hard_link(&mut self, original: &Path, link: &Path) -> io::Result<()> {
@@ -765,7 +820,7 @@ impl State {
             state.fail_point(op, true)?;
             state.bind(link_dir, &link_name, Some(Node::File(file)), op.number);
             let cells = vec![(link_dir, link_name)];
-            state.name_op(op, NameChangeKind::Link, Node::File(file), cells);
+            state.name_op(op, NameChangeKind::Link, Node::File(file), None, cells);
             Ok(())
         })
     }
@@ -784,7 +839,7 @@ impl State {
             state.fail_point(op, false)?;
             state.bind(dir, &name, None, op.number);
             let cells = vec![(dir, name)];
-            state.name_op(op, NameChangeKind::Remove, Node::File(file), cells);
+            state.name_op(op, NameChangeKind::Remove, Node::File(file), None, cells);
             Ok(())
         })
     }
@@ -799,7 +854,8 @@ impl State {
             state.fail_point(op, true)?;
             let created = Node::Dir(state.add_dir(dir, &name));
             state.bind(dir, &name, Some(created), op.number);
-            state.name_op(op, NameChangeKind::CreateDir, created, vec![(dir, name)]);
+            let cells = vec![(dir, name)];
+            state.name_op(op, NameChangeKind::CreateDir, created, None, cells);
             Ok(())
         })
     }
@@ -819,8 +875,7 @@ impl State {
                 }
                 None => return Err(refuse(ErrorKind::NotFound, &op.path, "does not exist")),
             };
-            let mut cells = state.dirs[&removed].cells.values();
-            if cells.any(|cell| cell.now.is_some()) {
+            if state.has_entries(removed) {
                 return Err(refuse(
                     ErrorKind::DirectoryNotEmpty,
                     &op.path,
@@ -830,7 +885,8 @@ impl State {
             state.fail_point(op, false)?;
             state.bind(dir, &name, None, op.number);
             let cells = vec![(dir, name)];
-            state.name_op(op, NameChangeKind::RemoveDir, Node::Dir(removed), cells);
+            let kind = NameChangeKind::RemoveDir;
+            state.name_op(op, kind, Node::Dir(removed), Some(removed), cells);
             Ok(())
         })
     }
@@ -1238,8 +1294,14 @@ impl State {
     pub(super) fn check(&self) {
         let mut file_refs: BTreeMap<FileId, u32> = BTreeMap::new();
         let mut dir_refs: BTreeMap<DirId, u32> = BTreeMap::from([(ROOT, 1)]);
+        let mut named = BTreeSet::new();
         for (id, dir) in &self.dirs {
             for (name, cell) in &dir.cells {
+                if let Some(Node::Dir(shown)) = cell.now {
+                    assert!(named.insert(shown), "a directory has one name");
+                    let place = Some((*id, name.clone()));
+                    assert_eq!(self.dirs[&shown].name, place, "and knows it");
+                }
                 assert!(
                     cell.now.is_some() || cell.durable.is_some() || !cell.pending.is_empty(),
                     "an empty cell is kept"
@@ -1272,6 +1334,17 @@ impl State {
             let kept = with_what_they_build_on(&self.dirs, &self.name_ops, [*seq]);
             assert!(kept.iter().all(|built_on| built_on <= seq));
         }
+        let mut under_the_root = BTreeSet::new();
+        let mut walk = vec![ROOT];
+        while let Some(dir) = walk.pop() {
+            for cell in self.dirs[&dir].cells.values() {
+                if let Some(Node::Dir(below)) = cell.now {
+                    assert!(under_the_root.insert(below), "the names are a tree");
+                    walk.push(below);
+                }
+            }
+        }
+        assert_eq!(under_the_root, named, "a directory with a name is found");
         for handle in self.handles.values() {
             *file_refs.entry(handle.file).or_default() += 1;
         }

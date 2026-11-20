@@ -18,7 +18,7 @@ use std::{
     thread,
 };
 
-use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
+use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, SyncItem, Vfs, VfsFile};
 
 /// Makes a test of every conformance case. `$setup` is evaluated once per
 /// test and gives `(vfs, root, cleanup)`: the backend, an empty directory in
@@ -63,12 +63,17 @@ macro_rules! conformance_tests {
             set_len_shrinks_and_grows,
             append_follows_set_len,
             sync_succeeds_in_every_mode,
+            sync_together_takes_files_and_directories,
+            sync_together_fails_as_the_sync_of_a_directory_does,
             handles_share_one_file,
             rename_moves_a_file,
             rename_replaces_the_destination,
             rename_of_a_missing_file_is_not_found,
             #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             rename_between_names_of_one_file_changes_nothing,
+            rename_moves_a_directory_with_what_is_in_it,
+            rename_of_a_directory_replaces_an_empty_directory_and_no_other,
+            rename_of_a_directory_into_itself_is_refused,
             #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             hard_link_is_another_name_for_the_same_file,
             #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
@@ -90,6 +95,7 @@ macro_rules! conformance_tests {
             a_file_is_replaced_by_write_sync_rename_sync_dir,
             #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             a_checkpoint_is_a_directory_of_hard_links,
+            a_directory_is_built_under_another_name_and_renamed_into_place,
         }
     };
     (@cases $setup:expr; $($(#[$attribute:meta])* $case:ident),* $(,)?) => {
@@ -565,6 +571,63 @@ pub(crate) fn sync_succeeds_in_every_mode(vfs: &dyn Vfs, root: &Path) {
     assert_eq!(read_all(&*read), b"written appended");
 }
 
+pub(crate) fn sync_together_takes_files_and_directories(vfs: &dyn Vfs, root: &Path) {
+    vfs.sync_together(&[]).unwrap();
+
+    let dir = root.join("dir");
+    vfs.create_dir(&dir).unwrap();
+    let written = open(vfs, &dir.join("written"), OpenMode::Write(Create::New));
+    written.write_at(b"written", 0).unwrap();
+    let appended = open(vfs, &root.join("appended"), OpenMode::Append(Create::New));
+    appended.append(b"appended").unwrap();
+    let read = open(vfs, &dir.join("written"), OpenMode::Read);
+
+    vfs.sync_together(&[
+        SyncItem::Data(&*written),
+        SyncItem::All(&*appended),
+        SyncItem::Data(&*read),
+        SyncItem::Dir(&dir),
+        SyncItem::Dir(root),
+        SyncItem::All(&*written),
+        SyncItem::Dir(&dir),
+    ])
+    .unwrap();
+
+    appended.append(b" more").unwrap();
+    vfs.sync_together(&[SyncItem::Data(&*appended)]).unwrap();
+    appended.sync_data().unwrap();
+    written.sync_all().unwrap();
+    vfs.sync_dir(&dir).unwrap();
+    vfs.sync_together(&[SyncItem::Dir(root)]).unwrap();
+
+    assert_eq!(read_all(&*read), b"written");
+    assert_eq!(read_path(vfs, &root.join("appended")), b"appended more");
+    assert_eq!(names(vfs, root), ["appended", "dir"]);
+    assert_eq!(names(vfs, &dir), ["written"]);
+}
+
+pub(crate) fn sync_together_fails_as_the_sync_of_a_directory_does(vfs: &dyn Vfs, root: &Path) {
+    let file = root.join("file");
+    write_new(vfs, &file, b"content");
+    let handle = open(vfs, &file, OpenMode::Read);
+
+    let no_directory = [
+        (root.join("missing"), ErrorKind::NotFound),
+        (file.clone(), ErrorKind::NotADirectory),
+    ];
+    for (path, expected) in &no_directory {
+        assert_fails(vfs.sync_together(&[SyncItem::Dir(path)]), *expected);
+        let among_others = [
+            SyncItem::Data(&*handle),
+            SyncItem::Dir(path),
+            SyncItem::Dir(root),
+        ];
+        assert_fails(vfs.sync_together(&among_others), *expected);
+    }
+    assert_eq!(read_all(&*handle), b"content");
+    assert_eq!(names(vfs, root), ["file"]);
+}
+
 pub(crate) fn handles_share_one_file(vfs: &dyn Vfs, root: &Path) {
     let path = root.join("file");
     let writer = open(vfs, &path, OpenMode::Write(Create::New));
@@ -629,6 +692,111 @@ pub(crate) fn rename_between_names_of_one_file_changes_nothing(vfs: &dyn Vfs, ro
     assert_eq!(names(vfs, root), ["first", "second"]);
     assert_eq!(read_path(vfs, &first), b"content");
     assert_eq!(read_path(vfs, &second), b"content");
+}
+
+pub(crate) fn rename_moves_a_directory_with_what_is_in_it(vfs: &dyn Vfs, root: &Path) {
+    let (from, to) = (root.join("from"), root.join("to"));
+    vfs.create_dir(&from).unwrap();
+    vfs.create_dir(&from.join("below")).unwrap();
+    write_new(vfs, &from.join("file"), b"moved");
+    write_new(vfs, &from.join("below").join("deep"), b"deep");
+    let handle = open(vfs, &from.join("file"), OpenMode::Append(Create::Never));
+
+    vfs.rename(&from, &to).unwrap();
+    assert_fails(vfs.read_dir(&from), ErrorKind::NotFound);
+    assert_fails(
+        vfs.open(&from.join("file"), OpenMode::Read),
+        ErrorKind::NotFound,
+    );
+    assert_eq!(
+        vfs.read_dir(&to).unwrap(),
+        [
+            entry("below", EntryKind::Dir),
+            entry("file", EntryKind::File)
+        ]
+    );
+    assert_eq!(read_path(vfs, &to.join("below").join("deep")), b"deep");
+    assert_eq!(names(vfs, root), ["to"]);
+
+    handle.append(b" along").unwrap();
+    assert_eq!(read_path(vfs, &to.join("file")), b"moved along");
+    assert_fails(
+        vfs.open(&to.join("file"), OpenMode::Write(Create::Never)),
+        ErrorKind::ResourceBusy,
+    );
+    drop(handle);
+
+    let other = root.join("other");
+    vfs.create_dir(&other).unwrap();
+    vfs.rename(&to, &other.join("inside")).unwrap();
+    assert_eq!(
+        read_path(vfs, &other.join("inside").join("file")),
+        b"moved along"
+    );
+    vfs.create_dir(&to).unwrap();
+    assert!(vfs.read_dir(&to).unwrap().is_empty());
+    for synced in [&other.join("inside"), &other, root] {
+        vfs.sync_dir(synced).unwrap();
+    }
+    assert_eq!(names(vfs, root), ["other", "to"]);
+    assert_eq!(names(vfs, &other), ["inside"]);
+}
+
+pub(crate) fn rename_of_a_directory_replaces_an_empty_directory_and_no_other(
+    vfs: &dyn Vfs,
+    root: &Path,
+) {
+    let (from, empty, full) = (root.join("from"), root.join("empty"), root.join("full"));
+    let file = root.join("file");
+    for dir in [&from, &empty, &full] {
+        vfs.create_dir(dir).unwrap();
+    }
+    write_new(vfs, &from.join("inside"), b"from");
+    write_new(vfs, &full.join("inside"), b"full");
+    write_new(vfs, &file, b"file");
+
+    assert_fails(vfs.rename(&from, &full), ErrorKind::DirectoryNotEmpty);
+    assert_fails(vfs.rename(&from, &file), ErrorKind::NotADirectory);
+    assert_fails(vfs.rename(&file, &empty), ErrorKind::IsADirectory);
+    assert_fails(vfs.rename(&file, &full), ErrorKind::IsADirectory);
+    assert_fails(
+        vfs.rename(&root.join("missing"), &empty),
+        ErrorKind::NotFound,
+    );
+    assert_eq!(names(vfs, root), ["empty", "file", "from", "full"]);
+    assert_eq!(read_path(vfs, &from.join("inside")), b"from");
+    assert_eq!(read_path(vfs, &full.join("inside")), b"full");
+    assert_eq!(read_path(vfs, &file), b"file");
+    assert!(vfs.read_dir(&empty).unwrap().is_empty());
+
+    vfs.rename(&from, &empty).unwrap();
+    assert_eq!(names(vfs, root), ["empty", "file", "full"]);
+    assert_eq!(read_path(vfs, &empty.join("inside")), b"from");
+
+    vfs.remove_file(&full.join("inside")).unwrap();
+    vfs.rename(&empty, &full).unwrap();
+    assert_eq!(names(vfs, root), ["file", "full"]);
+    assert_eq!(read_path(vfs, &full.join("inside")), b"from");
+}
+
+pub(crate) fn rename_of_a_directory_into_itself_is_refused(vfs: &dyn Vfs, root: &Path) {
+    let dir = root.join("dir");
+    let below = dir.join("below");
+    vfs.create_dir(&dir).unwrap();
+    vfs.create_dir(&below).unwrap();
+    write_new(vfs, &below.join("file"), b"content");
+
+    assert_fails(vfs.rename(&dir, &dir.join("new")), ErrorKind::InvalidInput);
+    assert_fails(
+        vfs.rename(&dir, &below.join("new")),
+        ErrorKind::InvalidInput,
+    );
+    assert_fails(vfs.rename(&below, &dir), ErrorKind::DirectoryNotEmpty);
+    vfs.rename(&dir, &dir).unwrap();
+
+    assert_eq!(names(vfs, root), ["dir"]);
+    assert_eq!(names(vfs, &dir), ["below"]);
+    assert_eq!(read_path(vfs, &below.join("file")), b"content");
 }
 
 pub(crate) fn hard_link_is_another_name_for_the_same_file(vfs: &dyn Vfs, root: &Path) {
@@ -954,4 +1122,41 @@ pub(crate) fn a_checkpoint_is_a_directory_of_hard_links(vfs: &dyn Vfs, root: &Pa
     vfs.remove_dir(&checkpoint).unwrap();
     vfs.sync_dir(root).unwrap();
     assert_eq!(names(vfs, root), ["live"]);
+}
+
+pub(crate) fn a_directory_is_built_under_another_name_and_renamed_into_place(
+    vfs: &dyn Vfs,
+    root: &Path,
+) {
+    let (building, target) = (root.join("checkpoint.new"), root.join("checkpoint"));
+    let (wal, manifest_path) = (building.join("wal"), building.join("MANIFEST"));
+    let logged = bytes(3_000, 5);
+    vfs.create_dir(&building).unwrap();
+    vfs.create_dir(&wal).unwrap();
+    let manifest = open(vfs, &manifest_path, OpenMode::Write(Create::New));
+    manifest.write_at(b"manifest", 0).unwrap();
+    let log = open(
+        vfs,
+        &wal.join("00000001.log"),
+        OpenMode::Append(Create::New),
+    );
+    log.append(&logged).unwrap();
+    vfs.sync_together(&[
+        SyncItem::Data(&*log),
+        SyncItem::Data(&*manifest),
+        SyncItem::Dir(&wal),
+        SyncItem::Dir(&building),
+        SyncItem::Dir(root),
+    ])
+    .unwrap();
+    drop((manifest, log));
+
+    vfs.rename(&building, &target).unwrap();
+    vfs.sync_dir(root).unwrap();
+
+    assert_eq!(names(vfs, root), ["checkpoint"]);
+    assert_eq!(names(vfs, &target), ["MANIFEST", "wal"]);
+    assert_eq!(read_path(vfs, &target.join("MANIFEST")), b"manifest");
+    let log = target.join("wal").join("00000001.log");
+    assert_eq!(read_path(vfs, &log), logged);
 }

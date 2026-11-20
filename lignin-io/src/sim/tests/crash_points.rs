@@ -725,8 +725,8 @@ fn a_directory_where_a_file_is_needed_and_a_file_where_a_directory_is_needed_are
     drop(create(&fs, "/file", b""));
 
     assert_eq!(
-        kind(fs.rename(p("/dir"), p("/other"))),
-        ErrorKind::IsADirectory
+        kind(fs.rename(p("/dir"), p("/file"))),
+        ErrorKind::NotADirectory
     );
     assert_eq!(
         kind(fs.rename(p("/file"), p("/dir"))),
