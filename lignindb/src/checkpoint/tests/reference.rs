@@ -20,7 +20,7 @@
 //!
 //! | Variable | |
 //! | --- | --- |
-//! | `LIGNIN_TXN06_DIR` | the directory of the store, kept from one run to the next: a store that is there is opened and not built again. Without it the store is built in a temporary directory, in memory where there is such a place. |
+//! | `LIGNIN_TXN06_DIR` | the directory of the store, kept from one run to the next: a store that is there is opened and not built again. Without it the store is built in a temporary directory, which `TMPDIR` places. |
 //! | `LIGNIN_TXN06_DOCUMENTS` | how many documents, 1,000,000 unless set |
 //! | `LIGNIN_TXN06_CHECKPOINTS` | how many checkpoints are made, 15 unless set |
 //! | `LIGNIN_TXN06_OPENS` | how many of them are opened, all unless set |
@@ -47,7 +47,7 @@ use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
 use lignin_store::{flush::FlushConfig, segment::read_manifest, wal::LogOptions};
 use lignin_tree::hash::Stale;
 
-use super::{checkpointer, checkpoints_in, memory_dir, root_hash, store_files, ROOT};
+use super::{checkpointer, checkpoints_in, root_hash, store_files, ROOT};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -572,7 +572,9 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let flush = FlushConfig::new(SIZE);
 
     let kept = std::env::var_os("LIGNIN_TXN06_DIR").map(PathBuf::from);
-    let temporary = kept.is_none().then(memory_dir);
+    let temporary = kept
+        .is_none()
+        .then(|| tempfile::tempdir().expect("a directory"));
     let dir = match (&kept, &temporary) {
         (Some(kept), _) => kept.clone(),
         (None, Some(temporary)) => temporary.path().to_path_buf(),

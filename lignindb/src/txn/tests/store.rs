@@ -275,6 +275,7 @@ impl Reclaim for Hook {
 
 #[path = "no_sync.rs"]
 mod no_sync;
+pub use no_sync::NoSync;
 
 impl Db {
     /// An empty store with a pool of `frames` frames, in a directory of its

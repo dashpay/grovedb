@@ -23,7 +23,7 @@ use lignin_format::{
 };
 use lignin_io::{
     sim::{SimConfig, SimVfs},
-    DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock,
+    DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
 };
 use lignin_store::{
     alloc::PageState,
@@ -42,7 +42,7 @@ use crate::{
         tests::{
             model::{self, Committed, OwnedBatch},
             put,
-            store::{Db, Outcome, Rng, SIZE},
+            store::{Db, NoSync, Outcome, Rng, SIZE},
             Tx, World,
         },
         Column, Unit,
@@ -364,27 +364,19 @@ impl History {
     }
 }
 
-/// A temporary directory, in memory where there is such a place.
-pub(super) fn memory_dir() -> tempfile::TempDir {
-    let memory = Path::new("/dev/shm");
-    match memory.is_dir() {
-        true => tempfile::tempdir_in(memory),
-        false => tempfile::tempdir(),
-    }
-    .expect("a directory")
-}
-
-/// An empty store in a directory of its own, in memory where there is such
-/// a place, whose log turns to another file every `log_file_len` bytes.
+/// An empty store in a temporary directory of its own, whose log turns to
+/// another file every `log_file_len` bytes. Its syncs do nothing, as those
+/// of [`Db::new`]: what a crash leaves of a checkpoint is tested on the
+/// simulated file system ([`store_on`]).
 pub(super) fn store_with_log(log_file_len: u64, frames: usize) -> (Arc<Db>, Versions) {
-    let dir = memory_dir();
+    let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().to_path_buf();
     let options = LogOptions {
         target_file_len: log_file_len,
         ..LogOptions::default()
     };
     Db::on(
-        Arc::new(StdVfs),
+        Arc::new(NoSync),
         &path,
         frames,
         options,

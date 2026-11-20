@@ -19,28 +19,28 @@ use lignin_store::{
 };
 
 use super::{
-    block, checkpointer, checkpoints_in, everything_in, memory_dir, names_of, open, open_on, sim,
-    store_files, store_on, store_with_log, turn, write_file, Before, Meddling,
+    block, checkpointer, checkpoints_in, everything_in, names_of, open, open_on, sim, store_files,
+    store_on, store_with_log, turn, write_file, Before, Meddling,
 };
 use crate::{
     checkpoint::{self, create::Step, CheckpointError, CheckpointOptions, DELETING_FILE_NAME},
     snapshot::Versions,
     txn::tests::{
         model::Committed,
-        store::{Db, Rng, SIZE},
+        store::{Db, NoSync, Rng, SIZE},
         World,
     },
 };
 
-/// A store in a directory of its own in memory, on the file layer that
-/// `meddling` makes of the plain one and of the directory of the store's
-/// checkpoints.
+/// A store in a temporary directory of its own, on the file layer that
+/// `meddling` makes of the one whose syncs do nothing and of the directory
+/// of the store's checkpoints.
 fn store_on_meddling(
     meddling: impl FnOnce(Arc<dyn Vfs>, PathBuf) -> Meddling,
 ) -> (Arc<Db>, Versions) {
-    let dir = memory_dir();
+    let dir = tempfile::tempdir().expect("a directory");
     let path = dir.path().to_path_buf();
-    let vfs = meddling(Arc::new(StdVfs), path.join("checkpoints"));
+    let vfs = meddling(Arc::new(NoSync), path.join("checkpoints"));
     let options = LogOptions {
         target_file_len: 24 << 10,
         ..LogOptions::default()
@@ -155,20 +155,20 @@ fn where_no_link_can_be_made_the_files_are_copied() {
     }
 }
 
-/// The same on two file systems of the machine, where it has two: the
-/// store is in memory and the checkpoint on the disk of the temporary
-/// directory.
+/// The same on two file systems of the machine, where the test has two:
+/// the store is in the temporary directory, and the checkpoint beside the
+/// test's own program, which whoever runs the tests on a machine like the
+/// project's has on another file system.
 #[test]
 fn a_checkpoint_on_another_file_system_is_copied() {
-    let memory = Path::new("/dev/shm");
-    let elsewhere = std::env::temp_dir();
+    let program = std::env::current_exe().expect("the test's program");
+    let elsewhere = program.parent().expect("its directory");
     let device = |path: &Path| std::fs::metadata(path).map(|at| at.dev()).ok();
-    if device(memory).is_none() || device(memory) == device(&elsewhere) {
+    if device(elsewhere) == device(&std::env::temp_dir()) {
         // One file system: `where_no_link_can_be_made_the_files_are_copied`
         // is the test.
         return;
     }
-    // Few files: every sync of a copy is one of that disk.
     let (db, versions) = Db::new(64);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(62);
@@ -176,13 +176,11 @@ fn a_checkpoint_on_another_file_system_is_copied() {
         block(&mut world, &mut rng, round * 10, 10);
         turn(&db, &versions);
     }
-    let other = tempfile::tempdir_in(&elsewhere).expect("a directory on the other file system");
+    let other = tempfile::tempdir_in(elsewhere).expect("a directory on the other file system");
     let target = other.path().join("checkpoint");
     let created = (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
     assert!(created.linked == 0 && created.copied > 0, "{created:?}");
     // Each copy is the live file up to the length the manifest gives it.
-    // That such a directory opens is shown where the store is in memory,
-    // since every sync of an open on this disk can take seconds.
     let manifest = read_manifest(&StdVfs, &target).expect("the checkpoint's manifest");
     let files = named(&manifest);
     assert_eq!(created.copied, files.len());
@@ -835,7 +833,7 @@ fn a_file_that_somebody_else_put_into_the_target_is_not_removed() {
 /// while it does stays, and the directory with it.
 #[test]
 fn a_file_that_comes_beside_a_lock_file_alone_is_not_removed() {
-    let dir = memory_dir();
+    let dir = tempfile::tempdir().expect("a directory");
     let theirs = dir.path().join("theirs");
     std::fs::create_dir(&theirs).expect("a directory");
     std::fs::write(theirs.join("LOCK"), b"").expect("a file");
