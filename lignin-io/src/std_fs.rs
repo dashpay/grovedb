@@ -59,17 +59,24 @@
 //! system is synced by its single call, with a full flush of its own, and so
 //! is a file of the list that another file layer opened.
 //!
-//! The items that share a flush are synced after the others of the list,
-//! those of each volume in one turn apart from every other sync this backend
-//! makes in the process. From the first `fsync` of a turn to its flush, and
-//! until a failure of that flush is on record for every handle among the
-//! turn's items, a single sync and another set wait, whatever volume they are
-//! for. So no flush of this backend is made, or fails, between a hand-over
-//! and the flush that covers it, and no sync of a handle returns between a
-//! failed flush and the record that stops the handle. Any number of single
-//! syncs run at once. A set that waits for its turn keeps the single syncs
-//! that come after it waiting as well, so one slow sync, on any volume, holds
-//! up every sync of the process once a set waits for it.
+//! The items that share a flush are synced after the others of the list, those
+//! of each volume in one turn apart from every other sync this backend makes
+//! in the process. From the first `fsync` of a turn to its flush, and until a
+//! failure of that flush is on record for every handle among the turn's items,
+//! the system calls of a single sync and of another set wait, whatever volume
+//! they are for. So no flush of this backend is made, or fails, between a
+//! hand-over and the flush that covers it, and no sync of a handle is made
+//! between a failed flush and the record that stops the handle. Any number of
+//! single syncs run at once. In which order waiting syncs get their turns is
+//! the lock's affair and is not promised: a set can wait for as long as single
+//! syncs are under way, and single syncs for as long as sets are, so one slow
+//! sync, on any volume, can hold up the others of the process. A call that
+//! fails before it syncs anything, for a path that is no directory or for a
+//! handle that was stopped, waits for no turn.
+//!
+//! The directories among the items that share a flush are opened as the list
+//! is read and stay open until the call ends, so a list needs as many
+//! descriptors at once as it has such directories.
 //!
 //! That one full flush is enough on APFS rests on three things.
 //!
@@ -481,7 +488,7 @@ fn open_dir(path: &Path) -> io::Result<File> {
 /// share a flush: from the first of them that it hands to the device to the
 /// flush that covers them, and until a failure of that flush is on record.
 /// So no flush of this backend is made, or fails, between a hand-over and
-/// its flush, and no sync returns between a failed flush and the record of
+/// its flush, and no sync is made between a failed flush and the record of
 /// its failure.
 ///
 /// It guards nothing a panic could leave half done, so a turn is taken

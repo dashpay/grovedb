@@ -709,6 +709,41 @@ fn a_failed_sync_cannot_be_made_good() {
     assert!(kept > 0 && lost > 0, "{kept} kept, {lost} lost");
 }
 
+/// A length is among what a failed sync leaves unknown, and `set_len` to the
+/// length the file has does not make it again: it changes nothing, the next
+/// sync covers no length, and a crash can bring the old length back with the
+/// bytes that were cut off. With another length set in between, the length
+/// is a change again, and the next sync makes it durable.
+#[test]
+fn a_length_is_not_made_again_by_setting_the_length_the_file_has() {
+    for (another_length_first, durable) in [(false, &b"durable"[..]), (true, b"")] {
+        let fs = SimVfs::new(SimConfig {
+            unknown: UnknownFate::Lost,
+            ..SimConfig::new(27)
+        });
+        let file = create_durable(&fs, "/file", b"durable");
+        let other = fs.open(p("/file"), OpenMode::Write(Create::Never)).unwrap();
+        file.set_len(0).unwrap();
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
+        assert_eq!(
+            SimError::injected(&file.sync_data().unwrap_err()),
+            Some(Fault::Eio)
+        );
+
+        if another_length_first {
+            other.set_len(1).unwrap();
+        }
+        other.set_len(0).unwrap();
+        fs.sync_together(&[SyncItem::Data(&*other)]).unwrap();
+        assert_eq!(read(&fs, "/file"), b"");
+        check(&fs);
+
+        let image = fs.crash_image();
+        assert!(image.changes().is_empty());
+        assert_eq!(read(&recover(&image, &image.lose_all()), "/file"), durable);
+    }
+}
+
 #[test]
 fn a_change_made_after_a_failed_sync_is_covered_by_the_next_one() {
     let fs = sim(20);

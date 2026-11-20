@@ -123,9 +123,15 @@
 //! - **A failed sync cannot be made good.** When a sync of a file fails, the
 //!   changes that were not yet synced are left unknown: the system may have
 //!   written them or dropped them, and it will not say which. A later sync
-//!   that returns `Ok`, on that handle or on any other, covers only what was
-//!   written after the failure. To rely on the earlier changes, write them
-//!   again, through another handle or to a new file, and sync that.
+//!   that returns `Ok`, on that handle or on any other, covers only the
+//!   changes made after the failure. To rely on the earlier ones, make them
+//!   again, through another handle or in a new file, and sync that. Only a
+//!   change counts as made again. Bytes that are written again are one,
+//!   whatever the file held. [`VfsFile::set_len`] to the length the file
+//!   already has is none: it changes nothing, and a sync after it makes no
+//!   length durable. A length that was among the earlier changes is made again
+//!   by setting another length before the one that is wanted, or by building
+//!   the file anew.
 //!
 //! # Locks
 //!
@@ -182,10 +188,13 @@
 //!   both fail on that handle from then on, and so does a
 //!   [`Vfs::sync_together`] that has the handle in its list. The rule above
 //!   about a failed sync holds for every handle of the file, including the
-//!   ones this does not stop. Those report nothing of the failure, alone or
-//!   in a list: another handle is how the changes are written again, so it
-//!   is not stopped, and whoever syncs one file through several handles
-//!   keeps track of the failures of each.
+//!   ones this does not stop. The file layer carries no failure from one
+//!   handle to another: another handle is how the changes are made again, so
+//!   it is not stopped by a failure it did not meet. The system may report one
+//!   failure through every handle that was open when it happened, and a handle
+//!   that it is reported through is stopped as well; it may as well report it
+//!   once. Whoever syncs one file through several handles checks the result of
+//!   every sync and keeps track of the failures of each handle.
 //! - A [`Vfs::sync_together`] that fails is a failed sync of the handles it
 //!   can no longer vouch for: the one whose own sync failed, and every one
 //!   whose bytes the call had handed to a device for a flush that then failed.
@@ -475,7 +484,8 @@ pub trait VfsFile: Any + fmt::Debug + Send + Sync {
 
     /// Sets the file's length. Shrinking drops the bytes past `len`; growing
     /// adds zeros. On an [`OpenMode::Append`] handle the next append starts at
-    /// `len`.
+    /// `len`. Setting the length the file has is no change of the file, and
+    /// no later sync has anything of it to make durable.
     ///
     /// Needs [`OpenMode::Write`] or [`OpenMode::Append`].
     fn set_len(&self, len: u64) -> io::Result<()>;

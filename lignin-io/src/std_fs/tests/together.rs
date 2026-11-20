@@ -720,6 +720,56 @@ fn a_set_is_flushed_once_for_each_file_system_that_shares_a_flush() {
     assert!(two.iter().all(is_stopped));
 }
 
+/// The calls of [`StdVfs`] and of its files take their turns themselves.
+/// While a turn is held as a set holds it, none of them ends: a sync of a
+/// file's data, of all of a file, of a directory, a set. And while a turn is
+/// held as a single sync holds it, a set ends only where its items share no
+/// flush, which is everywhere but on APFS.
+#[test]
+fn the_calls_of_the_file_layer_wait_for_a_turn_that_is_held() {
+    let _alone = one_set_at_a_time();
+    let (vfs, root, _dir) = setup();
+    let file = vfs
+        .open(&root.join("file"), OpenMode::Write(Create::New))
+        .unwrap();
+    file.write_at(b"content", 0).unwrap();
+    let a_while = Duration::from_millis(100);
+    let nothing_ended = Err(mpsc::RecvTimeoutError::Timeout);
+    let together = || vfs.sync_together(&[SyncItem::Data(&*file), SyncItem::Dir(&root)]);
+    let calls: [&(dyn Fn() -> io::Result<()> + Sync); 4] = [
+        &|| file.sync_data(),
+        &|| file.sync_all(),
+        &|| vfs.sync_dir(&root),
+        &together,
+    ];
+
+    std::thread::scope(|scope| {
+        let (ended, ends) = mpsc::channel();
+        let turn = apart_from_other_syncs();
+        for call in calls {
+            let ended = ended.clone();
+            scope.spawn(move || ended.send(call().is_ok()).unwrap());
+        }
+        assert_eq!(ends.recv_timeout(a_while), nothing_ended);
+        drop(turn);
+        for _ in calls {
+            assert!(ends.recv().unwrap());
+        }
+
+        let shares = is_on_apfs(&root);
+        let turn = beside_other_syncs();
+        scope.spawn(move || ended.send(together().is_ok()).unwrap());
+        if shares {
+            assert_eq!(ends.recv_timeout(a_while), nothing_ended);
+            drop(turn);
+            assert!(ends.recv().unwrap());
+        } else {
+            assert!(ends.recv().unwrap());
+            drop(turn);
+        }
+    });
+}
+
 fn report(what: &str, mut times: Vec<Duration>) {
     times.sort();
     let ms = |at: usize| times[at].as_secs_f64() * 1e3;
