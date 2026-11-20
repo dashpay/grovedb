@@ -9,22 +9,27 @@
 //! (`cost-model.md` R1, R2, W1, M1, C1 to C3).
 //!
 //! The cursor of a writer's handle ([`LigninWriter`](super::LigninWriter))
-//! is not built: a cursor of a scope borrows the scope, which the handles
-//! of a writer share behind a lock, and the transaction offers no parked
-//! cursor over flat records as it does over nodes. Such a cursor stands on
-//! no record, and its `status` says why.
+//! keeps no cursor of the transaction: a cursor of a scope borrows the
+//! scope, which the handles of a writer share behind a lock, and the
+//! transaction offers no parked cursor over flat records as it does over
+//! nodes. It keeps the key it stands on, and each move takes the lock,
+//! seeks to that key in a cursor of the scope and steps from there. So it
+//! reads the committed state of each move, as the point reads of a scope
+//! do, and not that of the moment it was opened (RD6); the writes of its
+//! own scope it sees as any cursor of the scope does.
 
 use std::cell::{OnceCell, RefCell};
 
 use grovedb_costs::{
-    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    cost_return_on_error, storage_cost::key_value_cost::KeyValueStorageCost, CostContext,
+    CostResult, CostsExt, OperationCost,
 };
 use grovedb_storage::{Error as StorageError, FlatStore, RawIterator};
 use lignindb::txn::{Cursor, Subtree, Unit, WriteTxn};
 
 use super::{
-    access::{column, fault, Prefix, Seek},
-    refused, LigninChangeSet, LigninNodeStore, LigninWriter, MODEL,
+    access::{column, fault, Failure, Prefix, Seek},
+    LigninChangeSet, LigninNodeStore, LigninWriter, MODEL,
 };
 use crate::{cost_model::Keyspace, Error};
 
@@ -87,15 +92,75 @@ impl FlatAccess for WriteTxn<'_> {
     }
 }
 
+/// A cursor over the flat records of a writer's scope: the key it stands
+/// on, from which each move starts again in a cursor of the scope.
+struct WriterRecords<'a, 't, 's> {
+    writer: &'a LigninWriter<'t, 's>,
+    unit: Unit,
+    at: Option<Vec<u8>>,
+}
+
+impl FlatWalk for WriterRecords<'_, '_, '_> {
+    fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
+        key.clear();
+        let scope = self.writer.scope();
+        let mut cursor = scope.cursor(self.unit);
+        match (to, &self.at) {
+            (Seek::First, _) => cursor.seek_to_first(),
+            (Seek::Last, _) => cursor.seek_to_last(),
+            (Seek::From(key), _) => cursor.seek(key),
+            (Seek::Back(key), _) => cursor.seek_for_prev(key),
+            // The key the cursor stood on may be gone: the seek is then
+            // on the key the step goes to.
+            (Seek::Next, Some(at)) => {
+                cursor
+                    .seek(at)
+                    .and_then(|()| match cursor.key() == Some(at.as_slice()) {
+                        true => cursor.next(),
+                        false => Ok(()),
+                    })
+            }
+            (Seek::Prev, Some(at)) => {
+                cursor
+                    .seek_for_prev(at)
+                    .and_then(|()| match cursor.key() == Some(at.as_slice()) {
+                        true => cursor.prev(),
+                        false => Ok(()),
+                    })
+            }
+            (Seek::Next | Seek::Prev, None) => Ok(()),
+        }
+        .map_err(fault)?;
+        self.at = cursor.key().map(<[u8]>::to_vec);
+        key.extend_from_slice(cursor.key().unwrap_or_default());
+        Ok(cursor.valid())
+    }
+
+    fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
+        let Some(at) = &self.at else {
+            return Ok(false);
+        };
+        let scope = self.writer.scope();
+        let mut cursor = scope.cursor(self.unit);
+        cursor.seek(at).map_err(fault)?;
+        match cursor.key() == Some(at.as_slice()) {
+            true => cursor.value(out).map_err(fault),
+            false => Ok(false),
+        }
+    }
+}
+
 impl FlatAccess for LigninWriter<'_, '_> {
     fn records<'a>(
         &'a self,
-        _keyspace: Keyspace,
-        _subtree: &Prefix,
+        keyspace: Keyspace,
+        subtree: &Prefix,
     ) -> Result<Box<dyn FlatWalk + 'a>, Error> {
-        Err(refused(
-            "a cursor over flat records is not built for the handles of a write scope",
-        ))
+        Ok(Box::new(WriterRecords {
+            writer: self,
+            unit: Unit::new(column(keyspace), Subtree::new(*subtree)),
+            at: None,
+        }))
     }
 }
 
@@ -113,7 +178,7 @@ pub struct LigninFlatCursor<'db> {
     on_key: bool,
     /// The value under the key, once it was asked for.
     value: OnceCell<Option<Vec<u8>>>,
-    failure: RefCell<Option<String>>,
+    failure: RefCell<Option<Failure>>,
 }
 
 impl std::fmt::Debug for LigninFlatCursor<'_> {
@@ -129,7 +194,7 @@ impl<'db> LigninFlatCursor<'db> {
     fn open(walk: Result<Box<dyn FlatWalk + 'db>, Error>) -> Self {
         let (walk, failure) = match walk {
             Ok(walk) => (Some(RefCell::new(walk)), None),
-            Err(error) => (None, Some(error.to_string())),
+            Err(error) => (None, Some(error.into())),
         };
         Self {
             walk,
@@ -153,7 +218,7 @@ impl<'db> LigninFlatCursor<'db> {
                 }
                 Err(error) => {
                     self.on_key = false;
-                    *self.failure.get_mut() = Some(error.to_string());
+                    *self.failure.get_mut() = Some(error.into());
                 }
             }
         }
@@ -170,7 +235,7 @@ impl<'db> LigninFlatCursor<'db> {
         match walk.value(&mut value) {
             Ok(found) => found.then_some(value),
             Err(error) => {
-                *self.failure.borrow_mut() = Some(error.to_string());
+                *self.failure.borrow_mut() = Some(error.into());
                 None
             }
         }
@@ -225,7 +290,7 @@ impl RawIterator for LigninFlatCursor<'_> {
     fn status(&self) -> Result<(), StorageError> {
         match &*self.failure.borrow() {
             None => Ok(()),
-            Some(failure) => Err(StorageError::StorageError(failure.clone())),
+            Some(failure) => Err(failure.error()),
         }
     }
 }
@@ -321,6 +386,22 @@ impl<'db> FlatStore for LigninKeyspace<'_, 'db> {
         let store = self.store;
         LigninFlatCursor::open(store.access.records(self.keyspace, &store.subtree.prefix))
     }
+
+    /// Removes every record of the keyspace: the walk of the trait, at its
+    /// cost. A walk that the view refuses or that fails on its way has not
+    /// come to every record, and the clear fails with its error then.
+    fn clear(&self) -> CostResult<(), StorageError> {
+        let mut cost = OperationCost::default();
+        let mut cursor = self.cursor();
+        cursor.seek_to_first().unwrap_add_cost(&mut cost);
+        while cursor.valid().unwrap_add_cost(&mut cost) {
+            if let Some(key) = cursor.key().unwrap_add_cost(&mut cost) {
+                cost_return_on_error!(&mut cost, self.delete(key, None));
+            }
+            cursor.next().unwrap_add_cost(&mut cost);
+        }
+        cursor.status().wrap_with_cost(cost)
+    }
 }
 
 /// A handle is the flat keyspace of its subtree's data, for a tree that
@@ -356,8 +437,8 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
         LigninFlatCursor::open(self.access.records(Keyspace::Data, &self.subtree.prefix))
     }
 
-    /// Removes every flat record of the subtree's data, as the walk of the
-    /// trait does and at its cost.
+    /// Removes every flat record of the subtree's data, by the walk of
+    /// its keyspace ([`LigninKeyspace`]) and at its cost.
     ///
     /// The nodes of a Merk are no flat records, and the walk sees none of
     /// them. Where the subtree keeps a Merk that has a node, the removal

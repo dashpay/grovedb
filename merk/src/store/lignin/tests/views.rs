@@ -517,10 +517,17 @@ fn a_flat_keyspace_costs_what_it_costs_in_a_storage_context() {
             }
         };
     }
+    /// How the handle under test writes.
+    #[derive(Clone, Copy, Debug)]
+    enum Through {
+        Batch,
+        AtOnce,
+        Scope,
+    }
     let flat = LigninSubtree::alone([0; 32]);
     for space in [Space::Data, Space::Aux, Space::Meta] {
-        for immediate in [false, true] {
-            let at = format!("{space:?}, immediate: {immediate}");
+        for through in [Through::Batch, Through::AtOnce, Through::Scope] {
+            let at = format!("{space:?}, {through:?}");
             let facade = Facade::new();
             let storage = TempStorage::new();
 
@@ -560,8 +567,8 @@ fn a_flat_keyspace_costs_what_it_costs_in_a_storage_context() {
             let rocks_transaction = storage.start_transaction();
             let batch = LigninBatch::new();
             let storage_batch = StorageBatch::new();
-            let (on_lignin, on_rocks) = match immediate {
-                true => {
+            let (on_lignin, on_rocks) = match through {
+                Through::AtOnce => {
                     let handle = LigninNodeStore::immediate(&transaction, flat.clone());
                     let context = storage
                         .get_immediate_storage_context(SubtreePath::empty(), &rocks_transaction)
@@ -571,7 +578,23 @@ fn a_flat_keyspace_costs_what_it_costs_in_a_storage_context() {
                         in_space!(space, context, flat_script),
                     )
                 }
-                false => {
+                // A writer's handle: its cursor starts each move from the
+                // key it stands on.
+                Through::Scope => {
+                    let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+                    let handle = LigninNodeStore::immediate(&writer, flat.clone());
+                    let context = storage
+                        .get_immediate_storage_context(SubtreePath::empty(), &rocks_transaction)
+                        .unwrap();
+                    let answers = (
+                        in_space!(space, handle, flat_script),
+                        in_space!(space, context, flat_script),
+                    );
+                    drop(handle);
+                    writer.into_scope().merge();
+                    answers
+                }
+                Through::Batch => {
                     let handle =
                         LigninNodeStore::deferred(&transaction, flat.clone(), Some(&batch));
                     let context = storage
@@ -630,7 +653,7 @@ fn a_flat_keyspace_costs_what_it_costs_in_a_storage_context() {
 }
 
 #[test]
-fn a_writers_handle_has_no_cursor_over_flat_records() {
+fn a_writers_flat_cursor_starts_each_move_from_the_key_it_stands_on() {
     let facade = Facade::new();
     let transaction = facade.db.begin();
     let writer = LigninWriter::new(transaction.scope().expect("a scope"));
@@ -638,20 +661,60 @@ fn a_writers_handle_has_no_cursor_over_flat_records() {
     handle
         .enter(TreeType::NormalTree)
         .expect("the root is entered");
-    handle.aux().put(b"k", b"v", None).unwrap().expect("a put");
-    assert_eq!(
-        handle.aux().get(b"k").unwrap().expect("a read"),
-        Some(b"v".to_vec())
-    );
     let aux = handle.aux();
+    for key in [b"a", b"c", b"e"] {
+        aux.put(key, key, None).unwrap().expect("a put");
+    }
     let mut cursor = aux.cursor();
     assert!(format!("{cursor:?}").contains("LigninFlatCursor"));
+    // A step from no key goes nowhere.
+    cursor.next().unwrap();
+    assert!(!cursor.valid().unwrap());
+    cursor.seek(b"b").unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(b"c".as_slice()));
+    // The key it stands on goes and another is written past it: it has no
+    // value any more, and the step is from where the cursor stood.
+    aux.delete(b"c", None).unwrap().expect("a delete");
+    aux.put(b"d", b"d", None).unwrap().expect("a put");
+    assert_eq!(cursor.value().unwrap(), None);
+    cursor.next().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(b"d".as_slice()));
+    assert_eq!(cursor.value().unwrap(), Some(b"d".as_slice()));
+    aux.delete(b"d", None).unwrap().expect("a delete");
+    cursor.prev().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(b"a".as_slice()));
+    cursor.prev().unwrap();
+    assert!(!cursor.valid().unwrap());
+    assert_eq!(cursor.value().unwrap(), None);
+    cursor.seek_to_last().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(b"e".as_slice()));
+    cursor.next().unwrap();
+    assert!(!cursor.valid().unwrap());
+    assert!(cursor.status().is_ok());
+    // A clear through the scope walks with that cursor, and removes every
+    // record.
+    aux.clear().unwrap().expect("a clear");
     cursor.seek_to_first().unwrap();
     assert!(!cursor.valid().unwrap());
-    assert_eq!(cursor.key().unwrap(), None);
-    assert_eq!(cursor.value().unwrap(), None);
-    let refused = cursor.status().expect_err("a cursor that was not opened");
-    assert!(refused.to_string().contains("write scope"), "{refused}");
+    assert_eq!(aux.get(b"a").unwrap().expect("a read"), None);
+    // A walk that the transaction refuses is no walk to the end: a clear
+    // through a handle outside the scope, which holds the keyspace, fails
+    // with the refusal and its class.
+    aux.put(b"k", b"v", None).unwrap().expect("a put");
+    let outside = LigninNodeStore::immediate(&transaction, ROOT);
+    let refused = outside
+        .aux()
+        .clear()
+        .unwrap()
+        .expect_err("the scope holds it");
+    assert!(
+        matches!(
+            refused,
+            grovedb_storage::Error::WriteScope(grovedb_storage::error::WriteScopeError::Overlap)
+        ),
+        "{refused}"
+    );
+    assert_eq!(aux.get(b"k").unwrap().expect("a read"), Some(b"v".to_vec()));
     // Batches that were settled apart are not applied together through a
     // scope, which could not take a part of them back.
     let batch = LigninBatch::new();
@@ -672,7 +735,8 @@ fn a_writers_handle_has_no_cursor_over_flat_records() {
         .expect("staging");
     let second = batch.settle(&writer).unwrap().expect("a settled batch");
     let together = LigninSettled::apply(vec![first, second], &writer, &[]);
-    assert!(together.unwrap().is_err());
+    let refused = together.unwrap().expect_err("two parts through a scope");
+    assert!(matches!(refused, Error::NotSupported(_)), "{refused}");
     assert_eq!(deferred.meta().get(b"a").unwrap().expect("a read"), None);
 }
 
@@ -910,6 +974,58 @@ fn settled_batches_are_applied_together_or_not_at_all() {
     );
     let entry = reader.entry().expect("the directory answers");
     assert_eq!(entry.expect("entered").host.expect("a host").key, plain(2));
+    // A subtree that the batch enters itself, and one under a node of it
+    // that is entered for the batch: the outer one first.
+    let outer = LigninSubtree::alone([10; 32]);
+    let inner = LigninSubtree {
+        prefix: [11; 32],
+        host: Some(LigninHost {
+            subtree: outer.prefix,
+            key: plain(1),
+            hosted: vec![[11; 32]],
+        }),
+    };
+    batch
+        .enter(&outer, &tree_type_bytes(TreeType::NormalTree))
+        .expect("an enter");
+    let mut merk = open(
+        LigninNodeStore::deferred(&transaction, outer.clone(), Some(&batch)),
+        TreeType::NormalTree,
+    );
+    apply(&mut merk, &puts(1..2, 1));
+    drop(merk);
+    let below = LigninNodeStore::deferred(&transaction, inner.clone(), Some(&batch));
+    (below.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+    let part = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert!(part.enters(&outer.prefix) && !part.enters(&inner.prefix));
+    let enters = [(inner.clone(), tree_type_bytes(TreeType::NormalTree))];
+    let applied = LigninSettled::apply(vec![part], &transaction, &enters);
+    applied
+        .unwrap()
+        .expect("the outer subtree is entered first");
+    let entry = below.entry().expect("the directory answers");
+    assert_eq!(entry.expect("entered").host.expect("a host").key, plain(1));
+
+    // A subtree whose every write a later operation of the batch takes
+    // back is written into no more: nothing is left to enter it for.
+    let gone = LigninSubtree::alone([12; 32]);
+    batch
+        .enter(&gone, &tree_type_bytes(TreeType::NormalTree))
+        .expect("an enter");
+    let handle = LigninNodeStore::deferred(&transaction, gone.clone(), Some(&batch));
+    (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+    batch.next_operation();
+    batch.drop_subtree(&gone);
+    let part = batch
+        .settle(&transaction)
+        .unwrap()
+        .expect("a settled batch");
+    assert_eq!(part.written().count(), 0);
+    assert!(part.is_empty() && !part.enters(&gone.prefix));
+
     let reader = LigninNodeStore::read_only(&transaction, parent);
     assert!(reader.has_node(&plain(2)).unwrap().expect("a read"));
     let reader = LigninNodeStore::read_only(&transaction, beside);

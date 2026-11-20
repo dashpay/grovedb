@@ -1,7 +1,7 @@
 //! The change set of a Merk on LigninDB, and the batch of one operation.
 
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -624,9 +624,12 @@ impl LigninBatch {
     /// Moves everything staged into a new batch and leaves this one empty,
     /// still open for the handles that stage into it.
     pub fn take_pending(&self) -> Self {
+        // The marks are taken with what they are of: a call that stages
+        // holds them from its first write to its mark.
+        let mut marks = self.marks();
         Self {
             staged: self.staged.take_pending(),
-            marks: Mutex::new(std::mem::take(&mut *self.marks())),
+            marks: Mutex::new(std::mem::take(&mut *marks)),
         }
     }
 
@@ -634,8 +637,8 @@ impl LigninBatch {
     /// place of what this batch holds for the key.
     pub fn merge_overwriting(&self, other: Self) {
         let marks = other.marks.into_inner();
-        self.marks()
-            .take_in(marks.unwrap_or_else(PoisonError::into_inner));
+        let mut own = self.marks();
+        own.take_in(marks.unwrap_or_else(PoisonError::into_inner));
         self.staged.merge_overwriting(other.staged);
     }
 
@@ -690,6 +693,7 @@ impl LigninBatch {
             ..
         } = change_set;
         let subtree = Subtree::new(named.prefix);
+        let mut marks = self.marks();
         if writes_nodes {
             self.host(&named);
         }
@@ -722,7 +726,7 @@ impl LigninBatch {
                 None => (self.staged).delete(unit, &change.key, Charge::Delete(cost)),
             }
         }
-        self.marks().write(named);
+        marks.write(named);
         Ok(())
     }
 
@@ -800,9 +804,16 @@ pub enum LigninOutcome<'a> {
 
 impl LigninSettled {
     fn new(resolved: Resolved<Charge>, marks: Marks, pending: OperationCost) -> Self {
+        // A subtree whose every write a later operation of the batch took
+        // back is written into no more.
+        let live: BTreeSet<Prefix> = (resolved.outcomes())
+            .map(|outcome| *outcome.unit.subtree.as_bytes())
+            .collect();
+        let mut written = marks.written;
+        written.retain(|prefix, _| live.contains(prefix));
         Self {
             resolved,
-            written: marks.written,
+            written,
             pending,
         }
     }
@@ -818,9 +829,9 @@ impl LigninSettled {
         self.resolved.is_empty()
     }
 
-    /// The subtrees the batch writes into, in any column, each as the
-    /// handle that staged the write named it: with the element that hosts
-    /// it.
+    /// The subtrees the batch holds a write for, in any column, each as
+    /// the handle that staged the write named it: with the element that
+    /// hosts it.
     pub fn written(&self) -> impl Iterator<Item = &LigninSubtree> {
         self.written.values()
     }

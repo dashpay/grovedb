@@ -237,9 +237,42 @@ pub(super) trait Walk: Send {
     /// is refused: the transaction has no way to point the committed side
     /// of a cursor at another Merk under the pin it holds.
     fn retarget(&mut self, _subtree: &Prefix) -> Result<(), Error> {
-        Err(refused(
-            "a cursor of a write transaction is not pointed at another subtree",
+        Err(Error::NotSupported(
+            "lignindb: a cursor of a write transaction is not pointed at another subtree"
+                .to_owned(),
         ))
+    }
+}
+
+/// Why a cursor stands on nothing, kept so that its status gives the error
+/// again, with the class it had: a refusal of a write scope and a limit of
+/// the engine as what they are, and anything else by its words.
+#[derive(Clone, Debug)]
+pub(super) enum Failure {
+    Scope(WriteScopeError),
+    NotSupported(String),
+    Words(String),
+}
+
+impl From<Error> for Failure {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::StorageError(StorageError::WriteScope(error)) => Self::Scope(error),
+            Error::StorageError(StorageError::NotSupported(what)) | Error::NotSupported(what) => {
+                Self::NotSupported(what)
+            }
+            error => Self::Words(error.to_string()),
+        }
+    }
+}
+
+impl Failure {
+    pub(super) fn error(&self) -> StorageError {
+        match self {
+            Self::Scope(error) => StorageError::WriteScope(*error),
+            Self::NotSupported(what) => StorageError::NotSupported(what.clone()),
+            Self::Words(words) => StorageError::StorageError(words.clone()),
+        }
     }
 }
 
@@ -887,12 +920,12 @@ fn apply_parts(
     let mut enters: Vec<SubtreeWrite<'_>> = enters.iter().map(subtree_write).collect();
     let mut written = Vec::with_capacity(parts.len());
     for part in parts {
-        // The parts of a batch are applied in the order of their kinds
-        // wherever they stand in it, so the enters of the caller go with
-        // the batch's own subtree writes.
+        // The enters of the caller go with the first part.
         written.push(part.with_batch(&mut |batch| {
-            let mut subtrees = std::mem::take(&mut enters);
-            subtrees.extend_from_slice(batch.subtrees);
+            if enters.is_empty() {
+                return apply_batch(scope, batch);
+            }
+            let subtrees = with_enters(batch.subtrees, std::mem::take(&mut enters));
             apply_batch(
                 scope,
                 &Batch {
@@ -906,6 +939,42 @@ fn apply_parts(
         return Err(refused("subtrees were to be entered with no batch"));
     }
     Ok(written)
+}
+
+/// The subtree writes of a batch with `enters` among them: what leaves
+/// first, as the batch has it, and then every enter after the enter of the
+/// subtree its host is in, and otherwise in the order they came.
+fn with_enters<'a>(
+    own: &[SubtreeWrite<'a>],
+    enters: Vec<SubtreeWrite<'a>>,
+) -> Vec<SubtreeWrite<'a>> {
+    let (mut ordered, entered): (Vec<_>, Vec<_>) =
+        (own.iter().cloned().chain(enters)).partition(|write| !write.enters());
+    // The subtree that the host of an entered subtree is in, if that one
+    // is entered here too.
+    let above = |subtree: &Subtree| {
+        let host = entered.iter().find_map(|write| match write {
+            SubtreeWrite::Enter {
+                subtree: entered,
+                host,
+                ..
+            } if entered == subtree => host.as_ref().map(|host| host.subtree),
+            _ => None,
+        })?;
+        let enters_it = |write: &SubtreeWrite<'_>| matches!(write, SubtreeWrite::Enter { subtree, .. } if *subtree == host);
+        entered.iter().any(enters_it).then_some(host)
+    };
+    let depth = |write: &SubtreeWrite<'_>| match write {
+        SubtreeWrite::Enter { subtree, .. } => {
+            let hosts = std::iter::successors(Some(*subtree), above);
+            hosts.take(entered.len()).count()
+        }
+        SubtreeWrite::Drop { .. } | SubtreeWrite::Clear { .. } => 0,
+    };
+    let mut by_depth: Vec<_> = entered.iter().map(|write| (depth(write), write)).collect();
+    by_depth.sort_by_key(|(depth, _)| *depth);
+    ordered.extend(by_depth.into_iter().map(|(_, write)| write.clone()));
+    ordered
 }
 
 /// One writer's part of a LigninDB write transaction: the scope it writes
@@ -937,7 +1006,7 @@ impl<'t, 's> LigninWriter<'t, 's> {
             .unwrap_or_else(PoisonError::into_inner)
     }
 
-    fn scope(&self) -> MutexGuard<'_, Scope<'t, 's>> {
+    pub(super) fn scope(&self) -> MutexGuard<'_, Scope<'t, 's>> {
         // A scope holds no state of its own that a panic could leave half
         // made: the transaction puts its frames right by itself (WT10).
         self.scope.lock().unwrap_or_else(PoisonError::into_inner)
@@ -982,8 +1051,10 @@ impl<'t, 's> Reader for LigninWriter<'t, 's> {
         // for one write that failed, so only what is one operation of the
         // transaction is all or nothing through it (WT10).
         if parts > 1 {
-            return Err(refused(
-                "batches that were settled apart are not applied together through a write scope",
+            return Err(Error::NotSupported(
+                "lignindb: batches that were settled apart are not applied together through a \
+                 write scope"
+                    .to_owned(),
             ));
         }
         write(&self.scope())
