@@ -6,6 +6,8 @@
 //! can find first, so that the fuzzer gets past them to the decoders behind
 //! them. The other bits are the target's own.
 
+#![forbid(unsafe_code)]
+
 pub mod tree;
 
 use std::fmt::Write as _;
