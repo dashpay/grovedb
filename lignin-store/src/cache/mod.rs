@@ -257,7 +257,7 @@
 //!
 //! The configured size is allocated when the pool is made: the frames,
 //! their headers, the table and the lanes ([`BufferPool::fixed_memory`]).
-//! No lock of the pool adds to it: on Linux and on Apple's systems none is
+//! On Linux and on Apple's systems no lock of the pool adds to it: none is
 //! allocated when it is first taken.
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page

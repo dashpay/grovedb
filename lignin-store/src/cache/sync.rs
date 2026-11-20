@@ -4,16 +4,19 @@
 //! from `loom`, which runs the pool's own code under every interleaving of a
 //! model and checks each access to a frame's bytes against the others.
 //!
-//! No lock of the pool is allocated when it is first taken: that would be
-//! memory the pool does not count, and an allocation in a load into a fixed
-//! frame. On Linux `std`'s `Mutex` is a futex word. On Apple's systems it is
-//! a pthread mutex in a box that is allocated when the mutex is first
-//! locked, and `std`'s `RwLock` is a word with a queue of nodes on the
-//! stacks of the threads that wait. So there the pool's `Mutex` is a
-//! `RwLock` that is only ever locked for writing. A thread that has to wait
-//! for one, and that `std` has given no handle yet, is given its handle
-//! then: that is the thread's memory, from the system's allocator, and not
-//! the pool's.
+//! On Linux and on Apple's systems no lock of the pool is allocated when it
+//! is first taken: that would be memory the pool does not count, and an
+//! allocation in a load into a fixed frame. On Linux `std`'s `Mutex` is a
+//! futex word. On Apple's systems it is a pthread mutex in a box that is
+//! allocated when the mutex is first locked, and `std`'s `RwLock` is a word
+//! with a queue of nodes on the stacks of the threads that wait. So there
+//! the pool's `Mutex` is a `RwLock` that is only ever locked for writing. A
+//! thread that has to wait for one, and that `std` has given no handle yet,
+//! is given its handle then: that is the thread's memory, from the system's
+//! allocator, and not the pool's.
+//!
+//! Every other system keeps `std`'s `Mutex`, and nothing is promised of it
+//! there: on some of them it is the pthread mutex in a box as well.
 
 #[cfg(loom)]
 pub(super) use loom::sync::{
