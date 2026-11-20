@@ -38,6 +38,10 @@
 #   lignin-ci.sh fuzz-decoders SECONDS    each fuzz target of lignin-format
 #   lignin-ci.sh miri-schedules SEEDS     the pool's races under SEEDS of
 #                                         Miri's schedules
+#   lignin-ci.sh crash [ARGS]             the store crash campaign: the
+#                                         defects it must find, then the
+#                                         campaign; ARGS follow
+#                                         `lignin-crash run`
 #
 # Miri and cargo-fuzz run on the toolchain $LIGNIN_NIGHTLY (default
 # nightly-2026-02-24), everything else on the one rust-toolchain.toml names.
@@ -272,15 +276,19 @@ miri)
     2:--full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
     *) fail "usage: lignin-ci.sh miri [--full]" ;;
     esac
+    # Every set runs, and every test target of a set, whatever failed
+    # before it: one run shows the failures of every set.
+    status=0
     for borrows in "${file_layer[@]}"; do
         say "Miri: the file layer ${borrows:-(Stacked Borrows)}"
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation $borrows" \
-            cargo "+$nightly" miri test -p lignin-io
+            cargo "+$nightly" miri test -p lignin-io --no-fail-fast || status=$?
     done
     for borrows in "" -Zmiri-tree-borrows; do
         say "Miri: the buffer pool ${borrows:-(Stacked Borrows)}"
         MIRIFLAGS="${MIRIFLAGS:-} $borrows" \
-            cargo "+$nightly" miri test -p lignin-store --lib cache::
+            cargo "+$nightly" miri test -p lignin-store --lib --no-fail-fast cache:: ||
+            status=$?
     done
     # crc32c takes the instructions of the machine where it finds them
     # (x86_64, aarch64) and its tables elsewhere. A big-endian target has
@@ -288,8 +296,9 @@ miri)
     # request runs the published vectors and the random lengths; the night
     # adds the test that walks 128 MiB.
     say "Miri: the checksum's software path, big-endian ($checksum)"
-    cargo "+$nightly" miri test -p lignin-format --lib \
-        --target s390x-unknown-linux-gnu "$checksum"
+    cargo "+$nightly" miri test -p lignin-format --lib --no-fail-fast \
+        --target s390x-unknown-linux-gnu "$checksum" || status=$?
+    exit "$status"
     ;;
 
 fuzz-targets)
@@ -380,6 +389,16 @@ fuzz-decoders)
         cargo "+$nightly" fuzz run -s none --debug-assertions "$target" \
             "corpus/$target" "$seeds/$target" -- -max_total_time="$seconds" -rss_limit_mb=2048
     done
+    ;;
+
+crash)
+    shift
+    # The campaign's own acceptance test first: a campaign that does not
+    # find a planted defect has shown nothing by finding none.
+    say "lignin-crash planted"
+    cargo run --release -p lignin-testkit --bin lignin-crash -- planted
+    say "lignin-crash run $*"
+    cargo run --release -p lignin-testkit --bin lignin-crash -- run "$@"
     ;;
 
 miri-schedules)

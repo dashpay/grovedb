@@ -4,6 +4,7 @@
 
 pub mod bench;
 pub mod cost_model;
+pub mod crash;
 // Two engines are compared through the `Engine` seam, which the engine the
 // golden corpus is pinned to does not have (`build.rs`).
 #[cfg(grovedb_engine_seam)]

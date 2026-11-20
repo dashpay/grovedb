@@ -66,6 +66,40 @@ jobs:
           .github/scripts/lignin-ci.sh diff-fuzz
           ${{ github.event_name == 'pull_request' && '120' || format('3600 --seed {0}', github.run_id) }}
 
+  # The page store crashed at every write boundary of random workloads on the
+  # simulated file layer (VER-03): first the planted defects the campaign has
+  # to find, then five million distinct crash states, each recovered and
+  # held to the model. It needs no disk.
+  crash:
+    name: Store crash campaign
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      # Each night its own seeds, from the run's id on; the log names the
+      # seed of a run that finds something, and `lignin-crash seed` makes
+      # that run again.
+      - name: Crash
+        run: >
+          .github/scripts/lignin-ci.sh crash --jobs 4 --quiet
+          ${{ github.event_name == 'pull_request' && '--runs 4' || format('--points 5000000 --seed {0}', github.run_id) }}
+
   # The golden corpus of the reference scale: a million documents on each
   # grove version, replayed on RocksDB.
   corpus-reference:
