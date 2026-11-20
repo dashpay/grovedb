@@ -129,6 +129,7 @@
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
+//! | held a database when the open began, and holds none under the lock | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
 //! ([`OpenError::left_untouched`]): by reading alone before the lock, or
@@ -139,8 +140,9 @@
 //! **Whom the guarantee is for** (D-129). The byte-for-byte guarantee is
 //! for a directory that nobody else changes while it is being opened, and
 //! for one that is put in the place of a database during the open: the
-//! lock of a database is taken through the lock file that is there, and a
-//! lock file is made in no directory that holds a database. A directory
+//! lock of a database is taken through the lock file that is there, a
+//! lock file is made in no directory that holds a database, and no
+//! database is made where the open first saw one. A directory
 //! with no lock file into which another process writes during the open is
 //! refused as [`OpenError::Changed`] and may have gained an empty `LOCK`.
 //! No protocol closes that window against a process that does not take

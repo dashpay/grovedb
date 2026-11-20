@@ -46,8 +46,12 @@ fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> 
     let began = Instant::now();
     let db = Db::open(dir, options).expect("the database is opened again");
     let open_ms = began.elapsed().as_secs_f64() * 1e3;
-    let (syncs, sync_ms, reads, read_bytes, files) = vfs.take();
+    let (_, _, reads, read_bytes, files) = vfs.take();
+    // The syncs of the open itself: those of this thread, which made it.
+    // A turn of the threads it started is not the open's.
     let synced = vfs.take_synced();
+    let syncs = synced.len() as u64;
+    let sync_ms = (synced.iter().map(|(.., took)| took.as_secs_f64())).sum::<f64>() * 1e3;
     assert!(!db.created());
     let opening = db.stats().opening;
     let recovery = db.stats().recovery;
@@ -81,9 +85,10 @@ fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> 
         opening,
         synced: synced
             .iter()
-            .map(|(what, path)| {
+            .map(|(what, path, took)| {
                 let path = path.strip_prefix(dir).unwrap_or(path);
-                format!("{what:?} {}", path.display())
+                let ms = took.as_secs_f64() * 1e3;
+                format!("{what:?} {} ({ms:.2} ms)", path.display())
             })
             .collect(),
     }

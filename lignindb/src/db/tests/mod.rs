@@ -56,9 +56,10 @@ pub(super) struct Counts {
     changes: AtomicU64,
     /// The same, for each thread that made one.
     changes_by: Mutex<HashMap<ThreadId, u64>>,
-    /// Every sync, in order: what was synced, and the path as the caller
-    /// named it, of the directory or of the file when it was opened.
-    synced: Mutex<Vec<(Synced, PathBuf, ThreadId)>>,
+    /// Every sync that has ended, in that order: what was synced, the
+    /// path as the caller named it, of the directory or of the file when
+    /// it was opened, who made it and how long it took.
+    synced: Mutex<Vec<(Synced, PathBuf, ThreadId, Duration)>>,
     /// The directory that paths with no root are in, if there is one.
     root: Option<PathBuf>,
     /// How many appends to a segment go through before one waits, if one
@@ -69,6 +70,8 @@ pub(super) struct Counts {
     /// What is run, once, when a lock is asked for, before it is taken,
     /// and whether only a lock that makes its file counts.
     at_lock: Mutex<Option<(bool, Change)>>,
+    /// What is run, once, after a lock that makes no file found none.
+    after_no_lock_file: Mutex<Option<Change>>,
 }
 
 impl fmt::Debug for Counts {
@@ -115,15 +118,14 @@ impl Watched {
         path: &Path,
         sync: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
-        let mut synced = self.0.synced.lock().expect("the list");
-        synced.push((what, path.to_path_buf(), thread::current().id()));
-        drop(synced);
         self.changed();
         let began = Instant::now();
         let synced = sync();
-        let nanos = began.elapsed().as_nanos() as u64;
+        let took = began.elapsed();
         self.0.syncs.fetch_add(1, Ordering::Relaxed);
-        self.0.sync_nanos.fetch_add(nanos, Ordering::Relaxed);
+        (self.0.sync_nanos).fetch_add(took.as_nanos() as u64, Ordering::Relaxed);
+        let record = (what, path.to_path_buf(), thread::current().id(), took);
+        self.0.synced.lock().expect("the list").push(record);
         synced
     }
 
@@ -166,6 +168,16 @@ impl Watched {
     /// an open's look at it and its lock.
     pub(super) fn at_the_next_lock(&self, change: impl FnOnce() + Send + 'static) {
         *self.0.at_lock.lock().expect("the hook") = Some((false, Box::new(change)));
+    }
+
+    /// Has `change` run after the next lock that makes no file has found
+    /// none, before its caller hears of it: what another open does between
+    /// this one's ask for the lock and its next look.
+    pub(super) fn after_the_next_lock_that_finds_no_file(
+        &self,
+        change: impl FnOnce() + Send + 'static,
+    ) {
+        *self.0.after_no_lock_file.lock().expect("the hook") = Some(Box::new(change));
     }
 
     /// The same, at the next lock that makes its file if it is missing.
@@ -218,16 +230,18 @@ impl Watched {
     pub(super) fn synced_dirs(&self) -> Vec<PathBuf> {
         let synced = self.0.synced.lock().expect("the list");
         let dirs = synced.iter().filter(|(what, ..)| *what == Synced::Dir);
-        dirs.map(|(_, path, _)| path.clone()).collect()
+        dirs.map(|(_, path, ..)| path.clone()).collect()
     }
 
     /// The syncs that the calling thread has made since the last call, in
-    /// order. Those of other threads are dropped.
-    pub(super) fn take_synced(&self) -> Vec<(Synced, PathBuf)> {
+    /// order, each with the time it took. Those of other threads are
+    /// dropped.
+    pub(super) fn take_synced(&self) -> Vec<(Synced, PathBuf, Duration)> {
         let synced = std::mem::take(&mut *self.0.synced.lock().expect("the list"));
         let here = thread::current().id();
-        let mine = synced.into_iter().filter(|(.., by)| *by == here);
-        mine.map(|(what, path, _)| (what, path)).collect()
+        let mine = synced.into_iter().filter(|(_, _, by, _)| *by == here);
+        mine.map(|(what, path, _, took)| (what, path, took))
+            .collect()
     }
 }
 
@@ -366,8 +380,14 @@ impl Vfs for Watched {
 
     fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         self.change_at_the_lock(false);
-        let lock = StdVfs.lock_existing(&self.at(path))?;
-        Ok(Box::new(WatchedLock(lock, self.clone())))
+        let lock = StdVfs.lock_existing(&self.at(path));
+        if matches!(&lock, Err(error) if error.kind() == io::ErrorKind::NotFound) {
+            let change = self.0.after_no_lock_file.lock().expect("the hook").take();
+            if let Some(change) = change {
+                change();
+            }
+        }
+        Ok(Box::new(WatchedLock(lock?, self.clone())))
     }
 }
 

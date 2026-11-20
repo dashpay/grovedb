@@ -163,6 +163,16 @@ fn create_dir(vfs: &dyn Vfs, dir: &Path) -> Result<(), OpenError> {
     Ok(())
 }
 
+/// What a look at a directory with no lock held finds, of what an open
+/// takes.
+enum Seen {
+    /// A database of this engine.
+    Database,
+    /// Nothing of any engine: a place for a new database. `exists` says
+    /// whether the directory is there.
+    Place { exists: bool },
+}
+
 /// The lock of a database directory, and the manifest it was opened or
 /// made with.
 pub(super) struct Opened {
@@ -179,22 +189,31 @@ pub(super) struct Opened {
 /// look, then create the directory if a database is to be made, then lock,
 /// then look again under the lock, and only then write.
 ///
+/// **What the open is of is settled by its first look**: it opens the
+/// database it saw, or makes one in the place it saw, where one is to be
+/// made. It never makes a database where it first saw one: if that
+/// database is gone under the lock, the directory at the path is another
+/// one and is refused ([`OpenError::Replaced`]).
+///
 /// **A lock file is made in no directory that holds a database.** The
 /// lock of a database is taken through the lock file that is there
 /// (`Vfs::lock_existing`), which every database has from the open that made
-/// it. So a directory that someone puts in the place of a database at any
-/// moment of the open, another engine's say, is not given a `LOCK` it did
-/// not have: with a lock file of its own it is locked for a moment and
-/// refused as it is, and with none it is looked at again and refused. A
-/// database that has no lock file, which a copy made without it has, is
-/// refused too ([`OpenError::NoLockFile`]).
+/// it, before its manifest. So a directory that someone puts in the place
+/// of a database at any moment of the open, another engine's say, is not
+/// given a `LOCK` it did not have: with a lock file of its own it is locked
+/// for a moment and refused as it is, and with none it is looked at again
+/// and refused. A database that has no lock file, which a copy made
+/// without it has, is refused too ([`OpenError::NoLockFile`]): that is said
+/// only after the lock was asked for once more with the database in view,
+/// since another open can have made the database, lock file first, between
+/// the first ask and the look.
 ///
 /// The lock file is made only in a place for a new database, where one is
-/// to be made: a directory with nothing of any engine in it and no lock
-/// file. If another process writes into that directory between the look
-/// and the making of the lock file, what the directory is refused for
-/// under the lock is [`OpenError::Changed`], and it may have gained an
-/// empty `LOCK` (D-129).
+/// to be made and where this open began on a place: a directory with
+/// nothing of any engine in it and no lock file. If another process writes
+/// into that directory between the look and the making of the lock file,
+/// what the directory is refused for under the lock is
+/// [`OpenError::Changed`], and it may have gained an empty `LOCK` (D-129).
 pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenError> {
     let vfs: &Arc<dyn Vfs> = &options.vfs;
     let page_size = |manifest: &Manifest| match options.page_size {
@@ -208,16 +227,30 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
     let none = || OpenError::NoDatabase {
         dir: dir.to_path_buf(),
     };
-    // What a look with no lock held allows: a database of this engine with
-    // pages of the size that is asked for, which is to be opened, or a
-    // place for a new one, which is made if there is no directory yet.
-    let looked = || match look(&**vfs, dir)? {
-        Found::Database(manifest) => page_size(&manifest).map(|()| true),
-        Found::Nothing { .. } if !options.create_if_missing => Err(none()),
-        Found::Nothing { exists: true } => Ok(false),
-        Found::Nothing { exists: false } => create_dir(&**vfs, dir).map(|()| false),
+    let replaced = || OpenError::Replaced {
+        dir: dir.to_path_buf(),
     };
-    looked()?;
+    // What a look with no lock held finds, if it is something this open
+    // takes: a database of this engine with pages of the size that is
+    // asked for, or a place for a new one.
+    let looked = || match look(&**vfs, dir)? {
+        Found::Database(manifest) => page_size(&manifest).map(|()| Seen::Database),
+        Found::Nothing { exists } => Ok(Seen::Place { exists }),
+    };
+    // What the open is of is settled by its first look: it opens the
+    // database that is there, or makes one in the place that is there. It
+    // never makes a database where it first saw one, whatever is at the
+    // path later, and it makes a lock file only in a place.
+    let reopens = match looked()? {
+        Seen::Database => true,
+        Seen::Place { .. } if !options.create_if_missing => return Err(none()),
+        Seen::Place { exists } => {
+            if !exists {
+                create_dir(&**vfs, dir)?;
+            }
+            false
+        }
+    };
 
     let lock_path = dir.join(LOCK_FILE);
     let refused = |error: io::Error| match error.kind() {
@@ -226,23 +259,43 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
         },
         _ => OpenError::io("lock", &lock_path)(error),
     };
-    let (lock, made) = match vfs.lock_existing(&lock_path) {
-        Ok(lock) => (lock, false),
-        Err(error) if error.kind() == ErrorKind::NotFound => {
-            // No lock file. The directory is looked at again, because it
-            // can be another one than the one that was looked at. A
-            // database in it is refused: a lock file is made in no
-            // directory that holds a database, so that one which is put in
-            // its place at any moment of the open gets none (D-129). It is
-            // made in a place for a new database, where one is to be made.
-            if looked()? {
-                return Err(OpenError::NoLockFile {
-                    dir: dir.to_path_buf(),
-                });
+    // The lock of a lock file that is there, with none made.
+    let existing = || match vfs.lock_existing(&lock_path) {
+        Ok(lock) => Ok(Some(lock)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(refused(error)),
+    };
+    let (lock, made) = match existing()? {
+        Some(lock) => (lock, false),
+        // No lock file. The directory is looked at again, because it can
+        // be another one than the one that was looked at, and because
+        // another open can have made a database in it meanwhile.
+        None => match looked()? {
+            // A database has its lock file from the open that made it,
+            // before its manifest: it is there now, held or free, unless
+            // the database was copied without it. A lock file is made in
+            // no directory that holds a database, so that one which is put
+            // in the place of a database at any moment of the open gets
+            // none (D-129).
+            Seen::Database => match existing()? {
+                Some(lock) => (lock, false),
+                None => {
+                    return Err(OpenError::NoLockFile {
+                        dir: dir.to_path_buf(),
+                    })
+                }
+            },
+            // The database this open began on is gone.
+            Seen::Place { .. } if reopens => return Err(replaced()),
+            // A place for a new database, as at the first look: the lock
+            // file is made here and nowhere else.
+            Seen::Place { exists } => {
+                if !exists {
+                    create_dir(&**vfs, dir)?;
+                }
+                (vfs.lock(&lock_path).map_err(refused)?, true)
             }
-            (vfs.lock(&lock_path).map_err(refused)?, true)
-        }
-        Err(error) => return Err(refused(error)),
+        },
     };
     // Under the lock nothing else makes or replaces a manifest here. What
     // is refused now was not so at the look before: someone changed the
@@ -262,8 +315,9 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
             let store = ManifestStore::open(vfs.clone(), dir).map_err(OpenError::Manifest)?;
             (store, false)
         }
-        // The database that was seen before the lock was held is gone.
-        Found::Nothing { .. } if !options.create_if_missing => return Err(changed(none())),
+        // The database that this open began on is gone, and what is at
+        // the path is another directory: no database is made in it.
+        Found::Nothing { .. } if reopens => return Err(replaced()),
         Found::Nothing { .. } => {
             let size = options.page_size.unwrap_or(PageSize::DEFAULT);
             let empty = Manifest::new(size, Default::default(), None, Vec::new())

@@ -582,7 +582,9 @@ fn a_close_writes_nothing_into_a_copy_of_its_directory() {
 /// its lock someone puts another directory in its place. Whatever that
 /// one is refused for, it is left byte for byte as it was put there: its
 /// lock file with its content if it has one, and without one if it has
-/// none. The lock of a database that is there is taken with no file made.
+/// none. The lock of a database that is there is taken with no file made,
+/// and an open that began on a database makes none, also where one is to
+/// be made if there is none: an empty directory stays empty.
 #[test]
 fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_is() {
     type Change = fn(&Path);
@@ -592,6 +594,9 @@ fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_
         fs::create_dir(path).expect("another in its place");
     };
     let empty: Change = |_| {};
+    let empty_with_a_lock_file: Change = |path| {
+        fs::write(path.join("LOCK"), b"theirs").expect("a lock file with content");
+    };
     let another_engine_with_its_lock: Change = |path| {
         rocksdb_directory(path);
         fs::write(path.join("LOCK"), b"theirs").expect("a lock file with content");
@@ -600,39 +605,95 @@ fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_
         rocksdb_directory(path);
         fs::remove_file(path.join("LOCK")).expect("no lock file");
     };
-    let none: Check = |error| matches!(error, OpenError::NoDatabase { .. });
+    let gone: Check = |error| matches!(error, OpenError::Replaced { .. });
     let other: Check = |error| matches!(error, OpenError::OtherEngine { .. });
     let cases = [
-        (empty, none),
+        (empty, gone),
+        (empty_with_a_lock_file, gone),
         (another_engine_with_its_lock, other),
         (another_engine_without_one, other),
     ];
     for (case, (change, refused)) in cases.into_iter().enumerate() {
+        for create_if_missing in [false, true] {
+            let dir = temp();
+            let path = dir.path().join("db");
+            let db = Db::open(&path, &options()).expect("a new database");
+            db.close().expect("the session ends");
+
+            let watched = Watched::default();
+            let reopening = Options {
+                create_if_missing,
+                vfs: Arc::new(watched.clone()),
+                ..options()
+            };
+            let at = path.clone();
+            let put = Arc::new(Mutex::new(None));
+            let told = put.clone();
+            watched.at_the_next_lock(move || {
+                replace(&at);
+                change(&at);
+                *told.lock().expect("the image") = Some(image(&at));
+            });
+            let error = Db::open(&path, &reopening).expect_err("the directory was changed");
+            let what = format!("case {case}, create {create_if_missing}: {error:?}");
+            assert!(refused(&error) && error.left_untouched(), "{what}");
+            assert!(error.source().is_none(), "{what}");
+            let put = (put.lock().expect("the image").take()).expect("the hook ran");
+            assert_eq!(image(&path), put, "{what}");
+            assert_eq!(watched.changes(), 0, "{what}: the open wrote");
+        }
+    }
+}
+
+/// Two opens of a place for a new database. The first finds no lock file.
+/// Before it looks again, the second makes the database, lock file first.
+/// The first then finds a database with its lock file: held, if the
+/// second handle is open, and that is what it reports; free, if the second
+/// is closed, and then it opens the database that the second made. It
+/// does not take the database for one that was copied without its lock
+/// file.
+#[test]
+fn an_open_that_another_open_overtakes_is_locked_out_or_opens_its_database() {
+    for held in [true, false] {
         let dir = temp();
         let path = dir.path().join("db");
-        let db = Db::open(&path, &options()).expect("a new database");
-        db.close().expect("the session ends");
-
         let watched = Watched::default();
-        let reopening = Options {
-            create_if_missing: false,
+        let first = Options {
             vfs: Arc::new(watched.clone()),
             ..options()
         };
         let at = path.clone();
-        let put = Arc::new(Mutex::new(None));
-        let told = put.clone();
-        watched.at_the_next_lock(move || {
-            replace(&at);
-            change(&at);
-            *told.lock().expect("the image") = Some(image(&at));
+        let second = Arc::new(Mutex::new(None));
+        let kept = second.clone();
+        watched.after_the_next_lock_that_finds_no_file(move || {
+            let db = Db::open(&at, &options()).expect("the second open makes the database");
+            assert!(db.created());
+            plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+            match held {
+                true => *kept.lock().expect("the handle") = Some(db),
+                false => db.close().expect("its session ends"),
+            }
         });
-        let error = Db::open(&path, &reopening).expect_err("the directory was changed");
-        assert!(refused(&error), "case {case}: {error:?}");
-        assert!(error.left_untouched(), "case {case}");
-        let put = (put.lock().expect("the image").take()).expect("the hook ran");
-        assert_eq!(image(&path), put, "case {case}");
-        assert_eq!(watched.changes(), 0, "case {case}: the open wrote");
+        let opened = Db::open(&path, &first);
+        match held {
+            true => {
+                let error = opened.expect_err("the second handle is open");
+                assert!(matches!(&error, OpenError::Locked { dir } if *dir == path));
+                let other = second.lock().expect("the handle").take();
+                other
+                    .expect("the hook ran")
+                    .close()
+                    .expect("its session ends");
+            }
+            false => {
+                let db = opened.expect("the database of the second open");
+                assert!(!db.created());
+                assert_eq!(
+                    seen(&db.snapshot().operation(), subtree(1), b"k"),
+                    Some((10, vec![]))
+                );
+            }
+        }
     }
 }
 

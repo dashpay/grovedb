@@ -112,6 +112,17 @@ pub enum OpenError {
         /// The directory.
         dir: PathBuf,
     },
+    /// The directory held a database when the open began, and holds none
+    /// under the lock: someone removed it, or put another directory in its
+    /// place, during the open. No database is made where one was to be
+    /// opened, whatever [`Options::create_if_missing`] says, and nothing
+    /// was written.
+    ///
+    /// [`Options::create_if_missing`]: crate::Options::create_if_missing
+    Replaced {
+        /// The directory.
+        dir: PathBuf,
+    },
     /// Another process wrote into the directory while a database was
     /// being made in it: it was looked at and found to hold nothing of any
     /// engine and no lock file, and under the lock it is one that is
@@ -180,6 +191,7 @@ impl OpenError {
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
                 | Self::NoLockFile { .. }
+                | Self::Replaced { .. }
                 | Self::PageSize { .. }
         )
     }
@@ -206,6 +218,12 @@ impl fmt::Display for OpenError {
                 "{} has files of a database ({}) and no manifest",
                 dir.display(),
                 Path::new(entry).display()
+            ),
+            Self::Replaced { dir } => write!(
+                f,
+                "{} held a database when the open began and holds none now: it was removed or \
+                 another directory was put in its place, and no database is made there",
+                dir.display()
             ),
             Self::NoLockFile { dir } => write!(
                 f,
@@ -258,7 +276,7 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
-            Self::NoLockFile { .. } | Self::Changed { .. } => None,
+            Self::NoLockFile { .. } | Self::Replaced { .. } | Self::Changed { .. } => None,
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }
