@@ -228,6 +228,9 @@ pub(super) struct State {
     pub(super) powered_off: bool,
     pub(super) crash_point: Option<CrashPoint>,
     pub(super) trace: Vec<Event>,
+    /// How many bytes the files may hold, if the device has a capacity
+    /// (`budget.rs`).
+    pub(super) capacity: Option<u64>,
     next_id: u64,
     dirs: BTreeMap<DirId, Dir>,
     files: BTreeMap<FileId, File>,
@@ -294,6 +297,7 @@ impl State {
             powered_off: false,
             crash_point: None,
             trace: Vec::new(),
+            capacity: None,
             next_id: 1,
             dirs: BTreeMap::from([(ROOT, root)]),
             files: BTreeMap::new(),
@@ -638,6 +642,24 @@ impl State {
         }
     }
 
+    /// The bytes of every file that a name or an open handle leads to now:
+    /// what the files of the device hold, as operations see them. A file
+    /// whose last name was removed and that no handle has open holds
+    /// nothing any more, whether or not the removal is durable, and
+    /// whether or not a lock is held on it.
+    pub(super) fn used_bytes(&self) -> u64 {
+        let named = self.dirs.values().flat_map(|dir| dir.cells.values());
+        let mut files: BTreeSet<FileId> = named
+            .filter_map(|cell| match cell.now {
+                Some(Node::File(file)) => Some(file),
+                _ => None,
+            })
+            .collect();
+        files.extend(self.handles.values().map(|handle| handle.file));
+        let len = |file: &FileId| self.files[file].content.len() as u64;
+        files.iter().map(len).sum()
+    }
+
     /// Decides whether the operation, which would otherwise succeed, fails.
     fn fault(&mut self, op: &mut Op, needs_space: bool) -> Option<Injection> {
         let mut hit = None;
@@ -655,6 +677,9 @@ impl State {
             if hit.is_none() && armed.seen > rule.skip && armed.seen - rule.skip <= rule.times {
                 hit = Some((rule.fault, rule.torn_append));
             }
+        }
+        if hit.is_none() && needs_space && self.lacks_room(op.kind, op.len) {
+            hit = Some((Fault::Enospc, None));
         }
         if hit.is_none() {
             let odds = &self.config.faults;

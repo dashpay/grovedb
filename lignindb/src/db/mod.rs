@@ -208,6 +208,64 @@
 //! a recovery, so the caller closes the database and opens it again. Reads
 //! go on until then, and what was published stays readable.
 //!
+//! **The store ends a session as well, whichever step met the failure**
+//! (D-151, D-157). Two things stay failed in a store until it is opened
+//! again, whatever the device does later: a sync of the log that failed
+//! ([`Reopen::NotDurable`]) and a sync of a segment that failed
+//! ([`Reopen::SegmentsNotDurable`]). The step that meets one need not be a
+//! commit: a turn of write-back does, a table checkpoint, the creation of
+//! a checkpoint of the database. A session in one of these states would
+//! take commits that can never become durable, keep a log that only
+//! grows, or refuse every commit for a failure that is over.
+//!
+//! So every commit looks at the store before it begins and after it has
+//! ended, and so does [`Db::reopen`]: the session has ended from the first
+//! look that finds one of the two and records it, under every sync policy.
+//! The look reads what the store holds and waits for nothing. What it
+//! finds is recorded under the commit lock. Before a commit that lock is
+//! tried, and a look that comes while another commit is being made records
+//! nothing. After a commit it is waited for. So a thread that writes
+//! commit after commit makes at most one more after the store failed, and
+//! a commit that was waiting for the lock when a failed sync of a segment
+//! was recorded is still taken.
+//!
+//! **A session gives one reason, the first.** The commit path can stop a
+//! session by itself while the store's failed sync is being recorded, and
+//! both are true then. Whichever is seen first where the session is
+//! answered for is kept, once: [`Db::reopen`], [`DbStats::reopen`] and
+//! every commit that is refused with [`WriteError::Reopen`] give that one
+//! from then on. (A commit whose own sync failed, or whose own group the
+//! log could not settle, says that in its own error:
+//! [`CommitError::NotDurable`], [`CommitError::Unsettled`].)
+//!
+//! **A session ends for what stays failed, and for nothing else.** A
+//! replacement of the manifest that failed in its rename, or in the sync
+//! of the directory after it, leaves the manifest in doubt: which of two a
+//! crash would leave is not known. That does not last. Write-back opens
+//! the manifest again where it next needs it, and so do a commit before it
+//! begins and a close, by the same call (`WriteBack::settle_manifest`).
+//! Where the manifest cannot be opened again now, the commit that found
+//! it in doubt is refused with that error and its transaction whole
+//! ([`CommitError::NotReady`]), and a close answers it. Until one of them
+//! has come by, the creation of a checkpoint of the database fails with
+//! the manifest's error and can be made again.
+//!
+//! A commit looks at the manifest without waiting for it. While
+//! write-back holds the manifest to replace it, or another thread holds it
+//! to settle it, a commit that comes finds nothing in doubt and is made,
+//! as it is beside any turn of write-back: the commit itself writes the
+//! log, and no manifest. Only a commit that found the manifest in doubt
+//! waits for the manifest's lock, to have it settled, behind whoever holds
+//! it then. [`Db::reopen`] and [`Db::stats`] settle nothing: they are
+//! looks, and can be made from anywhere.
+//!
+//! So a device that was full has one of two outcomes for a session, and
+//! the session says which. A refusal that involved no sync leaves the
+//! session as it was: once there is room, the next commit is taken. A sync
+//! of the log or of a segment that was refused ends it: [`Db::reopen`]
+//! says so, and a close and an open resume with everything that was
+//! promised (`docs/lignindb/disk-full-and-backup.md`).
+//!
 //! # Background work
 //!
 //! Two threads belong to an open database, and both end with its handle.
@@ -257,6 +315,17 @@
 //! the handle keeps to itself). So a directory that was removed, and one
 //! that holds another database by then, are left as they are: also a copy
 //! of this one, whoever holds its lock.
+//!
+//! A session whose own replacement of the manifest did not finish cannot
+//! say which of two manifests it wrote last. Its close opens the manifest
+//! again first, as write-back would, in a directory that has the handle's
+//! lock file still, and then looks as any close does. Where the manifest
+//! cannot be opened again, the close does nothing more, and answers that
+//! error and not that the directory was removed ([`DbError::Flush`]).
+//! Such a close has the lock file alone to go by before it opens the
+//! manifest: it takes the manifest it finds, as write-back does during
+//! the session. So a directory whose files were written over in place
+//! while the handle was open and its manifest in doubt is not told apart.
 //!
 //! This is about the close, and not about a session that goes on. Until
 //! the handle is closed its commits and its background work write as
@@ -747,7 +816,19 @@ impl Db {
     /// another database now, is written to no more (P-18).
     fn finish(&self) -> Result<(), DbError> {
         let shared = &*self.shared;
-        if !shared.store.ours(&*self.guard) {
+        let ours = match shared.store.ours(&*self.guard) {
+            // The directory has this handle's lock file, and the session
+            // cannot say which manifest it wrote last: the manifest is
+            // opened again, as write-back would at its next use, and the
+            // directory is looked at once more. Where the manifest cannot
+            // be opened, the close finishes nothing more.
+            Err(_in_doubt) => {
+                shared.write_back().settle_manifest()?;
+                matches!(shared.store.ours(&*self.guard), Ok(true))
+            }
+            Ok(ours) => ours,
+        };
+        if !ours {
             return Err(DbError::Removed {
                 dir: shared.store.dir.clone(),
             });
@@ -1004,7 +1085,14 @@ impl Db {
     }
 
     /// Why the session takes no write any more, if it does not: the
-    /// database has to be closed and opened again.
+    /// database has to be closed and opened again. The reason is the
+    /// first the session had, and it is the same from then on, here, in
+    /// [`DbStats::reopen`] and in every commit that is refused for it.
+    ///
+    /// This is a look at what the store holds. It makes no operation on a
+    /// file and settles nothing: a replacement of the manifest that was
+    /// left in doubt is no reason, and is settled by the next commit, by a
+    /// close and by write-back, not here.
     pub fn reopen(&self) -> Option<Reopen> {
         self.shared.store.refusal()
     }
@@ -1076,10 +1164,21 @@ impl Db {
         self.settle(committed)
     }
 
+    /// What a commit looks at before it begins, with no lock held: a
+    /// manifest that it finds in doubt is settled, and a session that has
+    /// ended refuses. A manifest that cannot be settled now refuses the
+    /// commit with the error of that, its transaction whole: the commit
+    /// can be tried again, and the session has not ended for it.
+    ///
+    /// The look does not wait for the manifest. While write-back replaces
+    /// it, or somebody else settles it, the commit finds nothing in doubt
+    /// and is made. A commit that found the manifest in doubt waits for
+    /// the manifest's lock, to have it settled.
     fn refused(&self) -> Result<(), WriteError> {
+        let settled = self.shared.settle_manifest();
         match self.shared.store.refusal() {
             Some(reopen) => Err(WriteError::Reopen(reopen)),
-            None => Ok(()),
+            None => settled.map_err(|error| WriteError::Commit(CommitError::NotReady(error))),
         }
     }
 
@@ -1100,11 +1199,14 @@ impl Db {
             }) => published(commit),
             _ => {}
         }
+        // A store that failed beside this commit ends the session before
+        // this thread's next one (D-151).
+        let said = shared.store.look_after_a_commit();
         // A commit that waited for the commit lock while the session
         // stopped is refused as one that came later is: the transaction is
-        // as it was.
+        // as it was, and the reason is the one the session gives.
         committed.map_err(|error| match error {
-            CommitError::Stopped(stopped) => WriteError::Reopen(stopped.into()),
+            CommitError::Stopped(stopped) => WriteError::Reopen(said.unwrap_or(stopped.into())),
             error => WriteError::Commit(error),
         })
     }

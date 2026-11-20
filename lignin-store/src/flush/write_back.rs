@@ -344,6 +344,24 @@ impl<'s> WriteBack<'s> {
         Ok(manifest)
     }
 
+    /// Settles the manifest for whoever answers for the session: what
+    /// write-back does by itself where it next needs the manifest, and
+    /// nothing else. If a replacement left the manifest in doubt, it is
+    /// opened again, and each of the four stores is told of the manifest
+    /// that is in force. With nothing in doubt this makes no operation on
+    /// a file.
+    ///
+    /// It waits for the lock on the manifest, so it is for a thread that
+    /// holds no lock of the store. Where the manifest cannot be opened, it
+    /// is in doubt as before, no store was told, and the call can be made
+    /// again. Where it is opened and a store answers an error, every store
+    /// was told all the same, the first such error is returned, and the
+    /// manifest is in doubt no more: the next call finds nothing to
+    /// settle.
+    pub fn settle_manifest(&self) -> Result<(), FlushError> {
+        self.manifest().map(drop)
+    }
+
     /// Tells write-back of a commit: its version, the place its group
     /// begins at in the log, and the group's bytes as they were appended.
     ///

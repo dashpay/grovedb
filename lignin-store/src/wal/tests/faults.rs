@@ -598,6 +598,68 @@ fn an_append_that_cannot_be_settled_ends_the_session() {
     }
 }
 
+/// What whoever answers for a session asks, to learn that its log makes
+/// nothing durable any more: it may not have made the sync that failed.
+#[test]
+fn the_log_says_that_a_sync_failed_and_makes_none_to_say_so() {
+    let options = LogOptions {
+        sync: SyncPolicy::EveryCommit,
+        ..LogOptions::default()
+    };
+    let mut run = Run::new(sim::traced(6, 64), options, FEW_STATES);
+    for _ in 0..3 {
+        run.append();
+    }
+    run.note_durable();
+    let db = run.db.as_ref().unwrap();
+    let before = run.fs.stats().ops;
+    assert!(db.log.sync_failed().is_none());
+    assert_eq!(ops_since(&run.fs, before), []);
+
+    // The device has no room for one sync, and has room again.
+    run.fs.add_rule(
+        FaultRule::new(Fault::Enospc)
+            .on(OpSet::SYNCS)
+            .at(wal_path(1)),
+    );
+    let (item, appended) = failing_commit(&mut run);
+    let appended = appended.unwrap();
+    run.model.items.push(item);
+    let db = run.db.as_ref().unwrap();
+    let error = db.log.sync_for_commit(&appended).unwrap_err();
+    assert_eq!(injected(&error), Some(Fault::Enospc));
+    run.fs.clear_rules();
+
+    // The log says so from then on, with the file and with what the file
+    // layer said. Asking makes no operation, and changes nothing: a sync
+    // is refused as it was before the question, and the log takes items.
+    let durable = db.log.durable();
+    let before = run.fs.stats().ops;
+    for _ in 0..2 {
+        let said = db.log.sync_failed().expect("a sync failed");
+        assert!(
+            matches!(&said, LogError::SyncFailed { path, source }
+                if *path == wal_path(1) && source.kind() == io::ErrorKind::StorageFull),
+            "{said}"
+        );
+        assert_eq!(said.to_string(), error.to_string());
+        assert_eq!(injected(&said), None);
+    }
+    assert!(matches!(db.log.sync(), Err(LogError::SyncFailed { .. })));
+    assert!(db.log.sync_failed().is_some());
+    assert_eq!(ops_since(&run.fs, before), []);
+    assert_eq!(db.log.durable(), durable);
+    let (item, appended) = failing_commit(&mut run);
+    appended.unwrap();
+    run.model.items.push(item);
+    run.check_crash_states();
+
+    // It is of the session: the log of the next one has no failed sync.
+    run.restart();
+    assert!(run.db.as_ref().unwrap().log.sync_failed().is_none());
+    run.check_crash_states();
+}
+
 #[test]
 fn a_sync_that_fails_is_never_made_good_in_its_session_and_the_next_writes_the_file_again() {
     for (seed, fate) in [

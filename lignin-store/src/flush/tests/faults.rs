@@ -163,6 +163,50 @@ fn run(script: &[Step], target: Target) -> (End, bool) {
     )
 }
 
+/// What whoever answers for a session asks, where a replacement of the
+/// manifest was left in doubt: write-back opens the manifest again, as it
+/// does by itself where it next needs it, and goes on. With nothing in
+/// doubt, asking makes no operation.
+#[test]
+fn a_manifest_in_doubt_is_settled_when_write_back_is_asked() {
+    let (fs, db) = new_store(false);
+    let wb = db.wb();
+    let in_doubt = || {
+        let manifest = db.manifest.lock().expect("the manifest");
+        manifest.manifest().is_err()
+    };
+    db.commit(&[insert((9, 1), b"z", long(9, 500))]);
+    wb.tick().expect("a turn");
+    let before = fs.stats().ops;
+    wb.settle_manifest().expect("nothing is in doubt");
+    assert_eq!(fs.stats().ops, before);
+
+    // The rename of the manifest that a table checkpoint installs fails.
+    db.commit(&[insert((8, 1), b"y", inline(b"after"))]);
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpKind::Rename));
+    wb.checkpoint().expect_err("the manifest is not replaced");
+    assert!(in_doubt());
+    // While the directory cannot be synced, the manifest cannot be opened
+    // again, and stays in doubt.
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpKind::SyncDir));
+    wb.settle_manifest()
+        .expect_err("the directory is not synced");
+    assert!(in_doubt());
+    fs.clear_rules();
+
+    wb.settle_manifest().expect("the manifest is opened again");
+    assert!(!in_doubt());
+    let before = fs.stats().ops;
+    wb.settle_manifest().expect("nothing is in doubt");
+    assert_eq!(fs.stats().ops, before);
+    // Write-back goes on: a table checkpoint covers every commit.
+    match wb.checkpoint() {
+        Ok(Checkpointed::Installed { covers, .. }) => assert_eq!(covers, db.latest()),
+        other => panic!("{other:?}"),
+    }
+    db.check_cold();
+}
+
 /// **Every operation of write-back fails once.** See the module
 /// documentation for what holds whichever it is.
 #[test]

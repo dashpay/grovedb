@@ -11,6 +11,7 @@ use std::{
 use super::*;
 use crate::vfs::{Create, EntryKind, OpenMode, SyncItem, Vfs, VfsFile};
 
+mod budget;
 mod crash_points;
 mod differential;
 mod directories;

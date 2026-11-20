@@ -4,7 +4,7 @@ use std::{
     fmt,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex, MutexGuard, PoisonError,
+        Mutex, MutexGuard, PoisonError, TryLockError,
     },
 };
 
@@ -166,6 +166,18 @@ impl CommitState {
         CommitLock {
             scratch: lock(&self.commit),
         }
+    }
+
+    /// Takes the commit lock if no commit is being made, and waits for
+    /// none: for whoever must not wait for a commit, or may be called by
+    /// the thread that is making one.
+    pub(crate) fn try_lock(&self) -> Option<CommitLock<'_>> {
+        let scratch = match self.commit.try_lock() {
+            Ok(scratch) => scratch,
+            Err(TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(CommitLock { scratch })
     }
 
     /// Why the session takes no commit any more, if it does not.
