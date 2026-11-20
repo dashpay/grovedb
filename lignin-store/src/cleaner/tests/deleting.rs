@@ -113,6 +113,101 @@ fn what_waits_for_an_operation_counts_against_the_room_for_copies() {
     db.check_cold();
 }
 
+/// A table checkpoint that is put off, because a write transaction holds
+/// a page that has to be in it, sets nothing free. What waits keeps its
+/// room: the segment that is most worth moving does not fit beside it,
+/// and one that fits is moved all the same, so that no more waits to be
+/// deleted than may. Once the transaction has ended a checkpoint is
+/// taken, and what waited goes.
+#[test]
+fn a_checkpoint_that_is_put_off_leaves_the_room_to_a_segment_that_fits() {
+    use std::collections::BTreeSet;
+
+    use crate::{cleaner::clean::victims, flush::tests::crash::free};
+
+    let db = churned(13);
+    let moves_nothing = CleanerState::new(CleanerConfig {
+        target_dead_percent: 100,
+        ..moving_only()
+    });
+    let sweep = || settle(&Cleaner::new(db.wb(), &moves_nothing));
+    sweep();
+    crate::flush::tests::installed(db.wb().checkpoint().expect("a checkpoint"));
+    // From here on no table checkpoint can be taken.
+    let (held, small, large) = (PAGES + 1, PAGES + 2, PAGES + 3);
+    db.commit(&[insert((held, 1), b"held", long(1, 900))]);
+    let mut txn = db.begin();
+    txn.copy(page(held));
+    let with_room = |checkpoint_dead_percent| CleanerConfig {
+        checkpoint_dead_percent,
+        ..moving_only()
+    };
+
+    // One segment is emptied, and waits for the checkpoint.
+    let first = CleanerState::new(with_room(1));
+    let pass = Cleaner::new(db.wb(), &first).pass().expect("a pass");
+    assert_eq!((pass.retired, pass.dropped), (1, 0), "{pass:?}");
+    assert!(matches!(pass.checkpoint, Some(Checkpointed::PutOff { .. })));
+
+    // A segment that is larger than the others, and all dead but for a
+    // small block: a page that filled most of it is freed. The block that
+    // write-back appends next finds the segment full, and seals it.
+    db.commit(&[
+        insert((small, 1), b"small", inline(&noise(8, 60))),
+        insert((large, 1), b"large", inline(&noise(9, 3000))),
+    ]);
+    db.wb().pass().expect("a pass");
+    db.commit(&[free(large), hash((1, 1), 77)]);
+    db.wb().pass().expect("a pass");
+    sweep();
+
+    // A room in which that segment, the one most worth moving, does not
+    // fit beside the one that waits, and a smaller one does.
+    let space = Cleaner::new(db.wb(), &first).space().expect("the space");
+    let waits: BTreeSet<FileId> = (space.segments.iter())
+        .filter(|segment| segment.retired)
+        .map(|segment| segment.file)
+        .collect();
+    let (waiting, none) = (space.retired_bytes(), BTreeSet::new());
+    assert!(waits.len() == 1 && waiting > 0, "{space:?}");
+    let choice = |room: u8, waiting| victims(&space, &waits, &none, &with_room(room), waiting);
+    let best = choice(100, 0).segments[0];
+    assert!(
+        space.segment(best).expect("a segment").block_bytes > 3000,
+        "the best is {best}:{}",
+        describe(&db, &space)
+    );
+    let (room, chosen) = (1..100u8)
+        .map(|room| (room, choice(room, waiting)))
+        .find(|(_, chosen)| chosen.no_room && !chosen.segments.is_empty())
+        .unwrap_or_else(|| panic!("no room for a smaller segment alone: {space:?}"));
+    assert!(!chosen.segments.contains(&best));
+
+    let state = CleanerState::new(with_room(room));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let pass = cleaner.pass().expect("a pass");
+    assert!(matches!(pass.checkpoint, Some(Checkpointed::PutOff { .. })));
+    assert!(pass.blocks_moved > 0 && pass.dropped == 0, "{pass:?}");
+    let after = cleaner.space().expect("the space");
+    let is_retired = |file: &FileId| after.segment(*file).is_some_and(|segment| segment.retired);
+    assert!(chosen.segments.iter().all(is_retired), "{after:?}");
+    assert!(!is_retired(&best), "{after:?}");
+    assert!(
+        after.retired_bytes() * 100 <= after.block_bytes() * u64::from(room),
+        "{} bytes wait, of {}",
+        after.retired_bytes(),
+        after.block_bytes()
+    );
+
+    txn.roll_back();
+    db.wb().pass().expect("a pass");
+    crate::flush::tests::installed(db.wb().checkpoint().expect("a checkpoint"));
+    let rest = settle(&cleaner);
+    assert!(rest.dropped > chosen.segments.len(), "{rest:?}");
+    assert_eq!(cleaner.space().expect("the space").retired_bytes(), 0);
+    db.check_cold();
+}
+
 /// **Test T-PN5.** A segment is not deleted while an operation that was
 /// running when it was retired is running: the operation may have read a
 /// location in it (PN5, PN6). A pin alone holds nothing back here.
@@ -264,6 +359,9 @@ fn a_segment_is_deleted_under_the_manifests_lock_after_its_manifest() {
         .find(|segment| segment.live_blocks == 0 && !segment.has_writer)
         .map(|segment| segment.file)
         .expect("an empty segment");
+    let names_it = |file: &LiveFile| file.kind() == FileKind::Segment && file.id() == empty;
+    let named = read_manifest(&StdVfs, &db.path).expect("the manifest");
+    assert!(named.files().iter().any(names_it), "{named:?}");
     let deletion = vfs.stop_after(0, FileOp::RemoveFile, &FileNames::SEGMENT.file_name(empty));
     let pass = std::thread::scope(|scope| {
         let pass = scope.spawn(|| cleaner.pass().expect("a pass"));
@@ -274,7 +372,6 @@ fn a_segment_is_deleted_under_the_manifests_lock_after_its_manifest() {
         ));
         assert!(!segment_ids(&db).contains(&empty) && on_disk(&db, empty));
         let named = read_manifest(&StdVfs, &db.path).expect("the manifest");
-        let names_it = |file: &LiveFile| file.kind() == FileKind::Segment && file.id() == empty;
         assert!(!named.files().iter().any(names_it), "{named:?}");
         deletion.go_on();
         pass.join().expect("the pass")

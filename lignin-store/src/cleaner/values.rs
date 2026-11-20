@@ -221,7 +221,9 @@ impl<'s> Cleaner<'s> {
     }
 
     /// The closed file with the largest share of dead bytes, if the dead
-    /// space that a cleaning can give back is above its target.
+    /// space that a cleaning can give back is above its target and at
+    /// least one byte in a hundred of the file is dead, or any byte with
+    /// a target of nothing dead.
     ///
     /// That is the dead space of the files that can be cleaned and of
     /// those that are being filled. A file that holds no live value and
@@ -256,14 +258,16 @@ impl<'s> Cleaner<'s> {
             return Ok(None);
         }
         // They come with the largest share first. A file of which less
-        // than one byte in a hundred is dead is not worth a cleaning.
+        // than one byte in a hundred is dead is not worth a cleaning,
+        // unless the target is that nothing is dead.
+        let worth = self.state.config.value_dead_percent.min(1);
         let worst = cleanable.iter().find(|held| {
             work.busy_files
                 .get(&held.file)
                 .is_none_or(|from| *from <= now)
         });
         Ok(worst
-            .filter(|file| is_at_least(dead_of(file.len, file.live_bytes), file.len, 1))
+            .filter(|file| is_at_least(dead_of(file.len, file.live_bytes), file.len, worth))
             .map(|file| file.file))
     }
 

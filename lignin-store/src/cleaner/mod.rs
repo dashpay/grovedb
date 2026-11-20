@@ -210,13 +210,13 @@
 //!
 //! While the dead space is above [`CleanerConfig::target_dead_percent`],
 //! a pass moves the live blocks out of the segments that take no more
-//! blocks, the one with the largest share of dead bytes first, until
-//! deleting them would bring the dead space within the target, or until
-//! it has moved [`CleanerConfig::max_pass_bytes`]. The segments that
-//! already wait to be deleted are left out of that sum, and so are those
-//! that cannot be read: what is dead in them stays whatever is moved, and
-//! counted, it would have the blocks of every other segment moved for
-//! nothing.
+//! blocks, the one with the largest share of dead bytes first among
+//! those there is room for, until deleting them would bring the dead
+//! space within the target, or until its copies come to
+//! [`CleanerConfig::max_pass_bytes`]. The segments that already wait to
+//! be deleted are left out of that sum, and so are those that cannot be
+//! read: what is dead in them stays whatever is moved, and counted, it
+//! would have the blocks of every other segment moved for nothing.
 //!
 //! **A pass works in rounds, and each round moves no more than can wait
 //! for one table checkpoint.** Until a segment is deleted the store holds
@@ -224,13 +224,14 @@
 //! checkpoint in force points into is deleted only after the next one.
 //! So a round chooses segments whose blocks, with those of the segments
 //! that wait to be deleted already, are at most
-//! [`CleanerConfig::checkpoint_dead_percent`] of the bytes of all blocks,
-//! or one segment if nothing waits. Then it has a checkpoint taken if
-//! that much waits for one, deletes what the checkpoint sets free, and
-//! the next round reads the table again. A pass ends when a round moves
-//! nothing, at the throttle, or after a few rounds. What waits for a
-//! running operation takes that room too: while it waits, no more is
-//! moved than the room allows.
+//! [`CleanerConfig::checkpoint_dead_percent`] of the bytes of all blocks
+//! as the round read them, or one segment if nothing waits. A segment
+//! that does not fit is passed over for one that does. Then it has a
+//! checkpoint taken if that much waits for one, deletes what the
+//! checkpoint sets free, and the next round reads the table again. A pass
+//! ends when a round moves nothing, at the throttle, or after a few
+//! rounds. What waits for a running operation takes that room too: while
+//! it waits, no more is moved than the room allows.
 //!
 //! A block is moved in three steps: it is read, which verifies its
 //! checksum; its payload is appended to the cleaner's segment as a block
@@ -301,9 +302,11 @@
 //! segments that only the checkpoint in force keeps hold
 //! [`CleanerConfig::checkpoint_dead_percent`] of the bytes of all blocks,
 //! and when the dead space is above its target and what waits leaves no
-//! room for a copy. A checkpoint that is put off, because a write
-//! transaction holds back a page that has to be in it, is not asked for
-//! again in the pass, and nothing more is moved until one is taken.
+//! room for the segment that is most worth moving. A checkpoint that is
+//! put off, because a write transaction holds back a page that has to be
+//! in it, is not asked for again in the pass. What waits keeps its room
+//! until one is taken: meanwhile only a segment that fits beside it is
+//! moved, as while a running operation keeps what waits.
 //!
 //! **A segment is not cleaned while it is written.** The one that
 //! write-back fills holds what the pages it wrote first have left behind
@@ -325,8 +328,9 @@
 //! the order [`crate::values`] asks for (CL5). It drops the files that
 //! are empty for every reader; if the dead space that a cleaning can
 //! give back is above [`CleanerConfig::value_dead_percent`], it cleans
-//! the closed file with the largest share of dead bytes
-//! ([`ValueStore::copy_live`], a sync, a manifest,
+//! the closed file with the largest share of dead bytes, unless less
+//! than one byte in a hundred of that file is dead and the target is not
+//! zero ([`ValueStore::copy_live`], a sync, a manifest,
 //! [`ValueStore::install`]); and it makes the log durable and asks which
 //! files are empty from now on ([`ValueStore::retire`]). Those are
 //! dropped once the operations that are running then have ended: in the
@@ -344,9 +348,10 @@
 //! A move is refused while a write transaction holds a private copy of
 //! the page (PV7), and the copy that was appended for it is dead. A file
 //! whose cleaning moved nothing for that reason is set aside, for longer
-//! the more files are set aside with it. So a long transaction has values
-//! appended again in about one pass in eight, however many files it keeps
-//! busy, and the passes between are for the files that can be cleaned.
+//! the more files are set aside with it. So once each of the files that a
+//! long transaction keeps busy has been tried, about one pass in eight
+//! appends values again for nothing, however many those files are, and
+//! the passes between are for the files that can be cleaned.
 //!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the
@@ -364,11 +369,12 @@
 //! [`CleanerConfig::max_pass_bytes`] and one block more, counting the
 //! copies whose links were gone when they were to be switched, and reads
 //! the page table a few times at most. A pass over the value log cleans
-//! one file, and the loop
-//! sleeps [`CleanerConfig::idle`] between two turns. A pass that finds
-//! the store as the pass before left it, with no segment waiting, does
-//! not read the page table: it looks at a few counts and at the list of
-//! segments. The bytes the cleaner writes are counted for the store
+//! one file, and the loop sleeps [`CleanerConfig::idle`] between two
+//! turns. A pass that moved nothing on, with no segment waiting to be
+//! deleted and no trim waiting for an operation, is remembered: the next
+//! one does not read the page table if it finds the store as that pass
+//! left it. It looks at a few counts and at the list of segments. The
+//! bytes the cleaner writes are counted for the store
 //! ([`Stats::count_cleaner_bytes`]).
 //!
 //! What the target costs is the other side of it: the lower

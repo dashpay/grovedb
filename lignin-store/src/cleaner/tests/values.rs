@@ -1,10 +1,12 @@
 //! The cleaner's pass over the value log: which file is cleaned, the two
 //! steps of a deletion, what holds a file back, and two kinds of owners.
 
+use std::collections::BTreeSet;
+
 use super::*;
 use crate::{
     cleaner::values::BUSY_PASSES,
-    values::{ValueStore, ValueStoreError},
+    values::{Cleaned, ValueStore, ValueStoreError},
 };
 
 /// A store whose value-log files are full after two values of 400 bytes.
@@ -382,24 +384,37 @@ fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
         txn.copy(page(u32::from(id)));
     }
 
+    // The file that a pass tried for nothing, if it tried one.
+    let tried_in_vain = || {
+        let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+        let in_vain = |(_, cleaned): &(FileId, Cleaned)| cleaned.moved == 0 && cleaned.busy != 0;
+        pass.cleaned.filter(in_vain).map(|(file, _)| file)
+    };
+
     // Each file is tried once: five for nothing, and the one whose page
     // nobody holds is cleaned.
-    for _ in 0..PAGES {
-        cleaner.pass_values(&Cells(&db)).expect("a pass");
-    }
+    let set_aside: BTreeSet<FileId> = (0..PAGES).filter_map(|_| tried_in_vain()).collect();
+    assert_eq!(set_aside.len() as u64, busy, "{set_aside:?}");
     let did = state.stats();
     assert_eq!((did.values_moved, did.values_left), (1, busy), "{did:?}");
     assert_eq!(unmoved(), [true, true, true, true, true, false]);
 
-    // From then on a pass now and then tries one of the five again.
+    // From then on a pass now and then tries one of the five again, each
+    // of them in its turn.
     let passes = 10 * BUSY_PASSES;
-    for _ in 0..passes {
-        cleaner.pass_values(&Cells(&db)).expect("a pass");
+    let mut again = BTreeMap::new();
+    for file in (0..passes).filter_map(|_| tried_in_vain()) {
+        *again.entry(file).or_insert(0u64) += 1;
     }
-    let tried = state.stats().values_left - did.values_left;
+    let tried: u64 = again.values().sum();
     assert!(
-        (busy..=passes / BUSY_PASSES + 2).contains(&tried),
+        tried <= passes / BUSY_PASSES + 2,
         "{tried} tries in {passes} passes"
+    );
+    assert!(again.keys().eq(set_aside.iter()), "{again:?}");
+    assert!(
+        again.values().all(|tries| (1..=3).contains(tries)),
+        "{again:?}"
     );
     assert_eq!(unmoved(), [true, true, true, true, true, false]);
 
@@ -410,6 +425,63 @@ fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
     }
     settle_values(&cleaner, &Cells(&db));
     assert_eq!(unmoved(), [false; 6]);
+    db.check_warm();
+}
+
+/// A file of which less than one byte in a hundred is dead is not worth
+/// a cleaning: its live values would be appended again for almost
+/// nothing. With a target of nothing dead it is cleaned all the same, or
+/// that target could not be met.
+#[test]
+fn a_file_that_is_almost_all_live_is_cleaned_only_for_a_target_of_nothing_dead() {
+    let mut db = Db::with(small_segments());
+    let values = {
+        let manifest = db.manifest.lock().expect("the manifest");
+        ValueStore::open(&manifest, &[]).expect("the value log")
+    };
+    db.values = values.with_target_file_len(1 << 20);
+    // 130 values on 26 pages in one file, which is then closed.
+    for id in 1..=26u8 {
+        let cells: Vec<Op> = (1..=5u8)
+            .map(|at| {
+                let value = long(id.wrapping_mul(7).wrapping_add(at), 400);
+                insert((u32::from(id), u16::from(at)), &[b'k', at], value)
+            })
+            .collect();
+        db.commit(&cells);
+        db.wb().pass().expect("a pass");
+    }
+    let files = value_files(&db);
+    assert_eq!(files.len(), 1, "{files:?}");
+    let almost_live = files[0];
+    assert!(db.wb().close_value_file(almost_live).expect("closed"));
+    // One of its values is replaced, and three times the value that
+    // replaced it, in the file that is being filled: most of what is dead
+    // is there, where no cleaning reaches it.
+    for round in 0..4u8 {
+        db.commit(&[set((1, 1), long(200 + round, 300))]);
+        db.wb().pass().expect("a pass");
+    }
+    // A cleaner that closes no file.
+    let with_target = |value_dead_percent| CleanerConfig {
+        value_dead_percent,
+        seal_dead_percent: 101,
+        ..eager()
+    };
+
+    let state = CleanerState::new(with_target(1));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let space = cleaner.value_space().expect("the space");
+    assert!(space.dead_percent() > 1.0, "{space:?}");
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    assert_eq!(pass, ValuePass::default());
+    assert_eq!(value_files(&db).len(), 2);
+
+    let state = CleanerState::new(with_target(0));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    let (file, cleaned) = pass.cleaned.expect("a cleaning");
+    assert_eq!((file, cleaned.moved, cleaned.live), (almost_live, 129, 0));
     db.check_warm();
 }
 

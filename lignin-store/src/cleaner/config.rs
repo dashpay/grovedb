@@ -33,7 +33,8 @@ pub struct CleanerConfig {
     /// in force still keeps. A checkpoint is asked for when they hold
     /// that much, and when the cleaner would move blocks and has no room
     /// for the copies under it: a copy takes room until its segment is
-    /// deleted. While no checkpoint can be taken, no more is moved.
+    /// deleted. While no checkpoint can be taken, only a segment that
+    /// still fits under it is moved.
     pub checkpoint_dead_percent: u8,
     /// A segment that is being filled is sealed when its dead blocks are
     /// this share of the bytes of all blocks, in a hundred, and a
@@ -51,16 +52,19 @@ pub struct CleanerConfig {
     /// it is not held to the target.
     pub min_segment_len: u64,
     /// The throttle: the most bytes of blocks, as they are stored, that
-    /// one pass writes, and one block more: a pass stops moving once it
-    /// has written that many. With [`Self::idle`] it bounds what the
-    /// cleaner writes in a second.
+    /// one pass over the segments copies, and one block more: a pass
+    /// stops moving once it has written that many. With [`Self::idle`] it
+    /// bounds the copies of blocks that the cleaner writes in a second. A
+    /// pass over the value log has its own measure, one file.
     pub max_pass_bytes: u64,
     /// The length at which the segment that takes the moved blocks is
     /// sealed and the next one begun.
     pub segment_len: u64,
     /// The share of dead bytes among the bytes of all values in the value
     /// log, in a hundred, above which a pass cleans a value-log file. One
-    /// file is cleaned in a pass.
+    /// file is cleaned in a pass: the one with the largest share of dead
+    /// bytes, and none of which less than one byte in a hundred is dead.
+    /// With 0 here, a file is cleaned for any dead byte.
     pub value_dead_percent: u8,
     /// How long the background loop sleeps between two passes when nobody
     /// wakes it.
@@ -72,7 +76,7 @@ impl CleanerConfig {
     /// and in the value log; let at most 4 in a hundred wait for a table
     /// checkpoint; close a file that is being filled when it holds 1 in a
     /// hundred of the store, or when 2 in a hundred of the store are dead
-    /// in it, and none before it holds 64 KiB; move at most 8 MiB in a
+    /// in it, and none before it holds 64 KiB; copy 8 MiB of blocks in a
     /// pass, into segments of 64 MiB; sleep 100 ms between passes.
     ///
     /// With these, the dead space of a store stays below 20 in a hundred
