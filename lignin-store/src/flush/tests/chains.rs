@@ -294,3 +294,61 @@ fn a_chain_that_is_over_the_thresholds_is_consolidated() {
     assert_eq!(db.shape(page(1)), "Bd");
     db.check_cold();
 }
+
+/// A page is freed, and the pool drops what it held of it, after
+/// write-back has looked at the page and before it keeps an old version of
+/// it for readers. The frame in write-back's hand is no page version any
+/// more, and nothing is owed of the page: write-back passes over it with
+/// no error, links nothing of it, and the pass goes on. So it is for a
+/// page that never had a link, which gets no free link, and for one that
+/// had its base image written.
+#[test]
+fn a_page_that_is_freed_and_dropped_after_the_look_is_passed_over() {
+    use std::{cell::Cell, rc::Rc};
+
+    for (linked, shape) in [(false, ""), (true, "BF")] {
+        let db = Rc::new(Db::new());
+        db.commit(&[
+            insert((1, 1), b"a", inline(b"v")),
+            insert((2, 1), b"b", inline(b"w")),
+        ]);
+        if linked {
+            db.wb().pass().expect("a pass");
+            db.commit(&[hash((1, 1), 5)]);
+        }
+        // Two versions of page 1 are owed, with no reader between them:
+        // the older is one that write-back keeps for readers and does not
+        // write.
+        db.commit(&[hash((1, 1), 7)]);
+
+        let (store, ran) = (db.clone(), Rc::new(Cell::new(None)));
+        let told = ran.clone();
+        crate::flush::write_back::AFTER_THE_LOOK.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |looked_at| {
+                let freed = store.commit(&[Op::Free { page: looked_at }]);
+                // No reader can ask for the page: the pool drops both
+                // frames, which write-back still has pinned.
+                let dropped = (0..2)
+                    .map(|_| store.pool.reclaim(&store.versions))
+                    .sum::<usize>();
+                told.set(Some((looked_at, freed, dropped)));
+            }));
+        });
+        let before = db.stats();
+        let pass = db.wb().pass().expect("a pass with no error");
+        let (looked_at, freed, dropped) = ran.get().expect("the hook ran");
+        assert_eq!((looked_at, dropped), (page(1), 2), "linked {linked}");
+        assert_eq!(pass.held, 0, "linked {linked}: {pass:?}");
+        assert_eq!(db.stats().held_for_readers, before.held_for_readers);
+
+        // Nothing of the freed page was linked after the look.
+        assert_eq!(db.shape(page(1)), shape, "linked {linked}");
+        if let Some(last) = db.chain(page(1)).last() {
+            assert_eq!(last.version, freed);
+        }
+        // The other page is written, by this pass or by the next.
+        db.wb().pass().expect("a pass");
+        assert!(db.shape(page(2)).starts_with('B'), "linked {linked}");
+        db.check_cold();
+    }
+}

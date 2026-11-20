@@ -227,7 +227,13 @@
 //! - A commit that frees a page takes what was owed of it off the lists
 //!   (`page-table.md` T18): the page table refuses a link behind a free
 //!   link, and write-back does not mark what it could not link. Those page
-//!   versions are held instead.
+//!   versions are held instead, and dropped by [`BufferPool::reclaim`] once
+//!   no reader can ask for them. Write-back can have such a frame pinned
+//!   from a look it made before the page was freed:
+//!   [`BufferPool::mark_written`] and [`BufferPool::hold_for_readers`] then
+//!   fail with [`CacheError::NotUnwritten`], or with
+//!   [`CacheError::Replaced`] once the frame was dropped, and write-back
+//!   passes over it either way.
 //! - A page version that was superseded with a pending value can be held
 //!   as well, with [`BufferPool::hold_for_readers`], instead of being
 //!   written (FL7).

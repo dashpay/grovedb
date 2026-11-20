@@ -222,6 +222,20 @@ impl Told {
     }
 }
 
+/// What a test does after a look.
+#[cfg(test)]
+pub(super) type AfterTheLook = Box<dyn FnOnce(PageId)>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run, once, after write-back has looked at a page
+    /// (the frames it owes and the page's chain) and before it does
+    /// anything with the first of them: what a commit or the pool does to
+    /// the page in between.
+    pub(super) static AFTER_THE_LOOK: std::cell::RefCell<Option<AfterTheLook>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// What one look at a page works on: the frames of its unwritten versions,
 /// oldest first, and what write-back has kept of the page, taken in one
 /// page step.
@@ -240,7 +254,8 @@ struct Look<'s> {
 enum Held {
     /// The pool keeps it, and its changes go into the next block.
     Kept,
-    /// The pool does not list it as owed any more: a commit freed the page.
+    /// The pool does not list it as owed any more: a commit freed the
+    /// page, and the pool may have dropped the frame since.
     NotOwed,
     /// It is the current version of its page again, to the pool.
     Current,
@@ -604,6 +619,10 @@ impl<'s> WriteBack<'s> {
         round: &mut Round,
         again: bool,
     ) -> Result<Option<CommitVersion>, FlushError> {
+        #[cfg(test)]
+        if let Some(change) = AFTER_THE_LOOK.with(|hook| hook.borrow_mut().take()) {
+            change(page);
+        }
         for (index, frame) in look.frames.iter().enumerate() {
             let born = frame.born();
             if let Some(freed) = links.last().filter(|link| link.kind == LinkKind::Free)
@@ -693,6 +712,14 @@ impl<'s> WriteBack<'s> {
     /// pool's list of what is owed only once it is noted, so whoever reads
     /// that list first and the notes second finds it in one of them
     /// ([`Self::floor`]).
+    ///
+    /// A commit can free the page between the look that pinned `frame` and
+    /// this call. Then nothing is owed of the page ([`Held::NotOwed`]):
+    /// the pool has taken the version off its list
+    /// ([`CacheError::NotUnwritten`]), or has dropped the frame as well,
+    /// once no reader could ask for it ([`CacheError::Replaced`]). No page
+    /// step makes the second answer here: a step replaces the current
+    /// version of a page, and this is called for a superseded one.
     fn hold(&self, page: PageId, frame: &PageRef<'s>) -> Result<Held, FlushError> {
         let born = frame.born().get();
         let noted = lock(&self.state.kept).fold(page, born);
@@ -707,7 +734,7 @@ impl<'s> WriteBack<'s> {
             lock(&self.state.kept).unfold_one(page, born);
         }
         match refused {
-            CacheError::NotUnwritten { .. } => Ok(Held::NotOwed),
+            CacheError::NotUnwritten { .. } | CacheError::Replaced { .. } => Ok(Held::NotOwed),
             CacheError::StillCurrent { .. } => Ok(Held::Current),
             error => Err(error.into()),
         }

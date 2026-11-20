@@ -105,8 +105,11 @@ pub enum CacheError {
         /// The version that bore it.
         born: CommitVersion,
     },
-    /// The frame is not how its page version is stored any more: a page
-    /// step put another in its place.
+    /// The frame is not how a page version is stored any more. A page
+    /// step put another in its place; or the page was freed and the pool
+    /// has dropped what it held of it, once no reader could ask for it
+    /// ([`BufferPool::reclaim`](super::BufferPool::reclaim)), while the
+    /// caller had the frame pinned.
     Replaced {
         /// The page.
         page: PageId,
@@ -189,7 +192,9 @@ impl fmt::Display for CacheError {
             ),
             Self::Replaced { page, born } => write!(
                 f,
-                "the frame of page {page} as born at version {born} was replaced by a page step"
+                "the frame of page {page} as born at version {born} is no page version of the \
+                 pool any more: a page step replaced it, or its page was freed and the pool \
+                 dropped it"
             ),
             Self::StillCurrent { page, born } => write!(
                 f,
