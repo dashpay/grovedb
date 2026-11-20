@@ -1,6 +1,7 @@
 //! LigninDB page store: buffer pool, write-ahead log, segments, page table, recovery and cleaner
 
 #![deny(unsafe_code)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 pub mod alloc;
 pub mod cache;

@@ -641,6 +641,17 @@ fn a_pool_has_at_most_a_lane_for_every_two_frames_and_no_more_than_it_may() {
         (300, 128),
         (5_000, 128),
     ] {
+        assert_eq!(
+            crate::cache::lanes::Lanes::count_for(frames),
+            lanes,
+            "{frames} frames"
+        );
+        // Miri has nothing more to find in a large pool than in a small
+        // one, and takes gigabytes over it. The number of its lanes, which
+        // is where the most a pool may have shows, was checked above.
+        if cfg!(miri) && frames > 300 {
+            continue;
+        }
         let pool = BufferPool::with_frames(frames, 8, 1, 0).expect("a small pool");
         assert_eq!(pool.arena.lanes().len(), lanes, "{frames} frames");
     }
@@ -782,6 +793,143 @@ fn a_dead_frame_whose_last_pin_went_is_taken_before_one_is_allocated() {
     assert_eq!(pool.overflow_frames(), 0);
     drop(blank);
     assert_eq!(free_frames(&pool), 1);
+    check(&pool, 0);
+}
+
+/// A frame is a slice of bytes from its first moment, before anything was
+/// written to it. So the pool's memory, and that of every frame beside the
+/// fixed ones, has to be memory that was written once: it is allocated
+/// zeroed. Miri fails this test if it is not.
+#[test]
+fn a_frame_can_be_read_before_anything_is_written_to_it() {
+    let pool = pool(1);
+    let fixed = pool.blank();
+    let beside = pool.blank();
+    assert_eq!(pool.overflow_frames(), 1);
+    for blank in [&fixed, &beside] {
+        assert_eq!(blank.len(), FRAME);
+        assert!(blank.iter().all(|&byte| byte == 0), "a new frame is zeroed");
+        assert_eq!(blank.attached(name(1)), None);
+    }
+}
+
+/// A pool is shared by every thread of a store, and what it hands out goes
+/// where the work goes: a page that was read to another thread, a latch to
+/// the threads that read under it. The compiler lets them only because the
+/// frames are declared safe to share, and their pointers and the arena safe
+/// to send and to share (`frame.rs`), which this test would not build
+/// without. A model
+/// keeps what it checks in the handles, and they stay on their threads.
+#[cfg(not(loom))]
+#[test]
+fn the_handles_of_the_pool_can_go_to_other_threads() {
+    fn sent<T: Send>() {}
+    fn shared<T: Sync>() {}
+    sent::<BufferPool>();
+    shared::<BufferPool>();
+    sent::<PageRef<'_>>();
+    shared::<PageRef<'_>>();
+    sent::<PrivateRef<'_>>();
+    shared::<PrivateRef<'_>>();
+    sent::<Blank<'_>>();
+    shared::<Blank<'_>>();
+    shared::<SharedLatch<'_>>();
+    shared::<ExclusiveLatch<'_>>();
+    shared::<PageStep<'_>>();
+
+    let pool = pool(2);
+    let found = seed(&pool, content(1, 1, 0), None);
+    let copy = pool
+        .make_private(owner(1), page(1), version(1))
+        .expect("in the pool");
+    let latch = copy.read();
+    std::thread::scope(|scope| {
+        scope.spawn(|| assert_eq!(Content::read(&latch), content(1, 1, 0)));
+        scope.spawn(|| assert_eq!(Content::read(&found.clone()), content(1, 1, 0)));
+        let blank = pool.blank();
+        scope.spawn(move || assert_eq!(blank.len(), FRAME));
+    });
+    drop(latch);
+    pool.discard(&copy).expect("a private copy");
+    drop((copy, found));
+    check(&pool, 0);
+
+    // A pool goes to another thread whole, with what it holds, and is read
+    // and dropped there.
+    std::thread::spawn(move || {
+        let found = pool.get(page(1), version(1)).expect("in the pool");
+        assert_eq!(Content::read(&found), content(1, 1, 0));
+        drop(found);
+        drop(pool);
+    })
+    .join()
+    .expect("the thread did not panic");
+}
+
+/// The attached values of a page are read by any number of threads at once:
+/// under the shared latch of a private copy, and with no latch once the
+/// page is published (A5). A reader that did anything to the frame's list
+/// of them but read it would do so beside the other readers, and Miri would
+/// report the two.
+#[cfg(not(loom))]
+#[test]
+fn threads_read_the_attached_values_of_one_page_at_once() {
+    fn read_by_three(read: impl Fn() + Sync) {
+        std::thread::scope(|scope| {
+            for _ in 0..3 {
+                scope.spawn(|| (0..3).for_each(|_| read()));
+            }
+        });
+    }
+
+    let pool = pool(2);
+    let copy = pool.new_private(owner(1), page(1)).expect("a new page");
+    {
+        let mut latch = copy.write().expect("a private copy");
+        content(1, 1, 0).write(&mut latch);
+        latch.attach(name(1), value(b"one"));
+        latch.attach(name(2), value(b"two"));
+    }
+    let latch = copy.read();
+    read_by_three(|| {
+        assert_eq!(latch.attached(name(1)), Some(&b"one"[..]));
+        assert_eq!(latch.attachments().count(), 2);
+        assert_eq!(Content::read(&latch), content(1, 1, 0));
+    });
+    drop(latch);
+
+    let found = pool.install(&copy, version(1)).expect("a commit");
+    read_by_three(|| {
+        assert_eq!(found.attached(name(2)), Some(&b"two"[..]));
+        assert_eq!(found.attachments().count(), 2);
+        assert_eq!(Content::read(&found), content(1, 1, 0));
+    });
+    assert_eq!(pool.attached_bytes(), 6);
+}
+
+/// Two frames that were taken out while readers held them wait together.
+/// The one whose reader goes first is made free, though it waits behind the
+/// other, and the other waits on.
+#[test]
+fn a_dead_frame_is_made_free_while_another_still_waits() {
+    let pool = pool(4);
+    drop(create(&pool, 1, 1));
+    drop(create(&pool, 2, 1));
+    let first = pool.get(page(1), version(1)).expect("in the pool");
+    let second = pool.get(page(2), version(1)).expect("in the pool");
+
+    // A page step on each page takes its frame out under the reader. The
+    // frame of page 2 is the last to join those that wait.
+    step_once(&pool, 1);
+    step_once(&pool, 2);
+    assert_eq!(free_frames(&pool), 0);
+
+    drop(first);
+    assert_eq!(free_frames(&pool), 1);
+    assert_eq!(Content::read(&second), content(2, 1, 0));
+    drop(second);
+    assert_eq!(free_frames(&pool), 2);
+    assert_eq!(pool.overflow_frames(), 0);
     check(&pool, 0);
 }
 

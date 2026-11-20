@@ -11,6 +11,7 @@
 //! needs `unsafe` code has to allow it for itself.
 
 #![deny(unsafe_code)]
+#![deny(clippy::undocumented_unsafe_blocks)]
 
 #[cfg(test)]
 mod conformance;

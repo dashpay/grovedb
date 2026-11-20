@@ -43,23 +43,36 @@ impl CountingAllocator {
     }
 }
 
+// SAFETY: every method counts and then hands its arguments, unchanged, to
+// the same method of `System`, so the memory is what `System` gives and takes
+// back under the contract the caller keeps. Counting adds to thread-local
+// cells that are constants at first and have no destructor, so it allocates
+// nothing, and it cannot unwind short of a count that overflows 64 bits.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         Self::count();
+        // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc`, which
+        // is the contract of `System.alloc`.
         unsafe { System.alloc(layout) }
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         Self::count();
+        // SAFETY: the caller keeps the contract of `GlobalAlloc::alloc_zeroed`, which
+        // is the contract of `System.alloc_zeroed`.
         unsafe { System.alloc_zeroed(layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         Self::count();
+        // SAFETY: the caller keeps the contract of `GlobalAlloc::realloc`, which
+        // is the contract of `System.realloc`.
         unsafe { System.realloc(ptr, layout, new_size) }
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        // SAFETY: the caller keeps the contract of `GlobalAlloc::dealloc`, which
+        // is the contract of `System.dealloc`.
         unsafe { System.dealloc(ptr, layout) }
     }
 }
