@@ -356,7 +356,7 @@ fn deleting_a_checkpoint_removes_its_directory() {
             std::fs::write(path, bytes).expect("a file");
         }
     };
-    let leftovers: [&[(&str, &[u8])]; 5] = [
+    let leftovers: [&[(&str, &[u8])]; 6] = [
         &[
             (DELETING_FILE_NAME, &a_manifest),
             ("seg/00000001.seg", b"left"),
@@ -369,6 +369,12 @@ fn deleting_a_checkpoint_removes_its_directory() {
         &[(DELETING_FILE_NAME, &a_manifest), ("ENGINE", b"beside it")],
         &[],
         &[("LOCK", b"")],
+        // A database that is known by its manifest, with a file that is
+        // only named as a renamed one: that file goes with the rest.
+        &[
+            ("MANIFEST", &a_manifest),
+            (DELETING_FILE_NAME, b"no manifest"),
+        ],
     ];
     for (index, files) in leftovers.into_iter().enumerate() {
         put(files);

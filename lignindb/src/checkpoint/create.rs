@@ -22,7 +22,7 @@ use lignin_store::{
 
 use super::{error::CheckpointError, files::Target};
 use crate::{
-    commit::{CommitState, Committer},
+    commit::{CommitLock, CommitState, Committer},
     snapshot::{VersionPin, Versions},
 };
 
@@ -35,7 +35,8 @@ use crate::{
 /// took some 25 ms longer for each megabyte of log it replayed, which is
 /// ten blocks of twenty documents, and a catch-up took a creation 15 to
 /// 30 ms. So a creation that finds more than a megabyte pays for the
-/// catch-up, and the open of its checkpoint replays nothing.
+/// catch-up, and the open of its checkpoint replays only what was
+/// committed after write-back had caught up.
 pub const DEFAULT_CATCH_UP_ABOVE: u64 = 1 << 20;
 
 /// How a checkpoint is made.
@@ -151,6 +152,16 @@ struct Sample<'s> {
     held: (VersionPin<'s>, LogHold, ValueHold),
 }
 
+/// What the sampling step reads and takes under the commit lock.
+struct Read<'s> {
+    version: CommitVersion,
+    end: Option<LogPlace>,
+    durable: bool,
+    named: Manifest,
+    pin: VersionPin<'s>,
+    log_hold: LogHold,
+}
+
 impl<'s> Checkpointer<'s> {
     /// What makes checkpoints of the database that `committer` commits to,
     /// with the default options.
@@ -220,13 +231,14 @@ impl<'s> Checkpointer<'s> {
     /// directory like any other, and is opened as one.
     ///
     /// Commits are kept out for the sampling step, which reads a few
-    /// things, and for nothing else of this call (CK5). The call syncs the
-    /// log only where it is not durable through the version already, so a
-    /// commit that syncs the log itself waits for that sync in one case
-    /// alone, which the [module documentation](super) names. Open write
-    /// transactions are not waited for, and nothing of them is in the
-    /// checkpoint (CK8). Any number of checkpoints may be made at once
-    /// (CK9).
+    /// things, and for nothing else of this call (CK5). A commit that
+    /// syncs the log itself waits, as the log has it, for a sync of the
+    /// log that is under way. This call makes one only where the log is
+    /// not durable through the version already, and write-back makes one
+    /// where it catches up first: the [module documentation](super) says
+    /// when a commit can meet either. Open write transactions are not
+    /// waited for, and nothing of them is in the checkpoint (CK8). Any
+    /// number of checkpoints may be made at once (CK9).
     ///
     /// If it fails, the live database is as it was (CK10), with one
     /// exception: where the sync of its log failed
@@ -304,33 +316,14 @@ impl<'s> Checkpointer<'s> {
             self.reached(Step::Waiting);
             drop(lock(stores.manifest));
         };
-        if let Some(stopped) = self.state.stopped() {
-            return Err(CheckpointError::Stopped(stopped));
-        }
-        let named = manifest
-            .manifest()
-            .map_err(CheckpointError::Manifest)?
-            .clone();
-        let pin = self.versions.pin();
-        let version = pin.version();
-        let (end, logged) = (stores.log.end(), stores.log.latest());
-        if logged != version {
-            return Err(CheckpointError::LogAhead {
-                log: logged,
-                latest: version,
-            });
-        }
-        // Where the log is durable through the version already, the
-        // checkpoint's log ends where the durable log ends, and nothing is
-        // synced for it: that place is behind the group of the version, at
-        // the end of a record, and what the log holds behind it are records
-        // of page steps, which a checkpoint can do without (PV6).
-        let synced = stores.log.durable();
-        let (end, durable) = match synced.place {
-            Some(place) if synced.version == version => (Some(place), true),
-            _ => (end, false),
-        };
-        let log_hold = stores.log.hold_from(None)?;
+        let Read {
+            version,
+            end,
+            durable,
+            named,
+            pin,
+            log_hold,
+        } = self.read(&commits, &manifest)?;
         drop(commits);
         let value_hold = stores.values.hold_files();
         let sample = Sample {
@@ -341,6 +334,54 @@ impl<'s> Checkpointer<'s> {
             held: (pin, log_hold, value_hold),
         };
         Ok((sample, manifest))
+    }
+
+    /// What the sample reads, under the two locks it is given: nothing of
+    /// it can be read without them.
+    fn read(
+        &self,
+        _commits: &CommitLock<'_>,
+        manifest: &ManifestStore,
+    ) -> Result<Read<'s>, CheckpointError> {
+        let log = self.write_back.stores().log;
+        if let Some(stopped) = self.state.stopped() {
+            return Err(CheckpointError::Stopped(stopped));
+        }
+        let named = manifest
+            .manifest()
+            .map_err(CheckpointError::Manifest)?
+            .clone();
+        let pin = self.versions.pin();
+        let version = pin.version();
+        let (end, logged) = (log.end(), log.latest());
+        if logged != version {
+            return Err(CheckpointError::LogAhead {
+                log: logged,
+                latest: version,
+            });
+        }
+        // Where the log is durable through the version already, the
+        // checkpoint's log ends where the durable log ends, and nothing is
+        // synced for it: that place is behind the group of the version, at
+        // the end of a record, and what the log holds behind it are records
+        // of page steps, which a checkpoint can do without (PV6). What the
+        // log says of itself is what a sync of this session found: a
+        // session syncs its log before its first commit, when it turns to
+        // a file of its own.
+        let synced = log.durable();
+        let (end, durable) = match synced.place {
+            Some(place) if synced.version == version => (Some(place), true),
+            _ => (end, false),
+        };
+        let log_hold = log.hold_from(None)?;
+        Ok(Read {
+            version,
+            end,
+            durable,
+            named,
+            pin,
+            log_hold,
+        })
     }
 
     /// Everything of a creation after the target was made.

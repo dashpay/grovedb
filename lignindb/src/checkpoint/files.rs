@@ -124,6 +124,7 @@ impl Target {
     /// is empty, and stays otherwise. And where the lock is had and the
     /// directory holds anything but the lock file, it is somebody else's
     /// by now ([`CheckpointError::TargetExists`]), and stays as it is.
+    /// Where it cannot be listed, it stays too, with its lock file.
     pub(super) fn make(vfs: Arc<dyn Vfs>, dir: &Path) -> Result<Self, CheckpointError> {
         let Some(parent) = parent_of(dir) else {
             return Err(CheckpointError::NoParent {
@@ -331,13 +332,13 @@ impl Target {
     }
 
     /// Takes away what this creation made, as far as the file layer lets
-    /// it: the manifest first, if this creation got as far as writing one,
-    /// so that what is left is no checkpoint, then the files it linked or
-    /// created, the directories, the lock file and the target. The lock
-    /// file is this creation's: the target held nothing else when its lock
-    /// was taken. Nothing else is touched: a file that somebody else put
-    /// into the target since stays, and the target with it. What cannot be
-    /// removed stays for the caller to remove.
+    /// it: the manifest first, if this creation got as far as having one
+    /// written, so that what is left is no checkpoint, then the files it
+    /// linked or created, the directories, the lock file and the target.
+    /// The lock file is this creation's: the target held nothing else when
+    /// its lock was taken. Nothing else is touched: a file that somebody
+    /// else put into the target since stays, and the target with it. What
+    /// cannot be removed stays for the caller to remove.
     ///
     /// **No file goes while the manifest could come back.** Where a
     /// manifest was written and its removal cannot be made durable,
@@ -406,9 +407,10 @@ fn remove_entry(vfs: &dyn Vfs, path: &Path, kind: EntryKind) -> Result<(), Check
 ///   followed into what it leads to;
 /// - the directory has a manifest of this engine, under the manifest's
 ///   name or under [`DELETING_FILE_NAME`], in a file of its own and not
-///   behind a link ([`CheckpointError::NotADatabase`]): a name alone is no
-///   proof, and a file that is named as either and holds anything else
-///   makes the directory nobody's that this call knows;
+///   behind a link ([`CheckpointError::NotADatabase`]). A name alone is no
+///   proof: a directory with a file that is named as either and holds
+///   something else is known for a database only by a manifest under the
+///   other name, and then what the first name holds goes with the rest;
 /// - no handle has it open ([`CheckpointError::Open`]): the call takes the
 ///   directory's lock for the time of the removal, and looks again under
 ///   it at what the directory is.

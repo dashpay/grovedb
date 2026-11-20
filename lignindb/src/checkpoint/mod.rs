@@ -81,27 +81,36 @@
 //! only tries that lock while it has the commit lock. Where the manifest
 //! is taken, it gives the commit lock back, waits, and takes both anew.
 //!
-//! **The sync of step 6 keeps no commit waiting either, with one case
-//! left over.** The log makes itself durable one sync at a time
-//! (`lignin_store::wal`), and a commit that syncs the log itself does so
-//! under the commit lock (CM7), where it would wait for a sync that is
-//! under way. So a creation syncs nothing where it need not:
+//! **A commit that syncs the log itself can wait for a sync of the log,
+//! and a creation makes as few as it can.** The log makes itself durable
+//! one sync at a time (`lignin_store::wal`), and such a commit syncs
+//! under the commit lock (CM7), where it waits for a sync that is under
+//! way, whoever makes it: write-back in its own loop, a flush, or a
+//! creation. CK5 and CM8 word "never waits for the fsync" for commits
+//! that sync nothing, which is the default, and where no commit syncs the
+//! log no commit waits for a sync. For the other policies:
 //!
-//! - Where every commit syncs the log
+//! - **Step 6 syncs nothing where the log is durable through *vc* at the
+//!   sample.** The checkpoint's log then ends where the log is durable
+//!   to. That is so after a flush and after the catch-up of step 2, and,
+//!   where every commit syncs the log
 //!   ([`SyncPolicy::EveryCommit`](lignin_store::wal::SyncPolicy::EveryCommit)),
-//!   the log is durable through every published version. The checkpoint's
-//!   log then ends where the log is durable to, and step 6 does nothing.
-//!   The same holds whenever the log is durable through *vc* at the
-//!   sample: after a flush, or after the catch-up of step 2.
-//! - Where no commit syncs the log, which is the default, no commit can
-//!   wait for a sync.
+//!   after every commit whose sync did not fail. After one that failed,
+//!   the sync of step 6 fails as well, at once.
+//! - **The catch-up of step 2 is a table checkpoint of write-back's, and
+//!   syncs the log as every one of them does**: a commit meets it as it
+//!   meets write-back's loop. It is due only above
+//!   [`CheckpointOptions::catch_up_above`], and `None` there takes it
+//!   away.
 //! - Where commits sync the log at an interval
 //!   ([`SyncPolicy::Interval`](lignin_store::wal::SyncPolicy::Interval)),
 //!   a commit whose sync falls due while the one of step 6 is under way
-//!   waits for it, as it would for write-back's or for a flush's, and then
-//!   makes its own. That is the case left over. CK5 and CM8 word "never
-//!   waits for the fsync" without it, and taking it away is the log's to
-//!   do: the owner decides between the wording and the log.
+//!   waits for it, and then makes its own.
+//!
+//! So with a policy that syncs, a commit can wait for one sync of the log
+//! that a creation caused, in the last two cases. Taking that away is the
+//! log's to do, as it is for write-back's own syncs, and the wording of
+//! CK5 and CM8 is the owner's to decide on.
 //!
 //! **The lock on the manifest is held through step 5**, which is one
 //! `link` for each file the manifest names: write-back replaces no
@@ -253,9 +262,14 @@
 //! it, and where it gets the lock and finds more than the lock file,
 //! somebody else has been there: nothing in the target is touched in
 //! either case. A manifest in the target is the creation's to remove only
-//! once it has begun to write one. Where the file layer fails the removal
-//! too, or fails the making of a file without saying whether it made it,
-//! what is left is for the caller to remove. **No file goes while a
+//! once it has asked the store to write one, and not where the store
+//! answers that one is there. The name a manifest is written under first
+//! is the store's to use in a database directory, and a file of that name
+//! is replaced. Where the file layer fails the removal too, or fails the
+//! making of a file without saying whether it made it, what is left is
+//! for the caller to remove, and so is a target that could not be listed
+//! once its lock was taken: it holds its lock file, and [`delete`]
+//! removes it. **No file goes while a
 //! manifest could come back**: where a manifest was written and its
 //! removal cannot be made durable, every file stays, so that a power cut
 //! leaves the whole checkpoint or a directory without a manifest, and not
@@ -325,7 +339,9 @@
 //! - It removes nothing of a path that is no directory of its own, of a
 //!   directory that is no database of this engine, or of one that a handle
 //!   has open. A database is known by a manifest of this engine in a file
-//!   of the directory's own, and not by a name. An empty directory, and
+//!   of the directory's own, under the manifest's name or the renamed
+//!   one's, and not by a name. What the other of the two names holds then
+//!   goes with the rest. An empty directory, and
 //!   the empty lock file of one that holds nothing else, it removes
 //!   whatever they were: nothing is lost with them, and a deletion that
 //!   was cut short can leave both.

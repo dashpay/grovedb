@@ -378,8 +378,9 @@ fn a_creation_syncs_no_log_that_is_durable_through_its_version() {
         }
         let durable = db.log.durable();
         assert_eq!(durable.version, versions.latest(), "{sync:?}");
+        let placed = db.flush.stats().values_placed;
         write_back.pass().expect("a pass of write-back");
-        assert!(db.flush.stats().values_placed > 0, "{sync:?}");
+        assert!(db.flush.stats().values_placed > placed, "{sync:?}");
         assert!(
             durable.place < db.log.end(),
             "{sync:?}: no record of a page step"
@@ -433,7 +434,9 @@ fn a_creation_samples_under_the_commit_lock() {
         wait_until("the target is made", || made.load(Ordering::SeqCst));
         // The creation is at its sample now, and stays there. A creation
         // that took none of the commit lock would be past it in far less
-        // than this.
+        // than this, unless its thread got no processor for as long: then
+        // this would pass for it. What the sample reads takes the lock as
+        // an argument, so it is not left out by a slip.
         std::thread::sleep(Duration::from_millis(500));
         assert!(
             !sampled.load(Ordering::SeqCst),
