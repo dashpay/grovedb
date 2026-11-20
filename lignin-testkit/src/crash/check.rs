@@ -112,7 +112,8 @@ fn opened(state: &SimVfs, tuning: &Tuning, kind: Kind) -> Result<Option<Session>
 /// Recovers `state`, which a crash left, with no fault injected, and holds
 /// what it lands on to `history`: one of the points that `expect` allows,
 /// with every page as that point has it, in a store that is at one with
-/// itself ([`Session::read`]).
+/// itself ([`Session::read`]) and that the engine's physical invariant
+/// checker finds sound ([`Session::verify`]).
 pub fn check_state(
     state: &SimVfs,
     history: &History,
@@ -136,6 +137,9 @@ pub fn check_state(
     let ids = expected_ids(history, expect);
     let pages = session
         .read(&ids)
+        .map_err(|error| Violation::new(Kind::Inconsistent, error))?;
+    session
+        .verify()
         .map_err(|error| Violation::new(Kind::Inconsistent, error))?;
     let landed = session.latest().get();
     let landing = history
@@ -178,7 +182,9 @@ pub fn check_again(
             let said = format!("{what}: {}", difference(&found, pages));
             return Err(Violation::new(Kind::NotTheSame, said));
         }
-        Ok(())
+        session
+            .verify()
+            .map_err(|error| Violation::new(Kind::NotTheSame, format!("{what}: {error}")))
     };
     let gone = || Violation::new(Kind::NotTheSame, "the manifest is gone");
 

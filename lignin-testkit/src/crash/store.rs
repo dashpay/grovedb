@@ -34,7 +34,7 @@ use lignin_format::{
         write_reclaim, FlatChange, FlatRun, FlatRunWriter, GroupWriter, LogPlace, Removed,
         ValueMove,
     },
-    CommitVersion, FileId, FormatError, PageId, PageSize, SlotId,
+    CellAddress, CommitVersion, FileId, FormatError, PageId, PageSize, SlotId,
 };
 use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
@@ -54,6 +54,12 @@ use lignin_store::{
     },
     wal::{LogError, LogOptions, LogStore, SyncPolicy, DEFAULT_READ_WINDOW_LEN},
 };
+
+use lignin_tree::{
+    flat::{FlatConfig, FlatTree},
+    OperationGuard,
+};
+use lignindb::verify;
 
 use super::model::{Cell, Change, Page, Pages, Value};
 
@@ -707,6 +713,71 @@ impl Session {
             );
         }
         Ok(Page::Tree(cells))
+    }
+}
+
+/// The guard of a session's own reads: no operation runs beside them.
+struct Alone;
+
+impl OperationGuard for Alone {}
+
+/// The physical invariant checker as a second look at a store that is
+/// still.
+impl Session {
+    /// Runs the engine's physical invariant checker (`lignindb::verify`)
+    /// over the latest version, in the scope of a store that is still: the
+    /// pages, the values and their owners, the page ids, the counts of
+    /// live values, and the page table against its blocks.
+    ///
+    /// The store has no tree above its pages, so the checker is told what
+    /// the workload writes: every cell is a Merk of one node, and every
+    /// flat leaf a keyspace of one page. No hash is recomputed.
+    ///
+    /// The caller vouches that no write transaction holds a copy.
+    pub fn verify(&self) -> Result<(), String> {
+        let mut states = Vec::new();
+        let mut from = Some(PageId::MIN);
+        while let Some(at) = from {
+            from = self.allocator.scan(at, &mut states);
+        }
+        let (mut roots, mut flat) = (Vec::new(), Vec::new());
+        for (id, _) in states.iter().filter(|(_, state)| *state == PageState::Live) {
+            let Some(frame) = self.current(*id).map_err(text)? else {
+                continue;
+            };
+            if is_tree(&frame) {
+                let tree = TreePage::from_validated(&frame, FRAME_FORMAT).map_err(text)?;
+                roots.extend(tree.cells().map(|(slot, _)| CellAddress::new(*id, slot)));
+            } else {
+                flat.push(FlatTree::open(*id, FlatConfig::new(PAGE_SIZE)));
+            }
+        }
+        let store = verify::Store {
+            loader: self.loader(),
+            table: &self.table,
+            segments: &self.segments,
+            values: &self.values,
+            page_size: PAGE_SIZE,
+            ids: Some(&self.allocator),
+            grove: verify::Grove::Roots(&roots),
+            flat_drops: None,
+            flat: &flat,
+            values_counted: true,
+        };
+        let options = verify::Options::new(self.latest(), verify::Scope::Still);
+        let report = verify::check(&store, &Alone, options, None);
+        if report.is_sound() {
+            return Ok(());
+        }
+        const SHOWN: usize = 3;
+        let mut said: Vec<String> = (report.findings.iter().take(SHOWN))
+            .map(|finding| finding.to_string())
+            .collect();
+        let more = report.findings.len().saturating_sub(SHOWN) as u64 + report.more_findings;
+        if more > 0 {
+            said.push(format!("and {more} more"));
+        }
+        Err(format!("the invariant checker: {}", said.join("; ")))
     }
 }
 
@@ -2455,6 +2526,7 @@ mod tests {
         let session = open(&vfs);
         let (tree, flat) = two_pages(&session);
         session.pass().expect("a pass");
+        session.verify().expect("the checker finds the store sound");
         // An id that is in use and names no page.
         let stray = session.allocator.allocate().expect("an id");
         let said = session.read(&BTreeSet::new()).expect_err("a private id");
@@ -2462,6 +2534,9 @@ mod tests {
         session.allocator.publish(stray).expect("published");
         let said = session.read(&BTreeSet::new()).expect_err("a live id");
         assert!(said.contains("is live and names no page"), "{said}");
+        // The engine's checker says the same of it, in its own words.
+        let said = session.verify().expect_err("a live id");
+        assert!(said.starts_with("the invariant checker: "), "{said}");
         session
             .allocator
             .free(stray, session.latest())
@@ -2490,6 +2565,8 @@ mod tests {
             .expect("counted");
         let said = session.read(&BTreeSet::new()).expect_err("a count too few");
         assert!(said.contains("the counts of live values are"), "{said}");
+        let said = session.verify().expect_err("a count too few");
+        assert!(said.starts_with("the invariant checker: "), "{said}");
         session
             .values
             .apply(&change, session.latest())

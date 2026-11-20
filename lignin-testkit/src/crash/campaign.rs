@@ -680,9 +680,15 @@ impl Run {
         let expected = lineage.history.last().pages.clone();
         let ids: BTreeSet<PageId> = expected.keys().copied().collect();
         let read = session.read(&ids);
+        // The checker's scope asks for a store that is still: no write
+        // transaction holds a page.
+        let sound = match lineage.held {
+            Some(_) => Ok(()),
+            None => session.verify(),
+        };
         fs.set_faults(self.faults.odds());
         let violation = match read {
-            Ok(pages) if pages == *expected => None,
+            Ok(pages) if pages == *expected => sound.err(),
             Ok(pages) => Some(model::difference(&pages, &expected)),
             Err(error) => Some(error),
         };

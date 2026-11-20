@@ -95,9 +95,21 @@
 //! - **The counts of live values** are the pointers that the pages hold,
 //!   file by file, and no count was found wrong.
 //!
-//! Not compared: the chains of the page table, which blocks hold a page,
-//! how many files there are and what the dead space is. They are what the
-//! store is free to change.
+//! Not compared with the model: the chains of the page table, which blocks
+//! hold a page, how many files there are and what the dead space is. They
+//! are what the store is free to change.
+//!
+//! **A second look, by the engine's own checker.** Every recovered store
+//! is also given to the physical invariant checker of the engine
+//! (`lignindb::verify`, VER-07) in its scope for a store that is still
+//! ([`store::Session::verify`]). It knows nothing of the model, and reads
+//! what the model does not: every link of every chain against its block,
+//! a block that two links name, a page version in a segment that holds a
+//! pending value, a value whose record names another owner, a pointer
+//! that two cells hold. It is told what the workload writes: every cell
+//! is a Merk of one node and every flat leaf a keyspace of one page, and
+//! no hash is recomputed. A finding of it is a violation like one of the
+//! model's.
 //!
 //! # What "committed" is
 //!
@@ -154,10 +166,10 @@
 //! | [`check::Kind`] | What was found |
 //! | --- | --- |
 //! | `NotRecovered` | A state that a crash left did not open, with no fault injected into the recovery. |
-//! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers. |
+//! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, or a finding of the engine's invariant checker. |
 //! | `NotCommitted` | It is at no point it may be at: below the floor, above the last, or with pages of no point. |
 //! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again. Each time it is at the same point. |
-//! | `Session` | A store that was not crashed says other than the model, or a call failed where no fault had been injected. |
+//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, or a call failed where no fault had been injected. |
 //!
 //! # Faults
 //!
