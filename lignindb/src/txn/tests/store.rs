@@ -4,7 +4,7 @@
 //! one (`lignin_tree::directory`), and so is the commit (`crate::commit`).
 //!
 //! A store is checked by the physical invariant checker (`crate::verify`)
-//! when it is dropped, in a debug build: [`Db::verify`] is the check, and
+//! when it is dropped, in a debug build: `Db::verify` is the check, and
 //! the end of this file says when it is left out.
 
 #![allow(dead_code)]
