@@ -1171,7 +1171,11 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         let proved = tally.proved;
         assert!(
-            proved.steps > 1_000 && proved.proofs > proved.steps && proved.bytes > 1_000_000,
+            proved.steps > 10_000 && proved.calls > proved.steps && proved.calls > proved.skipped,
+            "{tally:?}"
+        );
+        assert!(
+            proved.proofs > 50_000 && proved.bytes > 10_000_000,
             "{tally:?}"
         );
     }

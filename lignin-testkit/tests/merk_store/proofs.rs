@@ -45,8 +45,12 @@ use super::NO_VALUE_DEFINED_COST;
 pub struct Proved {
     /// The steps of the traces that prove.
     pub steps: u64,
-    /// The calls of a Merk that were made on both engines.
+    /// The calls of a Merk that were made on both engines, the opens that
+    /// failed on both among them.
     pub calls: u64,
+    /// The calls that were not made: no Merk is at the path, or what is
+    /// there is no tree of a type that opens one.
+    pub skipped: u64,
     /// Those that gave a proof, and the bytes of the proofs.
     pub proofs: u64,
     pub bytes: u64,
@@ -56,6 +60,7 @@ impl Proved {
     pub fn add(&mut self, other: Proved) {
         self.steps += other.steps;
         self.calls += other.calls;
+        self.skipped += other.skipped;
         self.proofs += other.proofs;
         self.bytes += other.bytes;
     }
@@ -256,9 +261,11 @@ pub fn compare(
             .merks()
             .find(|(_, merk)| merk.live && merk.axis.is_none() && merk.path.as_ref() == Some(path));
         let Some((_, model)) = found else {
+            proved.skipped += 1;
             continue;
         };
         let Some(tree_type) = tree_type(db, transaction, grove, model, grove_version) else {
+            proved.skipped += 1;
             continue;
         };
         let root_key = model.root.map(|root| grove.node(root).key.to_vec());
@@ -278,6 +285,7 @@ pub fn compare(
             (Ok(merk), Ok(expected)) => (merk, expected),
             (Err(error), Err(expected)) => {
                 assert_eq!(error, expected, "the open of the Merk {path:?}");
+                proved.calls += 1;
                 continue;
             }
             (opened, expected) => panic!(
