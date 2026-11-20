@@ -436,24 +436,37 @@ impl State {
         }
     }
 
+    /// The directories above `dir`, nearest first, each with the name that
+    /// the directory below it has in it. The directories form a tree, so the
+    /// walk ends at the root. A state in which one of them is above itself is
+    /// a fault of the simulator, and the walk panics there instead of going
+    /// round for ever.
+    fn above(&self, dir: DirId) -> impl Iterator<Item = &(DirId, OsString)> + '_ {
+        let name_of = move |dir: DirId| self.dirs[&dir].name.as_ref();
+        std::iter::successors(name_of(dir), move |(above, _)| name_of(*above))
+            .enumerate()
+            .map(move |(steps, at)| {
+                assert!(
+                    steps < self.dirs.len(),
+                    "the simulator's directories form a cycle: the directory named {:?} is \
+                     above itself",
+                    at.1
+                );
+                at
+            })
+    }
+
     /// The unsynced changes that put `dir`, and every directory above it,
     /// under the names they have now.
-    fn placed(&self, mut dir: DirId, placed: &mut Vec<u64>) {
-        while let Some((above, name)) = &self.dirs[&dir].name {
+    fn placed(&self, dir: DirId, placed: &mut Vec<u64>) {
+        for (above, name) in self.above(dir) {
             placed.extend(self.dirs[above].cells[name].unsynced().last());
-            dir = *above;
         }
     }
 
     /// Whether `dir` is `in_dir` or a directory below it.
-    fn is_within(&self, mut dir: DirId, in_dir: DirId) -> bool {
-        while dir != in_dir {
-            match &self.dirs[&dir].name {
-                Some((above, _)) => dir = *above,
-                None => return false,
-            }
-        }
-        true
+    fn is_within(&self, dir: DirId, in_dir: DirId) -> bool {
+        dir == in_dir || self.above(dir).any(|(above, _)| *above == in_dir)
     }
 
     /// Puts a change of names on record. `named` is the file or the
@@ -1363,5 +1376,53 @@ impl State {
         }
         assert_eq!(file_refs.len(), self.files.len());
         assert_eq!(dir_refs.len(), self.dirs.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `/d` and `/d/e`, and then `/d` under the name `d` in `/d/e` as well:
+    /// each of the two is above the other, as no operation leaves them.
+    fn with_a_cycle() -> (State, DirId) {
+        let mut state = State::new(SimConfig::new(1));
+        state.create_dir(Path::new("/d")).unwrap();
+        state.create_dir(Path::new("/d/e")).unwrap();
+        let (d_name, e_name) = (OsStr::new("d"), OsStr::new("e"));
+        let d = state.dir_at(&[d_name], "/d").unwrap();
+        let e = state.dir_at(&[d_name, e_name], "/d/e").unwrap();
+
+        assert!(state.is_within(e, d) && state.is_within(e, ROOT));
+        assert!(!state.is_within(d, e));
+        let mut placed = Vec::new();
+        state.placed(e, &mut placed);
+        assert_eq!(placed.len(), 2);
+
+        let d_in_e = Cell {
+            now: Some(Node::Dir(d)),
+            ..Cell::default()
+        };
+        state.dir_mut(e).cells.insert(d_name.to_owned(), d_in_e);
+        state.dir_mut(d).name = Some((e, d_name.to_owned()));
+        (state, d)
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the simulator's directories form a cycle: the directory named \"e\" is above itself"
+    )]
+    fn what_placed_a_directory_is_not_asked_for_ever_of_a_cycle() {
+        let (state, d) = with_a_cycle();
+        state.placed(d, &mut Vec::new());
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the simulator's directories form a cycle: the directory named \"e\" is above itself"
+    )]
+    fn what_a_directory_is_within_is_not_asked_for_ever_of_a_cycle() {
+        let (state, d) = with_a_cycle();
+        state.is_within(d, ROOT);
     }
 }
