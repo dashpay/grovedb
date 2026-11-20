@@ -32,9 +32,9 @@ use crate::{
 
 /// What the store keeps of a node between `prepare_node` and `put_node`:
 /// every part of it but the key, the value only where it was written, and
-/// the record length its put is charged by (`cost-model.md` N1). A node
-/// that cannot be written is not taken apart, and what is kept of it is
-/// why: it has no record length, or its aggregates do not add up.
+/// the record length its put is charged by (`cost-model.md` N1). Of a node
+/// that cannot be written, what is kept is why: it has no record length,
+/// or its aggregates do not add up.
 #[derive(Debug)]
 pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 
