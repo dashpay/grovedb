@@ -1358,7 +1358,7 @@ impl LogStore {
             failed.map(|failed| (failed.path.clone(), failed.error()))
         };
         if let Some((path, source)) = failed {
-            return Err(self.sync_failed(&path, source));
+            return Err(self.failed_sync(&path, source));
         }
         let (end, latest) = {
             let tail = self.tail();
@@ -1396,7 +1396,7 @@ impl LogStore {
                 self.write_again(&file, file_end)?;
             } else if let Err(source) = file.sync() {
                 self.files_mut().sync_failed = Some(Sticky::of(file.path(), &source));
-                return Err(self.sync_failed(file.path(), source));
+                return Err(self.failed_sync(file.path(), source));
             }
             if taken_back {
                 file.made_durable();
@@ -1420,7 +1420,7 @@ impl LogStore {
     /// The error of a sync that failed, now or earlier in the session. An
     /// append that was taken back and still waits for a sync is unsettled
     /// from here on: nothing can keep a crash from bringing it back.
-    fn sync_failed(&self, path: &Path, source: io::Error) -> LogError {
+    fn failed_sync(&self, path: &Path, source: io::Error) -> LogError {
         let mut tail = self.tail();
         let waits = matches!(&tail.active, Some((file, _)) if file.is_taken_back());
         if waits && tail.unsettled.is_none() {
@@ -1517,6 +1517,24 @@ impl LogStore {
     /// it.
     pub fn durable(&self) -> LogDurable {
         self.files().durable
+    }
+
+    /// The error of the sync that failed in this session, if one did: the
+    /// log makes nothing durable any more until it is opened again
+    /// ([`Self::sync`]), whoever made that sync.
+    ///
+    /// This says what is, and decides nothing. It makes no sync and no
+    /// other operation on a file, and nothing in the log acts on it: the
+    /// calls that sync refuse as they did, and nothing else refuses for
+    /// it. It is for whoever answers for the session, which has ended once
+    /// this is `Some`, and which may not have made the sync that failed.
+    pub fn sync_failed(&self) -> Option<LogError> {
+        let files = self.files();
+        let failed = files.sync_failed.as_ref()?;
+        Some(LogError::SyncFailed {
+            path: failed.path.clone(),
+            source: failed.error(),
+        })
     }
 
     /// Reads the pending value `pending`, for the cell of the page `owner`
