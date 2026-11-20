@@ -89,20 +89,24 @@ pub struct Created {
 #[cfg(all(test, not(loom)))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Step {
-    /// The target is made, and nothing is sampled.
+    /// The directory the checkpoint is built in is made, and nothing is
+    /// sampled.
     Made,
     /// The sample found the manifest locked. The commit lock is given
     /// back, and the creation is about to wait for the manifest.
     Waiting,
     /// The sample is taken and the commit lock is given back. The lock on
-    /// the manifest is held, and nothing is in the target yet.
+    /// the manifest is held, and nothing is in the directory yet.
     Linking,
     /// The lock on the manifest is given back too. The log is not synced
-    /// yet and no log file is in the target.
+    /// yet and no log file is in the directory.
     Sampled,
-    /// Every file is in the target, or open to be copied. The pin and the
-    /// holds are given back, and the manifest is not written.
+    /// Every file is in the directory, or open to be copied. The pin and
+    /// the holds are given back, and the manifest is not written.
     Secured,
+    /// Everything in the directory is durable, and so is the name it is
+    /// built under. Nothing has the name of the target.
+    Settled,
 }
 
 #[cfg(all(test, not(loom)))]
@@ -135,7 +139,8 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// What a creation reads in its sampling step, and what it holds in the
-/// live database from then until its files are in the target (CK3).
+/// live database from then until its files are in the checkpoint's
+/// directory (CK3).
 struct Sample<'s> {
     /// The latest version.
     version: CommitVersion,
@@ -226,6 +231,14 @@ impl<'s> Checkpointer<'s> {
     /// ([`CheckpointError::TargetExists`]). It can lie inside the database
     /// directory, and on another file system.
     ///
+    /// **`target` is there only once it is the whole checkpoint.** The
+    /// checkpoint is built beside it, in a directory of the target's name
+    /// with [`CREATING_SUFFIX`](super::CREATING_SUFFIX) added, which is
+    /// renamed to `target` when everything in it is durable. That name is
+    /// this call's: what a directory of it holds is removed, unless its
+    /// lock is held, as by another creation that is building in it
+    /// ([`CheckpointError::Creating`]).
+    ///
     /// **When this returns `Ok`, the checkpoint is durable, and so is its
     /// version in the live database** (CK4). `target` is then a database
     /// directory like any other, and is opened as one.
@@ -244,11 +257,16 @@ impl<'s> Checkpointer<'s> {
     /// exception: where the sync of its log failed
     /// ([`CheckpointError::Sync`]), the log makes nothing more durable
     /// until the database is opened again, as after any sync of it that
-    /// fails (`lignin_store::wal`). What was made of `target` is taken away
-    /// again as far as the file layer lets it. Where that fails too,
-    /// `target` is left for the caller to remove: without a manifest, or,
-    /// where a manifest was written and its removal could not be made
-    /// durable, with every file that manifest names.
+    /// fails (`lignin_store::wal`). What was made is taken away again as
+    /// far as the file layer lets it, and what it does not let go stays
+    /// under the other name, for the next creation at `target` or a
+    /// [`delete`](super::delete) to remove. Nothing is at `target` then,
+    /// with one exception: where the directory had that name already, the
+    /// name could not be made durable, and it could not be taken back
+    /// either, `target` is the whole checkpoint, and is not known to be
+    /// durable. Where it was taken back and that could not be made durable,
+    /// the whole checkpoint is under the other name, and a power cut can
+    /// leave it at `target`.
     pub fn create(&self, target: &Path) -> Result<Created, CheckpointError> {
         if let Some(stopped) = self.state.stopped() {
             return Err(CheckpointError::Stopped(stopped));
@@ -258,9 +276,10 @@ impl<'s> Checkpointer<'s> {
             let manifest = lock(stores.manifest);
             (manifest.vfs().clone(), manifest.dir().to_path_buf())
         };
-        // The catch-up comes before the target is made, so that nothing of
-        // a checkpoint is on disk for as long as it takes. A target that
-        // is there is refused before it, and again when it is made.
+        // The catch-up comes before the directory is made, so that
+        // nothing of a checkpoint is on disk for as long as it takes. A
+        // target that is there is refused before it, and again before the
+        // directory gets its name.
         Target::refuse_existing(&*vfs, target)?;
         let catch_up = self.catch_up();
         let mut made = Target::make(vfs, target)?;
@@ -384,7 +403,8 @@ impl<'s> Checkpointer<'s> {
         })
     }
 
-    /// Everything of a creation after the target was made.
+    /// Everything of a creation after the directory it builds in was
+    /// made.
     fn fill(
         &self,
         target: &mut Target,
@@ -406,7 +426,7 @@ impl<'s> Checkpointer<'s> {
         // Still under the file-set lock: the table checkpoint, the
         // segments and the value-log files that the sampled manifest
         // names, each of which is on disk for as long as a durable
-        // manifest names it. Once it has a name in the target, or is
+        // manifest names it. Once it has a name in the checkpoint, or is
         // open to be copied, it stays whatever the live database does
         // with its own name.
         let table = named.table_checkpoint();
@@ -501,18 +521,18 @@ impl<'s> Checkpointer<'s> {
         self.reached(Step::Secured);
 
         target.copy_waiting()?;
-        // Every name in the target is durable before the target's own name
-        // is, and that before the manifest is written: the name of a
-        // database directory is durable before its first manifest
-        // (`lignin_store::segment`). From here on, a target that a power
-        // cut leaves has every one of its files.
-        target.sync_names()?;
-        target.sync_parent()?;
         // The last ids are the sampled manifest's: the log turns to no file
         // that a durable manifest has not named, and a manifest is refused
         // that names a file above them.
         let first = Manifest::new(named.page_size(), named.last_file_ids(), table, files)?;
-        target.install(first)?;
+        target.write_manifest(&first)?;
+        // Everything in the directory is made durable, with the name it
+        // is built under, and only then does it get the name of the
+        // target: a power cut leaves the target whole or not at all.
+        target.settle()?;
+        #[cfg(all(test, not(loom)))]
+        self.reached(Step::Settled);
+        target.place()?;
         Ok(Created {
             version,
             log_end: end,

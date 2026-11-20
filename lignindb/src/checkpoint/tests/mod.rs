@@ -6,6 +6,7 @@ mod acceptance;
 mod cleaner;
 mod crash;
 mod files;
+mod opener;
 mod races;
 mod reference;
 
@@ -13,7 +14,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use lignin_format::{
@@ -24,7 +25,7 @@ use lignin_format::{
 };
 use lignin_io::{
     sim::{SimConfig, SimVfs},
-    DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
+    DirEntry, OpenMode, SyncItem, Vfs, VfsFile, VfsLock,
 };
 use lignin_store::{
     alloc::PageState,
@@ -36,7 +37,7 @@ use lignin_store::{
 };
 use lignin_tree::node::{Lease, NodePage};
 
-use super::{CheckpointOptions, Checkpointer};
+use super::{CheckpointOptions, Checkpointer, CREATING_SUFFIX};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -213,6 +214,13 @@ pub(super) fn checkpoints_in(db: &Db) -> PathBuf {
     }
     (db.vfs.sync_dir(&db.dir)).expect("its name is durable");
     dir
+}
+
+/// The directory that a checkpoint at `target` is built in.
+pub(super) fn building(target: &Path) -> PathBuf {
+    let mut name = target.file_name().expect("a name").to_os_string();
+    name.push(CREATING_SUFFIX);
+    target.with_file_name(name)
 }
 
 /// A database that was opened from a directory.
@@ -490,6 +498,11 @@ pub(super) struct Meddling {
     pub(super) before_lock: Option<Before>,
     /// Before a file is removed.
     pub(super) before_remove: Option<Before>,
+    /// Before a directory is listed.
+    pub(super) before_list: Option<Before>,
+    /// How many syncs each set had that was asked for
+    /// ([`Vfs::sync_together`]).
+    pub(super) sets: Mutex<Vec<usize>>,
 }
 
 impl Meddling {
@@ -500,6 +513,8 @@ impl Meddling {
             no_links: Some((under, kind)),
             before_lock: None,
             before_remove: None,
+            before_list: None,
+            sets: Mutex::default(),
         }
     }
 
@@ -510,6 +525,8 @@ impl Meddling {
             no_links: None,
             before_lock: Some(before),
             before_remove: None,
+            before_list: None,
+            sets: Mutex::default(),
         }
     }
 
@@ -520,6 +537,28 @@ impl Meddling {
             no_links: None,
             before_lock: None,
             before_remove: Some(before),
+            before_list: None,
+            sets: Mutex::default(),
+        }
+    }
+
+    /// `inner`, with `before` run before each directory is listed.
+    pub(super) fn before_list(inner: Arc<dyn Vfs>, before: Before) -> Self {
+        Self {
+            before_list: Some(before),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `inner`, as it is but for the count of the sets.
+    pub(super) fn plain(inner: Arc<dyn Vfs>) -> Self {
+        Self {
+            inner,
+            no_links: None,
+            before_lock: None,
+            before_remove: None,
+            before_list: None,
+            sets: Mutex::default(),
         }
     }
 }
@@ -565,11 +604,19 @@ impl Vfs for Meddling {
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        if let Some(before) = &self.before_list {
+            before(path)?;
+        }
         self.inner.read_dir(path)
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         self.inner.sync_dir(path)
+    }
+
+    fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
+        (self.sets.lock().expect("the sets")).push(items.len());
+        self.inner.sync_together(items)
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {

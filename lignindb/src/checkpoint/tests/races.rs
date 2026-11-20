@@ -15,8 +15,8 @@ use lignin_io::StdVfs;
 use lignin_store::{flush::Checkpointed, segment::FileNames};
 
 use super::{
-    block, checkpointer, checkpoints_in, open, remove_block, store_files, store_with_log, turn,
-    History, NO_CATCH_UP,
+    block, building, checkpointer, checkpoints_in, open, remove_block, store_files, store_with_log,
+    turn, History, NO_CATCH_UP,
 };
 use crate::{
     checkpoint::{create::Step, CheckpointOptions},
@@ -69,7 +69,7 @@ fn nothing_the_checkpoint_samples_goes_before_it_has_it() {
         let mut live = live.lock().expect("the live store");
         let (world, rng, round) = &mut *live;
         match step {
-            Step::Made | Step::Waiting | Step::Linking => return,
+            Step::Made | Step::Waiting | Step::Linking | Step::Settled => return,
             Step::Sampled => {
                 assert_eq!(versions.pins_held(), 1, "the version is pinned");
                 assert_eq!(db.oldest_pin(&versions), sampled);
@@ -97,9 +97,9 @@ fn nothing_the_checkpoint_samples_goes_before_it_has_it() {
                     !db.dir.join(&table_before).exists(),
                     "the table checkpoint of the sample is still the live store's"
                 );
-                assert!(target.join(&table_before).exists());
+                assert!(building(&target).join(&table_before).exists());
                 assert!(
-                    !target.join("wal").exists(),
+                    !building(&target).join("wal").exists(),
                     "the log is linked after its sync"
                 );
                 0
@@ -503,7 +503,8 @@ fn a_commit_is_published_while_a_creation_links(synced: bool) {
         let pause = |step: Step| match step {
             Step::Linking => {
                 assert!(db.manifest.try_lock().is_err(), "the manifest is free");
-                assert!(!target.join("seg").exists(), "a file is linked already");
+                let seg = building(&target).join("seg");
+                assert!(!seg.exists(), "a file is linked already");
                 go.store(true, Ordering::SeqCst);
                 wait_until(
                     "no commit was published while the files were linked",
@@ -589,7 +590,7 @@ fn a_creation_that_waits_for_the_manifest_keeps_no_commit_waiting() {
         };
         let outcome = world.write_outside(&batch, &[]);
         assert!(matches!(outcome, Outcome::Committed(_)), "{outcome:?}");
-        assert!(!target.join("MANIFEST").exists());
+        assert!(!building(&target).join("MANIFEST").exists() && !target.exists());
         drop(held);
         maker.join().expect("the maker").expect("a checkpoint")
     });

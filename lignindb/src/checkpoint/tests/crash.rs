@@ -5,7 +5,8 @@
 //! loses or tears each change that was not synced, as a plan says: both
 //! ends, what a file system that writes in order leaves, one change lost
 //! at a time, and drawn samples. Each state is opened twice, as the live
-//! store and as the checkpoint, by the store's recovery.
+//! store and as the checkpoint, by the store's recovery. `opener.rs` opens
+//! such states with the engine's own open.
 
 use std::{
     io::ErrorKind,
@@ -20,16 +21,15 @@ use lignin_io::{
 };
 use lignin_store::{
     flush::{Checkpointed, FlushConfig},
-    segment::read_manifest,
     wal::LogOptions,
 };
 
 use super::{
-    block, checkpointer, checkpoints_in, open_on, sim, store_files, History, Meddling, DIR,
-    NO_CATCH_UP,
+    block, building, checkpointer, checkpoints_in, open_on, sim, store_files, History, Meddling,
+    DIR, NO_CATCH_UP,
 };
 use crate::{
-    checkpoint::{self, CheckpointError, CheckpointOptions},
+    checkpoint::{self, create::Step, CheckpointError, CheckpointOptions},
     snapshot::Versions,
     txn::tests::{
         store::{Db, Rng, SIZE},
@@ -39,7 +39,7 @@ use crate::{
 
 /// How the files of a checkpoint come into its directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Files {
+pub(super) enum Files {
     Linked,
     /// No link can be made into the directory of the checkpoints, as when
     /// it is on another file system.
@@ -107,7 +107,7 @@ fn made(seed: u64, files: Files) -> Made {
 }
 
 /// Some of the states a crash can leave of `image`.
-fn plans(image: &CrashImage) -> Vec<CrashPlan> {
+pub(super) fn plans(image: &CrashImage) -> Vec<CrashPlan> {
     fn some(plans: impl Iterator<Item = CrashPlan>) -> impl Iterator<Item = CrashPlan> {
         let plans: Vec<CrashPlan> = plans.collect();
         let stride = plans.len().div_ceil(6).max(1);
@@ -120,12 +120,14 @@ fn plans(image: &CrashImage) -> Vec<CrashPlan> {
     plans
 }
 
-/// What a crash left: how many of its states had a checkpoint, and how
-/// many had none.
+/// What a crash left: how many of its states had the checkpoint at the
+/// target, how many had nothing there, and in how many of them something
+/// was left under the name the checkpoint was built under.
 #[derive(Debug, Default)]
 struct Left {
     whole: usize,
     none: usize,
+    built: usize,
 }
 
 impl Made {
@@ -141,17 +143,26 @@ impl Made {
             };
             let context = format!("{context}, crash plan {index}");
             let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
-            // A directory with a manifest is a checkpoint, whole.
-            if read_manifest(&state, &self.target).is_ok() {
-                let opened = open_on(vfs.clone(), &self.target, &self.db)
-                    .unwrap_or_else(|error| panic!("{context}: the checkpoint: {error}"));
-                assert_eq!(opened.versions.latest(), sampled, "{context}");
-                opened.check(self.history.at(sampled));
-                left.whole += 1;
-            } else {
-                assert!(!created, "{context}: the checkpoint that was made is gone");
-                left.none += 1;
+            // What has the name of the target is the checkpoint, whole.
+            // Nothing else ever has it: no directory without a manifest,
+            // and none that is empty.
+            match state.read_dir(&self.target) {
+                Ok(_) => {
+                    let opened = open_on(vfs.clone(), &self.target, &self.db)
+                        .unwrap_or_else(|error| panic!("{context}: the checkpoint: {error}"));
+                    assert_eq!(opened.versions.latest(), sampled, "{context}");
+                    opened.check(self.history.at(sampled));
+                    left.whole += 1;
+                }
+                Err(error) => {
+                    assert_eq!(error.kind(), ErrorKind::NotFound, "{context}: {error}");
+                    assert!(!created, "{context}: the checkpoint that was made is gone");
+                    left.none += 1;
+                }
             }
+            let built = state.read_dir(&building(&self.target)).is_ok();
+            assert!(!(built && created), "{context}: both names are there");
+            left.built += usize::from(built);
             // The live store lands on a committed version, at or after
             // what was durable, and on the checkpoint's once it is made.
             let live = open_on(vfs, Path::new(DIR), &self.db)
@@ -167,7 +178,34 @@ impl Made {
             if index < 3 {
                 live.check(self.history.at(landed));
             }
+            if index < 2 {
+                self.check_leftover(&state, &live, &context);
+            }
         }
+    }
+
+    /// What a crash left is taken over by the next creation at the target,
+    /// if nothing has its name, and removed by a deletion: the creation
+    /// leaves the target alone, as the checkpoint of the live store that
+    /// opened, and the deletion leaves neither name.
+    fn check_leftover(&self, state: &SimVfs, live: &super::Opened, context: &str) {
+        let built = building(&self.target);
+        let gone = |path: &Path| matches!(state.read_dir(path), Err(error) if error.kind() == ErrorKind::NotFound);
+        if gone(&self.target) {
+            let created = checkpointer(&live.db, &live.versions)
+                .with_options(NO_CATCH_UP)
+                .create(&self.target)
+                .unwrap_or_else(|error| panic!("{context}: the next creation: {error}"));
+            assert_eq!(created.version, live.versions.latest(), "{context}");
+            let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
+            let opened = open_on(vfs, &self.target, &self.db)
+                .unwrap_or_else(|error| panic!("{context}: the next checkpoint: {error}"));
+            assert_eq!(opened.versions.latest(), created.version, "{context}");
+        }
+        assert!(!gone(&self.target) && gone(&built), "{context}");
+        checkpoint::delete(state, &self.target)
+            .unwrap_or_else(|error| panic!("{context}: the deletion: {error}"));
+        assert!(gone(&self.target) && gone(&built), "{context}");
     }
 }
 
@@ -198,22 +236,27 @@ fn the_power_is_cut_at_every_operation(files: Files) {
         );
         made.check_crash(created.is_ok(), &format!("cut {cut} of {ops}"), &mut left);
     }
-    assert!(left.whole > 0 && left.none > 0, "{left:?}");
+    assert!(
+        left.whole > 0 && left.none > 0 && left.built > 0,
+        "{left:?}"
+    );
 }
 
 /// The power is cut after each operation of a creation. In every state the
-/// crash can leave, the target has no manifest, or it is the whole
-/// checkpoint: it opens at the version of its sample with that version's
-/// state. The live store opens at a committed version in every one of
-/// them. Once the creation has returned, the checkpoint is there in every
-/// state, and the live store is at its version (CK4).
+/// crash can leave, nothing has the name of the target, or the whole
+/// checkpoint has it: it opens at the version of its sample with that
+/// version's state. The live store opens at a committed version in every
+/// one of them. Once the creation has returned, the checkpoint is there in
+/// every state, and the live store is at its version (CK4). What a state
+/// has under the name the checkpoint was built under is removed by a
+/// deletion of the target, and by the next creation there.
 #[test]
 fn a_power_cut_at_any_operation_of_a_creation_leaves_no_checkpoint_or_a_whole_one() {
     the_power_is_cut_at_every_operation(Files::Linked);
 }
 
 /// The same for a checkpoint whose files are copied: a copy is durable
-/// before the manifest names it.
+/// before the directory that holds it gets the name of the target.
 #[test]
 fn a_power_cut_at_any_operation_of_a_copying_creation_leaves_no_checkpoint_or_a_whole_one() {
     the_power_is_cut_at_every_operation(Files::Copied);
@@ -226,7 +269,7 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
     made_whole.create(&whole.target).expect("a checkpoint");
     let ops = whole.fs.stats().ops - from;
 
-    let (mut failed, mut sync_failed, mut lock_left) = (0, 0, 0);
+    let (mut failed, mut sync_failed) = (0, 0);
     for at in 1..=ops {
         let context = format!("{fault:?} at operation {at} of {ops}");
         let made = made(41, files);
@@ -255,26 +298,16 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
             Err(error) => error,
         };
         failed += 1;
-        // Nothing is left of the target, and the live store is as it was
-        // and goes on (CK10). One failure leaves the target with its lock
-        // file: where the creation has the lock and cannot see what the
-        // target holds, it removes nothing from it. A deletion ends that.
-        let listed = made.fs.read_dir(&made.target);
-        if matches!(&error, CheckpointError::Io { action: "list", path, .. } if *path == made.target)
-        {
-            let names: Vec<_> = (listed.iter().flatten())
-                .map(|entry| entry.name.clone())
-                .collect();
-            assert_eq!(names, ["LOCK"], "{context}: {error}");
-            checkpoint::delete(&made.fs, &made.target)
-                .unwrap_or_else(|error| panic!("{context}: the leftover: {error}"));
-            lock_left += 1;
+        // Nothing has the name of the target, nothing is left under the
+        // name the checkpoint was built under, and the live store is as it
+        // was and goes on (CK10).
+        for path in [&made.target, &building(&made.target)] {
+            let listed = made.fs.read_dir(path);
+            assert!(
+                matches!(&listed, Err(error) if error.kind() == ErrorKind::NotFound),
+                "{context}: {error} left {listed:?}"
+            );
         }
-        let listed = made.fs.read_dir(&made.target);
-        assert!(
-            matches!(&listed, Err(error) if error.kind() == ErrorKind::NotFound),
-            "{context}: {error} left {listed:?}"
-        );
         assert_eq!(made.versions.pins_held(), 0, "{context}");
         world.check_committed();
         block(&mut world, &mut Rng::new(at), 1_000, 8);
@@ -298,19 +331,14 @@ fn the_file_layer_fails_at_every_operation(files: Files, fault: Fault) -> (usize
             (first, Err(second)) => panic!("{context}: {first}, and then {second}"),
         }
     }
-    // A listing fails for an error of the device, and not for a full disk.
-    assert_eq!(
-        lock_left,
-        usize::from(matches!(fault, Fault::Eio)),
-        "{fault:?}"
-    );
     (failed, sync_failed)
 }
 
 /// Each operation of a creation is failed in turn, with an error of the
-/// device and with a full disk. The creation reports the error, nothing is
-/// left of the target, the live store reads and commits as before, and the
-/// creation succeeds when it is made again.
+/// device and with a full disk. The creation reports the error, nothing
+/// has the name of the target or the name the checkpoint was built under,
+/// the live store reads and commits as before, and the creation succeeds
+/// when it is made again.
 #[test]
 fn a_fault_at_any_operation_of_a_creation_leaves_the_live_store_as_it_was() {
     for fault in [Fault::Eio, Fault::Enospc] {
@@ -335,60 +363,288 @@ fn a_fault_at_any_operation_of_a_copying_creation_leaves_the_live_store_as_it_wa
     }
 }
 
-/// A manifest is written, the sync that makes it durable fails, and so
-/// does the sync after its removal: the creation fails, and it leaves
-/// every file in the target. A power cut can bring that manifest back, and
-/// it then names files that are all there: what opens is the whole
-/// checkpoint, and never one with a file missing.
+/// The directory has the name of the target, and that name cannot be made
+/// durable. The creation fails, and it removes nothing from a directory
+/// that has, or can come back with, the name of the target:
+///
+/// - where the name is taken back and that is durable, everything goes;
+/// - where the name is taken back and that cannot be made durable, the
+///   checkpoint stays whole under the name it was built under;
+/// - where the name cannot be taken back, it stays whole at the target.
+///
+/// In every state a power cut then leaves, the target is the whole
+/// checkpoint or is not there. What was left is removed by the next
+/// creation at the target, or by a deletion.
 #[test]
-fn a_manifest_whose_removal_is_not_durable_keeps_its_files() {
-    let made = made(61, Files::Linked);
-    // The names in the target are made durable, and from then on no sync
-    // of the target succeeds.
-    let syncs = OpSet::of(&[OpKind::SyncDir]);
-    let rule = FaultRule::new(Fault::Eio).on(syncs).skip(1).forever();
-    made.fs.add_rule(rule.at(&made.target));
-    let failed = checkpointer(&made.db, &made.versions)
-        .with_options(NO_CATCH_UP)
-        .create(&made.target);
-    made.fs.clear_rules();
-    assert!(
-        matches!(failed, Err(CheckpointError::Install(_))),
-        "{failed:?}"
-    );
-    assert!(read_manifest(&made.fs, &made.target).is_err());
-    let kept = store_files(&made.fs, &made.target);
-    assert!(kept.iter().any(|file| file.starts_with("wal")), "{kept:?}");
-    assert!(kept.iter().any(|file| file.starts_with("seg")), "{kept:?}");
-    let mut left = Left::default();
-    made.check_crash(false, "a removal that is not durable", &mut left);
-    assert!(left.whole > 0 && left.none > 0, "{left:?}");
+fn a_name_that_cannot_be_made_durable_is_taken_back_or_left_with_the_whole_checkpoint() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Fails {
+        /// The sync after the rename, once.
+        TheSync,
+        /// Every sync of the directory above after the set's.
+        EverySync,
+        /// The sync after the rename, and every rename after the first.
+        TheSyncAndTheRenameBack,
+    }
+    for fails in [
+        Fails::TheSync,
+        Fails::EverySync,
+        Fails::TheSyncAndTheRenameBack,
+    ] {
+        let made = made(61, Files::Linked);
+        let sampled = made.versions.latest();
+        let above = made.target.parent().expect("a directory").to_path_buf();
+        let built = building(&made.target);
+        // The first sync of the directory above is the set's.
+        let sync = FaultRule::new(Fault::Eio)
+            .on(OpSet::of(&[OpKind::SyncDir]))
+            .skip(1);
+        let rename = FaultRule::new(Fault::Eio)
+            .on(OpSet::of(&[OpKind::Rename]))
+            .skip(1);
+        match fails {
+            Fails::TheSync => made.fs.add_rule(sync.at(&above)),
+            Fails::EverySync => made.fs.add_rule(sync.forever().at(&above)),
+            Fails::TheSyncAndTheRenameBack => {
+                made.fs.add_rule(sync.at(&above));
+                made.fs.add_rule(rename.forever());
+            }
+        }
+        let maker = checkpointer(&made.db, &made.versions).with_options(NO_CATCH_UP);
+        let failed = maker.create(&made.target);
+        made.fs.clear_rules();
+        assert!(
+            matches!(&failed, Err(CheckpointError::Io { action: "sync the directory", path, .. })
+                if *path == above),
+            "{fails:?}: {failed:?}"
+        );
+        let there = |path: &Path| made.fs.read_dir(path).is_ok();
+        let (at_target, at_built) = match fails {
+            Fails::TheSync => (false, false),
+            Fails::EverySync => (false, true),
+            Fails::TheSyncAndTheRenameBack => (true, false),
+        };
+        assert_eq!(
+            (there(&made.target), there(&built)),
+            (at_target, at_built),
+            "{fails:?}"
+        );
+        // The states a power cut leaves are looked at before anything else
+        // is done on this file system: an open of what stayed syncs.
+        let mut left = Left::default();
+        made.check_crash(false, &format!("{fails:?}"), &mut left);
+        assert!(left.none > 0, "{fails:?}: {left:?}");
+        // Of the states of a file system that writes in order, some have
+        // the first rename and not what came after it, unless the name
+        // was taken back durably. The checkpoint is at the target in
+        // them, whole, and nothing is under the other name.
+        let image = made.fs.crash_image();
+        let mut at_target = 0;
+        for plan in image.prefixes() {
+            let Ok(state) = image.recover(&plan) else {
+                continue;
+            };
+            if state.read_dir(&made.target).is_err() {
+                continue;
+            }
+            assert!(state.read_dir(&built).is_err(), "{fails:?}: both names");
+            if at_target == 0 {
+                let opened = open_on(Arc::new(state), &made.target, &made.db)
+                    .unwrap_or_else(|error| panic!("{fails:?}: at the target: {error}"));
+                assert_eq!(opened.versions.latest(), sampled, "{fails:?}");
+                opened.check(made.history.at(sampled));
+            }
+            at_target += 1;
+        }
+        assert_eq!(at_target > 0, fails != Fails::TheSync, "{fails:?}");
+        // What stayed is the whole checkpoint, under whichever name.
+        let kept = image.recover(&image.keep_all()).expect("a state");
+        for path in [&made.target, &built] {
+            if kept.read_dir(path).is_ok() {
+                let opened = open_on(Arc::new(kept.clone()), path, &made.db)
+                    .unwrap_or_else(|error| panic!("{fails:?}: what stayed: {error}"));
+                assert_eq!(opened.versions.latest(), sampled, "{fails:?}");
+                opened.check(made.history.at(sampled));
+            }
+        }
+        // What stayed in this state is removed as what any crash leaves.
+        match fails {
+            Fails::TheSyncAndTheRenameBack => {
+                let refused = maker.create(&made.target);
+                assert!(
+                    matches!(refused, Err(CheckpointError::TargetExists { .. })),
+                    "{refused:?}"
+                );
+                checkpoint::delete(&made.fs, &made.target).expect("the checkpoint is deleted");
+            }
+            Fails::TheSync | Fails::EverySync => {}
+        }
+        maker.create(&made.target).expect("a checkpoint");
+        assert!(there(&made.target) && !there(&built), "{fails:?}");
+    }
 }
 
-/// The name of the target is durable before its manifest is written, as
-/// the store asks of a database directory (`lignin_store::segment`). The
-/// directory above the target cannot be synced, and nothing can be
-/// renamed: the creation fails at the sync, which it would not reach if it
-/// wrote the manifest first, and would not make if it left the name of
-/// the target to the manifest's own sync.
+/// A creation that gave its directory the name of the target and took it
+/// back, with neither rename durable, has left the whole checkpoint under
+/// the other name, and a power cut can still bring it back at the target.
+/// **Whoever empties that directory makes its name durable first**: the
+/// next creation at the target, and a deletion, are each cut after every
+/// operation, and in every state that is looked at the target is the whole
+/// checkpoint of one of the two creations, or is not there. A creation or
+/// a deletion that emptied the directory first would leave it at the
+/// target with a part of what it held, or with nothing: a place that an
+/// open makes a database in.
 #[test]
-fn the_name_of_the_target_is_durable_before_its_manifest_is_written() {
-    let made = made(71, Files::Linked);
-    let above = made.target.parent().expect("a directory").to_path_buf();
-    let sync = FaultRule::new(Fault::Eio).on(OpSet::of(&[OpKind::SyncDir]));
-    made.fs.add_rule(sync.forever().at(&above));
-    let rename = FaultRule::new(Fault::Eio).on(OpSet::of(&[OpKind::Rename]));
-    made.fs.add_rule(rename.forever());
-    let maker = checkpointer(&made.db, &made.versions).with_options(NO_CATCH_UP);
-    let failed = maker.create(&made.target);
-    made.fs.clear_rules();
-    assert!(
-        matches!(&failed, Err(CheckpointError::Io { action: "sync the directory", path, .. })
-            if *path == above),
-        "{failed:?}"
-    );
-    assert!(made.fs.read_dir(&made.target).is_err());
-    maker.create(&made.target).expect("a checkpoint");
+fn what_a_failed_creation_left_is_not_emptied_before_its_name_is_durable() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Next {
+        Creation,
+        Deletion,
+    }
+    // A store whose creation failed at the sync after the rename, and at
+    // the sync after the rename back.
+    let failed = || {
+        let made = made(63, Files::Linked);
+        let above = made.target.parent().expect("a directory").to_path_buf();
+        let sync = FaultRule::new(Fault::Eio)
+            .on(OpSet::of(&[OpKind::SyncDir]))
+            .skip(1);
+        made.fs.add_rule(sync.forever().at(&above));
+        let failed = checkpointer(&made.db, &made.versions)
+            .with_options(NO_CATCH_UP)
+            .create(&made.target);
+        made.fs.clear_rules();
+        assert!(
+            matches!(
+                &failed,
+                Err(CheckpointError::Io {
+                    action: "sync the directory",
+                    ..
+                })
+            ),
+            "{failed:?}"
+        );
+        assert!(made.fs.read_dir(&building(&made.target)).is_ok());
+        made
+    };
+    let next = |made: &Made, next: Next| match next {
+        Next::Creation => checkpointer(&made.db, &made.versions)
+            .with_options(NO_CATCH_UP)
+            .create(&made.target)
+            .map(drop),
+        Next::Deletion => checkpoint::delete(&made.fs, &made.target),
+    };
+    for what in [Next::Creation, Next::Deletion] {
+        let whole = failed();
+        // Both renames wait to be made durable: a power cut now can leave
+        // the directory under either name.
+        let image = whole.fs.crash_image();
+        let at_target = |plan: &CrashPlan| {
+            (image.recover(plan)).is_ok_and(|state| state.read_dir(&whole.target).is_ok())
+        };
+        assert!(image.prefixes().any(|plan| at_target(&plan)), "{what:?}");
+        assert!(!at_target(&image.lose_all()) && !at_target(&image.keep_all()));
+        let from = whole.fs.stats().ops;
+        next(&whole, what).unwrap_or_else(|error| panic!("{what:?}: {error}"));
+        let ops = whole.fs.stats().ops - from;
+        assert!(ops > 6, "{what:?} of {ops} operations");
+
+        let (mut at_the_target, mut nothing) = (0, 0);
+        for cut in 1..=ops {
+            let made = failed();
+            assert_eq!(made.fs.stats().ops, from, "the same store");
+            let sampled = made.versions.latest();
+            made.fs.crash_at(CrashPoint::AfterOp(from + cut));
+            let done = next(&made, what);
+            assert_eq!(
+                done.is_ok(),
+                cut == ops,
+                "{what:?}, cut {cut} of {ops}: {done:?}"
+            );
+            let image = made.fs.crash_image();
+            let mut plans = plans(&image);
+            plans.extend(image.prefixes());
+            plans.extend(image.holes());
+            for (index, plan) in plans.iter().enumerate() {
+                let Ok(state) = image.recover(plan) else {
+                    continue;
+                };
+                let context = format!("{what:?}, cut {cut} of {ops}, crash plan {index}");
+                match state.read_dir(&made.target) {
+                    Err(error) => {
+                        assert_eq!(error.kind(), ErrorKind::NotFound, "{context}: {error}");
+                        nothing += 1;
+                    }
+                    // Both creations sampled the same version.
+                    Ok(_) => {
+                        let opened = open_on(Arc::new(state), &made.target, &made.db)
+                            .unwrap_or_else(|error| panic!("{context}: the checkpoint: {error}"));
+                        assert_eq!(opened.versions.latest(), sampled, "{context}");
+                        if at_the_target % 16 == 0 {
+                            opened.check(made.history.at(sampled));
+                        }
+                        at_the_target += 1;
+                    }
+                }
+            }
+        }
+        assert!(
+            at_the_target > 0 && nothing > 0,
+            "{what:?}: {at_the_target}, {nothing}"
+        );
+    }
+}
+
+/// **Everything of a checkpoint is durable under the name it is built
+/// under before it gets the name of the target.** Right before the rename,
+/// a power cut that loses every change that was not synced leaves nothing
+/// at the target, and under the other name a directory that opens as the
+/// checkpoint: every file, every name in it, its manifest and its own name
+/// were in the set of syncs. A creation that renamed first, or left one
+/// sync out of the set, fails here.
+#[test]
+fn a_checkpoint_is_whole_and_durable_before_it_gets_its_name() {
+    for files in [Files::Linked, Files::Copied] {
+        let made = made(81, files);
+        let sampled = made.versions.latest();
+        let built = building(&made.target);
+        let reached = std::sync::atomic::AtomicBool::new(false);
+        let pause = |step: Step| {
+            if step != Step::Settled {
+                return;
+            }
+            reached.store(true, std::sync::atomic::Ordering::SeqCst);
+            let image = made.fs.crash_image();
+            let left = image.recover(&image.lose_all()).expect("a state");
+            assert!(
+                matches!(left.read_dir(&made.target), Err(error)
+                    if error.kind() == ErrorKind::NotFound),
+                "{files:?}: the target is there before the rename"
+            );
+            let names: Vec<_> = (left.read_dir(&built).expect("the directory"))
+                .into_iter()
+                .map(|entry| entry.name)
+                .collect();
+            assert!(
+                names.iter().any(|name| name == "LOCK"),
+                "{files:?}: {names:?}"
+            );
+            let vfs: Arc<dyn Vfs> = Arc::new(left);
+            let opened = open_on(vfs, &built, &made.db)
+                .unwrap_or_else(|error| panic!("{files:?}: what was built: {error}"));
+            assert_eq!(opened.versions.latest(), sampled, "{files:?}");
+            opened.check(made.history.at(sampled));
+        };
+        checkpointer(&made.db, &made.versions)
+            .with_options(NO_CATCH_UP)
+            .pausing(&pause)
+            .create(&made.target)
+            .expect("a checkpoint");
+        assert!(
+            reached.load(std::sync::atomic::Ordering::SeqCst),
+            "{files:?}"
+        );
+    }
 }
 
 /// A catch-up that the file layer fails changes nothing of the checkpoint
