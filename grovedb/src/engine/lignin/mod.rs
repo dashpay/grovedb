@@ -97,7 +97,7 @@ impl LigninEngine {
     /// is entered in the subtree directory if it is not.
     pub fn new(db: Db) -> Result<Self, Error> {
         let engine = Self { db };
-        engine.enter_root()?;
+        engine.enter_hostless()?;
         Ok(engine)
     }
 
@@ -111,29 +111,44 @@ impl LigninEngine {
         &self.db
     }
 
-    /// Enters the subtree of the root Merk, which has no element to be
-    /// entered under, where the latest version does not have it: in a
-    /// database that was just made, and after a wipe.
-    fn enter_root(&self) -> Result<(), Error> {
-        let root = Subtree::new(ROOT);
-        let entered = {
-            let snapshot = self.db.snapshot();
-            let operation = snapshot.operation();
-            let opened = operation.open(root).map_err(failed)?;
-            opened.is_some()
-        };
-        if !entered {
-            let tree_type = tree_type_bytes(TreeType::NormalTree);
+    /// Whether the latest version has `subtree` in its subtree directory.
+    fn entered(&self, subtree: Subtree) -> Result<bool, Error> {
+        let snapshot = self.db.snapshot();
+        let operation = snapshot.operation();
+        let opened = operation.open(subtree).map_err(failed)?;
+        Ok(opened.is_some())
+    }
+
+    /// Enters the subtrees that no element hosts and that every grove has,
+    /// where the latest version does not have them, in a database that was
+    /// just made and after a wipe: the root Merk, as a normal tree, and
+    /// the namespace of the pending-drop records, which keeps no tree.
+    ///
+    /// Each is a commit of its own. One that a write of another thread
+    /// entered in between is entered, and is left as it is.
+    fn enter_hostless(&self) -> Result<(), Error> {
+        let normal = tree_type_bytes(TreeType::NormalTree);
+        let hostless: [(SubtreePrefix, &[u8]); 2] =
+            [(ROOT, &normal), (*pending_prefix_drops_namespace(), &[])];
+        for (prefix, tree_type) in hostless {
+            let subtree = Subtree::new(prefix);
+            if self.entered(subtree)? {
+                continue;
+            }
             let enter = [SubtreeWrite::Enter {
-                subtree: root,
-                tree_type: &tree_type,
+                subtree,
+                tree_type,
                 host: None,
             }];
             let batch = Batch {
                 subtrees: &enter,
                 ..Batch::default()
             };
-            (self.db.write(&batch, &mut NoStaleHashes)).map_err(write_error)?;
+            if let Err(error) = self.db.write(&batch, &mut NoStaleHashes) {
+                if !self.entered(subtree)? {
+                    return Err(write_error(error));
+                }
+            }
         }
         Ok(())
     }
@@ -164,10 +179,10 @@ impl ScopeView for LigninWriter<'_, '_> {
 }
 
 enum Kind<'db> {
-    Write(WriteTxn<'db>),
+    Write(Box<WriteTxn<'db>>),
     /// A snapshot, with how many savepoints were set on it: it has nothing
     /// to undo, and keeps the count that a transaction's stack has.
-    Snapshot(LigninSnapshot<'db>, AtomicUsize),
+    Snapshot(Box<LigninSnapshot<'db>>, AtomicUsize),
     Scope(Box<dyn ScopeView + 'db>),
 }
 
@@ -189,14 +204,15 @@ impl std::fmt::Debug for LigninTransaction<'_> {
 
 impl<'db> LigninTransaction<'db> {
     fn snapshot(snapshot: Snapshot<'db>) -> Self {
-        let kind = Kind::Snapshot(LigninSnapshot::new(snapshot), AtomicUsize::new(0));
+        let snapshot = Box::new(LigninSnapshot::new(snapshot));
+        let kind = Kind::Snapshot(snapshot, AtomicUsize::new(0));
         Self { kind }
     }
 
     fn view(&self) -> LigninView<'_> {
         match &self.kind {
-            Kind::Write(transaction) => transaction.into(),
-            Kind::Snapshot(snapshot, _) => snapshot.into(),
+            Kind::Write(transaction) => (&**transaction).into(),
+            Kind::Snapshot(snapshot, _) => (&**snapshot).into(),
             Kind::Scope(scope) => scope.view(),
         }
     }
@@ -414,12 +430,12 @@ impl Engine for LigninEngine {
 
     fn wipe(&self) -> Result<(), Error> {
         self.db.wipe().map_err(write_error)?;
-        self.enter_root()
+        self.enter_hostless()
     }
 
     fn start_transaction(&self) -> LigninTransaction<'_> {
         LigninTransaction {
-            kind: Kind::Write(self.db.begin()),
+            kind: Kind::Write(Box::new(self.db.begin())),
         }
     }
 

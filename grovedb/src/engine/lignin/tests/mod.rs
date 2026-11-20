@@ -8,9 +8,9 @@
 //!   same history on both engines with every cost and root hash compared,
 //!   and what the seam asks of an engine, on LigninDB.
 //!
-//! A test that leaves a database closes it, opens it again and has the
-//! physical checker of the engine read every page of it, with every hash
-//! of every Merk node made again by Merk's rules.
+//! The tests that call `check` close the database they leave, open it
+//! again and have the physical checker of the engine read every page of
+//! it, with every hash of every Merk node made again by Merk's rules.
 
 mod cases;
 
@@ -115,18 +115,18 @@ fn root_of<E: Engine>(items: &[&[u8]]) -> [u8; 32] {
 /// heights 32326 to 32328: a write with no transaction lands while a write
 /// transaction is open and has written. What each step observed, and what
 /// each call was charged.
-fn mainnet_trace<E: Engine>() -> (Vec<String>, Vec<OperationCost>) {
-    fn hex(hash: [u8; 32]) -> String {
-        hex::encode(&hash[..4])
-    }
+fn mainnet_trace<E: Engine>() -> (Vec<String>, Vec<OperationCost>, Vec<[u8; 32]>) {
     fn root<'db, E: Engine>(
         grove: &'db Grove<E>,
         through: TransactionArg<'db, '_, E>,
         costs: &mut Vec<OperationCost>,
-    ) -> String {
+        roots: &mut Vec<[u8; 32]>,
+    ) -> [u8; 32] {
         let read = grove.db.root_hash(through, version());
         costs.push(read.cost.clone());
-        hex(read.unwrap().expect("a root"))
+        let root = read.unwrap().expect("a root");
+        roots.push(root);
+        root
     }
     fn insert<'db, E: Engine>(
         grove: &'db Grove<E>,
@@ -140,33 +140,35 @@ fn mainnet_trace<E: Engine>() -> (Vec<String>, Vec<OperationCost>) {
         costs.push(inserted.cost.clone());
         inserted.unwrap().expect("an insert");
     }
-    let h = |items: &[&[u8]]| hex(root_of::<E>(items));
+    let h = |items: &[&[u8]]| root_of::<E>(items);
     let grove = Grove::<E>::new();
     let mut seen = Vec::new();
     let mut costs = Vec::new();
+    let mut roots = Vec::new();
     let t = grove.db.start_transaction();
 
     // 1. T inserts A/a1.
     insert(&grove, A, b"a1", Some(&t), &mut costs);
-    let own = root(&grove, Some(&t), &mut costs) == h(&[b"a1"]);
+    let own = root(&grove, Some(&t), &mut costs, &mut roots) == h(&[b"a1"]);
     seen.push(format!("1 {own}"));
     // 2. A write with no transaction inserts B/b1: it commits at once.
     insert(&grove, B, b"b1", None, &mut costs);
-    let none = root(&grove, None, &mut costs) == h(&[b"b1"]);
+    let none = root(&grove, None, &mut costs, &mut roots) == h(&[b"b1"]);
     // T reads its own root node, which carries the old hash of B.
-    let own = root(&grove, Some(&t), &mut costs) == h(&[b"a1"]);
+    let own = root(&grove, Some(&t), &mut costs, &mut roots) == h(&[b"a1"]);
     seen.push(format!("2 {none} {own}"));
     // 3. T reads B/b1: it never wrote that node.
     let read = (grove.db).get([B].as_ref(), b"b1", Some(&t), version());
     costs.push(read.cost.clone());
-    seen.push(format!("3 {}", read.unwrap().is_ok()));
+    let read = read.unwrap().expect("a read through the open transaction");
+    seen.push(format!("3 {}", read == Element::new_item(b"b1".to_vec())));
     // 4. T inserts A/a2: still without b1.
     insert(&grove, A, b"a2", Some(&t), &mut costs);
-    let own = root(&grove, Some(&t), &mut costs) == h(&[b"a1", b"a2"]);
+    let own = root(&grove, Some(&t), &mut costs, &mut roots) == h(&[b"a1", b"a2"]);
     seen.push(format!("4 {own}"));
     // 5. T inserts B/b2: this write loaded B as committed.
     insert(&grove, B, b"b2", Some(&t), &mut costs);
-    let own = root(&grove, Some(&t), &mut costs) == h(&[b"a1", b"a2", b"b1", b"b2"]);
+    let own = root(&grove, Some(&t), &mut costs, &mut roots) == h(&[b"a1", b"a2", b"b1", b"b2"]);
     seen.push(format!("5 {own}"));
     // 6. T commits: a conflict.
     let committed = grove.db.commit_transaction(t);
@@ -177,9 +179,9 @@ fn mainnet_trace<E: Engine>() -> (Vec<String>, Vec<OperationCost>) {
     seen.push(format!("6 {conflict}"));
     // 7. The database keeps the write with no transaction and nothing of
     // T's.
-    let none = root(&grove, None, &mut costs) == h(&[b"b1"]);
+    let none = root(&grove, None, &mut costs, &mut roots) == h(&[b"b1"]);
     seen.push(format!("7 {none}"));
-    (seen, costs)
+    (seen, costs, roots)
 }
 
 const MAINNET_TRACE: [&str; 7] = [
@@ -194,13 +196,15 @@ const MAINNET_TRACE: [&str; 7] = [
 
 #[test]
 fn a_write_with_no_transaction_beside_an_open_one_behaves_as_on_rocksdb() {
-    let (seen, costs) = mainnet_trace::<LigninEngine>();
+    let (seen, costs, roots) = mainnet_trace::<LigninEngine>();
     assert_eq!(seen, MAINNET_TRACE);
-    assert_eq!(costs.len(), 12);
+    assert_eq!((costs.len(), roots.len()), (12, 6));
     #[cfg(feature = "rocksdb_storage")]
     {
-        let (on_rocksdb, rocksdb_costs) = mainnet_trace::<crate::RocksDbEngine>();
+        let (on_rocksdb, rocksdb_costs, rocksdb_roots) = mainnet_trace::<crate::RocksDbEngine>();
         assert_eq!(on_rocksdb, MAINNET_TRACE);
+        // Every root that was read, whole, is the root RocksDB read there.
+        assert_eq!(roots, rocksdb_roots);
         for (step, (lignin, rocksdb)) in costs.iter().zip(&rocksdb_costs).enumerate() {
             assert_eq!(lignin, rocksdb, "the cost of call {step}");
         }
@@ -482,10 +486,8 @@ fn grovedb_opens_inserts_reads_and_reopens_on_lignindb() {
         // Twelve sum items, `s03` unchanged, `s99`, and `t1` of the
         // transaction: 3 * 66 - 84 + 99 + 5.
         assert_eq!(sum.as_sum_tree_value().expect("a sum tree"), 218);
-        assert!(db
-            .get([b"docs".as_slice()].as_ref(), b"undone", None, v)
-            .unwrap()
-            .is_err());
+        let undone = db.get([b"docs".as_slice()].as_ref(), b"undone", None, v);
+        assert!(matches!(undone.unwrap(), Err(Error::PathKeyNotFound(_))));
         // And writes on.
         db.insert(
             [b"docs".as_slice(), b"contract", b"type"].as_ref(),
@@ -1128,7 +1130,7 @@ fn pending_drop_records_are_read_and_removed_outside_any_transaction() {
     engine.commit_transaction(tx).unwrap().expect("a commit");
     assert_eq!(
         engine.pending_prefix_drop_records().expect("a record"),
-        [record.clone()]
+        std::slice::from_ref(&record)
     );
     (engine.remove_pending_prefix_drop_record(&record.primary_prefix)).expect("a removal");
     assert_eq!(engine.pending_prefix_drop_records().expect("no record"), []);
@@ -1187,6 +1189,19 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         class(WriteError::Commit(halted)),
         Some(CommitError::Unsettled)
     );
+    // A commit that found the log ahead of the session has failed, and
+    // says that the database has to be opened again.
+    let version = engine().1.database().version();
+    let gap = WriteError::Commit(Commit::Failed(lignindb::commit::Failure::VersionGap {
+        log: version,
+        latest: version,
+    }));
+    assert_eq!(error::write_error(gap).commit_error(), None);
+    let gap = WriteError::Commit(Commit::Failed(lignindb::commit::Failure::VersionGap {
+        log: version,
+        latest: version,
+    }));
+    assert!(named(error::write_error(gap)).contains("opened again"));
     assert_eq!(
         named(error::write_error(WriteError::Commit(Commit::ScopesOpen))),
         scopes_open
@@ -1236,22 +1251,23 @@ fn a_tree_that_holds_elements_is_not_deleted_yet_and_stays_whole() {
     let root = grove.db.root_hash(None, v).unwrap().expect("a root");
     assert_eq!(root, root_before);
     assert!(grove.finds(A, b"a1", None));
-    // A tree that nothing was written into is deleted as on RocksDB.
-    let rocks_like = {
-        let other = Grove::<LigninEngine>::new();
-        other.insert(A, b"a1", None);
-        (other.db.delete(ROOT, B, None, None, v))
-            .unwrap()
-            .expect("an empty tree");
-        other.db.root_hash(None, v).unwrap().expect("a root")
-    };
+    // A tree that nothing was written into is deleted, as on RocksDB.
     (grove.db.delete(ROOT, B, None, None, v))
         .unwrap()
         .expect("an empty tree");
-    assert_eq!(
-        grove.db.root_hash(None, v).unwrap().expect("a root"),
-        rocks_like
-    );
+    let gone = grove.db.get(ROOT, B, None, v).unwrap();
+    assert!(matches!(gone, Err(Error::PathKeyNotFound(_))));
+    let root = grove.db.root_hash(None, v).unwrap().expect("a root");
+    assert_ne!(root, root_before);
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let rocks = Grove::<crate::RocksDbEngine>::new();
+        rocks.insert(A, b"a1", None);
+        (rocks.db.delete(ROOT, B, None, None, v))
+            .unwrap()
+            .expect("an empty tree");
+        assert_eq!(rocks.db.root_hash(None, v).unwrap().expect("a root"), root);
+    }
     let Grove { dir, db } = grove;
     drop(db);
     check(dir.path());
@@ -1286,16 +1302,23 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
         applied.and_then(|_| engine.commit_transaction(tx).unwrap())
     };
 
+    // The physical checker reads the open database.
+    let sound = || {
+        let mut rules = MerkHashRules::for_check(v);
+        let report = engine.database().check(Scope::Reader, Some(&mut rules));
+        assert!(report.is_sound(), "{:#?}", report.findings);
+    };
     // Under an element that is no tree the directory keeps no tree type,
     // and the subtree is no Merk that opens.
     write(path![b"item"]).expect("a record under an item");
     let entry = entry_of(path![b"item"]).expect("entered");
     assert!(entry.tree_type.is_empty() && entry.tree_type().is_err());
     assert_eq!(entry.host.expect("a host").key, b"item");
-    // A subtree and one below it that one batch writes first: the outer
-    // one is entered before the inner one, whatever the order of their
-    // prefixes, and the inner one under an element that is not there has
-    // no tree type.
+    sound();
+    // A subtree and two below it that one batch writes first: the outer
+    // one is entered under its element. The inner ones are under keys
+    // that hold no element, and are entered with no host and no tree
+    // type: the directory names no host that is no node.
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
     for path in [path![b"tree", b"x"], path![b"tree"], path![b"tree", b"y"]] {
@@ -1303,7 +1326,7 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
         (handle.meta().put(b"k", b"v", None).unwrap()).expect("staging");
     }
     let applied = engine.apply_batch(batch, &tx).unwrap();
-    applied.expect("the subtrees are entered in the order of their hosts");
+    applied.expect("the subtrees are entered");
     engine.commit_transaction(tx).unwrap().expect("a commit");
     let outer = entry_of(path![b"tree"]).expect("entered");
     assert_eq!(
@@ -1313,12 +1336,30 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
     for inner in [b"x", b"y"] {
         let entry = entry_of(path![b"tree", inner]).expect("entered");
         assert!(entry.tree_type.is_empty());
-        let host = entry.host.expect("a host");
-        assert_eq!(
-            (host.subtree, host.key.as_slice()),
-            (build_prefix(path![b"tree"].into()).unwrap(), &inner[..])
-        );
+        assert_eq!(entry.host, None);
     }
+    sound();
+    // A tree that is entered by the first write into it has the tree type
+    // of its element, which is read from the transaction.
+    (db.insert(ROOT, b"sums", Element::empty_sum_tree(), None, None, v))
+        .unwrap()
+        .expect("a sum tree");
+    (db.insert(
+        path![b"sums"],
+        b"s",
+        Element::new_sum_item(4),
+        None,
+        None,
+        v,
+    ))
+    .unwrap()
+    .expect("a sum item");
+    let entry = entry_of(path![b"sums"]).expect("entered");
+    assert_eq!(
+        entry.tree_type().expect("a tree type"),
+        grovedb_merk::TreeType::SumTree
+    );
+    sound();
 
     // A handle by prefix names the element its subtree is entered under,
     // so a write through it says the same host as one by path.
@@ -1351,4 +1392,77 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
         (root.tree_type().expect("a tree type"), root.host),
         (grovedb_merk::TreeType::NormalTree, None)
     );
+}
+
+#[test]
+fn two_transactions_that_both_write_first_into_one_subtree() {
+    // Two inserts into a tree that nothing was written into: both enter
+    // its subtree and both change the root Merk, so the second to commit
+    // meets the first as a conflict, as on RocksDB.
+    let grove = Grove::<LigninEngine>::new();
+    let first = grove.db.start_transaction();
+    let second = grove.db.start_transaction();
+    grove.insert(A, b"a1", Some(&first));
+    grove.insert(A, b"a2", Some(&second));
+    assert_eq!(grove.commit(second), "OK");
+    let lost = grove.db.commit_transaction(first).unwrap();
+    let lost = lost.expect_err("the second commit");
+    assert!(lost.is_commit_conflict(), "{lost}");
+    assert!(grove.finds(A, b"a2", None) && !grove.finds(A, b"a1", None));
+    let Grove { dir, db } = grove;
+    drop(db);
+    check(dir.path());
+
+    // Two records with different keys in a keyspace that no element names
+    // and nothing has entered: the two transactions share no key, and the
+    // second to commit is refused all the same, by the subtree directory,
+    // which it would enter a second time. It is no conflict, and nothing
+    // of it is kept.
+    let (dir, engine) = engine();
+    let keyspace = [7; 32];
+    let write = |key: &[u8]| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(keyspace, Some(&batch), &tx)
+            .unwrap();
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+        tx
+    };
+    let (first, second) = (write(b"a"), write(b"b"));
+    (engine.commit_transaction(second).unwrap()).expect("the first commit");
+    let lost = engine.commit_transaction(first).unwrap();
+    let lost = lost.expect_err("the second commit");
+    assert_eq!(lost.commit_error(), None, "{lost}");
+    assert!(lost.to_string().contains("lignindb"), "{lost}");
+    let read = |key: &[u8]| {
+        let tx = engine.start_read_transaction();
+        let handle = engine.subtree_by_prefix(keyspace, None, &tx).unwrap();
+        handle.aux().get(key).unwrap().expect("a read")
+    };
+    assert_eq!((read(b"a"), read(b"b")), (None, Some(b"v".to_vec())));
+    // Made again, the write finds the keyspace entered and is committed.
+    (engine.commit_transaction(write(b"a")).unwrap()).expect("the write made again");
+    assert_eq!(read(b"a"), Some(b"v".to_vec()));
+    // The namespace of the pending-drop records is entered with the
+    // database, so two transactions that stage a record each both commit.
+    let namespace = *pending_prefix_drops_namespace();
+    let stage = |key: &[u8]| {
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine
+            .subtree_by_prefix(namespace, Some(&batch), &tx)
+            .unwrap();
+        (handle.meta().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+        tx
+    };
+    let (first, second) = (stage(b"a"), stage(b"b"));
+    (engine.commit_transaction(second).unwrap()).expect("a commit");
+    (engine.commit_transaction(first).unwrap()).expect("a commit of other keys");
+    drop(engine);
+    check(dir.path());
 }

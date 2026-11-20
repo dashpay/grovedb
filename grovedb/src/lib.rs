@@ -350,9 +350,10 @@ type Hash = [u8; 32];
 /// `GroveDb` with no parameter is `GroveDb<RocksDbEngine>`.
 ///
 /// `RocksDbEngine` is compiled with the `rocksdb_storage` feature. Without
-/// it, `GroveDb` with no parameter is `GroveDb<NoEngine>`: there is no
-/// database of it, and it has the functions that take none, the proof
-/// verifiers and the estimated costs.
+/// it and with the `lignin_storage` feature, `GroveDb` with no parameter
+/// is `GroveDb<LigninEngine>`. With neither, it is `GroveDb<NoEngine>`:
+/// there is no database of it, and it has the functions that take none,
+/// the proof verifiers and the estimated costs.
 #[cfg(feature = "engine_generic")]
 pub struct GroveDb<
     #[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))] E: Engine = DefaultEngine,

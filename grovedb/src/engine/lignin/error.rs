@@ -59,7 +59,14 @@ pub(super) fn write_error(error: WriteError) -> Error {
         WriteError::Commit(Commit::Refused(error) | Commit::Failed(Failure::Txn(error))) => {
             txn_error(error)
         }
-        error => failed(error),
+        // A commit that ended the session without being one of the
+        // outcomes above says so: the database has to be opened again.
+        error => match error.reopen() {
+            Some(reopen) if matches!(error, WriteError::Commit(_)) => {
+                failed(format!("{error}: {reopen}"))
+            }
+            _ => failed(error),
+        },
     }
 }
 

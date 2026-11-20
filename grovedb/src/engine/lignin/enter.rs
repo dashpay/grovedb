@@ -11,19 +11,23 @@
 //!   and is read as the empty tree that it is.
 //! - **Its host is the element its handle was opened under**: the key of
 //!   the last segment of the path, in the subtree of the segments before
-//!   ([`LigninSubtree::host`]). A subtree with no host is the root Merk of
-//!   the grove, or a keyspace that no element names.
+//!   ([`LigninSubtree::host`]), where that element is there once the
+//!   batch is applied. A subtree with no host is the root Merk of the
+//!   grove, or a keyspace that no element names: one opened by a prefix
+//!   alone, or under a key that holds no element.
 //! - **Its tree type is the one of that element**, read from the value
-//!   the batch states for the element, or with none from the transaction.
-//!   Where there is no such element, or it is no tree, the directory keeps
+//!   that the last batch of the group to state one states for the
+//!   element, or with none from the transaction. Where there is no such
+//!   element, the group deletes it, or it is no tree, the directory keeps
 //!   no tree type for the subtree, and `Merk::open_from_directory` refuses
 //!   it as it refuses any other bytes.
 //!
 //! An element that hosts more than one Merk, an indexed tree, is refused
 //! with `Error::NotSupported`: its Merks are named together, by its
-//! element (GROVE-04). It is refused where a batch writes into a subtree
-//! whose element the batch states as one, and where a subtree is entered
-//! under one.
+//! element (GROVE-04). It is refused where a group writes into a subtree
+//! whose element the group states as one, and where a subtree is entered
+//! under one. A batch that enters a subtree itself has said its host and
+//! its tree type, and neither is looked at here.
 //!
 //! What this does not do:
 //!
@@ -31,10 +35,11 @@
 //!   entry keeps the tree type and the host it was entered with when its
 //!   element is written again as a tree of another type.
 //! - Two transactions that each write first into one subtree both enter
-//!   it. The one that commits second is refused where it is applied or
-//!   committed, with the engine's words and not as a conflict, and its
-//!   caller makes the operation again (`engine.md`, "Subtrees are
-//!   entered by the engine").
+//!   it, and the directory takes the enter of the first to commit. The
+//!   second is refused: as a conflict where the two wrote a key, which
+//!   two writes into a tree always did, and otherwise by the directory,
+//!   with the engine's words (`engine.md`, "Subtrees are entered by the
+//!   first batch that writes into them").
 
 use std::collections::BTreeMap;
 
@@ -66,21 +71,38 @@ fn tree_of(value: &[u8]) -> Option<TreeType> {
     element.tree_type()
 }
 
-/// The tree type of the element `host` as the transaction has it.
-fn tree_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<TreeType>, Error> {
+/// The element `host` as the transaction has it: `None` if there is no
+/// such node, and otherwise its tree type, if it is a tree.
+fn tree_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option<TreeType>>, Error> {
     let parent = LigninNodeStore::read_only(view, LigninSubtree::alone(host.subtree));
     let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
     let node = parent.get_node(&host.key, no_cost, GroveVersion::latest());
     let node = node.unwrap().map_err(merk_error)?;
-    Ok(node
-        .as_ref()
-        .and_then(|node| tree_of(node.value_as_slice())))
+    Ok(node.as_ref().map(|node| tree_of(node.value_as_slice())))
 }
 
-/// What the parts make of the element `host`: the outcome of the last
-/// part that holds one for its node.
-fn stated<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Option<LigninOutcome<'a>> {
-    (parts.iter().rev()).find_map(|part| part.node(&host.subtree, &host.key))
+/// What the parts make of an element.
+enum Host<'a> {
+    /// The last part that states a value for it states this one.
+    Stated(&'a [u8]),
+    /// The last part that writes it removes it.
+    Removed,
+    /// No part writes it, or those that do keep the value it has: it is
+    /// what the transaction holds.
+    Stored,
+}
+
+fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
+    for part in parts.iter().rev() {
+        match part.node(&host.subtree, &host.key) {
+            Some(LigninOutcome::Put(Some(value))) => return Host::Stated(value),
+            Some(LigninOutcome::Removed) => return Host::Removed,
+            // A put that keeps the value keeps the one that an earlier
+            // part states, and with none the transaction's.
+            Some(LigninOutcome::Put(None)) | None => {}
+        }
+    }
+    Host::Stored
 }
 
 fn one_merk(tree_type: Option<TreeType>) -> Result<Option<TreeType>, Error> {
@@ -110,46 +132,54 @@ pub(super) fn owed(
             }
         }
     }
-    let mut owed: Vec<(&LigninSubtree, Vec<u8>)> = Vec::new();
+    let mut owed: Vec<(LigninSubtree, Vec<u8>)> = Vec::new();
     for subtree in written.into_values() {
-        let prefix = &subtree.prefix;
-        if parts.iter().any(|part| part.enters(prefix)) {
+        let prefix = subtree.prefix;
+        if parts.iter().any(|part| part.enters(&prefix)) {
             continue;
         }
-        let stated = subtree.host.as_ref().and_then(|host| stated(parts, host));
-        let stated_tree = match stated {
-            Some(LigninOutcome::Put(Some(value))) => one_merk(tree_of(value))?,
+        let host = subtree.host.as_ref();
+        let host = host.map(|host| (host, host_of(parts, host)));
+        let stated_tree = match host {
+            Some((_, Host::Stated(value))) => one_merk(tree_of(value))?,
             _ => None,
         };
-        let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(*prefix));
+        let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
         if handle.entry().map_err(merk_error)?.is_some() {
             continue;
         }
-        let tree_type = match (&subtree.host, stated) {
-            (None, _) if *prefix == ROOT => Some(TreeType::NormalTree),
-            // The batch deletes the element, or there is none to read.
-            (None, _) | (_, Some(LigninOutcome::Removed)) => None,
-            (_, Some(LigninOutcome::Put(Some(_)))) => stated_tree,
-            // The element is not written, or keeps the value it has.
-            (Some(host), Some(LigninOutcome::Put(None)) | None) => {
-                one_merk(tree_read(view, host)?)?
-            }
+        // A subtree is entered under an element that is there once the
+        // group is applied, and under none otherwise: the directory names
+        // no host that is no node.
+        let (host, tree_type) = match host {
+            None if prefix == ROOT => (None, Some(TreeType::NormalTree)),
+            None | Some((_, Host::Removed)) => (None, None),
+            Some((host, Host::Stated(_))) => (Some(host), stated_tree),
+            Some((host, Host::Stored)) => match tree_read(view, host)? {
+                Some(tree_type) => (Some(host), one_merk(tree_type)?),
+                None => (None, None),
+            },
         };
-        owed.push((subtree, tree_type.map(tree_type_bytes).unwrap_or_default()));
+        let named = LigninSubtree {
+            prefix,
+            host: host.cloned(),
+        };
+        owed.push((named, tree_type.map(tree_type_bytes).unwrap_or_default()));
     }
     // A subtree whose host is in a subtree that is entered here too comes
     // after it: by how many of its hosts' subtrees are entered here.
     let depth = |subtree: &LigninSubtree| {
         let host = |subtree: &&LigninSubtree| {
             let host = subtree.host.as_ref()?.subtree;
-            let mut owed = owed.iter().map(|(owed, _)| *owed);
-            owed.find(|owed| owed.prefix == host)
+            owed.iter()
+                .map(|(owed, _)| owed)
+                .find(|owed| owed.prefix == host)
         };
         let hosts = std::iter::successors(Some(subtree), host);
         hosts.take(owed.len()).count()
     };
     let mut ordered: Vec<_> = (owed.iter())
-        .map(|(subtree, tree_type)| (depth(subtree), *subtree, tree_type))
+        .map(|(subtree, tree_type)| (depth(subtree), subtree, tree_type))
         .collect();
     ordered.sort_by_key(|(depth, ..)| *depth);
     Ok(ordered

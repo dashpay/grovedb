@@ -88,7 +88,7 @@ pub enum Error {
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
-    StorageError(grovedb_storage::error::Error),
+    StorageError(#[source] grovedb_storage::error::Error),
 
     #[error("data corruption error: {0}")]
     /// Corrupted data
