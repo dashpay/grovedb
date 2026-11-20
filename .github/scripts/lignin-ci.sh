@@ -42,6 +42,11 @@
 #                                         defects it must find, then the
 #                                         campaign; ARGS follow
 #                                         `lignin-crash run`
+#   lignin-ci.sh schedules [POINTS]       one step of the engine's background
+#                                         work, a reader or an open of a
+#                                         checkpoint against commits let in at
+#                                         each of its points: at every point,
+#                                         or at no more than POINTS of a step
 #   lignin-ci.sh stress SECONDS           the engine's stress test: readers,
 #                                         writers, write-back, the reclaimer,
 #                                         the cleaner and checkpoints at once
@@ -416,6 +421,15 @@ miri-schedules)
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-many-seeds=0..$seeds $borrows" \
             cargo "+$nightly" miri test -p lignin-store --lib cache::tests::races
     done
+    ;;
+
+schedules)
+    points=${2:-all}
+    [[ $points == all || $points =~ ^[1-9][0-9]*$ ]] ||
+        fail "usage: lignin-ci.sh schedules [POINTS]"
+    export LIGNIN_SCHEDULE_POINTS=$points
+    say "the schedules of the engine, $points points of each step"
+    cargo test -p lignindb --lib db::tests::schedules:: -- --nocapture
     ;;
 
 stress | tsan)

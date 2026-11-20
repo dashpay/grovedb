@@ -26,10 +26,15 @@
 //! thread, which makes the burst, and waits for it. Where the step holds a
 //! lock that the burst needs, the step goes on after a while and the burst
 //! lands behind the lock, which is a schedule as well. [`sweep`] tries
-//! every point of a step, each from the same state: a database that was
+//! the points of a step, each from the same state: a database that was
 //! written by both writers of the stress test, closed, opened again with
 //! nothing in memory, and written a little more with no write-back, so that
 //! page versions are owed, values are pending and drops wait.
+//!
+//! With the crate's tests a sweep tries a sample of the points of its
+//! step, evenly spread. `LIGNIN_SCHEDULE_POINTS=all` has it try every
+//! point, which the nightly run does (`lignin-ci.sh schedules`), and
+//! `LIGNIN_SCHEDULE_POINTS=N` at most `N`.
 //!
 //! # The oracle
 //!
@@ -1146,21 +1151,28 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     }
 }
 
-/// The points of a step that a sweep tries: all of them, or with
-/// `LIGNIN_SCHEDULE_POINTS=N` at most `N`, evenly spread.
+/// How many points of a step a sweep tries where nobody says.
+const SAMPLE: u64 = 12;
+
+/// The points of a step that a sweep tries, evenly spread: at most
+/// [`SAMPLE`] of them, at most `N` with `LIGNIN_SCHEDULE_POINTS=N`, and
+/// every point with `LIGNIN_SCHEDULE_POINTS=all`.
 fn chosen(points: u64) -> Vec<u64> {
-    let most = std::env::var("LIGNIN_SCHEDULE_POINTS").ok();
-    let most = most
-        .and_then(|most| most.parse::<u64>().ok())
-        .unwrap_or(u64::MAX);
+    let most = match std::env::var("LIGNIN_SCHEDULE_POINTS") {
+        Err(_) => SAMPLE,
+        Ok(all) if all == "all" => u64::MAX,
+        Ok(most) => most.parse().unwrap_or_else(|_| {
+            panic!("LIGNIN_SCHEDULE_POINTS={most} is neither a number nor `all`")
+        }),
+    };
     if points <= most {
         return (1..=points).collect();
     }
     (0..most).map(|index| 1 + index * points / most).collect()
 }
 
-/// Tries `burst` at every point of `step`, each schedule from one state,
-/// and fails with every schedule that did not end sound.
+/// Tries `burst` at the [`chosen`] points of `step`, each schedule from
+/// one state, and fails with every schedule that did not end sound.
 fn sweep(step: Step, burst: Burst) {
     let base = base(0x5eed + step as u64 * 16 + burst as u64);
     // With the burst after the step: what the step does alone, and how
