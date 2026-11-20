@@ -8,7 +8,7 @@ use grovedb_storage::Error as StorageError;
 
 use super::{
     access::{Access, Prefix, Seek, StoredNode, Walk},
-    node_inner, MODEL,
+    hash, node_inner, MODEL,
 };
 use crate::{store::NodeCursor, Error};
 
@@ -35,8 +35,9 @@ use crate::{store::NodeCursor, Error};
 /// - **A call the transaction refuses leaves it on no key**, and
 ///   [`NodeCursor::status`] gives the error until the cursor is sought
 ///   again. A read of a record that fails leaves the cursor on its key,
-///   with no value. A walk that ends is at the end of the nodes only if
-///   `status` says so.
+///   with no value, and so does a node with a hash that is not made yet,
+///   which has no record. A walk that ends is at the end of the nodes only
+///   if `status` says so.
 pub struct LigninCursor<'db> {
     walk: Option<RefCell<Box<dyn Walk + 'db>>>,
     /// The key the cursor stands on, where it stands on one.
@@ -56,8 +57,11 @@ impl std::fmt::Debug for LigninCursor<'_> {
     }
 }
 
-/// The record Merk encodes of `node`.
+/// The record Merk encodes of `node`. A node with a stale hash has none:
+/// the bytes its cell stores there are no hash, and a record would give
+/// them out as one (`node-store.md`, "Hashes").
 fn record(node: StoredNode) -> Result<Vec<u8>, Error> {
+    hash::refuse_stale(node.stale)?;
     // A record does not hold the key of its own node.
     let inner = node_inner(Vec::new(), node)?;
     Encode::encode(&inner).map_err(Error::EdError)

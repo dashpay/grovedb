@@ -911,6 +911,94 @@ fn a_cursor_moves_to_another_thread_with_its_merk() {
     assert_eq!((key, shown), (Some(be(22)), true));
 }
 
+/// A node with a hash that is not made yet has no record: the bytes its
+/// cell stores there are no hash (MERK-02), and a record would give them
+/// out as one. On existing GroveVersions a commit of Merk leaves no such
+/// node.
+#[test]
+fn a_node_whose_hash_is_not_made_yet_has_no_record_under_the_cursor() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let store = LigninNodeStore::immediate(&writer, ROOT);
+
+    // Two nodes that no commit of Merk has hashed. The link to the lower
+    // one is modified, so the upper one is written with that hash left to
+    // the engine.
+    let lower = TreeNode::new(be(1), b"lower".to_vec(), None, BASIC).unwrap();
+    let upper = TreeNode::new(be(2), b"upper".to_vec(), None, BASIC).unwrap();
+    let upper = upper.attach(true, Some(lower)).unwrap();
+    let lower = upper.child(true).unwrap();
+    let mut change_set = store.change_set();
+    change_set.state_root(Some(upper.key()));
+    for node in [lower, &upper] {
+        let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
+        change_set.put_node(node.key(), prepared, None).unwrap();
+    }
+    let written = store.commit(change_set).unwrap();
+    written.expect("the write is taken");
+    assert_eq!(transaction.stats().stale_nodes, 1);
+
+    // The cursor shows the record of the node whose hashes are made, and
+    // stands on the key of the other with no record and an error.
+    let mut cursor = store.cursor();
+    cursor.seek_to_first().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(lower.key()));
+    assert!(cursor.value().unwrap().is_some());
+    assert!(cursor.status().is_ok());
+    cursor.next().unwrap();
+    assert!(cursor.valid().unwrap());
+    assert_eq!(cursor.key().unwrap(), Some(upper.key()));
+    assert!(cursor.status().is_ok());
+    let charged_for_the_key = cursor.key().cost;
+    let shown = cursor.value();
+    assert_eq!(shown.value, None);
+    assert_eq!(shown.cost, charged_for_the_key);
+    let refused = cursor.status().expect_err("a stale hash is no hash");
+    assert!(
+        refused.to_string().contains("not all made yet"),
+        "{refused}"
+    );
+
+    // A step goes on with the error, and a seek starts again.
+    cursor.next().unwrap();
+    assert!(!cursor.valid().unwrap());
+    assert!(cursor.status().is_err());
+    cursor.seek_to_last().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(upper.key()));
+    assert!(cursor.status().is_ok());
+
+    // A walk that reads no record reads no hash, and comes to its end.
+    cursor.seek_to_first().unwrap();
+    let mut keys = 0;
+    while cursor.valid().unwrap() {
+        keys += 1;
+        cursor.next().unwrap();
+    }
+    assert_eq!(keys, 2);
+    assert!(cursor.status().is_ok());
+    drop(cursor);
+
+    // A scan gives the records before the node and says that it failed
+    // there, in both directions.
+    for (left_to_right, before) in [(true, 1), (false, 0)] {
+        let mut query = Query::new_with_direction(left_to_right);
+        query.insert_all();
+        let mut scan = KVIterator::new(store.cursor(), &query).unwrap();
+        let mut rows = Vec::new();
+        while let Some((key, _)) = scan.next_kv().unwrap() {
+            rows.push(key);
+        }
+        assert_eq!(rows, vec![lower.key().to_vec(); before]);
+        let refused = scan.status().expect_err("the scan did not end");
+        assert!(
+            refused.to_string().contains("not all made yet"),
+            "{refused}"
+        );
+    }
+}
+
 /// A transaction whose cursors fail: when they are opened, at a move, or
 /// at the read of a node.
 struct Failing<'a> {
