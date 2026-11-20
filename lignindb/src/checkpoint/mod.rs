@@ -66,7 +66,7 @@
 //! | Step | What is done | Held |
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
-//! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
+//! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). Then write-back is asked for the settled manifest: one that a replacement left in doubt, the catch-up's own among them, is opened again (`lignin_store::flush::WriteBack::settle_manifest`). If write-back answers an error to that, the creation fails with no directory made ([`CheckpointError::Settle`]). | nothing of the checkpoint's |
 //! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. One whose lock is held is left alone, and the creation fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
@@ -77,13 +77,20 @@
 //! | 10 | **One set of syncs** makes durable everything in the directory and the directory's own name: each copy and the manifest, every name in the directory and in the directories in it, and the name it is built under in the directory above. | nothing |
 //! | 11 | The directory is renamed to the target, and the directory above is synced. | nothing |
 //!
-//! **Commits wait for the reads of step 4 and for nothing else** (CK5,
-//! CM8). The commit lock is given back as soon as the three things are
-//! read, before the first link is made. And no commit waits for the lock
-//! on the manifest, which write-back holds over a sync when it replaces a
-//! manifest and which another creation holds while it links: the sample
-//! only tries that lock while it has the commit lock. Where the manifest
-//! is taken, it gives the commit lock back, waits, and takes both anew.
+//! **A creation holds the commit lock for the reads of step 4 and for
+//! nothing else** (CK5, CM8). The commit lock is given back as soon as
+//! the three things are read, before the first link is made. And the
+//! sample makes no commit wait for the lock on the manifest, which
+//! write-back holds over a sync when it replaces a manifest and which
+//! another creation holds while it links: the sample only tries that lock
+//! while it has the commit lock. Where the manifest is taken, it gives
+//! the commit lock back, waits, and takes both anew.
+//!
+//! One commit does wait for the lock on the manifest: a commit that found
+//! the manifest in doubt before it began has it settled, and waits for
+//! whoever holds that lock then (`crate::db`). A creation holds it in
+//! step 2 while a manifest in doubt is opened again, as anybody does who
+//! settles it, and through step 5.
 //!
 //! **A commit that syncs the log itself can wait for a sync of the log,
 //! and a creation makes as few as it can.** The log makes itself durable
@@ -119,8 +126,9 @@
 //! **The lock on the manifest is held through step 5**, which is one
 //! `link` for each file the manifest names: write-back replaces no
 //! manifest and deletes no file for that long (row 18 of section 13). A
-//! committer meets it only where its thread takes a turn for write-back
-//! after its commit is published.
+//! committer meets it where its thread takes a turn for write-back after
+//! its commit is published, and before its commit begins where it found
+//! the manifest in doubt.
 //!
 //! **The directory gets the name of the target last, and whole.** Until
 //! step 11 the creation puts nothing under that name, and the directory
@@ -199,12 +207,12 @@
 //!    checkpoint; the directory it is built in; and the directory above;
 //! 3. the directory above once more, after the rename of step 11.
 //!
-//! Write-back's catch-up of step 2 makes its own. A creation that takes
-//! over what an earlier one left syncs the directory above before it
-//! empties what it found, and one that fails after the rename syncs it
-//! once more, to take the name back ("Durability, and a creation that
-//! fails"). What a set costs less than its syncs one by one is the file
-//! layer's to say.
+//! Write-back's catch-up of step 2 makes its own, and so does the opening
+//! of a manifest that was in doubt. A creation that takes over what an
+//! earlier one left syncs the directory above before it empties what it
+//! found, and one that fails after the rename syncs it once more, to take
+//! the name back ("Durability, and a creation that fails"). What a set
+//! costs less than its syncs one by one is the file layer's to say.
 //!
 //! **The set has no order and is not whole before it returns, and step 10
 //! needs neither**: whatever a power cut keeps of it is in a directory
@@ -385,9 +393,12 @@
 //!   lists as many files and as many directories as the creation put
 //!   there and nothing else, and the name the creation gave opens there.
 //!
-//! When the creation fails, the live database is as it was (CK10), except
-//! that its log may be durable further. One failure is the live
-//! database's as much as the creation's: if the sync of the log fails
+//! When the creation fails after step 2, the live database is as step 2
+//! left it (CK10), except that its log may be durable further. What step
+//! 2 does is write-back's work, and stays done whatever comes after: a
+//! catch-up, with whatever that met, and a manifest that is settled. One
+//! failure is the live database's as much as the creation's: if the sync
+//! of the log fails
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
 //! then removes what it made, and the directory it built in, so that the
@@ -573,8 +584,8 @@
 //!   commit lock against the sample and a manifest replacement is VER-05's
 //!   (`transactions.md` 15.2).
 //! - **Backup** (OPS-08): a checkpoint on another file system is a
-//!   consistent copy. A full disk fails the creation with the error of the
-//!   file layer and leaves the live database as it was.
+//!   consistent copy. A full disk fails the creation: what is left then
+//!   is said under "Durability, and a creation that fails".
 //!
 //! # Tests
 //!

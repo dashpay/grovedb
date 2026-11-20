@@ -435,10 +435,10 @@ impl Shared {
     /// Has a manifest that a replacement left in doubt opened again, as
     /// write-back does by itself where it next needs it
     /// (`WriteBack::settle_manifest`). Until then nothing that reads the
-    /// manifest itself can: no checkpoint of the database is made, and a
-    /// close cannot tell that the directory is the database's. With
-    /// nothing in doubt this is one look at the manifest, which waits for
-    /// nothing.
+    /// manifest itself can: a close cannot tell that the directory is the
+    /// database's. (The creation of a checkpoint reads it too, and asks
+    /// write-back for the same before it does.) With nothing in doubt
+    /// this is one look at the manifest, which waits for nothing.
     ///
     /// A manifest in doubt ends no session (D-157): it is not known which
     /// of two manifests a crash would leave, and opening it again finds

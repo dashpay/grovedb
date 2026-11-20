@@ -243,18 +243,21 @@ impl<'s> Checkpointer<'s> {
     /// version in the live database** (CK4). `target` is then a database
     /// directory like any other, and is opened as one.
     ///
-    /// Commits are kept out for the sampling step, which reads a few
-    /// things, and for nothing else of this call (CK5). A commit that
-    /// syncs the log itself waits, as the log has it, for a sync of the
-    /// log that is under way. This call makes one only where the log is
-    /// not durable through the version already, and write-back makes one
-    /// where it catches up first: the [module documentation](super) says
-    /// when a commit can meet either. Open write transactions are not
+    /// This call holds the commit lock for the sampling step, which reads
+    /// a few things, and for nothing else (CK5). A commit that syncs the
+    /// log itself waits, as the log has it, for a sync of the log that is
+    /// under way. This call makes one only where the log is not durable
+    /// through the version already, and write-back makes one where it
+    /// catches up first. And a commit that found the manifest in doubt
+    /// waits for the manifest to be settled, which this call does where
+    /// it comes first. The [module documentation](super) says when a
+    /// commit can meet each. Open write transactions are not
     /// waited for, and nothing of them is in the checkpoint (CK8). Any
     /// number of checkpoints may be made at once (CK9).
     ///
-    /// If it fails, the live database is as it was (CK10), with one
-    /// exception: where the sync of its log failed
+    /// If it fails, the live database is as write-back's catch-up and the
+    /// settling of its manifest left it (CK10), with one exception: where
+    /// the sync of its log failed
     /// ([`CheckpointError::Sync`]), the log makes nothing more durable
     /// until the database is opened again, as after any sync of it that
     /// fails (`lignin_store::wal`). What was made is taken away again as
@@ -282,6 +285,7 @@ impl<'s> Checkpointer<'s> {
         // directory gets its name.
         Target::refuse_existing(&*vfs, target)?;
         let catch_up = self.catch_up();
+        (self.write_back.settle_manifest()).map_err(CheckpointError::Settle)?;
         let mut made = Target::make(vfs, target)?;
         #[cfg(all(test, not(loom)))]
         self.reached(Step::Made);

@@ -1847,6 +1847,11 @@ fn the_errors_say_what_happened() {
             true,
         ),
         (
+            CheckpointError::Settle(FlushError::SegmentsNotDurable),
+            "the manifest was in doubt, and settling it answered an error",
+            true,
+        ),
+        (
             CheckpointError::Sync(FlushError::SegmentsNotDurable),
             "the log could not be made durable",
             true,

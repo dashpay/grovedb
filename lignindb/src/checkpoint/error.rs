@@ -15,10 +15,12 @@ use crate::commit::Stopped;
 /// [`delete`](super::delete) failed. Each of the two says what is left
 /// then.
 ///
-/// Whatever the error, the live database holds what it held: a creation
-/// changes nothing of it but how far its log is durable. After
-/// [`Self::Sync`] its log makes nothing more durable until the database is
-/// opened again, as after any sync of the log that fails.
+/// Whatever the error, the live database holds what it held. What a
+/// creation does to it is write-back's work before anything is made, a
+/// catch-up and the settling of its manifest, and a log that is durable
+/// further (the [module documentation](super)). After [`Self::Sync`] its
+/// log makes nothing more durable until the database is opened again, as
+/// after any sync of the log that fails.
 #[derive(Debug)]
 pub enum CheckpointError {
     /// The target is there already, as a directory or as anything else.
@@ -94,8 +96,17 @@ pub enum CheckpointError {
         /// The latest published version.
         latest: CommitVersion,
     },
-    /// The manifest could not be read: a replacement left it in doubt, and
-    /// write-back has not settled it yet. The call can be made again.
+    /// Write-back, which the creation asks to settle a manifest that a
+    /// replacement left in doubt before it makes a directory
+    /// (`lignin_store::flush::WriteBack::settle_manifest`), answered this
+    /// error. No directory was made for the checkpoint. The call can be made
+    /// again: where the manifest could not be opened again, the next call
+    /// asks for that again, and where it was opened and a store that was
+    /// told of it answered the error, nothing is in doubt any more.
+    Settle(FlushError),
+    /// The manifest could not be read at the sampling step: a replacement
+    /// left it in doubt after the creation had asked for it to be
+    /// settled. The call can be made again.
     Manifest(SegmentStoreError),
     /// The log could not be made durable through the version of the
     /// checkpoint. A sync of the log that fails stays failed for the
@@ -221,6 +232,10 @@ impl fmt::Display for CheckpointError {
                 f,
                 "the log holds commit {log}, and the latest published version is {latest}"
             ),
+            Self::Settle(source) => write!(
+                f,
+                "the manifest was in doubt, and settling it answered an error: {source}"
+            ),
             Self::Manifest(source) => write!(f, "the manifest could not be read: {source}"),
             Self::Sync(source) => write!(f, "the log could not be made durable: {source}"),
             Self::Log(source) => write!(f, "the log: {source}"),
@@ -265,6 +280,7 @@ impl fmt::Display for CheckpointError {
 impl Error for CheckpointError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
+            Self::Settle(source) => Some(source),
             Self::Manifest(source) => Some(source),
             Self::NotADatabase { source, .. } => Some(source),
             Self::Sync(source) => Some(source),
