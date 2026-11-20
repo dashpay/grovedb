@@ -73,6 +73,10 @@ grovedb-costs = { version = "6.1.1", path = "../costs", features = ["cost-model-
 # For `test_utils` in a test build that has the feature off.
 rand = { workspace = true }
 lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }
+# The file layer and the write-back of the test store, for the test that
+# counts the reads of the value log a proof makes.
+lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-store = { version = "6.1.1", path = "../lignin-store" }
 tempfile = { workspace = true }
 criterion = { workspace = true }
 assert_matches = { workspace = true }

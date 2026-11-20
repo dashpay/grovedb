@@ -19,8 +19,10 @@ type RocksTransaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
 
 /// One call on a Merk, or on a cursor of its store.
 #[derive(Clone, Debug)]
-enum Act {
+pub(super) enum Act {
     Apply(Vec<(Vec<u8>, Op)>),
+    /// A proof, or a read that follows one (`proof.rs`).
+    Prove(&'static GroveVersion, super::proof::Call),
     Aux(Vec<(Vec<u8>, Op, Option<KeyValueStorageCost>)>),
     GetAux(Vec<u8>),
     PutMeta(Vec<u8>, Vec<u8>),
@@ -180,6 +182,9 @@ fn act<'db, S: NodeStore<'db>>(merk: &mut Merk<S>, act: &Act) -> (String, Operat
             let applied = merk.apply::<_, Vec<u8>>(batch, &[], None, version());
             format!("{:?}", applied.unwrap_add_cost(&mut cost))
         }
+        Act::Prove(grove_version, call) => {
+            super::proof::answer(merk, call, grove_version, &mut cost)
+        }
         Act::Aux(aux) => {
             let applied = merk.apply::<Vec<u8>, _>(&[], aux, None, version());
             format!("{:?}", applied.unwrap_add_cost(&mut cost))
@@ -240,18 +245,18 @@ fn acts<'db, S: NodeStore<'db>>(
 }
 
 /// The same Merk on RocksDB and on LigninDB, each inside a transaction.
-struct Both<'a, 't, 's> {
-    tree_type: TreeType,
+pub(super) struct Both<'a, 't, 's> {
+    pub(super) tree_type: TreeType,
     rocks: &'a TempStorage,
     rocks_transaction: &'a RocksTransaction<'a>,
-    writer: &'a LigninWriter<'t, 's>,
+    pub(super) writer: &'a LigninWriter<'t, 's>,
 }
 
 impl Both<'_, '_, '_> {
     /// Makes `calls` on a Merk on a deferred handle of each engine and
     /// applies what they staged. The answers, the cost of every call and
     /// the cost of the batch are the same on both, and are returned.
-    fn deferred(&self, calls: &[Act]) -> Vec<String> {
+    pub(super) fn deferred(&self, calls: &[Act]) -> Vec<String> {
         let storage_batch = StorageBatch::new();
         let context = self
             .rocks
@@ -276,7 +281,7 @@ impl Both<'_, '_, '_> {
     }
 
     /// [`Self::immediate`] or [`Self::deferred`].
-    fn run(&self, immediate: bool, calls: &[Act]) -> Vec<String> {
+    pub(super) fn run(&self, immediate: bool, calls: &[Act]) -> Vec<String> {
         match immediate {
             true => self.immediate(calls),
             false => self.deferred(calls),
@@ -284,7 +289,7 @@ impl Both<'_, '_, '_> {
     }
 
     /// As [`Self::deferred`], on handles that write at once.
-    fn immediate(&self, calls: &[Act]) -> Vec<String> {
+    pub(super) fn immediate(&self, calls: &[Act]) -> Vec<String> {
         let context = self
             .rocks
             .get_immediate_storage_context(SubtreePath::empty(), self.rocks_transaction)
@@ -324,7 +329,7 @@ impl Both<'_, '_, '_> {
 /// batches committed, with what `before` did, and a few more written by
 /// the transaction that `test` is given, which rewrite some of the
 /// committed nodes, remove some and add others.
-fn with_both(
+pub(super) fn with_both(
     tree_type: TreeType,
     seed: u64,
     rounds: usize,
@@ -645,7 +650,7 @@ fn a_cleared_merk_has_no_root_and_is_written_again() {
 }
 
 /// Every record a cursor of `store` shows from the first to the last.
-fn walked<'db, S: NodeStore<'db>>(store: &S) -> Vec<(Vec<u8>, Vec<u8>)> {
+pub(super) fn walked<'db, S: NodeStore<'db>>(store: &S) -> Vec<(Vec<u8>, Vec<u8>)> {
     let mut cursor = store.cursor();
     cursor.seek_to_first().unwrap();
     let mut found = Vec::new();

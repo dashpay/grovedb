@@ -38,6 +38,7 @@ use crate::{
 };
 
 mod cursor;
+mod proof;
 
 pub(super) const NO_VALUE_DEFINED_COST: Option<
     fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>,
