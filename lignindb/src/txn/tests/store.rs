@@ -613,9 +613,16 @@ impl Db {
         *self.flat_drops.get().expect("made with the store")
     }
 
+    /// What takes the records of the page steps that background work makes
+    /// on this store: a reclaimer's, and those of the owners of values
+    /// when the value log is cleaned.
+    pub fn steps<'s>(&'s self, versions: &'s Versions) -> Steps<'s> {
+        Steps { db: self, versions }
+    }
+
     /// A reclaimer of what the drops of this store left.
     pub fn reclaimer<'s>(&'s self, versions: &'s Versions) -> Reclaimer<'s, Steps<'s>> {
-        let steps = Steps { db: self, versions };
+        let steps = self.steps(versions);
         Reclaimer::new(
             self.loader(),
             &self.pool,
