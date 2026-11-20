@@ -3,8 +3,8 @@
 //!
 //! When a trace has been replayed, Merks of the grove it leaves are copied
 //! as state sync copies a Merk, on RocksDB and on LigninDB: each live Merk
-//! that has a root, is the Merk of no axis and is hosted by an element
-//! that opens a Merk.
+//! that has a root and is the Merk of no axis, and whose host, where it
+//! has one, is an element that opens a Merk.
 //!
 //! - **The chunks.** Every chunk of the Merk is produced from the Merk on
 //!   RocksDB, as the trace's transaction reads it, and from the Merk on the
