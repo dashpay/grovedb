@@ -614,12 +614,17 @@ impl LogStore {
     /// Opens the log that `manifest` names, in its directory, for writing.
     /// `end` is where a [`LogReader`](super::LogReader) found the log to
     /// end, with nothing written to `wal/` since and the log files named
-    /// as the reader's manifest named them: an end of another directory,
-    /// or of files that have another length now, is refused
-    /// ([`LogError::WrongDirectory`], [`LogError::WrongLogEnd`]). What the
-    /// manifest says of the other kinds of files may have changed
-    /// meanwhile, as it does when a recovery writes a segment while it
-    /// reads the log.
+    /// as the reader's manifest named them: an end of another directory is
+    /// refused ([`LogError::WrongDirectory`]), and so is an end of files
+    /// that are not what was read any more ([`LogError::WrongLogEnd`]). A
+    /// file that the manifest names open has to have the length it was
+    /// read with. A file that it names closed has to be as long as its
+    /// valid length, which is where the log ends in it, and may have grown
+    /// behind that: a database that shares the file as a hard link appends
+    /// to it, as the live database does to the last log file of a
+    /// checkpoint (CK5 of `transactions.md`). What the manifest says of
+    /// the other kinds of files may have changed meanwhile, as it does
+    /// when a recovery writes a segment while it reads the log.
     ///
     /// Every file of the log belongs to an earlier session. It is read and
     /// synced, and never appended to: it ends where the reader found its
@@ -675,7 +680,7 @@ impl LogStore {
                 if !agrees {
                     return Err(LogError::WrongLogEnd { file: id });
                 }
-                let adopted = LogFile::adopted(&*vfs, &dir, found, current.format_version())?;
+                let adopted = LogFile::adopted(&*vfs, &dir, found, file, current.format_version())?;
                 let entry = Entry {
                     file: Arc::new(adopted),
                     durable_len: file.valid_len(),

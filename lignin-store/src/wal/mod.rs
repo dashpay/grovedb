@@ -437,8 +437,13 @@
 //!   `wal/` in between and no change to how the manifest names the log's
 //!   files. Other kinds of files may be created and named meanwhile. The
 //!   log takes an end only of its own directory, by the path, and only
-//!   while every file that holds something of the log has the length it
-//!   was read with ([`LogError::WrongLogEnd`]).
+//!   while every file that holds something of the log is what was read
+//!   ([`LogError::WrongLogEnd`]): a file that the manifest names open has
+//!   the length it was read with, and a file that it names closed is as
+//!   long as its valid length. A closed file may have grown behind that
+//!   length, where nothing is read: a database that shares the file as a
+//!   hard link appends to it, as the live database does to the last log
+//!   file of a checkpoint (CK5 of `transactions.md`).
 //! - It calls [`LogStore::roll`] before the session's first append, which
 //!   [recovery](crate::recovery) does, and from then on whenever
 //!   [`LogStore::is_due`], and from time to time: outside a commit and

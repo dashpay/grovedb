@@ -3,6 +3,7 @@ mod crash;
 mod errors;
 mod faults;
 mod reader;
+mod shared;
 mod store;
 mod threads;
 
