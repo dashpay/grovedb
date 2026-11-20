@@ -139,6 +139,18 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
             .fetch_node(link, value_defined_cost_fn, grove_version)
     }
 
+    fn fetch_node_without_value(
+        &self,
+        link: &Link,
+        grove_version: &GroveVersion,
+    ) -> CostResult<TreeNode, crate::Error> {
+        self.store.fetch_node_without_value(link, grove_version)
+    }
+
+    fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), crate::Error> {
+        self.store.load_node_value(node)
+    }
+
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), crate::Error> {
         self.store.write_node(node, change)
     }

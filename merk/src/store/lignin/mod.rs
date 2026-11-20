@@ -37,8 +37,15 @@
 //! [`LigninBatch::apply`] for a handle that stays open
 //! ([`LigninNodeStore::take_locations`]).
 //!
-//! Every read builds a `TreeNode`, value included. PERF-01 replaces that
-//! with views.
+//! Every read builds a `TreeNode`. A read by key and a fetch through a link
+//! build it with its value. A fetch for a walk that only reads
+//! ([`NodeStore::fetch_node_without_value`]), which is how a proof walks,
+//! builds it without: the cell holds the hashes, the feature and the links
+//! such a walk reads, and the value's length, by which the read is charged
+//! as the whole record. The value is read when the walk asks for it
+//! ([`NodeStore::load_node_value`]), and only if the node under the key
+//! still has the value hash and the key-value hash it was read with.
+//! PERF-01 replaces the `TreeNode` with views.
 //!
 //! # Writes
 //!
@@ -278,6 +285,18 @@ fn reference(link: Option<StoredLink>) -> Result<Option<Link>, Error> {
     .transpose()
 }
 
+/// A node that was read with no value, as a walk that only reads takes it.
+fn node_without_value(key: Vec<u8>, node: StoredNode) -> Result<TreeNode, Error> {
+    Ok(TreeNode::new_without_value(
+        key,
+        node.kv_hash,
+        node.value_hash,
+        node.feature,
+        reference(node.left)?,
+        reference(node.right)?,
+    ))
+}
+
 fn node_inner(key: Vec<u8>, node: StoredNode) -> Result<TreeNodeInner, Error> {
     let value = node
         .value
@@ -350,17 +369,18 @@ impl<'db> LigninNodeStore<'db> {
         self.hints.borrow().get(key).copied()
     }
 
-    /// The node under `key` with the key of each child in its link.
+    /// The node under `key` with the key of each child in its link, and
+    /// with its value where `with_value` asks for it.
     ///
     /// The node and its children are read in operations of their own, and
     /// a commit can land between two of them. The transaction then says
     /// that the node's location is no longer good, and the node is read
     /// again.
-    fn load(&self, key: &[u8]) -> Result<Option<StoredNode>, Error> {
+    fn load(&self, key: &[u8], with_value: bool) -> Result<Option<StoredNode>, Error> {
         let prefix = &self.subtree.prefix;
         let mut hint = self.hint(key);
         'node: for _ in 0..READ_ATTEMPTS {
-            let Some(mut node) = self.access.node(prefix, key, hint, true)? else {
+            let Some(mut node) = self.access.node(prefix, key, hint, with_value)? else {
                 return Ok(None);
             };
             hash::refuse_stale(node.stale)?;
@@ -404,12 +424,36 @@ impl<'db> LigninNodeStore<'db> {
         }
     }
 
-    /// Loads the node under `key` and charges the read.
-    fn read(&self, key: &[u8]) -> CostResult<Option<StoredNode>, Error> {
-        self.charged(self.load(key).and_then(|node| {
+    /// Loads the node under `key` and charges the read: the length of the
+    /// node's whole record, whether or not its value is read with it.
+    fn read(&self, key: &[u8], with_value: bool) -> CostResult<Option<StoredNode>, Error> {
+        self.charged(self.load(key, with_value).and_then(|node| {
             let len = node.as_ref().map(record_len).transpose()?;
             Ok((node, len))
         }))
+    }
+
+    /// Reads the value of `node`, which was read without it, if the node
+    /// under its key still has the value hash and the key-value hash that
+    /// were read: a value whose hashed bytes changed has another.
+    fn read_value_of(&self, node: &mut TreeNode) -> Result<(), Error> {
+        if !node.value_absent() {
+            return Ok(());
+        }
+        let prefix = &self.subtree.prefix;
+        let stored = self
+            .access
+            .node(prefix, node.key(), self.hint(node.key()), true)?
+            .ok_or_else(|| refused("a node was removed before its value was read"))?;
+        hash::refuse_stale(stored.stale)?;
+        if stored.value_hash != *node.value_hash() || stored.kv_hash != *node.kv_hash() {
+            return Err(refused("a node was written before its value was read"));
+        }
+        let value = stored
+            .value
+            .ok_or(Error::CorruptedState("a node was read with no value"))?;
+        node.put_read_value(value);
+        Ok(())
     }
 
     fn read_record(&self, keyspace: Keyspace, key: &[u8]) -> CostResult<Option<Vec<u8>>, Error> {
@@ -505,7 +549,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeNode>, Error> {
-        self.read(key)
+        self.read(key, true)
             .map_ok(|node| {
                 node.map(|node| {
                     let mut inner = node_inner(key.to_vec(), node)?;
@@ -521,9 +565,28 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
-        self.read(key)
+        self.read(key, true)
             .map_ok(|node| node.map(|node| node_inner(Vec::new(), node)).transpose())
             .flatten()
+    }
+
+    fn fetch_node_without_value(
+        &self,
+        link: &Link,
+        _grove_version: &GroveVersion,
+    ) -> CostResult<TreeNode, Error> {
+        let key = link.key();
+        self.read(key, false)
+            .map_ok(|node| {
+                let node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
+                node_without_value(key.to_vec(), node)
+            })
+            .flatten()
+    }
+
+    fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {
+        self.read_value_of(node)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {

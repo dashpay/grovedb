@@ -167,6 +167,19 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         })
     }
 
+    fn fetch_node_without_value(
+        &self,
+        link: &Link,
+        grove_version: &GroveVersion,
+    ) -> CostResult<TreeNode, Error> {
+        injected_failure(link.key())
+            .unwrap_or_else(|| self.0.fetch_node_without_value(link, grove_version))
+    }
+
+    fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {
+        self.0.load_node_value(node)
+    }
+
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         self.0.write_node(node, change)
     }

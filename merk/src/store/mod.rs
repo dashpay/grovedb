@@ -218,6 +218,55 @@ pub trait NodeStore<'db> {
             .flatten()
     }
 
+    /// The node a parent's `link` points to, for a walk that only reads the
+    /// tree and asks for the value of a node where it needs it, as the walk
+    /// of a proof does.
+    ///
+    /// A store may leave the value out, and says so in the node
+    /// ([`TreeNode::value_absent`]); [`Self::load_node_value`] reads it. In
+    /// everything else the node is the one [`Self::fetch_node`] returns at
+    /// that moment, with no value-defined cost, and the read is charged as
+    /// that fetch is: the whole record, whether or not the value comes
+    /// with it. A node without its value has no mutation baseline. It must
+    /// never reach a commit or be kept in the tree of a Merk.
+    ///
+    /// The default is [`Self::fetch_node`]: a store that keeps one record
+    /// per node has read the value with it.
+    fn fetch_node_without_value(
+        &self,
+        link: &Link,
+        grove_version: &GroveVersion,
+    ) -> CostResult<TreeNode, Error> {
+        self.fetch_node(
+            link,
+            None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+            grove_version,
+        )
+    }
+
+    /// Reads the value of `node`, which [`Self::fetch_node_without_value`]
+    /// returned without it, and puts it in the node. A node that has its
+    /// value is left as it is.
+    ///
+    /// It is charged nothing: the fetch of the node was charged its whole
+    /// record. The value that is read is one the node's hashes are the
+    /// hashes of, or the read fails with `Error::StorageError`: a store
+    /// does not put a value under a value hash and a key-value hash that
+    /// are not its own. What a value holds outside its hash, as an item
+    /// holds the list of its referrers, is what the store holds when the
+    /// value is read.
+    ///
+    /// The default is for a store that returns every node whole.
+    fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {
+        match node.value_absent() {
+            false => Ok(()),
+            true => Err(Error::CorruptedCodeExecution(
+                "a store of whole nodes was handed a node without its value",
+            )),
+        }
+        .wrap_with_cost(Default::default())
+    }
+
     /// Writes one node at once, outside a change set, uncharged. The default
     /// commits a change set of that one node.
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {

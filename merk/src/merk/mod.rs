@@ -72,7 +72,7 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_version::version::GroveVersion;
-use source::MerkSource;
+use source::{MerkSource, PaidNodes};
 
 use crate::{
     error::Error,
@@ -314,6 +314,9 @@ pub struct Merk<S> {
     meta_cache: HashMap<Vec<u8>, Option<Vec<u8>>>,
     /// The kind of data this tree holds (normal, sum, count, etc.).
     pub tree_type: TreeType,
+    /// The nodes a walk was charged for and did not keep in `tree`, on a
+    /// store that leaves the values of such a walk's nodes out.
+    paid_nodes: PaidNodes,
 }
 
 /// Adds the key of `walker`'s node and of every node under it to `keys`.
@@ -677,6 +680,7 @@ where
                             self.root_tree_key = Cell::new(Some(t.key().to_vec()));
                         }
                         self.tree = Cell::new(tree);
+                        self.paid_nodes.clear();
                     })
             } else {
                 Ok(()).wrap_with_cost(Default::default())
@@ -702,6 +706,7 @@ where
                 .get_node(tree_root_key, value_defined_cost_fn, grove_version)
                 .map_ok(|tree| {
                     self.tree = Cell::new(tree);
+                    self.paid_nodes.clear();
                 })
         } else {
             // The tree is empty
@@ -1022,6 +1027,7 @@ where
                 }
                 Some(w) => w,
             };
+            walker.values_on_demand();
 
             // First, find the path to the target key
             let find_result = walker

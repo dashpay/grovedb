@@ -58,6 +58,12 @@
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
 //! which run the same batches on both.
 //!
+//! # Proofs (MERK-06)
+//!
+//! Where a step of a trace proves, Merk makes the proofs GroveDB asks of
+//! it on both engines, over the nodes the replay has handed over so far,
+//! and every proof is the same bytes at the same cost (`proofs`).
+//!
 //! # What the store charges (MERK-03)
 //!
 //! The replay also holds the store's charges to RocksDB's, on the nodes of
@@ -88,6 +94,8 @@
 
 #[path = "merk_store/hashes.rs"]
 mod hashes;
+#[path = "merk_store/proofs.rs"]
+mod proofs;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -259,6 +267,8 @@ struct Tally {
     /// The committed cells whose hashes Merk's hash rules made again, the
     /// hashes they made, and the value hashes only their writer can make.
     hashed: hashes::Made,
+    /// The proofs that Merk made on both engines where a trace proves.
+    proved: proofs::Proved,
 }
 
 impl Tally {
@@ -285,6 +295,7 @@ impl Tally {
         self.hashed.with_secondary += other.hashed.with_secondary;
         self.hashed.with_axes += other.hashed.with_axes;
         self.hashed.reloaded += other.hashed.reloaded;
+        self.proved.add(other.proved);
     }
 }
 
@@ -1136,6 +1147,10 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
             let _ = transactions.apply(&op, spec.grove_version).unwrap();
             let changes = observer.observe(&db, transactions.block());
             if changes.is_empty() {
+                // A step that proves is proven by Merk on both engines.
+                let (block, grove) = (transactions.block(), observer.grove());
+                let proved = proofs::compare(&db, block, &writer, grove, &op, spec.grove_version);
+                replay.tally.proved.add(proved);
                 continue;
             }
             let (block, grove) = (transactions.block(), observer.grove());
@@ -1363,6 +1378,15 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(
             hashed.with_axes > 0 && hashed.reloaded > 10_000,
+            "{tally:?}"
+        );
+        let proved = tally.proved;
+        assert!(
+            proved.steps > 10_000 && proved.calls > proved.steps && proved.calls > proved.skipped,
+            "{tally:?}"
+        );
+        assert!(
+            proved.proofs > 50_000 && proved.bytes > 10_000_000,
             "{tally:?}"
         );
     }
