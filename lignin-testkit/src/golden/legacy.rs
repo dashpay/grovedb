@@ -60,6 +60,16 @@
 //!     an indexed tree, and the repair of those versions can take such a
 //!     row out of the ranking's tree and leave it in storage, where the
 //!     ranking is read from (`ranking-drift`).
+//! 14. **A conversion that is refused**: `GroveDb::convert_to_big_sum_tree`
+//!     of a tree that is converted already, of what has no counterpart
+//!     with a 128-bit sum, at a place that holds no tree, of a tree whose
+//!     parent or whose child would sum it differently, of a tree whose
+//!     element names another sum than it has, and of an indexed tree with
+//!     a key the axis of 128-bit sums cannot rank; and on grove versions 1
+//!     to 4, which have no such operation, every conversion (the
+//!     `convert-…` cases). With them: an empty indexed tree as a row of a
+//!     proven query, whose proof does not verify on grove versions 1 and 2
+//!     (`empty-indexed-tree-row`).
 //!
 //! Two more cases hold what every grove version refuses and the generators
 //! therefore never ask for: an offset where no count commits the rows it
@@ -76,6 +86,7 @@ use grovedb::{
 
 use crate::workload::{AppendEntry, BatchOp, Op, Query, QueryItem, Read, Write};
 
+mod conversions;
 mod later;
 mod refusals;
 
@@ -572,6 +583,7 @@ pub fn cases() -> Vec<Case> {
     cases.push(reference_case());
     cases.extend(refusals::cases());
     cases.extend(later::cases());
+    cases.extend(conversions::cases());
     cases
 }
 
@@ -767,7 +779,7 @@ mod tests {
     /// What the cases for refused operations and forms of query tally on
     /// grove versions 1 to 5: the operations refused, then the proofs
     /// refused.
-    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 24] = [
+    const REFUSALS: [(&str, [usize; 5], [usize; 5]); 33] = [
         ("move-in-batch", [2, 2, 2, 0, 0], [0; 5]),
         ("drop-flat", [1, 1, 1, 0, 0], [0; 5]),
         ("drop-flat-in-batch", [1, 1, 1, 0, 0], [0; 5]),
@@ -800,13 +812,39 @@ mod tests {
         ("flags-of-another-length", [2, 2, 2, 0, 0], [0; 5]),
         ("full-handover", [1, 1, 1, 1, 0], [0; 5]),
         ("ranking-drift", [7, 7, 7, 5, 0], [7, 7, 7, 3, 0]),
+        ("convert-twice", [25, 25, 25, 25, 18], [0; 5]),
+        (
+            "convert-without-a-counterpart",
+            [19, 19, 19, 19, 14],
+            [0; 5],
+        ),
+        ("convert-what-is-not-there", [12, 12, 12, 12, 10], [0; 5]),
+        (
+            "convert-before-its-parent",
+            [16, 16, 16, 16, 5],
+            [2, 2, 2, 2, 0],
+        ),
+        ("convert-with-a-wide-child", [8, 8, 8, 8, 3], [0; 5]),
+        ("convert-claimed-sum", [6, 6, 6, 6, 4], [0; 5]),
+        (
+            "convert-key-too-long-to-rank",
+            [8, 8, 8, 7, 2],
+            [3, 3, 3, 2, 0],
+        ),
+        (
+            "convert-rows-of-both-signs",
+            [15, 15, 15, 10, 0],
+            [9, 9, 9, 4, 0],
+        ),
+        ("empty-indexed-tree-row", [0; 5], [0; 5]),
     ];
 
     /// The proofs of those cases that do not verify, on grove versions 1 to
     /// 5, where there are any.
-    const UNVERIFIED: [(&str, [usize; 5]); 2] = [
+    const UNVERIFIED: [(&str, [usize; 5]); 3] = [
         ("capped-tree-rows", [0, 0, 0, 1, 0]),
         ("limit-over-empty-subtrees", [2, 2, 0, 0, 0]),
+        ("empty-indexed-tree-row", [3, 3, 0, 0, 0]),
     ];
 
     /// Keeps the panics this module expects out of the test output. Any

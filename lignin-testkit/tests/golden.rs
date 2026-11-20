@@ -249,6 +249,15 @@ fn only_the_hand_written_cases_record_a_failure() {
         case("flags-of-another-length", &[1, 2, 3]),
         case("full-handover", &[1, 2, 3, 4]),
         case("ranking-drift", &[1, 2, 3, 4]),
+        case("convert-twice", &[1, 2, 3, 4, 5]),
+        case("convert-without-a-counterpart", &[1, 2, 3, 4, 5]),
+        case("convert-what-is-not-there", &[1, 2, 3, 4, 5]),
+        case("convert-before-its-parent", &[1, 2, 3, 4, 5]),
+        case("convert-with-a-wide-child", &[1, 2, 3, 4, 5]),
+        case("convert-claimed-sum", &[1, 2, 3, 4, 5]),
+        case("convert-key-too-long-to-rank", &[1, 2, 3, 4, 5]),
+        case("convert-rows-of-both-signs", &[1, 2, 3, 4]),
+        case("empty-indexed-tree-row", &[1, 2]),
     ]
     .into_iter()
     .flatten()
@@ -522,6 +531,51 @@ fn the_layer_a_limit_ends_early_is_in_the_corpus() {
         cut[2], full[2],
         "the limit of the whole query ends the layer"
     );
+}
+
+/// The corpus holds the conversion of each of the seven trees as grove
+/// version 5 makes it and as the versions before it refuse it. In
+/// `convert-twice` grove version 5 converts each tree once and refuses every
+/// later conversion of it, and grove versions 1 to 4 refuse them all for
+/// having no such operation.
+#[test]
+fn the_conversions_are_in_the_corpus() {
+    let conversions = |version: u32| -> Vec<Option<String>> {
+        recorded(&format!("v{version}/legacy-convert-twice.trace"))
+            .details()
+            .filter(|detail| {
+                detail
+                    .remarks
+                    .iter()
+                    .any(|remark| remark.starts_with("Write(ConvertToBigSumTree"))
+            })
+            .map(|detail| {
+                detail
+                    .lines
+                    .iter()
+                    .find_map(|line| line.strip_prefix("failed "))
+                    .map(str::to_string)
+            })
+            .collect()
+    };
+    let converted = conversions(5);
+    assert_eq!(converted.len(), 25);
+    let refused: Vec<&String> = converted.iter().flatten().collect();
+    assert_eq!(converted.len() - refused.len(), 7, "one for each tree");
+    assert!(
+        refused.iter().all(|error| *error == "InvalidInput"),
+        "{refused:?}"
+    );
+    for version in 1..=4 {
+        let refused = conversions(version);
+        assert_eq!(refused.len(), 25);
+        assert!(
+            refused
+                .iter()
+                .all(|error| { error.as_deref() == Some("VersionError::UnknownVersionMismatch") }),
+            "grove version {version}: {refused:?}"
+        );
+    }
 }
 
 /// The sizes of the reference workload's two named proofs, by the protocol
