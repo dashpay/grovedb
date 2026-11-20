@@ -10,10 +10,11 @@
 //!    further.
 //! 2. The Merk is opened on RocksDB, in the trace's transaction, and on
 //!    the LigninDB store the replay wrote. The two root hashes are equal.
-//! 3. On RocksDB a chunk producer is made and asked for the chunk at the
-//!    root. If either is refused, the same two calls on the store end in
-//!    an error with the same `Debug` text, and the Merk is counted as
-//!    giving no chunk and goes no further.
+//! 3. On RocksDB the replay tries to make a chunk producer and, if one is
+//!    made, asks it for the chunk at the root. If that attempt ends in an
+//!    error, the same attempt on the store ends in an error with the same
+//!    `Debug` text, and the Merk is counted as giving no chunk and goes no
+//!    further.
 //! 4. `chunks_of` asks each engine for its chunks. The two maps of chunk id
 //!    to chunk are equal.
 //! 5. `restore` restores a Merk from that map on each engine, with no
@@ -23,7 +24,8 @@
 //!    where it did not, are the same on the two engines, compared as
 //!    their `Debug` text. Where `finalize` succeeded, so is what
 //!    `root_hash_key_and_aggregate_data` answers for the restored Merk,
-//!    and the key and the record of every node reached from its root.
+//!    compared in the same way. So are the key and the record of every
+//!    node reached from its root, compared as bytes in hexadecimal.
 //!
 //! The restores of one call go into one new RocksDB storage and one new
 //! LigninDB store, each under the prefix the Merk has in the grove. What a
@@ -69,9 +71,9 @@ pub struct Restored {
     pub nodes: u64,
     /// Those of them whose `finalize` did not succeed in step 5.
     pub refused: u64,
-    /// The Merks that went no further than step 3.
+    /// The Merks that stopped at step 3.
     pub no_chunks: u64,
-    /// The Merks that went no further than step 1.
+    /// The Merks that stopped at step 1.
     pub skipped: u64,
 }
 

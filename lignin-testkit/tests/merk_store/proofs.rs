@@ -14,11 +14,13 @@
 //!   an aggregate over a range is also proven as that aggregate.
 //! - For a trunk and for a branch chunk: the trunk or the branch proof of
 //!   the Merk at the path.
-//! - For chunks of a Merk by their ids (MERK-07): one producer is given
-//!   each id the step names, in their order, or the id of the chunk at the
-//!   root where the step names none. The call answers with every chunk
-//!   and the id the producer gives as next after each, or with the first
-//!   refusal.
+//! - For chunks of a Merk by their ids (MERK-07): the replay tries to make
+//!   one producer and, if one is made, gives it the ids the step names, in
+//!   their order and up to the first that is refused, or the id of the
+//!   chunk at the root where the step names none. The call answers with
+//!   the encoded chunks and what the producer gives as the next id after
+//!   each, which is none after the producer's last chunk, or with the
+//!   first error alone. A producer reports no cost for a chunk.
 //!
 //! Every answer is compared as its encoded bytes, or as its error, and
 //! every call must cost on LigninDB what it costs on RocksDB, the open of

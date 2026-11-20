@@ -1404,16 +1404,16 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             "{tally:?}"
         );
         assert!(
-            proved.chunk_calls > 0 && proved.chunk_bytes > 0,
+            proved.chunk_calls > 500 && proved.chunk_bytes > 100_000,
             "{tally:?}"
         );
         let restored = tally.restored;
         assert!(
-            restored.merks > 0 && restored.of_several_chunks > 0,
+            restored.merks > 30_000 && restored.of_several_chunks > 2_000,
             "{tally:?}"
         );
         assert!(
-            restored.finished > restored.refused && restored.nodes > 0,
+            restored.finished > 30_000 && restored.nodes > 100_000,
             "{tally:?}"
         );
     }
