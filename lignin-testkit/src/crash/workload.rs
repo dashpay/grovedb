@@ -18,7 +18,7 @@ use crate::workload::rng::Rng;
 /// One thing a session does.
 ///
 /// A step of the segment cleaner (STORE-08) is one more operation here and
-/// one more call in the campaign's `Lineage::run`: it changes no page, so
+/// one more call in the campaign's `Run::make_with`: it changes no page, so
 /// the model has nothing to learn of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {

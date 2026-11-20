@@ -620,8 +620,7 @@ impl History {
         if let Some(at) = at {
             return Ok(Landing::Point(expect.floor + at));
         }
-        let (floor, latest) = (self.points[expect.floor].version, self.last().version);
-        let latest = latest.max(self.points[expect.latest].version);
+        let floor = self.points[expect.floor].version;
         if landed < floor {
             return Err(Mismatch::BelowFloor { landed, floor });
         }
@@ -638,7 +637,7 @@ impl History {
             }),
             None => Err(Mismatch::AboveLatest {
                 landed,
-                latest: self.points[expect.latest].version.min(latest),
+                latest: self.points[expect.latest].version,
             }),
         }
     }

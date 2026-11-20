@@ -277,6 +277,16 @@ pub enum Reclaim {
     Page,
 }
 
+impl Reclaim {
+    /// The slots of the cells the step takes: none when it frees the page.
+    pub fn slots(&self) -> &[u16] {
+        match self {
+            Self::Cells(slots) => slots,
+            Self::Page => &[],
+        }
+    }
+}
+
 /// A page of a commit: its private copy, and the changes made to it.
 struct Work<'c, 'p> {
     copy: PrivateRef<'p>,
@@ -506,6 +516,26 @@ impl Session {
         released.len() + self.pool.reclaim(&self.versions)
     }
 
+    /// The state of every page id the allocator has given out.
+    fn page_states(&self) -> Vec<(PageId, PageState)> {
+        let mut states = Vec::new();
+        let mut from = Some(PageId::MIN);
+        while let Some(at) = from {
+            from = self.allocator.scan(at, &mut states);
+        }
+        states
+    }
+
+    /// The newest link of every page the table has a chain of.
+    fn newest_links(&self) -> BTreeMap<PageId, Link> {
+        let mut links = Vec::new();
+        let mut from = Some(PageId::MIN);
+        while let Some(at) = from {
+            from = self.table.scan(at, &mut links);
+        }
+        links.into_iter().collect()
+    }
+
     /// Pins the latest version, as a snapshot does. Returns whether a pin
     /// was taken: a session has one at most.
     pub fn pin(&self) -> bool {
@@ -546,23 +576,13 @@ impl Session {
     /// - the counts of live values are the pointers the pages hold (DU5),
     ///   and none was found wrong
     pub fn read(&self, expected: &BTreeSet<PageId>) -> Result<Pages, String> {
-        let mut states = Vec::new();
-        let mut from = Some(PageId::MIN);
-        while let Some(at) = from {
-            from = self.allocator.scan(at, &mut states);
-        }
-        let states: BTreeMap<PageId, PageState> = states.into_iter().collect();
-        let mut links = Vec::new();
-        let mut from = Some(PageId::MIN);
-        while let Some(at) = from {
-            from = self.table.scan(at, &mut links);
-        }
-        let newest: BTreeMap<PageId, Link> = links.into_iter().collect();
+        let states: BTreeMap<PageId, PageState> = self.page_states().into_iter().collect();
+        let newest = self.newest_links();
 
         let ids: BTreeSet<PageId> = (states.keys().chain(newest.keys()).chain(expected))
             .copied()
             .collect();
-        let private = lock(&self.held).is_some();
+        let private = self.holds();
         let mut pages = Pages::new();
         let mut pointers: BTreeMap<FileId, u64> = BTreeMap::new();
         let mut buf = Vec::new();
@@ -735,11 +755,7 @@ impl Session {
     ///
     /// The caller vouches that no write transaction holds a copy.
     pub fn verify(&self) -> Result<(), String> {
-        let mut states = Vec::new();
-        let mut from = Some(PageId::MIN);
-        while let Some(at) = from {
-            from = self.allocator.scan(at, &mut states);
-        }
+        let states = self.page_states();
         let (mut roots, mut flat) = (Vec::new(), Vec::new());
         for (id, _) in states.iter().filter(|(_, state)| *state == PageState::Live) {
             let Some(frame) = self.current(*id).map_err(text)? else {
@@ -1102,9 +1118,7 @@ impl Session {
                 };
                 let after = pointers_of(&image)?;
                 released.extend(before.into_iter().filter(|held| !after.contains(held)));
-                let (head, tail) = latch.split_at_mut(image.len());
-                head.copy_from_slice(&image);
-                tail.fill(0);
+                put_image(&mut latch[..], &image);
             }
             if !named.is_empty() {
                 return Err(format!("page {id}: a value was logged for no cell"));
@@ -1209,6 +1223,21 @@ impl Session {
             LogError::Unsettled { .. } => Err(text(error)),
             other => Ok(text(other)),
         }
+    }
+}
+
+/// Makes `frame` the image, with nothing after it.
+fn put_image(frame: &mut [u8], image: &[u8]) {
+    let (head, tail) = frame.split_at_mut(image.len());
+    head.copy_from_slice(image);
+    tail.fill(0);
+}
+
+/// The version a table checkpoint covers, or `None` if it was put off.
+fn covered(checkpointed: Checkpointed) -> Option<u64> {
+    match checkpointed {
+        Checkpointed::Installed { covers, .. } => Some(covers.get()),
+        Checkpointed::PutOff { .. } => None,
     }
 }
 
@@ -1499,9 +1528,7 @@ impl Session {
             let mut image = Vec::new();
             let capacity = PAGE_SIZE.image_capacity();
             change.apply_to_flat_leaf(frame, FRAME_FORMAT, capacity, &mut image)?;
-            let (head, tail) = blank.split_at_mut(image.len());
-            head.copy_from_slice(&image);
-            tail.fill(0);
+            put_image(&mut blank[..], &image);
             change
         };
         let mut record = Vec::new();
@@ -1699,12 +1726,7 @@ impl Session {
     /// whoever cleans segments does. Returns how many chains went.
     pub fn trim_freed(&self) -> usize {
         let oldest = self.versions.oldest_pin();
-        let mut links = Vec::new();
-        let mut from = Some(PageId::MIN);
-        while let Some(at) = from {
-            from = self.table.scan(at, &mut links);
-        }
-        let newest: BTreeMap<PageId, Link> = links.into_iter().collect();
+        let newest = self.newest_links();
         let freed = |link: &Link| link.kind == LinkKind::Free && link.version <= oldest;
         let mut removed = Vec::new();
         newest
@@ -1860,10 +1882,7 @@ impl Session {
     /// Takes a table checkpoint. Returns the version it covers, or `None`
     /// if it was put off.
     pub fn checkpoint(&self) -> Result<Option<u64>, String> {
-        match self.wb().checkpoint().map_err(text)? {
-            Checkpointed::Installed { covers, .. } => Ok(Some(covers.get())),
-            Checkpointed::PutOff { .. } => Ok(None),
-        }
+        self.wb().checkpoint().map(covered).map_err(text)
     }
 
     /// Makes the log durable, as `flush()` does.
@@ -1887,10 +1906,7 @@ impl Session {
     /// version its last table checkpoint covers, or `None` if that was put
     /// off.
     pub fn finish(&self) -> Result<Option<u64>, String> {
-        match self.wb().finish().map_err(text)? {
-            Checkpointed::Installed { covers, .. } => Ok(Some(covers.get())),
-            Checkpointed::PutOff { .. } => Ok(None),
-        }
+        self.wb().finish().map(covered).map_err(text)
     }
 
     /// How much of the log no table checkpoint covers.
