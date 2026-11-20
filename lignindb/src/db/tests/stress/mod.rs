@@ -61,6 +61,14 @@
 //! `LIGNIN_STRESS_EPOCH_SECONDS` the length of an epoch. The schedule of
 //! the threads is the machine's, so a seed names the workload and not the
 //! interleaving.
+//!
+//! A run holds several hundred files open at once: the segments and the
+//! value-log files of the database, which this test keeps small, and as
+//! many again of a checkpoint that is opened beside it. That is more than
+//! the 256 files a process may open by default on macOS. A run that may
+//! not open as many files as it wants ([`Until::open_files`]) fails at its
+//! start and says so. `.github/scripts/lignin-ci.sh` raises the limit for
+//! the commands that run this test.
 
 pub(super) mod history;
 pub(super) mod work;
@@ -124,6 +132,43 @@ enum Until {
     Blocks(u64),
     /// So long.
     Elapsed(Duration),
+}
+
+impl Until {
+    /// How many open files a run wants room for: well above what runs
+    /// were measured to hold at once, which was under 300 for the short
+    /// form and under 600 for the long one.
+    fn open_files(self) -> u64 {
+        match self {
+            Self::Blocks(_) => 512,
+            Self::Elapsed(_) => 2_048,
+        }
+    }
+}
+
+/// How many files this process may hold open at once, as a shell that it
+/// starts says: the limit is inherited. `None` where no shell answers
+/// with a number, and nothing is checked then.
+fn open_files_limit() -> Option<u64> {
+    let shell = std::process::Command::new("sh")
+        .args(["-c", "ulimit -n"])
+        .output()
+        .ok()?;
+    String::from_utf8(shell.stdout).ok()?.trim().parse().ok()
+}
+
+/// Fails, with what to do about it, if this process may not hold `wanted`
+/// files open at once: a run that meets the limit halfway fails in
+/// whichever thread opens a file next, with an error of the file system.
+fn may_open(wanted: u64) {
+    if let Some(limit) = open_files_limit() {
+        assert!(
+            limit >= wanted,
+            "the stress test wants room for {wanted} open files, and this process may open \
+             {limit}: raise the limit of open files (`ulimit -n 4096`), as \
+             `.github/scripts/lignin-ci.sh` does"
+        );
+    }
 }
 
 /// What one run of the stress test is given.
@@ -546,7 +591,7 @@ fn outside(run: &Run<'_>, writer: &mut Writer, dir: &Path, options: &Options) {
                 }
                 add(&tally.outside, 1);
                 commits += 1;
-                if commits % CHECKPOINT_EVERY == 0 {
+                if commits.is_multiple_of(CHECKPOINT_EVERY) {
                     checkpoint(run, &dir.join(format!("checkpoint-{commits}")), options);
                 }
             }
@@ -670,7 +715,7 @@ fn reader(run: &Run<'_>) {
         add(&tally.looks_behind, u64::from(at < run.version()));
         looks += 1;
 
-        if looks % VERIFY_EVERY == 0 {
+        if looks.is_multiple_of(VERIFY_EVERY) {
             // The checker reads a pinned version as a reader, beside the
             // writers, write-back and the cleaner. A step of the reclaimer
             // of what drops left changes the newest version of one page,
@@ -930,6 +975,7 @@ fn epoch(
 
 fn stress(config: Config) -> Tally {
     println!("stress: {config:?}");
+    may_open(config.until.open_files());
     let dir = temp();
     let tally = Tally::default();
     let history = History::new(1);

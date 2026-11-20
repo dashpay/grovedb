@@ -65,7 +65,7 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 ### Open files
 
-`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
+`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests, and so do `schedules`, `stress` and `tsan`. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". The engine's stress test (`lignindb` `db::tests::stress`) wants more than 256 too: it holds a database and a checkpoint of it open at once, both in small files, and a run that may not open as many files as it wants fails at its start and says so. Someone who runs these tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
 
 ### Hosted runners
 

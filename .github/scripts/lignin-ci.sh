@@ -57,9 +57,10 @@
 # Miri, cargo-fuzz and ThreadSanitizer run on the toolchain $LIGNIN_NIGHTLY
 # (default nightly-2026-02-24), everything else on the one
 # rust-toolchain.toml names.
-# Test databases go to the temporary directory: TMPDIR says where. `test`
-# raises the limit of open files, whose default of 256 on macOS is less than
-# the RocksDB databases of the test kit's tests hold at once.
+# Test databases go to the temporary directory: TMPDIR says where. `test`,
+# `schedules`, `stress` and `tsan` raise the limit of open files, whose
+# default of 256 on macOS is less than the RocksDB databases of the test
+# kit's tests hold at once, and less than the engine's stress test does.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
@@ -68,6 +69,15 @@ cd "$repo"
 nightly=${LIGNIN_NIGHTLY:-nightly-2026-02-24}
 
 say() { printf '== %s\n' "$*"; }
+# Raises the soft limit of open files to the hard limit, at most 65536.
+raise_open_files() {
+    local limit
+    limit=$(ulimit -Hn)
+    if [ "$limit" = unlimited ] || [ "$limit" -gt 65536 ]; then
+        limit=65536
+    fi
+    ulimit -n "$limit"
+}
 fail() {
     printf 'lignin-ci: %s\n' "$*" >&2
     exit 1
@@ -179,11 +189,7 @@ machine)
 test)
     shift
     package_args
-    limit=$(ulimit -Hn)
-    if [ "$limit" = unlimited ] || [ "$limit" -gt 65536 ]; then
-        limit=65536
-    fi
-    ulimit -n "$limit"
+    raise_open_files
     say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
     status=0
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@" || status=$?
@@ -427,6 +433,7 @@ schedules)
     points=${2:-all}
     [[ $points == all || $points =~ ^[1-9][0-9]*$ ]] ||
         fail "usage: lignin-ci.sh schedules [POINTS]"
+    raise_open_files
     export LIGNIN_SCHEDULE_POINTS=$points
     say "the schedules of the engine, $points points of each step"
     cargo test -p lignindb --lib db::tests::schedules:: -- --nocapture
@@ -435,6 +442,9 @@ schedules)
 stress | tsan)
     seconds=${2:-}
     [[ $seconds =~ ^[1-9][0-9]*$ ]] || fail "usage: lignin-ci.sh $1 SECONDS"
+    # The stress test holds a database and a checkpoint of it open at
+    # once, both in small files.
+    raise_open_files
     # An optimised build with the assertions of a debug build, in a
     # directory of its own: the profile is not the one of a release.
     export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
