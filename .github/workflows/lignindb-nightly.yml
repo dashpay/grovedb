@@ -1,0 +1,182 @@
+name: LigninDB nightly
+
+# The LigninDB runs that take longer than a pull request should wait for.
+# Each job is one command of .github/scripts/lignin-ci.sh, which runs them by
+# hand too; docs/lignindb/ci.md lists them.
+#
+# GitHub runs a scheduled workflow from the default branch only, so the
+# nightly runs start once this file is on develop. Until then, and whenever
+# the file or the script changes, a pull request runs every job briefly,
+# which shows that its commands work.
+
+on:
+  schedule:
+    - cron: '17 2 * * *'
+  workflow_dispatch:
+  pull_request:
+    branches:
+      - master
+      - develop
+      - 'v[0-9]+.[0-9]+-dev'
+    paths:
+      - '.github/workflows/lignindb-nightly.yml'
+      - '.github/scripts/lignin-ci.sh'
+
+# A new commit of a pull request replaces its run; a run by hand does not
+# stop the night's.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  LIGNIN_NIGHTLY: nightly-2026-02-24
+
+jobs:
+  # An hour of random operation streams on RocksDB and on the engine that
+  # stands in for LigninDB, compared after every step (VER-01).
+  diff-fuzz:
+    name: Differential fuzzer
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      # Each night a seed of its own, so that the nights cover different
+      # cases; the log names it, and `lignin-diff case` replays a case.
+      - name: Fuzz
+        run: >
+          .github/scripts/lignin-ci.sh diff-fuzz
+          ${{ github.event_name == 'pull_request' && '120' || format('3600 --seed {0}', github.run_id) }}
+
+  # The golden corpus of the reference scale: a million documents on each
+  # grove version, replayed on RocksDB.
+  corpus-reference:
+    name: Corpus of the reference scale
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+      - name: Replay
+        run: .github/scripts/lignin-ci.sh corpus-reference ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
+
+  # The corpus recorded again from the commit of develop it is pinned to,
+  # through record-at-pin.sh, and compared with the committed corpus: the
+  # recipe still works, and the corpus is what its engine gives.
+  corpus-at-pin:
+    name: Corpus from its pinned engine
+    runs-on: >-
+      ${{ fromJSON((github.event_name != 'pull_request'
+      || github.event.pull_request.head.repo.full_name == github.repository)
+      && '["self-hosted","Linux","rust-ci"]' || '"ubuntu-latest"') }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          clean: false
+          # The pinned commit has to be in the clone.
+          fetch-depth: 0
+      - name: Prepare a persistent runner
+        if: runner.environment == 'self-hosted'
+        uses: ./.github/actions/persistent-runner
+        with:
+          tools: clang cmake
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        if: runner.environment == 'github-hosted'
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/record-at-pin/target"
+      # The script takes a lock in the kept target/ for its run. A runner runs
+      # one job at a time, so a lock found here is one a killed job left.
+      - name: Remove a lock a killed run left
+        if: runner.environment == 'self-hosted'
+        run: rmdir target/record-at-pin/lock 2>/dev/null || true
+      - name: Record and compare
+        run: .github/scripts/lignin-ci.sh corpus-at-pin ${{ github.event_name == 'pull_request' && '--grove-version 5' || '' }}
+
+  # libFuzzer on every decoder of lignin-format (FMT-08). It installs a
+  # nightly toolchain and cargo-fuzz, so it stays hosted.
+  fuzz-decoders:
+    name: Decoder fuzzing
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LIGNIN_NIGHTLY }}
+      - uses: Swatinem/rust-cache@v2
+        if: hashFiles('lignin-format/fuzz/Cargo.toml') != ''
+        with:
+          cache-on-failure: "false"
+          workspaces: lignin-format/fuzz
+      - name: Install cargo-fuzz
+        if: hashFiles('lignin-format/fuzz/Cargo.toml') != ''
+        run: cargo "+$LIGNIN_NIGHTLY" install cargo-fuzz --locked
+      - name: Fuzz each decoder
+        run: .github/scripts/lignin-ci.sh fuzz-decoders ${{ github.event_name == 'pull_request' && 20 || 300 }}
+      - name: Keep the inputs that failed
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-artifacts
+          path: lignin-format/fuzz/artifacts
+          if-no-files-found: ignore
+
+  # What the pull request's Miri job leaves out: the file layer under Tree
+  # Borrows and the checksum test that walks 128 MiB; and the buffer pool's
+  # races under many of Miri's random schedules, with its data-race detector
+  # and weak-memory emulation.
+  miri:
+    name: Miri
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LIGNIN_NIGHTLY }}
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run Miri over everything
+        if: github.event_name != 'pull_request'
+        run: .github/scripts/lignin-ci.sh miri --full
+      - name: Run the races
+        run: .github/scripts/lignin-ci.sh miri-schedules ${{ github.event_name == 'pull_request' && 4 || 64 }}

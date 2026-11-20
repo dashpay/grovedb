@@ -197,6 +197,8 @@ Registering an engine with the fuzzer is two things: `impl StreamEngine` for it,
 - The job `test-engines` runs each suite on each of its other engines: `cargo nextest run -p PACKAGE --all-features --lib` with the suite's variable set. Its matrix is what `.github/scripts/engine-suites.sh matrix` prints, which the job `detect-changes` puts in an output. No engine is named in the workflow, so registering an engine adds its run.
 - A change to a registry or to the script runs the tests.
 
+[`ci.md`](ci.md) lists every job that checks the engines and the LigninDB crates, and the platforms each runs on.
+
 ## Registering an engine
 
 1. Add its name to the registry of the suite. The first line stays the default.
