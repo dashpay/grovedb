@@ -64,6 +64,17 @@
 //! ([`NodeChangeSet::state_root`](super::NodeChangeSet::state_root)): the
 //! engine keeps the Merk's directory entry by it.
 //!
+//! # Hashes
+//!
+//! A cell stores the value hash, the key-value hash and the hash of each
+//! child as Merk holds them, and a read hands them to Merk as they are
+//! stored. A write states every hash Merk holds and leaves to the engine
+//! the hash of a child whose link is modified, which Merk has not made:
+//! on existing GroveVersions there is none, because a commit hashes its
+//! tree first. The rules by which the engine makes such a hash are Merk's,
+//! and [`hash`] has them, with what each state of a link means for the
+//! store. A node with a hash that is not made yet is not read.
+//!
 //! # Costs
 //!
 //! Every charge comes from the functions of [`cost_model`], with the sizes
@@ -72,8 +83,10 @@
 //! write nothing until its batch is applied, and a batch as a storage
 //! batch is. The record length of a cell is measured from its sizes
 //! ([`cost_model::node_record_len_from_sizes`]), and that of a node Merk
-//! writes from the node ([`cost_model::node_record_len`]): no record is
-//! encoded for a charge. `docs/lignindb/cost-model.md`, section 15, has the
+//! writes from the node ([`cost_model::node_record_len`]), or from its
+//! parts where a link of it is modified and Merk has no record of it
+//! ([`hash`]): no record is encoded for a charge.
+//! `docs/lignindb/cost-model.md`, section 15, has the
 //! call for each event and how the store is held to it.
 //!
 //! # What is not here
@@ -97,6 +110,7 @@ mod access;
 mod change_set;
 mod directory;
 mod feature;
+pub mod hash;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod open_tests;
 #[cfg(all(test, feature = "rocksdb_storage"))]
@@ -311,6 +325,7 @@ impl<'db> LigninNodeStore<'db> {
             let Some(mut node) = self.access.node(prefix, key, hint, true)? else {
                 return Ok(None);
             };
+            hash::refuse_stale(node.stale)?;
             hint = None;
             let mut found = Vec::new();
             for (left, link) in [(true, &mut node.left), (false, &mut node.right)] {
@@ -394,11 +409,15 @@ impl<'db> LigninNodeStore<'db> {
                     .wrap_with_cost(MODEL.refused_write())
             }
             Mode::Deferred(Some(batch)) => {
-                batch.stage(change_set).wrap_with_cost(MODEL.staged_write())
+                let staged = change_set.check_stale();
+                let staged = staged.and_then(|()| batch.stage(change_set));
+                staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {
+                let checked = change_set.check_stale();
                 let (cost, write) = change_set.into_write();
-                self.apply(&write).wrap_with_cost(match is_commit {
+                let applied = checked.and_then(|()| self.apply(&write));
+                applied.wrap_with_cost(match is_commit {
                     true => cost,
                     false => MODEL.write_immediate(),
                 })

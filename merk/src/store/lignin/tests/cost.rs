@@ -2158,6 +2158,8 @@ fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
 
 #[test]
 fn a_node_that_has_no_record_length_is_not_written() {
+    use integer_encoding::VarInt;
+
     let lignin = Lignin::new();
     let path = lignin.path();
     let transaction = path.begin();
@@ -2180,8 +2182,11 @@ fn a_node_that_has_no_record_length_is_not_written() {
     )
     .unwrap();
     // A link to a child that is modified and not committed has no encoding
-    // either, and no hash: Merk commits a child before it writes the
-    // parent, and a writer that does not is refused the same.
+    // either, and no hash. Its node has the record length of the node once
+    // the hash is made, and is written with the hash left to the engine,
+    // in a change set that writes the child as well
+    // (`store::lignin::hash`). By itself it is refused too: by
+    // `write_node`, and by the commit of the change set that took it.
     let leaf = |n: u64| {
         TreeNode::new(
             be(n),
@@ -2193,25 +2198,71 @@ fn a_node_that_has_no_record_length_is_not_written() {
     };
     let uncommitted = leaf(2).attach(true, Some(leaf(1))).unwrap();
     assert!(uncommitted.link(true).is_some_and(Link::is_modified));
+    // M2 of a put of that node: a seek, and the stored key and the record
+    // added, each with its varint. The record is the one the node has once
+    // its child is hashed.
+    let hashed = Link::Reference {
+        hash: [3; 32],
+        child_heights: (0, 0),
+        key: be(1),
+        aggregate_data: AggregateData::NoAggregateData,
+    };
+    let hashed = TreeNode::from_fields(
+        be(2),
+        b"value".to_vec(),
+        [7; 32],
+        Some(hashed),
+        None,
+        TreeFeatureType::BasicMerkNode,
+    )
+    .unwrap();
+    let record_len = crate::cost_model::node_record_len(HANDLE_COST_MODEL, &hashed).unwrap();
+    let stored_key_len = HANDLE_COST_MODEL.stored_key_len(uncommitted.key().len());
+    let added =
+        stored_key_len + stored_key_len.required_space() + record_len + record_len.required_space();
+    let put_charge = OperationCost {
+        seek_count: 1,
+        storage_cost: StorageCost {
+            added_bytes: added as u32,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let nothing = OperationCost::default();
 
     let staged = LigninBatch::new();
-    for node in [&overlong, &uncommitted] {
-        for store in [
+    for (store, immediate) in [
+        (
             LigninNodeStore::deferred(&writer, ROOT, Some(&staged)),
-            LigninNodeStore::immediate(&writer, ROOT),
-        ] {
-            let written = store.write_node(node, NodeChange::ValueWritten);
-            assert_eq!(written.cost, OperationCost::default());
-            assert!(matches!(written.value, Err(Error::EdError(_))));
+            false,
+        ),
+        (LigninNodeStore::immediate(&writer, ROOT), true),
+    ] {
+        let written = store.write_node(&overlong, NodeChange::ValueWritten);
+        assert_eq!(written.cost, OperationCost::default());
+        assert!(matches!(written.value, Err(Error::EdError(_))));
+        let written = store.write_node(&uncommitted, NodeChange::ValueWritten);
+        assert_eq!(written.cost, OperationCost::default());
+        assert!(matches!(written.value, Err(Error::StorageError(_))));
 
-            let mut change_set = store.change_set();
-            let prepared = change_set.prepare_node(node, NodeChange::ValueWritten);
-            let put = change_set.put_node(node.key(), prepared, None);
-            assert!(matches!(put, Err(Error::EdError(_))));
-            let committed = store.commit(change_set);
-            assert_eq!(committed.cost, OperationCost::default());
-            committed.value.expect("a change set with nothing in it");
-        }
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&overlong, NodeChange::ValueWritten);
+        let put = change_set.put_node(overlong.key(), prepared, None);
+        assert!(matches!(put, Err(Error::EdError(_))));
+        let committed = store.commit(change_set);
+        assert_eq!(committed.cost, OperationCost::default());
+        committed.value.expect("a change set with nothing in it");
+
+        let mut change_set = store.change_set();
+        let prepared = change_set.prepare_node(&uncommitted, NodeChange::ValueWritten);
+        let put = change_set.put_node(uncommitted.key(), prepared, None);
+        put.expect("a node whose child is modified is taken");
+        let committed = store.commit(change_set);
+        assert!(matches!(committed.value, Err(Error::StorageError(_))));
+        // The put was charged as it joined the change set of an immediate
+        // handle. A deferred one is charged when its batch is applied.
+        let charged = if immediate { &put_charge } else { &nothing };
+        assert_eq!(&committed.cost, charged);
     }
     assert!(staged.is_empty());
     assert_eq!(transaction.stats().writes, 0);

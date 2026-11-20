@@ -1,7 +1,7 @@
 //! The change set of a Merk on LigninDB, and the batch of one operation.
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -11,6 +11,7 @@ use grovedb_costs::{
     CostsExt, OperationCost,
 };
 use grovedb_storage::Error as StorageError;
+use lignin_format::tree_page::{HashField, Side};
 
 use super::{
     access::{
@@ -18,59 +19,90 @@ use super::{
         SubtreeChange, ValueWrite, Write, Written,
     },
     feature::{encode_aggregate, encode_feature},
+    hash::{held_link, stale_hashes, HeldLink},
     record_len, refused, LigninHost, LigninSubtree, LigninWriter, MODEL,
 };
 use crate::{
     cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
     merk::defaults::ROOT_KEY_KEY,
     store::{NodeChange, NodeChangeSet, NodeWriteCost},
-    tree::TreeNode,
+    tree::{TreeNode, NULL_HASH},
     Error, Link,
 };
 
 /// What the store keeps of a node between `prepare_node` and `put_node`:
-/// every part of it but the key, the value only where it was written, and
-/// the record length its put is charged by (`cost-model.md` N1). A node
-/// that has no record length is not taken apart, and what is kept of it is
-/// why it has none.
+/// its feature, its hashes and its links as they are written, which of the
+/// hashes are left to the engine, the value only where it was written, a
+/// copy of its key that `put_node` replaces with the key of the record,
+/// and the record length its put is charged by (`cost-model.md` N1). Of a
+/// node that cannot be written, what is kept is why: it has no record
+/// length, or its aggregates do not add up.
 #[derive(Debug)]
 pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 
-fn link_write(link: &Link) -> LinkWrite {
-    let heights = match link {
-        Link::Reference { child_heights, .. }
-        | Link::Modified { child_heights, .. }
-        | Link::Uncommitted { child_heights, .. }
-        | Link::Loaded { child_heights, .. } => *child_heights,
-    };
-    LinkWrite {
+/// A link as it is written, with what Merk holds of it. A hash that Merk
+/// does not hold is left to the engine: the bytes written for it are no
+/// hash (`store::lignin::hash`).
+fn link_write(link: &Link) -> Result<(LinkWrite, HeldLink), Error> {
+    let held = held_link(link)?;
+    let write = LinkWrite {
         key: link.key().to_vec(),
-        hash: *link.hash(),
-        heights,
-        aggregate: encode_aggregate(&link.aggregate_data()),
-    }
+        hash: held.hash.unwrap_or(NULL_HASH),
+        heights: held.heights,
+        aggregate: encode_aggregate(&held.aggregate),
+    };
+    Ok((write, held))
 }
 
-fn prepare(node: &TreeNode, change: NodeChange) -> PreparedNode {
-    // The length comes first: a link with no length, as one to a child that
-    // is modified and not committed, has no hash to give either.
-    PreparedNode(cost_model::node_record_len(MODEL, node).map(|record_len| {
-        let node = NodeWrite {
+fn prepare(node: &TreeNode, change: NodeChange) -> Result<(NodeWrite, usize), Error> {
+    use ed::Encode;
+
+    let stale = stale_hashes(node);
+    // A node with no modified link is measured first, so one that has no
+    // record length is not taken apart.
+    let encoded_len = match stale.is_empty() {
+        true => Some(cost_model::node_record_len(MODEL, node)?),
+        false => None,
+    };
+    let left = node.link(true).map(link_write).transpose()?;
+    let right = node.link(false).map(link_write).transpose()?;
+    let record_len = match encoded_len {
+        Some(record_len) => record_len,
+        // Merk has no record of a node with a modified link. Its length is
+        // that of the record it has once the hash of the link is made,
+        // which is made of its parts (`cost-model.md` N1).
+        None => {
+            let link_len = |link: &Option<(LinkWrite, HeldLink)>| {
+                let len = (link.as_ref()).map(|(link, held)| held.record_len(link.key.len()));
+                len.transpose()
+            };
+            let feature = node.feature_type().encoding_length();
+            MODEL.node_record_len(
+                node.value_as_slice().len(),
+                feature.map_err(Error::EdError)?,
+                link_len(&left)?,
+                link_len(&right)?,
+            )
+        }
+    };
+    Ok((
+        NodeWrite {
             key: node.key().to_vec(),
             feature: encode_feature(&node.feature_type()),
             value_hash: *node.value_hash(),
             kv_hash: *node.kv_hash(),
-            left: node.link(true).map(link_write),
-            right: node.link(false).map(link_write),
+            left: left.map(|(link, _)| link),
+            right: right.map(|(link, _)| link),
             value: match change {
                 NodeChange::ValueWritten => ValueWrite::Stated(node.value_as_slice().to_vec()),
                 NodeChange::StructureChanged | NodeChange::HashOnly => ValueWrite::Kept,
             },
+            stale,
             hint: None,
             hosted: None,
-        };
-        (node, record_len)
-    }))
+        },
+        record_len,
+    ))
 }
 
 /// The sizes the cost rules take with a put of a node that is charged when
@@ -142,7 +174,7 @@ impl LigninChangeSet {
         change: NodeChange,
     ) -> Result<Self, Error> {
         let mut change_set = Self::new(subtree, false);
-        let (node, record_len) = prepare(node, change).0?;
+        let (node, record_len) = prepare(node, change)?;
         change_set.nodes.push((
             node,
             PutSizes {
@@ -172,6 +204,30 @@ impl LigninChangeSet {
         for (node, _) in &mut self.nodes {
             node.hint = hints.get(&node.key).copied();
         }
+    }
+
+    /// Refuses a change set that leaves the hash of a child to the engine
+    /// and does not write the child: the engine makes that hash from the
+    /// child's cell, which would be the child as it was before.
+    pub(super) fn check_stale(&self) -> Result<(), Error> {
+        let mut written: Option<HashSet<&[u8]>> = None;
+        for (node, _) in self.nodes.iter().filter(|(node, _)| !node.stale.is_empty()) {
+            let written = written.get_or_insert_with(|| {
+                let keys = self.nodes.iter().map(|(node, _)| node.key.as_slice());
+                keys.collect()
+            });
+            for (side, link) in [(Side::Left, &node.left), (Side::Right, &node.right)] {
+                let stale = node.stale.has(HashField::Child(side));
+                let child = link.as_ref().filter(|_| stale);
+                if child.is_some_and(|child| !written.contains(child.key.as_slice())) {
+                    return Err(refused(
+                        "the hash of a child is left to the engine, and the child is not \
+                         written with its parent",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn record(
@@ -265,7 +321,7 @@ impl NodeChangeSet for LigninChangeSet {
     type Prepared = PreparedNode;
 
     fn prepare_node(&mut self, node: &TreeNode, change: NodeChange) -> PreparedNode {
-        prepare(node, change)
+        PreparedNode(prepare(node, change))
     }
 
     fn put_node(

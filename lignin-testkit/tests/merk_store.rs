@@ -31,6 +31,14 @@
 //!    a record, with RocksDB's. Equal records from the root down are an
 //!    equal tree shape, and the root hash is a function of the root's
 //!    record.
+//! 6. Write-back then puts every page version of the commit into a
+//!    segment, and the pages are loaded from there by a buffer pool that
+//!    has never held them. The hashes of the pages that were loaded again
+//!    are the ones the pool of the store has, and Merk's hash rules make
+//!    them again (`hashes`, MERK-02): checked as they are stored, and made
+//!    by one evaluation of the engine after every one of them was
+//!    overwritten and marked stale. The hash the rules make of the grove's
+//!    root is the root hash GroveDB gives on RocksDB.
 //!
 //! The Merk logic itself runs on RocksDB here. That it gives the same tree
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
@@ -63,6 +71,9 @@
 //! The costs a writer gives are made up here. What Merk itself gives with
 //! a node, on every grove version, is held by the tests of
 //! `merk::store::lignin`, where a Merk runs on both engines.
+
+#[path = "merk_store/hashes.rs"]
+mod hashes;
 
 use std::{
     collections::{BTreeMap, HashMap},
@@ -177,6 +188,9 @@ struct Tally {
     /// The cells of the Merks in use that the physical invariant checker
     /// walked in the store as the replay left it.
     checked: u64,
+    /// The committed cells whose hashes Merk's hash rules made again, the
+    /// hashes they made, and the value hashes only their writer can make.
+    hashed: hashes::Made,
 }
 
 impl Tally {
@@ -196,6 +210,13 @@ impl Tally {
         self.reads_charged += other.reads_charged;
         self.bytes_loaded += other.bytes_loaded;
         self.checked += other.checked;
+        self.hashed.cells += other.hashed.cells;
+        self.hashed.hashes += other.hashed.hashes;
+        self.hashed.stated += other.hashed.stated;
+        self.hashed.inserted_plain += other.hashed.inserted_plain;
+        self.hashed.with_secondary += other.hashed.with_secondary;
+        self.hashed.with_axes += other.hashed.with_axes;
+        self.hashed.reloaded += other.hashed.reloaded;
     }
 }
 
@@ -955,7 +976,38 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         let committed = Committed::check(&lignin, &versions);
         let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
+        let before = replay.tally.compared;
         replay.compare_all(&committed, &reader, block, grove);
+        let compared = replay.tally.compared - before;
+
+        // Write-back puts every page version of the commit into a
+        // segment, and the hashes are read from there.
+        let write_back = lignin.write_back(&versions);
+        loop {
+            let pass = write_back.pass().expect("a pass of write-back");
+            if pass.waiting == 0 {
+                break;
+            }
+            assert!(pass.progressed(), "write-back stands still: {pass:?}");
+        }
+
+        // The hashes of the committed pages are the ones Merk's hash
+        // rules make, and the root hash they make is GroveDB's.
+        let root_hash = db.root_hash(Some(block), spec.grove_version).unwrap();
+        let made = hashes::check(
+            &lignin,
+            &versions,
+            committed.at,
+            &committed.roots,
+            Subtree::new(grove.merk(MerkId::ROOT).prefix),
+            root_hash.expect("the root hash of the grove"),
+            spec.grove_version,
+        );
+        assert_eq!(made.cells, compared, "every node that was compared");
+        replay.tally.add(Tally {
+            hashed: made,
+            ..Tally::default()
+        });
     }
 
     // The store as the replay leaves it passes the physical invariant
@@ -1075,5 +1127,18 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             "{tally:?}"
         );
         assert!(tally.checked > 10_000, "{tally:?}");
+        let hashed = tally.hashed;
+        assert!(
+            hashed.cells > 1_000_000 && hashed.hashes > 2 * hashed.cells,
+            "{tally:?}"
+        );
+        assert!(
+            hashed.stated > 10_000 && hashed.inserted_plain > 0,
+            "{tally:?}"
+        );
+        assert!(
+            hashed.with_axes > 0 && hashed.reloaded > 10_000,
+            "{tally:?}"
+        );
     }
 }
