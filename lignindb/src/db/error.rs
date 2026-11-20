@@ -329,9 +329,11 @@ impl From<RecoveryError> for OpenError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reopen {
     /// A sync of the log failed: of a commit under a sync policy that asks
-    /// for one, or of a [`flush`](super::Db::flush). The log makes nothing
-    /// durable any more in this session (`lignin_store::wal`), so a write
-    /// that was taken now could be lost with no error to say so.
+    /// for one, of a [`flush`](super::Db::flush), or of the background
+    /// work, which syncs the log for a table checkpoint and when it cuts a
+    /// failed append off. The log makes nothing durable any more in this
+    /// session (`lignin_store::wal`), so a write that was taken now could
+    /// be lost with no error to say so.
     NotDurable {
         /// The latest version when the failed sync was recorded. It is
         /// published, and not known to be durable.
@@ -339,6 +341,17 @@ pub enum Reopen {
         /// What the sync said.
         reason: String,
     },
+    /// A sync of a segment failed in this session, in a turn of the
+    /// background work. The blocks that were not durable then cannot be
+    /// made durable any more, so the store installs no table checkpoint
+    /// until it is opened again (`lignin_store::flush`, "When something
+    /// fails"): the log would keep every commit from here on, and grow for
+    /// as long as the session took writes.
+    ///
+    /// Nothing that was published is lost by it. A
+    /// [`flush`](super::Db::flush) still makes the log durable, and the
+    /// next open replays it.
+    SegmentsNotDurable,
     /// The commit path stopped the session
     /// ([`Stopped`]): whether a commit is in the log
     /// could not be found out, or a commit is in the log and could not be
@@ -362,6 +375,9 @@ impl fmt::Display for Reopen {
             Self::NotDurable { version, reason } => write!(
                 f,
                 "a sync of the log failed with version {version} published ({reason})"
+            ),
+            Self::SegmentsNotDurable => f.write_str(
+                "a sync of a segment failed, and no table checkpoint is installed until then",
             ),
             Self::Stopped(stopped) => write!(f, "{stopped}"),
         }
@@ -493,7 +509,10 @@ impl From<CommitError> for WriteError {
 #[non_exhaustive]
 pub enum DbError {
     /// Write-back failed: a sync of the log, a table checkpoint, the
-    /// closing of the session's files.
+    /// closing of the session's files. A close answers with this, and has
+    /// finished nothing in the directory, where a replacement of the
+    /// manifest had been left in doubt and the manifest could not be
+    /// opened again.
     Flush(FlushError),
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.

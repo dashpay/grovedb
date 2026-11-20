@@ -221,6 +221,11 @@ pub enum CommitError {
     /// append of write-back that fails after that, before the commit has
     /// the lock on the counts of live values, fails the commit
     /// ([`Self::Failed`] with [`LogError::NoActiveFile`]).
+    ///
+    /// The engine's handle answers the same where a replacement of the
+    /// manifest was left in doubt and the manifest cannot be opened again
+    /// yet (`crate::db`, "A session ends for what stays failed"): nothing
+    /// of the commit was begun there either.
     NotReady(FlushError),
     /// A commit outside the transaction wrote a key after the transaction
     /// first wrote it (CF2). This error is used for that and for nothing
@@ -318,7 +323,7 @@ impl fmt::Display for CommitError {
                 "a commit outside the transaction wrote a key after the transaction first wrote it",
             ),
             Self::Refused(source) => write!(f, "the commit was refused: {source}"),
-            Self::NotReady(source) => write!(f, "the log takes no commit yet: {source}"),
+            Self::NotReady(source) => write!(f, "the session takes no commit yet: {source}"),
             Self::Failed(source) => write!(f, "the commit was not made: {source}"),
             Self::NotDurable { published, source } => write!(
                 f,

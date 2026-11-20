@@ -308,6 +308,10 @@ fn a_session_whose_sync_failed_takes_no_write() {
     let db = Db::open("/db", &options).expect("a new database");
     enter(&db, &[1]);
     assert!(db.reopen().is_none());
+    // The background work is at rest, so the sync that fails is the
+    // commit's: one that write-back met would end the session as well
+    // (D-151), before the commit.
+    halt_background(&db);
 
     fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS).forever());
     let writes = Writes {
