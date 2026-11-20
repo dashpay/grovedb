@@ -3,7 +3,7 @@
 //! a Merk on RocksDB give the same bytes and charge the same, and the walk
 //! of a proof reads from the value log the values the proof emits and no
 //! other, but for a count-offset proof, which also reads those of the rows
-//! of its range that it skips.
+//! of its range that it gives as a digest.
 
 use std::{
     collections::{BTreeSet, LinkedList},
@@ -859,7 +859,7 @@ fn a_point_proof_reads_no_value_from_the_value_log_but_the_targets() {
 
 /// What the other proofs read from the value log: the values they emit,
 /// and for a count-offset proof also the value of every row in its range
-/// that it comes to, which it reads to refuse a row that is a tree.
+/// that it gives by key, which it reads to refuse a row that is a tree.
 #[test]
 fn a_proof_reads_the_values_it_emits_from_the_value_log() {
     const NODES: u64 = 200;
@@ -928,10 +928,9 @@ fn a_proof_reads_the_values_it_emits_from_the_value_log() {
     assert!((1..=3).contains(&branch.0), "{branch:?}");
     assert_eq!(reads[5], branch.1);
     // A count-offset proof reads the value of every row of its range that
-    // it comes to, which are the nodes of the range it names by key: the
-    // two it returns among them, and far fewer than the hundred and one
-    // the range holds. The rows it skips in whole subtrees it gives as one
-    // hash each, and reads no value of.
+    // it gives by key: the two it returns among them, and far fewer than
+    // the hundred and one the range holds. The rows it skips in whole
+    // subtrees it gives as one hash each, and reads no value of.
     assert_eq!(emitted(&answers[5]).0, 2);
     let (_, proof) = answers[5].split_once('"').expect("a proof");
     let proof = hex::decode(proof.split_once('"').expect("a proof").0).expect("bytes");
