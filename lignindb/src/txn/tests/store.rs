@@ -420,6 +420,11 @@ impl Db {
             directory: OnceLock::from(made.directory()),
             flat_drops: OnceLock::from(made.flat_drops()),
             used: Mutex::new(used),
+            // What recovery opened is checked when it is dropped, as a
+            // store in a directory of its own is.
+            unchecked: AtomicBool::new(false),
+            hash_rules: Mutex::new(None),
+            unhashed: AtomicBool::new(false),
             _dir: None,
         });
         let versions = Versions::with_reclaim(landed, Box::new(Hook(db.clone())));
