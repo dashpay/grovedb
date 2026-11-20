@@ -404,6 +404,12 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// on: the pool and the id are told, once, as a commit that frees such
     /// a page tells them. Returns whether the page was given no free link.
     ///
+    /// Write-back links no block of a page that the pool has been told is
+    /// freed: it looks in a page step before it pushes. A pass that looked
+    /// before the pool was told can have linked the page behind the first
+    /// push, so the free link is pushed once more after the pool's word,
+    /// and then lands above that link (`page-table.md` T18).
+    ///
     /// Every other refusal leaves the store other than its log has it
     /// ([`DropError::Broken`]), and none of them is one a store that keeps
     /// its rules meets: a free link older than the newest link of the
@@ -413,14 +419,22 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     /// id that names no committed page.
     fn free(&self, page: PageId, version: CommitVersion) -> Result<bool, DropError> {
         let broken = broken(page);
-        let never_linked = match self.table.push(page, Link::free(version)) {
-            Ok(()) => false,
-            Err(LinkError::AlreadyFree) => true,
-            Err(error) => return Err(broken(error.into())),
+        let free = || match self.table.push(page, Link::free(version)) {
+            Ok(()) => Ok(false),
+            Err(LinkError::AlreadyFree) => Ok(true),
+            Err(error) => Err(broken(error.into())),
         };
+        let mut never_linked = free()?;
         self.pool
             .free(page, version)
             .map_err(|error| broken(error.into()))?;
+        if never_linked {
+            // A write-back pass that had the page in hand can have linked
+            // it between the push and the pool's word, and from here on
+            // none does (`lignin_store::flush`). The free link then goes
+            // above that link, as for any page a segment holds.
+            never_linked = free()?;
+        }
         self.ids
             .free(page, version)
             .map_err(|error| broken(error.into()))?;

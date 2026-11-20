@@ -15,7 +15,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
     },
     time::{Duration, Instant},
 };
@@ -54,6 +54,10 @@ pub(super) struct Counts {
     synced_dirs: Mutex<Vec<PathBuf>>,
     /// The directory that paths with no root are in, if there is one.
     root: Option<PathBuf>,
+    /// Whether an append to a segment waits, and how many wait.
+    holding: Mutex<bool>,
+    released: Condvar,
+    held: AtomicU64,
 }
 
 /// The file layer of the operating system, with a count of what is asked
@@ -113,6 +117,34 @@ impl Watched {
         self.0.changes.load(Ordering::Relaxed)
     }
 
+    /// From here on an append to a segment waits until [`Self::release`]:
+    /// a write-back pass is held with a page in hand, its block not
+    /// written and its link not pushed.
+    pub(super) fn hold_segment_appends(&self) {
+        *self.0.holding.lock().expect("the gate") = true;
+    }
+
+    /// Lets the appends that wait go on, and holds none any more.
+    pub(super) fn release(&self) {
+        *self.0.holding.lock().expect("the gate") = false;
+        self.0.released.notify_all();
+    }
+
+    /// How many appends have waited so far.
+    pub(super) fn held(&self) -> u64 {
+        self.0.held.load(Ordering::Acquire)
+    }
+
+    fn wait_at_the_gate(&self) {
+        let mut holding = self.0.holding.lock().expect("the gate");
+        if *holding {
+            self.0.held.fetch_add(1, Ordering::AcqRel);
+        }
+        while *holding {
+            holding = self.0.released.wait(holding).expect("the gate");
+        }
+    }
+
     /// The directories that were synced so far, as the caller named them.
     pub(super) fn synced_dirs(&self) -> Vec<PathBuf> {
         self.0.synced_dirs.lock().expect("the list").clone()
@@ -122,6 +154,8 @@ impl Watched {
 struct WatchedFile {
     file: Box<dyn VfsFile>,
     watched: Watched,
+    /// Whether the file is in the directory of the segments.
+    segment: bool,
 }
 
 impl fmt::Debug for WatchedFile {
@@ -145,6 +179,9 @@ impl VfsFile for WatchedFile {
     }
 
     fn append(&self, buf: &[u8]) -> io::Result<u64> {
+        if self.segment {
+            self.watched.wait_at_the_gate();
+        }
         self.watched.changed();
         self.file.append(buf)
     }
@@ -174,9 +211,11 @@ impl Vfs for Watched {
             self.changed();
         }
         let file = StdVfs.open(&self.at(path), mode)?;
+        let segment = path.components().any(|part| part.as_os_str() == "seg");
         Ok(Box::new(WatchedFile {
             file,
             watched: self.clone(),
+            segment,
         }))
     }
 

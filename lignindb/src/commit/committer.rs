@@ -862,14 +862,21 @@ impl<'s> Committer<'s> {
                 // The copy kept every page step off the page until here,
                 // under the lock on the counts.
                 pool.discard(copy)?;
-                match self.table.push(page, Link::free(version)) {
-                    Ok(()) => {}
-                    // See "A page that is freed again before it was
-                    // written back" in the module documentation.
-                    Err(LinkError::AlreadyFree) => done.freed_unlinked += 1,
-                    Err(error) => return Err(error.into()),
-                }
+                // See "A page that is freed again before it was written
+                // back" in the module documentation.
+                let free = || match self.table.push(page, Link::free(version)) {
+                    Ok(()) => Ok(false),
+                    Err(LinkError::AlreadyFree) => Ok(true),
+                    Err(error) => Err(error),
+                };
+                let unlinked = free()?;
                 pool.free(page, version)?;
+                // A write-back pass can have linked the page behind the
+                // first push, and none does once the pool is told: the
+                // free link then goes above that link.
+                if unlinked && free()? {
+                    done.freed_unlinked += 1;
+                }
                 ids.free(page, version)?;
                 done.freed.push(page);
             }

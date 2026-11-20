@@ -1321,6 +1321,12 @@ holding a later one:
 Level 4a was added after levels 1 to 5 had been named in other documents,
 which is why it has no number of its own.
 
+One lock of level 5 is taken under another in one place: write-back pushes
+the link of a block in the page step of its page (`page-table.md` T18), so
+it takes the page table's lock under the lock of the page step. The page
+table calls nothing while it holds its lock, so no thread waits for a page
+step under it.
+
 **The counts lock (4a).** Every change point that changes a count of live
 values takes it: a commit whose cells stop holding value pointers, and a
 page step that places a value, installs a move or removes a dropped cell

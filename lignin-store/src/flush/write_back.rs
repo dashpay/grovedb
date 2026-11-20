@@ -840,7 +840,28 @@ impl<'s> WriteBack<'s> {
         };
 
         let counters = &self.state.counters;
-        match table.push(page, link) {
+        // The second look (`page-table.md` T18). The pass took the frame
+        // a while ago, and the page can have been freed since. A free
+        // link refuses the block's link by its version, but a page that
+        // was made under an id used before, and freed before it had a
+        // link, was given none: the newest link of its id is the free
+        // link of the page before it, which is older than this block.
+        // So the link is pushed in a page step, in which the pool is
+        // asked: `BufferPool::free` takes that lock, and a page that was
+        // freed has no current version. A page that is in use and has
+        // none in the pool had it written, and a link below that one is
+        // refused by the table as it always was.
+        let pushed = {
+            let step = pool.page_step(page);
+            match step.current() {
+                Some(_) => table.push(page, link),
+                None => {
+                    count(&counters.links_refused, 1);
+                    return Ok(Outcome::Refused);
+                }
+            }
+        };
+        match pushed {
             Ok(()) => {}
             Err(LinkError::OutOfOrder { .. }) => {
                 count(&counters.links_refused, 1);

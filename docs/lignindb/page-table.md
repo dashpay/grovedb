@@ -160,6 +160,25 @@ It does not need one:
   free link was pushed covers less than those changes (K1), and replay
   takes them from the log.
 
+**A page that was freed before it had a link** is held to the rule by the
+buffer pool, because its free link cannot do it. Ids are used again (ID2),
+so a page can be made under an id that named another page before, and be
+freed again before write-back gave it a link. The newest link of its id is
+then the free link of the earlier page, and the table takes no second free
+link (`LinkError::AlreadyFree`). That link is older than the page, so it
+refuses none of the page's blocks. For this case:
+
+- Whoever writes back pushes the link of a block in a page step (PV7) in
+  which the page still has a current version in the buffer pool. Freeing
+  a page in the pool is a page step too, and a freed page has no current
+  version, so no block of a page is linked once the pool was told that
+  the page is freed. The table's lock is taken under the lock of the page
+  step here (LT7).
+- Whoever frees a page, and was refused the free link because the id has
+  one, pushes it once more after it has told the pool. A link that
+  write-back pushed between the first push and the pool's word then has
+  the free link above it, as the link of any page that a segment holds.
+
 So whoever writes back (STORE-06) takes such changes out of its queue when
 the free link is pushed, counts them as written back when it says which
 version a checkpoint covers (K1), and holds no log file back for them

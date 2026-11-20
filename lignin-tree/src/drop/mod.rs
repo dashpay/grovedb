@@ -297,8 +297,13 @@
 //!    (`lignindb::commit`, "A page that is freed again before it was
 //!    written back"): no segment ever held the page, the pool takes its
 //!    versions off the lists of what is to be written back, and the id is
-//!    retired once. [`Reclaimed::pages_never_linked`] and
-//!    [`FlatReclaimed::pages_never_linked`] count these pages. The record
+//!    retired once. Write-back links no block of a page once the pool was
+//!    told that it is freed, and a pass that looked before that can have
+//!    linked the page behind the refused push: so the step pushes the free
+//!    link once more after the pool's word, and it then lands above that
+//!    link. [`Reclaimed::pages_never_linked`] and
+//!    [`FlatReclaimed::pages_never_linked`] count the pages that were
+//!    given no free link by either push. The record
 //!    of the step is in the log before the page is freed, which is what a
 //!    checkpoint of the page table needs of it (`page-table.md` K14).
 //! 4. **Every step holds the lock on the counts**, also one that releases

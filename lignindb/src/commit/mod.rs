@@ -209,6 +209,14 @@
 //! allocator once, at the commit's version. [`Published::freed_unlinked`]
 //! counts these pages.
 //!
+//! The free link of a page is also what keeps write-back from linking a
+//! block of it afterwards (`page-table.md` T18), and the earlier page's
+//! link is too old to do that for this one. Write-back therefore links
+//! a block only in a page step in which the pool still has a current
+//! version of the page, and the commit pushes the free link once more
+//! after it has told the pool: a link that a pass pushed between the two
+//! has the free link above it, and the page is not counted here.
+//!
 //! What the free link would also have done is hold a checkpoint of the page
 //! table back until the log is durable through the freeing commit. That is
 //! held by the place of the checkpoint's copy instead (`page-table.md` K14

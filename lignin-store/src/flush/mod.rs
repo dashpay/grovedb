@@ -195,14 +195,16 @@
 //! | is superseded, and holds a pending value or bytes attached for one | Keeps it in the pool for the readers that can still ask for it ([`BufferPool::hold_for_readers`](crate::cache::BufferPool::hold_for_readers)), and puts its changes into the block of the next version of the page that is written. This is the choice for a superseded version with a pending value (`transactions.md`, choice 25): the version stays in memory, and its value is placed for the version that carries it on. |
 //! | is superseded, and no reader can ask for it: the oldest pin is at or past the version that superseded it | The same: one block for several commits (FL3). A version that a pin can still reach, and that has no pending value, gets a block of its own. |
 //! | is older than the free link of its page | Nothing. Nothing older than a free link is written back (`page-table.md` T18), and the pool keeps the version until no reader needs it. |
+//! | is of a page that was freed after the pass took the version in hand | Its block may be written, and gets no link. The link is pushed in a page step, and only while the page has a current version in the pool: a page that was made under an id used before and freed before it had a link has no free link of its own to refuse the block (T18). |
 //! | is a flat page | A base image. Every block of a flat page is its image (PD13). |
 //! | is a tree page whose chain ends in a base image or a run | A run of deltas behind that link, if the conditions below hold. Otherwise a base image. |
 //! | is a tree page with no chain, or one that ends in a free link | A base image. A run that creates its page is never written to a segment (PD11). |
 //!
 //! The link of a block is pushed to the page table before the pool is told
-//! that the version is written, and the pool is not told when the table
-//! refused the link: a commit has freed the page meanwhile, and the block
-//! is dead space ([`FlushStats::links_refused`]).
+//! that the version is written, and the pool is not told when the link was
+//! refused, by the table or because the page has no current version in the
+//! pool any more: the page was freed meanwhile, and the block is dead space
+//! ([`FlushStats::links_refused`]).
 //!
 //! **A run is written only when it is known to give the page.** Write-back
 //! keeps the records of what each commit did to each tree page from the
