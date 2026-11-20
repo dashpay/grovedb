@@ -423,6 +423,7 @@ impl Db {
             dir: dir.to_path_buf(),
             keyspaces: OnceLock::from(made.keyspaces()),
             directory: OnceLock::from(made.directory()),
+            directories: Directories::empty(),
             flat_drops: OnceLock::from(made.flat_drops()),
             used: Mutex::new(used),
             // What recovery opened is checked when it is dropped, as a
@@ -433,6 +434,14 @@ impl Db {
             _dir: None,
         });
         let versions = Versions::with_reclaim(landed, Box::new(Hook(db.clone())));
+        // The handle on the subtree directory of the version the recovery
+        // landed on, loaded while nothing else runs, as the engine's open
+        // loads it: every reader takes its copy of that one.
+        if landed != CommitVersion::EMPTY {
+            let guard = versions.guard();
+            let pages = db.committed(&guard, landed);
+            db.directories.set(landed, db.directory_at(&pages));
+        }
         Ok((db, versions, report))
     }
 

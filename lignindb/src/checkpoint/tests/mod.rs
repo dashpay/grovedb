@@ -577,4 +577,11 @@ impl Vfs for Meddling {
         }
         self.inner.lock(path)
     }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        if let Some(before) = &self.before_lock {
+            before(path)?;
+        }
+        self.inner.lock_existing(path)
+    }
 }
