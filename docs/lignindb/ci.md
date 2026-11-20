@@ -69,9 +69,18 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 ### Hosted runners
 
-The jobs on GitHub's hosted runners (`ubuntu-24.04-arm`, `macos-15`) build the LigninDB crates' tests with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`: a panic still names its file and line, and the build is about half the size. With full debug info, the default of Cargo's dev profile, `lignin-ci.sh test`'s first command builds 38 test executables of 9.3 GiB, 11.7 GiB of artifacts in all, beside 1.9 GiB of RocksDB's objects; at four build jobs, as on the arm runner, it held up to 14.9 GB of memory, page cache included, while it linked them. That is close to all of the runner's disk and memory: GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. With line tables it is 5.3 GiB of executables, 7.2 GiB of artifacts and 8.0 GB of memory (measured on strixbox, x86_64, under a cap of 16 GiB with no swap; the arm build is of the same size within a little).
+The jobs on GitHub's hosted runners (`ubuntu-24.04-arm`, `macos-15`) build the LigninDB crates' tests with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, so a panic still names its file and line.
 
-Each of those jobs prints the runner's cores, memory, swap and free disk at its start (`lignin-ci.sh machine`), and again every minute while the tests build and run, so a runner that dies leaves what it had in the log.
+Why: the arm job died three runs in a row ("The runner has received a shutdown signal", exit code 143) about two minutes into the last phase of the build, while the test executables were linked, with no test run; its log shows no "No space left on device" and no killed compiler. The likely cause is that phase's disk or memory. A reproduction of the job's first command on strixbox (x86_64, four build jobs as on the arm runner, a cap of 16 GiB of memory with no swap, no compiler cache) gave:
+
+| Debug info | Test executables (38) | All artifacts | RocksDB's objects | Peak memory, page cache included |
+| --- | --- | --- | --- | --- |
+| full, Cargo's default | 9.3 GiB | 11.7 GiB | 1.9 GiB | 14.9 GB |
+| line tables | 5.3 GiB | 7.2 GiB | 1.9 GiB | 11.0 GB |
+
+GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. The arm build was not measured; it is not expected to be much smaller.
+
+Each of those jobs prints the runner's cores, memory, swap and free disk at its start (`lignin-ci.sh machine`), and again every minute while the tests build and run, so a runner that dies leaves its last sample in the log. On macOS the memory printed is what is installed, and the swap what is in use.
 
 ## Nightly
 

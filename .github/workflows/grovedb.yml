@@ -346,16 +346,18 @@ jobs:
           - platform: macOS aarch64
             runner: macos-15
     env:
-      # A panic still names its file and line. With full debug info the
-      # build of these tests outgrew what the hosted arm runner holds: it
-      # died while the test executables were written, three runs in a row
-      # (docs/lignindb/ci.md, "Hosted runners").
+      # A panic still names its file and line, and the build takes about
+      # two fifths less disk and a quarter less memory (measured on x86_64).
+      # The hosted arm runner died three runs in a row while the test
+      # executables were linked with full debug info (docs/lignindb/ci.md,
+      # "Hosted runners").
       CARGO_PROFILE_DEV_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
       - name: Describe the runner
+        continue-on-error: true
         run: .github/scripts/lignin-ci.sh machine
       # The RocksDB build of the test kit's dependencies needs libclang.
       - name: Install clang
@@ -370,14 +372,14 @@ jobs:
         with:
           cache-on-failure: "false"
       # The machine is printed every minute beside the tests, so a runner
-      # that dies leaves its last memory and disk in the log.
+      # that dies leaves its last sample in the log.
       - name: Run the LigninDB crates' tests
         run: |
           .github/scripts/lignin-ci.sh machine --every 60 &
           monitor=$!
           status=0
           .github/scripts/lignin-ci.sh test || status=$?
-          kill "$monitor"
+          kill "$monitor" 2>/dev/null || true
           exit "$status"
 
   # The loom models of the buffer pool, the snapshots and the write scopes.

@@ -5,7 +5,8 @@
 #
 #   lignin-ci.sh crates              the LigninDB crates, one a line
 #   lignin-ci.sh machine [--every S] the machine: cores, memory, swap, free disk;
-#                                    with --every, again every S seconds
+#                                    with --every, again every S seconds (S a
+#                                    whole number above 0)
 #   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
 #                                    machine (ARGS follow `cargo test`), then
 #                                    those of Merk's node store on LigninDB
@@ -97,20 +98,25 @@ refuse() {
     [ -z "$found" ] || fail "$what:"$'\n'"$found"
 }
 
-# Cores, memory and swap in use of total, and the disk free under the
-# checkout and the temporary directory.
+# Cores, memory and swap (on Linux used of total; on macOS the memory
+# installed and the swap in use), and the disk free under the checkout and
+# the temporary directory. A value that cannot be read is printed as such.
 machine() {
     local cores memory
     if [ -r /proc/meminfo ]; then
-        cores=$(nproc)
-        memory=$(free -m | awk '/^Mem:/ { printf "memory %d of %d MiB used", $3, $2 } /^Swap:/ { printf ", swap %d of %d MiB", $3, $2 }')
+        cores=$(nproc || echo unreadable)
+        memory=$(free -m | awk '/^Mem:/ { printf "memory %d of %d MiB used", $3, $2 } /^Swap:/ { printf ", swap %d of %d MiB", $3, $2 }') ||
+            memory="memory unreadable"
     else
-        cores=$(sysctl -n hw.ncpu)
-        memory="memory $(($(sysctl -n hw.memsize) / 1048576)) MiB, swap $(sysctl -n vm.swapusage)"
+        cores=$(sysctl -n hw.ncpu || echo unreadable)
+        memory="memory $(($(sysctl -n hw.memsize || echo 0) / 1048576)) MiB installed, swap $(sysctl -n vm.swapusage || echo unreadable)"
     fi
     printf '== %s machine: %s cores, %s; free disk: %s here, %s in %s\n' "$(date -u +%H:%M:%S)" \
-        "$cores" "$memory" "$(df -Pm . | awk 'NR == 2 { print $4 " MiB" }')" \
-        "$(df -Pm "${TMPDIR:-/tmp}" | awk 'NR == 2 { print $4 " MiB" }')" "${TMPDIR:-/tmp}"
+        "$cores" "$memory" "$(free_disk .)" "$(free_disk "${TMPDIR:-/tmp}")" "${TMPDIR:-/tmp}"
+}
+
+free_disk() {
+    df -Pm "$1" | awk 'NR == 2 { print $4 " MiB" }' || echo unreadable
 }
 
 case "${1:-}" in
@@ -121,7 +127,10 @@ crates)
 machine)
     case "$#:${2:-}" in
     1:) machine ;;
-    3:--every) while machine; do sleep "$3"; done ;;
+    3:--every)
+        [[ $3 =~ ^[1-9][0-9]*$ ]] || fail "usage: lignin-ci.sh machine [--every SECONDS]"
+        while machine; do sleep "$3" >/dev/null 2>&1; done
+        ;;
     *) fail "usage: lignin-ci.sh machine [--every SECONDS]" ;;
     esac
     ;;
