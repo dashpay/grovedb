@@ -1159,7 +1159,8 @@ impl Drop for Db {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecoveredAsLeft {
     /// The store is not one whose files a recovery may be run on: it has
-    /// no directory of its own, or its session ended for writes.
+    /// no directory of its own, its test said that files of it are gone
+    /// ([`Db::files_are_gone`]), or its session ended for writes.
     NotAsked,
     /// The recovery landed on the store's latest version with the same
     /// pages, page ids and counts of values.
@@ -1181,8 +1182,8 @@ impl Db {
     /// ([`Self::new`]): a recovery writes, and such a directory is nobody
     /// else's and goes with the store. A store whose test removed files
     /// of it is not asked ([`Self::files_are_gone`]), and a session that
-    /// ended for writes is not asked either: a commit of it that was not published can be in
-    /// the log, and the recovery lands on it (DU2).
+    /// ended for writes is not asked either: a commit of it that was not
+    /// published can be in the log, and the recovery lands on it (DU2).
     pub fn recovered_as_left(&self) -> Result<RecoveredAsLeft, String> {
         use lignin_format::{flat_page::FlatPageKind, tree_page::TreePage};
         use lignin_store::load::FRAME_FORMAT;
@@ -1276,7 +1277,7 @@ impl Db {
         let counts = |values: &ValueStore| {
             let counts = values.counts().into_iter();
             let mut counts: Vec<_> = counts
-                .filter(|count| count.values > 0)
+                .filter(|count| count.values > 0 || count.bytes > 0 || count.miscounted)
                 .map(|count| {
                     (
                         count.file.get(),

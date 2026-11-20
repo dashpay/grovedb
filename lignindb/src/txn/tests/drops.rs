@@ -62,7 +62,7 @@ fn records<'s>(world: &World<'s>, tx: &Tx<'s>, rng: &mut Rng, name: u8, from: us
 /// Commits the three subtrees, each a Merk of three nodes, with `own` flat
 /// records under the one that will be dropped and 300 under each of its
 /// neighbours.
-fn planted(world: &mut World<'_>, rng: &mut Rng, own: usize) {
+pub(super) fn planted(world: &mut World<'_>, rng: &mut Rng, own: usize) {
     let tx = world.begin();
     let mut merks = Vec::new();
     for name in [BEFORE, DROPPED, AFTER] {
