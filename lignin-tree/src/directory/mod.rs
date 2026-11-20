@@ -208,6 +208,11 @@
 //! - **A Merk is moved** ([`Directory::rekey`]) with every Merk below it:
 //!   one entry for each is written under its new prefix, and no cell is
 //!   read (`tree-layout.md` D5).
+//! - **A Merk is stated anew** ([`Directory::restate`]) where its element
+//!   becomes one of another type in place: its entry takes the new tree
+//!   type, and the Merks of an element that names them in another order
+//!   take their new places together. Nothing else of a Merk changes, and
+//!   no cell is read.
 //!
 //! # The reclaimer
 //!
@@ -339,7 +344,7 @@ pub use error::{DirectoryError, Malformed};
 pub use read::{Children, Drops, Entries};
 pub use record::{Child, Dropped, Entry, Host, MerkId, Prefix, RecordKind, Root};
 pub use rekey::Step;
-pub use write::RootChange;
+pub use write::{Restated, RootChange};
 
 use crate::flat::{FlatConfig, FlatPages, FlatPagesMut, FlatTree};
 
