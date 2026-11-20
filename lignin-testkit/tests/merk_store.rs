@@ -25,12 +25,14 @@
 //!    transaction is committed. The check of the committed tree pages
 //!    walks every Merk from the root its entry in the subtree directory
 //!    names, and must reach the keys RocksDB holds for that Merk and no
-//!    others. The cell of the element that hosts a Merk must point, at the
-//!    Merk's position, at that root, and no cell at another. Then every
-//!    node of every Merk is read from the committed pages and compared, as
-//!    a record, with RocksDB's. Equal records from the root down are an
-//!    equal tree shape, and the root hash is a function of the root's
-//!    record.
+//!    others. It is the physical invariant checker's (`lignindb::verify`),
+//!    which is given Merk's hash rules and recomputes every hash of the
+//!    cells it reaches. The cell of the element that hosts a Merk must
+//!    point, at the Merk's position, at that root, and no cell at another.
+//!    Then every node of every Merk is read from the committed pages and
+//!    compared, as a record, with RocksDB's. Equal records from the root
+//!    down are an equal tree shape, and the root hash is a function of the
+//!    root's record.
 //! 6. Write-back then puts every page version of the commit into a
 //!    segment, and the pages are loaded from there by a buffer pool that
 //!    has never held them. The hashes of the pages that were loaded again
@@ -100,7 +102,10 @@ use grovedb_costs::{
 use grovedb_merk::{
     cost_model::HANDLE_COST_MODEL,
     store::{
-        lignin::{LigninBatch, LigninHost, LigninNodeStore, LigninSubtree, LigninWriter},
+        lignin::{
+            hash::MerkHashRules, LigninBatch, LigninHost, LigninNodeStore, LigninSubtree,
+            LigninWriter,
+        },
         NodeChange, NodeChangeSet, NodeStore, NodeWriteCost,
     },
     tree::{kv::ValueDefinedCostType, TreeNode},
@@ -918,6 +923,10 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
     let dir = tempfile::tempdir().expect("a directory");
     let db = GroveDb::open(dir.path()).expect("a GroveDB");
     let (lignin, versions) = Db::new(1024);
+    // Every run of the physical invariant checker on this store, after a
+    // commit and when it is dropped, recomputes the hashes it reaches by
+    // Merk's rules.
+    lignin.check_hashes_by(Box::new(MerkHashRules::for_check(spec.grove_version)));
     let path = lignin.path(&versions);
     let mirror = TempStorage::new();
     let mut replay = Replay {
@@ -1012,16 +1021,18 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
 
     // The store as the replay leaves it passes the physical invariant
     // checker (`lignindb::verify`): the pages, the trees, the directory
-    // against the cells, the values, the page ids and the page table. No
-    // hash is recomputed here: the rules that make Merk's hashes for every
-    // kind of tree are the hash bridge's (MERK-02).
-    let report = lignin.verify(versions.latest(), Scope::Still, None);
+    // against the cells, the values, the page ids and the page table, and
+    // the hashes of every cell of a Merk in use, recomputed by Merk's
+    // rules.
+    let mut rules = MerkHashRules::for_check(spec.grove_version);
+    let report = lignin.verify(versions.latest(), Scope::Still, Some(&mut rules));
     let unsound = lignin.unsound(&report);
     assert!(
         unsound.is_empty() && report.more_findings == 0,
         "{}: the store is not sound: {unsound:?}",
         spec.name
     );
+    assert_eq!(report.census.hashed_cells, report.census.live_cells);
     replay.tally.checked += report.census.live_cells;
 
     // Of the values it was handed, the store wrote exactly those whose
