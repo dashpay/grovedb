@@ -7,7 +7,10 @@ use std::{
     io::ErrorKind,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use lignin_format::manifest::Manifest;
@@ -837,10 +840,15 @@ fn a_file_that_comes_beside_a_lock_file_alone_is_not_removed() {
     let theirs = dir.path().join("theirs");
     std::fs::create_dir(&theirs).expect("a directory");
     std::fs::write(theirs.join("LOCK"), b"").expect("a file");
-    let into = theirs.clone();
+    // The file comes once, before the first removal: a deletion that went
+    // on to remove what it then found would take it away.
+    let (into, came) = (theirs.clone(), AtomicBool::new(false));
     let meddling = Meddling::before_remove(
         Arc::new(StdVfs),
-        Box::new(move |_| std::fs::write(into.join("data"), b"put there meanwhile")),
+        Box::new(move |_| match came.swap(true, Ordering::SeqCst) {
+            true => Ok(()),
+            false => std::fs::write(into.join("data"), b"put there meanwhile"),
+        }),
     );
     let failed = checkpoint::delete(&meddling, &theirs);
     assert!(
