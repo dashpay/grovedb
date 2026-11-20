@@ -1472,6 +1472,59 @@ fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on() {
     }
 }
 
+/// **A version that is pinned inside a commit checks sound too, with the
+/// reclaimer held back from the pin on.** A commit gives the lock on the
+/// counts of values back when it has counted, before it publishes, so a
+/// round of the reclaimer can run between the two. It reads at the
+/// published version there, and a step on a page whose newest version the
+/// commit installed is refused: the page is not as the step read it.
+///
+/// The state of the test above, with the commit that writes the leaf of
+/// the flat record held before its publication. A round of the reclaimer
+/// inside it takes nothing out. The version before the commit is pinned
+/// there with the reclaimer held back, the commit is published, and the
+/// checker finds nothing at the pinned version.
+#[test]
+fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() {
+    let (db, history) = dropped_just_now();
+    let (arrived, at_publication) = mpsc::channel();
+    let (go_on, resumed) = mpsc::channel::<()>();
+    let resumed = Mutex::new(resumed);
+    (db.shared.store.committing).run_before_publication(move |_| {
+        let _ = arrived.send(());
+        let _ = lock(&resumed).recv();
+    });
+    thread::scope(|threads| {
+        let (db, history) = (&db, &history);
+        let commit = threads.spawn(move || commit_behind(db, history, Behind::Column));
+        (at_publication.recv()).expect("the commit is before its publication");
+        let before = db.version();
+        let round = db.reclaim();
+        let reclaimed = db.stats().reclaimed;
+        assert_eq!((round.finished, round.waiting), (0, 1), "{round:?}");
+        assert_eq!(
+            (reclaimed.flat_records, reclaimed.blocked_by_contention),
+            (0, 1),
+            "{reclaimed:?}"
+        );
+
+        let held_back = lock(&db.shared.store.reclaiming);
+        let pinned = db.snapshot();
+        assert_eq!(pinned.version(), before);
+        go_on.send(()).expect("the commit goes on");
+        commit.join().expect("the commit is made");
+        assert_eq!(Some(db.version()), before.next());
+        let report = verify(db, Scope::Reader, pinned.version());
+        assert!(report.is_sound(), "{report}");
+        drop(held_back);
+        compare_at(db, history, &pinned.operation());
+    });
+    // The hook holds what waits for the test: it goes before the database.
+    (db.shared.store.committing).run_before_publication(|_| {});
+    reclaim_all(&db, &history);
+    assert_eq!(db.stats().reclaimed.merks, 1);
+}
+
 macro_rules! schedules {
     ($($name:ident: $step:ident, $burst:ident;)*) => {
         $(

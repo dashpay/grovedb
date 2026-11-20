@@ -23,8 +23,11 @@
 //!
 //! - **Every read.** [`History`] holds *S(v)* for every version a reader
 //!   can ask at. A look reads a subtree whole, through a snapshot or an
-//!   operation, and compares: whether it is entered, every node with its
-//!   value, hashes and links, every record of the other columns.
+//!   operation, and compares: whether it is entered and, where it is,
+//!   every node with its value, hashes and links, and every record of the
+//!   other columns. A subtree that is not entered is not opened, so
+//!   nothing of it is read: a record that a drop left under it is the
+//!   checker's to find.
 //! - **Every commit outcome** (CF2). A writer notes the latest version
 //!   before and after each operation that writes, and before its commit.
 //!   The model then says whether a commit outside wrote one of its keys
