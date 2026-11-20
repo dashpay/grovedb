@@ -40,6 +40,49 @@ fn options(scratch: std::path::PathBuf) -> RunOptions {
     }
 }
 
+/// The rows that are times.
+const TIME_ROWS: [&str; 8] = [
+    "bulk_load",
+    "wall_per_transition",
+    "block_commit",
+    "checkpoint",
+    "reopen",
+    "point_get",
+    "point_query_proof",
+    "references_proof",
+];
+
+/// The rows whose values follow the schedule: where a log file starts,
+/// when background work ran, what the rest of the process wrote.
+const MEASURED_ROWS: [&str; 6] = [
+    "bytes_logged_per_transition",
+    "physical_bytes_per_transition",
+    "flush_bytes_per_transition",
+    "compaction_bytes_per_transition",
+    "process_write_bytes_per_transition",
+    "size_on_disk",
+];
+
+fn kind_of(id: &str) -> RowKind {
+    if TIME_ROWS.contains(&id) {
+        RowKind::Time
+    } else if MEASURED_ROWS.contains(&id) {
+        RowKind::Measured
+    } else {
+        RowKind::Count
+    }
+}
+
+/// The id and phase of every count row of `report`.
+fn count_rows(report: &Report) -> std::collections::BTreeSet<(String, String)> {
+    report.engines[0]
+        .rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Count)
+        .map(|row| (row.id.clone(), row.phase.clone()))
+        .collect()
+}
+
 #[test]
 fn a_run_measures_every_row_and_count_rows_repeat() {
     let scratch = tempfile::tempdir().unwrap();
@@ -104,8 +147,8 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     if let Some(instructions) = create.instructions_per_sample {
         assert!(instructions > 1_000.0);
     }
-    if first.method.thread_cpu_time {
-        assert!(create.cpu_per_sample.unwrap() > 0.0);
+    if let Some(cpu) = create.cpu_per_sample {
+        assert!(cpu > 0.0);
     }
     if first.method.cold_method == ColdMethod::ReopenAndDropFileCache {
         let cold = engine.row("point_get", "cold").unwrap();
@@ -167,30 +210,24 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     );
     assert_eq!(load.counters.log_groups, 100, "one write batch per block");
 
-    for row in &engine.rows {
-        let follows_the_schedule = [
-            "bytes_logged",
-            "physical_bytes",
-            "flush_bytes",
-            "compaction_bytes",
-            "process_write_bytes",
-            "size_on_disk",
-        ]
-        .iter()
-        .any(|prefix| row.id.starts_with(prefix));
-        let expected = match row.kind {
-            RowKind::Time => RowKind::Time,
-            _ if follows_the_schedule => RowKind::Measured,
-            _ => RowKind::Count,
-        };
-        assert_eq!(row.kind, expected, "{} in {}", row.id, row.phase);
+    for report in [&first, &second] {
+        for row in &report.engines[0].rows {
+            assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
+        }
     }
+    let counted = count_rows(&first);
+    assert_eq!(
+        counted,
+        count_rows(&second),
+        "both runs have the same count rows"
+    );
 
     let agreements = compare(&first, &second);
     let counts: Vec<_> = agreements
         .iter()
         .filter(|agreement| agreement.kind == RowKind::Count)
         .collect();
+    assert_eq!(counts.len(), counted.len());
     for agreement in &counts {
         assert!(
             agreement.within(0.0),

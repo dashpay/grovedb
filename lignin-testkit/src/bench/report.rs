@@ -172,7 +172,8 @@ pub struct DiskUsage {
 #[serde(rename_all = "kebab-case")]
 pub enum RowKind {
     /// Bytes and counts the workload fixes: equal in every run of one
-    /// commit, on any machine.
+    /// commit with the same settings (workload, seed, sizes and read
+    /// counts), on any machine.
     Count,
     /// Bytes and sizes that also depend on when the engine's background
     /// work ran, or on what the rest of the process wrote: reported, not
@@ -485,8 +486,9 @@ pub struct Agreement {
     pub id: String,
     /// The row's phase.
     pub phase: String,
-    /// The looser of the two runs' kinds: measured if either run has the
-    /// row as measured.
+    /// The looser of the two runs' kinds: for rows [`comparable`] accepts,
+    /// measured if either run has the row as measured; otherwise the first
+    /// run's.
     pub kind: RowKind,
     /// The unit.
     pub unit: String,

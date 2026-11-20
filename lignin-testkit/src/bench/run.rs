@@ -514,7 +514,7 @@ fn write_phase<E: Engine>(
 
 const COST_SOURCE: &str = "GroveDB's OperationCost of every operation, summed";
 
-/// The count rows of a write phase, per state transition.
+/// The count and measured rows of a write phase, per state transition.
 fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
     let totals = &run.totals;
     let phase = totals.phase.as_str();

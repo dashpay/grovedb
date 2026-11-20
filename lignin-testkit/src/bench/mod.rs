@@ -11,7 +11,8 @@
 //!
 //! # Rows
 //!
-//! Count rows are equal in every run of one commit, on any machine.
+//! Count rows are equal in every run of one commit with the same
+//! [`Settings`], on any machine.
 //! Measured rows ([`RowKind::Measured`]) are bytes and sizes that are not:
 //! `bytes_logged_per_transition`, `physical_bytes_per_transition`,
 //! `flush_bytes_per_transition`, `compaction_bytes_per_transition`,
