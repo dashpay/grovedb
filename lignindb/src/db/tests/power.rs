@@ -7,6 +7,7 @@
 use std::collections::BTreeMap;
 
 use lignin_io::sim::{CrashPoint, SimConfig, SimVfs};
+use lignin_store::flush::Checkpointed;
 
 use super::*;
 
@@ -24,7 +25,8 @@ struct Ran {
     /// What the commit that was under way when the power went would
     /// publish: its group can be in the log (DU2).
     under_way: Option<State>,
-    /// The latest version that a flush made durable.
+    /// The latest version that a flush or an installed table checkpoint
+    /// made durable.
     durable: u64,
     /// The latest published version.
     latest: u64,
@@ -33,11 +35,16 @@ struct Ran {
     /// Pages that a reclaiming step freed before write-back had linked
     /// them: their ids were another page's before (D-110).
     never_linked: u64,
+    /// How many of them were freed before the first table checkpoint was
+    /// installed: their freeing steps are in the log before it.
+    never_linked_at_checkpoint: u64,
     /// Whether a pass of write-back met a page that a write transaction
-    /// held back, before the table checkpoint in the middle.
+    /// held back.
     held_back: bool,
     /// Table checkpoints that were installed.
-    checkpoints: u32,
+    installed: u32,
+    /// Table checkpoints that were put off for a page that was held back.
+    put_off: u32,
 }
 
 /// The session's work, step by step on one thread, with the background
@@ -138,10 +145,20 @@ impl Script<'_> {
         }
     }
 
+    /// A table checkpoint. One that is installed has synced the log, so
+    /// every version published before it is durable.
     fn checkpoint(&mut self) -> bool {
         match self.db.shared.write_back().checkpoint() {
-            Ok(_) => {
-                self.ran.checkpoints += 1;
+            Ok(Checkpointed::Installed { .. }) => {
+                if self.ran.installed == 0 {
+                    self.ran.never_linked_at_checkpoint = self.ran.never_linked;
+                }
+                self.ran.installed += 1;
+                self.ran.durable = self.ran.latest;
+                true
+            }
+            Ok(Checkpointed::PutOff { .. }) => {
+                self.ran.put_off += 1;
                 true
             }
             Err(error) => {
@@ -183,19 +200,30 @@ impl Script<'_> {
             && self.reclaim(1)
             && self.enter(21)
             && self.reclaim(1)
-            // A Merk with values out of line, which wait for their place.
-            && self.plant(50, long(), 6)
             // The second life of the ids: a Merk that is dropped before
             // write-back has linked its pages.
             && self.plant(2, wide(b'b'), 120)
-            && self.drop_of(2);
+            && self.drop_of(2)
+            // The reclaiming, whose steps free pages that never had a link
+            // and are given no free link (D-110). Then a pass that trims, a
+            // table checkpoint with those steps in the log before it, and
+            // the third life of the ids.
+            && self.reclaim(2)
+            && self.pass()
+            && self.checkpoint()
+            && self.enter(22)
+            && self.reclaim(2)
+            && self.enter(23)
+            && self.reclaim(2)
+            && self.plant(3, wide(b'c'), 120)
+            // A Merk with values out of line, which wait for their place.
+            && self.plant(50, long(), 6);
         if !begun {
             return false;
         }
-        // A write transaction that begins after the drop, so that the
-        // reclaiming does not wait for it, copies a page of the Merk with
-        // the long values and stays open: write-back cannot place the
-        // values, and the page holds the table checkpoint back.
+        // A write transaction copies a page of the Merk with the long
+        // values and stays open: write-back cannot place the values, and
+        // the page puts the table checkpoint off.
         let txn = self.db.begin();
         let held = {
             let Ok(scope) = txn.scope() else {
@@ -209,19 +237,7 @@ impl Script<'_> {
             scope.merge();
             applied.is_ok()
         };
-        // The reclaiming, whose steps free pages that never had a link and
-        // are given no free link (D-110). Then a pass that trims, a table
-        // checkpoint with those steps in the log before it, and the third
-        // life of the ids.
-        let ended = held
-            && self.reclaim(2)
-            && self.pass()
-            && self.checkpoint()
-            && self.enter(22)
-            && self.reclaim(2)
-            && self.enter(23)
-            && self.reclaim(2)
-            && self.plant(3, wide(b'c'), 120);
+        let ended = held && self.pass() && self.checkpoint();
         let rolled_back = self.db.rollback(&txn).is_ok();
         drop(txn);
         ended && rolled_back && self.pass() && self.flush() && self.checkpoint() && self.pass()
@@ -281,11 +297,14 @@ fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
         ran.never_linked > 0,
         "no page was freed before it had a link"
     );
+    // The first table checkpoint was installed with those freeing steps
+    // in the log before it; the one in the middle was put off.
+    assert_eq!(ran.never_linked_at_checkpoint, ran.never_linked);
     assert!(
         ran.held_back,
         "no page was held back by the write transaction"
     );
-    assert_eq!(ran.checkpoints, 2);
+    assert_eq!((ran.installed, ran.put_off), (2, 1));
     assert_eq!(ran.durable, ran.latest);
     println!(
         "{} changes of the file layer, {} versions, {} pages never linked",
@@ -299,15 +318,15 @@ fn the_script_frees_pages_that_never_had_a_link_around_a_table_checkpoint() {
 /// files, and each cut is recovered in four states: nothing kept
 /// that was not synced, everything kept, and two drawn from the seed.
 /// Each state opens. It lands on a version the script published, or on
-/// the one whose commit was under way, at or after the last version a
-/// flush made durable, and a reader finds what that version held. The
+/// the one whose commit was under way, at or after the last version that
+/// was made durable, and a reader finds what that version held. The
 /// reclaimer of the new session then takes out what was left, a commit
 /// is taken, and the store is sound to the physical checker.
 ///
 /// The commits of the script make nothing durable by themselves (the
-/// default sync policy), so a cut lands on the last flushed version or on
-/// a later one that the cut happened to keep. No cut of this script lands
-/// on a commit that was under way, though the check allows for one.
+/// default sync policy), so a cut lands on the last version that a flush
+/// or an installed table checkpoint made durable, or on a later one that
+/// the cut happened to keep.
 #[test]
 fn a_power_cut_at_any_point_of_a_session_recovers_a_committed_version() {
     let whole = ran(&SimVfs::new(SimConfig::new(31)), None);
