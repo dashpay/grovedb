@@ -1750,14 +1750,21 @@ struct Seen {
     handles: BTreeMap<Vec<u8>, NodeHandle>,
 }
 
-/// Reads every node of the Merk `name` through `txn`, and checks that each
-/// is shown with the hash of the value it is shown with.
-fn see(txn: &WriteTxn<'_>, name: u8) -> Seen {
+/// Reads every node of the Merk `name` through `txn`, in the order of the
+/// keys, and checks that each is shown with the hash of the value it is
+/// shown with. `during` is called after each node is read, with the place
+/// of its key.
+///
+/// Each node is read at the version that is the latest then: where a
+/// commit is published during the read, what is returned is of two
+/// versions.
+fn see_during(txn: &WriteTxn<'_>, name: u8, mut during: impl FnMut(u8)) -> Seen {
     let mut seen = Seen {
         items: Items::new(),
         handles: BTreeMap::new(),
     };
-    for key in (0..KEYS).map(key) {
+    for at in 0..KEYS {
+        let key = key(at);
         let read = |view: Option<NodeView<'_>>| {
             let view = view.expect("the node is there");
             (value_of(&view), *view.value_hash(), view.handle())
@@ -1767,8 +1774,34 @@ fn see(txn: &WriteTxn<'_>, name: u8) -> Seen {
         seen.handles
             .extend(handle.map(|handle| (key.clone(), handle)));
         seen.items.insert(key, value);
+        during(at);
     }
     seen
+}
+
+/// [`see_during`] with nothing done between the nodes: for a look at what
+/// is published, which makes no hash from what it reads.
+fn see(txn: &WriteTxn<'_>, name: u8) -> Seen {
+    see_during(txn, name, |_| ())
+}
+
+/// The Merk `name` as one version has it: [`see_during`], made again
+/// while a commit was published during it. This is the read of a writer
+/// of the schedule, which makes the hashes it states from the values it
+/// read ([`change`]).
+fn see_at_one_version(
+    versions: &Versions,
+    txn: &WriteTxn<'_>,
+    name: u8,
+    mut during: impl FnMut(u8),
+) -> Seen {
+    loop {
+        let before = versions.latest();
+        let seen = see_during(txn, name, &mut during);
+        if versions.latest() == before {
+            break seen;
+        }
+    }
 }
 
 /// The batch that gives the node `key` of the Merk `name` the value
@@ -1877,10 +1910,35 @@ fn cell_of(path: WritePath<'_>, node: &[u8]) -> Place {
     Place::Cell(handle.expect("a committed node").address())
 }
 
+/// A place among the schedule's keys that is not `root`, the place of the
+/// key of the Merks' root.
+fn below_the_root(rng: &mut Rng, root: u8) -> u8 {
+    let at = rng.below(usize::from(KEYS) - 1) as u8;
+    at + u8::from(at >= root)
+}
+
 /// One transaction of the schedule: it reads the Merk `name`, lets
 /// `between` happen, writes the node `key` with a new value and commits.
 /// Returns whether the commit was made, with the keys of the nodes it
 /// wrote and of those among them that kept their values.
+///
+/// The writer makes the hashes of the nodes it writes from the values it
+/// read, and it stays within what the conflict rule answers for, so that
+/// whatever it publishes is the Merk of the values that are stored:
+///
+/// - **Its view is of one version** ([`see_at_one_version`]). From values
+///   of two versions it would state, in a node of the newer one, the hash
+///   of a child as the older one had it
+///   (`a_view_of_two_versions_publishes_a_link_hash_of_the_older_one`). A
+///   Merk has no such view: it reads the links of a node with the node.
+/// - **It does not change the value of the root.** A node whose value is
+///   stated states its links with it, and nothing of it is dated at a
+///   read (D-155 item 3): after a commit that changed a child, the root
+///   is published with the link hashes of the writer's read
+///   (`a_stated_value_is_published_with_the_link_hashes_of_its_read`).
+///   Every other node has the root above it, which the writer keeps the
+///   value of. Every commit of the schedule to the Merk writes the root,
+///   so one since the writer's read is then a conflict.
 fn rewrite(
     db: &Db,
     versions: &Versions,
@@ -1889,9 +1947,10 @@ fn rewrite(
     between: impl FnOnce(),
 ) -> (bool, Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let txn = path.begin();
-    let seen = see(&txn, write.0);
+    let seen = see_at_one_version(versions, &txn, write.0, |_| ());
     between();
     let done = write_as_seen(db, versions, &txn, &seen, write);
+    assert!(!done.2.is_empty(), "the root is above the node, and kept");
     // Whatever is published has the hash of its value under every key.
     for name in [MERK, OTHER] {
         see(&path.begin(), name);
@@ -1965,10 +2024,101 @@ fn a_stated_value_is_published_with_the_link_hashes_of_its_read() {
     );
 }
 
+/// What a writer of the schedule must not do, and how it does not. It
+/// makes the link hashes it states from the values it read ([`change`]).
+/// Where a commit of another transaction is published during its read, the
+/// values are of two versions: here the first node as it was before that
+/// commit changed it, and every other node as it is after. The writer
+/// changes the other child of the node above the first. It writes the node
+/// above with its value kept, and with the hash of the first node as it
+/// read it for the link to it, which is the hash of the older version. No
+/// node it keeps the value of was read before that commit, so its own
+/// commit is in no conflict, and the physical checker reports the link.
+/// This is the writer's doing. A Merk reads the links of a node with the
+/// node. The engine dates a kept value at the read its write names, and
+/// this write names no read of the first node: it states that node's
+/// hash in a link of the node above, and links are not dated.
+///
+/// The read of the schedule is made again while a commit was published
+/// during it ([`see_at_one_version`]), and what its writer then publishes
+/// is the Merk of the values that are stored.
+#[test]
+fn a_view_of_two_versions_publishes_a_link_hash_of_the_older_one() {
+    let (db, versions) = Db::new(96);
+    let path = db.path(&versions);
+    let mut rng = Rng::new(0x2057_a7ed);
+    let items = make_merks(&db, &versions, path, || model::value(&mut rng, 24));
+    let records = model::records(&items).1;
+    // The node that is read first, the node above it with the side it is
+    // on, and the child on the other side, which the writer changes.
+    let first = key(0);
+    let (above, side, other) = (records.iter())
+        .find_map(|(node, record)| {
+            let (side, across) = [(Side::Left, Side::Right), (Side::Right, Side::Left)]
+                .into_iter()
+                .find(|(side, _)| record.link(*side).is_some_and(|link| link.key == first))?;
+            Some((node.clone(), side, record.link(across)?.key.clone()))
+        })
+        .expect("the node above the first has another child");
+    let other = place(&other);
+    let theirs = |rng: &mut Rng| {
+        let value = model::value(rng, 24);
+        let (made, ..) = rewrite(&db, &versions, path, (MERK, 0, value.clone()), || ());
+        assert!(made);
+        value
+    };
+
+    // A read with a commit after its first node, as it is.
+    let txn = path.begin();
+    let seen = see_during(&txn, MERK, |at| {
+        if at == 0 {
+            theirs(&mut rng);
+        }
+    });
+    assert_eq!(seen.items[&first], items[&first], "as it was before");
+    let ours = (MERK, other, model::value(&mut rng, 24));
+    let (made, _, kept) = write_as_seen(&db, &versions, &txn, &seen, ours);
+    assert!(made, "the commit is taken");
+    assert!(kept.contains(&above) && !kept.contains(&first));
+    let report = db.verify_still();
+    let found = db.unsound(&report);
+    assert_eq!((found.len(), report.more_findings), (1, 0), "{report}");
+    assert_eq!(
+        found[0].rule,
+        Rule::Hash(HashField::Child(side)),
+        "{report}"
+    );
+    assert_eq!(found[0].place, cell_of(path, &above), "{report}");
+
+    // The read of the schedule, with a commit after the first node of its
+    // first pass: it is made a second time, and is of one version.
+    let txn = path.begin();
+    let (mut passes, mut theirs_now) = (0, Vec::new());
+    let seen = see_at_one_version(&versions, &txn, MERK, |at| {
+        if at == 0 {
+            passes += 1;
+            if passes == 1 {
+                theirs_now = theirs(&mut rng);
+            }
+        }
+    });
+    assert_eq!(passes, 2);
+    assert_eq!(seen.items[&first], theirs_now, "as it is now");
+    let ours = (MERK, other, model::value(&mut rng, 24));
+    let (made, ..) = write_as_seen(&db, &versions, &txn, &seen, ours);
+    assert!(made);
+    let report = db.verify_still();
+    assert!(
+        db.unsound(&report).is_empty() && report.more_findings == 0,
+        "{report}"
+    );
+}
+
 /// A writer on one thread reads the nodes of a Merk and later writes them
 /// again with their values kept, while a second thread commits to the
 /// same keys and to others. After every commit, every node has the hash
-/// of its value.
+/// of its value, and what is left at the end is checked whole, with the
+/// hash in every link.
 ///
 /// The first part is interleaved by construction: the second thread makes
 /// the commits the writer asks it for, between the writer's read and its
@@ -2007,7 +2157,9 @@ fn kept_values_on_two_threads_are_never_published_under_a_hash_of_another_value(
         model::value(rng, len)
     };
     // The two Merks, with every key.
-    make_merks(&db, &versions, path, || value(&mut rng));
+    let items = make_merks(&db, &versions, path, || value(&mut rng));
+    // The two Merks have the same keys, and so the same root.
+    let root = place(&model::records(&items).0.expect("a root"));
 
     let (asks, asked) = mpsc::channel::<Ask>();
     let (answers, answered) = mpsc::channel::<Vec<Vec<u8>>>();
@@ -2032,7 +2184,7 @@ fn kept_values_on_two_threads_are_never_published_under_a_hash_of_another_value(
                     Ask::Free => {
                         while !stop.load(Ordering::Relaxed) {
                             let name = [MERK, MERK, OTHER][rng.below(3)];
-                            let at = rng.below(usize::from(KEYS)) as u8;
+                            let at = below_the_root(&mut rng, root);
                             let len = [9, 24, 700][rng.below(3)];
                             let value = model::value(&mut rng, len);
                             let wait = || wait_for_a_commit(versions);
@@ -2048,14 +2200,14 @@ fn kept_values_on_two_threads_are_never_published_under_a_hash_of_another_value(
 
         // The part that is interleaved by construction.
         for round in 0..ROUNDS {
-            let at = rng.below(usize::from(KEYS)) as u8;
+            let at = below_the_root(&mut rng, root);
             let new = value(&mut rng);
             let commits = rng.below(4);
             let same = rng.chance(50);
             let mut theirs: Vec<(u8, u8, Vec<u8>)> = (0..commits)
                 .map(|_| {
                     let name = if same { MERK } else { OTHER };
-                    (name, rng.below(usize::from(KEYS)) as u8, value(&mut rng))
+                    (name, below_the_root(&mut rng, root), value(&mut rng))
                 })
                 .collect();
             let mut written = BTreeSet::new();
@@ -2081,7 +2233,7 @@ fn kept_values_on_two_threads_are_never_published_under_a_hash_of_another_value(
         asks.send(Ask::Free).expect("it runs");
         let mut made = 0usize;
         for _ in 0..FREE {
-            let at = rng.below(usize::from(KEYS)) as u8;
+            let at = below_the_root(&mut rng, root);
             let new = value(&mut rng);
             let wait = || wait_for_a_commit(versions);
             let (committed, ..) = rewrite(db, versions, path, (MERK, at, new), wait);
