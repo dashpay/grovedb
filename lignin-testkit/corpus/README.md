@@ -65,7 +65,8 @@ out as it was but for its `engine` line again. That range is one commit,
   that keeps a 64-bit sum becomes, in place, the tree that keeps it in 128
   bits. `conversions` converts trees of each of the seven types and goes on
   using them, and the `legacy-convert-…` cases hold every way a conversion
-  is refused. Both were added afterwards, recorded from the same pin.
+  is refused on a database one grove version wrote. Both were added
+  afterwards, recorded from the same pin.
 - It changes what `GroveDb::reconcile_indexed_tree_secondaries` writes on
   grove version 5 when the rankings of the tree are damaged: every row it
   removes leaves storage, a row no tree links is removed or written again,
@@ -600,20 +601,27 @@ hash do not have it. The repair of grove version 5 removes such records
 
 What was seen in a generated stream and reported as the other half
 (BASE-01, `wide-ranks` on grove version 4: a ranking that lacks the row of
-an entry a batch wrote) is this half seen from another side. The stream was
-generated again as it was then, with batches writing entries, for 400 seeds
-at three sizes, with its repairs and without them, and every ranking of
-every tree was compared with the tree's entries after every commit
-(`tests/ranking_drift.rs`). No ranking lacked a row, ranked a key at
-another count or sum than its element has, or returned fewer entries than
-keys. Nearly every stream left rows behind (1,190 of 1,200 without the
-repairs, 1,165 with them). A row left behind sits in the ranking before the
-entries that rank after it, so the rank of a key comes out one too high and
-a page begins one row late: that is what the model of that stream reported.
-Shrunk, such a stream is eight operations: the removal, through the method
-of the tree, of the entry at the root of a tree of five entries, two of
-them written by a batch of the same block. That is the removal this case
-holds.
+an entry a batch wrote) was looked for again in that generator's streams
+and not found. The stream is generated with batches writing entries, as it
+was then, for 400 seeds at three sizes, with its repairs and without them,
+and after every commit every ranking of every indexed tree is compared
+with the tree's entries, row by row: the value a key is ranked at, and the
+key (`tests/ranking_drift.rs`). In those 2,400 streams no ranking lacked
+the row of an entry, held a key of the tree twice, ranked a key at another
+count, sum or average than its element has, or returned other entries
+than keys where its entries could be read. Nearly every stream left rows
+of removed entries behind, which is the half this case holds. Shrunk, such
+a stream is eight operations: the removal, through the method of the tree,
+of the entry at the root of a tree of five entries, two of them written by
+a batch of the same block.
+
+A row left behind sits in the ranking before the entries that rank after
+it, so the rank of a key comes out one too high and a page begins one row
+late. The model of that day reported exactly such answers (a rank of 7
+where it expected 6, and a page that began with another entry), which a
+row left behind explains and a missing row does not. The stream of that
+day was not kept, so this is an explanation of what was reported and not
+a reproduction of it.
 
 `golden::legacy`'s tests run every case on every grove version and check
 these numbers, and `tests/golden.rs` checks that no other trace of the
@@ -636,17 +644,29 @@ holds it knowingly.
 children with the sum in 128 bits. Grove version 5 has the operation;
 grove versions 1 to 4 refuse every call (`VersionError`). A generated
 stream holds no operation that fails, so `conversions` holds the
-conversions that are accepted and these cases every way one is refused,
-each next to the conversion that is accepted once the reason is gone. In
-every case some conversions run in the transaction of the block and some
-are given no transaction, which GroveDB then runs in one of its own and
+conversions that are accepted and these cases every way one is refused
+that a trace can reach (two it cannot are named below), each next to the
+conversion that is accepted once the reason is gone. In
+every case but `convert-key-too-long-to-rank`, which converts in the
+block, some conversions run in the transaction of the block and some are
+given no transaction, which GroveDB then runs in one of its own and
 commits. GroveDB has no batch operation that converts.
+
+Two of the refusals GroveDB documents are in no case: a tree whose stored
+axes are not canonical, and a tree that holds a child its counterpart does
+not accept. No supported write of grove version 5 stores either. A batch of
+grove versions 1 to 4 that creates a tree and fills it does (the
+`filled-tree-…` cases above), and those versions do not convert. Such a
+tree is refused only on a database that one grove version wrote and
+another converts, and a trace applies one grove version to one database.
+GroveDB's own test for them does exactly that
+(`a_tree_written_past_the_checks_of_a_released_version_is_refused`).
 
 | Case | What grove version 5 refuses | v1, v2, v3 | v4 | v5 |
 | --- | --- | --- | --- | --- |
-| `convert-twice` | a second conversion of each of the seven trees, in the same block, in a later one and given no transaction (`InvalidInput`: the tree has no counterpart any more) | 25 / 0 / 0 | 25 / 0 / 0 | 18 / 0 / 0 |
+| `convert-twice` | a second conversion: of four of the seven trees in the block that converted them, and of all seven in a later block and given no transaction (`InvalidInput`: the tree has no counterpart any more) | 25 / 0 / 0 | 25 / 0 / 0 | 18 / 0 / 0 |
 | `convert-without-a-counterpart` | the four trees that keep no sum, the six whose sum has 128 bits as created, an item, a reference and a sum item (`InvalidInput`) | 19 / 0 / 0 | 19 / 0 / 0 | 14 / 0 / 0 |
-| `convert-what-is-not-there` | a key that is not stored (`PathKeyNotFound`), a subtree that does not exist (`InvalidParentLayerPath`), a path through an item or a sum item (`CorruptedPath`), a key or a path segment of 256 bytes (`InvalidInput`) | 12 / 0 / 0 | 12 / 0 / 0 | 10 / 0 / 0 |
+| `convert-what-is-not-there` | a key that is not stored (`MerkError::PathKeyNotFound`), a subtree that does not exist (`InvalidParentLayerPath`), both also given no transaction; a path through an item or a sum item (`CorruptedPath`), a key or a path segment of 256 bytes (`InvalidInput`) | 12 / 0 / 0 | 12 / 0 / 0 | 10 / 0 / 0 |
 | `convert-before-its-parent` | a tree whose parent adds its sum to a 64-bit sum: inside a sum tree, and as an entry of a tree ranking by a 64-bit sum (`InvalidInput`) | 16 / 2 / 0 | 16 / 2 / 0 | 5 / 0 / 0 |
 | `convert-with-a-wide-child` | a tree that holds a tree with a 128-bit sum, which would add its sum once the tree is converted (`InvalidInput`) | 8 / 0 / 0 | 8 / 0 / 0 | 3 / 0 / 0 |
 | `convert-claimed-sum` | a tree inserted with a sum and no children, whose element names a sum the tree does not have (`InvalidInput`) | 6 / 0 / 0 | 6 / 0 / 0 | 4 / 0 / 0 |
@@ -665,10 +685,11 @@ What the cases show beside the refusals:
   no axis of 128-bit sums.
 - `convert-rows-of-both-signs` has no refusal on grove version 5. Its two
   indexed trees hold rows that, removed one at a time, would pass through
-  a total no `i64` holds. Every ranking is read and proven before the
-  conversion and after it, on the axis of 128-bit sums that replaces the
-  axis of sums, and the trees then take entries past an `i64` at either
-  end.
+  a total no `i64` holds. The rankings by sum and by average are read and
+  proven before the conversion, and those and the ranking by count after
+  it, on the axis of 128-bit sums that replaces the axis of sums. The
+  trees then take entries, each within an `i64`, that carry the total of
+  one tree below the `i64` range and the total of the other above it.
 - On grove versions 1 to 4 the numbers above also count what follows from
   the refusals: the trees with a 128-bit sum that those versions do not
   create, the sums that overflow a tree that was not converted

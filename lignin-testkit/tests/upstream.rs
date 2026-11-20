@@ -17,8 +17,8 @@ use grovedb::{
         QueryItemOrSumReturnType,
     },
     query_result_type::{PathKeyElementTrio, QueryResultElements},
-    AxisAggregateValue, AxisKeys, AxisProjection, AxisQuery, AxisTraversal, Element, GroveDb,
-    PathQuery, PathQueryRun, PathQueryShape,
+    AggregateKind, AxisAggregateValue, AxisKeys, AxisProjection, AxisQuery, AxisTraversal, Element,
+    GroveDb, PathQuery, PathQueryRun, PathQueryShape,
 };
 use grovedb_merk::proofs::query::{AggregateFold, IndexAxis};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
@@ -1028,8 +1028,8 @@ struct ConversionsSeen {
     above: u64,
     below: u64,
     elements: u64,
-    /// How many trees were read as stored, in their wrappers.
-    raw_elements: u64,
+    /// How many trees were read as stored and came in a wrapper.
+    read_in_a_wrapper: u64,
     rows: u64,
     values_or_sums: u64,
     aggregates: u64,
@@ -1130,17 +1130,6 @@ fn every_row(trees: &Trees, path: &[Vec<u8>]) -> Vec<PathKeyElementTrio> {
         .collect()
 }
 
-/// How many trees of the model have a 128-bit sum or no sum: every tree
-/// but those a conversion applies to.
-fn wide_trees(trees: &Trees) -> usize {
-    trees
-        .held
-        .values()
-        .flat_map(|tree| tree.values())
-        .filter(|element| convertible(element).is_none() && element.is_any_tree())
-        .count()
-}
-
 fn check_conversion_read(
     context: &str,
     trees: &Trees,
@@ -1172,12 +1161,14 @@ fn check_conversion_read(
             },
             Outcome::Element(element),
         ) => {
-            assert_eq!(
-                Some(without_root_keys(element)),
-                trees.stored(path, key),
-                "{context}"
-            );
-            seen.raw_elements += 1;
+            let stored = trees.stored(path, key);
+            assert_eq!(Some(without_root_keys(element)), stored, "{context}");
+            seen.read_in_a_wrapper += u64::from(matches!(
+                stored,
+                Some(
+                    Element::NonCounted(_) | Element::NotSummed(_) | Element::NotCountedOrSummed(_)
+                )
+            ));
         }
         (Read::Query(query), Outcome::Rows(rows)) => {
             assert!(
@@ -1248,9 +1239,16 @@ fn check_conversion_read(
             },
             Outcome::BigSum { count, sum },
         ) => {
-            let Ok(PathQueryShape::AggregateLeaf { inner, .. }) = query.classify() else {
+            let Ok(PathQueryShape::AggregateLeaf { kind, inner }) = query.classify() else {
                 panic!("{context}\nis no aggregate over one range");
             };
+            assert!(
+                matches!(
+                    (*with_count, kind),
+                    (false, AggregateKind::Sum) | (true, AggregateKind::CountAndSum)
+                ),
+                "{context}\nasks for another aggregate than its reader returns"
+            );
             let (expected_count, expected_sum) = total_in(trees, &query.path, inner);
             assert_eq!(
                 (count, sum),
@@ -1260,18 +1258,17 @@ fn check_conversion_read(
             seen.big_sums += 1;
         }
         (Read::PathQuery { query, .. }, Outcome::Run(run)) => {
-            let Ok(PathQueryShape::AggregateLeaf { inner, .. }) = query.classify() else {
+            let Ok(PathQueryShape::AggregateLeaf { kind, inner }) = query.classify() else {
                 return check_rank_query(context, trees, query, run, &mut seen.ranks);
             };
             let (count, sum) = total_in(trees, &query.path, inner);
             let narrow = i64::try_from(sum).expect("a narrow total fits an i64");
-            let expected = match run {
-                PathQueryRun::AggregateCount(_) => PathQueryRun::AggregateCount(count),
-                PathQueryRun::AggregateSum(_) => PathQueryRun::AggregateSum(narrow),
-                PathQueryRun::AggregateCountAndSum { .. } => {
+            let expected = match kind {
+                AggregateKind::Count => PathQueryRun::AggregateCount(count),
+                AggregateKind::Sum => PathQueryRun::AggregateSum(narrow),
+                AggregateKind::CountAndSum => {
                     PathQueryRun::AggregateCountAndSum { count, sum: narrow }
                 }
-                ref other => panic!("{context}\nreturned {other:?}"),
             };
             assert_eq!(format!("{run:?}"), format!("{expected:?}"), "{context}");
             seen.aggregates += 1;
@@ -1301,6 +1298,7 @@ fn the_converted_trees_hold_what_was_written() {
             let (_dir, db) = open();
             let mut transactions = Transactions::new(&db);
             let mut trees = Trees::default();
+            let mut in_block: Vec<(Path, Vec<u8>)> = Vec::new();
             for (index, op) in workload.stream(seed).enumerate() {
                 let context =
                     format!("conversions on grove v{version}, seed {seed}: op {index}\n{op:?}");
@@ -1316,11 +1314,6 @@ fn the_converted_trees_hold_what_was_written() {
                     .apply(&op, grove_version)
                     .unwrap()
                     .unwrap_or_else(|error| panic!("{context}\nrefused: {error:?}"));
-                let undoes = matches!(
-                    op,
-                    Op::Transaction(TransactionOp::Rollback | TransactionOp::RollbackToSavepoint)
-                );
-                let before = if undoes { wide_trees(&trees) } else { 0 };
                 if let Some(held) = trees.record(&op) {
                     assert!(
                         matches!(outcome, Outcome::Flag(deleted) if deleted == held),
@@ -1328,8 +1321,24 @@ fn the_converted_trees_hold_what_was_written() {
                     );
                     continue;
                 }
-                if undoes {
-                    seen.undone += (before - wide_trees(&trees)) as u64;
+                // The conversions of the open block, and those of them a
+                // rollback takes back: the tree is again one that converts.
+                match &op {
+                    Op::Write(Write::ConvertToBigSumTree {
+                        path,
+                        key,
+                        own_transaction: false,
+                    }) => in_block.push((path.clone(), key.clone())),
+                    Op::Commit => in_block.clear(),
+                    Op::Transaction(
+                        TransactionOp::Rollback | TransactionOp::RollbackToSavepoint,
+                    ) => {
+                        let before = in_block.len();
+                        in_block
+                            .retain(|(path, key)| convertible(&trees.held[path][key]).is_none());
+                        seen.undone += (before - in_block.len()) as u64;
+                    }
+                    _ => {}
                 }
                 let read = match &op {
                     Op::Read(read) | Op::Transaction(TransactionOp::BlockRead(read)) => read,
@@ -1386,7 +1395,7 @@ fn the_converted_trees_hold_what_was_written() {
             ("read with a sum below an i64", seen.below),
             ("read as a 128-bit sum of a range", seen.big_sums),
             ("ranked past an i64", seen.ranks.ranked_past_an_i64),
-            ("read in its wrapper", seen.raw_elements),
+            ("read in its wrapper", seen.read_in_a_wrapper),
             (
                 "left with a 64-bit sum in a converted ranking",
                 seen.narrow_in_wide_rankings,

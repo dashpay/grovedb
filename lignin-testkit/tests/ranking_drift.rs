@@ -12,15 +12,16 @@
 //!
 //! - **left behind**: a row for a key the tree does not hold;
 //! - **missing**: a key of the tree with no row;
-//! - **stale**: a row that ranks a key at another count or sum than its
-//!   element has;
-//! - **short**: a key that a read of the ranking's keys returns and a read
-//!   of its entries does not.
+//! - **doubled**: a key of the tree with more than one row;
+//! - **stale**: a row that ranks a key of the tree at another count, sum
+//!   or average than its element has;
+//! - **other entries**: a read of the ranking's entries that succeeds and
+//!   returns other rows than the read of its keys.
 //!
+//! The rows compared are whole: the value a key is ranked at and the key.
 //! Rows are left behind in nearly every stream, and a read of the entries
-//! then fails on the row of a removed key, or ranks every entry after it
-//! one place late. None of the other three shows: no ranking was found to
-//! lack the row of an entry.
+//! then fails on the row of a removed key. None of the other four shows:
+//! no ranking was found to lack the row of an entry.
 
 use std::collections::BTreeMap;
 
@@ -105,8 +106,9 @@ fn indexed_trees(ops: &[Op]) -> Vec<(Path, Vec<IndexAxis>)> {
 struct Drift {
     left_behind: u64,
     missing: u64,
+    doubled: u64,
     stale: u64,
-    short: u64,
+    other_entries: u64,
     /// How many reads of the entries of a ranking failed.
     unreadable: u64,
 }
@@ -115,8 +117,9 @@ impl Drift {
     fn add(&mut self, other: &Drift) {
         self.left_behind += other.left_behind;
         self.missing += other.missing;
+        self.doubled += other.doubled;
         self.stale += other.stale;
-        self.short += other.short;
+        self.other_entries += other.other_entries;
         self.unreadable += other.unreadable;
     }
 
@@ -125,10 +128,16 @@ impl Drift {
         Drift {
             left_behind: u64::from(self.left_behind > 0),
             missing: u64::from(self.missing > 0),
+            doubled: u64::from(self.doubled > 0),
             stale: u64::from(self.stale > 0),
-            short: u64::from(self.short > 0),
+            other_entries: u64::from(self.other_entries > 0),
             unreadable: u64::from(self.unreadable > 0),
         }
+    }
+
+    /// The kinds no stream showed, each of which must be zero.
+    fn never_shown(&self) -> [u64; 4] {
+        [self.missing, self.doubled, self.stale, self.other_entries]
     }
 }
 
@@ -136,6 +145,53 @@ fn committed(db: &GroveDb, read: Read, grove_version: &GroveVersion) -> Result<O
     apply(db, &Op::Read(read), None, grove_version)
         .unwrap()
         .map_err(|error| format!("{error:?}"))
+}
+
+/// The scale of the fixed-point average an indexed tree ranks by.
+const AVERAGE_SCALE: i128 = 10_000_000_000_000_000_000;
+
+/// The value an indexed tree ranks `element` at on `axis`: its count, its
+/// sum, or the sum over the count times [`AVERAGE_SCALE`], rounded down,
+/// which a tree with a 128-bit sum works out in two steps. The average of
+/// nothing is zero.
+fn ranked_at(element: &Element, axis: IndexAxis, wide: bool) -> i128 {
+    let count = i128::from(element.count_value_or_default());
+    let sum = element.big_sum_value_or_default();
+    match axis {
+        IndexAxis::Count => count,
+        IndexAxis::Sum | IndexAxis::BigSum => sum,
+        IndexAxis::Avg if count == 0 => 0,
+        IndexAxis::Avg if wide => {
+            sum.div_euclid(count) * AVERAGE_SCALE + sum.rem_euclid(count) * AVERAGE_SCALE / count
+        }
+        IndexAxis::Avg => (sum * AVERAGE_SCALE).div_euclid(count),
+    }
+}
+
+/// The rows of a ranking: the value each key is ranked at, and the key.
+type Rows = Vec<(i128, Vec<u8>)>;
+
+fn rows_of_keys(keys: AxisKeys) -> Rows {
+    match keys {
+        AxisKeys::Count(keys) => keys.into_iter().map(|(v, k)| (v.into(), k)).collect(),
+        AxisKeys::Sum(keys) => keys.into_iter().map(|(v, k)| (v.into(), k)).collect(),
+        AxisKeys::Avg(keys) | AxisKeys::BigSum(keys) => keys,
+    }
+}
+
+fn rows_of_entries(entries: AxisEntries) -> Rows {
+    fn rows<T: Into<i128>>(entries: Vec<grovedb::IndexedAxisEntry<T>>) -> Rows {
+        entries
+            .into_iter()
+            .map(|entry| (entry.ordering_value.into(), entry.primary_key))
+            .collect()
+    }
+    match entries {
+        AxisEntries::Count(entries) => rows(entries),
+        AxisEntries::Sum(entries) => rows(entries),
+        AxisEntries::Avg(entries) => rows(entries),
+        AxisEntries::BigSum(entries) => rows(entries),
+    }
 }
 
 /// Compares every ranking of `trees` with the entries of its tree, in
@@ -158,36 +214,31 @@ fn drift(db: &GroveDb, trees: &[(Path, Vec<IndexAxis>)], grove_version: &GroveVe
                 .collect(),
             other => panic!("the rows of {tree:?}: {other:?}"),
         };
+        let wide = axes.contains(&IndexAxis::BigSum);
         for axis in axes {
             let page = AxisQuery::top_k(*axis, u16::MAX, 0, false);
             let keys = Read::PathQuery {
                 query: Box::new(PathQuery::new_axis(tree.clone(), page.clone().keys_only())),
                 proven: false,
             };
-            let ranked: BTreeMap<Vec<u8>, i128> = match committed(db, keys, grove_version) {
-                Ok(Outcome::Run(PathQueryRun::AxisKeys { keys, .. })) => match keys {
-                    AxisKeys::Count(keys) => keys.into_iter().map(|(v, k)| (k, v.into())).collect(),
-                    AxisKeys::Sum(keys) => keys.into_iter().map(|(v, k)| (k, v.into())).collect(),
-                    AxisKeys::Avg(keys) | AxisKeys::BigSum(keys) => {
-                        keys.into_iter().map(|(v, k)| (k, v)).collect()
-                    }
-                },
+            let ranked: Rows = match committed(db, keys, grove_version) {
+                Ok(Outcome::Run(PathQueryRun::AxisKeys { keys, .. })) => rows_of_keys(keys),
                 other => panic!("the keys of {tree:?} on {axis:?}: {other:?}"),
             };
-            drift.left_behind +=
-                ranked.keys().filter(|key| !held.contains_key(*key)).count() as u64;
-            drift.missing += held.keys().filter(|key| !ranked.contains_key(*key)).count() as u64;
-            drift.stale += held
+            let mut rows_of: BTreeMap<&Vec<u8>, u64> = BTreeMap::new();
+            for (value, key) in &ranked {
+                *rows_of.entry(key).or_default() += 1;
+                match held.get(key) {
+                    None => drift.left_behind += 1,
+                    Some(element) => {
+                        drift.stale += u64::from(*value != ranked_at(element, *axis, wide));
+                    }
+                }
+            }
+            drift.missing += held.keys().filter(|key| !rows_of.contains_key(key)).count() as u64;
+            drift.doubled += rows_of
                 .iter()
-                .filter(|(key, element)| {
-                    let expected: i128 = match axis {
-                        IndexAxis::Count => element.count_value_or_default().into(),
-                        IndexAxis::Sum | IndexAxis::BigSum => element.big_sum_value_or_default(),
-                        // The average is worked out from the two.
-                        IndexAxis::Avg => return false,
-                    };
-                    ranked.get(*key).is_some_and(|ranked| *ranked != expected)
-                })
+                .filter(|(key, rows)| **rows > 1 && held.contains_key(**key))
                 .count() as u64;
             let entries = Read::PathQuery {
                 query: Box::new(PathQuery::new_axis(tree.clone(), page)),
@@ -195,18 +246,10 @@ fn drift(db: &GroveDb, trees: &[(Path, Vec<IndexAxis>)], grove_version: &GroveVe
             };
             match committed(db, entries, grove_version) {
                 Ok(Outcome::Run(PathQueryRun::AxisEntries { entries, .. })) => {
-                    let read: Vec<Vec<u8>> = match entries {
-                        AxisEntries::Count(e) => e.into_iter().map(|e| e.primary_key).collect(),
-                        AxisEntries::Sum(e) => e.into_iter().map(|e| e.primary_key).collect(),
-                        AxisEntries::Avg(e) => e.into_iter().map(|e| e.primary_key).collect(),
-                        AxisEntries::BigSum(e) => e.into_iter().map(|e| e.primary_key).collect(),
-                    };
-                    drift.short += held
-                        .keys()
-                        .filter(|key| ranked.contains_key(*key) && !read.contains(key))
-                        .count() as u64;
+                    drift.other_entries += u64::from(rows_of_entries(entries) != ranked);
                 }
-                _ => drift.unreadable += 1,
+                Ok(other) => panic!("the entries of {tree:?} on {axis:?}: {other:?}"),
+                Err(_) => drift.unreadable += 1,
             }
         }
     }
@@ -285,8 +328,8 @@ fn grove_version(number: u32) -> &'static GroveVersion {
 /// On grove version 5 batches leave every ranking in step with its tree.
 /// On grove version 4 they leave rows of removed entries behind, with the
 /// repairs of the stream and without them, and nothing else: no ranking
-/// lacks a row, ranks a key at another value or returns fewer entries than
-/// keys.
+/// lacks a row, holds a key twice, ranks a key at another value, or
+/// returns other entries than keys where its entries can be read.
 #[test]
 fn batches_leave_rows_behind_on_grove_version_4_and_no_row_out() {
     for repairs in [false, true] {
@@ -301,15 +344,11 @@ fn batches_leave_rows_behind_on_grove_version_4_and_no_row_out() {
         );
         let fourth = hunt(1..=4, grove_version(4), repairs);
         println!("grove version 4, repairs: {repairs}: {fourth:?}");
-        let Drift {
-            left_behind,
-            missing,
-            stale,
-            short,
-            unreadable,
-        } = fourth.drift;
-        assert!(left_behind >= 6 && unreadable > 0, "{fourth:?}");
-        assert_eq!((missing, stale, short), (0, 0, 0), "{fourth:?}");
+        assert!(
+            fourth.drift.left_behind >= 6 && fourth.drift.unreadable > 0,
+            "{fourth:?}"
+        );
+        assert_eq!(fourth.drift.never_shown(), [0; 4], "{fourth:?}");
     }
 }
 
@@ -324,12 +363,6 @@ fn no_ranking_lacks_a_row_over_many_seeds() {
     for repairs in [false, true] {
         let shown = hunt(1..=seeds, grove_version(4), repairs);
         println!("grove version 4, repairs: {repairs}: {shown:?}");
-        let Drift {
-            missing,
-            stale,
-            short,
-            ..
-        } = shown.drift;
-        assert_eq!((missing, stale, short), (0, 0, 0));
+        assert_eq!(shown.drift.never_shown(), [0; 4], "{shown:?}");
     }
 }

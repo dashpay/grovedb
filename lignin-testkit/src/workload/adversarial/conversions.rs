@@ -45,8 +45,10 @@ const HEADROOM: i64 = 4_000_000;
 /// which for an indexed tree is an entry that ranks by what it holds. Its
 /// amounts add up to the largest `i64` exactly, to the smallest exactly, to
 /// about nothing with one large credit and one large debit, or to little.
-/// Half of the trees are created by a batch that also fills them, and half
-/// carry storage flags.
+/// Two or three of the five trees that do not rank their entries are
+/// created by the batch of the round, which also writes whatever the size
+/// of the round puts into them, and each tree carries storage flags or
+/// none, as the seed has it.
 ///
 /// Where the grove version has the operation, the round then converts every
 /// tree: half of them in the transaction of the block, among its writes and

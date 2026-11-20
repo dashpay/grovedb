@@ -535,9 +535,9 @@ fn the_layer_a_limit_ends_early_is_in_the_corpus() {
 
 /// The corpus holds the conversion of each of the seven trees as grove
 /// version 5 makes it and as the versions before it refuse it. In
-/// `convert-twice` grove version 5 converts each tree once and refuses every
-/// later conversion of it, and grove versions 1 to 4 refuse them all for
-/// having no such operation.
+/// `convert-twice` grove version 5 applies the first conversion of each
+/// tree and refuses every later one, step by step, and grove versions 1 to
+/// 4 refuse them all for having no such operation.
 #[test]
 fn the_conversions_are_in_the_corpus() {
     let conversions = |version: u32| -> Vec<Option<String>> {
@@ -558,14 +558,19 @@ fn the_conversions_are_in_the_corpus() {
             })
             .collect()
     };
-    let converted = conversions(5);
-    assert_eq!(converted.len(), 25);
-    let refused: Vec<&String> = converted.iter().flatten().collect();
-    assert_eq!(converted.len() - refused.len(), 7, "one for each tree");
-    assert!(
-        refused.iter().all(|error| *error == "InvalidInput"),
-        "{refused:?}"
-    );
+    // The seven trees in turn, each converted and every second one asked
+    // again at once, then all seven in a later block, then all seven given
+    // no transaction.
+    let refused = Some("InvalidInput".to_string());
+    let mut expected = Vec::new();
+    for tree in 0..7 {
+        expected.push(None);
+        if tree % 2 == 0 {
+            expected.push(refused.clone());
+        }
+    }
+    expected.extend(std::iter::repeat_n(refused, 14));
+    assert_eq!(conversions(5), expected);
     for version in 1..=4 {
         let refused = conversions(version);
         assert_eq!(refused.len(), 25);

@@ -1,9 +1,19 @@
 //! The cases for `GroveDb::convert_to_big_sum_tree`: every way it refuses a
-//! conversion, next to the conversion it accepts once the reason is gone.
+//! conversion on a database one grove version wrote, next to the conversion
+//! it accepts once the reason is gone.
 //!
 //! A generated stream holds no refused operation, so these are the steps
 //! whose recorded result is the error. Grove versions 1 to 4 have no such
 //! operation and refuse every conversion here.
+//!
+//! Two refusals GroveDB documents are in no case: a tree whose stored axes
+//! are not canonical, and a tree that holds a child its counterpart does
+//! not accept. No supported write of grove version 5 stores either. A batch
+//! of grove versions 1 to 4 that creates a tree and fills it does (the
+//! `filled-tree-…` cases), and those versions do not convert: such a tree
+//! is refused only on a database written by one grove version and
+//! converted by another, and a trace applies one grove version to one
+//! database.
 
 use grovedb::{
     element::reference_path::ReferencePathType, Element, PathQuery, Query as GroveQuery,
@@ -116,8 +126,9 @@ fn convertible() -> [(&'static [u8], Element, Option<IndexedTree>); 7] {
     ]
 }
 
-/// Each of the seven trees converted, and then asked to convert again: in
-/// the block that converted it, in a later block, and given no transaction.
+/// Each of the seven trees converted, and then asked to convert again:
+/// four of them in the block that converted them, and all of them in a
+/// later block and given no transaction.
 fn twice_case() -> Case {
     let mut ops = vec![insert(&[], TOP, Element::empty_tree())];
     for (name, tree, methods) in convertible() {
@@ -153,10 +164,11 @@ fn twice_case() -> Case {
     case(
         "convert-twice",
         "Each of the seven trees that keep a 64-bit sum is converted to the tree that keeps \
-         it in 128 bits, and then asked to convert again: in the block that converted it, in \
-         a later block, and given no transaction. Grove version 5 converts each once and \
-         refuses every further conversion, as the tree has no counterpart any more. Grove \
-         versions 1 to 4 have no such operation and refuse them all.",
+         it in 128 bits, and then asked to convert again: four of the seven in the block \
+         that converted them, and all seven in a later block and given no transaction. \
+         Grove version 5 converts each once and refuses every further conversion, as the \
+         tree has no counterpart any more. Grove versions 1 to 4 have no such operation and \
+         refuse them all.",
         ops,
     )
 }
@@ -275,9 +287,9 @@ fn nothing_there_case() -> Case {
         "convert-what-is-not-there",
         "A conversion is asked at a key that is not stored, in a subtree that does not \
          exist, through an item and through a sum item, and at a key and under a path \
-         segment of 256 bytes, in the block and given no transaction. Every grove version \
-         refuses each. The two trees that are there, one of them in the root tree, are then \
-         converted by grove version 5.",
+         segment of 256 bytes, in the block; the first two also given no transaction. \
+         Every grove version refuses each. The two trees that are there, one of them in \
+         the root tree, are then converted by grove version 5.",
         ops,
     )
 }
@@ -558,7 +570,8 @@ fn both_signs_case() -> Case {
         ranking(by_average, IndexAxis::BigSum),
         ranking(by_average, IndexAxis::Avg),
         ranking(by_average, IndexAxis::Count),
-        // The converted trees rank an entry past an `i64` at either end.
+        // Entries within an `i64` that carry the total of the first tree
+        // below the `i64` range and the total of the second above it.
         entry(by_sum, b"f", sum_item(-4 * LARGE), IndexedTree::BigSum),
         entry(by_sum, b"g", sum_item(-4 * LARGE), IndexedTree::BigSum),
         entry(by_sum, b"h", sum_item(-4 * LARGE), IndexedTree::BigSum),
@@ -581,8 +594,9 @@ fn both_signs_case() -> Case {
          debit of one, a credit of one and the largest `i64`. A conversion writes the rows \
          of the sums again under longer keys; were the old rows removed one at a time, the \
          rest would pass through a total no `i64` holds. Grove version 5 converts both \
-         trees with every ranking as it was, and the trees then take entries that carry \
-         their totals past an `i64` at either end. Grove versions 1 to 4 refuse the \
+         trees with the rankings by sum and by average as they were, and the trees then \
+         take entries, each within an `i64`, that carry the total of one below the `i64` \
+         range and the total of the other above it. Grove versions 1 to 4 refuse the \
          conversions, and grove versions 1 to 3 the rankings.",
         ops,
     )
