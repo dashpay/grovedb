@@ -10,7 +10,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 
 | Job | Runner | What it runs | By hand |
 | --- | --- | --- | --- |
-| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`) and the differential fuzzer's acceptance test (`--test diff`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
+| Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`), the differential fuzzer's acceptance test (`--test diff`) and the short form of the store crash campaign with its planted defects (`--test crash`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
 | LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests, then the tests of Merk's node store on LigninDB | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
@@ -57,7 +57,7 @@ The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the
 
 The loom models run on every pull request that runs the tests: with their bounds they take minutes (seven on a loaded strixbox). `loom` is a dependency of `lignin-store` and `lignindb` under `cfg(loom)` only (D-059 item 3); `cargo audit` reads the lock file, which lists it, and passes, so the models stay where they are. The models build in `target/loom`, because the cfg changes every crate they compile.
 
-Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over. A pull request runs the pool, which has the unsafe code, under both borrow models, and the file layer, which has none of its own, under Stacked Borrows: one pass over `lignin-io` took 27 minutes on a loaded strixbox. The checksum runs its published vectors and random lengths there. The nightly run adds the file layer under Tree Borrows and the checksum test that walks 128 MiB (`lignin-ci.sh miri --full`), and the races under 64 of Miri's schedules (`lignin-ci.sh miri-schedules 64`).
+Miri runs on the toolchain `nightly-2026-02-24` (`$LIGNIN_NIGHTLY`), the newest the project's machines have with Miri, so that a run in CI and one on a machine of the project interpret the same way. The unsafe audit (VER-06) owns what Miri is run over. A pull request runs the pool, which has the unsafe code, under both borrow models, and the file layer, which has none of its own, under Stacked Borrows: one pass over `lignin-io` took 27 minutes on a loaded strixbox. The checksum runs its published vectors and random lengths there. The nightly run adds the file layer under Tree Borrows and the checksum test that walks 128 MiB (`lignin-ci.sh miri --full`), and the races under 64 of Miri's schedules (`lignin-ci.sh miri-schedules 64`). `lignin-ci.sh miri` runs every one of its sets, and every test of a set, whatever failed before it, and fails at the end: one run shows every failure, as `lignin-ci.sh test` does.
 
 ### Test scratch
 
@@ -93,13 +93,22 @@ Each of those jobs prints the runner's cores, memory, swap and free disk at its 
 | Corpus from its pinned engine | the corpus recorded again from the commit of `develop` its traces name, through `record-at-pin.sh`, and compared with the committed one byte for byte (D-107) | grove version 5 | `lignin-ci.sh corpus-at-pin` |
 | Decoder fuzzing | five minutes for each fuzz target of `lignin-format` (FMT-08), from its seeds | 20 seconds each | `lignin-ci.sh fuzz-decoders 300` |
 | Miri | the file layer under both borrow models and every checksum test; the pool's races under 64 of Miri's schedules, both borrow models | the races under 4 | `lignin-ci.sh miri --full`, `lignin-ci.sh miri-schedules 64` |
+| Store crash campaign | the planted defects the campaign has to find, then five million distinct crash states of the page store, each recovered and held to the model (VER-03, [`crash-tests.md`](crash-tests.md)), from seeds of its own each night (the run's id on, which the log names) | the planted defects, then the runs of seeds 1 to 4 | `lignin-ci.sh crash --points 5000000 --jobs 4 --seed N` |
 
 The corpus from its pinned engine is what a sync with `develop` runs first (D-107): done every night, a recipe that has rotted is found the day it rots.
 
+## Crash simulation
+
+Crashes are simulated on the file layer of IO-02 (`lignin_io::sim`), which needs no disk.
+
+- **With the crates' tests, on all three platforms:** every state a crash can leave of the log (`lignin-format/tests/wal_crash.rs`), crashes during write-back and recovery at chosen points of scripted sessions (`lignin-store/src/flush/tests/crash.rs`, the recovery tests), and the short form of the store crash campaign (`lignin-testkit/tests/crash.rs`): twelve runs of random workloads with every kind of injected faults, about eleven thousand crash states, and the eight planted defects, each of which the campaign has to find.
+- **Every night:** the campaign itself, `lignin-crash` ([`crash-tests.md`](crash-tests.md)). A run that finds a violation names its seed, and `lignin-crash seed --seed N` makes that run again on any machine.
+
+The one million crash points of gate M2 were a run of VER-03 on the project's machines; the nightly run is five times that, from other seeds each night.
+
 ## What CI does not run
 
-- The 24 hours of differential fuzzing of gate M5 and the one million crash points of M2 and M5 (VER-03, VER-04): runs of their tasks, on the project's machines.
-- A crash campaign. The crash simulations that exist are tests on the simulated file layer of IO-02 (`lignin_io::sim`): every state a crash can leave of the log (`lignin-format/tests/wal_crash.rs`), and crashes during write-back and recovery (`lignin-store/src/flush/tests/crash.rs`, the recovery tests). They run with the LigninDB crates' tests on all three platforms, which is their smoke run. VER-03 adds the campaign (`lignin-testkit::crash`); its million crash points are a run of that task, and a shorter run of it belongs in the nightly workflow.
+- The 24 hours of differential fuzzing of gate M5 and the crash campaign of the engine (VER-04): runs of their tasks, on the project's machines.
 - The benchmarks: their numbers depend on the machine (`benchmarks.md`).
 
 ## Adding to it
