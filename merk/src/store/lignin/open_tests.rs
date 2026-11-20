@@ -6,11 +6,11 @@ use grovedb_costs::{CostResult, OperationCost};
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 use lignin_tree::directory::DirectoryError;
-use lignindb::txn::{testing::Outcome, Column, Subtree, TxnError, Unit, WriteTxn};
+use lignindb::txn::{Column, Subtree, TxnError, Unit, WriteTxn};
 
 use super::{
     access::fault,
-    tests::{apply, version, Lignin, NO_VALUE_DEFINED_COST},
+    tests::{apply, version, Lignin, Outcome, NO_VALUE_DEFINED_COST},
     tree_type_bytes, tree_type_from_bytes, LigninBatch, LigninEntry, LigninHost, LigninHosted,
     LigninNodeStore, LigninSubtree, LigninWriter,
 };

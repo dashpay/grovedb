@@ -586,7 +586,7 @@ What MERK-02 left open:
 4. **A batch holds one outcome for each key**, by the rule of the batch across subtrees (TXN-08, `lignindb::batch::StagedBatch`), for a node as for a side record: see [The batch of an operation](#the-batch-of-an-operation). An immediate handle makes its writes in the order they were given.
 5. **The cursor was left to MERK-05** (see [The cursor](#the-cursor)). A cursor that lives across calls could not be taken from a `Send` handle as `lignindb::txn` stood, because `Scope::merk_cursor` borrows the scope; MERK-05 added the parked cursor for it.
 6. **The store charges by the first version of the cost rules**, as the storage contexts do, with no grove version given to a handle. MERK-03 named that version `cost_model::HANDLE_COST_MODEL` and holds it to what every grove version charges by (`cost-model.md`, section 15.3).
-7. **`lignindb` has a Cargo feature `testing`**, a test fixture and no API: its own test store with a stand-in commit, for tests outside the crate until the engine can be opened (TXN-07).
+7. **`lignindb` has a Cargo feature `testing`**, a test fixture and no API: its own test store, for tests outside the crate that read the parts of a store the engine gives nobody (the replay of the corpus in `lignin-testkit`). The tests of `store::lignin` in Merk open the engine (`lignindb::Db`).
 
 ### Choices MERK-06 made
 

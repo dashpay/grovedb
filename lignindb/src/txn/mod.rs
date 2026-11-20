@@ -541,14 +541,12 @@ pub(crate) mod write_set;
 /// A page store on disk with its log and its write-back, as the open of the
 /// engine will make them: the store of this crate's own tests.
 ///
-/// It is for the tests of crates that build on a write transaction before
-/// the engine can be opened (TXN-07): [`testing::Db::new`] makes a store,
-/// [`testing::Db::path`] its write path, and [`testing::Db::commit`]
-/// commits a transaction through the commit of this crate
-/// ([`crate::commit`]), which appends a group to the store's log. It runs
-/// no write-back loop, and it panics where a database would return an
-/// error other than a conflict or a refusal that leaves the transaction
-/// open.
+/// It is for tests outside this crate that read the parts of a store,
+/// which the engine ([`crate::Db`]) gives nobody; a test of what a user of
+/// the engine does opens a [`crate::Db`]. [`testing::Db::new`] makes a
+/// store, [`testing::Db::path`] its write path, and
+/// [`testing::Db::commit`] commits a transaction through the commit of
+/// this crate ([`crate::commit`]). It runs no write-back loop.
 #[cfg(all(feature = "testing", not(loom)))]
 #[path = "tests/store.rs"]
 #[expect(

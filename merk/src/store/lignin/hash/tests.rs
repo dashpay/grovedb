@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     panic::{catch_unwind, AssertUnwindSafe},
-    sync::Arc,
 };
 
 use grovedb_element::{reference_path::ReferencePathType, BackwardReference, Element};
@@ -16,9 +15,9 @@ use lignin_tree::{
 };
 use lignindb::{
     commit::{Committed, NoStaleHashes},
-    snapshot::Versions,
-    txn::{testing::Db, Subtree, WritePath, WriteTxn},
-    verify::{Finding, Place, Rule, Scope},
+    txn::{Batch, Subtree, SubtreeWrite, WriteTxn},
+    verify::{Finding, Place, Report, Rule},
+    Db, Options,
 };
 
 use super::{
@@ -941,31 +940,65 @@ fn a_modified_link_is_handed_over_with_the_aggregate_a_commit_would_give_it() {
     ));
 }
 
-/// A LigninDB store on disk, committed with the hash rules a test gives.
+/// A LigninDB database in a directory of its own, opened as a user of the
+/// engine opens one, and committed with the hash rules a test gives. The
+/// engine checks it when it is closed, in a debug build, with Merk's
+/// rules.
 struct Lignin {
-    db: Arc<Db>,
-    versions: Versions,
+    db: Db,
+    _dir: tempfile::TempDir,
 }
 
 const SUBTREE: [u8; 32] = [0; 32];
 
 impl Lignin {
     fn new() -> Self {
-        let (db, versions) = Db::new(512);
+        let dir = tempfile::tempdir().expect("a directory");
+        let options = Options {
+            page_size: Some(PageSize::MIN),
+            cache_size: 512 * (PageSize::MIN.get() + 512),
+            ..Options::default()
+        };
+        let db = Db::open(dir.path(), &options).expect("a new database");
         db.check_hashes_by(Box::new(MerkHashRules::for_check(version())));
-        Self { db, versions }
+        // The subtree of these tests, as a Merk that stands alone.
+        let entered = [SubtreeWrite::Enter {
+            subtree: Subtree::new(SUBTREE),
+            tree_type: b"merk",
+            host: None,
+        }];
+        let batch = Batch {
+            subtrees: &entered,
+            ..Batch::default()
+        };
+        let made = db.write(&batch, &mut NoStaleHashes);
+        assert!(matches!(made, Ok(Committed::Published(_))), "{made:?}");
+        Self { db, _dir: dir }
     }
 
-    fn path(&self) -> WritePath<'_> {
-        self.db.path(&self.versions)
+    /// The database: a write transaction is begun from it.
+    fn path(&self) -> &Db {
+        &self.db
+    }
+
+    /// Closes the database and returns what the engine's check of it
+    /// finds, with Merk's rules for its hashes.
+    fn closed(self) -> Report {
+        let mut rules = MerkHashRules::for_check(version());
+        let closed = self.db.close_and_verify(Some(&mut rules));
+        closed.expect("the database is closed")
     }
 
     /// Commits `transaction` with `rules` and returns how many nodes had a
     /// stale hash that the commit evaluated.
     fn commit(&self, transaction: &WriteTxn<'_>, rules: &mut impl HashRules) -> usize {
-        let committer = self.db.committer(&self.versions);
-        match committer.commit(transaction, rules).expect("the commit") {
-            Committed::Published(published) => published.evaluated,
+        let before = self.db.version();
+        match self.db.commit(transaction, rules).expect("the commit") {
+            Committed::Published(published) => {
+                assert!(published.version > before, "a commit takes a later version");
+                assert!(published.miscounted.is_none(), "a value is miscounted");
+                published.evaluated
+            }
             Committed::Empty => panic!("the transaction wrote nothing"),
         }
     }
@@ -1218,13 +1251,14 @@ fn a_commit_whose_rules_refuse_a_stale_hash_fails_and_ends_the_transaction() {
 
     // The rules of a writer that makes every hash itself, which are those
     // of a commit on existing GroveVersions, make none.
-    let committer = lignin.db.committer(&lignin.versions);
-    let failed = committer.commit(&transaction, &mut NoStaleHashes);
+    let failed = lignin.db.commit(&transaction, &mut NoStaleHashes);
     let failed = failed.expect_err("a hash is stale");
     assert!(!failed.leaves_transaction_open(), "{failed}");
     assert!(failed.to_string().contains("a hash is stale"), "{failed}");
     assert_eq!(transaction.stats().stale_nodes, 0);
-    let again = committer.commit(&transaction, &mut MerkHashRules::new(version()));
+    let again = lignin
+        .db
+        .commit(&transaction, &mut MerkHashRules::new(version()));
     assert!(matches!(again, Ok(Committed::Empty)), "{again:?}");
 }
 
@@ -1521,13 +1555,11 @@ fn cell_of(lignin: &Lignin, key: &[u8]) -> CellAddress {
 fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
     // A grove that Merk hashed is sound, the hash that the writer of its
     // reference stated with it, and every cell of it was checked.
-    let sound = grove(None);
-    let report = sound.db.verify_still();
+    let report = grove(None).closed();
     assert!(report.is_sound(), "{report}");
     let census = &report.census;
     assert_eq!((census.live_cells, census.hashed_cells), (12, 12));
     assert_eq!(census.hosted_roots, 1);
-    drop(sound);
 
     // Each hash, with the key of the node whose cell stores it.
     let (left, right) = (Side::Left, Side::Right);
@@ -1540,25 +1572,35 @@ fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
     ];
     for (planted, field, stored_at) in planted {
         let lignin = grove(Some(planted));
+        let cell = Place::Cell(cell_of(&lignin, &key(stored_at)));
+        let found = |report: &Report| -> Vec<_> {
+            let found = |finding: &Finding| (finding.rule, finding.place);
+            report.findings.iter().map(found).collect()
+        };
         // A check that is given no rules recomputes no hash and finds
         // nothing.
-        let at = lignin.versions.latest();
-        let unhashed = lignin.db.verify(at, Scope::Still, None);
+        let unhashed = lignin.db.verify(None);
         assert!(unhashed.is_sound(), "{planted:?}: {unhashed}");
         assert_eq!(unhashed.census.hashed_cells, 0);
 
-        // With Merk's rules it finds the hash, once, where it is stored.
-        let report = lignin.db.verify_still();
-        let found = |finding: &Finding| (finding.rule, finding.place);
-        let found: Vec<_> = report.findings.iter().map(found).collect();
-        let cell = Place::Cell(cell_of(&lignin, &key(stored_at)));
-        assert_eq!(found, [(Rule::Hash(field), cell)], "{planted:?}: {report}");
+        // With Merk's rules it finds the hash, once, where it is stored:
+        // as a reader beside the session's work, and as the check of the
+        // closed database, which also goes through the page ids, the
+        // value counts and the page table, and finds nothing else.
+        let mut rules = MerkHashRules::for_check(version());
+        let report = lignin.db.verify(Some(&mut rules));
+        let expected = [(Rule::Hash(field), cell)];
+        assert_eq!(found(&report), expected, "{planted:?}: {report}");
+        assert_eq!(report.more_findings, 0, "{planted:?}");
+        let report = lignin.closed();
+        assert_eq!(found(&report), expected, "{planted:?}: {report}");
         assert_eq!(report.more_findings, 0, "{planted:?}");
 
-        // So the store of a test that leaves such a hash fails when it is
-        // dropped, where the store is checked at its drop, and says which
-        // rule.
+        // So the database of a test that leaves such a hash fails when
+        // it is closed, where the engine checks a database at its close,
+        // and says which rule.
         if cfg!(debug_assertions) {
+            let lignin = grove(Some(planted));
             let dropped = catch_unwind(AssertUnwindSafe(move || drop(lignin)));
             let failure = dropped.expect_err("the store is not sound");
             let failure = failure.downcast_ref::<String>().expect("a message");

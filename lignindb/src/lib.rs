@@ -122,10 +122,12 @@
 //!   the facade gives out the versions of a database: a version of one is
 //!   published by a commit alone.
 //!
-//! One way around is left, and goes with the second unit of this task:
-//! the feature `testing` (`txn::testing`), which only tests switch on,
-//! gives the store of this crate's own tests with its write path, for the
-//! tests of crates that were written before the facade.
+//! One way around is left: the feature `testing` (`txn::testing`), which
+//! only tests switch on, gives the store of this crate's own tests with
+//! its write path and its parts. The replay of the corpus in
+//! `lignin-testkit` uses it, because it reads what the facade gives
+//! nobody: the pages of a version through the loader, the roots of the
+//! directory, and the segments after a write-back.
 //!
 //! What a caller does hold, for as long as it likes, borrows the
 //! database: a [`WriteTxn`](txn::WriteTxn) with its scopes and cursors, a

@@ -55,7 +55,12 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage};
 use grovedb_version::version::GroveVersion;
-use lignindb::txn::testing::Db;
+use lignin_format::PageSize;
+use lignindb::{
+    commit::{Committed, NoStaleHashes},
+    txn::{Batch, Subtree, SubtreeWrite},
+    Db, Options,
+};
 
 type ValueDefinedCost = fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>;
 
@@ -265,12 +270,33 @@ fn restore_into<'db, S: NodeStore<'db>>(engine: &str, store: S) -> u64 {
     nodes
 }
 
-/// Restores the Merk in a write transaction of a LigninDB store, which is
-/// handed the Merk whole, and prints what the process held.
+/// Restores the Merk in a write transaction of a LigninDB database, which
+/// is handed the Merk whole, and prints what the process held. The
+/// database is opened as a user of the engine opens one, in a directory of
+/// its own, with a buffer pool whose bytes are enough for at least
+/// `RESTORE_MEMORY_FRAMES` frames of the smallest page size, and the
+/// subtree of the Merk is entered by a commit before the restore begins.
 fn restore_on_lignindb() {
-    let (db, versions) = Db::new(number("RESTORE_MEMORY_FRAMES", 4_096) as usize);
-    let path = db.path(&versions);
-    let transaction = path.begin();
+    let dir = tempfile::tempdir().expect("a directory");
+    let frames = number("RESTORE_MEMORY_FRAMES", 4_096) as usize;
+    let options = Options {
+        page_size: Some(PageSize::MIN),
+        cache_size: frames * (PageSize::MIN.get() + 512),
+        ..Options::default()
+    };
+    let db = Db::open(dir.path(), &options).expect("a new database");
+    let entered = [SubtreeWrite::Enter {
+        subtree: Subtree::new([1; 32]),
+        tree_type: b"merk",
+        host: None,
+    }];
+    let batch = Batch {
+        subtrees: &entered,
+        ..Batch::default()
+    };
+    let made = db.write(&batch, &mut NoStaleHashes);
+    assert!(matches!(made, Ok(Committed::Published(_))), "{made:?}");
+    let transaction = db.begin();
     let writer = LigninWriter::new(transaction.scope().expect("a scope"));
     let store = LigninNodeStore::immediate(&writer, LigninSubtree::alone([1; 32]));
     let nodes = restore_into("lignindb", store);
