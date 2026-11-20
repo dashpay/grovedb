@@ -146,7 +146,7 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                         wrong_place(&fs, &sim_to, file_there, dir_there),
                     ];
                     let renamed = fs.rename(&sim_from, &sim_to);
-                    renamed_dirs += u32::from(is_dir && renamed.is_ok());
+                    renamed_dirs += u32::from(is_dir && renamed.is_ok() && from != to);
                     same_for_two_paths(
                         renamed,
                         real.rename(&real_from, &real_to),
@@ -172,6 +172,17 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                 8 => {
                     let path = pick(&mut rng, &FILES);
                     let (sim_path, real_path) = on(path);
+                    if fs.read_dir(&sim_path).is_ok() {
+                        // A directory where a file is removed: the contract
+                        // leaves the error to the system, and Linux and
+                        // macOS give different ones.
+                        let either = [ErrorKind::IsADirectory, ErrorKind::PermissionDenied];
+                        let sim = fs.remove_file(&sim_path).unwrap_err();
+                        let real = real.remove_file(&real_path).unwrap_err();
+                        assert!(either.contains(&sim.kind()), "{what}: {sim}");
+                        assert!(either.contains(&real.kind()), "{what}: {real}");
+                        continue;
+                    }
                     same(
                         fs.remove_file(&sim_path),
                         real.remove_file(&real_path),

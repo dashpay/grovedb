@@ -11,7 +11,7 @@
 //! | [`VfsFile::sync_all`] | `fsync` | `fcntl(F_FULLFSYNC)` |
 //! | [`VfsFile::sync_data`] | `fdatasync` | `fcntl(F_FULLFSYNC)` |
 //! | [`Vfs::sync_dir`] | `fsync` on the directory, opened read-only | `fcntl(F_FULLFSYNC)` on the directory, opened read-only |
-//! | [`Vfs::sync_together`] | the three calls above, one for each item, in the order of the list | `fsync` on each file and each directory of the list, then `fcntl(F_FULLFSYNC)` once for each file system they are on |
+//! | [`Vfs::sync_together`] | the three calls above, one for each item, in the order of the list | for the items on an APFS volume, `fsync` on each and then `fcntl(F_FULLFSYNC)` once for the volume; for every other item, its call above |
 //! | [`Vfs::lock`] | `flock(LOCK_EX \| LOCK_NB)` | the same |
 //! | [`Vfs::hard_link`] | `linkat` | the same |
 //! | [`Vfs::rename`] | `rename` | the same |
@@ -82,16 +82,14 @@
 //!   file system back to the last valid state" (Apple File System Reference,
 //!   2020-06-22, "Container" and "About Apple File System").
 //! - **What the device holds afterwards.** The experiment of
-//!   `std_fs/tests/device_probe.rs` makes one change of every kind the
-//!   contract has on a disk image (an append, a write past the end, a growth
-//!   and a cut of the length, an overwrite, new directories, a file made, a
-//!   file and a directory renamed, a hard link, a removal), syncs them, and
-//!   mounts a copy of the image file that is taken as the sync returns. On an
-//!   APFS image on macOS 27.0.1 the copy has every one of the changes after
-//!   `fsync` of each item and one `F_FULLFSYNC` on the last, and none of them
-//!   after the `fsync` calls alone: a plain `fsync` there leaves the names
-//!   and the lengths in memory, and it is the full flush that writes the
-//!   checkpoint, with everything in it, whichever item it is asked on.
+//!   `std_fs/tests/device_probe.rs` makes changes of every kind the contract
+//!   has on a disk image, syncs them, and mounts a copy of the image file
+//!   that is taken as the sync returns. On an APFS image on macOS 27.0.1 the
+//!   copy has every one of the changes after `fsync` of each item and one
+//!   `F_FULLFSYNC` on the last, in each of the three orders of the list it
+//!   tries: the last item a directory that was not changed, a file that was
+//!   appended to, and a file that was only read. After the `fsync` calls
+//!   alone the copy has none of the changes.
 //!
 //! HFS+ is why the flush is shared on APFS only, and not wherever
 //! `F_FULLFSYNC` works. In the HFS+ source, a write past the end of a file,
@@ -122,14 +120,17 @@
 //! documentation expects this to be "as safe as `fsync` on macOS for repos
 //! stored on HFS+ or APFS filesystems".
 //!
-//! Three limits. The flush is made for each volume, not once for a list,
-//! because Apple's sentence is about "the same device" and the volume is
-//! what an open file tells of its device: two volumes of one APFS container
-//! get a flush each. A volume on which `F_FULLFSYNC` fails cannot be synced
-//! by this call either. And the experiment shows what a set's calls have
-//! written to the device when they return, not that the device keeps it
-//! through a power cut: that the flush makes it so is Apple's statement,
-//! and no test of this crate cuts the power.
+//! The limits of this. The flush is made for each volume, not once for a
+//! list, because Apple's sentence is about "the same device" and the volume
+//! is what an open file tells of its device: two volumes of one APFS
+//! container get a flush each. A volume on which `F_FULLFSYNC` fails cannot
+//! be synced by this call either. The experiment was made on macOS 27.0.1,
+//! on an image of 64 MiB that is one device, with lists on one volume: other
+//! versions, a container on several devices and far larger transactions are
+//! taken to behave the same on Apple's word, not on a run. And it shows what
+//! had reached the image file when a set's calls returned, not that a device
+//! keeps it through a power cut: that the flush makes it so is Apple's
+//! statement, and no test of this crate cuts the power.
 
 use std::{
     any::Any,
@@ -289,9 +290,7 @@ impl StdFile {
 
     fn sync_using(&self, sync: impl FnOnce(&File) -> io::Result<()>) -> io::Result<()> {
         let mut failure = guard(&self.sync_failure)?;
-        if let Some(failure) = &*failure {
-            return Err(io::Error::other(failure.clone()));
-        }
+        still_syncing(&failure)?;
         sync(&self.file).inspect_err(|error| *failure = Some(failed_sync(error)))
     }
 
@@ -429,6 +428,14 @@ impl Drop for StdFile {
     }
 }
 
+/// Fails for a handle whose syncs were stopped, as they keep failing.
+fn still_syncing(failure: &Option<String>) -> io::Result<()> {
+    match failure {
+        Some(failure) => Err(io::Error::other(failure.clone())),
+        None => Ok(()),
+    }
+}
+
 fn failed_sync(error: &io::Error) -> String {
     format!(
         "an earlier sync of this file failed ({error}), so this handle can no longer make it \
@@ -456,15 +463,14 @@ enum Member {
     Dir,
 }
 
-type OfMember<'a> = &'a dyn Fn(&File, Member) -> io::Result<()>;
-type OfFile<'a> = &'a dyn Fn(&File) -> io::Result<()>;
+type FileCall<'a> = &'a dyn Fn(&File) -> io::Result<()>;
 type FileSystemOf<'a> = &'a dyn Fn(&File) -> io::Result<Option<u64>>;
 
 /// How a set is made durable.
 #[derive(Clone, Copy)]
 struct SetSync<'a> {
     /// The whole sync of one item, as its single call makes it.
-    alone: OfMember<'a>,
+    alone: &'a dyn Fn(&File, Member) -> io::Result<()>,
     /// How the items on one file system share a flush, where they can.
     shared: Option<SharedFlush<'a>>,
 }
@@ -475,10 +481,10 @@ struct SharedFlush<'a> {
     /// can share a flush. An item on any other is synced alone.
     file_system: FileSystemOf<'a>,
     /// Hands one item to its device: its sync but for the flush.
-    hand_over: OfFile<'a>,
+    hand_over: FileCall<'a>,
     /// The flush. Asked on one item, it makes durable what was handed over
     /// of every item on that item's file system.
-    flush: OfFile<'a>,
+    flush: FileCall<'a>,
 }
 
 impl<'a> SetSync<'a> {
@@ -571,28 +577,26 @@ impl Last<'_> {
     }
 }
 
-fn wait<'a>(
+/// Puts an item that was handed over among those that wait for the flush of
+/// its file system.
+fn wait_for_flush<'a>(
     waiting: &mut Vec<Waiting<'a>>,
     file_system: u64,
     handle: Option<&'a StdFile>,
     last: Last<'a>,
 ) {
     let on_it = |group: &Waiting<'_>| group.file_system == file_system;
-    let at = match waiting.iter().position(on_it) {
+    match waiting.iter().position(on_it) {
         Some(at) => {
             waiting[at].last = last;
-            at
+            waiting[at].handles.extend(handle);
         }
-        None => {
-            waiting.push(Waiting {
-                file_system,
-                handles: Vec::new(),
-                last,
-            });
-            waiting.len() - 1
-        }
-    };
-    waiting[at].handles.extend(handle);
+        None => waiting.push(Waiting {
+            file_system,
+            handles: handle.into_iter().collect(),
+            last,
+        }),
+    }
 }
 
 fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<()> {
@@ -606,7 +610,7 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
                 match set.shared_on(&dir)? {
                     Some((file_system, shared)) => {
                         (shared.hand_over)(&dir)?;
-                        wait(&mut waiting, file_system, None, Last::Dir(dir));
+                        wait_for_flush(&mut waiting, file_system, None, Last::Dir(dir));
                     }
                     None => (set.alone)(&dir, Member::Dir)?,
                 }
@@ -617,9 +621,10 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
         let Some(handle) = any.downcast_ref::<StdFile>() else {
             // A file of another file layer: that layer's own call syncs it
             // whole, so it waits for no flush of this one.
-            match member {
-                Member::Data => file.sync_data()?,
-                Member::All | Member::Dir => file.sync_all()?,
+            if member == Member::Data {
+                file.sync_data()?;
+            } else {
+                file.sync_all()?;
             }
             continue;
         };
@@ -627,7 +632,7 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
             Some((file_system, shared)) => {
                 handle.sync_using(shared.hand_over)?;
                 let last = Last::Handle(&handle.file);
-                wait(&mut waiting, file_system, Some(handle), last);
+                wait_for_flush(&mut waiting, file_system, Some(handle), last);
             }
             None => handle.sync_using(|file| (set.alone)(file, member))?,
         }
@@ -641,6 +646,11 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
                 handle.flush_failed(&error);
             }
             return Err(error);
+        }
+        // A sync of one of them may have failed on another thread since it
+        // was handed over, and then this flush does not vouch for it.
+        for handle in &group.handles {
+            still_syncing(&*guard(&handle.sync_failure)?)?;
         }
     }
     Ok(())

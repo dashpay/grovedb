@@ -18,14 +18,15 @@ fn written(path: &Path) -> StdFile {
 /// Whether the handle's syncs fail as they do after a failed sync.
 #[track_caller]
 fn is_stopped(file: &StdFile) -> bool {
-    let stopped = [StdFile::sync_data, StdFile::sync_all].map(|sync| match sync(file) {
-        Ok(()) => false,
-        Err(error) => {
+    let mut stopped = Vec::new();
+    for sync in [StdFile::sync_data, StdFile::sync_all] {
+        let synced = sync(file);
+        if let Err(error) = &synced {
             assert_eq!(error.kind(), ErrorKind::Other);
             assert!(error.to_string().contains("an earlier sync"), "{error}");
-            true
         }
-    });
+        stopped.push(synced.is_err());
+    }
     assert_eq!(stopped[0], stopped[1]);
     stopped[0]
 }
@@ -39,7 +40,7 @@ fn ino(file: &File) -> u64 {
 }
 
 /// A set whose items are all on one file system that shares a flush.
-fn sharing<'a>(hand_over: OfFile<'a>, flush: OfFile<'a>) -> SetSync<'a> {
+fn sharing<'a>(hand_over: FileCall<'a>, flush: FileCall<'a>) -> SetSync<'a> {
     SetSync {
         alone: &|_, _| panic!("no item of this set is synced alone"),
         shared: Some(SharedFlush {
@@ -50,8 +51,8 @@ fn sharing<'a>(hand_over: OfFile<'a>, flush: OfFile<'a>) -> SetSync<'a> {
     }
 }
 
-/// The directories and the files of something like a checkpoint: seven and
-/// two.
+/// The directories of something like a checkpoint: `root` and six that are
+/// made below it.
 fn seven_directories(root: &Path) -> Vec<PathBuf> {
     let below = [
         "made",
@@ -68,6 +69,17 @@ fn seven_directories(root: &Path) -> Vec<PathBuf> {
     [vec![root.to_path_buf()], dirs].concat()
 }
 
+/// Two files and the seven directories, as a list.
+fn nine<'a>(
+    log: &'a dyn VfsFile,
+    manifest: &'a dyn VfsFile,
+    dirs: &'a [PathBuf],
+) -> Vec<SyncItem<'a>> {
+    let mut items = vec![SyncItem::Data(log), SyncItem::All(manifest)];
+    items.extend(dirs.iter().map(|dir| SyncItem::Dir(dir)));
+    items
+}
+
 /// The calls of this system for a set of nine, counted. Where the file
 /// system of the temporary directory shares a flush, which on macOS is APFS,
 /// they are nine calls that hand an item to the device and one flush.
@@ -78,8 +90,7 @@ fn a_set_of_nine_is_nine_calls_and_one_flush_where_a_flush_is_shared() {
     let dirs = seven_directories(&root);
     let manifest = written(&root.join("made/MANIFEST"));
     let log = written(&root.join("made/wal/1.log"));
-    let mut items = vec![SyncItem::Data(&log), SyncItem::All(&manifest)];
-    items.extend(dirs.iter().map(|dir| SyncItem::Dir(dir)));
+    let items = nine(&log, &manifest, &dirs);
 
     let (alone, handed_over, flushes) = (RefCell::new(Vec::new()), Cell::new(0), Cell::new(0));
     let count_alone = |file: &File, member: Member| {
@@ -105,10 +116,9 @@ fn a_set_of_nine_is_nine_calls_and_one_flush_where_a_flush_is_shared() {
     };
     sync_together_using(&items, &counted).unwrap();
 
-    let shares = match &system {
-        Some(shared) => (shared.file_system)(&log.file).unwrap().is_some(),
-        None => false,
-    };
+    let shares = system
+        .as_ref()
+        .is_some_and(|shared| (shared.file_system)(&log.file).unwrap().is_some());
     assert_eq!(
         shares,
         cfg!(target_os = "macos"),
@@ -180,6 +190,29 @@ fn a_failed_flush_of_a_set_stops_every_handle_that_waited_for_it() {
     assert!(!is_stopped(&outside));
     vfs.sync_together(&[SyncItem::Data(&outside), SyncItem::Dir(&root)])
         .unwrap();
+}
+
+/// A handle of the set is synced by another thread while the set waits for
+/// its flush, and that sync fails: the flush, which succeeds, does not vouch
+/// for the handle.
+#[test]
+fn a_sync_that_fails_while_its_handle_waits_for_the_flush_fails_the_set() {
+    let (_, root, _dir) = setup();
+    let files = ["a", "b"].map(|name| written(&root.join(name)));
+    let flushes = Cell::new(0);
+    let fails_meanwhile = |_: &File| {
+        flushes.set(flushes.get() + 1);
+        files[0].sync_using(|_| Err(full())).unwrap_err();
+        Ok(())
+    };
+    let set = sharing(&|_| Ok(()), &fails_meanwhile);
+    let items = [SyncItem::Data(&files[0]), SyncItem::Data(&files[1])];
+
+    let error = sync_together_using(&items, &set).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert!(error.to_string().contains("an earlier sync"), "{error}");
+    assert_eq!(flushes.get(), 1);
+    assert!(is_stopped(&files[0]) && !is_stopped(&files[1]));
 }
 
 #[test]
@@ -397,8 +430,7 @@ fn measure_a_set_of_nine_against_nine_single_syncs() {
     for dir in &dirs {
         fs::write(dir.join("name 0"), b"").unwrap();
     }
-    let mut items = vec![SyncItem::Data(&*log), SyncItem::All(&*manifest)];
-    items.extend(dirs.iter().map(|dir| SyncItem::Dir(dir)));
+    let items = nine(&*log, &*manifest, &dirs);
     vfs.sync_together(&items).unwrap();
 
     let (mut one_by_one, mut together) = (Vec::new(), Vec::new());

@@ -250,19 +250,16 @@ fn a_directory_built_under_another_name_appears_whole_or_not_at_all() {
             let sampled = (0..20).map(|draw| image.sample(draw));
             let plans = image.prefixes().chain(image.holes()).chain(sampled);
             for plan in plans {
-                let left = tree(&recover(&image, &plan));
-                let in_place = |(path, _): &(&String, &Option<Vec<u8>>)| {
-                    *path == "made" || path.starts_with("made/")
-                };
-                let made: Tree = left
-                    .iter()
-                    .filter(in_place)
-                    .map(|(path, content)| (path.clone(), content.clone()))
+                let made: Tree = tree(&recover(&image, &plan))
+                    .into_iter()
+                    .filter(|(path, _)| path == "made" || path.starts_with("made/"))
                     .collect();
-                match made {
-                    made if made.is_empty() => none += 1,
-                    made if made == whole => whole_ones += 1,
-                    _ => broken += 1,
+                if made.is_empty() {
+                    none += 1;
+                } else if made == whole {
+                    whole_ones += 1;
+                } else {
+                    broken += 1;
                 }
             }
         }

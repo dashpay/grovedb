@@ -79,11 +79,9 @@ fn a_set_is_made_durable_by_the_single_syncs_of_its_list() {
         (OpKind::SyncData, "/a"),
         (OpKind::SyncDir, "/dir"),
         (OpKind::SyncAll, "/dir/b"),
-    ];
-    assert_eq!(made.len(), expected.len());
-    for ((kind, path), (expected_kind, expected_path)) in made.iter().zip(expected) {
-        assert_eq!((*kind, path.as_str()), (expected_kind, expected_path));
-    }
+    ]
+    .map(|(kind, path)| (kind, path.to_owned()));
+    assert_eq!(made, expected);
 
     let image = set.fs.crash_image();
     assert!(image.names().is_empty() && image.changes().is_empty());

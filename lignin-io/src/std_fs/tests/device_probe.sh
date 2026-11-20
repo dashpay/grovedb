@@ -4,12 +4,13 @@
 #
 #   device_probe.sh FILE_SYSTEM WAY [WHOLE]
 #
-# FILE_SYSTEM is what hdiutil makes: APFS, HFS+J. WAY is one of together,
+# FILE_SYSTEM is what hdiutil makes: APFS, HFS+J. WAY is one of the ways
+# device_probe.rs lists: together, together-file-last, together-read-last,
 # alone, shared, handed, none. With a third argument the step that checks
 # fails unless everything is there.
 set -euo pipefail
 file_system=${1:?the file system of the image: APFS or HFS+J}
-way=${2:?how the changes are synced: together, alone, shared, handed, none}
+way=${2:?how the changes are synced: one of the ways in device_probe.rs}
 whole=${3:-}
 
 cd "$(dirname "$0")/../../../.."
