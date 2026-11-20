@@ -249,9 +249,12 @@ pub trait NodeStore<'db> {
     /// value is left as it is.
     ///
     /// It is charged nothing: the fetch of the node was charged its whole
-    /// record. The value is the one the node had when it was fetched, or
-    /// the read fails with `Error::StorageError`: a store does not put
-    /// under the hashes of a node a value that was written since.
+    /// record. The value that is read is one the node's hashes are the
+    /// hashes of, or the read fails with `Error::StorageError`: a store
+    /// does not put a value under a value hash and a key-value hash that
+    /// are not its own. What a value holds outside its hash, as an item
+    /// holds the list of its referrers, is what the store holds when the
+    /// value is read.
     ///
     /// The default is for a store that returns every node whole.
     fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {

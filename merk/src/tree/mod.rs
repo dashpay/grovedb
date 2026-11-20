@@ -2307,62 +2307,43 @@ impl TreeNode {
             ))
             .wrap_with_cost(Default::default());
         };
-        let (child_heights, hash, aggregate_data) = match link {
-            Link::Reference {
-                child_heights,
-                hash,
-                aggregate_data,
-                ..
-            } => (child_heights, hash, aggregate_data),
-            _ => {
-                return Err(Error::CorruptedState(
-                    "Expected Link::Reference in TreeNode::load",
-                ))
-                .wrap_with_cost(Default::default());
-            }
-        };
+        if !link.is_reference() {
+            return Err(Error::CorruptedState(
+                "Expected Link::Reference in TreeNode::load",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         let mut cost = OperationCost::default();
         let tree = cost_return_on_error!(
             &mut cost,
             source.fetch(link, value_defined_cost_fn, grove_version)
         );
-        debug_assert_eq!(tree.key(), link.key());
-        *self.slot_mut(left) = Some(Link::Loaded {
-            tree,
-            hash: *hash,
-            child_heights: *child_heights,
-            aggregate_data: *aggregate_data,
-        });
+        cost_return_on_error_no_add!(cost, self.put_fetched_child(left, tree));
         Ok(()).wrap_with_cost(cost)
     }
 
     /// Places `tree`, the node the `Link::Reference` on the given side
-    /// points to, in the child slot, as [`Self::load`] places the node it
-    /// fetched.
+    /// points to, in the child slot (upgrading the link to `Link::Loaded`).
     pub(crate) fn put_fetched_child(&mut self, left: bool, tree: TreeNode) -> Result<(), Error> {
-        let Some(Link::Reference {
+        let Some(&Link::Reference {
             child_heights,
             hash,
             aggregate_data,
-            ..
+            ref key,
         }) = self.link(left)
         else {
             return Err(Error::CorruptedState(
                 "Expected Link::Reference for a fetched child",
             ));
         };
-        debug_assert_eq!(
-            tree.key(),
-            self.link(left).map(Link::key).unwrap_or_default()
-        );
-        let loaded = Link::Loaded {
+        debug_assert_eq!(tree.key(), key.as_slice());
+        *self.slot_mut(left) = Some(Link::Loaded {
             tree,
-            hash: *hash,
-            child_heights: *child_heights,
-            aggregate_data: *aggregate_data,
-        };
-        *self.slot_mut(left) = Some(loaded);
+            hash,
+            child_heights,
+            aggregate_data,
+        });
         Ok(())
     }
 }

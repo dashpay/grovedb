@@ -476,23 +476,20 @@ where
                 let maybe_child = link.tree();
                 match maybe_child {
                     None if self.paid_nodes.contains(link.key()) => {
-                        let node = match self.walk_paid_nodes(link, key, grove_version) {
-                            Ok(PaidWalk::Node(link)) => self.fetch_paid_node(&link, grove_version),
-                            Ok(PaidWalk::NoChild) => {
-                                return Ok(None).wrap_with_cost(Default::default())
+                        break match self.walk_paid_nodes(link, key, grove_version) {
+                            Ok(PaidWalk::Node(link)) => {
+                                match self.fetch_paid_node(&link, grove_version) {
+                                    Ok(node) => f(&node).map(|x| Ok(Some(x))),
+                                    Err(e) => Err(e).wrap_with_cost(Default::default()),
+                                }
                             }
-                            Ok(PaidWalk::NotInMemory) => {
-                                break self.get_node_direct_fn(
-                                    key,
-                                    f,
-                                    value_defined_cost_fn,
-                                    grove_version,
-                                );
-                            }
-                            Err(e) => Err(e),
-                        };
-                        break match node {
-                            Ok(node) => f(&node).map(|x| Ok(Some(x))),
+                            Ok(PaidWalk::NoChild) => Ok(None).wrap_with_cost(Default::default()),
+                            Ok(PaidWalk::NotInMemory) => self.get_node_direct_fn(
+                                key,
+                                f,
+                                value_defined_cost_fn,
+                                grove_version,
+                            ),
                             Err(e) => Err(e).wrap_with_cost(Default::default()),
                         };
                     }

@@ -22,14 +22,19 @@ use crate::{
 /// value-defined cost, as the walk fetched it. So what an operation costs
 /// does not depend on whether its store leaves values out.
 ///
+/// What is read again is the node as the store holds it then, where the
+/// other Merk has the node as it was fetched. The two are the same node
+/// unless it was written through another handle while this Merk stayed
+/// open, and a Merk on either store then holds a tree that is not the
+/// stored one.
+///
 /// It is empty for as long as the store returns whole nodes.
 #[derive(Debug, Default)]
 pub(crate) struct PaidNodes(RefCell<HashSet<Vec<u8>>>);
 
 impl PaidNodes {
     pub(crate) fn contains(&self, key: &[u8]) -> bool {
-        let paid = self.0.borrow();
-        !paid.is_empty() && paid.contains(key)
+        self.0.borrow().contains(key)
     }
 
     fn insert(&self, key: &[u8]) {
@@ -128,14 +133,14 @@ where
     ) -> CostResult<TreeNode, Error> {
         let paid = self.paid.contains(link.key());
         let mut fetched = self.storage.fetch_node_without_value(link, grove_version);
-        match &fetched.value {
-            Ok(node) if node.value_absent() && !paid => self.paid.insert(link.key()),
-            Ok(node) if paid => {
-                fetched.cost = Default::default();
-                if !node.value_absent() {
-                    self.paid.remove(link.key());
-                }
-            }
+        if paid {
+            fetched.cost = Default::default();
+        }
+        // A node is among the paid ones while the tree does not hold it:
+        // from when it comes without its value until it comes whole.
+        match fetched.value.as_ref().map(TreeNode::value_absent) {
+            Ok(true) if !paid => self.paid.insert(link.key()),
+            Ok(false) if paid => self.paid.remove(link.key()),
             _ => {}
         }
         fetched

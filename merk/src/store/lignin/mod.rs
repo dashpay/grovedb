@@ -44,8 +44,8 @@
 //! such a walk reads, and the value's length, by which the read is charged
 //! as the whole record. The value is read when the walk asks for it
 //! ([`NodeStore::load_node_value`]), and only if the node under the key
-//! still has the hashes it was read with. PERF-01 replaces the `TreeNode`
-//! with views.
+//! still has the value hash and the key-value hash it was read with.
+//! PERF-01 replaces the `TreeNode` with views.
 //!
 //! # Writes
 //!
@@ -400,8 +400,12 @@ impl<'db> LigninNodeStore<'db> {
     }
 
     /// Reads the value of `node`, which was read without it, if the node
-    /// under its key is still the one that was read.
+    /// under its key still has the two hashes that were read: they are the
+    /// hashes of the value, in every byte that a value is hashed with.
     fn read_value_of(&self, node: &mut TreeNode) -> Result<(), Error> {
+        if !node.value_absent() {
+            return Ok(());
+        }
         let prefix = &self.subtree.prefix;
         let stored = self
             .access
@@ -547,11 +551,8 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn load_node_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {
-        match node.value_absent() {
-            false => Ok(()),
-            true => self.read_value_of(node),
-        }
-        .wrap_with_cost(OperationCost::default())
+        self.read_value_of(node)
+            .wrap_with_cost(OperationCost::default())
     }
 
     fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {

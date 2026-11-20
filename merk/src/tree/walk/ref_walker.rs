@@ -138,15 +138,21 @@ where
         let values_on_demand = self.values_on_demand;
         let retained = matches!(self.tree, Walked::Retained(_));
         match link {
-            // Below a node the walk owns nothing is retained, so no
-            // value-defined cost is asked for there.
-            Link::Reference { .. }
-                if values_on_demand && (value_defined_cost_fn.is_none() || !retained) =>
-            {
-                let child = cost_return_on_error!(
-                    &mut cost,
-                    self.source.fetch_without_value(link, grove_version)
-                );
+            Link::Reference { .. } => {
+                let child = match (values_on_demand, value_defined_cost_fn) {
+                    (true, None) => self.source.fetch_without_value(link, grove_version),
+                    // A node below one the walk owns is not kept, so a
+                    // Merk could not hold it as it was fetched with the
+                    // function.
+                    (_, Some(_)) if !retained => Err(Error::CorruptedCodeExecution(
+                        "a walk was given a value-defined cost function below a node it owns",
+                    ))
+                    .wrap_with_cost(Default::default()),
+                    _ => self
+                        .source
+                        .fetch(link, value_defined_cost_fn, grove_version),
+                };
+                let child = cost_return_on_error!(&mut cost, child);
                 if retained && child.value_absent() {
                     let child = RefWalker {
                         tree: Walked::Owned(child),
@@ -159,16 +165,6 @@ where
                     cost,
                     self.tree.node_mut().put_fetched_child(left, child)
                 );
-            }
-            Link::Reference { .. } => {
-                let load_res = self
-                    .tree
-                    .node_mut()
-                    .load(left, &self.source, value_defined_cost_fn, grove_version)
-                    .unwrap_add_cost(&mut cost);
-                if let Err(e) = load_res {
-                    return Err(e).wrap_with_cost(cost);
-                }
             }
             Link::Modified { .. } => {
                 return Err(Error::CorruptedState("cannot traverse Link::Modified"))
@@ -274,7 +270,11 @@ where
 
 #[cfg(all(test, feature = "minimal"))]
 mod tests {
-    use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
+    use std::{
+        cell::{Cell, RefCell},
+        collections::BTreeMap,
+        rc::Rc,
+    };
 
     use grovedb_costs::{CostResult, CostsExt, OperationCost};
     use grovedb_version::version::GroveVersion;
@@ -310,6 +310,8 @@ mod tests {
     struct Stored {
         nodes: Rc<BTreeMap<Vec<u8>, Vec<u8>>>,
         leaves_values_out: bool,
+        /// Whether a value that is asked for is refused.
+        refuses_values: Rc<Cell<bool>>,
         asked: Rc<RefCell<Vec<Asked>>>,
     }
 
@@ -375,6 +377,10 @@ mod tests {
         fn fetch_value(&self, node: &mut TreeNode) -> CostResult<(), Error> {
             let mut asked = self.asked.borrow_mut();
             asked.push(Asked::Value(node.key().to_vec()));
+            if self.refuses_values.get() {
+                return Err(Error::InvalidInputError("no value"))
+                    .wrap_with_cost(Default::default());
+            }
             let value = self.node(node.key()).value_as_slice().to_vec();
             node.put_read_value(value);
             Ok(()).wrap_with_cost(Default::default())
@@ -404,6 +410,7 @@ mod tests {
         let source = Stored {
             nodes: Rc::new(nodes),
             leaves_values_out,
+            refuses_values: Rc::default(),
             asked: Rc::default(),
         };
         (source.node(tree.key()), source)
@@ -419,7 +426,11 @@ mod tests {
         keys
     }
 
-    fn proof_of(root: &mut TreeNode, source: &Stored, key: u64) -> (Vec<u8>, OperationCost) {
+    fn try_proof_of(
+        root: &mut TreeNode,
+        source: &Stored,
+        key: u64,
+    ) -> (Result<Vec<u8>, Error>, OperationCost) {
         let query = [QueryItem::Key(seq_key(key).to_vec())];
         let proved = RefWalker::new(root, source.clone()).create_proof(
             &query,
@@ -427,9 +438,17 @@ mod tests {
             true,
             GroveVersion::latest(),
         );
-        let mut bytes = Vec::new();
-        encode_into(proved.value.unwrap().0.iter(), &mut bytes);
-        (bytes, proved.cost)
+        let proof = proved.value.map(|(ops, ..)| {
+            let mut bytes = Vec::new();
+            encode_into(ops.iter(), &mut bytes);
+            bytes
+        });
+        (proof, proved.cost)
+    }
+
+    fn proof_of(root: &mut TreeNode, source: &Stored, key: u64) -> (Vec<u8>, OperationCost) {
+        let (proof, cost) = try_proof_of(root, source, key);
+        (proof.unwrap(), cost)
     }
 
     #[test]
@@ -493,12 +512,17 @@ mod tests {
         assert!(!child.tree().value_absent());
         assert_eq!(child.tree().value_as_slice(), value_of(n));
 
-        // With a value-defined cost function the walk below a node it owns
-        // is still one of nodes without values: none of them is kept.
+        // Below a node the walk owns nothing is kept, so a node cannot be
+        // fetched there with a value-defined cost function: the walk is
+        // refused, and fetches nothing.
         let cost_fn = |_: &[u8], _: &GroveVersion| None;
-        let other = child.walk(true, Some(&cost_fn), GroveVersion::latest());
-        let other_key = (other.unwrap().unwrap().expect("a child").tree().key()).to_vec();
-        assert_eq!(source.asked(), [Asked::WithoutValue(other_key)]);
+        let refused = child.walk(true, Some(&cost_fn), GroveVersion::latest());
+        assert_eq!(refused.cost, OperationCost::default());
+        assert!(matches!(
+            refused.value,
+            Err(Error::CorruptedCodeExecution(_))
+        ));
+        assert_eq!(source.asked(), []);
         drop(child);
 
         // The tree the walk began on holds no node of it: the root's links
@@ -569,6 +593,37 @@ mod tests {
                 .into_iter()
                 .all(|left| root.child(left).is_none()));
         }
+    }
+
+    #[test]
+    fn a_proof_whose_value_is_not_read_fails_and_is_charged_its_fetches() {
+        let (mut root, source) = stored(true);
+        let target = (0..NODES)
+            .find(|key| root.key() != seq_key(*key))
+            .expect("a node that is not the root");
+        let (expected, expected_cost) = proof_of(&mut root, &source, target);
+        let fetches = source.asked().len() as u32 - 1;
+        assert_eq!(expected_cost.seek_count, fetches);
+
+        // The walk kept nothing, so a walk that is charged again fetches
+        // the same nodes: the value of the target is refused.
+        source.refuses_values.set(true);
+        let (refused, cost) = try_proof_of(&mut root, &source, target);
+        assert!(matches!(refused, Err(Error::InvalidInputError("no value"))));
+        assert_eq!(cost, expected_cost);
+        assert_eq!(
+            source.asked().last(),
+            Some(&Asked::Value(seq_key(target).to_vec()))
+        );
+        assert!([true, false]
+            .into_iter()
+            .all(|left| root.child(left).is_none()));
+
+        source.refuses_values.set(false);
+        assert_eq!(
+            proof_of(&mut root, &source, target),
+            (expected, expected_cost)
+        );
     }
 
     #[test]
