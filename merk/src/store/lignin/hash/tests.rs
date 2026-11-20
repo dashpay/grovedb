@@ -18,7 +18,7 @@ use lignindb::{
     commit::{Committed, NoStaleHashes},
     snapshot::Versions,
     txn::{testing::Db, Subtree, WritePath, WriteTxn},
-    verify::{Rule, Scope},
+    verify::{Finding, Place, Rule, Scope},
 };
 
 use super::{
@@ -1503,10 +1503,24 @@ fn grove(planted: Option<Planted>) -> Lignin {
     lignin
 }
 
+/// The cell of the node under `key` in the upper Merk of a grove that is
+/// committed.
+fn cell_of(lignin: &Lignin, key: &[u8]) -> CellAddress {
+    let write_path = lignin.path();
+    let transaction = write_path.begin();
+    let scope = transaction.scope().unwrap();
+    let read = scope.node(Subtree::new(SUBTREE), key, |view| {
+        let handle = view.expect("the node is there").handle();
+        handle.expect("a committed node has a cell").address()
+    });
+    scope.rollback();
+    read.expect("the node is read")
+}
+
 #[test]
 fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
-    // A grove that Merk hashed is sound, with the hash that the writer of
-    // its reference stated: every cell has its hashes recomputed.
+    // A grove that Merk hashed is sound, the hash that the writer of its
+    // reference stated with it, and every cell of it was checked.
     let sound = grove(None);
     let report = sound.db.verify_still();
     assert!(report.is_sound(), "{report}");
@@ -1515,14 +1529,16 @@ fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
     assert_eq!(census.hosted_roots, 1);
     drop(sound);
 
+    // Each hash, with the key of the node whose cell stores it.
+    let (left, right) = (Side::Left, Side::Right);
     let planted = [
-        (Planted::Child(Side::Left), HashField::Child(Side::Left)),
-        (Planted::Child(Side::Right), HashField::Child(Side::Right)),
-        (Planted::KeyValue, HashField::KeyValue),
-        (Planted::Item, HashField::Value),
-        (Planted::Tree, HashField::Value),
+        (Planted::Child(left), HashField::Child(left), 3),
+        (Planted::Child(right), HashField::Child(right), 3),
+        (Planted::KeyValue, HashField::KeyValue, 3),
+        (Planted::Item, HashField::Value, 0),
+        (Planted::Tree, HashField::Value, 5),
     ];
-    for (planted, field) in planted {
+    for (planted, field, stored_at) in planted {
         let lignin = grove(Some(planted));
         // A check that is given no rules recomputes no hash and finds
         // nothing.
@@ -1533,8 +1549,10 @@ fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
 
         // With Merk's rules it finds the hash, once, where it is stored.
         let report = lignin.db.verify_still();
-        let found: Vec<_> = report.findings.iter().map(|found| found.rule).collect();
-        assert_eq!(found, [Rule::Hash(field)], "{planted:?}: {report}");
+        let found = |finding: &Finding| (finding.rule, finding.place);
+        let found: Vec<_> = report.findings.iter().map(found).collect();
+        let cell = Place::Cell(cell_of(&lignin, &key(stored_at)));
+        assert_eq!(found, [(Rule::Hash(field), cell)], "{planted:?}: {report}");
         assert_eq!(report.more_findings, 0, "{planted:?}");
 
         // So the store of a test that leaves such a hash fails when it is

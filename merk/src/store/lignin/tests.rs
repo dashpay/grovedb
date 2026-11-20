@@ -54,10 +54,15 @@ pub(super) fn version() -> &'static GroveVersion {
 /// the hash of a node.
 ///
 /// The values of these tests are no elements of GroveDB, so Merk's rule
-/// for the value hash of an element does not apply to them. A value has
-/// the hash of its bytes, which is what `Op::Put` gives it. Where a test
-/// writes with an operation that states the value hash, as a reference's
-/// is stated, the hash is taken as stored.
+/// for the value hash of an element does not apply to them. A store has
+/// one rule for every value hash in it, chosen when it is made:
+///
+/// - [`Lignin::new`]: a value hash is the hash of the value's bytes, which
+///   is what `Op::Put` and `Op::PutWithSpecializedCost` give a value.
+/// - [`Lignin::with_stated_value_hashes`]: a value hash is taken as
+///   stored, for a test that writes with an operation which states it.
+///   That holds for every value of the store, also for one that was put
+///   plainly.
 struct RawValues {
     rules: MerkHashRules<'static>,
     stated: bool,
@@ -930,8 +935,8 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
             .unwrap()
             .unwrap();
         assert_eq!(stored(&store, 2).encode(), leaf_parent.encode());
+        assert_eq!(records(&store, root.clone()).len(), 7);
     }
-    assert_eq!(records(&store, root.clone()).len(), 7);
     drop(store);
     writer.into_scope().merge();
 

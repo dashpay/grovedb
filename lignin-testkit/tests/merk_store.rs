@@ -25,10 +25,13 @@
 //!    transaction is committed. The check of the committed tree pages
 //!    walks every Merk from the root its entry in the subtree directory
 //!    names, and must reach the keys RocksDB holds for that Merk and no
-//!    others. It is the physical invariant checker's (`lignindb::verify`),
-//!    which is given Merk's hash rules and recomputes every hash of the
-//!    cells it reaches. The cell of the element that hosts a Merk must
-//!    point, at the Merk's position, at that root, and no cell at another.
+//!    others. Before that walk it runs the physical invariant checker
+//!    (`lignindb::verify`) on the committed version, with Merk's hash
+//!    rules: the checker compares the hashes that every cell of a Merk in
+//!    use stores with what the rules make of them, and the rules take a
+//!    value hash that only its writer can make as it is stored. The cell
+//!    of the element that hosts a Merk must point, at the Merk's position,
+//!    at that root, and no cell at another.
 //!    Then every node of every Merk is read from the committed pages and
 //!    compared, as a record, with RocksDB's. Equal records from the root
 //!    down are an equal tree shape, and the root hash is a function of the
