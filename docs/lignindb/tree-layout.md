@@ -791,7 +791,10 @@ RocksDB, so it measures the copy (section 15, and section 17, item 19).
 
 **D6. The flat records under a prefix are those of the entry the directory
 stores there.** A subtree has records outside its Merk: in the aux, meta
-and roots columns, and its data where a tree keeps that flat. They are kept
+and roots columns, its data where a tree keeps that flat, and in the data
+column of a Merk its unlinked records: the written nodes that
+`lignindb::txn` keeps outside the tree pages (`MerkWrite`, "Unlinked
+records"; `transactions.md` ST1, GM0). They are kept
 by the subtree's prefix, each under `lead ++ prefix ++ key` in its column.
 The rule (decision D-084):
 

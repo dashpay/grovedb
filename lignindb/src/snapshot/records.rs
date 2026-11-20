@@ -1,7 +1,11 @@
 //! The records of a database as a reader finds them: through the subtree
 //! directory of the version it reads.
 
-use std::{error::Error, fmt, sync::OnceLock};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex, OnceLock, PoisonError},
+};
 
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_store::values::ValueStore;
@@ -13,7 +17,7 @@ use lignin_tree::{
 };
 
 use super::{kept::Directories, read::Operation, versions::OperationGuard};
-use crate::txn::{Column, Keyspaces, Subtree};
+use crate::txn::{unlinked, Column, Keyspaces, Subtree};
 
 /// Where the records of one store are: its value log, the flat keyspace of
 /// each column, and the handles on its subtree directory that the engine
@@ -67,6 +71,10 @@ pub enum ReadError {
         /// The version the reader reads at.
         at: CommitVersion,
     },
+    /// A flat record in the data column of the subtree was read as a node
+    /// of its Merk, and is no unlinked record (`lignindb::txn`, "Unlinked
+    /// records").
+    NotUnlinked,
 }
 
 impl fmt::Display for ReadError {
@@ -89,6 +97,9 @@ impl fmt::Display for ReadError {
                 "no handle on the subtree directory is kept for version {}",
                 at.get()
             ),
+            Self::NotUnlinked => {
+                f.write_str("a flat record among the nodes of a Merk is no unlinked record")
+            }
         }
     }
 }
@@ -96,7 +107,10 @@ impl fmt::Display for ReadError {
 impl Error for ReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NoRecords | Self::NotKept { .. } | Self::OtherVersion { .. } => None,
+            Self::NoRecords
+            | Self::NotKept { .. }
+            | Self::OtherVersion { .. }
+            | Self::NotUnlinked => None,
             Self::Directory(error) => Some(error),
             Self::Flat(error) => Some(error),
             Self::Node(error) => Some(error),
@@ -150,13 +164,16 @@ pub(super) enum Handle<'o> {
 }
 
 /// A subtree that a reader keeps from one operation to the next: its entry
-/// as the version `at` of one database has it.
+/// as the version `at` of one database has it, and whether that version
+/// holds unlinked records under it, once a read has asked
+/// ([`Opened::node`](Opened::node)).
 #[derive(Debug, Clone)]
 pub struct Kept {
     subtree: Subtree,
     entry: Entry,
     database: u64,
     at: CommitVersion,
+    unlinked: Arc<Mutex<Option<bool>>>,
 }
 
 impl<'o> Operation<'o> {
@@ -196,6 +213,7 @@ impl<'o> Operation<'o> {
             records,
             subtree,
             entry,
+            unlinked: Arc::default(),
         }))
     }
 
@@ -235,6 +253,7 @@ impl<'o> Operation<'o> {
             records,
             subtree: kept.subtree,
             entry: kept.entry.clone(),
+            unlinked: Arc::clone(&kept.unlinked),
         }))
     }
 }
@@ -330,6 +349,10 @@ pub struct Opened<'a, 'o> {
     pub(super) records: Records<'o>,
     subtree: Subtree,
     entry: Entry,
+    /// Whether the version holds a record in the data column under the
+    /// subtree, once it was looked up: shared with what the reader keeps
+    /// of the subtree ([`Kept`]).
+    unlinked: Arc<Mutex<Option<bool>>>,
 }
 
 impl<'a, 'o> Opened<'a, 'o> {
@@ -381,7 +404,28 @@ impl<'a, 'o> Opened<'a, 'o> {
             entry: self.entry,
             database: self.operation.database,
             at: self.operation.at(),
+            unlinked: self.unlinked,
         }
+    }
+
+    /// Whether the version holds a record in the data column under the
+    /// subtree: for a subtree with a Merk, whether it holds unlinked
+    /// records (`lignindb::txn`, "Unlinked records"). The lookup reads no
+    /// record, and its answer is kept: by this, by what the reader keeps
+    /// of the subtree ([`Self::keep`]), and by every open that resumes
+    /// from there at the same version. Those that share the answer do
+    /// not look it up at the same time: one looks while the others wait.
+    /// A lookup that fails keeps no answer.
+    pub(super) fn has_unlinked(&self) -> Result<bool, ReadError> {
+        let mut known = self.unlinked.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(known) = *known {
+            return Ok(known);
+        }
+        let pages = self.operation.flat_pages(&self.records);
+        let data = self.records.keyspaces.of(Column::Data);
+        let any = unlinked::any(&data, &pages, &self.subtree)?;
+        *known = Some(any);
+        Ok(any)
     }
 }
 
@@ -456,6 +500,8 @@ impl Opened<'_, '_> {
             cursor: tree.cursor_within(self.subtree.as_bytes()),
             database: self.operation.database,
             at: self.operation.at(),
+            #[cfg(all(test, not(loom)))]
+            failing: false,
         }
     }
 }
@@ -472,6 +518,10 @@ pub struct RecordWalk {
     cursor: flat::Cursor,
     database: u64,
     at: CommitVersion,
+    /// Whether the next move fails before the cursor moves. It is for
+    /// the tests, which have no page that fails to load.
+    #[cfg(all(test, not(loom)))]
+    pub(super) failing: bool,
 }
 
 macro_rules! record_moves {
@@ -483,6 +533,10 @@ macro_rules! record_moves {
             $($key: &[u8],)?
         ) -> Result<(), ReadError> {
             let records = self.records_of(operation)?;
+            #[cfg(all(test, not(loom)))]
+            if std::mem::take(&mut self.failing) {
+                return Err(ReadError::NoRecords);
+            }
             let pages = operation.flat_pages(&records);
             Ok(self.cursor.$name(&pages $(, $key)?)?)
         }
@@ -492,7 +546,10 @@ macro_rules! record_moves {
 impl RecordWalk {
     /// The records of `operation`, if it reads what the cursor was made
     /// on.
-    fn records_of<'o>(&self, operation: &Operation<'o>) -> Result<Records<'o>, ReadError> {
+    pub(super) fn records_of<'o>(
+        &self,
+        operation: &Operation<'o>,
+    ) -> Result<Records<'o>, ReadError> {
         if (operation.database, operation.at()) != (self.database, self.at) {
             return Err(ReadError::OtherVersion {
                 made_at: self.at,

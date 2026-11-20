@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_tree::directory::{Directory, Entry, MerkId};
 
-use super::{error::TxnError, key::Subtree, path::WritePath, write_set::WriteSet};
+use super::{error::TxnError, key::Subtree, path::WritePath, unlinked, write_set::WriteSet};
 use crate::snapshot::OperationGuard;
 
 /// A handle on the subtree directory of one committed version, and the
@@ -23,11 +23,17 @@ use crate::snapshot::OperationGuard;
 /// made again for another. An entry that was found stays good
 /// for that version; what the transaction itself dropped or cleared since
 /// is asked of its write set at every read ([`Self::seen`]).
+///
+/// Whether a subtree holds unlinked records at the version is kept with
+/// its entry, once it was looked up ([`Self::has_unlinked`]).
 #[derive(Debug)]
 pub(crate) struct Opened {
     at: CommitVersion,
     directory: Directory,
     entries: HashMap<Subtree, Option<Entry>>,
+    /// For the subtrees it was looked up for: whether the data column
+    /// holds a record under the subtree at this version.
+    unlinked: HashMap<Subtree, bool>,
 }
 
 impl Opened {
@@ -45,6 +51,7 @@ impl Opened {
                 at,
                 directory: path.directory_at(at)?,
                 entries: HashMap::new(),
+                unlinked: HashMap::new(),
             });
         }
         Ok(slot.as_mut().expect("it was loaded"))
@@ -104,6 +111,31 @@ impl Opened {
             let above = above.filter(|above| above.root().is_some());
             above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
         }))
+    }
+
+    /// The version the handle is of.
+    pub(crate) const fn version(&self) -> CommitVersion {
+        self.at
+    }
+
+    /// Whether the data column holds a record under `subtree` at this
+    /// version: for a subtree whose data are the nodes of a Merk, whether
+    /// it holds unlinked records (`super::unlinked`). It is one lookup,
+    /// made once for the version, and the caller has found the subtree
+    /// entered: no record is read under a subtree without its entry.
+    pub(crate) fn has_unlinked<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        if let Some(known) = self.unlinked.get(subtree) {
+            return Ok(*known);
+        }
+        let pages = path.committed(guard, self.at);
+        let has = unlinked::any(&path.keyspaces.data, &pages, subtree)?;
+        self.unlinked.insert(*subtree, has);
+        Ok(has)
     }
 
     /// The ids of the Merks that `subtree` is below at this version, from

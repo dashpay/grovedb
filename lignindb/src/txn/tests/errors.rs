@@ -5,7 +5,7 @@
 
 use std::error::Error;
 
-use lignin_format::tree_page::Hash;
+use lignin_format::tree_page::{Hash, HashField, Side};
 
 use super::{
     model::{self, value, OwnedBatch, OwnedMerk, OwnedSubtree},
@@ -254,15 +254,17 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
         }
 
         if !overlapped {
-            // Laid out over the committed state, a link and a root name a
-            // node that is there. Served by key, a record may name a child
-            // that is gone (WT7b).
+            // Laid out over the committed state, a link of a node of the
+            // tree and a root name a node that is there. Served by key, a
+            // record may name a child that is gone (WT7b), and so may a
+            // node that its tree does not reach, which is kept as a record
+            // (`tests/unlinked.rs`).
             let nodes = [NodePut {
                 left: link(b"absent"),
                 ..node(b"z", ValuePut::Value(b"1"))
             }];
             assert_eq!(
-                batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
+                batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Set(Some(b"z")))])),
                 BatchError::NoChild { subtree: one }
             );
             let nodes = [node(b"z", ValuePut::Value(b"1"))];
@@ -280,9 +282,43 @@ fn a_batch_that_names_what_is_not_there_is_refused_whole() {
                 feature: &huge,
                 ..node(b"huge", ValuePut::Value(b"1"))
             }];
-            let error = refused(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)]));
+            let root = RootPut::Set(Some(b"huge"));
+            let error = refused(&tx, &merks(&[merk(1, &nodes, root)]));
             assert!(matches!(error, TxnError::Fragment(_)), "{error}");
             assert!(error.source().is_some());
+            // The same node where its tree does not reach it is no cell,
+            // and is refused as one all the same.
+            let error = refused(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)]));
+            assert!(matches!(error, TxnError::Format(_)), "{error}");
+            // Such a node hosts no Merk.
+            let hosted = [other];
+            let nodes = [NodePut {
+                hosted: Hosted::Set(&hosted),
+                ..node(b"z", ValuePut::Value(b"1"))
+            }];
+            assert_eq!(
+                batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)])),
+                BatchError::HostUnlinked { subtree: one }
+            );
+            // And leaves no hash to be made: nobody makes a hash of one.
+            // The hash of a child it names is one, and so is its value
+            // hash.
+            let child = LinkPut {
+                key: b"nowhere",
+                hash: &[0; 32],
+                heights: (0, 0),
+                aggregate: &[],
+            };
+            for field in [HashField::Value, HashField::Child(Side::Left)] {
+                let nodes = [NodePut {
+                    left: Some(child),
+                    stale: lignin_tree::hash::Stale::NONE.with(field),
+                    ..node(b"z", ValuePut::Value(b"1"))
+                }];
+                let refused = batch_error(&tx, &merks(&[merk(1, &nodes, RootPut::Keep)]));
+                assert_eq!(refused, BatchError::StaleUnlinked { subtree: one });
+                assert!(refused.to_string().contains("leaves a hash to be made"));
+            }
         }
         // An empty batch adds nothing, and is not refused (GM0).
         let scope = tx.txn.scope().expect("no scope is open");
@@ -871,6 +907,8 @@ fn every_error_says_what_it_is() {
         BatchError::NotFlat { unit },
         BatchError::NotMerk { subtree },
         BatchError::HostKeeps { subtree },
+        BatchError::HostUnlinked { subtree },
+        BatchError::StaleUnlinked { subtree },
         BatchError::NotEntered { subtree },
         BatchError::Entered { subtree },
         BatchError::SubtreeTwice { subtree },

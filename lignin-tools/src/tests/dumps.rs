@@ -2,9 +2,16 @@
 
 use std::{fs, path::Path};
 
-use lignindb::Db;
+use grovedb_element::Element;
+use lignin_format::tree_page::Side;
+use lignin_tree::{hash::Stale, value::ValueBuf};
+use lignindb::{
+    commit::NoStaleHashes,
+    txn::{Batch, Hosted, LinkPut, MerkWrite, NodePut, RootPut, ValuePut},
+    Db,
+};
 
-use super::{contains, fixture, ran, run, small, temp, DOCS};
+use super::{contains, fixture, grove, ran, run, small, temp, Item, AGGREGATE, DOCS, FEATURE};
 use crate::{hex, Outcome, ToolError};
 
 /// A database in `dir` with nothing in it.
@@ -130,6 +137,132 @@ fn a_nested_subtree_is_loaded_with_no_host() {
         fs::read(&first).unwrap() == fs::read(&second).unwrap(),
         "the two dumps differ"
     );
+    let verified = ran(&format!("verify {}", target.display()), Outcome::Done);
+    contains(&verified, &["sound: every rule holds"]);
+}
+
+/// A record of the data column of a Merk with a root that no node links
+/// is dumped among the nodes of its Merk and loaded as such a record
+/// again: found under its key, in no tree, with every part it was written
+/// with, the key and the hash of each link among them.
+#[test]
+fn a_record_that_no_node_links_is_dumped_and_loaded_as_one() {
+    const STRAY: &[u8] = b"doc00009x";
+    let dir = temp();
+    let source = dir.path().join("db");
+    let db = Db::open(&source, &small()).expect("a new database");
+    grove(&db, 20);
+    // A node of the documents' Merk that the root does not reach, with
+    // two links to keys that hold nothing.
+    let stray = Item::element(STRAY, Element::new_item(b"in no tree".to_vec()));
+    let hashes = [[1; 32], [2; 32], [3; 32], [4; 32]];
+    let put = NodePut {
+        key: STRAY,
+        feature: FEATURE,
+        value_hash: &hashes[0],
+        kv_hash: &hashes[1],
+        left: Some(LinkPut {
+            key: b"nowhere",
+            hash: &hashes[2],
+            heights: (1, 0),
+            aggregate: AGGREGATE,
+        }),
+        right: Some(LinkPut {
+            key: b"nowhere either",
+            hash: &hashes[3],
+            heights: (0, 2),
+            aggregate: AGGREGATE,
+        }),
+        hosted: Hosted::Set(&[]),
+        value: ValuePut::Value(&stray.value),
+        stale: Stale::NONE,
+        at: None,
+    };
+    let beside = MerkWrite {
+        subtree: DOCS,
+        nodes: &[put],
+        removed: &[],
+        root: RootPut::Keep,
+        anchored: true,
+    };
+    db.write(
+        &Batch {
+            records: &[],
+            merks: &[beside],
+            subtrees: &[],
+        },
+        &mut NoStaleHashes,
+    )
+    .expect("the record is written");
+    db.close().expect("a close");
+    // Whether the record under the key is one that no node links, and
+    // each of its parts.
+    let held = |path: &Path| {
+        let db = Db::open(path, &small()).expect("the database opens");
+        let found = {
+            let snapshot = db.snapshot();
+            let operation = snapshot.operation();
+            let docs = operation.open(DOCS).expect("a read").expect("the Merk");
+            docs.node(STRAY, None, |view| {
+                view.map(|view| {
+                    let link = |side| {
+                        let link = view.link(side).expect("a link");
+                        let key = link.key.map(<[u8]>::to_vec);
+                        (key, *link.hash, link.heights, link.aggregate.to_vec())
+                    };
+                    let value = view.value(&mut ValueBuf::new()).map(<[u8]>::to_vec);
+                    (
+                        view.is_unlinked(),
+                        view.feature().to_vec(),
+                        (*view.value_hash(), *view.kv_hash()),
+                        [link(Side::Left), link(Side::Right)],
+                        value.expect("the value"),
+                    )
+                })
+            })
+            .expect("a read")
+        };
+        db.close().expect("a close");
+        found
+    };
+    let link = |key: &[u8], hash, heights| (Some(key.to_vec()), hash, heights, AGGREGATE.to_vec());
+    let as_written = Some((
+        true,
+        FEATURE.to_vec(),
+        (hashes[0], hashes[1]),
+        [
+            link(b"nowhere", hashes[2], (1, 0)),
+            link(b"nowhere either", hashes[3], (0, 2)),
+        ],
+        stray.value.clone(),
+    ));
+    assert_eq!(held(&source), as_written);
+
+    let target = empty(dir.path(), "target");
+    let (first, second) = (
+        dir.path().join("first.dump"),
+        dir.path().join("second.dump"),
+    );
+    let dumped = ran(
+        &format!("dump {} --all {}", source.display(), first.display()),
+        Outcome::Done,
+    );
+    // The thirty nodes of the four Merks, and the record.
+    contains(&dumped, &[": 5 subtrees, 31 nodes, 43 records, "]);
+    ran(
+        &format!("load {} {}", target.display(), first.display()),
+        Outcome::Done,
+    );
+    assert_eq!(held(&target), as_written);
+    ran(
+        &format!("dump {} --all {}", target.display(), second.display()),
+        Outcome::Done,
+    );
+    assert!(
+        fs::read(&first).unwrap() == fs::read(&second).unwrap(),
+        "the two dumps differ"
+    );
+    assert_eq!(entries(&source), entries(&target));
     let verified = ran(&format!("verify {}", target.display()), Outcome::Done);
     contains(&verified, &["sound: every rule holds"]);
 }

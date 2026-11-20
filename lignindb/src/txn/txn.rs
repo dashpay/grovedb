@@ -28,9 +28,10 @@ use super::{
     pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
     reads::{Reads, Since},
+    unlinked,
     view::{ChildKeys, NodeView, SubtreeView},
     write::{Applied, Batch, SubtreeWrite, ValuePut},
-    write_set::{EntryId, Mark, Own, OwnSubtree, Said, WriteSet},
+    write_set::{EntryId, Mark, Own, OwnSubtree, Restated, Said, WriteSet},
 };
 use crate::{
     scope::table::{Scopes, Who},
@@ -984,7 +985,7 @@ impl<'s> WriteTxn<'s> {
         }
         // What the transaction wrote below a Merk that the batch drops or
         // clears goes with it: the directory says which, before the batch.
-        let cut = match batch.subtrees.iter().any(|write| !write.enters()) {
+        let cut = match batch.subtrees.iter().any(SubtreeWrite::leaves) {
             true => frames.below(batch, state.set.written())?,
             false => Vec::new(),
         };
@@ -1185,6 +1186,8 @@ impl<'s> WriteTxn<'s> {
                         let mut pages =
                             path.committed_pages(&op.guard, op.at, state.lease, &mut state.buffers);
                         match find(&mut pages, root, node.key)? {
+                            // An unlinked record under the key is no
+                            // node, and has no value to keep.
                             None => None,
                             // A committed value, and no read of it is
                             // named: refused before the value is read.
@@ -1204,7 +1207,7 @@ impl<'s> WriteTxn<'s> {
             entry += merk.removed.len() as EntryId;
         }
         let cut = self.cut(state, op, batch)?;
-        if batch.subtrees.iter().any(|write| !write.enters()) {
+        if batch.subtrees.iter().any(SubtreeWrite::leaves) {
             // The cells of a Merk that leaves stay in their pages: every
             // handle that was read before ends (PN8).
             state.renew_lease();
@@ -1271,6 +1274,63 @@ impl<'s> WriteTxn<'s> {
         stored_key(&mut state.key, &unit.subtree, key);
         let tree = path.keyspaces.of(unit.column);
         Ok(tree.get(&path.committed(&op.guard, op.at), &state.key, out)?)
+    }
+
+    /// Appends to `out` the bytes of the unlinked record that the
+    /// committed version `at` holds under `key` of `subtree`, and says
+    /// whether it holds one (`super::unlinked`). The caller has found no
+    /// node of the Merk's tree under the key.
+    ///
+    /// No record is read under a subtree without its entry. Whether the
+    /// subtree holds unlinked records at all is looked up once for the
+    /// version ([`Opened::has_unlinked`]), and where it holds none,
+    /// nothing else is read.
+    fn committed_unlinked(
+        &self,
+        state: &mut State<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        subtree: &Subtree,
+        key: &[u8],
+        out: &mut Vec<u8>,
+    ) -> Result<bool, TxnError> {
+        let path = &self.path;
+        let opened = Opened::at(&mut state.directory, path, guard, at)?;
+        let entered = opened.root(path, guard, subtree)?.is_some();
+        if !entered || !opened.has_unlinked(path, guard, subtree)? {
+            return Ok(false);
+        }
+        let pages = path.committed(guard, at);
+        Ok(unlinked::get(
+            &path.keyspaces.data,
+            &pages,
+            subtree,
+            key,
+            out,
+        )?)
+    }
+
+    /// Whether the committed version `at` holds unlinked records under
+    /// `subtree`, for a cursor that reads that version beside the
+    /// transaction's writes. The cursor pins `at` and has found the subtree
+    /// entered there. What the transaction found for the version is not
+    /// looked up again.
+    pub(crate) fn committed_has_unlinked(
+        &self,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        subtree: &Subtree,
+    ) -> Result<bool, TxnError> {
+        let mut state = self.lock();
+        let path = &self.path;
+        // The transaction keeps the directory of one version, the one it
+        // read last: a cursor of another version asks for itself.
+        if (state.directory.as_ref()).is_some_and(|opened| opened.version() != at) {
+            let pages = path.committed(guard, at);
+            return Ok(unlinked::any(&path.keyspaces.data, &pages, subtree)?);
+        }
+        let opened = Opened::at(&mut state.directory, path, guard, at)?;
+        opened.has_unlinked(path, guard, subtree)
     }
 
     fn committed_get_in(
@@ -1403,18 +1463,18 @@ impl<'s> WriteTxn<'s> {
         let entered = match by_key.standing(subtree, ops)? {
             Standing::Gone => return Ok(read(None)),
             Standing::Committed => {
-                let root = match base {
-                    OwnSubtree::Unwritten { root } => root,
-                    OwnSubtree::Entered { .. } | OwnSubtree::Gone => None,
+                let (root, stated) = match base {
+                    OwnSubtree::Unwritten { root, stated } => (root, stated),
+                    OwnSubtree::Entered { .. } | OwnSubtree::Gone => (None, Restated::default()),
                 };
                 let opened = by_key.opened;
                 let entry = opened.seen_entry(&self.path, &op.guard, set, &subtree)?;
                 return Ok(read(entry.map(|entry| {
                     let view = SubtreeView::of(entry);
-                    SubtreeView {
+                    stated.of(SubtreeView {
                         root_key: root.unwrap_or(view.root_key),
                         ..view
-                    }
+                    })
                 })));
             }
             Standing::Own(entered) => entered,
@@ -1485,8 +1545,19 @@ impl<'s> WriteTxn<'s> {
                 }
                 None => {
                     state.keyed += 1;
-                    let root = frames.root(&subtree)?;
-                    find(&mut frames.tree, root, key)?
+                    let entry = frames.entry(&subtree)?;
+                    let root = entry.as_ref().and_then(|entry| entry.root());
+                    let found = find(&mut frames.tree, root.map(|root| root.address), key)?;
+                    if found.is_none() && entry.is_some() {
+                        // No node of the tree is under the key, which can
+                        // hold an unlinked record.
+                        let mut record = Vec::new();
+                        if frames.unlinked(&self.path, &subtree, key, &mut record)? {
+                            let node = unlinked::decode(key, &record)?;
+                            return Ok(Ok(read(Some(NodeView::unlinked(node)))));
+                        }
+                    }
+                    found
                 }
             };
             if at.is_some() {
@@ -1530,7 +1601,8 @@ impl<'s> WriteTxn<'s> {
         };
         // What the transaction dropped hides the Merks below it, also from
         // a handle.
-        let root = (self.seen(state, &op.guard, op.at, &subtree)?).flatten();
+        let seen = self.seen(state, &op.guard, op.at, &subtree)?;
+        let root = seen.flatten();
         let lease = state.lease;
         let mut pages = (self.path).committed_pages(&op.guard, op.at, lease, &mut state.buffers);
         let followed = (hint.filter(|_| root.is_some()))
@@ -1546,10 +1618,15 @@ impl<'s> WriteTxn<'s> {
             }
         };
         if at.is_none() {
-            // No node is shown: there is no handle to watch the commits
-            // for.
+            // No node of the tree is shown: there is no handle to watch
+            // the commits for. The key can hold an unlinked record, which
+            // has none.
             state.unwatch();
-            return Ok(read(None));
+            let (guard, mut record) = (&op.guard, Vec::new());
+            let held = seen.is_some()
+                && self.committed_unlinked(state, guard, op.at, &subtree, key, &mut record)?;
+            let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
+            return Ok(read(node.map(NodeView::unlinked)));
         }
         state.reads.note(lease, op.at);
         show_committed(&mut pages, at, read)
@@ -1642,7 +1719,12 @@ impl<'s> WriteTxn<'s> {
         let at = find(&mut pages, root, key)?;
         if at.is_none() {
             state.unwatch();
-            return Ok(read(None));
+            // The committed record under the key can be an unlinked one:
+            // a delete with no cost is charged from it as from a node.
+            let (guard, mut record) = (&op.guard, Vec::new());
+            let held = self.committed_unlinked(state, guard, op.at, &subtree, key, &mut record)?;
+            let node = held.then(|| unlinked::decode(key, &record)).transpose()?;
+            return Ok(read(node.map(NodeView::unlinked)));
         }
         state.reads.note(lease, op.at);
         show_committed(&mut pages, at, read)

@@ -118,13 +118,16 @@ impl<'s> LigninSnapshot<'s> {
             None => {
                 let found = operation.open(Subtree::new(*subtree)).map_err(unread)?;
                 let kept = found.map(|found| found.keep());
-                let opened = match &kept {
-                    Some(kept) => operation.resume(kept).map_err(unread)?,
-                    None => None,
+                // Of two first opens of one subtree, the entry that was
+                // kept first is the one both read through.
+                let kept = {
+                    let mut all = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
+                    all.entry(*subtree).or_insert(kept).clone()
                 };
-                let mut all = self.opened.lock().unwrap_or_else(PoisonError::into_inner);
-                all.insert(*subtree, kept);
-                Ok(opened)
+                match &kept {
+                    Some(kept) => operation.resume(kept).map_err(unread),
+                    None => Ok(None),
+                }
             }
         }
     }
@@ -208,7 +211,8 @@ impl Walk for SnapshotNodes<'_, '_> {
     }
 
     fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
-        self.walk = (self.snapshot).reading(subtree, |opened| Ok(Some(opened.walk())))?;
+        self.walk =
+            (self.snapshot).reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
         Ok(())
     }
 }
@@ -259,7 +263,7 @@ impl FlatAccess for LigninSnapshot<'_> {
 
 impl Access for LigninSnapshot<'_> {
     fn cursor<'a>(&'a self, subtree: &Prefix) -> Result<Box<dyn Walk + 'a>, Error> {
-        let walk = self.reading(subtree, |opened| Ok(Some(opened.walk())))?;
+        let walk = self.reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
         Ok(Box::new(SnapshotNodes {
             snapshot: self,
             walk,

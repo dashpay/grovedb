@@ -401,6 +401,69 @@ fn a_node_keeps_across_operations_the_value_one_of_them_wrote() {
     assert_eq!(store.keys()[&HOST], ["a", "b", "c", "d"]);
 }
 
+/// Inside one operation a put stands over a later delete of its key
+/// (GM0). Two commits of one Merk in one operation can so leave the batch
+/// with the put of a node that the root it holds does not reach. The
+/// transaction keeps that node as a record of its key, as an engine with
+/// one record for a key does: it is read by key, no node links it, and the
+/// report of the write names no cell for it.
+#[test]
+fn a_put_that_stands_over_a_delete_is_a_record_that_no_node_links() {
+    let store = Store::new();
+    let pairs: [(&[u8], &[u8]); 5] = [
+        (b"a", b"1"),
+        (b"b", b"2"),
+        (b"c", b"3"),
+        (b"d", b"4"),
+        (b"e", b"5"),
+    ];
+    let first = items(&pairs);
+    store.write({
+        let batch = StagedBatch::<()>::new();
+        stage_merk(&batch, HOST, &Items::new(), &first);
+        batch
+    });
+
+    // The first commit of the operation gives `b` and `d` new values, and
+    // the second removes `b`.
+    let mut second = first.clone();
+    second.insert(b"b".to_vec(), b"two".to_vec());
+    second.insert(b"d".to_vec(), b"four".to_vec());
+    let mut third = second.clone();
+    third.remove(&b"b"[..]);
+    let txn = store.begin();
+    let batch = StagedBatch::<()>::new();
+    stage_merk_read(&batch, Some(&txn), HOST, &first, &second);
+    stage_merk_read(&batch, Some(&txn), HOST, &second, &third);
+    let resolved = batch.resolve().expect("no call is refused");
+    let put: Vec<Vec<u8>> = resolved.with_batch(|batch| {
+        assert!(batch.merks[0].removed.is_empty(), "the put stands");
+        let nodes = batch.merks[0].nodes.iter();
+        nodes.map(|node| node.key.to_vec()).collect()
+    });
+    assert!(put.contains(&b"b".to_vec()), "{put:?}");
+
+    let applied = apply_resolved(&txn, &resolved);
+    assert_eq!(applied.unlinked.len(), 1);
+    assert_eq!(applied.nodes.len(), put.len() - 1);
+    let placed: Vec<Vec<u8>> = (resolved.placed(&applied))
+        .map(|(_, key, _)| key.to_vec())
+        .collect();
+    assert_eq!(placed.len(), put.len() - 1);
+    assert!(!placed.contains(&b"b".to_vec()) && placed.contains(&b"d".to_vec()));
+    let look = |txn: &WriteTxn<'_>| {
+        let unlinked = |view: Option<NodeView<'_>>| view.map(|view| view.is_unlinked());
+        let shown = |key: &[u8]| txn.node(subtree(HOST), key, unlinked).expect("a read");
+        assert_eq!((shown(b"b"), shown(b"d")), (Some(true), Some(false)));
+        assert_eq!(node_value(txn, HOST, b"b"), Some(b"two".to_vec()));
+        assert_eq!(node_value(txn, HOST, b"d"), Some(b"four".to_vec()));
+    };
+    look(&txn);
+    assert!(matches!(store.commit(&txn), Outcome::Committed(_)));
+    look(&store.begin());
+    assert_eq!(store.keys()[&HOST], ["a", "c", "d", "e"]);
+}
+
 /// One edit of the model of the schedule below.
 fn edit(rng: &mut Rng, merks: &mut [Items; 2], flat: &mut Items) {
     for merk in merks.iter_mut() {

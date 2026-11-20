@@ -7,7 +7,7 @@ use lignin_format::value_log::MAX_VALUE_LEN;
 use super::{
     error::BatchError,
     key::{Column, Unit},
-    write::{Batch, Entering, Hosted, RecordWrite, RootPut, ValuePut},
+    write::{Batch, Entering, Hosted, RecordWrite, RootPut, SubtreeWrite, ValuePut},
 };
 
 /// The longest key of a Merk node: a cell has one byte for its length
@@ -23,21 +23,30 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// Checks what can be checked of `batch` without reading a page: that it
 /// writes each record key once, names each Merk once, sets no root without
 /// a node and none that it deletes, writes no flat record among the nodes of
-/// a Merk, holds no key or value that is too long, and enters no subtree
-/// twice, by either kind of enter, and drops or clears none twice.
+/// a Merk, holds no key or value that is too long, enters no subtree
+/// twice, by either kind of enter, drops or clears none twice, and states
+/// none anew twice or beside its enter, its drop or its clear.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
     let (mut entered, mut left) = (HashSet::new(), HashSet::new());
+    let mut stated = HashSet::new();
     for write in batch.subtrees {
         let subtree = write.subtree();
         let enter = write.entering();
-        let once = match enter {
-            Some(_) => entered.insert(subtree),
-            None => left.insert(subtree),
+        let once = match (enter, write) {
+            (Some(_), _) => entered.insert(subtree),
+            (None, SubtreeWrite::Convert { .. }) => stated.insert(subtree),
+            (None, _) => left.insert(subtree),
         };
         if !once {
             return Err(BatchError::SubtreeTwice { subtree });
+        }
+        if let SubtreeWrite::Convert { tree_type, .. } = write
+            && tree_type.len() > MAX_TREE_TYPE
+        {
+            let len = tree_type.len();
+            return Err(BatchError::TreeTypeTooLong { subtree, len });
         }
         if let Some(Entering {
             tree_type, host, ..
@@ -54,6 +63,12 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
                 });
             }
         }
+    }
+    // A subtree that is stated anew stays as it is otherwise.
+    if let Some(subtree) =
+        (stated.iter()).find(|subtree| entered.contains(subtree) || left.contains(subtree))
+    {
+        return Err(BatchError::SubtreeTwice { subtree: *subtree });
     }
     let value_len = |len: usize| match len > MAX_VALUE_LEN {
         true => Err(BatchError::ValueTooLong { len }),

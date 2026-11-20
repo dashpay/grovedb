@@ -123,6 +123,14 @@ In the `data` column a record is one of two things:
   child's key, hash, heights and aggregate data.
 - a **flat entry** of an append-only tree.
 
+A Merk node is a record of its key whether or not a link of its Merk's tree
+leads to it. A storage batch can leave one that no link leads to (GM0). It
+is read by its key and under an iterator, written and deleted as any
+record, and in no hash. LigninDB keeps a written node that its tree does
+not reach outside its tree pages, as an **unlinked record** in the flat
+keyspace of the `data` column, by the rule of `lignindb::txn` (`MerkWrite`,
+"Unlinked records"; MERK-09).
+
 `aux`, `roots` and `meta` records are plain values. `roots` holds the base
 root key (`ROOT_KEY_KEY`).
 
@@ -2036,7 +2044,8 @@ Which call survives for a key is not simply the last one
 (`StorageBatch::put`, `delete` and `Operations::delete_into` in
 `storage/src/storage.rs`). The batch counts **operation generations**:
 `StorageBatch::next_operation` starts a new one, and a caller that runs
-several Merk commits against one batch calls it between them.
+several Merk commits against one batch calls it between them (the repair
+of a ranking on grove versions 1 to 4 does not, see below).
 
 | Call | Kept when | Otherwise |
 | --- | --- | --- |
@@ -2049,6 +2058,15 @@ information. Rebalancing deletes a node and puts it again in one Merk
 commit, and the put is the intended end state. Across a boundary the later
 operation wins: its delete removes a key an earlier operation had put. The
 four columns are kept apart, as the column is part of the key (ST1).
+
+The put also wins where it is not the intended end state. Two Merk commits
+of one generation can write one Merk: a node that the first put and the
+second deleted stays in the batch as a put. Where the tree that the batch
+leaves does not reach such a node, its record is one that no node links
+(ST1). The repair of an indexed tree's rankings on grove versions 1 to 4
+makes one commit for each row it removes, in one generation, and leaves
+rows so (the corpus case `ranking-drift`). The write-set entry of such a
+key is the put, as the batch holds it.
 
 Two ways of joining batches follow from the two calls. `merge` replays the
 other batch's entries through put and delete in the current generation, so

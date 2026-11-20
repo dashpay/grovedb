@@ -5,6 +5,7 @@ pub(crate) mod store;
 pub(crate) use super::testing as store;
 
 mod acceptance;
+mod converted;
 mod drops;
 mod enters;
 mod errors;
@@ -23,6 +24,7 @@ mod scopes;
 mod subtrees;
 mod threads;
 mod trees;
+mod unlinked;
 
 use std::{
     cell::RefCell,
@@ -441,7 +443,7 @@ fn check_under(cursor: &mut MerkCursor<'_, '_>, key: &[u8], expected: &model::No
         .node_with_children(&mut children, |shown| {
             let shown = shown.expect("a node under the cursor's key");
             expected.check(key, &shown);
-            shown.is_record()
+            shown.is_record() || shown.is_unlinked()
         })
         .expect("the node is read");
     for side in [Side::Left, Side::Right] {

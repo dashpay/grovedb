@@ -75,6 +75,10 @@ pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
                     let host = host.unwrap_or_default();
                     format!("{enter} {} as {}{host}", name(*subtree), text(tree_type))
                 }
+                // A staged batch states no subtree anew.
+                SubtreeWrite::Convert {
+                    subtree, tree_type, ..
+                } => format!("convert {} to {}", name(*subtree), text(tree_type)),
             })
             .collect(),
         merks: (batch.merks.iter())
