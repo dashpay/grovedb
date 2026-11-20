@@ -180,6 +180,13 @@
 //! version 2. A crash before it is in the log leaves a store with no
 //! commit, and the next open makes it again.
 //!
+//! **A power cut during a creation leaves a directory that the next open
+//! takes, or makes a database in anew.** The lock file's name is synced
+//! with the directory before the first manifest is installed, so a cut
+//! leaves no manifest without its lock file
+//! ([`OpenError::NoLockFile`] is for a database whose lock file someone
+//! left out or removed, and no crash makes one).
+//!
 //! **The catalog says where the keyspaces are.** It is a flat keyspace in
 //! the first page a store makes, page 1, with one record for each of the
 //! six: the id of its root page, which is the same for as long as the
