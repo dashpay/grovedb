@@ -595,11 +595,20 @@ fn a_read_after_a_proof_walks_the_nodes_of_the_proof_as_if_they_were_kept() {
 /// What a read says that [`Refusing`] refused.
 const REFUSED: &str = "the read of the node was refused";
 
-/// A transaction that refuses to read the node under one key for as long
-/// as it is told to, and counts the reads it refused.
+/// The reads of a node by its key that [`Refusing`] refuses: every one, or
+/// only one that asks for the node's value.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Reads {
+    Every,
+    OfTheValue,
+}
+
+/// A transaction whose read of a node by its key (`Access::node`) refuses
+/// the node under one key for as long as it is told to, and counts the
+/// reads it refused. Every other call is passed on.
 struct Refusing<'a> {
     under: &'a dyn Access,
-    key: Mutex<Option<Vec<u8>>>,
+    refuses: Mutex<Option<(Vec<u8>, Reads)>>,
     refused: AtomicU64,
 }
 
@@ -607,14 +616,16 @@ impl<'a> Refusing<'a> {
     fn over(under: &'a dyn Access) -> Self {
         Refusing {
             under,
-            key: Mutex::new(None),
+            refuses: Mutex::new(None),
             refused: AtomicU64::new(0),
         }
     }
 
-    /// Refuses every read of the node under `key` from here on, or none.
-    fn refuse(&self, key: Option<&[u8]>) {
-        *self.key.lock().expect("a lock that no thread left") = key.map(<[u8]>::to_vec);
+    /// From here on refuses the reads `refuses` names, of the node under a
+    /// key, or none.
+    fn refuse(&self, refuses: Option<(&[u8], Reads)>) {
+        let refuses = refuses.map(|(key, reads)| (key.to_vec(), reads));
+        *self.refuses.lock().expect("a lock that no thread left") = refuses;
     }
 
     /// How many reads were refused since this was last asked.
@@ -635,12 +646,11 @@ impl Access for Refusing<'_> {
         hint: Option<Location>,
         with_value: bool,
     ) -> Result<Option<StoredNode>, Error> {
-        let refused = self
-            .key
-            .lock()
-            .expect("a lock that no thread left")
-            .as_deref()
-            == Some(key);
+        let refuses = self.refuses.lock().expect("a lock that no thread left");
+        let refused = refuses.as_ref().is_some_and(|(refused, reads)| {
+            refused.as_slice() == key && (with_value || *reads == Reads::Every)
+        });
+        drop(refuses);
         if refused {
             self.refused.fetch_add(1, Relaxed);
             return Err(Error::StorageError(grovedb_storage::Error::StorageError(
@@ -685,22 +695,31 @@ impl Access for Refusing<'_> {
     }
 }
 
-/// A Merk makes `proved`, which leaves it charged for nodes it does not
-/// hold, and then `call` while the store refuses to read the node under
-/// `refused`. What that call answered, what it was charged and how many
-/// reads were refused are returned.
+/// A call as the message of an assertion names it.
+fn named(call: &Act) -> String {
+    match call {
+        Act::Prove(_, call) => format!("{call:?}"),
+        other => format!("{other:?}"),
+    }
+}
+
+/// A Merk makes the calls of `proved`, and then `call` while the store
+/// refuses the reads `refused` names. What that call answered, what it was
+/// charged and how many reads were refused are returned.
 ///
 /// Then the store answers again, and the Merk makes `call` once more and
-/// the calls of `then`: each answers and costs what it does on a Merk
-/// that made `proved` and met no refusal.
+/// the calls of `then`. Each succeeds, and answers and costs what it does
+/// on a Merk that made `proved` and met no refusal, and the two Merks end
+/// with the same root hash.
 fn refused_then_answered(
     both: &Both<'_, '_, '_>,
     proved: &[Act],
     call: &Act,
-    refused: &[u8],
+    refused: (&[u8], Reads),
     then: &[Act],
 ) -> (String, OperationCost, u64) {
     let tree_type = both.tree_type;
+    let case = format!("{tree_type:?}, {refused:?} refused at {}", named(call));
     let refusing = Refusing::over(both.writer);
     let staged = LigninBatch::new();
     let store = LigninNodeStore::new(&refusing, ROOT, Mode::Deferred(Some(&staged)));
@@ -710,32 +729,32 @@ fn refused_then_answered(
     let mut expected = open(store, tree_type);
 
     for call in proved {
-        assert_eq!(act(&mut merk, call), act(&mut expected, call));
+        let found = act(&mut merk, call);
+        assert_eq!(found, act(&mut expected, call), "{case}: before it");
     }
     refusing.refuse(Some(refused));
     let (failed, cost) = act(&mut merk, call);
     let refusals = refusing.refused();
     refusing.refuse(None);
     for call in std::iter::once(call).chain(then) {
-        assert_eq!(
-            act(&mut merk, call),
-            act(&mut expected, call),
-            "{tree_type:?}: {call:?} after a refused read"
-        );
+        let found = act(&mut merk, call);
+        assert!(found.0.starts_with("Ok("), "{case}: {}", named(call));
+        let wanted = act(&mut expected, call);
+        assert_eq!(found, wanted, "{case}: {} afterwards", named(call));
     }
-    assert_eq!(refusing.refused(), 0);
-    assert!(staged.is_empty() && unrefused.is_empty());
+    let root_hash = merk.root_hash().unwrap();
+    assert_eq!(root_hash, expected.root_hash().unwrap(), "{case}");
     (failed, cost, refusals)
 }
 
 /// A Merk reads again, at no charge, a node that a proof was charged for
 /// and did not keep. Where the store refuses that read, the call ends with
-/// the store's error and is charged nothing, and the Merk is as it was:
-/// once the store answers, the same call and the calls after it answer and
-/// cost what they do on a Merk that met no refusal.
+/// the store's error and is charged nothing. Once the store answers, the
+/// same call succeeds, and it and the reads and the write that follow it
+/// answer and cost what they do on a Merk that met no refusal.
 ///
-/// A read that is refused for a node the Merk was not charged for is
-/// charged as the store charges it.
+/// A proof whose read is refused for a node the Merk was not charged for
+/// is charged what the store charges for that read.
 #[test]
 fn a_reread_that_the_store_refuses_fails_the_call_at_no_charge() {
     for (seed, tree_type) in TREE_TYPES.into_iter().enumerate() {
@@ -749,37 +768,53 @@ fn a_reread_that_the_store_refuses_fails_the_call_at_no_charge() {
             // The proof of the target is charged for the node above it and
             // for the target, and keeps neither.
             let proved = [point(&target)];
+            // What follows the refused call: reads of the two nodes and
+            // of what is beside them, a write of the target, whose walk
+            // goes through the node above it, and reads of what the write
+            // left in memory.
+            let rewrite = Op::Put(vec![7; 60], feature(tree_type, 3));
             let then = [
                 prove(Call::Get(target.clone(), true)),
                 prove(Call::Exists(target.clone())),
                 point(&target),
                 prove(Call::Get(sibling.clone(), true)),
                 point(&absent),
+                prove(Call::Get(above.clone(), true)),
+                Act::Apply(vec![(target.clone(), rewrite)]),
+                prove(Call::Get(target.clone(), true)),
+                point(&target),
+                prove(Call::Observe(above.clone())),
             ];
             let refused_as = |failed: &str| {
                 failed.starts_with("Err(StorageError(StorageError(") && failed.contains(REFUSED)
             };
 
-            // The callers that read such a node again: a proof; a read of
-            // the nodes in memory, which reads the nodes on its way
-            // without their values and the node of its key whole; the
-            // same walk for whether a key is there, which does not read
-            // the node of the key; and a read that keeps the nodes it
-            // fetches, as the walk of a write fetches them.
+            // Four callers that read such a node again. A proof reads the
+            // nodes on its way without their values, and then the value
+            // of the node of its key. A read of the nodes in memory reads
+            // the nodes on its way without their values and the node of
+            // its key whole. The same walk for whether a key is there does
+            // not read the node of the key. A read that keeps the nodes
+            // it fetches reads each whole, as the walk of a write does.
             let callers = [
                 point(&target),
                 prove(Call::Get(target.clone(), true)),
                 prove(Call::Exists(target.clone())),
                 prove(Call::Observe(target.clone())),
             ];
+            let refused_reads = [
+                (above.as_slice(), Reads::Every),
+                (target.as_slice(), Reads::Every),
+                (target.as_slice(), Reads::OfTheValue),
+            ];
             for call in &callers {
-                for refused in [&above, &target] {
+                for refused in refused_reads {
                     let (failed, cost, refusals) =
                         refused_then_answered(both, &proved, call, refused, &then);
-                    let case = format!("{tree_type:?}: {call:?}");
+                    let case = format!("{tree_type:?}, {refused:?} refused at {}", named(call));
                     assert_eq!(cost, OperationCost::default(), "{case}");
                     let unread =
-                        matches!(call, Act::Prove(_, Call::Exists(_))) && refused == &target;
+                        matches!(call, Act::Prove(_, Call::Exists(_))) && refused.0 == target;
                     match unread {
                         false => {
                             assert!(refused_as(&failed), "{case}: {failed}");
@@ -800,7 +835,7 @@ fn a_reread_that_the_store_refuses_fails_the_call_at_no_charge() {
             let store = LigninNodeStore::new(&refusing, ROOT, Mode::Deferred(None));
             let link = way[0].link(above.as_slice() < way[0].key());
             let link = link.filter(|link| link.key() == above).expect("a link");
-            refusing.refuse(Some(&above));
+            refusing.refuse(Some((above.as_slice(), Reads::Every)));
             let unread = store.fetch_node_without_value(link, version());
             assert!(matches!(
                 &unread.value,
@@ -808,8 +843,9 @@ fn a_reread_that_the_store_refuses_fails_the_call_at_no_charge() {
                     if text == REFUSED
             ));
             assert_ne!(unread.cost, OperationCost::default());
+            let refused = (above.as_slice(), Reads::Every);
             let (failed, cost, refusals) =
-                refused_then_answered(both, &[], &proved[0], &above, &then);
+                refused_then_answered(both, &[], &proved[0], refused, &then);
             assert!(refused_as(&failed), "{tree_type:?}: {failed}");
             assert_eq!((cost, refusals), (unread.cost, 1), "{tree_type:?}");
         });
