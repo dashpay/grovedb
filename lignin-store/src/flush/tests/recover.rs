@@ -136,6 +136,17 @@ pub(crate) fn recover(vfs: Arc<dyn Vfs>, path: &Path, ids: &[PageId]) -> Recover
                                 }
                             }
                             Entry::Freed(id) if committed > covers => {
+                                // The chain already holds what the commit
+                                // did, and more: the id was given to a new
+                                // page since, and its block was linked
+                                // before the checkpoint copied the chain
+                                // (K3, as for a run).
+                                let has = table
+                                    .newest(id)
+                                    .is_some_and(|link| link.version >= committed);
+                                if has {
+                                    continue;
+                                }
                                 frames.insert(id, None);
                                 dropped.remove(&id);
                             }
