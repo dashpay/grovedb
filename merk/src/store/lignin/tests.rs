@@ -12,6 +12,10 @@ use grovedb_costs::OperationCost;
 use grovedb_path::SubtreePath;
 use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
 use grovedb_version::version::GroveVersion;
+use lignin_tree::{
+    hash::{HashRules, Refusal},
+    node::NodeRef,
+};
 use lignindb::{
     snapshot::Versions,
     txn::{
@@ -22,14 +26,15 @@ use lignindb::{
 
 use super::{
     access::{Access, Child, Location, Prefix, StoredNode, Walk, Write, Written},
+    hash::MerkHashRules,
     LigninApplied, LigninBatch, LigninEntry, LigninHost, LigninNodeStore, LigninSubtree,
     LigninWriter, Mode,
 };
 use crate::{
     cost_model::Keyspace,
     store::{mem::MemNodeStore, NodeChange, NodeChangeSet, NodeCursor, NodeStore},
-    tree::{kv::ValueDefinedCostType, AggregateData, TreeNode},
-    Error, Link, Merk, Op, TreeFeatureType, TreeType,
+    tree::{kv::ValueDefinedCostType, value_hash, AggregateData, TreeNode},
+    CryptoHash, Error, Link, Merk, Op, TreeFeatureType, TreeType,
 };
 
 mod cursor;
@@ -44,6 +49,42 @@ pub(super) fn version() -> &'static GroveVersion {
     GroveVersion::latest()
 }
 
+/// The rules by which the store of a test has its hashes recomputed when
+/// it is dropped (`lignindb::verify`): Merk's for the key-value hash and
+/// the hash of a node.
+///
+/// The values of these tests are no elements of GroveDB, so Merk's rule
+/// for the value hash of an element does not apply to them. A value has
+/// the hash of its bytes, which is what `Op::Put` gives it. Where a test
+/// writes with an operation that states the value hash, as a reference's
+/// is stated, the hash is taken as stored.
+struct RawValues {
+    rules: MerkHashRules<'static>,
+    stated: bool,
+}
+
+impl HashRules for RawValues {
+    fn value_hash(
+        &mut self,
+        node: NodeRef<'_>,
+        value: &[u8],
+        _: &[Option<CryptoHash>],
+    ) -> Result<CryptoHash, Refusal> {
+        Ok(match self.stated {
+            true => *node.value_hash(),
+            false => value_hash(value).unwrap(),
+        })
+    }
+
+    fn kv_hash(&mut self, key: &[u8], value_hash: &CryptoHash) -> Result<CryptoHash, Refusal> {
+        self.rules.kv_hash(key, value_hash)
+    }
+
+    fn node_hash(&mut self, node: NodeRef<'_>) -> Result<CryptoHash, Refusal> {
+        self.rules.node_hash(node)
+    }
+}
+
 /// A LigninDB store on disk, with the stand-in commit of the engine's own
 /// transaction tests.
 pub(super) struct Lignin {
@@ -53,15 +94,20 @@ pub(super) struct Lignin {
 
 impl Lignin {
     pub(super) fn new() -> Self {
-        let (db, versions) = Db::new(512);
-        Self { db, versions }
+        Self::checked(false)
     }
 
-    /// Takes the store out of the check that the physical invariant
-    /// checker makes when it is dropped (`lignindb::verify`): the test
-    /// leaves pages that the checker does not pass, and says why.
-    pub(super) fn unchecked(&self) {
-        self.db.unchecked();
+    /// A store for a test that writes with operations which state a value
+    /// hash: the check at its drop takes every value hash as stored.
+    pub(super) fn with_stated_value_hashes() -> Self {
+        Self::checked(true)
+    }
+
+    fn checked(stated: bool) -> Self {
+        let (db, versions) = Db::new(512);
+        let rules = MerkHashRules::for_check(version());
+        db.check_hashes_by(Box::new(RawValues { rules, stated }));
+        Self { db, versions }
     }
 
     pub(super) fn path(&self) -> WritePath<'_> {
@@ -400,7 +446,7 @@ impl Comparison {
 
 fn same_tree_as_on_rocksdb(tree_type: TreeType, writing: Writing, seed: u64, rounds: usize) {
     let mut comparison = Comparison::new(tree_type, writing, seed);
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
 
     if writing == Writing::Immediate {
@@ -568,7 +614,7 @@ fn a_value_is_written_only_when_it_changed() {
 fn every_node_merk_writes_is_one_write_of_its_key() {
     let tree_type = TreeType::NormalTree;
     let mem = MemNodeStore::new();
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
@@ -677,7 +723,7 @@ fn a_link_is_followed_to_where_its_node_was_seen() {
 
 #[test]
 fn a_committed_tree_is_read_and_written_by_the_next_transaction() {
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let mut root = None;
     let mut model = BTreeMap::new();
@@ -844,11 +890,6 @@ fn the_root_key_and_the_side_records_are_records_of_their_subtree() {
 #[test]
 fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
     let lignin = Lignin::new();
-    // The two writes below state a node alone, with heights that are not
-    // its child's and with a link taken away from a child that stays: the
-    // tree they leave is not one the physical invariant checker passes
-    // (`lignindb::verify`), and the store is taken out of its check.
-    lignin.unchecked();
     let path = lignin.path();
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
@@ -860,7 +901,9 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
         node.unwrap().unwrap().expect("the node is stored")
     };
 
-    // Chunk restore corrects the heights in a parent's link this way.
+    // Chunk restore corrects the heights in a parent's link this way: the
+    // link is written with heights that are not the child's, and then with
+    // the child's.
     let store = LigninNodeStore::immediate(&writer, ROOT);
     let mut leaf_parent = stored(&store, 2);
     let Some(Link::Reference {
@@ -872,23 +915,32 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
         panic!("a link that was read is a reference");
     };
     assert_eq!(child_heights, (0, 0));
-    leaf_parent.set_link(
-        true,
-        Some(Link::Reference {
-            hash,
-            child_heights: (3, 4),
-            key: be(1),
-            aggregate_data: AggregateData::NoAggregateData,
-        }),
-    );
-    store
-        .write_node(&leaf_parent, NodeChange::HashOnly)
-        .unwrap()
-        .unwrap();
-    assert_eq!(stored(&store, 2).encode(), leaf_parent.encode());
+    for child_heights in [(3, 4), child_heights] {
+        leaf_parent.set_link(
+            true,
+            Some(Link::Reference {
+                hash,
+                child_heights,
+                key: be(1),
+                aggregate_data: AggregateData::NoAggregateData,
+            }),
+        );
+        store
+            .write_node(&leaf_parent, NodeChange::HashOnly)
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored(&store, 2).encode(), leaf_parent.encode());
+    }
     assert_eq!(records(&store, root.clone()).len(), 7);
+    drop(store);
+    writer.into_scope().merge();
 
-    // On a deferred handle the write is staged like any other.
+    // On a deferred handle the write is staged like any other. A node that
+    // is written alone cannot take a child out of a tree: the cell of the
+    // child stays, and the node above states the hash and the heights of
+    // what was there. So this write is made in a scope of its own, which
+    // is rolled back.
+    let writer = LigninWriter::new(transaction.scope().unwrap());
     let staged = LigninBatch::new();
     let deferred = LigninNodeStore::deferred(&writer, ROOT, Some(&staged));
     let mut corrected = stored(&deferred, 6);
@@ -901,11 +953,15 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
     staged.apply(&writer).unwrap().unwrap();
     assert!(stored(&deferred, 6).link(false).is_none());
     assert_eq!(records(&deferred, root.clone()).len(), 6);
+    let entry = deferred.entry().unwrap().expect("the subtree is entered");
+    assert_eq!(entry.root_key, root);
+    drop(deferred);
+    writer.into_scope().rollback();
+    let reader = LigninNodeStore::read_only(&transaction, ROOT);
+    assert!(stored(&reader, 6).link(false).is_some());
 
-    // Neither write stated a root: the directory still names the one the
-    // Merk's commit stated.
-    drop((store, deferred));
-    writer.into_scope().merge();
+    // No write stated a root: the directory still names the one the Merk's
+    // commit stated.
     assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
     assert_eq!(root, Some(be(4)));
     assert_eq!(lignin.root_in_directory(ROOT.prefix), root);

@@ -505,11 +505,6 @@ fn a_merk_in_a_subtree_that_is_not_entered_is_empty_and_takes_no_write() {
 #[test]
 fn a_subtree_is_entered_through_its_handle() {
     let lignin = Lignin::new();
-    // The subtrees below are entered as hosted by an element that no
-    // commit writes: entries whose host is no node are not a state the
-    // physical invariant checker passes (`lignindb::verify`), and the
-    // store is taken out of its check.
-    lignin.unchecked();
     let path = lignin.path();
     let transaction = path.begin();
     let writer = LigninWriter::new(transaction.scope().unwrap());
@@ -573,6 +568,17 @@ fn a_subtree_is_entered_through_its_handle() {
     let error = unnamed.enter(TreeType::NormalTree).expect_err("not hosted");
     assert!(error.to_string().contains("not among those"), "{error}");
     assert_eq!(unnamed.entry().unwrap(), None);
+    // The element that hosts the two is a node of its Merk when the
+    // transaction commits: an entry names a node as its host.
+    let host = LigninNodeStore::immediate(&writer, fresh.clone());
+    let (mut host, _) = open(Kind::Base, host, TreeType::CountTree);
+    let element = Op::Put(b"two".to_vec(), TreeFeatureType::CountedMerkNode(1));
+    apply(&mut host, &[(b"element".to_vec(), element)]);
+    drop(host);
+    let with_element = plain(TreeType::CountTree).map(|entry| LigninEntry {
+        root_key: Some(b"element".to_vec()),
+        ..entry
+    });
 
     // A handle that only reads enters nothing.
     let unstaged = LigninNodeStore::deferred(&writer, LigninSubtree::alone([234; 32]), None);
@@ -586,12 +592,12 @@ fn a_subtree_is_entered_through_its_handle() {
     // What the transaction entered is read through it, and by no other
     // before it commits.
     let entered = LigninNodeStore::read_only(&transaction, fresh.clone());
-    assert_eq!(entered.entry().unwrap(), plain(TreeType::CountTree));
+    assert_eq!(entered.entry().unwrap(), with_element);
     let other = path.begin();
     let unseen = LigninNodeStore::read_only(&other, fresh.clone());
     assert_eq!(unseen.entry().unwrap(), None);
     commit(&lignin, &transaction);
-    assert_eq!(unseen.entry().unwrap(), plain(TreeType::CountTree));
+    assert_eq!(unseen.entry().unwrap(), with_element);
 }
 
 /// Every tree type has bytes of its own in the directory, which give the
