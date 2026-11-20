@@ -6,8 +6,10 @@ use std::{error::Error, fmt, sync::OnceLock};
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_store::values::ValueStore;
 use lignin_tree::{
+    cursor::CursorError,
     directory::{Directory, DirectoryError, Entry},
     flat::{self, Committed, FlatError},
+    node::NodeError,
 };
 
 use super::{kept::Directories, read::Operation, versions::OperationGuard};
@@ -43,6 +45,10 @@ pub enum ReadError {
     Directory(DirectoryError),
     /// A flat keyspace could not be read.
     Flat(FlatError),
+    /// A node of a Merk could not be read.
+    Node(NodeError),
+    /// A cursor over the nodes of a Merk did not move.
+    Cursor(CursorError),
     /// The engine keeps no handle on the subtree directory for the version
     /// that is read. It keeps one for every version that is pinned, and
     /// for the latest version of an operation under its guard
@@ -60,6 +66,8 @@ impl fmt::Display for ReadError {
             Self::NoRecords => f.write_str("the read path names no records"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
+            Self::Node(error) => write!(f, "node: {error}"),
+            Self::Cursor(error) => write!(f, "cursor: {error}"),
             Self::NotKept { at } => write!(
                 f,
                 "no handle on the subtree directory is kept for version {}",
@@ -75,7 +83,21 @@ impl Error for ReadError {
             Self::NoRecords | Self::NotKept { .. } => None,
             Self::Directory(error) => Some(error),
             Self::Flat(error) => Some(error),
+            Self::Node(error) => Some(error),
+            Self::Cursor(error) => Some(error),
         }
+    }
+}
+
+impl From<NodeError> for ReadError {
+    fn from(error: NodeError) -> Self {
+        Self::Node(error)
+    }
+}
+
+impl From<CursorError> for ReadError {
+    fn from(error: CursorError) -> Self {
+        Self::Cursor(error)
     }
 }
 
@@ -184,8 +206,8 @@ impl<'o> Operation<'o> {
 /// The records of the subtree are read through this, and through nothing
 /// else.
 pub struct Opened<'a, 'o> {
-    operation: &'a Operation<'o>,
-    records: Records<'o>,
+    pub(super) operation: &'a Operation<'o>,
+    pub(super) records: Records<'o>,
     subtree: Subtree,
     entry: Entry,
 }
@@ -301,6 +323,82 @@ impl RecordCursor<'_, '_> {
     /// says whether it stands on one.
     pub fn value(&self, out: &mut Vec<u8>) -> Result<bool, ReadError> {
         Ok(self.cursor.value(&self.pages, out)?)
+    }
+}
+
+impl Opened<'_, '_> {
+    /// A cursor over the flat records of `column` of the subtree, in key
+    /// order, not positioned, which the reader keeps from one operation to
+    /// the next ([`RecordWalk`]).
+    pub fn record_walk(&self, column: Column) -> RecordWalk {
+        let tree = self.records.keyspaces.of(column);
+        RecordWalk {
+            cursor: tree.cursor_within(self.subtree.as_bytes()),
+        }
+    }
+}
+
+/// A cursor over the flat records of one column of one subtree, which a
+/// reader keeps from one operation to the next ([`Opened::record_walk`]).
+///
+/// It holds no page between two calls. Each call is given the operation it
+/// is made in, which reads the version the cursor was made at: the
+/// operations of one snapshot do.
+pub struct RecordWalk {
+    cursor: flat::Cursor,
+}
+
+macro_rules! record_moves {
+    ($($(#[$doc:meta])* $name:ident($($key:ident)?);)*) => {$(
+        $(#[$doc])*
+        pub fn $name(
+            &mut self,
+            operation: &Operation<'_>,
+            $($key: &[u8],)?
+        ) -> Result<(), ReadError> {
+            let records = operation.records.ok_or(ReadError::NoRecords)?;
+            let pages = operation.flat_pages(&records);
+            Ok(self.cursor.$name(&pages $(, $key)?)?)
+        }
+    )*};
+}
+
+impl RecordWalk {
+    record_moves! {
+        /// Goes to the first key at or after `key`.
+        seek(key);
+        /// Goes to the last key at or before `key`.
+        seek_for_prev(key);
+        /// Goes to the first key.
+        seek_to_first();
+        /// Goes to the last key.
+        seek_to_last();
+        /// Goes to the next key. Past the last one the cursor stands on
+        /// none.
+        next();
+        /// Goes to the key before. Before the first one the cursor stands
+        /// on none.
+        prev();
+    }
+
+    /// The key the cursor stands on, if it stands on one.
+    pub fn key(&self) -> Option<&[u8]> {
+        self.cursor.key()
+    }
+
+    /// Appends the value under the key the cursor stands on to `out`, and
+    /// says whether it stands on one.
+    pub fn value(&self, operation: &Operation<'_>, out: &mut Vec<u8>) -> Result<bool, ReadError> {
+        let records = operation.records.ok_or(ReadError::NoRecords)?;
+        Ok(self.cursor.value(&operation.flat_pages(&records), out)?)
+    }
+}
+
+impl fmt::Debug for RecordWalk {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RecordWalk")
+            .field("key", &self.key())
+            .finish_non_exhaustive()
     }
 }
 

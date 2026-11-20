@@ -5,6 +5,7 @@
 mod guards;
 mod kept;
 mod open;
+mod reads;
 mod reclaim;
 mod reopen;
 mod wipe;
