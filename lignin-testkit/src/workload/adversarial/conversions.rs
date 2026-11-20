@@ -553,8 +553,9 @@ impl Generator {
     }
 
     /// A tree of `kind` in `holder`, with what its size gives it. A tree of
-    /// another type than the two that rank their entries is created and
-    /// filled by the batch of the round when `batched` is set.
+    /// another type than the two that rank their entries is created by the
+    /// batch of the round when `batched` is set, and the batch also writes
+    /// what the size gives the tree, which is nothing for an empty one.
     fn build(
         &mut self,
         holder: &Path,

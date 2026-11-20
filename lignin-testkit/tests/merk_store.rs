@@ -1189,11 +1189,13 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         });
     }
 
-    // The store as the replay leaves it passes the physical invariant
-    // checker (`lignindb::verify`): the pages, the trees, the directory
-    // against the cells, the values, the page ids and the page table, and
-    // the hashes of every cell of a Merk in use, recomputed by Merk's
-    // rules.
+    // The store as the replay leaves it is run through the physical
+    // invariant checker (`lignindb::verify`): the pages, the trees, the
+    // directory against the cells, the values, the page ids and the page
+    // table, and the hashes of every cell of a Merk in use, recomputed by
+    // Merk's rules. It passes, but for a trace of `MOVED_BY_A_CONVERSION`:
+    // there the report must hold the findings of the hosts a conversion
+    // moved, at least one, and no other.
     let mut rules = MerkHashRules::for_check(spec.grove_version);
     let report = lignin.verify(versions.latest(), Scope::Still, Some(&mut rules));
     match moved {
