@@ -32,6 +32,7 @@
 //! | `LIGNIN_TXN06_OPEN_ONLY` | a checkpoint that is opened is not read: the difference between a run with opens and one without is then what the opens cost, as `perf stat` counts it |
 
 use std::{
+    any::Any,
     collections::HashMap,
     io,
     path::{Path, PathBuf},
@@ -43,7 +44,7 @@ use std::{
 };
 
 use lignin_format::tree_page::Hash;
-use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
+use lignin_io::{DirEntry, OpenMode, StdVfs, SyncItem, Vfs, VfsFile, VfsLock};
 use lignin_store::{flush::FlushConfig, segment::read_manifest, wal::LogOptions};
 use lignin_tree::{hash::Stale, node::NodeHandle};
 
@@ -393,13 +394,17 @@ impl Grove {
     }
 }
 
-/// A file layer that counts what a creation asks of the system.
+/// A file layer that counts what a creation asks of the system. The
+/// syncs are those that are asked for one by one, and `in_sets` those of
+/// the sets (`Vfs::sync_together`).
 #[derive(Debug, Default)]
 struct Counts {
     links: AtomicU64,
     syncs: AtomicU64,
     dir_syncs: AtomicU64,
     opens: AtomicU64,
+    sets: AtomicU64,
+    in_sets: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -489,6 +494,30 @@ impl Vfs for Counting {
         self.inner.sync_dir(path)
     }
 
+    /// The set is handed to the system's file layer as a set of its own
+    /// files, so that it costs there what it costs a store that is opened
+    /// on that layer: a file layer shares the cost of a set only among
+    /// files it knows for its own.
+    fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
+        fn own(file: &dyn VfsFile) -> &dyn VfsFile {
+            let any: &dyn Any = file;
+            match any.downcast_ref::<CountingFile>() {
+                Some(counting) => &*counting.inner,
+                None => file,
+            }
+        }
+        self.counts.sets.fetch_add(1, Ordering::Relaxed);
+        (self.counts.in_sets).fetch_add(items.len() as u64, Ordering::Relaxed);
+        let items: Vec<SyncItem<'_>> = (items.iter())
+            .map(|item| match *item {
+                SyncItem::Data(file) => SyncItem::Data(own(file)),
+                SyncItem::All(file) => SyncItem::All(own(file)),
+                SyncItem::Dir(path) => SyncItem::Dir(path),
+            })
+            .collect();
+        self.inner.sync_together(&items)
+    }
+
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         self.inner.lock(path)
     }
@@ -501,9 +530,16 @@ impl Vfs for Counting {
 impl Counts {
     /// The links, the syncs of files, the syncs of directories and the
     /// opens so far.
-    fn read(&self) -> [u64; 4] {
-        [&self.links, &self.syncs, &self.dir_syncs, &self.opens]
-            .map(|count| count.load(Ordering::Relaxed))
+    fn read(&self) -> [u64; 6] {
+        [
+            &self.links,
+            &self.syncs,
+            &self.dir_syncs,
+            &self.opens,
+            &self.sets,
+            &self.in_sets,
+        ]
+        .map(|count| count.load(Ordering::Relaxed))
     }
 }
 
@@ -676,11 +712,12 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
         taken.push(took);
         taken_on_cpu.extend(on_cpu);
         let after = counts.read();
-        let [links, syncs, dir_syncs, file_opens] = [0, 1, 2, 3].map(|at| after[at] - before[at]);
+        let [links, syncs, dir_syncs, file_opens, sets, in_sets] =
+            [0, 1, 2, 3, 4, 5].map(|at| after[at] - before[at]);
         println!(
             "checkpoint {index}: version {}, {} files, {held} bytes of log held, \
-             {links} links, {syncs} syncs of files, {dir_syncs} of directories, \
-             {file_opens} opens, catch-up {:?}",
+             {links} links, {syncs} syncs of files and {dir_syncs} of directories one by one, \
+             {sets} sets of {in_sets} syncs, {file_opens} opens, catch-up {:?}",
             created.version, created.linked, created.catch_up
         );
         assert_eq!(created.version, versions.latest());
