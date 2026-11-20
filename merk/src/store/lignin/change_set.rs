@@ -31,10 +31,12 @@ use crate::{
 };
 
 /// What the store keeps of a node between `prepare_node` and `put_node`:
-/// every part of it but the key, the value only where it was written, and
-/// the record length its put is charged by (`cost-model.md` N1). Of a node
-/// that cannot be written, what is kept is why: it has no record length,
-/// or its aggregates do not add up.
+/// its feature, its hashes and its links as they are written, which of the
+/// hashes are left to the engine, the value only where it was written, a
+/// copy of its key that `put_node` replaces with the key of the record,
+/// and the record length its put is charged by (`cost-model.md` N1). Of a
+/// node that cannot be written, what is kept is why: it has no record
+/// length, or its aggregates do not add up.
 #[derive(Debug)]
 pub struct PreparedNode(Result<(NodeWrite, usize), Error>);
 
