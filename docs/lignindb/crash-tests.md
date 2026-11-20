@@ -43,7 +43,7 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 
 ## What it costs
 
-On the project's Linux machine (28 threads, shared with other work, at a load of 70 to 130), four threads recover 2,500 to 4,500 distinct crash states a second between them, and a run of the default shape has forty to sixty thousand: about a minute of one thread. A million crash states are some twenty-five runs. The short form that runs with the crates' tests (`lignin-testkit/tests/crash.rs`) is twelve runs of two lineages of ten operations, about fifteen thousand states.
+On the project's Linux machine (28 threads, shared with other work), four threads recover 2,000 to 11,000 distinct crash states a second between them, by how busy the machine is, and a run of the default shape has forty to sixty thousand: a quarter of a minute to a minute and a half of one thread. A million crash states are some twenty-five runs. The short form that runs with the crates' tests (`lignin-testkit/tests/crash.rs`) is twelve runs of two lineages of ten operations, some sixteen thousand states.
 
 ## Reading a violation
 
