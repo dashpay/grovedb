@@ -830,54 +830,58 @@ const MAPS: bool = cfg!(all(
 /// Where a build maps ([`MAPS`]), a pool with a megabyte of frames or more
 /// does not write them when it is made: they are a mapping of the pool's
 /// own, which the system gives zeroed. Elsewhere they are the allocator's.
-/// Either way they are aligned and zeroed as the frames of a small pool are,
-/// they lie side by side in one block, the first and the last of them can
-/// be written from end to end, and the pool counts them as its memory from
-/// the start. Miri fails this test if a frame is not zeroed or lies outside
-/// the block, and if the block is used after the pool gave it back.
+/// Either way, and for every page size of a store, they are zeroed and
+/// aligned to 4,096 bytes as the frames of a small pool are, they lie side
+/// by side in one block, the first and the last of them can be written
+/// from end to end, and the pool counts them as its memory from the start.
+/// Miri fails this test if a frame is not zeroed or lies outside the block,
+/// and if the block is used after the pool gave it back.
 #[test]
 fn the_frames_of_a_large_pool_are_mapped_zeroed_and_side_by_side() {
-    let page_size = PageSize::MIN;
-    let config = PoolConfig {
-        page_size,
-        capacity: 130 * (page_size.get() + 512),
-    };
-    let pool = BufferPool::new(config).expect("holds frames");
-    let (frames, len) = (pool.frames(), pool.frame_len());
-    assert!(frames * len >= 1 << 20, "{frames} frames");
-    assert_eq!(pool.mapped_memory(), if MAPS { frames * len } else { 0 });
-    assert!(pool.fixed_memory() > frames * len);
-    assert!(pool.fixed_memory() <= pool.capacity());
-    assert_eq!(pool.memory(), pool.fixed_memory());
+    for size in [8_192, 16_384, 32_768, 65_536] {
+        let page_size = PageSize::new(size).expect("a page size");
+        let config = PoolConfig {
+            page_size,
+            capacity: ((1 << 20) / size + 2) * (size + 512),
+        };
+        let pool = BufferPool::new(config).expect("holds frames");
+        let (frames, len) = (pool.frames(), pool.frame_len());
+        assert_eq!(len, size);
+        assert!(frames * len >= 1 << 20, "{frames} frames of {len} bytes");
+        assert_eq!(pool.mapped_memory(), if MAPS { frames * len } else { 0 });
+        assert!(pool.fixed_memory() > frames * len);
+        assert!(pool.fixed_memory() <= pool.capacity());
+        assert_eq!(pool.memory(), pool.fixed_memory());
 
-    let mut blanks: Vec<Blank<'_>> = (0..frames).map(|_| pool.blank()).collect();
-    assert_eq!(pool.overflow_frames(), 0);
-    blanks.sort_by_key(|blank| blank.as_ptr().addr());
-    let first = blanks[0].as_ptr().addr();
-    for (index, blank) in blanks.iter().enumerate() {
-        assert_eq!(blank.len(), len);
-        assert_eq!(blank.as_ptr().addr(), first + index * len);
-        assert_eq!(blank.as_ptr().addr() % 4096, 0, "a frame is page-aligned");
+        let mut blanks: Vec<Blank<'_>> = (0..frames).map(|_| pool.blank()).collect();
+        assert_eq!(pool.overflow_frames(), 0);
+        blanks.sort_by_key(|blank| blank.as_ptr().addr());
+        let first = blanks[0].as_ptr().addr();
+        assert_eq!(first % 4096, 0, "a frame starts at a multiple of 4,096");
+        for (index, blank) in blanks.iter().enumerate() {
+            assert_eq!(blank.len(), len);
+            assert_eq!(blank.as_ptr().addr(), first + index * len);
+        }
+        // Under Miri every byte that is read is a step, so it reads the two
+        // frames at the ends of the block and one inside it.
+        let read: Vec<usize> = if cfg!(miri) {
+            vec![0, frames / 2, frames - 1]
+        } else {
+            (0..frames).collect()
+        };
+        for &index in &read {
+            assert!(
+                blanks[index].iter().all(|&byte| byte == 0),
+                "a new frame is zeroed"
+            );
+        }
+        for index in [0, frames - 1] {
+            blanks[index].fill(0xA5);
+            assert!(blanks[index].iter().all(|&byte| byte == 0xA5));
+        }
+        drop(blanks);
+        check(&pool, 0);
     }
-    // Under Miri every byte that is read is a step, so it reads the two
-    // frames at the ends of the block and one inside it.
-    let read: Vec<usize> = if cfg!(miri) {
-        vec![0, frames / 2, frames - 1]
-    } else {
-        (0..frames).collect()
-    };
-    for &index in &read {
-        assert!(
-            blanks[index].iter().all(|&byte| byte == 0),
-            "a new frame is zeroed"
-        );
-    }
-    for index in [0, frames - 1] {
-        blanks[index].fill(0xA5);
-        assert!(blanks[index].iter().all(|&byte| byte == 0xA5));
-    }
-    drop(blanks);
-    check(&pool, 0);
 }
 
 /// Where a build maps, the frames are a mapping from a megabyte of them

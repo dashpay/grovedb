@@ -22,10 +22,10 @@ use crate::alloc::Epoch;
 pub struct PoolConfig {
     /// The store's page size. A frame holds one page of it.
     pub page_size: PageSize,
-    /// The memory the pool may use for what it caches, in bytes. It is
-    /// taken when the pool is made, and it includes each frame's header,
-    /// the pool's table and its lanes: less than 512 bytes a frame beside
-    /// the page.
+    /// The memory the pool may ask for, for what it caches, in bytes. What
+    /// it asks for when it is made ([`BufferPool::fixed_memory`]) is as many
+    /// whole frames as this holds, with each frame's header, the pool's
+    /// table and its lanes: less than 512 bytes a frame beside the page.
     pub capacity: usize,
 }
 
@@ -337,7 +337,11 @@ impl BufferPool {
         self.capacity
     }
 
-    /// The bytes the fixed part takes. It is at most [`Self::capacity`].
+    /// The bytes the fixed part takes: what the pool asked the allocator
+    /// and the system for when it was made. It is at most
+    /// [`Self::capacity`]. The allocator and the system may each take more
+    /// than they are asked for, which is not counted: the system rounds a
+    /// mapping ([`Self::mapped_memory`]) up to its own page size.
     pub fn fixed_memory(&self) -> usize {
         Self::cost(
             self.arena.len(),
@@ -362,16 +366,16 @@ impl BufferPool {
             + self.turnover.attached.get()
     }
 
-    /// The bytes of the fixed part that are a mapping of the pool's own and
-    /// not the allocator's: all of its frames, or none.
+    /// The bytes of the fixed part that the pool asked the system for, as
+    /// a mapping of its own, and not the allocator: all of its frames, or
+    /// none.
     ///
     /// On Linux (x86-64 and AArch64) and on macOS, with 64-bit pointers,
     /// the frames of a pool that has a megabyte of them or more are such a
-    /// mapping, unless the system refuses one. The system gives it zeroed
-    /// and backs it with memory as each of its own pages is first used, so
-    /// making the pool writes none of its frames. These bytes are part of
-    /// [`Self::fixed_memory`] from the start, whether or not they were used
-    /// yet.
+    /// mapping, unless the system refuses one. The system gives a mapping
+    /// zeroed, so the pool does not write its frames when it is made. These
+    /// bytes are part of [`Self::fixed_memory`] from the start, whether or
+    /// not a frame was used yet.
     pub fn mapped_memory(&self) -> usize {
         self.arena.mapped()
     }

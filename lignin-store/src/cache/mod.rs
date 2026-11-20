@@ -255,24 +255,35 @@
 //!
 //! # Memory
 //!
-//! The configured size is taken when the pool is made: the frames, their
-//! headers, the table and the lanes ([`BufferPool::fixed_memory`]).
+//! The pool asks for its memory when it is made: as many whole frames as
+//! the configured size holds, their headers, the table and the lanes
+//! ([`BufferPool::fixed_memory`]). What it counts is the bytes it asks for.
+//! The allocator and the system may each take more for a request, which is
+//! not counted.
 //! On Linux and on Apple's systems no lock of the pool adds to it: none is
 //! allocated when it is first taken.
 //!
-//! The headers, the table and the lanes are allocated and written then,
-//! and so are the frames of a pool that has less than a megabyte of them.
-//! On Linux (x86-64 and AArch64) and on macOS, with 64-bit pointers, a
-//! megabyte of frames or more is not written when the pool is made: it is
-//! a mapping of the pool's own ([`BufferPool::mapped_memory`]), which the
-//! system gives zeroed and backs with memory as each of its pages is first
-//! used. Making the pool then costs by its headers and its table, and the
-//! first use of a frame takes the system's page faults. If the system has
-//! promised more memory than it has, it finds that out at a frame's first
-//! use, not when the pool is made. On any other system, and where the
-//! system refuses a mapping, those frames are the allocator's and are
-//! zeroed when the pool is made. Either way they are counted in the fixed
+//! The headers, the table and the lanes are allocated and written then.
+//! The frames are asked for zeroed, and the pool does not write them when
+//! it is made. A pool with less than a megabyte of frames asks the
+//! allocator for them. On Linux (x86-64 and AArch64) and on macOS, with
+//! 64-bit pointers, a pool with a megabyte of frames or more asks the
+//! system instead, for a mapping of its own
+//! ([`BufferPool::mapped_memory`]), which the system gives zeroed. On any
+//! other system, and where the system refuses a mapping, those frames are
+//! the allocator's too. Either way the frames are counted in the fixed
 //! memory from the start, used or not.
+//!
+//! What a block of zeroed memory costs to come by is its giver's affair.
+//! An allocator may write a block to zero it. A system as a rule backs a
+//! page of a mapping with memory when the page is first used, so that
+//! making a large pool costs by its headers and its table, and a frame's
+//! first use takes the system's page faults; a process that has its memory
+//! locked has every page backed at once. A mapping takes address space in
+//! whole pages of the system's size, which can be most of one such page
+//! more than the frames.
+//!
+//! A frame starts at a multiple of 4,096 bytes, whatever the page size.
 //!
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page

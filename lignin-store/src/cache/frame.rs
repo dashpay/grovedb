@@ -1313,6 +1313,12 @@ impl ChainWrite<'_> {
     }
 }
 
+/// The layout of `count` frames of `frame_len` bytes side by side.
+///
+/// A frame starts at a multiple of 4,096 bytes, whatever the size of a
+/// store's pages, each of which is a multiple of that. A block of frames is
+/// aligned to that and to no more, from the allocator or as a mapping: a
+/// frame is not aligned to the size of a page.
 fn layout(frame_len: usize, count: usize) -> Result<Layout, CacheError> {
     let align = if frame_len.is_multiple_of(4096) {
         4096
@@ -1330,6 +1336,32 @@ fn allocate(layout: Layout) -> NonNull<u8> {
     // SAFETY: the layout's size is above zero.
     let memory = unsafe { alloc::alloc_zeroed(layout) };
     NonNull::new(memory).unwrap_or_else(|| alloc::handle_alloc_error(layout))
+}
+
+/// A block from the allocator, asked for zeroed, which this value gives back
+/// when it is dropped.
+struct Allocated {
+    start: NonNull<u8>,
+    layout: Layout,
+}
+
+impl Allocated {
+    fn new(layout: Layout) -> Self {
+        Self {
+            start: allocate(layout),
+            layout,
+        }
+    }
+}
+
+impl Drop for Allocated {
+    fn drop(&mut self) {
+        // SAFETY: `start` was allocated with `layout` in `new`, and only
+        // this value frees it, once. Whoever holds this value keeps no
+        // pointer into the block in use beyond its drop (the arena drops
+        // its headers first).
+        unsafe { alloc::dealloc(self.start.as_ptr(), self.layout) };
+    }
 }
 
 use mapping::Mapped;
@@ -1358,10 +1390,10 @@ mod mapping {
     };
 
     /// A mapping of memory that is no file's, which this value made and
-    /// unmaps when it is dropped. The system gives such memory zeroed, and
-    /// backs it with memory of its own page by page as each is first used,
-    /// so nothing is written to make it and a page that is never used costs
-    /// nothing.
+    /// unmaps when it is dropped. The system gives such memory zeroed, so
+    /// nothing is written to make it. When the system backs a page of it
+    /// with memory of its own is the system's affair: as a rule, when the
+    /// page is first used.
     pub(super) struct Mapped {
         start: NonNull<u8>,
         len: usize,
@@ -1453,7 +1485,14 @@ mod mapping {
             // mapping in use beyond its drop (the arena drops its headers
             // first).
             let refused = unsafe { munmap(self.start.as_ptr().cast(), self.len) };
-            debug_assert_eq!(refused, 0, "the whole of a mapping is unmapped");
+            // The system can refuse: Linux does when the range is the
+            // middle of one of its own mappings, which it has joined with
+            // a neighbour, and the process is at its limit of mappings.
+            // The mapping then stays the process's until the process ends,
+            // which loses memory and breaks no rule. A build with debug
+            // assertions stops here, so that a refusal for a range that is
+            // no mapping, which would be a mistake of this file, is seen.
+            debug_assert_eq!(refused, 0, "the system unmaps a mapping");
         }
     }
 }
@@ -1488,13 +1527,24 @@ mod mapping {
     }
 }
 
-/// Where the block of an arena's frames is from, which is how it is given
-/// back.
+/// The block of an arena's frames, owned: it is given back when this value
+/// is dropped, in the way it was come by.
 enum Block {
-    /// The allocator, which was asked for it zeroed with this layout.
-    Allocated(Layout),
+    /// From the allocator, which was asked for it zeroed.
+    Allocated(Allocated),
     /// A mapping of the arena's own, which the system gives zeroed.
     Mapped(Mapped),
+}
+
+impl Block {
+    /// The first byte of the block. A pointer made from it is good for the
+    /// block's length until this value is dropped.
+    fn start(&self) -> NonNull<u8> {
+        match self {
+            Block::Allocated(allocated) => allocated.start,
+            Block::Mapped(mapped) => mapped.start(),
+        }
+    }
 }
 
 /// The fixed part of the pool: `count` frames of `frame_len` bytes in one
@@ -1507,17 +1557,18 @@ enum Block {
 /// The block is zeroed either way it is come by, because a frame's bytes
 /// are handed out as a slice before anything is written to them. A block
 /// of [`Arena::MAPPED_FROM`] bytes or more is a mapping of its own where
-/// the system has one for this file ([`Mapped`]), so that making a large
-/// arena writes none of its frames. A smaller block, and every block on
-/// another system or where the system refuses a mapping, is the
-/// allocator's.
+/// the system has one for this file ([`Mapped`]): the system gives it
+/// zeroed, so the arena does not write its frames to make them. A smaller
+/// block, and every block on another system or where the system refuses a
+/// mapping, is the allocator's, which is asked for it zeroed.
 pub(super) struct Arena {
     /// A number no other arena of the process has: its frames carry it.
     id: u64,
     frames: NonNull<Frame>,
     count: usize,
-    /// The first byte of the block of frames.
-    memory: NonNull<u8>,
+    /// The block of the frames. The arena's drop frees the headers, which
+    /// point into it, and the block is given back after that, when the
+    /// arena's fields are dropped.
     block: Block,
     frame_len: usize,
     /// Where the pins that are not counted are announced (A6).
@@ -1566,6 +1617,16 @@ impl Arena {
         count: usize,
         frame_len: usize,
     ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
+        Self::with_mapping(count, frame_len, Mapped::new)
+    }
+
+    /// As [`Self::new`], where `map` is asked for the mapping of a block
+    /// that is to be one: the system, or a test that refuses.
+    fn with_mapping(
+        count: usize,
+        frame_len: usize,
+        map: impl FnOnce(Layout) -> Option<Mapped>,
+    ) -> Result<(Self, Vec<OwnedFrame>), CacheError> {
         assert!(count > 0 && frame_len > 0);
         static ARENAS: plain::AtomicU64 = plain::AtomicU64::new(1);
         let id = ARENAS.fetch_add(1, plain::Ordering::Relaxed);
@@ -1574,20 +1635,26 @@ impl Arena {
         if last >= NO_INDEX - 1 {
             return Err(CacheError::CapacityTooLarge);
         }
+        // Each of these owns what it holds, and the headers stay a box
+        // until all of them are made: a panic on the way frees what was
+        // made before it.
+        let lanes = Lanes::new(Lanes::count_for(count));
+        let dead = Padded(Mutex::new(None));
         let mapped = (layout.size() >= Self::MAPPED_FROM)
-            .then(|| Mapped::new(layout))
+            .then(|| map(layout))
             .flatten();
-        let (memory, block) = match mapped {
-            Some(mapped) => (mapped.start(), Block::Mapped(mapped)),
-            None => (allocate(layout), Block::Allocated(layout)),
+        let block = match mapped {
+            Some(mapped) => Block::Mapped(mapped),
+            None => Block::Allocated(Allocated::new(layout)),
         };
+        let start = block.start();
         let headers: Box<[Frame]> = (0..=last)
             .map(|index| {
-                // SAFETY: `memory` is the start of a block of `layout.size()`
+                // SAFETY: `start` is the start of a block of `layout.size()`
                 // bytes, from the allocator or a mapping, and
                 // `index * frame_len` is below that size, so the result is
                 // inside the block.
-                let bytes = unsafe { memory.add(index as usize * frame_len) };
+                let bytes = unsafe { start.add(index as usize * frame_len) };
                 Frame::new(bytes, frame_len, id, index)
             })
             .collect();
@@ -1597,11 +1664,10 @@ impl Arena {
             id,
             frames,
             count,
-            memory,
             block,
             frame_len,
-            lanes: Lanes::new(Lanes::count_for(count)),
-            dead: Padded(Mutex::new(None)),
+            lanes,
+            dead,
         };
         // By A3: nothing has seen these frames yet.
         let owned = (0..count)
@@ -1761,13 +1827,8 @@ impl Drop for Arena {
         // into a raw pointer, and the arena is its only owner. Nothing can
         // follow a pointer to a header any more: a pin borrows the arena.
         drop(unsafe { Box::from_raw(headers) });
-        if let Block::Allocated(layout) = self.block {
-            // SAFETY: `memory` was allocated with `layout` in `new`, and the
-            // headers that pointed into it are gone.
-            unsafe { alloc::dealloc(self.memory.as_ptr(), layout) };
-        }
-        // A block that is a mapping is unmapped when the arena's fields are
-        // dropped, which is after this and so after the headers.
+        // The block is given back when the arena's fields are dropped, which
+        // is after this and so after the headers.
     }
 }
 
@@ -1808,10 +1869,31 @@ mod tests {
             .expect("a panic with a message")
     }
 
-    /// A mapping the system cannot give is `None`, and the arena then asks
-    /// the allocator: no address space holds a block of this size. Miri has
-    /// no address space of its own to refuse from, and stops when it is
-    /// asked for so much.
+    /// An arena whose mapping is refused asks the allocator for its block,
+    /// and its frames are zeroed and aligned as those of any arena.
+    #[test]
+    fn an_arena_whose_mapping_is_refused_takes_its_block_from_the_allocator() {
+        let (count, frame_len) = (Arena::MAPPED_FROM / 8_192, 8_192);
+        let mut asked = None;
+        let (arena, frames) = Arena::with_mapping(count, frame_len, |layout| {
+            asked = Some(layout.size());
+            None
+        })
+        .expect("an arena");
+        assert_eq!(asked, Some(count * frame_len), "a mapping was asked for");
+        assert_eq!(arena.mapped(), 0);
+        assert_eq!(frames.len(), count);
+        for frame in [&frames[0], &frames[count - 1]] {
+            assert_eq!(frame.bytes().len(), frame_len);
+            assert!(frame.bytes().iter().all(|&byte| byte == 0));
+            assert!(frame.bytes().as_ptr().addr().is_multiple_of(4096));
+        }
+        drop(frames);
+    }
+
+    /// A mapping the system cannot give is `None`: no address space holds a
+    /// block of this size. Miri has no address space of its own to refuse
+    /// from, and stops when it is asked for so much.
     #[cfg_attr(miri, ignore = "Miri stops on a mapping that is too large")]
     #[test]
     fn a_mapping_the_system_refuses_is_none() {

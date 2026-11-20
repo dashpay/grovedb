@@ -434,7 +434,8 @@ enum Kind {
     Impl,
     Fn,
     /// An `unsafe extern` block: the declarations of functions that are
-    /// defined outside the crate, which the compiler takes on trust.
+    /// defined outside the crate, which the compiler takes on trust. An
+    /// `unsafe extern fn` is a function ([`Kind::Fn`]).
     Extern,
     /// Anything else the keyword can open: a trait, an attribute. No
     /// audited file has one.
@@ -528,11 +529,18 @@ fn sites(source: &str) -> Vec<Site> {
     for (at, (token, line)) in tokens.iter().enumerate() {
         match token {
             Token::Word(word) if word == "unsafe" => {
-                let kind = match tokens.get(at + 1).map(|(next, _)| next) {
-                    Some(Token::Punct('{')) => Kind::Block,
-                    Some(Token::Word(next)) if next == "impl" => Kind::Impl,
+                // The name of an ABI is a string, which is blanked: what
+                // follows `extern` is the brace of a block of declarations
+                // or the `fn` of a function.
+                let after_abi = match tokens.get(at + 1) {
+                    Some((Token::Word(next), _)) if next == "extern" => at + 2,
+                    _ => at + 1,
+                };
+                let kind = match tokens.get(after_abi).map(|(next, _)| next) {
+                    Some(Token::Punct('{')) if after_abi == at + 1 => Kind::Block,
+                    Some(Token::Punct('{')) => Kind::Extern,
                     Some(Token::Word(next)) if next == "fn" => Kind::Fn,
-                    Some(Token::Word(next)) if next == "extern" => Kind::Extern,
+                    Some(Token::Word(next)) if next == "impl" && after_abi == at + 1 => Kind::Impl,
                     _ => Kind::Other,
                 };
                 let of = scopes.iter().rev().find_map(|scope| match scope {
@@ -540,7 +548,7 @@ fn sites(source: &str) -> Vec<Site> {
                     _ => None,
                 });
                 let function = if kind == Kind::Fn {
-                    match tokens.get(at + 2) {
+                    match tokens.get(after_abi + 1) {
                         Some((Token::Word(function), _)) => Some(function.clone()),
                         _ => Some(String::new()),
                     }
@@ -1347,6 +1355,14 @@ fn calls_out() {
 }
 
 unsafe trait Trusted {}
+
+/// # Safety
+///
+/// A section.
+unsafe extern "C" fn exported() {}
+
+// SAFETY: a comment is not the section a function needs.
+unsafe extern "C" fn exported_with_a_comment() {}
 "##;
     let found = sites(source);
     assert_eq!(
@@ -1372,6 +1388,8 @@ unsafe trait Trusted {}
             "calls_out | unsafe extern",
             "calls_out | block 1",
             " | other",
+            "exported | unsafe fn",
+            "exported_with_a_comment | unsafe fn",
         ]
     );
     assert!(sites("fn a_raw_name(r#unsafe: u8) -> u8 { r#unsafe }").is_empty());
@@ -1393,6 +1411,7 @@ unsafe trait Trusted {}
             "line 75: Block far_from_its_comment",
             "line 79: Fn loosely_documented",
             "line 90: Other ",
+            "line 98: Fn exported_with_a_comment",
         ]
     );
 }
