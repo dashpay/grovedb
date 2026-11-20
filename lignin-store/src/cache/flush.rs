@@ -58,7 +58,9 @@ impl BufferPool {
     ///
     /// It fails, and write-back still owes the page version, if `frame` is
     /// not how the page version is stored any more, because a page step
-    /// replaced it while it was being written ([`CacheError::Replaced`]); if
+    /// replaced it while it was being written ([`CacheError::Replaced`]: the
+    /// same answer is given for a frame of a page that was freed meanwhile
+    /// and that the pool has dropped, of which nothing is owed); if
     /// it has attached values, which are not in the segment
     /// ([`CacheError::AttachedValues`]); or if write-back did not owe it
     /// ([`CacheError::NotUnwritten`]).

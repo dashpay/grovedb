@@ -448,6 +448,162 @@ fn a_record_that_is_another_one_by_now_is_not_taken_out() {
     check_reclaimed(&db, &grove);
 }
 
+/// The leaf of `tree` that holds the stored key `key` at the latest
+/// version.
+fn leaf_holding(db: &Db, tree: &FlatTree, key: &[u8]) -> PageId {
+    let reader = db.reader();
+    let mut page = tree.root();
+    loop {
+        let frame = reader.page(page).expect("a page");
+        match FlatPage::from_validated(&frame, FRAME_FORMAT).expect("a flat page") {
+            FlatPage::Branch(branch) => {
+                page = branch.child(branch.child_index(key)).expect("a child");
+            }
+            FlatPage::Leaf(_) => return page,
+        }
+    }
+}
+
+/// A flat tree of two hundred records, which has a branch, and the keys
+/// of the leaf that holds the record in the middle.
+fn tree_with_a_branch(db: &Db) -> (FlatTree, Vec<Vec<u8>>) {
+    let mut txn = db.begin();
+    let tree = FlatTree::create(&mut txn.flat, db.config).expect("a tree");
+    let value = bytes(1, 200);
+    for n in 0..200 {
+        (tree.put(&mut txn.flat, &key(n), &value)).expect("a record");
+    }
+    db.commit(txn);
+    let home = leaf_holding(db, &tree, &key(100));
+    assert_ne!(home, tree.root(), "the tree has a branch");
+    let beside: Vec<Vec<u8>> = (0..200)
+        .map(key)
+        .filter(|key| leaf_holding(db, &tree, key) == home)
+        .collect();
+    assert!(beside.len() > 2 && beside.len() < 200);
+    (tree, beside)
+}
+
+/// The reclaimer walks to the leaf of a record it is to take out. It has
+/// read the branch above when a commit takes every entry out of that leaf,
+/// which frees the leaf and takes it out of the branch. The walk reads the
+/// tree at one version, so it comes to the leaf as that version has it,
+/// and not to a page that is no page: nothing is reported as damage. The
+/// step on the leaf is refused, since the leaf is not current any more,
+/// and the second look finds the record gone.
+#[test]
+fn a_leaf_that_a_commit_frees_under_the_walk_to_it_is_no_damage() {
+    use std::{cell::Cell, rc::Rc};
+
+    use super::super::step::BELOW_A_BRANCH;
+
+    let db = Rc::new(Db::new());
+    let (tree, beside) = tree_with_a_branch(&db);
+    let own = key(100);
+    let home = leaf_holding(&db, &tree, &own);
+    let looked = seen(&db.reader(), &tree, &own)
+        .expect("a look")
+        .expect("the record");
+
+    let (store, ran) = (db.clone(), Rc::new(Cell::new(None)));
+    let (told, gone) = (ran.clone(), beside.clone());
+    BELOW_A_BRANCH.with(|hook| {
+        *hook.borrow_mut() = Some(Box::new(move |named| {
+            let mut txn = store.begin();
+            for key in &gone {
+                assert!(tree.delete(&mut txn.flat, key).expect("a delete"));
+            }
+            told.set(Some((named, store.commit(txn))));
+        }));
+    });
+    let reclaimer = db.reclaimer();
+    let step = reclaimer.remove_entry(&tree, &own, &looked);
+    let (named, freed) = ran.get().expect("the hook ran");
+    assert_eq!(named, home);
+    // The commit freed the leaf: it is no page at the latest version.
+    assert_eq!(db.latest(), freed);
+    assert!(reclaimer.current(home).expect("a read").is_none());
+    assert!(
+        matches!(step, Ok(Step::Made(EntryRemoved::Absent))),
+        "{step:?}"
+    );
+    assert!(seen(&db.reader(), &tree, &own).expect("a look").is_none());
+    // The other records are as they were.
+    let left: Vec<_> = (flat_records(&db, &tree).into_iter())
+        .map(|(key, _)| key)
+        .collect();
+    let kept: Vec<_> = (0..200)
+        .map(key)
+        .filter(|key| !beside.contains(key))
+        .collect();
+    assert_eq!(left, kept);
+}
+
+/// The same moment, and the commit puts records into the leaf until it is
+/// split: the record the reclaimer came for is in another page then. A
+/// walk that read the branch before the split and the leaf after it would
+/// not find the record in the leaf it was sent to, and take it for gone:
+/// the record would stay for good. Read at one version, the record is
+/// found where that version has it, the step on that leaf is refused
+/// because the leaf has changed, and the second look takes the record out
+/// of the page it is in now.
+///
+/// Which half of a split keeps the page is the tree's affair, so the
+/// record is once the first of its leaf and once the last: in one of the
+/// two it has moved.
+#[test]
+fn a_record_that_a_split_moves_under_the_walk_to_it_is_taken_out() {
+    use std::{cell::Cell, rc::Rc};
+
+    use super::super::step::BELOW_A_BRANCH;
+
+    let mut moved = 0;
+    for first in [true, false] {
+        let db = Rc::new(Db::new());
+        let (tree, beside) = tree_with_a_branch(&db);
+        // The new records go between the record and its neighbour inside
+        // the leaf, so that the record stays at its end of the leaf.
+        let (own, next_to) = match first {
+            true => (beside[0].clone(), beside[0].clone()),
+            false => (
+                beside[beside.len() - 1].clone(),
+                beside[beside.len() - 2].clone(),
+            ),
+        };
+        let home = leaf_holding(&db, &tree, &own);
+        let looked = seen(&db.reader(), &tree, &own)
+            .expect("a look")
+            .expect("the record");
+
+        let (store, ran) = (db.clone(), Rc::new(Cell::new(None)));
+        let (told, sought) = (ran.clone(), own.clone());
+        BELOW_A_BRANCH.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move |named| {
+                let mut txn = store.begin();
+                let value = bytes(2, 200);
+                for n in 0..40 {
+                    let mut key = next_to.clone();
+                    key.extend_from_slice(format!("+{n:03}").as_bytes());
+                    (tree.put(&mut txn.flat, &key, &value)).expect("a record");
+                }
+                store.commit(txn);
+                told.set(Some((named, leaf_holding(&store, &tree, &sought))));
+            }));
+        });
+        let step = db.reclaimer().remove_entry(&tree, &own, &looked);
+        let (named, now) = ran.get().expect("the hook ran");
+        assert_eq!(named, home, "first {first}");
+        moved += usize::from(now != home);
+        assert!(
+            matches!(step, Ok(Step::Made(EntryRemoved::Removed(None)))),
+            "first {first}, the record in page {now} and the walk sent to {home}: {step:?}"
+        );
+        assert!(seen(&db.reader(), &tree, &own).expect("a look").is_none());
+        assert_eq!(flat_records(&db, &tree).len(), 200 + 40 - 1);
+    }
+    assert!(moved >= 1, "no split moved the record out of its leaf");
+}
+
 /// A key that the tree keeps in a bucket is not a record that a step takes
 /// out.
 #[test]

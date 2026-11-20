@@ -440,7 +440,7 @@ mod key {
 const CATALOG_LAYOUT: u8 = 1;
 
 /// The page of the catalog: the first page a store makes.
-const CATALOG_PAGE: PageId = PageId::MIN;
+pub(super) const CATALOG_PAGE: PageId = PageId::MIN;
 
 /// The first commit of a database: the catalog, the flat keyspace of each
 /// column, the subtree directory and the keyspace of the pages that drops

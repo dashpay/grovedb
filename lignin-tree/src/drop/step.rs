@@ -288,6 +288,13 @@ thread_local! {
     /// there.
     pub(super) static BEFORE_THE_POOL_IS_TOLD: std::cell::RefCell<Option<Between>> =
         const { std::cell::RefCell::new(None) };
+
+    /// What a test runs, once, in the walk to the leaf of a key
+    /// (`Reclaimer::remove_entry`), on the page a branch names for the
+    /// key: after the branch is read and before that page is. A commit
+    /// that frees the leaf falls there.
+    pub(super) static BELOW_A_BRANCH: std::cell::RefCell<Option<Between>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// What a test runs on a page between two things its freeing step does.
@@ -545,12 +552,30 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
     }
 
     /// The leaf of `tree` whose key range holds the stored key `key`, as
-    /// the latest version has it.
-    fn leaf_of(&self, tree: &FlatTree, key: &[u8]) -> Result<(PageId, PageRef<'s>), DropError> {
+    /// the version `at` has the tree.
+    ///
+    /// **Every level is read at that one version.** A commit that takes
+    /// the last entry out of a leaf, or merges it into its neighbour,
+    /// frees the leaf and takes it out of its branch
+    /// ([`flat`](crate::flat)). A walk that read each page as it is at
+    /// that moment could read the branch before such a commit and the
+    /// leaf after it, and find that a tree which is whole names no page.
+    /// At one version the pages are those of one tree, and the caller's
+    /// operation guard keeps them readable (PN6).
+    ///
+    /// The leaf can be an older version than the current one by the time
+    /// it is returned: a step on it is refused then, and the caller looks
+    /// again ([`Self::remove_entries`]).
+    fn leaf_of(
+        &self,
+        tree: &FlatTree,
+        key: &[u8],
+        at: CommitVersion,
+    ) -> Result<(PageId, PageRef<'s>), DropError> {
         let (mut page, mut above) = (tree.root(), None::<u8>);
         loop {
             let frame = self
-                .current(page)?
+                .at(page, at)?
                 .ok_or(damaged(page, "a flat tree that names no page"))?;
             let FlatPage::Branch(branch) = flat_page(&frame, page, above)? else {
                 return Ok((page, frame));
@@ -559,6 +584,10 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             page = branch
                 .child_for(key)
                 .ok_or(damaged(page, "a branch that names no child"))?;
+            #[cfg(test)]
+            if let Some(change) = BELOW_A_BRANCH.with(|hook| hook.borrow_mut().take()) {
+                change(page);
+            }
         }
     }
 
@@ -587,7 +616,8 @@ impl<'s, L: StepLog> Reclaimer<'s, L> {
             return Err(DropError::Record("a key that is kept in a bucket"));
         }
         for _ in 0..LOOKS {
-            let (page, frame) = self.leaf_of(tree, key)?;
+            let at = self.log.latest();
+            let (page, frame) = self.leaf_of(tree, key, at)?;
             let Some(value) = flat_leaf(&frame, page)?.get(key) else {
                 return Ok(Step::Made(EntryRemoved::Absent));
             };

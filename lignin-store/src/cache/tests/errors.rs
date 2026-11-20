@@ -106,7 +106,8 @@ fn every_error_says_what_was_wrong() {
                 page: page(2),
                 born: version(3),
             },
-            "the frame of page 2 as born at version 3 was replaced by a page step",
+            "the frame of page 2 as born at version 3 is no page version of the pool any more: \
+             a page step replaced it, or its page was freed and the pool dropped it",
         ),
         (
             CacheError::StillCurrent {

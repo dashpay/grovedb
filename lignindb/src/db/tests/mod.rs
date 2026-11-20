@@ -733,6 +733,40 @@ pub(super) fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
     }
 }
 
+/// The physical invariant checker on the latest version of `db`, with what
+/// a store keeps beside its pages: for a database whose background work
+/// has ended and that nobody writes to.
+pub(super) fn checked(db: &Db) -> crate::verify::Report {
+    use crate::verify;
+
+    let store = &*db.shared.store;
+    let catalog = store.catalog();
+    let columns = catalog.keyspaces.columns();
+    let beside = [lignin_tree::flat::FlatTree::open(
+        crate::db::open::CATALOG_PAGE,
+        store.config(),
+    )];
+    let view = verify::Store {
+        loader: store.loader(),
+        table: &store.table,
+        segments: &store.segments,
+        values: &store.values,
+        page_size: store.page_size,
+        ids: Some(&store.ids),
+        grove: verify::Grove::Directory {
+            tree: catalog.directory,
+            columns: &columns,
+        },
+        flat_drops: Some(catalog.flat_drops),
+        flat: &beside,
+        values_counted: true,
+    };
+    let guard = db.shared.versions.guard();
+    let at = db.shared.versions.latest();
+    let options = verify::Options::new(at, verify::Scope::Still);
+    verify::check(&view, &guard, options, None)
+}
+
 /// Waits until the reclaiming of `db` is as `done` says, and says what it
 /// is and what the store holds if that takes more than a minute.
 pub(super) fn reclaimed(db: &Db, what: &str, done: impl Fn(&ReclaimStats) -> bool) {
