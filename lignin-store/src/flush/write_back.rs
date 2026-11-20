@@ -1142,7 +1142,7 @@ impl<'s> WriteBack<'s> {
     /// at the page versions that were unwritten when it began, and what
     /// tells it, before it writes a block, that one of them is of a page
     /// that a commit has freed since is that free link (T18). Without it
-    /// the pass would write the block for nothing: the link is refused
+    /// the pass could write the block for nothing: the link is refused
     /// where it is pushed, because the pool owes the version no more. A
     /// pass that begins afterwards does not list such a version: the pool
     /// takes it off its list before the freeing commit is published, and

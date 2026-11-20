@@ -204,7 +204,7 @@
 //! and that link is what tells a pass of write-back, before it writes a
 //! block, that a page version it listed as unwritten is of a page that
 //! was freed since (`page-table.md` T18). Trimmed while a pass is under
-//! way, the pass would write the block of such a version for nothing:
+//! way, the pass could write the block of such a version for nothing:
 //! its link is refused where it is pushed, because the pool owes the
 //! version no more.
 //!
