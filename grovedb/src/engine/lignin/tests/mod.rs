@@ -1523,7 +1523,10 @@ fn two_transactions_that_both_write_first_into_one_subtree() {
 
 #[test]
 fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
-    use grovedb_merk::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType, TreeType};
+    use grovedb_merk::{
+        store::lignin::LigninOutcome, tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType,
+        TreeType,
+    };
 
     const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
     let v = version();
@@ -1569,6 +1572,13 @@ fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
             }
             (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
         }
+        // The first batch states the value of `t`, and the second holds
+        // its node with the value kept.
+        let held: Vec<_> = (group.parts.iter())
+            .map(|part| part.node(&[0; 32], b"t"))
+            .collect();
+        assert!(matches!(held[0], Some(LigninOutcome::Put(Some(_)))));
+        assert_eq!(held[1], Some(LigninOutcome::Put(None)));
         let applied = engine.apply_write_group(group, &tx).unwrap();
         applied.map(|_| {
             let below = engine.subtree(path![b"t"].into(), None, &tx).unwrap();

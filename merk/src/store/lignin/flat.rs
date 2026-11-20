@@ -447,13 +447,15 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     /// The nodes of a Merk are no flat records, and the walk sees none of
     /// them. Where the subtree keeps a Merk that has a node, the removal
     /// is therefore refused with [`StorageError::NotSupported`]: it would
-    /// remove nothing and say that it did. A Merk is emptied by
-    /// `Merk::clear`, and a subtree leaves with its element by a drop
+    /// remove nothing and say that it did. The Merk is looked at before
+    /// the walk, where a refusal removes nothing, and after it, where a
+    /// node means that a commit outside the transaction made the subtree
+    /// a Merk while the walk ran: the deletes of the flat records the
+    /// walk saw are staged or made by then, and the caller gives up the
+    /// batch or the transaction. A Merk is emptied by `Merk::clear`, and
+    /// a subtree leaves with its element by a drop
     /// ([`LigninBatch::drop_subtree`](super::LigninBatch::drop_subtree)).
     fn clear(&self) -> CostResult<(), StorageError> {
-        // The subtree's Merk is looked at before the walk and after it:
-        // a commit outside the transaction that gave it a node in between
-        // took the flat records the walk was to remove.
         let has_nodes = || match self.entry() {
             Ok(Some(entry)) if entry.root_key.is_some() => Err(StorageError::NotSupported(
                 "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace"
