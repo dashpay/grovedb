@@ -1155,9 +1155,10 @@ fn the_errors_say_what_failed() {
 ///
 /// The states that are tried: nothing kept that was not synced, all of
 /// it, all of it up to each operation, each change of a name alone with
-/// what it builds on, and four states drawn from the seed. The changes of
-/// names alone are every way a later name can survive an earlier one;
-/// the contents of files are not gone through.
+/// what it builds on, and four states drawn from the seed. With the
+/// changes of names alone, each later name is tried as the one that
+/// survives without any earlier name it does not build on. Several names
+/// surviving together, and the contents of files, are not gone through.
 ///
 /// The creation begins in no directory, and in one that an open which
 /// failed left with a lock file whose name is not synced: the name is
