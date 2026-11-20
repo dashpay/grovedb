@@ -693,7 +693,7 @@ impl Generator {
             self.ops.push(Op::Read(looked_at));
         }
 
-        let in_block = |index: usize| (index + round as usize) % 2 == 0;
+        let in_block = |index: usize| (index + round as usize).is_multiple_of(2);
         for (index, tree) in trees.iter_mut().enumerate() {
             if !in_block(index) {
                 continue;
