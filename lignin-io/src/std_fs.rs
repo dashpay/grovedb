@@ -118,7 +118,11 @@ impl Vfs for StdVfs {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        Ok(Box::new(StdLock::acquire(path, || {})?))
+        Ok(Box::new(StdLock::acquire(path, true, || {})?))
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        Ok(Box::new(StdLock::acquire(path, false, || {})?))
     }
 }
 
@@ -337,12 +341,15 @@ struct StdLock {
 }
 
 impl StdLock {
-    fn acquire(path: &Path, mut locked: impl FnMut()) -> io::Result<Self> {
+    /// Takes the lock of the file at `path`, which is made if it is not
+    /// there and `create` says so. `locked` is run each time a file was
+    /// locked, before it is looked at again.
+    fn acquire(path: &Path, create: bool, mut locked: impl FnMut()) -> io::Result<Self> {
         loop {
             let file = OpenOptions::new()
                 .read(true)
                 .write(true)
-                .create(true)
+                .create(create)
                 .truncate(false)
                 .open(path)?;
             if let Err(error) = file.try_lock() {
@@ -373,7 +380,15 @@ impl StdLock {
     }
 }
 
-impl VfsLock for StdLock {}
+impl VfsLock for StdLock {
+    fn is_at(&self, path: &Path) -> io::Result<bool> {
+        match self.is_named(path) {
+            // A directory above the name is gone, or is a file now.
+            Err(error) if error.kind() == ErrorKind::NotADirectory => Ok(false),
+            named => named,
+        }
+    }
+}
 
 impl Drop for StdLock {
     fn drop(&mut self) {

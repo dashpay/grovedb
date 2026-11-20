@@ -92,6 +92,27 @@
 //!   written after the failure. To rely on the earlier changes, write them
 //!   again, through another handle or to a new file, and sync that.
 //!
+//! # Locks
+//!
+//! A lock is held in a lock file by one guard at a time ([`Vfs::lock`]):
+//! in this process, and for the files of an operating system in every
+//! other. It is what lets one process at a time into a directory.
+//!
+//! - **The guard is on the file, not on its name**, as a handle is. When
+//!   the lock file is removed, or its directory is removed and made
+//!   again, or a copy of the directory is put in its place, the guard is
+//!   still held and keeps nobody out of the file that has the name now.
+//!   [`VfsLock::is_at`] says whether a path names the guard's file. It
+//!   compares the two files, by device and inode number where an operating
+//!   system has them, and takes no lock and writes nothing.
+//! - **[`Vfs::lock`] makes the lock file if it is missing**, which is a
+//!   change of names like any creation. [`Vfs::lock_existing`] makes none:
+//!   it fails with [`NotFound`], and a directory that was looked at and is
+//!   another one by now is not given a file it did not have.
+//! - **A lock is not durable.** After a crash nobody holds it. Taking a
+//!   lock that is there, with either call, and dropping a guard change
+//!   nothing that a crash keeps or loses. The lock file stays.
+//!
 //! # Errors
 //!
 //! Operations return [`std::io::Error`]. These kinds are part of the contract:
@@ -104,7 +125,7 @@
 //! | [`IsADirectory`] | [`Vfs::open`]: the path is a directory. |
 //! | [`NotADirectory`] | [`Vfs::read_dir`] or [`Vfs::sync_dir`]: the path is not a directory. |
 //! | [`DirectoryNotEmpty`] | [`Vfs::remove_dir`]: the directory has entries. |
-//! | [`WouldBlock`] | [`Vfs::lock`]: the lock is held. |
+//! | [`WouldBlock`] | [`Vfs::lock`], [`Vfs::lock_existing`]: the lock is held. |
 //! | [`UnexpectedEof`] | [`VfsFile::read_exact_at`]: the file ends before the buffer is full. |
 //! | [`InvalidInput`] | The handle's [`OpenMode`] does not allow the operation. |
 //! | [`StorageFull`], [`QuotaExceeded`] | The device, or a quota on it, has no space left. |
@@ -259,6 +280,24 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// open for writing, or opened for writing while it is locked, is not
     /// specified.
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>>;
+
+    /// As [`Self::lock`], for a lock file that is there: no file is made.
+    /// Fails with [`NotFound`](io::ErrorKind::NotFound) if `path` names no
+    /// file.
+    ///
+    /// Whoever opens a database that it found in a directory takes the
+    /// lock this way, so that a directory which was put in the place of
+    /// that one meanwhile, and which is someone else's, is not given a
+    /// file it did not have.
+    ///
+    /// The provided method looks for the file and then calls
+    /// [`Self::lock`], which makes a file that was removed between the
+    /// two. An implementation that can ask for both at once does, and the
+    /// two of this crate do.
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        drop(self.open(path, OpenMode::Read)?);
+        self.lock(path)
+    }
 }
 
 /// One open file.
@@ -324,4 +363,20 @@ pub trait VfsFile: fmt::Debug + Send + Sync {
 }
 
 /// A held lock from [`Vfs::lock`]. Dropping it releases the lock.
-pub trait VfsLock: fmt::Debug + Send + Sync {}
+pub trait VfsLock: fmt::Debug + Send + Sync {
+    /// Whether the file this guard is on is the file that `path` names
+    /// now. It is not once the lock file was removed, or another file was
+    /// put under its name: the directory was removed and made again, or a
+    /// copy of it took its place. A path that names nothing, or whose
+    /// directory is gone, is answered with `false`.
+    ///
+    /// The guard stays as it is, and nothing is written. Whoever is about
+    /// to write into the directory of a lock it has held for long asks
+    /// this first: the guard keeps others out of the file it is on, and
+    /// says nothing of the path.
+    ///
+    /// `path` is read as the [`Vfs`] that gave the guard reads paths. A
+    /// file layer that is put over another and gives paths another
+    /// meaning gives guards that read them so too.
+    fn is_at(&self, path: &Path) -> io::Result<bool>;
+}

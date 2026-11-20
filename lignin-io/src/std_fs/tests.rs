@@ -190,7 +190,7 @@ fn lock_follows_a_lock_file_replaced_while_it_was_being_locked() {
     let path = root.join("LOCK");
 
     let mut attempts = 0;
-    let lock = StdLock::acquire(&path, || {
+    let lock = StdLock::acquire(&path, true, || {
         attempts += 1;
         match attempts {
             1 => fs::remove_file(&path).unwrap(),

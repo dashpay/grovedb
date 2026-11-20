@@ -81,6 +81,8 @@ macro_rules! conformance_tests {
             sync_dir_takes_directories_only,
             lock_excludes_until_it_is_dropped,
             lock_creates_its_file_and_leaves_it,
+            lock_existing_makes_no_file,
+            a_guard_says_whether_its_file_is_at_a_path,
             locks_on_different_files_are_independent,
             one_thread_wins_a_contended_lock,
             a_file_is_replaced_by_write_sync_rename_sync_dir,
@@ -800,6 +802,59 @@ pub(crate) fn lock_creates_its_file_and_leaves_it(vfs: &dyn Vfs, root: &Path) {
         vfs.lock(&root.join("missing").join("LOCK")),
         ErrorKind::NotFound,
     );
+}
+
+pub(crate) fn lock_existing_makes_no_file(vfs: &dyn Vfs, root: &Path) {
+    let path = root.join("LOCK");
+    assert_fails(vfs.lock_existing(&path), ErrorKind::NotFound);
+    assert_fails(
+        vfs.lock_existing(&root.join("missing").join("LOCK")),
+        ErrorKind::NotFound,
+    );
+    assert_eq!(vfs.read_dir(root).unwrap(), []);
+
+    // A file that is there is locked as `lock` locks it, with its content
+    // as it was, and the two exclude each other.
+    open(vfs, &path, OpenMode::Write(Create::IfMissing))
+        .write_at(b"kept", 0)
+        .unwrap();
+    let guard = vfs.lock_existing(&path).unwrap();
+    assert_fails(vfs.lock_existing(&path), ErrorKind::WouldBlock);
+    assert_fails(vfs.lock(&path), ErrorKind::WouldBlock);
+    drop(guard);
+    let guard = vfs.lock(&path).unwrap();
+    assert_fails(vfs.lock_existing(&path), ErrorKind::WouldBlock);
+    drop(guard);
+    assert_eq!(read_path(vfs, &path), b"kept");
+}
+
+pub(crate) fn a_guard_says_whether_its_file_is_at_a_path(vfs: &dyn Vfs, root: &Path) {
+    let dir = root.join("db");
+    vfs.create_dir(&dir).unwrap();
+    let (path, other) = (dir.join("LOCK"), dir.join("other"));
+    let guard = vfs.lock(&path).unwrap();
+    assert!(guard.is_at(&path).unwrap());
+    drop(vfs.lock(&other).unwrap());
+    assert!(!guard.is_at(&other).unwrap());
+    assert!(!guard.is_at(&dir.join("none")).unwrap());
+    assert!(!guard.is_at(&root.join("missing").join("LOCK")).unwrap());
+
+    // The file goes to another name: the guard is on it there, and not on
+    // a file that is made under the name it had.
+    let aside = dir.join("aside");
+    vfs.rename(&path, &aside).unwrap();
+    assert!(!guard.is_at(&path).unwrap() && guard.is_at(&aside).unwrap());
+    open(vfs, &path, OpenMode::Write(Create::IfMissing));
+    assert!(!guard.is_at(&path).unwrap());
+    // That file can be locked, by someone else, while the guard is held:
+    // the guard says nothing of the path.
+    let second = vfs.lock_existing(&path).unwrap();
+    assert!(second.is_at(&path).unwrap() && !guard.is_at(&path).unwrap());
+    drop(second);
+    // Asking changes nothing: the guard still excludes.
+    assert_fails(vfs.lock(&aside), ErrorKind::WouldBlock);
+    drop(guard);
+    drop(vfs.lock(&aside).unwrap());
 }
 
 pub(crate) fn locks_on_different_files_are_independent(vfs: &dyn Vfs, root: &Path) {

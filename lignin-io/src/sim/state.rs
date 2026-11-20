@@ -864,7 +864,22 @@ impl State {
         })
     }
 
-    pub(super) fn lock(&mut self, path: &Path) -> io::Result<FileId> {
+    /// Whether `path` names `file` now. It is no operation: nothing is
+    /// counted for it, and no fault falls on it.
+    pub(super) fn is_at(&self, path: &Path, file: FileId) -> io::Result<bool> {
+        if self.powered_off {
+            return Err(SimError::PowerLoss.into());
+        }
+        let shown = canonical(path);
+        Ok(match self.parent(path, &shown, ErrorKind::IsADirectory) {
+            Ok((dir, name)) => self.now(dir, &name) == Some(Node::File(file)),
+            Err(_) => false,
+        })
+    }
+
+    /// Locks the file at `path`, which is made if it is not there and
+    /// `create` says so.
+    pub(super) fn lock(&mut self, path: &Path, create: bool) -> io::Result<FileId> {
         let paths = (canonical(path), None);
         self.run(OpKind::Lock, paths, (0, 0), |state, op| {
             let (dir, name) = state.parent(path, &op.path, ErrorKind::IsADirectory)?;
@@ -876,7 +891,8 @@ impl State {
                     return Err(refuse(ErrorKind::WouldBlock, &op.path, "is locked"));
                 }
                 Some(Node::File(file)) => Some(file),
-                None => None,
+                None if create => None,
+                None => return Err(refuse(ErrorKind::NotFound, &op.path, "is not there")),
             };
             let file = state.file_or_create(existing, dir, name, op)?;
             state.locks.insert(file);

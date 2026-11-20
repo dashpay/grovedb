@@ -765,6 +765,43 @@ fn a_directory_where_a_file_is_needed_and_a_file_where_a_directory_is_needed_are
     check(&fs);
 }
 
+/// A lock is no part of a crash state: locking a file that is there
+/// records nothing, whichever call takes the lock, and the file system a
+/// crash leaves has the file and no guard on it.
+#[test]
+fn a_lock_is_not_durable_and_locking_a_file_that_is_there_changes_no_crash_state() {
+    let fs = sim(31);
+    drop(fs.lock(p("/LOCK")).unwrap());
+    let made = fs.crash_image();
+    assert_eq!((made.names().len(), made.changes().len()), (1, 0));
+    fs.sync_dir(p("/")).unwrap();
+
+    let guard = fs.lock_existing(p("/LOCK")).unwrap();
+    assert_eq!(kind(fs.lock_existing(p("/missing"))), ErrorKind::NotFound);
+    assert_eq!(kind(fs.lock_existing(p("/LOCK"))), ErrorKind::WouldBlock);
+    assert_eq!(kind(fs.lock(p("/LOCK"))), ErrorKind::WouldBlock);
+    assert!(guard.is_at(p("/LOCK")).unwrap());
+    let image = fs.crash_image();
+    assert_eq!((image.names().len(), image.changes().len()), (0, 0));
+    for plan in [image.lose_all(), image.keep_all()] {
+        let after = recover(&image, &plan);
+        assert_eq!(tree(&after), tree_of(&[("LOCK", Some(""))]));
+        let taken = after.lock_existing(p("/LOCK")).unwrap();
+        assert!(taken.is_at(p("/LOCK")).unwrap());
+        assert_eq!(kind(after.lock(p("/LOCK"))), ErrorKind::WouldBlock);
+    }
+    // The guard of the file system that went on is held there as before,
+    // and asking it is no operation.
+    let ops = fs.stats().ops;
+    assert!(guard.is_at(p("/LOCK")).unwrap() && !guard.is_at(p("/gone/LOCK")).unwrap());
+    assert_eq!(fs.stats().ops, ops);
+    // With the power off it fails as every call does.
+    fs.crash_at(CrashPoint::AfterOp(ops + 1));
+    fs.sync_dir(p("/")).unwrap();
+    power_loss(fs.read_dir(p("/")));
+    power_loss(guard.is_at(p("/LOCK")));
+}
+
 #[test]
 fn handles_and_images_show_what_they_are() {
     let fs = sim(18);
