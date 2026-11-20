@@ -709,11 +709,12 @@ fn a_failed_sync_cannot_be_made_good() {
     assert!(kept > 0 && lost > 0, "{kept} kept, {lost} lost");
 }
 
-/// A length is among what a failed sync leaves unknown, and `set_len` to the
-/// length the file has does not make it again: it changes nothing, the next
-/// sync covers no length, and a crash can bring the old length back with the
-/// bytes that were cut off. With another length set in between, the length
-/// is a change again, and the next sync makes it durable.
+/// A truncation is among what a failed sync leaves unknown. `set_len` to
+/// the length the file has, through another handle, changes nothing: the
+/// sync after it has nothing to cover here, and, the unknown changes being
+/// lost in this test, a crash brings the old length back with the bytes
+/// that were cut off. A `set_len` to another length is a change, and the
+/// sync after it and the wanted length makes the wanted length durable.
 #[test]
 fn a_length_is_not_made_again_by_setting_the_length_the_file_has() {
     for (another_length_first, durable) in [(false, &b"durable"[..]), (true, b"")] {

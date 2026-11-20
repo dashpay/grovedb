@@ -721,10 +721,10 @@ fn a_set_is_flushed_once_for_each_file_system_that_shares_a_flush() {
 }
 
 /// The calls of [`StdVfs`] and of its files take their turns themselves.
-/// While a turn is held as a set holds it, none of them ends: a sync of a
-/// file's data, of all of a file, of a directory, a set. And while a turn is
-/// held as a single sync holds it, a set ends only where its items share no
-/// flush, which is everywhere but on APFS.
+/// While a turn is held as a set holds it, none of these calls ends: a sync
+/// of a file's data, of all of a file, of a directory, a set. And while a
+/// turn is held as a single sync holds it, the set ends on Linux, where its
+/// items share no flush, and does not end on APFS, where they share one.
 #[test]
 fn the_calls_of_the_file_layer_wait_for_a_turn_that_is_held() {
     let _alone = one_set_at_a_time();
@@ -744,11 +744,19 @@ fn the_calls_of_the_file_layer_wait_for_a_turn_that_is_held() {
     ];
 
     std::thread::scope(|scope| {
+        let (began, begins) = mpsc::channel();
         let (ended, ends) = mpsc::channel();
         let turn = apart_from_other_syncs();
         for call in calls {
-            let ended = ended.clone();
-            scope.spawn(move || ended.send(call().is_ok()).unwrap());
+            let (began, ended) = (began.clone(), ended.clone());
+            scope.spawn(move || {
+                began.send(()).unwrap();
+                ended.send(call().is_ok()).unwrap();
+            });
+        }
+        drop((began, ended));
+        for _ in calls {
+            begins.recv().unwrap();
         }
         assert_eq!(ends.recv_timeout(a_while), nothing_ended);
         drop(turn);
@@ -757,15 +765,23 @@ fn the_calls_of_the_file_layer_wait_for_a_turn_that_is_held() {
         }
 
         let shares = is_on_apfs(&root);
-        let turn = beside_other_syncs();
-        scope.spawn(move || ended.send(together().is_ok()).unwrap());
-        if shares {
-            assert_eq!(ends.recv_timeout(a_while), nothing_ended);
-            drop(turn);
-            assert!(ends.recv().unwrap());
-        } else {
-            assert!(ends.recv().unwrap());
-            drop(turn);
+        if shares || cfg!(target_os = "linux") {
+            let (began, begins) = mpsc::channel();
+            let (ended, ends) = mpsc::channel();
+            let turn = beside_other_syncs();
+            scope.spawn(move || {
+                began.send(()).unwrap();
+                ended.send(together().is_ok()).unwrap();
+            });
+            begins.recv().unwrap();
+            if shares {
+                assert_eq!(ends.recv_timeout(a_while), nothing_ended);
+                drop(turn);
+                assert!(ends.recv().unwrap());
+            } else {
+                assert!(ends.recv().unwrap());
+                drop(turn);
+            }
         }
     });
 }

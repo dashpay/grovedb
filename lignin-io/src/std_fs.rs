@@ -11,7 +11,7 @@
 //! | [`VfsFile::sync_all`] | `fsync` | `fcntl(F_FULLFSYNC)` |
 //! | [`VfsFile::sync_data`] | `fdatasync` | `fcntl(F_FULLFSYNC)` |
 //! | [`Vfs::sync_dir`] | `fsync` on the directory, opened read-only | `fcntl(F_FULLFSYNC)` on the directory, opened read-only |
-//! | [`Vfs::sync_together`] | the three calls above, one for each item, in the order of the list | for the items on an APFS volume, `fsync` on each and then `fcntl(F_FULLFSYNC)` once for the volume; for every other item, its call above |
+//! | [`Vfs::sync_together`] | for each item of this backend, its call above, in the order of the list, until one fails | for its items on an APFS volume, `fsync` on each and then `fcntl(F_FULLFSYNC)` once for the volume, and for each other item of this backend its call above, until one fails |
 //! | [`Vfs::lock`] | `flock(LOCK_EX \| LOCK_NB)` | the same |
 //! | [`Vfs::hard_link`] | `linkat` | the same |
 //! | [`Vfs::rename`] | `rename` | the same |
@@ -47,36 +47,36 @@
 //! # A set synced together
 //!
 //! On Linux [`Vfs::sync_together`] makes the single calls of its items one
-//! after another: `fdatasync` or `fsync` for a file, `fsync` for a directory.
-//! Each is a whole sync when it returns, so what is durable, and when, is
-//! what the single calls give.
+//! after another: `fdatasync` or `fsync` for a file of this backend, `fsync`
+//! for a directory. Each is a whole sync when it returns, so what is durable,
+//! and when, is what the single calls give. A file of the list that another
+//! file layer opened is synced by that layer's own call, on Linux and on
+//! macOS.
 //!
-//! On macOS the items of the list that are on an APFS volume share a flush:
-//! `fsync` is called for each of them, and then `fcntl(F_FULLFSYNC)` once
-//! for each volume, on the last item of the list that is on it. A volume is
-//! told by the device number of the open file (`st_dev`), and APFS by the
+//! On macOS the items of this backend that are on an APFS volume share a
+//! flush: `fsync` is called for each of them, and then `fcntl(F_FULLFSYNC)`
+//! once for each volume, on the last item of the list that is on it. A volume
+//! is told by the device number of the open file (`st_dev`), and APFS by the
 //! name of the file system that `fstatfs` gives. An item on any other file
-//! system is synced by its single call, with a full flush of its own, and so
-//! is a file of the list that another file layer opened.
+//! system is synced by its single call, with a full flush of its own.
 //!
 //! The items that share a flush are synced after the others of the list, those
 //! of each volume in one turn apart from every other sync this backend makes
 //! in the process. From the first `fsync` of a turn to its flush, and until a
 //! failure of that flush is on record for every handle among the turn's items,
-//! the system calls of a single sync and of another set wait, whatever volume
-//! they are for. So no flush of this backend is made, or fails, between a
-//! hand-over and the flush that covers it, and no sync of a handle is made
-//! between a failed flush and the record that stops the handle. Any number of
-//! single syncs run at once. In which order waiting syncs get their turns is
-//! the lock's affair and is not promised: a set can wait for as long as single
-//! syncs are under way, and single syncs for as long as sets are, so one slow
-//! sync, on any volume, can hold up the others of the process. A call that
-//! fails before it syncs anything, for a path that is no directory or for a
-//! handle that was stopped, waits for no turn.
+//! this backend's `fsync` and `F_FULLFSYNC` calls for a single sync or for
+//! another set wait, whatever volume they are for. So in one process no flush
+//! of this backend is made, or fails, between a set's hand-overs and its
+//! flush, and no sync of a handle is made between a failed flush and the
+//! record that stops the handle. Any number of single syncs hold a turn at
+//! once. In which order waiting syncs get their turns is the lock's affair and
+//! is not promised: a set can wait for as long as single syncs are under way,
+//! and single syncs for as long as sets are, so where sets share a flush one
+//! slow sync, on any volume, can hold up the others of the process.
 //!
 //! The directories among the items that share a flush are opened as the list
-//! is read and stay open until the call ends, so a list needs as many
-//! descriptors at once as it has such directories.
+//! is read and stay open until the call ends, one descriptor for each such
+//! item.
 //!
 //! That one full flush is enough on APFS rests on three things.
 //!
@@ -151,14 +151,14 @@
 //! a device keeps it through a power cut: that the flush makes it so is
 //! Apple's statement, and no test of this crate cuts the power.
 //!
-//! A flush that this backend does not make can fail between a set's
-//! hand-overs and its flush without the set seeing it: one that other code
-//! of the process asks for (another storage engine, a file that is synced
-//! past this backend), another process, or the system of its own accord.
-//! What a device then does with the bytes it was handed is not known here. A
-//! single `F_FULLFSYNC` has the same gap between its two halves, and a file
-//! whose bytes the system wrote to the device early has it for longer; a set
-//! has it for as long as its `fsync` calls take.
+//! A flush that this backend does not make in this process can fail between a
+//! set's hand-overs and its flush without the set seeing it: one that other
+//! code of the process asks for (another storage engine, another copy of this
+//! crate, a file that is synced past this backend), another process, or the
+//! system of its own accord. What a device then does with the bytes it was
+//! handed is not known here. A single `F_FULLFSYNC` has the same gap between
+//! its two halves, and a file whose bytes the system wrote to the device early
+//! has it for longer; a set has it from its first hand-over to its flush.
 
 use std::{
     any::Any,
@@ -487,9 +487,9 @@ fn open_dir(path: &Path) -> io::Result<File> {
 /// set holds it for itself once for the items of each file system that
 /// share a flush: from the first of them that it hands to the device to the
 /// flush that covers them, and until a failure of that flush is on record.
-/// So no flush of this backend is made, or fails, between a hand-over and
-/// its flush, and no sync is made between a failed flush and the record of
-/// its failure.
+/// So in this process no flush of this backend is made, or fails, between a
+/// set's hand-overs and its flush, and no sync of a handle is made between a
+/// failed flush and the record that stops that handle.
 ///
 /// It guards nothing a panic could leave half done, so a turn is taken
 /// whether or not an earlier holder panicked.
@@ -701,9 +701,9 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
 ///
 /// It is one turn apart from every other sync (see [`SYNC_TURNS`]). In it
 /// the handles are looked at, so that one whose syncs were stopped fails the
-/// set before anything is handed over; every item is handed to the device;
-/// the flush is made on the last of them; and a failure of the flush is put
-/// on record for every handle of the group.
+/// set before any item of the group is handed over; every item is handed to
+/// the device; the flush is made on the last of them; and a failure of the
+/// flush is put on record for every handle of the group.
 fn sync_sharing(group: &Sharing<'_>, shared: &SharedFlush<'_>) -> io::Result<()> {
     let Some(last) = group.items.last() else {
         return Ok(());
