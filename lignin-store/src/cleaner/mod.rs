@@ -196,10 +196,11 @@
 //! has read. Were the chain of a page that a commit freed meanwhile
 //! trimmed at once, the operation would find no such page. So the cleaner
 //! asks its three questions here as it does for a file (PN6): the oldest
-//! pin, then an epoch for an answer that is higher than its last, and the
-//! answer is used once every operation guard of before that epoch is
-//! released. Write-back's own trims go by the same rule, which is kept
-//! in one place.
+//! pin, then an epoch for an answer that is higher than its last and has
+//! room to wait among the eight that can, and such an answer is used
+//! once every operation guard of before its epoch is released. An answer
+//! that is given no epoch is not used. Write-back's own trims go by the
+//! same rule, which is kept in one place.
 //!
 //! The chains are trimmed through [`WriteBack::trim_chains`], between two
 //! passes of write-back. A trim can take the free link of a page away,

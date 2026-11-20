@@ -23,10 +23,12 @@ pub(super) const MAX_BOUNDS: usize = 8;
 /// (`transactions.md` RD4, PN5): were the chain of a page that a commit
 /// superseded or freed meanwhile trimmed at the oldest pin, the
 /// operation would find no version of the page. So an answer about the
-/// oldest pin that is higher than the last one is given an epoch, as a
-/// file that is retired is (PN6), and it is used once every operation
-/// guard of before that epoch is released. An operation that begins
-/// later reads a version at or after the answer.
+/// oldest pin is used only with an epoch of its own, as a file that is
+/// retired is (PN6): once every operation guard of before that epoch is
+/// released. An operation that begins later reads a version at or after
+/// the answer. An answer is given an epoch if it is higher than the last
+/// one and has room to wait, and one that is given none is not used
+/// ([`Self::ask`]).
 #[derive(Debug, Default)]
 pub(crate) struct TrimBound {
     /// Answers about the oldest pinned version, each with the epoch that
