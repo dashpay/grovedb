@@ -207,6 +207,10 @@ fn a_database_goes_on_through_one_crash_after_another() {
     let mut tally = Tally::default();
     let mut installed = 0;
     let mut lost_commits = 0;
+    // Seeds whose workloads, between them, crash where a checkpoint has
+    // no link of a page that is in use, which the last assertions ask
+    // for: where the crashes fall depends on how many changes of names
+    // and files an open makes.
     for seed in [34, 35, 36, 37] {
         let mut fs = sim_fs(SimConfig::new(seed));
         let mut run = Run::new(&fs, seed);
