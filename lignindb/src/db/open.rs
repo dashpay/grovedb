@@ -196,10 +196,13 @@ pub(super) struct Opened {
 /// lock that is held is not the lock of what is at the path: another
 /// directory was put there, the directory was removed, or its lock file
 /// alone was removed or replaced, and another open can hold the one that
-/// is there now. Whatever the directory holds, the open ends with
-/// nothing written ([`OpenError::Replaced`]). The file layer names files
-/// by path, so this is the last moment the open can tell (the module
-/// documentation, "Where the guarantee ends").
+/// is there now. Whatever the directory holds, the open ends with no
+/// manifest opened or made: as [`OpenError::Replaced`] if it took the lock
+/// through a lock file that was there, and as [`OpenError::Changed`] if
+/// it asked for the lock file to be made, since a directory may have
+/// gained that file. The file layer names files by path, so this is the
+/// last moment the open can tell (the module documentation, "Where the
+/// guarantee ends").
 ///
 /// **What the open sees before the lock decides how the lock is asked
 /// for, and only takes away from what the open may do.** A look with no

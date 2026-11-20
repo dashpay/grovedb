@@ -876,7 +876,10 @@ fn a_database_whose_lock_file_is_replaced_under_the_open_is_not_opened() {
     let error = Db::open(&path, &opening).expect_err("the lock file is another");
     assert!(matches!(&error, OpenError::Replaced { dir } if *dir == path));
     assert!(error.left_untouched());
-    assert!(error.to_string().contains("its lock file"), "{error}");
+    assert!(
+        error.to_string().contains("the lock file that was taken"),
+        "{error}"
+    );
     let put = (put.lock().expect("the image").take()).expect("the hook ran");
     assert_eq!(image(&path), put);
     assert_eq!(watched.changes(), 0, "the open wrote");
@@ -914,7 +917,7 @@ fn a_place_that_is_replaced_after_its_lock_file_was_made_gets_no_database() {
         panic!("{error:?}");
     };
     assert_eq!(named, &path);
-    assert!(found.contains("put in its place"), "{found}");
+    assert!(found.contains("the lock file that was taken"), "{found}");
     assert!(!error.left_untouched());
     assert!(
         image(&path).is_empty(),

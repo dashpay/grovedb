@@ -24,6 +24,35 @@ fn drop_of(subtrees: &[Subtree]) -> Writes {
     }
 }
 
+/// A reader's pin that its holder leaked borrows the handle no more, so
+/// the handle can be closed with the pin still counted. The close waits
+/// for no pin: it ends, and what the pin held back is reclaimed by the
+/// next session.
+#[test]
+fn a_close_waits_for_no_pin_that_was_leaked() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 400, 500));
+    plant(&db, subtree(2), Merk::sized(b'k', 50, 20));
+    let before = db.snapshot();
+    drop_of(&[subtree(1)]).commit(&db);
+    let round = db.reclaim();
+    assert_eq!((round.finished, round.waiting), (0, 1));
+    std::mem::forget(before);
+    db.close().expect("the session ends");
+
+    let db = Db::open(dir.path(), &options()).expect("the database is opened again");
+    wait_for("the dropped Merk is reclaimed", || {
+        db.stats().reclaimed.merks == 1
+    });
+    let snapshot = db.snapshot();
+    assert_eq!(seen(&snapshot.operation(), subtree(1), b"k"), None);
+    assert_eq!(
+        seen(&snapshot.operation(), subtree(2), b"k"),
+        Some((50, vec![]))
+    );
+}
+
 #[test]
 fn what_a_drop_left_is_reclaimed_once_no_reader_from_before_is_left() {
     let dir = temp();

@@ -129,7 +129,7 @@
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
-//! | held a database at one look of the open and none at a later one, or has another lock file than the one the open took, or none | [`OpenError::Replaced`] |
+//! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
 //! ([`OpenError::left_untouched`]): by reading alone before the lock, or
@@ -157,7 +157,9 @@
 //! a database of this engine that someone puts into the directory in
 //! that window, without its lock file, is opened under the lock file
 //! that this open made: the open cannot tell it from one that another
-//! open made there.)
+//! open made there. A directory whose lock file this open asked to be
+//! made, and whose lock file is another, or none, after the look under
+//! it, is refused as `Changed` as well.)
 //!
 //! **Where the guarantee ends.** The file layer names files by path. The
 //! last thing an open does before its first write is to ask, under the
@@ -631,6 +633,82 @@ impl Db {
     /// recovers what was durable or more (DU2). An error here says that
     /// something of the above was not done: the database is closed all the
     /// same, and the next open replays what the checkpoint does not cover.
+    ///
+    /// # What a caller still holds
+    ///
+    /// A close waits for no reader, refuses for none and ends none: it
+    /// cannot be called while one lives. Everything a caller reads or
+    /// writes through borrows the handle, and a close takes the handle:
+    /// a write transaction, its scopes and cursors, a snapshot and its
+    /// operations, and a parked cursor
+    /// ([`ParkedCursor`](crate::txn::ParkedCursor)), which borrows its
+    /// transaction and holds the pin of its version after its scope has
+    /// ended. So a parked cursor is dropped before its transaction, and
+    /// the transaction before the close:
+    ///
+    /// ```
+    /// use lignindb::{
+    ///     txn::{Batch, Subtree, SubtreeWrite},
+    ///     Db, Options,
+    /// };
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let dir = tempfile::tempdir()?;
+    /// let db = Db::open(dir.path(), &Options::default())?;
+    /// let subtree = Subtree::new([1; 32]);
+    /// let txn = db.begin();
+    /// let scope = txn.scope()?;
+    /// scope.apply(&Batch {
+    ///     subtrees: &[SubtreeWrite::Enter {
+    ///         subtree,
+    ///         tree_type: b"tree",
+    ///         host: None,
+    ///     }],
+    ///     ..Batch::default()
+    /// })?;
+    /// let parked = scope.parked_merk_cursor(subtree)?;
+    /// scope.merge();
+    /// drop(parked);
+    /// drop(txn);
+    /// db.close()?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// The same with the close before the cursor is dropped does not
+    /// compile (`db` is moved while it is borrowed):
+    ///
+    /// ```compile_fail,E0505
+    /// use lignindb::{
+    ///     txn::{Batch, Subtree, SubtreeWrite},
+    ///     Db, Options,
+    /// };
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let dir = tempfile::tempdir()?;
+    /// let db = Db::open(dir.path(), &Options::default())?;
+    /// let subtree = Subtree::new([1; 32]);
+    /// let txn = db.begin();
+    /// let scope = txn.scope()?;
+    /// scope.apply(&Batch {
+    ///     subtrees: &[SubtreeWrite::Enter {
+    ///         subtree,
+    ///         tree_type: b"tree",
+    ///         host: None,
+    ///     }],
+    ///     ..Batch::default()
+    /// })?;
+    /// let parked = scope.parked_merk_cursor(subtree)?;
+    /// scope.merge();
+    /// db.close()?;
+    /// drop(parked);
+    /// # Ok(())
+    /// # }
+    /// ```
+    ///
+    /// A pin whose holder leaked it (`std::mem::forget`) borrows nothing
+    /// any more. A close does not wait for it: what it holds back from
+    /// being reclaimed is reclaimed by the next session.
     pub fn close(self) -> Result<(), DbError> {
         self.shut()
     }

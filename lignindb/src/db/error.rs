@@ -117,16 +117,19 @@ pub enum OpenError {
         /// The directory.
         dir: PathBuf,
     },
-    /// The directory, or its lock file, was removed or replaced while it
-    /// was being opened. Either a look of this open found a database and
-    /// a later look, with the lock held or without, found none: no
-    /// database is made where one was seen, whatever
-    /// [`Options::create_if_missing`] says. Or the lock file that this
-    /// open took, with none made, is not the one at the path any more:
-    /// another directory was put at the path, or the directory is the
-    /// same and its lock file was removed or another put there. The lock
-    /// that is held is then not the lock of what is at the path, whatever
-    /// that holds. No file was made and nothing was written.
+    /// What is at the path is not what this open saw, or not what it
+    /// locked: someone changed it while it was being opened. Either a
+    /// look of this open found a database and a later look, with the lock
+    /// held or without, found none, in a directory that was removed, in
+    /// another that was put in its place, or in the same one with the
+    /// database's files taken out: no database is made where one was
+    /// seen, whatever [`Options::create_if_missing`] says. Or the lock
+    /// file that this open took, with none made, is not the one at the
+    /// path any more: another directory was put at the path, or the
+    /// directory is the same and its lock file was removed or another put
+    /// there. The lock that is held is then not the lock of what is at
+    /// the path, whatever that holds. No file was made and nothing was
+    /// written.
     ///
     /// [`Options::create_if_missing`]: crate::Options::create_if_missing
     Replaced {
@@ -244,9 +247,9 @@ impl fmt::Display for OpenError {
             ),
             Self::Replaced { dir } => write!(
                 f,
-                "{} was removed, or another directory was put in its place, or its lock file \
-                 was removed or replaced, while it was being opened: nothing is opened or \
-                 made there",
+                "{} was changed while it was being opened: the database that was seen there \
+                 is gone, or the lock file that was taken is not the one at the path any \
+                 more. Nothing is opened or made there",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
