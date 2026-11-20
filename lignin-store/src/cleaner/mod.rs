@@ -190,14 +190,16 @@
 //! chains it gives a base image itself.
 //!
 //! **The version it trims at is one that no version pin and no running
-//! operation reads below.** The table asks for the first alone. But an
-//! operation that holds no pin reads the latest version of its beginning
-//! (RD4), and a link it has not looked up yet is no location it has read:
-//! were the chain of a page that a commit freed meanwhile trimmed at
-//! once, the operation would find no such page. So the cleaner asks its
-//! three questions here as it does for a file (PN6): the oldest pin, then
-//! an epoch, and the answer is used once every operation guard of before
-//! that epoch is released.
+//! operation reads below.** The oldest pin is not that version by itself:
+//! an operation that holds no pin reads the latest version of its
+//! beginning (RD4), and a link it has not looked up yet is no location it
+//! has read. Were the chain of a page that a commit freed meanwhile
+//! trimmed at once, the operation would find no such page. So the cleaner
+//! asks its three questions here as it does for a file (PN6): the oldest
+//! pin, then an epoch for an answer that is higher than its last, and the
+//! answer is used once every operation guard of before that epoch is
+//! released. Write-back's own trims go by the same rule, which is kept
+//! in one place.
 //!
 //! The chains are trimmed through [`WriteBack::trim_chains`], between two
 //! passes of write-back. A trim can take the free link of a page away,

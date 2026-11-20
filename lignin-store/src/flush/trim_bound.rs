@@ -15,16 +15,18 @@ pub(crate) const MAX_BOUNDS: usize = 8;
 /// The version at which chains may be trimmed: one that no version pin
 /// and no running operation reads below.
 ///
-/// The page table asks for the first alone (`page-table.md` T11), and the
-/// oldest pin alone is not that version. An operation that holds no pin
-/// reads the latest version of its beginning under its guard, and a link
-/// it has not looked up yet is no location it has read
+/// A trim of the page table takes the oldest version that a reader can
+/// ask for (`page-table.md` T11), and the oldest pin is not that version
+/// by itself. An operation that holds no pin reads the latest version of
+/// its beginning under its guard, which the oldest pin can have passed
+/// since, and a link it has not looked up yet is no location it has read
 /// (`transactions.md` RD4, PN5): were the chain of a page that a commit
-/// superseded or freed meanwhile trimmed at once, the operation would
-/// find no version of the page. So the three questions are put as they
-/// are for a file (PN6): the oldest pin, then an epoch, and the answer is
-/// used once every operation guard of before that epoch is released. An
-/// operation that begins later reads a version at or after the answer.
+/// superseded or freed meanwhile trimmed at the oldest pin, the
+/// operation would find no version of the page. So an answer about the
+/// oldest pin that is higher than the last one is given an epoch, as a
+/// file that is retired is (PN6), and it is used once every operation
+/// guard of before that epoch is released. An operation that begins
+/// later reads a version at or after the answer.
 #[derive(Debug, Default)]
 pub(crate) struct TrimBound {
     /// Answers about the oldest pinned version, each with the epoch that
@@ -37,9 +39,16 @@ pub(crate) struct TrimBound {
 }
 
 impl TrimBound {
-    /// Asks `versions` the three questions and returns the version at
-    /// which chains may be trimmed now, or `None` while no such version
-    /// is known.
+    /// Returns the version at which chains may be trimmed now, or `None`
+    /// while no such version is known.
+    ///
+    /// It asks `versions` for the oldest pin. If that answer is higher
+    /// than the last one it asked with, and fewer than [`MAX_BOUNDS`]
+    /// answers wait, it starts an epoch and keeps the answer with it: an
+    /// answer that is no higher, or that has no room, starts none. Then
+    /// it asks for the oldest guard, and every answer whose epoch that
+    /// guard has reached is ready: the highest answer that was ever
+    /// ready is returned.
     pub(crate) fn ask<P: Pins + ?Sized>(&mut self, versions: &P) -> Option<CommitVersion> {
         let oldest = versions.oldest_pin();
         let asked = self.waiting.back().map(|(_, at)| *at).or(self.at);
