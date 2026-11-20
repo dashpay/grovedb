@@ -10,7 +10,11 @@ use std::{
     },
 };
 
-use lignin_format::{wal::LogStart, FileHeader, FileId, FormatVersion};
+use lignin_format::{
+    manifest::{FileState, LiveFile},
+    wal::LogStart,
+    FileHeader, FileId, FormatVersion,
+};
 use lignin_io::{OpenMode, Vfs, VfsFile};
 
 use super::{error::LogError, reader::FileEnd};
@@ -51,12 +55,30 @@ impl LogFile {
         }
     }
 
-    /// A file of an earlier session, as a reader of the log found it. It is
-    /// read and synced, and never written.
+    /// A file of an earlier session, as a reader of the log found it and as
+    /// the manifest names it (`named`). It is read and synced, and never
+    /// written.
+    ///
+    /// The file is measured again here, and what its length has to be
+    /// depends on how the manifest names it:
+    ///
+    /// - A file named open was read to its end, so it has to have the
+    ///   length the reader measured. An item that was appended since is in
+    ///   no end of the log, and a log that opened without it would name
+    ///   the file closed in front of it.
+    /// - A file named closed ends at its valid length for this database
+    ///   (LG32 of `log-format.md`). The caller has found that to be where
+    ///   the reader's log ends in it, and what lies behind that length is
+    ///   not this database's. It can be another's, which shares the file
+    ///   as a hard link and appends to it: a checkpoint's manifest names
+    ///   the last log file of the live database closed (CK5 of
+    ///   `transactions.md`). So such a file has to be as long as its valid
+    ///   length still, and nothing else.
     pub(super) fn adopted(
         vfs: &dyn Vfs,
         db: &Path,
         read: &FileEnd,
+        named: &LiveFile,
         version: FormatVersion,
     ) -> Result<Self, LogError> {
         let path = FileNames::WAL.path(db, read.file());
@@ -64,7 +86,11 @@ impl LogFile {
             .open(&path, OpenMode::Read)
             .map_err(LogError::io("open", &path))?;
         let len = handle.len().map_err(LogError::io("measure", &path))?;
-        if len != read.file_len() {
+        let fits = match named.state() {
+            FileState::Open => len == read.file_len(),
+            FileState::Closed | FileState::Sealed => len >= named.valid_len(),
+        };
+        if !fits {
             return Err(LogError::WrongLogEnd { file: read.file() });
         }
         Ok(Self {

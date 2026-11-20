@@ -966,10 +966,17 @@ nothing of the manifest. The manifest gives every log file a valid length
   manifest's length is never taken for the end of the log, and the open
   fails. To cut the file there would take back commits that were durable.
 - *In a closed file the log ends at the valid length.* The reader is given
-  those bytes and no more, and they are whole items to their end.
+  those bytes and no more, and they are whole items to their end. The file
+  can be longer, and it can grow while the database is being opened: a
+  checkpoint names the last log file of the live database closed and
+  shares it as a hard link, and the live database goes on appending to it
+  (M15, CK5). So every look the store takes at a closed file asks one
+  thing of its length, that it is not below the valid length.
 - *In an open file the tail begins at the valid length.* Whole items that
   follow it are part of the log (M15), the first failure behind it is
   where the log ends, and recovery names the file closed at `valid_len`.
+  Such a file is read to its end, so it has to have the length it was
+  read with when the log is opened for writing.
 
 When an append fails, the engine cuts the file at the end of its last
 whole item (CM9). `LogStart::next` gives the start record of the file that
@@ -1152,6 +1159,16 @@ owner can overrule one while version 1 is still open (U10).
     the page or what emptied a slot that a later commit filled. The records
     and their bytes are as they were. `page-table.md` K11 and K13 say the
     same from the table's side.
+29. **A closed log file is held to its valid length and to nothing behind
+    it** (LG32; found by VER-05 and OPS-08, the owner's decision D-171).
+    When the store opens the log for writing it measures every log file
+    again. Of a file that is named closed it asks that the file is not
+    shorter than its valid length: the reader is given the file to that
+    length only. Of a file that is named open it asks for the length the
+    reader found: an item appended since the read would be in no end of
+    the log. Before this change it asked for the reader's length of every
+    file, and so refused a checkpoint that was opened while the live
+    database appended to the log file the two share.
 
 ## 13. Code and tests
 
@@ -1176,6 +1193,7 @@ All of this is in `lignin-format::wal`. Run the tests with
 | LG4: a record says how long it is | `GroupPart`, `Reclaim`, `LoggedBytes`, the records of one size | `a_changed_length_is_refused_whatever_the_checksum_says`: every record of the six logs of the acceptance test, with each of the 32 bits of its length flipped and the checksum that the new length and the bytes it then covers have. Each is refused where it stands, none by its checksum. In `tests/records.rs`, a part and a reclaiming step that state another length than they have. |
 | LG26 to LG28 | `ValueMove`, `Reclaim`, `write_reclaim`; replay by LG28 is `lignin-store::recovery` (`Replay::change`, `Replay::beyond_the_copy`) | `tests/changes.rs`: a placing and a move are due exactly while the cell holds the old place, in a tree page and in a flat leaf, and change the place and nothing else; a leaf of another page that holds the place is not the step's; a reclaiming step's rules. The replay rule is tested with recovery (`lignin-store`, `recovery/tests/rules.rs`): `a_page_step_is_replayed_from_the_place_of_the_sample_on` and `a_reclaiming_step_is_made_once_and_never_takes_a_later_cell` for a page whose chain was copied; for a page the checkpoint has lost, `a_page_that_a_step_freed_before_the_sample_is_free_where_the_checkpoint_lost_it`, `a_cell_that_a_step_took_out_before_the_sample_is_out_of_a_page_replay_made` and `a_history_with_pages_the_checkpoint_lost_recovers_the_same_wherever_it_is_killed`, which kills one session after each of its acts. In `tests/records.rs`, a pending value where a value pointer must stand is `ReservedFileId`: the `to` of a value change, the source of a carried value, a released or acquired pointer of a group and of a reclaiming step. |
 | LG29 | `CheckpointMark`, `table::FIRST_SAMPLE_OFFSET` | `the_versions_of_the_groups_go_up_by_one_and_nothing_is_ahead_of_them`; in `table`, `the_end_record_must_agree_with_the_counts_and_name_a_place_in_the_log`. |
+| LG32: a closed file, shared and growing | `lignin-store::wal` (`LogReader`, `LogStore::open`) | In `lignin-store`, `wal/tests/shared.rs`, on the simulated file system: `a_checkpoints_log_opens_while_the_live_database_appends_to_the_file_they_share` (a second directory links the log's files and names them closed; the live database commits before the reader's pass and again between that and the open; the log opens, ends at the named length and goes on in a file of its own, and each database reads its own commits), with `a_log_file_named_open_that_grew_since_it_was_read_is_still_refused` and `a_log_file_named_closed_that_is_shorter_than_its_named_length_is_still_refused`. `recovery/tests/shared.rs`, `a_checkpoint_recovers_while_the_live_database_appends_to_every_file_they_share`: the last log file, the open segment and the value-log file grow before every open for reading that a recovery of the checkpoint makes. |
 | B8 | every reader and writer | In the acceptance test and in the tests of arbitrary bytes, every item that is read is written again and gives the bytes it was read from. |
 | B10 | every reader | `arbitrary_bytes_are_an_error_or_a_log_and_never_a_panic`: 45,000 files, a third arbitrary, a third records with valid checksums and arbitrary fields, a third written logs with a record changed under a valid checksum. `an_arbitrary_flat_run_is_an_error_or_a_run_that_applies_or_is_refused`. |
 | No allocation | `scan`, `LogCursor`, `Group::{values, entries}` | `tests/wal_alloc.rs` runs under a counting allocator. |
