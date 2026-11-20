@@ -115,10 +115,7 @@ fn element_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option
 }
 
 fn entered_elsewhere() -> Error {
-    not_supported(
-        "a write into an indexed tree whose subtrees an earlier element under its key left \
-         entered at other places",
-    )
+    not_supported("a write into an indexed tree whose subtrees are entered at other places")
 }
 
 fn beside_nothing() -> Error {

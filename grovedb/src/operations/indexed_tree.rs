@@ -5156,7 +5156,6 @@ mod direct_axis_mirror_tests {
         tree::AggregateData,
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::StorageBatch;
     use grovedb_version::version::GroveVersion;
 
     use super::{
@@ -5164,7 +5163,7 @@ mod direct_axis_mirror_tests {
         IndexedEntryState,
     };
     use crate::{
-        tests::{make_test_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, SuiteBatch, TEST_LEAF},
         Element, GroveDb,
     };
 
@@ -5188,7 +5187,7 @@ mod direct_axis_mirror_tests {
         db: &'db GroveDb,
         axis: IndexAxis,
         grove_version: &GroveVersion,
-    ) -> (crate::Transaction<'db>, StorageBatch) {
+    ) -> (crate::Transaction<'db>, SuiteBatch) {
         let axes: Vec<(u8, Option<Vec<u8>>)> = vec![(axis.tag(), None)];
         db.insert(
             [TEST_LEAF].as_ref(),
@@ -5200,7 +5199,7 @@ mod direct_axis_mirror_tests {
         )
         .unwrap()
         .expect("empty PCPSIT insert");
-        (db.start_transaction(), StorageBatch::new())
+        (db.start_transaction(), SuiteBatch::default())
     }
 
     /// Sanity: `(1, 5)` and `(2, 10)` share an avg sort key but produce

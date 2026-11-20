@@ -90,7 +90,7 @@ mod tests {
         gv: &GroveVersion,
     ) -> Option<Vec<u8>> {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let owned: Vec<&[u8]> = pcit_path.to_vec();
         let path: SubtreePath<&[u8]> = owned.as_slice().into();
         let (parent_path, pcit_key) = path.derive_parent().expect("non-root PCIT");
