@@ -13,6 +13,7 @@
 //! it, with every hash of every Merk node made again by Merk's rules.
 
 mod cases;
+mod nested;
 mod restore;
 
 use grovedb_costs::OperationCost;
