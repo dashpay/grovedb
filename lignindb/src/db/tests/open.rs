@@ -1050,7 +1050,8 @@ fn the_mark_of_a_removal_that_comes_before_the_lock_is_found_under_it() {
     };
     let error = Db::open(&place, &opening).expect_err("the mark of a removal");
     assert!(
-        matches!(&error, OpenError::Changed { dir, .. } if *dir == place),
+        matches!(&error, OpenError::Changed { dir, found }
+            if *dir == place && found.contains("MANIFEST.deleting")),
         "{error:?}"
     );
     assert!(!error.left_untouched());

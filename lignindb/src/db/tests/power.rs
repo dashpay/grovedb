@@ -305,7 +305,8 @@ fn ran(fs: &SimVfs, cut: Option<u64>) -> Ran {
 }
 
 /// What a reader of the latest version of `db` finds of the script's
-/// subtrees: every key and value of each Merk, and no flat record.
+/// subtrees: every key and value of each Merk. The script writes no flat
+/// record, and the one key that is looked for in each column has none.
 fn found(db: &Db) -> State {
     let snapshot = db.snapshot();
     let operation = snapshot.operation();

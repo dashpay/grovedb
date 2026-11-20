@@ -38,15 +38,18 @@ fn the_policy_of_the_cleaner_comes_from_the_options() {
     assert_eq!(db.shared.store.cleaner.config(), CleanerConfig::new());
 }
 
-/// Commits enter a Merk with values out of line and drop the one before,
-/// again and again, beside a Merk that stays. What the drops leave is
-/// reclaimed, the blocks and values of freed pages are dead, and the
-/// cleaner of the session, on its thread, gives files back: segments, and
-/// files of the value log. Whether it moved something out of a file
-/// first or found the file dead as a whole is the layout's, which the
-/// threads make between them; what the cleaner moves is the next test's.
-/// Nothing a reader is given changes, the close ends the cleaner and
-/// checks the store, and the next session reads the same.
+/// A session begins with two Merks whose pages are in a segment and
+/// whose values are in a file of the value log, both closed: an earlier
+/// session wrote them and was closed. One of the two is dropped, and
+/// what it had in those files is dead whatever the threads of this
+/// session do next. Then commits enter a Merk with values out of line and
+/// drop the one before, again and again. What the drops leave is
+/// reclaimed, and the cleaner of the session, on its thread, gives files
+/// back: segments, and files of the value log. Whether it moved something
+/// out of a file first or found the file dead as a whole is the layout's,
+/// which the threads make between them; what the cleaner moves is the
+/// next test's. Nothing a reader is given changes, the close ends the
+/// cleaner and checks the store, and the next session reads the same.
 #[test]
 fn the_cleaner_of_a_session_gives_back_what_drops_left_dead() {
     const ROUNDS: u32 = 120;
@@ -55,10 +58,26 @@ fn the_cleaner_of_a_session_gives_back_what_drops_left_dead() {
         cleaner: Some(policy()),
         ..options()
     };
-    let db = Db::open(dir.path(), &cleaning).expect("a new database");
     let long = || Merk::sized(b'k', 12, 1500);
+    let db = Db::open(dir.path(), &cleaning).expect("a new database");
     plant(&db, subtree(1), long());
-    plant(&db, numbered(0), long());
+    Writes {
+        enter: vec![(numbered(0), None), (subtree(8), None)],
+        merks: vec![
+            (numbered(0), long()),
+            (subtree(8), Merk::sized(b'w', 120, 30)),
+        ],
+        ..Writes::default()
+    }
+    .commit(&db);
+    // The close writes every page back and places every value.
+    db.close().expect("the first session ends");
+    let db = Db::open(dir.path(), &cleaning).expect("the database is opened again");
+    Writes {
+        drop: vec![subtree(8)],
+        ..Writes::default()
+    }
+    .commit(&db);
     for round in 1..=ROUNDS {
         Writes {
             drop: vec![numbered(round - 1)],
@@ -69,7 +88,7 @@ fn the_cleaner_of_a_session_gives_back_what_drops_left_dead() {
         .commit(&db);
     }
     reclaimed(&db, "every drop is reclaimed", |reclaimed| {
-        reclaimed.merks == u64::from(ROUNDS) && reclaimed.waiting == 0
+        reclaimed.merks == u64::from(ROUNDS) + 1 && reclaimed.waiting == 0
     });
     cleaned(&db, "segments are given back", |cleaner| {
         cleaner.segments_dropped > 0

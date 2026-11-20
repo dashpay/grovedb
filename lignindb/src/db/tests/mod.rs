@@ -756,11 +756,17 @@ impl Writes {
             // The handle the commit hands on is the directory of the
             // version that was published: it leaves out what one that is
             // loaded from the pages of that version leaves out.
-            // The version is read under a guard while it is the latest:
-            // beside another committer the comparison is left out.
+            // A round of the reclaiming takes entries out of the pages
+            // of the latest version, so the comparison is made with the
+            // reclaiming held, and left out where a round is running or
+            // the caller is inside one. It is left out as well where a
+            // commit came since: the version is read while it is the
+            // latest.
             let store = &*db.shared.store;
+            let held = store.reclaiming.try_lock();
             let guard = db.shared.versions.guard();
-            if guard.latest() == published.version {
+            let poisoned = matches!(held, Err(std::sync::TryLockError::Poisoned(_)));
+            if (held.is_ok() || poisoned) && guard.latest() == published.version {
                 let pages = store.committed(&guard, published.version);
                 let fresh = store.catalog().load_directory(&pages);
                 let fresh = fresh.expect("the directory of the version");

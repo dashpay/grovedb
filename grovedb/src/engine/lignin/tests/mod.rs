@@ -10,10 +10,11 @@
 //!
 //! The tests that call `check` close the database they leave, open it
 //! again and have the physical checker of the engine read every page of
-//! it, with every hash of every Merk node made again by Merk's rules. In
-//! a debug build every database of these tests is checked when it is
-//! closed, by the database itself, with the hashes of the Merks in use
-//! made again.
+//! it, with the stored hashes of the nodes of every Merk in use checked
+//! by Merk's rules: each is made again and compared, but for a value hash
+//! that only its writer can make (a reference's), which the rules take as
+//! it is stored. In a debug build every database of these tests is
+//! checked so when it is closed, by the database itself.
 
 mod append_only;
 mod axes;
@@ -59,8 +60,8 @@ macro_rules! path {
 
 /// Opens the database in `dir` again, which nothing has open, closes it,
 /// and has the physical checker read it as a store that is still: every
-/// rule of the layout, and every stored hash of every Merk node against
-/// the hash that Merk's rules make.
+/// rule of the layout, and the stored hashes of the nodes of every Merk
+/// in use by Merk's rules, as the module documentation says.
 fn check(dir: &std::path::Path) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
     let mut rules = MerkHashRules::for_check(version());
@@ -1584,10 +1585,10 @@ fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
 
 /// The engine gives Merk's rules to the check that a close of its
 /// database makes in a debug build (`lignindb::Db::check_hashes_by`), so
-/// that check makes the stored hashes of the nodes of every Merk in use
-/// again. A node of the
-/// root Merk is written with a hash that is not its own, by a write of
-/// one node through the engine's handle, and no rule of the layout is
+/// that check holds the stored hashes of the nodes of every Merk in use
+/// to those rules. A node of the root Merk is written with a key-value
+/// hash that is not its own, by a write of one node through the engine's
+/// handle, and no rule of the layout is
 /// broken by it: the close finds it, as a hash that differs from its
 /// recomputation. A grove that GroveDB wrote is closed with nothing
 /// found.
