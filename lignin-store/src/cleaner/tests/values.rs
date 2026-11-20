@@ -47,12 +47,12 @@ fn filled_pages(pages: u8) -> Db {
     db
 }
 
-fn value_files(db: &Db) -> Vec<FileId> {
+pub(super) fn value_files(db: &Db) -> Vec<FileId> {
     let named = db.values.files_named().expect("the files");
     named.iter().map(|file| file.id()).collect()
 }
 
-fn value_on_disk(db: &Db, file: FileId) -> bool {
+pub(super) fn value_on_disk(db: &Db, file: FileId) -> bool {
     let path = crate::segment::FileNames::VALUE_LOG.path(&db.path, file);
     db.vfs.open(&path, lignin_io::OpenMode::Read).is_ok()
 }
