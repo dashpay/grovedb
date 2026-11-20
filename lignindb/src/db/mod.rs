@@ -272,7 +272,7 @@
 //! crash would leave is not known. That does not last. Write-back opens
 //! the manifest again where it next needs it, and so do a commit before it
 //! begins, a close, and the creation of a checkpoint of the database
-//! before it makes anything, by the same call
+//! before it makes a directory, by the same call
 //! (`WriteBack::settle_manifest`). Where the manifest cannot be opened
 //! again now, the commit that found it in doubt is refused with that error
 //! and its transaction whole ([`CommitError::NotReady`]), a close answers

@@ -86,11 +86,11 @@
 //! while it has the commit lock. Where the manifest is taken, it gives
 //! the commit lock back, waits, and takes both anew.
 //!
-//! One commit does wait for the lock on the manifest: a commit that found
-//! the manifest in doubt before it began has it settled, and waits for
-//! whoever holds that lock then (`crate::db`). A creation holds it in
-//! step 2 while a manifest in doubt is opened again, as anybody does who
-//! settles it, and through step 5.
+//! A commit that found the manifest in doubt before it began does wait
+//! for that lock, to have it settled, behind whoever holds it then
+//! (`crate::db`). A creation holds it longest in step 2, while a manifest
+//! in doubt is opened again, as anybody does who settles it, and through
+//! step 5.
 //!
 //! **A commit that syncs the log itself can wait for a sync of the log,
 //! and a creation makes as few as it can.** The log makes itself durable
@@ -395,10 +395,10 @@
 //!
 //! When the creation fails after step 2, the live database is as step 2
 //! left it (CK10), except that its log may be durable further. What step
-//! 2 does is write-back's work, and stays done whatever comes after: a
-//! catch-up, with whatever that met, and a manifest that is settled. One
-//! failure is the live database's as much as the creation's: if the sync
-//! of the log fails
+//! 2 does is write-back's work, a catch-up, with whatever that met, and
+//! the settling of the manifest, and a failure after it does not undo it.
+//! One failure is the live database's as much as the creation's: if the
+//! sync of the log fails
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
 //! then removes what it made, and the directory it built in, so that the

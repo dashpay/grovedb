@@ -100,7 +100,7 @@ whose cause was the file layer's "no space left".
 | `Db::flush` | `DbError::Flush` | takes no write any more (`Reopen::NotDurable`): after a sync that failed the log makes nothing durable in this session |
 | `Db::snapshot`, `Db::read`, every read through a transaction | what it reads at any other time | as before |
 | `Db::rollback` | `Ok`: a rollback writes to no file | as before |
-| `Checkpointer::create` | `CheckpointError`, with nothing at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, under its name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where settling answers an error, it fails with `CheckpointError::Settle`, and where a replacement leaves the manifest in doubt after that, with `CheckpointError::Manifest`. Either is made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
+| `Checkpointer::create` | `CheckpointError`, with nothing put at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, under its name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where the settling it asks for after the catch-up answers an error, it fails with `CheckpointError::Settle`, and where the manifest is in doubt again when the creation reads it, with `CheckpointError::Manifest`. Either can be made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
 | `Backup::copy` | `BackupError`, with nothing left of the target, or a target without a manifest, or the whole target (section 6.4). The source is as it was. | no session is involved |
 | `Db::close` | `DbError`. The handle is closed all the same, and the next open replays what the close did not cover. | has ended |
 | the background work: write-back, the reclaiming of what drops left, the cleaner | nothing is answered to anyone. The turn that was refused is counted, its error is kept as text (`DbStats::background`), and it is made again at the next turn. | goes on, unless what was refused was a sync of the log or of a segment: then it has ended (DF8) |
@@ -220,10 +220,10 @@ ended, make no operation on a file, and settle nothing.
   refused, the checkpoint fails and the manifest is in doubt when it
   returns, which is the state the other points here are about.
 - The creation of a checkpoint reads the manifest itself, and asks for it
-  to be settled before it makes a directory. A replacement that leaves the
-  manifest in doubt after that, and before the creation reads it, fails
-  that creation with `CheckpointError::Manifest`: it leaves nothing at its
-  target, and is made again.
+  to be settled before it makes a directory. A manifest that is in doubt
+  again when the creation reads it, by a replacement after that, fails the
+  creation with `CheckpointError::Manifest`: it leaves nothing at its
+  target, and can be made again.
 - A manifest that cannot be opened again for another reason than room
   refuses every commit that finds it so, and the session does not end for
   it: the directory was removed under the handle, or cannot be written, or
@@ -237,8 +237,8 @@ ended, make no operation on a file, and settle nothing.
   had it settled is answered that error once (`CommitError::NotReady`, its
   transaction whole), the next commit finds nothing in doubt, and the
   session does not end for it. A creation of a checkpoint that had it
-  settled is answered that error once as well (`CheckpointError::Settle`,
-  with no directory made).
+  settled after its catch-up is answered that error once as well
+  (`CheckpointError::Settle`, with no directory made).
 - A close has the lock file alone to go by before it opens the manifest
   again, and takes the manifest it finds, as write-back does. A directory
   whose files were written over in place while the handle was open and its
@@ -490,10 +490,10 @@ returned.
   holds nothing of a database yet: so no open that may create is pointed
   at the target of a creation or of a copy before that call has returned
   `Ok` (`lignindb::checkpoint`, "What other tasks take from here").
-- **It is removed by whoever asked for it**, with everything in it, and
-  the creation or the copy is made again: both refuse a target that is
-  there. Nothing is lost with it. Its files are the live database's under
-  a second name, or copies.
+- **A target that was so left is removed by whoever asked for it**, with
+  everything in it, and the creation or the copy is made again: both
+  refuse a target that is there. Nothing is lost with it. Its files are
+  the live database's under a second name, or copies.
 - `lignindb::checkpoint::delete` removes an empty directory and one that
   holds its lock file alone. Of a directory whose name does not end in
   `.creating`, it refuses one that holds files and no manifest, because it
@@ -545,9 +545,9 @@ reserve, the file `RESERVE`, which is there to be removed, with
      than the last one with no power cut, and `Db::version` says where
      it landed. After a power cut it has what DF1 says.
    - **A checkpoint that fails with "a replacement of the manifest ... did
-     not finish"** is made again: a creation has the manifest settled
+     not finish"** can be made again: a creation has the manifest settled
      before it makes a directory (DF8a). One that fails with "the manifest
-     was in doubt, and settling it answered an error" is made again as
+     was in doubt, and settling it answered an error" can be made again as
      well. Asking `Db::reopen` settles nothing. The session has not ended
      for either.
    - **A commit that stays refused with "the session takes no commit
@@ -613,7 +613,7 @@ written, the oldest open write transaction):
   at most the rest of one Merk's cells for each crash at that moment.
 - **A target that was left without a manifest** by a backup that was cut
   short, and a directory that a creation of a checkpoint left beside its
-  target, are removed by whoever asked for them (section 6.4).
+  target, are dealt with as section 6.4 says.
 
 ### 7.4 Backup and restore
 

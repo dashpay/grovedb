@@ -256,8 +256,8 @@ impl<'s> Checkpointer<'s> {
     /// number of checkpoints may be made at once (CK9).
     ///
     /// If it fails, the live database is as write-back's catch-up and the
-    /// settling of its manifest left it (CK10), with one exception: where
-    /// the sync of its log failed
+    /// settling of its manifest left it, but that its log may be durable
+    /// further (CK10). Where the sync of its log failed
     /// ([`CheckpointError::Sync`]), the log makes nothing more durable
     /// until the database is opened again, as after any sync of it that
     /// fails (`lignin_store::wal`). What was made is taken away again as

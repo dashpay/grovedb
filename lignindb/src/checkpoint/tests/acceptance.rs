@@ -534,9 +534,9 @@ fn an_existing_target_is_refused_and_left_untouched() {
     world.check_committed();
 }
 
-/// A catch-up of write-back that leaves the manifest in doubt, by a
-/// replacement of its own that fails, does not fail the creation it was
-/// made for: the manifest is settled after the catch-up, and the
+/// A catch-up of write-back leaves the manifest in doubt, by a
+/// replacement of its own that fails, and the manifest can be opened
+/// again: the creation has it settled after the catch-up, and the
 /// checkpoint is made. The catch-up's error is reported.
 #[test]
 fn a_catch_up_that_leaves_the_manifest_in_doubt_is_settled() {

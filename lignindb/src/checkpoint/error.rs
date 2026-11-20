@@ -16,8 +16,8 @@ use crate::commit::Stopped;
 /// then.
 ///
 /// Whatever the error, the live database holds what it held. What a
-/// creation does to it is write-back's work before anything is made, a
-/// catch-up and the settling of its manifest, and a log that is durable
+/// creation does to it is write-back's work before a directory is made,
+/// a catch-up and the settling of its manifest, and a log that is durable
 /// further (the [module documentation](super)). After [`Self::Sync`] its
 /// log makes nothing more durable until the database is opened again, as
 /// after any sync of the log that fails.
@@ -99,10 +99,10 @@ pub enum CheckpointError {
     /// Write-back, which the creation asks to settle a manifest that a
     /// replacement left in doubt before it makes a directory
     /// (`lignin_store::flush::WriteBack::settle_manifest`), answered this
-    /// error. No directory was made for the checkpoint. The call can be made
-    /// again: where the manifest could not be opened again, the next call
-    /// asks for that again, and where it was opened and a store that was
-    /// told of it answered the error, nothing is in doubt any more.
+    /// error. No directory was made for the checkpoint. The call can be
+    /// made again. Where the manifest could not be opened again, it is in
+    /// doubt still; where it was opened and a store that was told of it
+    /// answered the error, that doubt is settled.
     Settle(FlushError),
     /// The manifest could not be read at the sampling step: a replacement
     /// left it in doubt after the creation had asked for it to be
