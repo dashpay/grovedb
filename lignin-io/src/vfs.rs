@@ -290,14 +290,11 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// that one meanwhile, and which is someone else's, is not given a
     /// file it did not have.
     ///
-    /// The provided method looks for the file and then calls
-    /// [`Self::lock`], which makes a file that was removed between the
-    /// two. An implementation that can ask for both at once does, and the
-    /// two of this crate do.
-    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        drop(self.open(path, OpenMode::Read)?);
-        self.lock(path)
-    }
+    /// It is one step: no implementation looks for the file and then
+    /// calls [`Self::lock`], which would make a file that was removed
+    /// between the two. A file layer that is put over another passes the
+    /// call on to it.
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>>;
 }
 
 /// One open file.

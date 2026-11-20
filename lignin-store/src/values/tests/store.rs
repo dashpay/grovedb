@@ -1186,6 +1186,10 @@ impl Vfs for Pausing {
     fn lock(&self, path: &Path) -> std::io::Result<Box<dyn lignin_io::VfsLock>> {
         self.inner.lock(path)
     }
+
+    fn lock_existing(&self, path: &Path) -> std::io::Result<Box<dyn lignin_io::VfsLock>> {
+        self.inner.lock_existing(path)
+    }
 }
 
 #[test]

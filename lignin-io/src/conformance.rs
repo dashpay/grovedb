@@ -26,8 +26,9 @@ use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
 ///
 /// A backend over the operating system's files adds `host_files` after
 /// `$setup`. Under Miri, which runs its file calls on the host's files, the
-/// cases Miri cannot emulate are then ignored: those that need hard links,
-/// which Miri does not have, and a read far beyond the end of a file (see
+/// cases Miri cannot emulate are then ignored: those that need hard links
+/// or inode numbers, which Miri does not have, and a read far beyond the
+/// end of a file (see
 /// [`read_at_just_below_the_largest_offset_reads_nothing`]).
 macro_rules! conformance_tests {
     ($setup:expr) => {
@@ -82,6 +83,7 @@ macro_rules! conformance_tests {
             lock_excludes_until_it_is_dropped,
             lock_creates_its_file_and_leaves_it,
             lock_existing_makes_no_file,
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no inode numbers")]
             a_guard_says_whether_its_file_is_at_a_path,
             locks_on_different_files_are_independent,
             one_thread_wins_a_contended_lock,

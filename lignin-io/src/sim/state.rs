@@ -870,6 +870,9 @@ impl State {
         if self.powered_off {
             return Err(SimError::PowerLoss.into());
         }
+        // A path the simulator does not take is refused as everywhere,
+        // and one that names nothing is answered.
+        components(path)?;
         let shown = canonical(path);
         Ok(match self.parent(path, &shown, ErrorKind::IsADirectory) {
             Ok((dir, name)) => self.now(dir, &name) == Some(Node::File(file)),

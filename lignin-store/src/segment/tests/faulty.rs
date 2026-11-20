@@ -262,6 +262,11 @@ impl Vfs for FaultyVfs {
         self.enter(Op::Lock, path)?;
         self.inner.lock(path)
     }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.enter(Op::Lock, path)?;
+        self.inner.lock_existing(path)
+    }
 }
 
 #[derive(Debug)]
