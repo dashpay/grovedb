@@ -665,7 +665,7 @@ fn a_merk_costs_the_same(
     let prefix = [7; 32];
     let subtree = LigninSubtree::alone(prefix);
     let rocks = TempStorage::new();
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let mut random = Random(seed);
     let mut model = BTreeMap::new();
@@ -1952,7 +1952,7 @@ fn the_nodes_of_a_merk_removed_with_no_cost_are_charged_as_committed() {
     let prefix = at(7);
     let subtree = LigninSubtree::alone(prefix);
     let rocks = TempStorage::new();
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let mut random = Random(99);
     let mut model = BTreeMap::new();
@@ -2322,7 +2322,7 @@ fn a_conversion_costs_the_same(
     let subtree = LigninSubtree::alone(prefix);
     let opened = Opened::Layered;
     let rocks = TempStorage::new();
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let mut random = Random(seed);
     let mut model = BTreeMap::new();

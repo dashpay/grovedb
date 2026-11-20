@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::Arc,
 };
 
@@ -17,6 +18,7 @@ use lignindb::{
     commit::{Committed, NoStaleHashes},
     snapshot::Versions,
     txn::{testing::Db, Subtree, WritePath, WriteTxn},
+    verify::{Finding, Place, Rule, Scope},
 };
 
 use super::{
@@ -27,7 +29,7 @@ use crate::{
     store::{
         lignin::{
             feature::{encode_aggregate, encode_feature},
-            LigninBatch, LigninNodeStore, LigninSubtree, LigninWriter,
+            LigninBatch, LigninHost, LigninNodeStore, LigninSubtree, LigninWriter,
         },
         NodeChange, NodeChangeSet, NodeStore,
     },
@@ -950,6 +952,7 @@ const SUBTREE: [u8; 32] = [0; 32];
 impl Lignin {
     fn new() -> Self {
         let (db, versions) = Db::new(512);
+        db.check_hashes_by(Box::new(MerkHashRules::for_check(version())));
         Self { db, versions }
     }
 
@@ -1386,5 +1389,181 @@ fn a_merk_makes_every_hash_itself_and_the_rules_make_the_same() {
         // No rule runs at the commit: one that is asked refuses.
         writer.into_scope().merge();
         assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0, "{at}");
+    }
+}
+
+/// The hash of a grove that Merk would not have given it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum Planted {
+    /// The value hash of an item.
+    Item,
+    /// The value hash of the tree, whose Merk has a root.
+    Tree,
+    /// The key-value hash of the root.
+    KeyValue,
+    /// The hash of a child in a link of the root.
+    Child(Side),
+}
+
+/// A subtree that the store of the tests is not made with.
+const BELOW: [u8; 32] = [222; 32];
+/// A hash that no rule makes.
+const WRONG: CryptoHash = [0x5a; 32];
+
+/// Commits a grove as GroveDB writes one, with one hash `planted`: a Merk
+/// of five items, a reference and a tree, and the Merk of the tree with
+/// items of its own.
+fn grove(planted: Option<Planted>) -> Lignin {
+    let lignin = Lignin::new();
+    {
+        let write_path = lignin.path();
+        let transaction = write_path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let staged = LigninBatch::new();
+        let basic = TreeFeatureType::BasicMerkNode;
+        let puts = |keys: std::ops::Range<u64>| -> Vec<(Vec<u8>, Op)> {
+            keys.map(|n| (key(n), Op::Put(item(n), basic))).collect()
+        };
+
+        let below = LigninSubtree {
+            prefix: BELOW,
+            host: Some(LigninHost {
+                subtree: SUBTREE,
+                key: key(5),
+                hosted: vec![BELOW],
+            }),
+        };
+        let lower = LigninNodeStore::deferred(&writer, below, Some(&staged));
+        lower.enter(TreeType::NormalTree).unwrap();
+        let lower =
+            Merk::open_layered_with_root_key(lower, None, TreeType::NormalTree, NO_COST, version());
+        let mut lower = lower.unwrap().expect("the Merk opens");
+        let applied = lower.apply::<_, Vec<u8>>(&puts(0..5), &[], None, version());
+        applied.unwrap().expect("the batch applies");
+        let tree = bytes(&Element::new_tree(lower.root_key()));
+        let root_hash = lower.root_hash().unwrap();
+        drop(lower);
+
+        let upper = LigninSubtree::alone(SUBTREE);
+        let upper = LigninNodeStore::deferred(&writer, upper, Some(&staged));
+        let upper = Merk::open_base(upper, TreeType::NormalTree, NO_COST, version());
+        let mut upper = upper.unwrap().expect("the Merk opens");
+        let mut batch = puts(0..7);
+        if planted == Some(Planted::Item) {
+            batch[0].1 = Op::PutWithProvidedValueHash(item(0), WRONG, None, basic);
+        }
+        // The value hash of a reference is its writer's: nothing that a
+        // cell holds makes it, whatever it is.
+        let reference = bytes(&Element::new_reference(path()));
+        batch[1].1 = Op::PutCombinedReference(reference, WRONG, basic);
+        let root_below = match planted {
+            Some(Planted::Tree) => WRONG,
+            _ => root_hash,
+        };
+        batch[5].1 = Op::PutLayeredReference(tree, 3, root_below, basic);
+        let applied = upper.apply::<_, Vec<u8>>(&batch, &[], None, version());
+        applied.unwrap().expect("the batch applies");
+        let root = upper.root_key().expect("a root");
+        assert_eq!(root, key(3));
+        drop(upper);
+        staged
+            .apply(&writer)
+            .unwrap()
+            .expect("the batch is applied");
+
+        // The root is an item. It is written again with one hash that is
+        // not its own, by a write of one node.
+        if matches!(planted, Some(Planted::KeyValue | Planted::Child(_))) {
+            let store = store(&writer);
+            let node = store.get_node(&root, NO_COST, version()).unwrap();
+            let node = node.unwrap().expect("the root is stored");
+            let link = |side: Side| {
+                let mut link = node.link(side == Side::Left).cloned();
+                let Some(Link::Reference { hash, .. }) = &mut link else {
+                    panic!("a link that was read is a reference");
+                };
+                if planted == Some(Planted::Child(side)) {
+                    *hash = WRONG;
+                }
+                link
+            };
+            let kv_hash = match planted == Some(Planted::KeyValue) {
+                true => WRONG,
+                false => *node.kv_hash(),
+            };
+            let value = node.value_as_slice().to_vec();
+            let (left, right) = (link(Side::Left), link(Side::Right));
+            let wrong = TreeNode::from_fields(root, value, kv_hash, left, right, basic).unwrap();
+            let written = store.write_node(&wrong, NodeChange::HashOnly);
+            written.unwrap().expect("the node is written");
+        }
+        writer.into_scope().merge();
+        assert_eq!(lignin.commit(&transaction, &mut NoStaleHashes), 0);
+    }
+    lignin
+}
+
+/// The cell of the node under `key` in the upper Merk of a grove that is
+/// committed.
+fn cell_of(lignin: &Lignin, key: &[u8]) -> CellAddress {
+    let write_path = lignin.path();
+    let transaction = write_path.begin();
+    let scope = transaction.scope().unwrap();
+    let read = scope.node(Subtree::new(SUBTREE), key, |view| {
+        let handle = view.expect("the node is there").handle();
+        handle.expect("a committed node has a cell").address()
+    });
+    scope.rollback();
+    read.expect("the node is read")
+}
+
+#[test]
+fn the_check_of_a_dropped_store_recomputes_the_hashes_of_its_merks() {
+    // A grove that Merk hashed is sound, the hash that the writer of its
+    // reference stated with it, and every cell of it was checked.
+    let sound = grove(None);
+    let report = sound.db.verify_still();
+    assert!(report.is_sound(), "{report}");
+    let census = &report.census;
+    assert_eq!((census.live_cells, census.hashed_cells), (12, 12));
+    assert_eq!(census.hosted_roots, 1);
+    drop(sound);
+
+    // Each hash, with the key of the node whose cell stores it.
+    let (left, right) = (Side::Left, Side::Right);
+    let planted = [
+        (Planted::Child(left), HashField::Child(left), 3),
+        (Planted::Child(right), HashField::Child(right), 3),
+        (Planted::KeyValue, HashField::KeyValue, 3),
+        (Planted::Item, HashField::Value, 0),
+        (Planted::Tree, HashField::Value, 5),
+    ];
+    for (planted, field, stored_at) in planted {
+        let lignin = grove(Some(planted));
+        // A check that is given no rules recomputes no hash and finds
+        // nothing.
+        let at = lignin.versions.latest();
+        let unhashed = lignin.db.verify(at, Scope::Still, None);
+        assert!(unhashed.is_sound(), "{planted:?}: {unhashed}");
+        assert_eq!(unhashed.census.hashed_cells, 0);
+
+        // With Merk's rules it finds the hash, once, where it is stored.
+        let report = lignin.db.verify_still();
+        let found = |finding: &Finding| (finding.rule, finding.place);
+        let found: Vec<_> = report.findings.iter().map(found).collect();
+        let cell = Place::Cell(cell_of(&lignin, &key(stored_at)));
+        assert_eq!(found, [(Rule::Hash(field), cell)], "{planted:?}: {report}");
+        assert_eq!(report.more_findings, 0, "{planted:?}");
+
+        // So the store of a test that leaves such a hash fails when it is
+        // dropped, where the store is checked at its drop, and says which
+        // rule.
+        if cfg!(debug_assertions) {
+            let dropped = catch_unwind(AssertUnwindSafe(move || drop(lignin)));
+            let failure = dropped.expect_err("the store is not sound");
+            let failure = failure.downcast_ref::<String>().expect("a message");
+            let rule = Rule::Hash(field).text();
+            assert!(failure.contains(rule), "{planted:?}: {failure}");
+        }
     }
 }

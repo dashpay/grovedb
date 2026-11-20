@@ -332,7 +332,7 @@ fn with_both(
     test: impl FnOnce(&Both<'_, '_, '_>),
 ) {
     let rocks = TempStorage::new();
-    let lignin = Lignin::new();
+    let lignin = Lignin::with_stated_value_hashes();
     let path = lignin.path();
     let mut random = Random(seed);
     let mut model = BTreeMap::new();
