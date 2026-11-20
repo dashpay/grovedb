@@ -103,12 +103,22 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
-    /// Someone changed the directory while it was being opened: it was
-    /// looked at and found to be one this open takes, with no lock file in
-    /// it, and under the lock it is one that is refused. This open asked
-    /// for the lock file to be made between the two, so the directory may
-    /// have a `LOCK` it did not have ([`Self::left_untouched`] is false).
-    /// Nothing else was written.
+    /// The directory holds a database of this engine and no lock file. A
+    /// database has its `LOCK` from the open that made it, and loses it
+    /// only by a copy that leaves it out. The open makes none in a
+    /// directory that holds a database: whoever copied it puts an empty
+    /// file named `LOCK` there.
+    NoLockFile {
+        /// The directory.
+        dir: PathBuf,
+    },
+    /// Another process wrote into the directory while a database was
+    /// being made in it: it was looked at and found to hold nothing of any
+    /// engine and no lock file, and under the lock it is one that is
+    /// refused. This open asked for the lock file to be made between the
+    /// two, so the directory may have gained an empty `LOCK`
+    /// ([`Self::left_untouched`] is false), which is left where it is,
+    /// because another opener may hold it. Nothing else was written.
     ///
     /// A directory that had its lock file is locked with none made, and
     /// what it is refused for is reported as itself.
@@ -155,11 +165,13 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest, or its pages are of another size. Each of these
-    /// was found with no file made: before the lock, or under the lock of
-    /// a lock file that was there. A directory that someone made into one
-    /// of these while a lock file was being made in it is
-    /// [`Self::Changed`].
+    /// lost its manifest or its lock file, or its pages are of another
+    /// size. Each of these was found with no file made: before the lock,
+    /// or under the lock of a lock file that was there. That holds for a
+    /// directory that nobody else changes while it is being opened, and
+    /// for one that is put in the place of a database during the open. A
+    /// directory with no lock file into which another process writes
+    /// while a database is being made in it is [`Self::Changed`].
     pub const fn left_untouched(&self) -> bool {
         matches!(
             self,
@@ -167,6 +179,7 @@ impl OpenError {
                 | Self::OtherEngine { .. }
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
+                | Self::NoLockFile { .. }
                 | Self::PageSize { .. }
         )
     }
@@ -193,6 +206,12 @@ impl fmt::Display for OpenError {
                 "{} has files of a database ({}) and no manifest",
                 dir.display(),
                 Path::new(entry).display()
+            ),
+            Self::NoLockFile { dir } => write!(
+                f,
+                "{} holds a database and no LOCK file: it was copied without it, and the file \
+                 is made in no directory that holds a database",
+                dir.display()
             ),
             Self::PageSize {
                 dir,
@@ -239,7 +258,7 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
-            Self::Changed { .. } => None,
+            Self::NoLockFile { .. } | Self::Changed { .. } => None,
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }

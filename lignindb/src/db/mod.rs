@@ -128,19 +128,25 @@
 //! | has a manifest of a format version this build does not read | [`OpenError::FormatVersion`] |
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
+//! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
 //!
-//! Each of these is found by reading alone, before the lock file is
-//! made ([`OpenError::left_untouched`]). The directory is looked at once
-//! more under the lock, because someone can have put another in its place
-//! in between. The lock of a lock file that is there is taken with no
-//! file made, so a directory that turns out to be another engine's then is
-//! refused as it is. Only where no lock file was there, and the open
-//! asked for one in a directory it had just seen fit, can such a
-//! directory have a `LOCK` it did not have: that is
-//! [`OpenError::Changed`], and the file is not taken away again, because
-//! another opener may hold it. A `MANIFEST` that is too short
-//! to have a header is reported as a manifest that cannot be read
+//! Each of these is found with no file made
+//! ([`OpenError::left_untouched`]): by reading alone before the lock, or
+//! under the lock of a lock file that was there. A `MANIFEST` that is too
+//! short to have a header is reported as a manifest that cannot be read
 //! ([`OpenError::Manifest`]), and nothing is written for it either.
+//!
+//! **Whom the guarantee is for** (D-129). The byte-for-byte guarantee is
+//! for a directory that nobody else changes while it is being opened, and
+//! for one that is put in the place of a database during the open: the
+//! lock of a database is taken through the lock file that is there, and a
+//! lock file is made in no directory that holds a database. A directory
+//! with no lock file into which another process writes during the open is
+//! refused as [`OpenError::Changed`] and may have gained an empty `LOCK`.
+//! No protocol closes that window against a process that does not take
+//! the lock, because the lock is the only thing two openers share and it
+//! has to be made before it can be held. The file is left where it is
+//! because another opener may hold it.
 //!
 //! # A new database
 //!

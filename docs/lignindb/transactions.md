@@ -965,8 +965,9 @@ fsync the log (CM7), for an fsync of the log that someone else is making.**
 It never waits for a reader or for another open write transaction. Of the
 creation of a checkpoint it waits for the sampling step, and, with the
 exception that follows, for nothing more. The flusher and the cleaner can
-make it wait only through the counts lock: for one hold of it, which
-covers at most one append to the log and no fsync.
+make it wait only through the counts lock, for one hold of it, which
+covers at most one append to the log and no fsync, and, by the same
+exception, the flusher through an fsync of the log.
 
 The exception is the fsync of CM7. The log makes one fsync at a time
 (STORE-01), so a commit that fsyncs the log waits at its own fsync for one
@@ -1697,7 +1698,10 @@ database as well (DU1).
 
 **CK5. Commits go on after sampling.** Bytes appended to a shared file past
 its recorded length are not part of the checkpoint: its manifest gives each
-file's valid length. A commit never waits for the fsync or the linking.
+file's valid length. A commit never waits for the linking. It waits for the
+fsync only in the one case of CM8: a commit whose sync policy has it fsync
+the log (CM7) waits at its own fsync for an fsync of the log that the
+checkpoint is making then. No other commit waits for it.
 
 **CK6. A catch-up by the flusher before sampling is ordinary write-back**
 (FL1 to FL5). It changes no version.
@@ -1876,9 +1880,9 @@ whether either can be made to wait for the other.
 | 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2 | never; the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
-| 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either |
+| 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either; a commit that fsyncs the log (CM7) waits for an fsync of the log that the flusher is making (CM8) |
 | 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites or whose left-over cells it removes; the counts of live values | CL4 to CL7, PV6, PV7, ID2, PN6, LT7 | one page step, or one hold of the counts lock by either |
-| 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling |
+| 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling; a commit that fsyncs the log (CM7) waits for an fsync of the log that the checkpoint is making (CM8, CK5) |
 | 16 | Flusher, flusher | the pages being written back, and the counts of live values | PV4, FL3, FL7, LT7 levels 4a and 5 | one page step, or one hold of the counts lock |
 | 17 | Flusher, cleaner | page-table locations, segment and value-log files, the manifest, pages both would change in a page step, and the counts of live values | PV4, PV7, FL1, FL3, FL7, CL2, CL4, CL5, LT7 levels 3, 4a and 5 | the file-set lock; one page step, or one hold of the counts lock |
 | 18 | Flusher, checkpoint | the manifest and the open files | CK2, CK3, CK6 | the file-set lock, during sampling |

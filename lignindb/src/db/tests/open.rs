@@ -388,19 +388,35 @@ fn entries_that_are_not_the_engines_are_left_alone() {
 
 /// P-18: Platform removes the directory of a checkpoint while its handle
 /// is open. The handle then closes without a panic, with the threads of
-/// its background work running to the end, and makes no directory.
+/// its background work running to the end, makes no directory, and the
+/// thread that closes it, by `close` or by dropping it, makes no call
+/// that changes a file or makes one durable. (What a turn of the
+/// background work that was under way still writes, to files that are
+/// gone, is on its own thread and is not counted here.)
 #[test]
 fn a_handle_whose_directory_was_removed_closes() {
     for explicit in [true, false] {
         let dir = temp();
         let path = dir.path().join("db");
-        let db = Db::open(&path, &options()).expect("a new database");
+        let watched = Watched::default();
+        let options = Options {
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let db = Db::open(&path, &options).expect("a new database");
         plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
         // The database writes while its directory is taken away, so the
         // removal is made until nothing is left.
-        while path.exists() {
-            let _ = fs::remove_dir_all(&path);
+        let began = Instant::now();
+        while let Err(error) = fs::remove_dir_all(&path) {
+            let gone = error.kind() == std::io::ErrorKind::NotFound;
+            if gone && !path.exists() {
+                break;
+            }
+            assert!(began.elapsed() < Duration::from_secs(30), "{error}");
         }
+        assert!(!path.exists());
+        let before = watched.changes_here();
         match explicit {
             true => {
                 let error = db.close().expect_err("nothing could be made durable");
@@ -410,6 +426,7 @@ fn a_handle_whose_directory_was_removed_closes() {
             }
             false => drop(db),
         }
+        assert_eq!(watched.changes_here(), before, "the close wrote");
         assert!(!path.exists(), "the directory was made again");
     }
 }
@@ -619,11 +636,56 @@ fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_
     }
 }
 
-/// The one way an open can leave a file in a directory it refuses: no
-/// lock file was there, the directory was looked at again and seen fit for
-/// a new database, and someone put another engine's directory in its
-/// place before the lock file was made. The error says so, and that file
-/// is all the open added.
+/// A database that was copied without its lock file is refused and left
+/// as it is: the lock file is made in no directory that holds a database,
+/// so that no directory which is put in the place of one, at any moment of
+/// the open, is given a file. With the file put there it opens.
+#[test]
+fn a_database_without_its_lock_file_is_refused_and_no_lock_file_is_made() {
+    let dir = temp();
+    let path = dir.path().join("db");
+    let db = Db::open(&path, &options()).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+    db.close().expect("the session ends");
+    fs::remove_file(path.join("LOCK")).expect("the lock file is left out");
+    let before = image(&path);
+
+    for create_if_missing in [true, false] {
+        let watched = Watched::default();
+        let made = Arc::new(Mutex::new(false));
+        let told = made.clone();
+        watched.at_the_next_lock_that_makes(move || *told.lock().expect("the flag") = true);
+        let reopening = Options {
+            create_if_missing,
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let error = Db::open(&path, &reopening).expect_err("no lock file");
+        assert!(matches!(&error, OpenError::NoLockFile { dir } if *dir == path));
+        assert!(error.left_untouched() && error.source().is_none());
+        assert!(error.to_string().contains("no LOCK file"), "{error}");
+        assert!(
+            !*made.lock().expect("the flag"),
+            "a lock file was asked for"
+        );
+        assert_eq!(watched.changes(), 0, "the open wrote");
+        assert_eq!(image(&path), before);
+    }
+
+    fs::write(path.join("LOCK"), b"").expect("the lock file is put there");
+    let db = Db::open(&path, &options()).expect("the database opens");
+    assert_eq!(
+        seen(&db.snapshot().operation(), subtree(1), b"k"),
+        Some((10, vec![]))
+    );
+}
+
+/// The one way an open can leave a file in a directory it refuses
+/// (D-129): the directory has nothing of any engine in it and no lock
+/// file, it was looked at again and seen fit for a new database, and
+/// another process writes another engine's files into it before the lock
+/// file is made. The open refuses it as changed, and an empty `LOCK` is
+/// all it added: nothing else in the directory is altered.
 #[test]
 fn a_directory_that_is_changed_while_its_lock_file_is_made_is_refused_as_changed() {
     let dir = temp();

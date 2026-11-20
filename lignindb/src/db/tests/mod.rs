@@ -10,13 +10,14 @@ mod wipe;
 mod writes;
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashMap},
     fmt, fs, io,
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
         Arc, Condvar, Mutex,
     },
+    thread::{self, ThreadId},
     time::{Duration, Instant},
 };
 
@@ -53,9 +54,11 @@ pub(super) struct Counts {
     opens: AtomicU64,
     /// Calls that change a file or a directory, or make one durable.
     changes: AtomicU64,
+    /// The same, for each thread that made one.
+    changes_by: Mutex<HashMap<ThreadId, u64>>,
     /// Every sync, in order: what was synced, and the path as the caller
     /// named it, of the directory or of the file when it was opened.
-    synced: Mutex<Vec<(Synced, PathBuf)>>,
+    synced: Mutex<Vec<(Synced, PathBuf, ThreadId)>>,
     /// The directory that paths with no root are in, if there is one.
     root: Option<PathBuf>,
     /// How many appends to a segment go through before one waits, if one
@@ -102,6 +105,8 @@ impl Watched {
 
     fn changed(&self) {
         self.0.changes.fetch_add(1, Ordering::Relaxed);
+        let mut by = self.0.changes_by.lock().expect("the counts");
+        *by.entry(thread::current().id()).or_default() += 1;
     }
 
     fn sync<T>(
@@ -111,7 +116,7 @@ impl Watched {
         sync: impl FnOnce() -> io::Result<T>,
     ) -> io::Result<T> {
         let mut synced = self.0.synced.lock().expect("the list");
-        synced.push((what, path.to_path_buf()));
+        synced.push((what, path.to_path_buf(), thread::current().id()));
         drop(synced);
         self.changed();
         let began = Instant::now();
@@ -201,16 +206,28 @@ impl Watched {
         }
     }
 
+    /// How many of those calls the calling thread has made: what a close
+    /// writes itself, whatever a turn of the background work that was
+    /// under way still writes beside it.
+    pub(super) fn changes_here(&self) -> u64 {
+        let by = self.0.changes_by.lock().expect("the counts");
+        by.get(&thread::current().id()).copied().unwrap_or(0)
+    }
+
     /// The directories that were synced so far, as the caller named them.
     pub(super) fn synced_dirs(&self) -> Vec<PathBuf> {
         let synced = self.0.synced.lock().expect("the list");
-        let dirs = synced.iter().filter(|(what, _)| *what == Synced::Dir);
-        dirs.map(|(_, path)| path.clone()).collect()
+        let dirs = synced.iter().filter(|(what, ..)| *what == Synced::Dir);
+        dirs.map(|(_, path, _)| path.clone()).collect()
     }
 
-    /// Every sync since the last call, in order.
+    /// The syncs that the calling thread has made since the last call, in
+    /// order. Those of other threads are dropped.
     pub(super) fn take_synced(&self) -> Vec<(Synced, PathBuf)> {
-        std::mem::take(&mut *self.0.synced.lock().expect("the list"))
+        let synced = std::mem::take(&mut *self.0.synced.lock().expect("the list"));
+        let here = thread::current().id();
+        let mine = synced.into_iter().filter(|(.., by)| *by == here);
+        mine.map(|(what, path, _)| (what, path)).collect()
     }
 }
 
