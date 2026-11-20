@@ -649,6 +649,10 @@ impl Vfs for CountingVfs {
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         StdVfs.lock(path)
     }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        StdVfs.lock_existing(path)
+    }
 }
 
 impl VfsFile for CountedFile {
