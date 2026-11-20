@@ -178,7 +178,8 @@ const MOVED_BY_A_CONVERSION: &[(&str, usize)] = &[
     ("v5/suite.trace", 12),
 ];
 
-/// A host whose Merks stand in another order than they were entered in.
+/// A host with a Merk at another position than it was entered at, where
+/// that Merk or the one now at the position has a root.
 struct Displaced {
     /// The cell of the host.
     cell: CellAddress,
@@ -605,8 +606,9 @@ struct Replay<'a> {
     /// The subtrees entered under each element, by the subtree of the
     /// element.
     under: HashMap<Prefix, Hosted>,
-    /// The elements a conversion of the trace wrote, by the subtree of the
-    /// element.
+    /// In a trace of [`MOVED_BY_A_CONVERSION`], the elements its
+    /// conversions wrote, by the subtree of the element. Empty in any other
+    /// trace.
     converted: HashSet<(Prefix, Vec<u8>)>,
     tally: Tally,
 }
