@@ -342,8 +342,28 @@ pub(super) struct Steps<'s> {
     versions: &'s Versions,
 }
 
+/// What a test runs when a reclaimer asks for the latest version.
+#[cfg(test)]
+pub(super) type AtTheLatest = Box<dyn FnMut()>;
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run each time a reclaimer on this thread asks for
+    /// the latest version, before it is given it: a commit that lands at
+    /// one of the reclaimer's reads.
+    pub(super) static AT_THE_LATEST: std::cell::RefCell<Option<AtTheLatest>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 impl StepLog for Steps<'_> {
     fn latest(&self) -> CommitVersion {
+        #[cfg(test)]
+        if let Some(mut change) = AT_THE_LATEST.with(|hook| hook.borrow_mut().take()) {
+            // The hook is out of its place while it runs: what it does
+            // can ask for the latest version itself.
+            change();
+            AT_THE_LATEST.with(|hook| *hook.borrow_mut() = Some(change));
+        }
         self.versions.latest()
     }
 

@@ -750,3 +750,138 @@ fn a_step_that_the_log_refuses_is_made_again() {
         Some((30, vec![]))
     );
 }
+
+/// A commit arrives at each of the reclaimer's reads of the latest version
+/// in turn, and enters subtrees beside the dropped Merk and beside the Merk
+/// below it: their records split the leaves of the directory that hold
+/// the records the reclaimer is taking out. Wherever the commit arrives,
+/// the reclaimer reports no error and leaves no record behind: the store
+/// is sound to the physical checker.
+///
+/// A walk to a record's leaf that read the branch before such a commit and
+/// the leaf after it did not find a record that the split had moved. It
+/// took a record of the Merk below for gone, and left it for good; for
+/// the dropped Merk's own record it reported that no such Merk was
+/// dropped.
+///
+/// The commit is made on a thread of its own, and the reclaimer waits for
+/// it at the read. A read that the reclaimer makes inside a page step is
+/// passed over: it holds the lock on the counts of values there, which a
+/// commit waits for, so no commit lands at such a read. Whether a read is
+/// one of those is asked first, by a thread that takes that lock and
+/// gives it back. The first read of a reclaiming is made before any step,
+/// and is not asked about: a commit lands there in every run.
+#[test]
+fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
+    use std::{cell::Cell, rc::Rc, sync::mpsc};
+
+    use crate::db::store::AT_THE_LATEST;
+
+    // Subtrees a hundred apart, so that the directory has a branch and
+    // there is room beside each.
+    let spaced = |n: u32| numbered(n * 100);
+    let (outer, inner) = (numbered(15_050), numbered(17_050));
+    fn small() -> Merk {
+        Merk::sized(b'k', 2, 20)
+    }
+    // The subtrees beside the one numbered `of`, each with a Merk.
+    fn beside(of: u32) -> Writes {
+        let near: Vec<Subtree> = (of - 49..of + 50)
+            .filter(|n| *n != of)
+            .map(numbered)
+            .collect();
+        Writes {
+            enter: near.iter().map(|subtree| (*subtree, None)).collect(),
+            merks: near.iter().map(|subtree| (*subtree, small())).collect(),
+            ..Writes::default()
+        }
+    }
+    // The node of such a Merk that hosts the one below.
+    let host: &[u8] = &[b'k', 0, 0, 0, 1];
+
+    let mut landed = 0;
+    for at_read in 1.. {
+        let dir = temp();
+        let db = Arc::new(Db::open(dir.path(), &options()).expect("a new database"));
+        Writes {
+            enter: (0..300).map(|n| (spaced(n), None)).collect(),
+            ..Writes::default()
+        }
+        .commit(&db);
+        Writes {
+            enter: vec![(outer, None), (inner, Some((outer, host.to_vec())))],
+            merks: vec![(inner, small()), (outer, small().hosting(host, inner))],
+            ..Writes::default()
+        }
+        .commit(&db);
+        halt_background(&db);
+        drop_of(&[outer]).commit(&db);
+
+        let reads = Rc::new(Cell::new(0u32));
+        let committed = Rc::new(Cell::new(false));
+        let (store, count, told) = (db.clone(), reads.clone(), committed.clone());
+        AT_THE_LATEST.with(|hook| {
+            *hook.borrow_mut() = Some(Box::new(move || {
+                count.set(count.get() + 1);
+                if count.get() != at_read {
+                    return;
+                }
+                // Whether the lock on the counts is free: this thread, the
+                // reclaimer's, holds it or nobody does.
+                let (free, answer) = mpsc::channel();
+                let asked = store.clone();
+                let asking = thread::spawn(move || {
+                    drop(asked.shared.store.values.step());
+                    let _ = free.send(());
+                });
+                let in_a_step =
+                    at_read > 1 && answer.recv_timeout(Duration::from_millis(200)).is_err();
+                if !in_a_step {
+                    let (done, landed) = mpsc::channel();
+                    let store = store.clone();
+                    let writer = thread::spawn(move || {
+                        beside(15_050).commit(&store);
+                        beside(17_050).commit(&store);
+                        let _ = done.send(());
+                    });
+                    landed
+                        .recv_timeout(Duration::from_secs(60))
+                        .expect("a commit lands at a read that is made in no page step");
+                    writer.join().expect("the commits are made");
+                    told.set(true);
+                }
+                // Left to end by itself where the lock is held: it ends
+                // when the step does.
+                drop(asking);
+            }));
+        });
+        let mut rounds = 0;
+        while db.stats().reclaimed.merks < 1 {
+            db.reclaim();
+            rounds += 1;
+            assert!(rounds < 1_000, "read {at_read}: {}", db.stats());
+        }
+        AT_THE_LATEST.with(|hook| hook.borrow_mut().take());
+        if reads.get() < at_read {
+            // The reclaiming ended before this read: every read has had
+            // its turn.
+            break;
+        }
+        landed += u32::from(committed.get());
+        let stats = db.stats();
+        assert_eq!(
+            (stats.background.reclaim_errors, stats.reclaimed.nested),
+            (0, 1),
+            "read {at_read}: {:?}",
+            stats.background
+        );
+        db.finish().expect("the store is written back");
+        let report = checked(&db);
+        assert!(
+            report.findings.is_empty() && report.more_findings == 0,
+            "a commit at read {at_read} of the reclaimer:\n{report}"
+        );
+    }
+    println!("a commit landed at {landed} reads of the reclaimer");
+    assert!(landed >= 1, "no commit landed at the first read");
+}
