@@ -7,6 +7,12 @@
 //! the root Merk's elements above both. Write-back writes them, and the
 //! cleaner runs with the owners of values that a store has, which are the
 //! cells of tree pages and the entries of flat leaves.
+//!
+//! The stores of these tests are on files in memory, which the drop of a
+//! store does not check, so each test runs the physical invariant checker
+//! (`crate::verify`) itself: at rest once its cleaner has finished
+//! ([`check_whole`]), and as a reader of a pinned version while the
+//! cleaner works.
 
 use std::{
     collections::BTreeMap,
@@ -23,15 +29,12 @@ use lignin_io::{
     Vfs,
 };
 use lignin_store::{
-    cleaner::{BothOwners, Cleaner, CleanerConfig, CleanerError, CleanerState, ValuePass},
+    cleaner::{Cleaner, CleanerConfig, CleanerState},
     flush::FlushConfig,
     load::LoadBuffers,
     wal::{LogOptions, SyncPolicy},
 };
-use lignin_tree::{
-    flat::FlatOwners,
-    value::{read_value, TreeOwners, ValueBuf},
-};
+use lignin_tree::value::{read_value, ValueBuf};
 
 use super::{
     acceptance::{document_key, grove_batch, reference_key, DOCUMENTS, ROOT},
@@ -247,25 +250,12 @@ fn read(db: &Db, operation: &Operation<'_>) -> Said {
     said
 }
 
-/// One pass of `cleaner` over the value log, with the owners of values
-/// that a store has. The pass takes the operation guard they are used
-/// under itself.
-fn clean_values(
-    cleaner: &Cleaner<'_>,
-    db: &Db,
-    versions: &Versions,
-) -> Result<ValuePass, CleanerError> {
-    let steps = db.steps(versions);
-    let owners = BothOwners(
-        TreeOwners::new(db.loader(), &db.pool, SIZE, &steps),
-        FlatOwners::new(db.loader(), &db.pool, db.config(), &steps),
-    );
-    cleaner.pass_values(&owners)
-}
-
 /// Checks what the blocks left: everybody reads what the model has, the
 /// counts of live values are those of the pointers that the pages hold
-/// (`transactions.md` PV6), and nothing private is left.
+/// (`transactions.md` PV6), nothing private is left, and the physical
+/// invariant checker finds the store sound at rest, the page table with
+/// the blocks that the cleaner moved among the rest. No pass of
+/// write-back or of the cleaner runs meanwhile.
 fn check_whole(world: &World<'_>, db: &Db, versions: &Versions) {
     assert!(db.flush_errors.lock().expect("the errors").is_empty());
     world.check_committed();
@@ -274,6 +264,11 @@ fn check_whole(world: &World<'_>, db: &Db, versions: &Versions) {
     assert_eq!(counted(db), held);
     assert_eq!(db.pool.census().private, 0);
     assert_eq!(db.private_ids(), 0);
+    let report = db.verify_still();
+    assert!(
+        db.unsound(&report).is_empty() && report.more_findings == 0,
+        "the store is not sound at rest:\n{report}"
+    );
 }
 
 /// The most dead space, in a hundred, that a run found after a block,
@@ -308,7 +303,7 @@ fn run(blocks: u64, from: u64, cleaned: bool) -> Measured {
         write_back.tick().expect("a turn of write-back");
         if cleaned {
             cleaner.pass().expect("a pass over the segments");
-            clean_values(&cleaner, &db, &versions).expect("a pass over the value log");
+            (db.clean_values(&versions, &cleaner)).expect("a pass over the value log");
         }
         let space = cleaner.space().expect("the space");
         let values = cleaner.value_space().expect("the value log");
@@ -349,6 +344,7 @@ fn run(blocks: u64, from: u64, cleaned: bool) -> Measured {
             "{did:?}"
         );
     }
+    cleaner.finish().expect("the cleaner's files are closed");
     check_whole(&world, &db, &versions);
     let operation_said = {
         let snapshot = db.reads(&versions).snapshot();
@@ -418,6 +414,8 @@ fn wait_until(what: &str, reached: impl Fn() -> bool) {
 /// until commits have gone by, and reads them again: each time it is
 /// given exactly what that version committed, every value whole, wherever
 /// write-back and the cleaner have put the blocks and the values since.
+/// Every fourth pin, the physical invariant checker reads that version
+/// too, as a reader (`verify::Scope::Reader`), and finds it sound.
 ///
 /// The threads take turns by construction: the reader holds each pin
 /// until two blocks are committed after it, and every few blocks the
@@ -454,13 +452,14 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     let waits = AtomicBool::new(false);
     let cleaner_errors = Mutex::new(Vec::new());
     let (pins, behind, documents_read) = (AtomicU64::new(0), AtomicU64::new(0), AtomicU64::new(0));
+    let checks = AtomicU64::new(0);
 
     std::thread::scope(|scope| {
         scope.spawn(|| write_back.run(|_| failed.store(true, Ordering::Relaxed)));
         let _stop = OnDrop(|| write_back.stop());
         scope.spawn(|| {
             cleaner.run(
-                |cleaner| clean_values(cleaner, &db, &versions),
+                |cleaner| db.clean_values(&versions, cleaner),
                 |error| (cleaner_errors.lock().expect("the errors")).push(error.to_string()),
             )
         });
@@ -475,6 +474,14 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
                     .get(&at.get())
                     .expect("a version that was published");
                 assert_eq!(read(&db, &snapshot.operation()), expected, "at {at}");
+                // Every fourth pin, the physical invariant checker reads
+                // the pinned version as a reader does, under an operation
+                // guard of its own, while the cleaner works.
+                if pins.load(Ordering::SeqCst) % 4 == 0 {
+                    let _guard = versions.guard();
+                    db.check_trees(&versions, at);
+                    checks.fetch_add(1, Ordering::Relaxed);
+                }
                 // The pin is held while two blocks are committed, and
                 // while write-back and the cleaner work on what they
                 // superseded.
@@ -546,6 +553,8 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
         pins >= BLOCKS / 8 && behind >= BLOCKS / 16,
         "{pins} pins, {behind} behind"
     );
+    let checks = checks.into_inner();
+    assert!(checks >= pins / 4, "{checks} checks in {pins} pins");
     // The cleaner did not copy the value log over and over: a pin that
     // keeps emptied files has no other file cleaned for them.
     assert!(
@@ -561,8 +570,9 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
     write_back.checkpoint().expect("a checkpoint");
     for _ in 0..4 {
         cleaner.pass().expect("a pass over the segments");
-        clean_values(&cleaner, &db, &versions).expect("a pass over the value log");
+        (db.clean_values(&versions, &cleaner)).expect("a pass over the value log");
     }
+    cleaner.finish().expect("the cleaner's files are closed");
     check_whole(&world, &db, &versions);
     let snapshot = db.reads(&versions).snapshot();
     assert_eq!(read(&db, &snapshot.operation()), grove.said());

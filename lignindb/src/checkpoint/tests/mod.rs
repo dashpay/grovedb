@@ -3,6 +3,7 @@
 //! any directory, by the store's recovery.
 
 mod acceptance;
+mod cleaner;
 mod crash;
 mod files;
 mod races;

@@ -28,6 +28,7 @@ use lignin_io::Vfs;
 use lignin_store::{
     alloc::{PageAllocator, PageState, Pins},
     cache::{BufferPool, OwnerId, PoolConfig},
+    cleaner::{BothOwners, Cleaner, CleanerError, ValuePass},
     flush::{FlushConfig, FlushError, FlushState, Stores, WriteBack},
     load::{LoadBuffers, PageLoader},
     recovery::{recover, RecoveryError, RecoveryOptions, RecoveryReport},
@@ -40,11 +41,11 @@ use lignin_store::{
 use lignin_tree::{
     directory::Directory,
     drop::{self, Busy, FlatDrop, FlatDrops, FlatReclaimed, Progress, Reclaimed, Reclaimer, Wait},
-    flat::{Committed, FlatConfig, FlatPages, FlatTree, Private, StepLog},
+    flat::{Committed, FlatConfig, FlatOwners, FlatPages, FlatTree, Private, StepLog},
     fragment::Layout,
     hash::{HashRules, Refusal},
     node::{Lease, NodePage, NodeRef},
-    value::InlinePolicy,
+    value::{InlinePolicy, TreeOwners},
 };
 
 use crate::{
@@ -618,6 +619,23 @@ impl Db {
     /// when the value log is cleaned.
     pub fn steps<'s>(&'s self, versions: &'s Versions) -> Steps<'s> {
         Steps { db: self, versions }
+    }
+
+    /// One pass of `cleaner` over the value log of this store, with the
+    /// owners of values that a store has: the cells of tree pages and the
+    /// entries of flat leaves. The pass takes the operation guard they are
+    /// used under itself.
+    pub fn clean_values(
+        &self,
+        versions: &Versions,
+        cleaner: &Cleaner<'_>,
+    ) -> Result<ValuePass, CleanerError> {
+        let steps = self.steps(versions);
+        let owners = BothOwners(
+            TreeOwners::new(self.loader(), &self.pool, SIZE, &steps),
+            FlatOwners::new(self.loader(), &self.pool, self.config(), &steps),
+        );
+        cleaner.pass_values(&owners)
     }
 
     /// A reclaimer of what the drops of this store left.
