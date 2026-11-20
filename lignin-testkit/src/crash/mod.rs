@@ -222,21 +222,25 @@
 //! point, write-back is asked again, and a log that cannot say what it
 //! holds ends the session.
 //!
-//! **An error is a fault's** when a fault was injected into the operation
-//! that failed, or, since the store was opened, into a call whose failure
-//! lasts for the session ([`observe::Observer::lasting_faults`]): a sync,
-//! which cannot be made good, so that the log makes nothing more durable
-//! and a segment keeps every table checkpoint from being installed
-//! (`lignin_store::wal`, "When the file layer fails", and
-//! `lignin_store::flush`, "When something fails"); and any call on a file
-//! of the log, whose failed append the
-//! log does not get over until it is opened again, or on the manifest,
-//! which can be left in doubt. A write or a read that fails in a segment,
-//! a value-log file or a table checkpoint fails the operation it was
-//! injected into and excuses no later one, and the store that a recovery
-//! returns owes nothing to the faults before it. Every other error is a
-//! violation, and so is a store that says it is damaged where only faults
-//! were injected.
+//! **An error is a fault's** in three cases, and a violation in every
+//! other ([`observe::Observer::lasting_faults`]):
+//!
+//! - A fault was injected into the operation that failed.
+//! - Since the store was opened, a sync failed of a file of the log or of
+//!   a segment. A failed sync cannot be made good: the log makes nothing
+//!   more durable in the session, and a segment keeps every table
+//!   checkpoint from being installed (`lignin_store::wal`, "When the file
+//!   layer fails", and `lignin_store::flush`, "When something fails").
+//! - An append to the log failed earlier in the session, and the log had
+//!   not been rolled when the operation began: until it is, it takes no
+//!   item (`transactions.md` CM9 item 5).
+//!
+//! What else a fault leaves, the store gets over in the session: a file
+//! whose append or creation failed is given up for another, a deletion is
+//! made again, and a manifest that could not be replaced stays in force.
+//! The store that a recovery returns owes nothing to the faults before
+//! it. A store that says it is damaged where only faults were injected is
+//! a violation as well.
 //!
 //! The states a crash leaves of those runs are recovered with no fault and
 //! held to the same rule. One in four is then recovered once more, on a

@@ -492,6 +492,15 @@ impl Session {
         self.log.end()
     }
 
+    /// Whether the log takes an item now. After an append that failed it
+    /// takes none until it has been rolled: the file is cut off where its
+    /// last whole item ends, by whoever keeps the log's files, and every
+    /// append before that fails (`transactions.md` CM9 item 5,
+    /// `LogError::NoActiveFile`).
+    pub fn log_takes_items(&self) -> bool {
+        !matches!(self.log.next_group(), Err(LogError::NoActiveFile))
+    }
+
     /// Whether the log takes nothing more in this session: it cannot say
     /// whether an item is in it.
     pub fn stopped(&self) -> bool {

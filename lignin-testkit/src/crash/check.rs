@@ -315,7 +315,182 @@ pub fn check_with_faults(
 
 #[cfg(test)]
 mod tests {
+    use lignin_io::{
+        sim::{Fault, FaultRule, SimConfig},
+        Create, OpenMode,
+    };
+    use lignin_store::segment::ManifestStore;
+
     use super::*;
+    use crate::crash::{
+        model::{Change, Value},
+        store::Committed,
+    };
+
+    /// A file system with an empty directory for a store.
+    fn empty() -> SimVfs {
+        let fs = SimVfs::new(SimConfig::new(5));
+        fs.create_dir(db_dir()).expect("a directory");
+        fs.sync_dir(Path::new("/")).expect("synced");
+        fs
+    }
+
+    /// What a killed session leaves of a store with one commit: the files,
+    /// the version and the pages.
+    fn killed() -> (SimVfs, u64, Pages) {
+        let fs = empty();
+        let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+        Session::create(vfs.clone(), db_dir()).expect("a store");
+        let session = Session::open(vfs, db_dir(), &Tuning::small()).expect("opened");
+        let entries = vec![(b"k".to_vec(), Value::Inline(vec![1]))];
+        let committed = session.commit(&[Change::NewFlat { entries }], false, false, &mut |_| {});
+        assert!(matches!(committed, Committed::Yes { .. }), "{committed:?}");
+        let pages = session.read(&BTreeSet::new()).expect("read");
+        let landed = session.latest().get();
+        (fs, landed, pages)
+    }
+
+    /// The files of `fs` once more, as a crash that loses nothing leaves
+    /// them.
+    fn copy(fs: &SimVfs) -> SimVfs {
+        let image = fs.crash_image();
+        image.recover(&image.keep_all()).expect("fits")
+    }
+
+    fn said<T: fmt::Debug>(checked: Result<T, Violation>) -> (Kind, String) {
+        let violation = checked.expect_err("a violation");
+        (violation.kind, violation.detail)
+    }
+
+    #[test]
+    fn a_state_that_recovers_again_to_another_state_is_told() {
+        let (fs, landed, pages) = killed();
+        let tuning = Tuning::small();
+        assert_eq!(check_again(&copy(&fs), &tuning, landed, &pages), Ok(()));
+
+        let other = check_again(&copy(&fs), &tuning, landed + 1, &pages);
+        let violation = other.clone().expect_err("another version");
+        assert!(
+            violation
+                .to_string()
+                .starts_with("recovering again gave another state: the second recovery: "),
+            "{violation}"
+        );
+        let (kind, detail) = said(other);
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(
+            detail.ends_with(&format!(
+                "it is at version {landed}, and the first was at {}",
+                landed + 1
+            )),
+            "{detail}"
+        );
+        let (kind, detail) = said(check_again(&copy(&fs), &tuning, landed, &Pages::new()));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(detail.contains("is in use and should not be"), "{detail}");
+        let (kind, detail) = said(check_again(&empty(), &tuning, landed, &pages));
+        assert_eq!(
+            (kind, detail.as_str()),
+            (Kind::NotTheSame, "the manifest is gone")
+        );
+    }
+
+    #[test]
+    fn a_recovery_with_faults_returns_the_store_that_the_one_without_returned() {
+        let (fs, landed, pages) = killed();
+        let tuning = Tuning::small();
+        let check = |state: &SimVfs, landed: Option<u64>| {
+            check_with_faults(state, FaultOdds::NONE, &tuning, landed, &pages)
+        };
+        // No fault is drawn: the recovery is the one that was made before.
+        assert_eq!(check(&copy(&fs), Some(landed)), Ok(Faulted::Returned));
+        assert_eq!(check(&empty(), None), Ok(Faulted::NoStore));
+        let (kind, detail) = said(check(&copy(&fs), None));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(
+            detail.contains("returned a store, and the directory held none"),
+            "{detail}"
+        );
+        let (kind, detail) = said(check(&empty(), Some(landed)));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(
+            detail.contains("found no store, and the directory holds one"),
+            "{detail}"
+        );
+        let (kind, detail) = said(check(&copy(&fs), Some(landed + 1)));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(
+            detail.starts_with("a recovery with faults injected: it is at version"),
+            "{detail}"
+        );
+
+        // A fault fails the recovery, which takes the directory's lock
+        // first: the recovery after it is held to the same.
+        let failing = |state: SimVfs| {
+            state.add_rule(FaultRule::new(Fault::Eio));
+            state
+        };
+        assert_eq!(
+            check(&failing(copy(&fs)), Some(landed)),
+            Ok(Faulted::Failed)
+        );
+        assert_eq!(check(&failing(empty()), None), Ok(Faulted::Failed));
+        let (kind, detail) = said(check(&failing(copy(&fs)), None));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert_eq!(detail, "it returned a store where there was none");
+        let (kind, detail) = said(check(&failing(empty()), Some(landed)));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert_eq!(detail, "it found no store where there was one");
+        let (kind, detail) = said(check(&failing(copy(&fs)), Some(landed + 1)));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(
+            detail.starts_with("the recovery after one that a fault failed: it is at version"),
+            "{detail}"
+        );
+
+        // A recovery that fails with no fault injected has no excuse, and
+        // neither has the one after a fault that says the store is
+        // damaged.
+        let damaged = || {
+            let state = copy(&fs);
+            let manifest = db_dir().join(ManifestStore::FILE_NAME);
+            let file = state
+                .open(&manifest, OpenMode::Write(Create::IfMissing))
+                .expect("opened");
+            file.write_at(b"not a manifest at all", 0).expect("written");
+            state
+        };
+        let (kind, detail) = said(check(&damaged(), Some(landed)));
+        assert_eq!(kind, Kind::NotRecovered);
+        assert!(
+            detail.starts_with("a recovery of a state that had recovered: the store is damaged"),
+            "{detail}"
+        );
+        let (kind, detail) = said(check(&failing(damaged()), Some(landed)));
+        assert_eq!(kind, Kind::NotTheSame);
+        assert!(detail.starts_with("the store is damaged"), "{detail}");
+        // The same state, held to the model, did not recover.
+        let history = History::new();
+        let (kind, detail) = said(check_state(
+            &damaged(),
+            &history,
+            &Expect::exactly(0),
+            &tuning,
+        ));
+        assert_eq!(kind, Kind::NotRecovered);
+        assert!(detail.starts_with("the store is damaged"), "{detail}");
+        let (kind, detail) = said(check_state(
+            &empty(),
+            &history,
+            &Expect::exactly(0),
+            &tuning,
+        ));
+        assert_eq!(kind, Kind::NotRecovered);
+        assert_eq!(
+            detail,
+            "the directory has no manifest, and the store was made"
+        );
+    }
 
     #[test]
     fn a_panic_is_a_violation_that_says_what_the_panic_said() {

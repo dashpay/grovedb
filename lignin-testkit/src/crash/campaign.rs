@@ -353,9 +353,13 @@ struct Lineage {
     /// How many faults had been injected into the file system when the
     /// operation that is being made began.
     op_before: u64,
-    /// How many faults that last had been injected when the session was
-    /// opened ([`Observer::lasting_faults`]).
+    /// How many faults had been injected, and how many of them last
+    /// ([`Observer::lasting_faults`]), when the session was opened.
+    faults_before: u64,
     lasting_before: u64,
+    /// Whether the log took no item when the operation that is being made
+    /// began ([`Session::log_takes_items`]).
+    rolling: bool,
     /// The point that the durable part of an image of this file system
     /// last recovered to: no state of a later crash is before it.
     durable: usize,
@@ -375,18 +379,23 @@ struct Lineage {
 }
 
 impl Lineage {
-    /// Whether an error of the session is a fault's. One was injected into
-    /// the operation that is being made, or, since the store was opened,
-    /// into a call whose failure lasts for the session: a sync, or a call
-    /// on the log's files or on the manifest
-    /// ([`Observer::lasting_faults`]). A store that a recovery returned
-    /// owes nothing to the faults of the session before, and a write or a
-    /// read that fails in a segment, a value-log file or a table
-    /// checkpoint fails the operation it was injected into and no later
-    /// one.
+    /// Whether an error of the session is a fault's:
+    ///
+    /// - a fault was injected into the operation that is being made
+    /// - since the store was opened, a sync failed that lasts for the
+    ///   session ([`Observer::lasting_faults`])
+    /// - an append to the log failed earlier in the session, and the log
+    ///   had not been rolled when the operation began: until it is, it
+    ///   takes no item
+    ///
+    /// A store that a recovery returned owes nothing to the faults of the
+    /// session before, and every other fault fails the operation it was
+    /// injected into and no later one.
     fn excused(&self) -> bool {
-        self.observer.fs().stats().faults > self.op_before
+        let faults = self.observer.fs().stats().faults;
+        faults > self.op_before
             || self.observer.lasting_faults() > self.lasting_before
+            || (self.rolling && faults > self.faults_before)
     }
 
     /// What the session knows to be durable is the floor from here on,
@@ -534,7 +543,9 @@ impl Run {
             sessions: 0,
             session: None,
             op_before: 0,
+            faults_before: 0,
             lasting_before: 0,
+            rolling: false,
             durable,
             held: None,
             pinned: false,
@@ -784,7 +795,9 @@ impl Run {
             expect.floor = latest;
         });
         lineage.op_before = fs.stats().faults;
+        lineage.faults_before = lineage.op_before;
         lineage.lasting_before = lineage.observer.lasting_faults();
+        lineage.rolling = false;
         lineage.session = Some(session);
         self.check_images(lineage);
         true
@@ -853,6 +866,7 @@ impl Run {
     fn make(&mut self, lineage: &mut Lineage, op: &Op) -> Option<&'static str> {
         let session = lineage.session.take()?;
         lineage.op_before = lineage.observer.fs().stats().faults;
+        lineage.rolling = !session.log_takes_items();
         let reopen = self.make_with(lineage, &session, op);
         for complaint in session.complaints() {
             self.tolerate_error(lineage, "write-back", complaint);
@@ -1838,6 +1852,7 @@ mod tests {
         let (mut run, mut lineage) = begun();
         let fs = lineage.observer.fs().clone();
         let vfs = lineage.observer.vfs();
+        vfs.create_dir(std::path::Path::new("/seg")).expect("made");
         let open = |name: &str| {
             let path = std::path::Path::new(name);
             vfs.open(path, OpenMode::Append(Create::New))
@@ -1851,10 +1866,9 @@ mod tests {
         };
         assert!(!lineage.excused());
 
-        // A write that fails, in a file that is neither the log's nor the
-        // manifest: an error of the same operation is the fault's, and one
-        // of the next operation is a violation.
-        let (written, synced) = (open("/written"), open("/synced"));
+        // A write that fails: an error of the same operation is the
+        // fault's, and one of the next operation is a violation.
+        let (written, synced) = (open("/written"), open("/seg/synced"));
         fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
         assert!(written.append(b"block").is_err());
         assert_eq!(failed(&mut run, &lineage), (1, 0));
@@ -1868,15 +1882,55 @@ mod tests {
             "a call failed with no fault injected: it failed"
         );
 
-        // A sync that fails lasts: the errors of the operations after it
-        // are the fault's, until the store is opened again.
+        // While the log takes no item after an append that failed, the
+        // errors of the operations are that fault's.
+        lineage.rolling = true;
+        assert_eq!(failed(&mut run, &lineage), (2, 1));
+        lineage.rolling = false;
+        assert!(!lineage.excused());
+
+        // The sync of a segment that fails lasts: the errors of the
+        // operations after it are the fault's, until the store is opened
+        // again.
         fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS));
         assert!(synced.sync_data().is_err());
         begin(&mut lineage);
         assert!(lineage.excused());
-        assert_eq!(failed(&mut run, &lineage), (2, 1));
+        assert_eq!(failed(&mut run, &lineage), (3, 1));
         assert!(run.step(&mut lineage, Op::Kill));
         assert!(!lineage.excused());
-        assert_eq!(failed(&mut run, &lineage), (2, 2));
+        assert_eq!(failed(&mut run, &lineage), (3, 2));
+    }
+
+    #[test]
+    fn the_log_takes_no_item_after_an_append_that_failed_until_it_is_rolled() {
+        let (mut run, mut lineage) = begun();
+        let fs = lineage.observer.fs().clone();
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!((fs.stats().faults, run.tally.get("commits made")), (1, 0));
+        // The append failed in the log, which no sync of it did.
+        assert_eq!(lineage.observer.lasting_faults(), 0);
+        let takes = |lineage: &Lineage| {
+            let session = lineage.session.as_ref().expect("a session");
+            session.log_takes_items()
+        };
+        assert!(!takes(&lineage));
+        // An operation that begins now finds the log so, and an error of
+        // it is the fault's.
+        assert!(run.step(&mut lineage, Op::Pass));
+        assert!(lineage.rolling && lineage.excused());
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        // Once the log is rolled it takes items again, and a commit is
+        // made with nothing to excuse.
+        assert!(run.step(&mut lineage, Op::RollLog));
+        assert!(takes(&lineage));
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
+        assert!(!lineage.rolling && !lineage.excused());
+        assert_eq!(run.tally.get("commits made"), 1);
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
     }
 }

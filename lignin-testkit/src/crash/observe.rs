@@ -71,16 +71,27 @@ struct Watch {
     lasting: u64,
 }
 
-/// Whether a fault in a call on `path` lasts for the session of the store,
-/// whatever the call: the log's files, whose failed append the log does
-/// not get over until it is opened again (`lignin_store::wal`, "When the
-/// file layer fails"), and the manifest, which can be left in doubt. Any
-/// fault on them counts, a failed read among them: the log reads its file
-/// to find out what became of an append that failed.
+/// Whether a sync that fails of the file at `path` lasts for the session of
+/// the store. A failed sync cannot be made good (`lignin_io::vfs`), and
+/// two kinds of file have nothing to fall back on:
+///
+/// - a file of the log: the log makes nothing more durable in the session,
+///   and every later sync fails (`lignin_store::wal`, "When the file layer
+///   fails", `LogError::SyncFailed`)
+/// - a segment, write-back's or the cleaner's: chains point to blocks that
+///   cannot be made durable, and no table checkpoint is installed until
+///   the store is opened again (`lignin_store::flush` and
+///   `lignin_store::cleaner`, "When something fails")
+///
+/// A value-log file whose sync fails is given up for another, a table
+/// checkpoint is written again, and a manifest that was left in doubt is
+/// opened again by the next call that needs it.
 fn lasts(path: &Path) -> bool {
-    let manifest = |name: &std::ffi::OsStr| name.to_string_lossy().starts_with("MANIFEST");
-    path.components().any(|part| part.as_os_str() == "wal")
-        || path.file_name().is_some_and(manifest)
+    let named = |part: std::path::Component<'_>| {
+        let part = part.as_os_str();
+        part == "wal" || part == "seg"
+    };
+    path.components().any(named)
 }
 
 /// The file layer of an observed run. A clone is another handle on the
@@ -176,27 +187,26 @@ impl Observer {
         self.watch().lies
     }
 
-    /// How many faults were injected into a call whose failure lasts for
-    /// the session of the store: a sync, of a file or of a directory, and
-    /// any call on a file of the log or on the manifest. A failed sync
-    /// cannot be made good (`lignin_io::vfs`): the log makes nothing more
-    /// durable in the session, a segment whose sync failed keeps every
-    /// table checkpoint from being installed (`lignin_store::flush`, "When
-    /// something fails"), and a name that a directory's sync left in doubt
-    /// stays so.
+    /// How many faults were injected that last for the session of the
+    /// store: the syncs of a file of the log or of a segment that failed.
+    /// Every other fault fails the call it was injected into, and what it
+    /// leaves the store gets over in the same session: a file whose append
+    /// or creation failed is given up for another, a deletion is made
+    /// again, a manifest that could not be replaced stays in force.
     pub fn lasting_faults(&self) -> u64 {
         self.watch().lasting
     }
 
-    /// Looks at the file system after a call on `path`: a fault that was
-    /// injected into the call is counted, and an image is taken if the
-    /// call changed what a crash can leave.
-    fn after(&self, path: &Path, lasting: bool) {
+    /// Looks at the file system after a call on `path`, a sync of that
+    /// file if `synced`: a fault that was injected into the call is
+    /// counted, and an image is taken if the call changed what a crash can
+    /// leave.
+    fn after(&self, path: &Path, synced: bool) {
         let mut watch = self.watch();
         let stats = self.fs.stats();
         if stats.faults != watch.faults {
             watch.faults = stats.faults;
-            watch.lasting += u64::from(lasting || lasts(path));
+            watch.lasting += u64::from(synced && lasts(path));
         }
         if stats.changes != watch.changes {
             watch.changes = stats.changes;
@@ -278,9 +288,7 @@ impl Vfs for Observer {
         if self.loses_dir_sync(path) {
             return Ok(());
         }
-        let synced = self.fs.sync_dir(path);
-        self.after(path, true);
-        synced
+        self.observed(path, self.fs.sync_dir(path))
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
@@ -435,44 +443,52 @@ mod tests {
     }
 
     #[test]
-    fn a_fault_in_a_sync_in_the_log_or_in_the_manifest_lasts() {
+    fn a_sync_of_the_log_or_of_a_segment_that_fails_lasts() {
         use lignin_io::sim::{Fault, FaultRule, OpSet};
 
         let observer = Observer::new(fs(), Expect::of_new_store());
         let (fs, vfs) = (observer.fs().clone(), observer.vfs());
-        vfs.create_dir(Path::new("/db/wal")).expect("made");
+        for dir in ["/db/wal", "/db/seg", "/db/val"] {
+            vfs.create_dir(Path::new(dir)).expect("made");
+        }
         let append = OpenMode::Append(Create::New);
         let open = |path: &str| vfs.open(Path::new(path), append).expect("opened");
-        let (segment, log, manifest) =
-            (open("/db/seg"), open("/db/wal/1.log"), open("/db/MANIFEST"));
         let fail = |ops: OpSet| fs.add_rule(FaultRule::new(Fault::Eio).on(ops));
+        let counts = || (fs.stats().faults, observer.lasting_faults());
 
-        // A write to a segment that fails is its call's and no more. A
-        // sync that fails lasts, of whatever file.
-        fail(OpSet::WRITES);
-        assert!(segment.append(b"block").is_err());
-        assert_eq!((fs.stats().faults, observer.lasting_faults()), (1, 0));
-        fail(OpSet::SYNCS);
-        assert!(segment.sync_data().is_err());
-        assert_eq!((fs.stats().faults, observer.lasting_faults()), (2, 1));
-
-        // A fault in the log lasts, whether it failed a write or a read,
-        // and so does one in the manifest and in the sync of a directory.
+        // What the store gets over in the same session: a write and a read
+        // that fail, in the log as anywhere, the sync of a value-log file,
+        // of the manifest and of a directory, and a deletion.
+        let (log, values, manifest) = (
+            open("/db/wal/1.log"),
+            open("/db/val/1.val"),
+            open("/db/MANIFEST.tmp"),
+        );
         fail(OpSet::WRITES);
         assert!(log.append(b"item").is_err());
-        assert_eq!(observer.lasting_faults(), 2);
         fail(OpSet::READS);
         assert!(log.len().is_err());
-        assert_eq!(observer.lasting_faults(), 3);
-        fail(OpSet::WRITES);
-        assert!(manifest.append(b"edit").is_err());
-        assert_eq!(observer.lasting_faults(), 4);
         fail(OpSet::SYNCS);
-        assert!(vfs.sync_dir(Path::new("/db")).is_err());
-        assert_eq!((fs.stats().faults, observer.lasting_faults()), (6, 5));
+        assert!(values.sync_data().is_err());
+        fail(OpSet::SYNCS);
+        assert!(manifest.sync_all().is_err());
+        fail(OpSet::SYNCS);
+        assert!(vfs.sync_dir(Path::new("/db/wal")).is_err());
+        fail(OpSet::NAMES);
+        assert!(vfs.remove_file(Path::new("/db/wal/1.log")).is_err());
+        assert_eq!(counts(), (6, 0));
+
+        // What lasts: the sync of a file of the log, and of a segment.
+        let (log, segment) = (open("/db/wal/2.log"), open("/db/seg/1.seg"));
+        fail(OpSet::SYNCS);
+        assert!(log.sync_data().is_err());
+        assert_eq!(counts(), (7, 1));
+        fail(OpSet::SYNCS);
+        assert!(segment.sync_all().is_err());
+        assert_eq!(counts(), (8, 2));
         // A call with no fault counts nothing.
-        vfs.create_dir(Path::new("/db/val")).expect("made");
-        assert_eq!((fs.stats().faults, observer.lasting_faults()), (6, 5));
+        vfs.create_dir(Path::new("/db/table")).expect("made");
+        assert_eq!(counts(), (8, 2));
     }
 
     #[test]
