@@ -96,6 +96,8 @@
 mod hashes;
 #[path = "merk_store/proofs.rs"]
 mod proofs;
+#[path = "merk_store/restore.rs"]
+mod restore;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -269,6 +271,9 @@ struct Tally {
     hashed: hashes::Made,
     /// The proofs that Merk made on both engines where a trace proves.
     proved: proofs::Proved,
+    /// The Merks the replay left that were copied by chunks on both
+    /// engines.
+    restored: restore::Restored,
 }
 
 impl Tally {
@@ -296,6 +301,7 @@ impl Tally {
         self.hashed.with_axes += other.hashed.with_axes;
         self.hashed.reloaded += other.hashed.reloaded;
         self.proved.add(other.proved);
+        self.restored.add(other.restored);
     }
 }
 
@@ -1218,6 +1224,17 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         });
     }
 
+    // Every Merk the trace leaves is copied as state sync copies one: its
+    // chunks are the same from both engines, and a restore from them
+    // leaves the same Merk on both. Once for a trace, whichever way its
+    // nodes were handed over.
+    if kinds == Kinds::Narrowest {
+        let reader = path.begin();
+        let (block, grove) = (transactions.block(), observer.grove());
+        let restored = restore::compare(&db, block, &reader, grove, spec.grove_version);
+        replay.tally.restored.add(restored);
+    }
+
     // The store as the replay leaves it is run through the physical
     // invariant checker (`lignindb::verify`): the pages, the trees, the
     // directory against the cells, the values, the page ids and the page
@@ -1387,6 +1404,23 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(
             proved.proofs > 50_000 && proved.bytes > 10_000_000,
+            "{tally:?}"
+        );
+        // Chunks were served on both engines where a trace asks for chunks
+        // of a Merk by their ids, and Merks the traces leave were copied
+        // by chunks: Merks of several chunks among them, restores that
+        // finished, and more of those than were refused.
+        assert!(
+            proved.chunk_calls > 0 && proved.chunk_bytes > 0,
+            "{tally:?}"
+        );
+        let restored = tally.restored;
+        assert!(
+            restored.merks > 0 && restored.of_several_chunks > 0,
+            "{tally:?}"
+        );
+        assert!(
+            restored.finished > restored.refused && restored.nodes > 0,
             "{tally:?}"
         );
     }
