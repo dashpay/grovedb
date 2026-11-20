@@ -3,6 +3,20 @@
 //! A normal build takes them from `std`. A build with `--cfg loom` takes them
 //! from `loom`, which runs the pool's own code under every interleaving of a
 //! model and checks each access to a frame's bytes against the others.
+//!
+//! On Linux and on Apple's systems no lock of the pool is allocated when it
+//! is first taken: that would be memory the pool does not count, and an
+//! allocation in a load into a fixed frame. On Linux `std`'s `Mutex` is a
+//! futex word. On Apple's systems it is a pthread mutex in a box that is
+//! allocated when the mutex is first locked, and `std`'s `RwLock` is a word
+//! with a queue of nodes on the stacks of the threads that wait. So there
+//! the pool's `Mutex` is a `RwLock` that is only ever locked for writing. A
+//! thread that has to wait for one, and that `std` has given no handle yet,
+//! is given its handle then: that is the thread's memory, from the system's
+//! allocator, and not the pool's.
+//!
+//! Every other system keeps `std`'s `Mutex`, and nothing is promised of it
+//! there: on some of them it is the pthread mutex in a box as well.
 
 #[cfg(loom)]
 pub(super) use loom::sync::{
@@ -12,8 +26,12 @@ pub(super) use loom::sync::{
 #[cfg(not(loom))]
 pub(super) use std::sync::{
     atomic::{AtomicPtr, AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering},
-    Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard,
+    RwLock, RwLockReadGuard, RwLockWriteGuard,
 };
+#[cfg(all(not(loom), not(target_vendor = "apple")))]
+pub(super) use std::sync::{Mutex, MutexGuard};
+#[cfg(all(not(loom), target_vendor = "apple"))]
+pub(super) use std::sync::{RwLock as Mutex, RwLockWriteGuard as MutexGuard};
 use std::{
     ops::Deref,
     sync::{PoisonError, TryLockError},
@@ -94,7 +112,7 @@ struct ThreadNumbers {
 }
 
 #[cfg(not(loom))]
-static THREAD_NUMBERS: std::sync::Mutex<ThreadNumbers> = std::sync::Mutex::new(ThreadNumbers {
+static THREAD_NUMBERS: Mutex<ThreadNumbers> = Mutex::new(ThreadNumbers {
     free: Vec::new(),
     made: 0,
 });
@@ -106,9 +124,7 @@ struct ThreadNumber(usize);
 #[cfg(not(loom))]
 impl ThreadNumber {
     fn take() -> Self {
-        let mut numbers = THREAD_NUMBERS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner);
+        let mut numbers = lock(&THREAD_NUMBERS);
         Self(numbers.free.pop().unwrap_or_else(|| {
             numbers.made += 1;
             numbers.made - 1
@@ -119,11 +135,7 @@ impl ThreadNumber {
 #[cfg(not(loom))]
 impl Drop for ThreadNumber {
     fn drop(&mut self) {
-        THREAD_NUMBERS
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .free
-            .push(self.0);
+        lock(&THREAD_NUMBERS).free.push(self.0);
     }
 }
 
@@ -164,7 +176,11 @@ pub(super) fn set_thread_number(number: usize) {
 /// Locks a mutex. A panic in another holder does not stop the pool: every
 /// change under one of its locks is finished before anything that can panic.
 pub(super) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+    #[cfg(any(loom, not(target_vendor = "apple")))]
+    let locked = mutex.lock();
+    #[cfg(all(not(loom), target_vendor = "apple"))]
+    let locked = mutex.write();
+    locked.unwrap_or_else(PoisonError::into_inner)
 }
 
 pub(super) fn read<T>(lock: &RwLock<T>) -> RwLockReadGuard<'_, T> {
