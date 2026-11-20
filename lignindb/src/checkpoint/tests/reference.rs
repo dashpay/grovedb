@@ -395,9 +395,9 @@ impl Grove {
     }
 }
 
-/// A file layer that counts what a creation asks of the system. The
-/// syncs are those that are asked for one by one, and `in_sets` those of
-/// the sets (`Vfs::sync_together`).
+/// A file layer that counts what a creation asks of the system, and how
+/// long the system took for it. The syncs are those that are asked for one
+/// by one, and `in_sets` those of the sets (`Vfs::sync_together`).
 #[derive(Debug, Default)]
 struct Counts {
     links: AtomicU64,
@@ -406,6 +406,20 @@ struct Counts {
     opens: AtomicU64,
     sets: AtomicU64,
     in_sets: AtomicU64,
+    /// Nanoseconds in the links, in the syncs that were asked for one by
+    /// one, in the sets, and in every other call on a name.
+    link_time: AtomicU64,
+    sync_time: AtomicU64,
+    set_time: AtomicU64,
+    name_time: AtomicU64,
+}
+
+/// Runs `call` and adds the time it took to `spent`.
+fn clocked<T>(spent: &AtomicU64, call: impl FnOnce() -> T) -> T {
+    let began = Instant::now();
+    let answer = call();
+    spent.fetch_add(began.elapsed().as_nanos() as u64, Ordering::Relaxed);
+    answer
 }
 
 #[derive(Debug)]
@@ -439,12 +453,12 @@ impl VfsFile for CountingFile {
 
     fn sync_data(&self) -> io::Result<()> {
         self.counts.syncs.fetch_add(1, Ordering::Relaxed);
-        self.inner.sync_data()
+        clocked(&self.counts.sync_time, || self.inner.sync_data())
     }
 
     fn sync_all(&self) -> io::Result<()> {
         self.counts.syncs.fetch_add(1, Ordering::Relaxed);
-        self.inner.sync_all()
+        clocked(&self.counts.sync_time, || self.inner.sync_all())
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -459,40 +473,43 @@ impl VfsFile for CountingFile {
 impl Vfs for Counting {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
         self.counts.opens.fetch_add(1, Ordering::Relaxed);
+        let inner = clocked(&self.counts.name_time, || self.inner.open(path, mode))?;
         Ok(Box::new(CountingFile {
-            inner: self.inner.open(path, mode)?,
+            inner,
             counts: self.counts.clone(),
         }))
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.inner.rename(from, to)
+        clocked(&self.counts.name_time, || self.inner.rename(from, to))
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
         self.counts.links.fetch_add(1, Ordering::Relaxed);
-        self.inner.hard_link(original, link)
+        clocked(&self.counts.link_time, || {
+            self.inner.hard_link(original, link)
+        })
     }
 
     fn remove_file(&self, path: &Path) -> io::Result<()> {
-        self.inner.remove_file(path)
+        clocked(&self.counts.name_time, || self.inner.remove_file(path))
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.create_dir(path)
+        clocked(&self.counts.name_time, || self.inner.create_dir(path))
     }
 
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.remove_dir(path)
+        clocked(&self.counts.name_time, || self.inner.remove_dir(path))
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        self.inner.read_dir(path)
+        clocked(&self.counts.name_time, || self.inner.read_dir(path))
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
         self.counts.dir_syncs.fetch_add(1, Ordering::Relaxed);
-        self.inner.sync_dir(path)
+        clocked(&self.counts.sync_time, || self.inner.sync_dir(path))
     }
 
     /// The set is handed to the system's file layer as a set of its own
@@ -516,21 +533,21 @@ impl Vfs for Counting {
                 SyncItem::Dir(path) => SyncItem::Dir(path),
             })
             .collect();
-        self.inner.sync_together(&items)
+        clocked(&self.counts.set_time, || self.inner.sync_together(&items))
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        self.inner.lock(path)
+        clocked(&self.counts.name_time, || self.inner.lock(path))
     }
 
     fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        self.inner.lock_existing(path)
+        clocked(&self.counts.name_time, || self.inner.lock_existing(path))
     }
 }
 
 impl Counts {
-    /// The links, the syncs of files, the syncs of directories and the
-    /// opens so far.
+    /// The links, the syncs of files, the syncs of directories, the opens,
+    /// the sets and the syncs in them so far.
     fn read(&self) -> [u64; 6] {
         [
             &self.links,
@@ -541,6 +558,18 @@ impl Counts {
             &self.in_sets,
         ]
         .map(|count| count.load(Ordering::Relaxed))
+    }
+
+    /// The time so far in the links, in the syncs that were asked for one
+    /// by one, in the sets, and in the other calls on a name.
+    fn spent(&self) -> [Duration; 4] {
+        [
+            &self.link_time,
+            &self.sync_time,
+            &self.set_time,
+            &self.name_time,
+        ]
+        .map(|nanos| Duration::from_nanos(nanos.load(Ordering::Relaxed)))
     }
 }
 
@@ -700,6 +729,10 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
     let targets = checkpoints_in(&db);
     let mut made = Vec::new();
     let (mut taken, mut taken_on_cpu) = (Vec::new(), Vec::new());
+    // Of the checkpoints with no catch-up: the whole time, and the time in
+    // the links, in the syncs one by one, in the sets and in the other
+    // calls on names.
+    let mut parts: [Vec<Duration>; 5] = Default::default();
     for index in 0..blocks {
         grove.block(&db, &versions, BLOCK, true);
         if index >= checkpoints {
@@ -711,20 +744,32 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
         if durable_first {
             (db.write_back(&versions).sync_log()).expect("the log is made durable");
         }
-        let before = counts.read();
+        let (before, spent_before) = (counts.read(), counts.spent());
         let (created, took, on_cpu) = timed(|| checkpointer(&db, &versions).create(&target));
         let created = created.expect("a checkpoint");
         taken.push(took);
         taken_on_cpu.extend(on_cpu);
-        let after = counts.read();
+        let (after, spent_after) = (counts.read(), counts.spent());
         let [links, syncs, dir_syncs, file_opens, sets, in_sets] =
             [0, 1, 2, 3, 4, 5].map(|at| after[at] - before[at]);
+        let spent = [0, 1, 2, 3].map(|at| spent_after[at] - spent_before[at]);
         println!(
             "checkpoint {index}: version {}, {} files, {held} bytes of log held, \
              {links} links, {syncs} syncs of files and {dir_syncs} of directories one by one, \
-             {sets} sets of {in_sets} syncs, {file_opens} opens, catch-up {:?}",
-            created.version, created.linked, created.catch_up
+             {sets} sets of {in_sets} syncs, {file_opens} opens, catch-up {:?}; \
+             {:.2} ms: {} in the links, the syncs one by one, the sets, other calls on names",
+            created.version,
+            created.linked,
+            created.catch_up,
+            took.as_secs_f64() * 1e3,
+            millis(&spent)
         );
+        if created.catch_up.is_none() {
+            parts[0].push(took);
+            for (part, spent) in parts[1..].iter_mut().zip(spent) {
+                part.push(spent);
+            }
+        }
         assert_eq!(created.version, versions.latest());
         assert_eq!(created.copied, 0);
         made.push((
@@ -738,21 +783,36 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
 
     let (like, _) = Db::new(16);
     let (mut opened_in, mut opened_on_cpu) = (Vec::new(), Vec::new());
+    // Of each open: the whole time, and the time in the syncs one by one,
+    // in the sets and in the other calls on names.
+    let mut open_parts: [Vec<Duration>; 4] = Default::default();
     for (target, version, hash, transitions) in made.iter().take(opens as usize) {
+        let (before, spent_before) = (counts.read(), counts.spent());
         let (opened, took, on_cpu) =
             timed(|| Db::open(vfs.clone(), target, frames, options, flush, &like));
         let (checkpoint, its_versions, report) = opened.expect("the checkpoint opens");
         opened_in.push(took);
         opened_on_cpu.extend(on_cpu);
+        let (after, spent_after) = (counts.read(), counts.spent());
+        let [_, syncs, dir_syncs, file_opens, sets, in_sets] =
+            [0, 1, 2, 3, 4, 5].map(|at| after[at] - before[at]);
+        let spent = [1, 2, 3].map(|at| spent_after[at] - spent_before[at]);
         println!(
             "opened version {} in {:.2} ms: {} bytes of log read, {} commits replayed, \
-             {} pages rebuilt",
+             {} pages rebuilt; {syncs} syncs of files and {dir_syncs} of directories one by \
+             one, {sets} sets of {in_sets} syncs, {file_opens} opens; ms: {} in the syncs one \
+             by one, the sets, other calls on names",
             report.landed,
             took.as_secs_f64() * 1e3,
             report.log_bytes,
             report.commits,
-            report.pages_rebuilt
+            report.pages_rebuilt,
+            millis(&spent)
         );
+        open_parts[0].push(took);
+        for (part, spent) in open_parts[1..].iter_mut().zip(spent) {
+            part.push(spent);
+        }
         assert_eq!(its_versions.latest(), *version);
         if !reads {
             continue;
@@ -790,6 +850,22 @@ fn the_reference_database_is_checkpointed_and_opened_in_time() {
                 millis(samples)
             );
         }
+    }
+    if !parts[0].is_empty() {
+        println!(
+            "a checkpoint with no catch-up, {} of them (ms, the median of each): {} whole, in \
+             the links, in the syncs one by one, in the sets, in other calls on names",
+            parts[0].len(),
+            millis(&parts.each_ref().map(|part| median(part)))
+        );
+    }
+    if !open_parts[0].is_empty() {
+        println!(
+            "an open of a checkpoint, {} of them (ms, the median of each): {} whole, in the \
+             syncs one by one, in the sets, in other calls on names",
+            open_parts[0].len(),
+            millis(&open_parts.each_ref().map(|part| median(part)))
+        );
     }
     println!(
         "{:.0} MiB on disk in {} files",
