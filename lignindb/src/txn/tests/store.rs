@@ -1080,7 +1080,8 @@ impl Db {
     }
 
     /// Leaves the recovery of this store's files out of the check that its
-    /// drop makes ([`Self::recovered_as_left`]): for a test that removes
+    /// drop makes (the comparison with what a recovery makes of the
+    /// files, D-108 item 3): for a test that removes
     /// files of its store while the session goes on with what it has in
     /// memory and open. The physical check is made all the same.
     pub fn files_are_gone(&self) {
@@ -1131,7 +1132,8 @@ impl Db {
 ///
 /// A store that passes is then recovered from the files it leaves, and
 /// what the recovery makes is compared with what the session had
-/// ([`Db::recovered_as_left`], D-108 item 3).
+/// (D-108 item 3). The drop has the store to itself, so nothing commits
+/// beside the recovery, which writes to the directory.
 #[cfg(debug_assertions)]
 impl Drop for Db {
     fn drop(&mut self) {
@@ -1171,6 +1173,23 @@ pub enum RecoveredAsLeft {
 }
 
 impl Db {
+    /// Ends the life of a store with the comparison that its drop makes,
+    /// and returns what the comparison found. It takes the store and its
+    /// versions: a recovery writes to the directory, so nothing may commit
+    /// beside it or after it, and nothing holds the store any more. The
+    /// drop that follows makes no check of the files the recovery wrote.
+    #[cfg(test)]
+    pub(crate) fn into_recovered(
+        db: Arc<Self>,
+        versions: Versions,
+    ) -> Result<RecoveredAsLeft, String> {
+        drop(versions);
+        let db = Arc::try_unwrap(db).unwrap_or_else(|_| panic!("the store has another holder"));
+        let compared = db.recovered_as_left();
+        db.unchecked.store(true, Ordering::Relaxed);
+        compared
+    }
+
     /// Recovers the store from the files it leaves, with the store's own
     /// recovery (`lignin_store::recovery`), and compares what comes out
     /// with what the session has: the version it lands on, the image of
@@ -1178,13 +1197,24 @@ impl Db {
     /// live values (D-108 item 3). The drop of a store does this in a
     /// debug build, after the physical check.
     ///
+    /// **Only whoever has the store to itself calls this**: the drop, and
+    /// `Db::into_recovered` of the tests. A recovery makes a manifest, writes what
+    /// it replays and begins a log file in the directory of the session,
+    /// and the comparison reads the session's latest version and its
+    /// pages one after the other: a commit beside it would be compared
+    /// half.
+    ///
     /// It is asked only of a store in a directory of its own
-    /// ([`Self::new`]): a recovery writes, and such a directory is nobody
-    /// else's and goes with the store. A store whose test removed files
-    /// of it is not asked ([`Self::files_are_gone`]), and a session that
-    /// ended for writes is not asked either: a commit of it that was not
-    /// published can be in the log, and the recovery lands on it (DU2).
-    pub fn recovered_as_left(&self) -> Result<RecoveredAsLeft, String> {
+    /// ([`Self::new`]): such a directory is nobody else's and goes with
+    /// the store. A store whose test removed files of it is not asked
+    /// ([`Self::files_are_gone`]), and a session that ended for writes is
+    /// not asked either: a commit of it that was not published can be in
+    /// the log, and the recovery lands on it (DU2).
+    #[cfg_attr(
+        not(any(test, debug_assertions)),
+        expect(dead_code, reason = "the drop that calls it is of debug builds")
+    )]
+    fn recovered_as_left(&self) -> Result<RecoveredAsLeft, String> {
         use lignin_format::{flat_page::FlatPageKind, tree_page::TreePage};
         use lignin_store::load::FRAME_FORMAT;
 
@@ -1235,8 +1265,11 @@ impl Db {
         let mut buffers = LoadBuffers::new();
         let mut live = 0;
         for &(id, state) in &had {
-            let found = new.get(id, landed, &mut buffers).ok();
-            let found = found.map(|frame| image(&frame));
+            let found = match new.get(id, landed, &mut buffers) {
+                Ok(frame) => Some(image(&frame)),
+                Err(lignin_store::load::LoadError::NoPage { .. }) => None,
+                Err(error) => return Err(format!("page {id} after recovery: {error}")),
+            };
             let now = store.allocator.state(id);
             if state != PageState::Live {
                 if found.is_some() || now == PageState::Live {
