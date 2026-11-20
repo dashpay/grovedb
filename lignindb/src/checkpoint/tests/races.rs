@@ -462,9 +462,21 @@ fn wait_until(what: &str, met: impl Fn() -> bool) {
 
 /// "Commits go on after sampling" (CK5): while the creation links files,
 /// with the lock on the manifest held, a commit is made and published. It
-/// is not in the checkpoint.
+/// is not in the checkpoint, though the log is durable through it before
+/// the log's files are linked: the file the sample ended in is named at
+/// the sampled end, and not as far as it is durable.
+///
+/// Once the log is not durable through the sampled version, so that the
+/// creation's own sync covers the later commit, and once it is, so that
+/// the creation syncs nothing and a flush covers it.
 #[test]
 fn a_commit_is_published_while_the_files_are_linked() {
+    for synced in [false, true] {
+        a_commit_is_published_while_a_creation_links(synced);
+    }
+}
+
+fn a_commit_is_published_while_a_creation_links(synced: bool) {
     let (db, versions) = store_with_log(24 << 10, 256);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(24);
@@ -472,7 +484,12 @@ fn a_commit_is_published_while_the_files_are_linked() {
         block(&mut world, &mut rng, round * 20, 20);
         turn(&db, &versions);
     }
+    match synced {
+        true => drop(db.write_back(&versions).sync_log().expect("a flush")),
+        false => drop(block(&mut world, &mut rng, 4 * 20, 20)),
+    }
     let sampled = versions.latest();
+    assert_eq!(db.log.durable().version == sampled, synced);
     let captured = world.model.clone();
     let target = checkpoints_in(&db).join("1");
     let (go, linked) = (AtomicBool::new(false), AtomicBool::new(false));
@@ -480,21 +497,23 @@ fn a_commit_is_published_while_the_files_are_linked() {
     let (created, world) = std::thread::scope(|scope| {
         let committer = scope.spawn(|| {
             wait_until("the creation never linked", || go.load(Ordering::SeqCst));
-            block(&mut world, &mut rng, 4 * 20, 20);
+            block(&mut world, &mut rng, 5 * 20, 20);
             world
         });
-        let pause = |step: Step| {
-            if step != Step::Linking {
-                return;
+        let pause = |step: Step| match step {
+            Step::Linking => {
+                assert!(db.manifest.try_lock().is_err(), "the manifest is free");
+                assert!(!target.join("seg").exists(), "a file is linked already");
+                go.store(true, Ordering::SeqCst);
+                wait_until(
+                    "no commit was published while the files were linked",
+                    || versions.latest() > sampled,
+                );
+                linked.store(true, Ordering::SeqCst);
             }
-            assert!(db.manifest.try_lock().is_err(), "the manifest is free");
-            assert!(!target.join("seg").exists(), "a file is linked already");
-            go.store(true, Ordering::SeqCst);
-            wait_until(
-                "no commit was published while the files were linked",
-                || versions.latest() > sampled,
-            );
-            linked.store(true, Ordering::SeqCst);
+            // What a flush does, before the log's files are linked.
+            Step::Sampled if synced => drop(db.write_back(&versions).sync_log().expect("a flush")),
+            _ => {}
         };
         let created = checkpointer(&db, &versions)
             .with_options(NO_CATCH_UP)
@@ -506,6 +525,11 @@ fn a_commit_is_published_while_the_files_are_linked() {
     assert!(linked.load(Ordering::SeqCst));
     assert_eq!(created.version, sampled);
     assert_eq!(versions.latest(), sampled.next().expect("a version"));
+    // The log was durable through the later commit when its files were
+    // linked, and the checkpoint's log ends before it.
+    let durable = db.log.durable();
+    assert_eq!(durable.version, versions.latest(), "synced: {synced}");
+    assert!(created.log_end < durable.place, "synced: {synced}");
     let opened = open(&db, &target);
     assert_eq!(opened.versions.latest(), sampled);
     opened.check(&captured);
