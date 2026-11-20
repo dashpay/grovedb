@@ -4,6 +4,9 @@
 # runs which, where and when.
 #
 #   lignin-ci.sh crates              the LigninDB crates, one a line
+#   lignin-ci.sh machine [--every S] the machine: cores, memory, swap, free disk;
+#                                    with --every, again every S seconds (S a
+#                                    whole number above 0)
 #   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
 #                                    machine (ARGS follow `cargo test`), then
 #                                    those of Merk's node store on LigninDB
@@ -95,9 +98,64 @@ refuse() {
     [ -z "$found" ] || fail "$what:"$'\n'"$found"
 }
 
+# What command "$@" prints, or `unreadable` when it fails or prints nothing.
+probe() {
+    local out
+    if out=$("$@" 2>/dev/null) && [ -n "$out" ]; then
+        echo "$out"
+    else
+        echo unreadable
+    fi
+}
+
+linux_memory() {
+    LC_ALL=C free -m | awk '
+        /^Mem:/ { memory = sprintf("memory %d of %d MiB used", $3, $2) }
+        /^Swap:/ { swap = sprintf(", swap %d of %d MiB", $3, $2) }
+        END { if (memory != "") print memory swap }'
+}
+
+macos_memory() {
+    local bytes
+    bytes=$(sysctl -n hw.memsize) && [[ $bytes =~ ^[0-9]+$ ]] &&
+        echo "memory $((bytes / 1048576)) MiB installed"
+}
+
+disk_free() {
+    df -Pm "$1" | awk 'NR == 2 && $4 ~ /^[0-9]+$/ { print $4 " MiB" }'
+}
+
+# Cores, memory and swap (on Linux used of total; on macOS the memory
+# installed and the swap in use), and the disk free under the checkout and
+# the temporary directory. A value that cannot be read is printed as such.
+machine() {
+    local cores memory
+    if [ -r /proc/meminfo ]; then
+        cores=$(probe nproc)
+        memory=$(probe linux_memory)
+    else
+        cores=$(probe sysctl -n hw.ncpu)
+        memory="$(probe macos_memory), swap $(probe sysctl -n vm.swapusage)"
+    fi
+    memory=${memory/#unreadable/memory unreadable}
+    printf '== %s machine: %s cores, %s; free disk: %s here, %s in %s\n' "$(date -u +%H:%M:%S)" \
+        "$cores" "$memory" "$(probe disk_free .)" "$(probe disk_free "${TMPDIR:-/tmp}")" "${TMPDIR:-/tmp}"
+}
+
 case "${1:-}" in
 crates)
     listed crates
+    ;;
+
+machine)
+    case "$#:${2:-}" in
+    1:) machine ;;
+    3:--every)
+        [[ $3 =~ ^[1-9][0-9]*$ ]] || fail "usage: lignin-ci.sh machine [--every SECONDS]"
+        while machine; do sleep "$3" >/dev/null 2>&1; done
+        ;;
+    *) fail "usage: lignin-ci.sh machine [--every SECONDS]" ;;
+    esac
     ;;
 
 test)

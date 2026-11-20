@@ -67,6 +67,21 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 `lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
 
+### Hosted runners
+
+The jobs on GitHub's hosted runners (`ubuntu-24.04-arm`, `macos-15`) build the LigninDB crates' tests with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`, so a panic still names its file and line.
+
+Why: the arm job died three runs in a row ("The runner has received a shutdown signal", exit code 143) about two minutes into the last phase of the build, while the test executables were linked, with no test run; its log shows no "No space left on device" and no killed compiler. The likely cause is that phase's disk or memory. A reproduction of the job's first command on strixbox (x86_64, four build jobs as on the arm runner, a cap of 16 GiB of memory with no swap, no compiler cache) gave:
+
+| Debug info | Executables (38) | All artifacts | RocksDB's objects, besides | Peak memory, page cache included |
+| --- | --- | --- | --- | --- |
+| full, Cargo's default | 9.3 GiB | 11.7 GiB | 1.9 GiB | 14.9 GB |
+| line tables | 5.3 GiB | 7.2 GiB | 1.9 GiB | 11.0 GB |
+
+The 38 executables are the 35 test binaries and the programs `lignin-diff`, `lignin-bench` and `lignin-golden`. In all, line tables take about a third less disk (9.1 GiB against 13.6) and a quarter less memory. GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. The arm build was not measured.
+
+Each of those jobs prints the runner's cores, memory, swap and free disk at its start (`lignin-ci.sh machine`), and again every minute while the tests build and run, so a runner that dies leaves its last sample in the log. On macOS the memory printed is what is installed, and the swap what is in use.
+
 ## Nightly
 
 `.github/workflows/lignindb-nightly.yml`, at 02:17 UTC, and by hand from the Actions tab. GitHub runs a scheduled workflow from the default branch only, so these start once the workflow is on `develop`. A pull request that changes the workflow or `lignin-ci.sh` runs every job briefly instead, to show that its commands work.
