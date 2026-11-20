@@ -609,6 +609,12 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.charged(len.map(|len| (len.is_some(), len)))
     }
 
+    /// A cell names a child by where the child's cell is, so a link is
+    /// written only to a node the Merk holds or the same change set writes.
+    fn takes_links_to_absent_nodes(&self) -> bool {
+        false
+    }
+
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         // A value is kept by the read it was kept from. Of a node this
         // handle has not loaded there is none to name, so its value is

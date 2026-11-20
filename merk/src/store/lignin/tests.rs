@@ -44,6 +44,7 @@ use crate::{
     CryptoHash, Error, Link, Merk, Op, TreeFeatureType, TreeType,
 };
 
+mod chunk;
 mod cursor;
 mod proof;
 mod views;

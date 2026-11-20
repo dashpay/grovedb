@@ -180,6 +180,10 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         self.0.load_node_value(node)
     }
 
+    fn takes_links_to_absent_nodes(&self) -> bool {
+        self.0.takes_links_to_absent_nodes()
+    }
+
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         self.0.write_node(node, change)
     }

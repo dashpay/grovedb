@@ -146,6 +146,9 @@ pub(super) struct MerkChange {
     /// Whether the Merk has a host that the same write does not name it
     /// in.
     pub(super) anchored: bool,
+    /// Whether the change set is the whole Merk, which had no node before
+    /// it: every node once, a child before its parent, every value stated.
+    pub(super) whole: bool,
 }
 
 /// A write of a record that is no node: the root key, an aux or a meta
@@ -787,16 +790,23 @@ thread_local! {
 /// where Merk says the value is unchanged, and the comparing read here,
 /// which is of exactly the bytes that are kept. A Merk whose subtree the
 /// batch enters has no node before the write, whatever the transaction
-/// holds under its prefix until then: nothing of it is read.
-pub(super) fn apply_batch(scope: &Scope<'_, '_>, batch: &Batch<'_>) -> Result<Written, Error> {
+/// holds under its prefix until then: nothing of it is read. Nor is
+/// anything read of a Merk that `whole` marks, by its place among the
+/// Merks of the batch: its change set says that it is the whole Merk, and
+/// `apply` has checked what that asks.
+pub(super) fn apply_batch(
+    scope: &Scope<'_, '_>,
+    batch: &Batch<'_>,
+    whole: &[bool],
+) -> Result<Written, Error> {
     let mut written = Written::default();
     let fresh = |subtree: Subtree| {
         let enters = |write: &SubtreeWrite<'_>| write.enters() && write.subtree() == subtree;
         batch.subtrees.iter().any(enters)
     };
     let mut keep = Vec::with_capacity(batch.merks.len());
-    for merk in batch.merks {
-        let fresh = fresh(merk.subtree);
+    for (at, merk) in batch.merks.iter().enumerate() {
+        let fresh = whole.get(at) == Some(&true) || fresh(merk.subtree);
         let mut kept = Vec::with_capacity(merk.nodes.len());
         for node in merk.nodes {
             let held = match fresh {
@@ -866,6 +876,25 @@ pub(super) fn link_of(link: &Option<LinkWrite>) -> Option<LinkPut<'_>> {
 }
 
 fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
+    // A change set that says it is the whole Merk is applied with no read
+    // of the nodes it names. So it states every value and removes nothing,
+    // and it is refused for a Merk whose entry names a root.
+    for merk in write.merks.iter().filter(|merk| merk.whole) {
+        let keeps = |node: &NodeWrite| matches!(node.value, ValueWrite::Kept);
+        if merk.nodes.iter().any(keeps) || !merk.removed.is_empty() {
+            return Err(refused(
+                "a change set that is said to be the whole Merk keeps a value or removes a node",
+            ));
+        }
+        let has_root = |entry: LigninEntry| entry.root_key.is_some();
+        if read_subtree(scope, &merk.subtree)?.is_some_and(has_root) {
+            return Err(refused(
+                "a change set that is said to be the whole Merk, for a Merk that has a root",
+            ));
+        }
+    }
+    let whole: Vec<bool> = write.merks.iter().map(|merk| merk.whole).collect();
+
     let hosted: Vec<Vec<Option<Vec<Subtree>>>> = (write.merks.iter())
         .map(|merk| {
             let lists = merk.nodes.iter().map(|node| {
@@ -921,6 +950,7 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
             merks: &merks,
             subtrees: &subtrees,
         },
+        &whole,
     )
 }
 
@@ -942,7 +972,7 @@ fn apply_parts(
             .collect();
         written.push(part.with_batch(&mut |batch| {
             if enters.is_empty() {
-                return apply_batch(scope, batch);
+                return apply_batch(scope, batch, &[]);
             }
             let subtrees = with_enters(batch.subtrees, &enters);
             apply_batch(
@@ -951,6 +981,7 @@ fn apply_parts(
                     subtrees: &subtrees,
                     ..*batch
                 },
+                &[],
             )
         })?);
     }

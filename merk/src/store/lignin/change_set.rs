@@ -137,6 +137,9 @@ pub struct LigninChangeSet {
     nodes: Vec<(NodeWrite, PutSizes)>,
     removed: Vec<(Vec<u8>, Option<KeyValueStorageCost>)>,
     root: RootWrite,
+    /// Whether the change set is the whole Merk
+    /// ([`NodeChangeSet::state_whole_merk`]).
+    whole: bool,
     records: Vec<RecordOp>,
     /// The charge of an immediate handle's change set, to which each change
     /// is added as it is made.
@@ -150,6 +153,7 @@ impl fmt::Debug for LigninChangeSet {
             .field("nodes", &self.nodes.len())
             .field("removed", &self.removed.len())
             .field("root", &self.root)
+            .field("whole", &self.whole)
             .field("records", &self.records)
             .finish_non_exhaustive()
     }
@@ -166,6 +170,7 @@ impl LigninChangeSet {
             nodes: Vec::new(),
             removed: Vec::new(),
             root: RootWrite::Keep,
+            whole: false,
             records: Vec::new(),
             immediate: immediate.then(|| MODEL.immediate_batch()),
         }
@@ -325,6 +330,7 @@ impl LigninChangeSet {
             removed: self.removed.into_iter().map(|(key, _)| key).collect(),
             root: self.root,
             anchored,
+            whole: self.whole,
         }
     }
 }
@@ -389,6 +395,10 @@ impl NodeChangeSet for LigninChangeSet {
 
     fn state_root(&mut self, root_key: Option<&[u8]>) {
         self.root = RootWrite::Set(root_key.map(<[u8]>::to_vec));
+    }
+
+    fn state_whole_merk(&mut self) {
+        self.whole = true;
     }
 
     fn put_root_key(
@@ -684,6 +694,14 @@ impl LigninBatch {
     }
 
     pub(super) fn stage(&self, change_set: LigninChangeSet) -> Result<(), Error> {
+        // A batch keeps one outcome for each key and not the change set, so
+        // nothing would tell the transaction that the Merk is whole.
+        if change_set.whole {
+            return Err(refused(
+                "a change set that is said to be the whole Merk, through a handle that stages its \
+                 writes",
+            ));
+        }
         let writes_nodes = change_set.writes_nodes();
         if !writes_nodes && change_set.records.is_empty() {
             return Ok(());

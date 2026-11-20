@@ -16,6 +16,7 @@ use std::{
     },
 };
 
+use ed::Encode;
 use grovedb_element::{reference_path::ReferencePathType, BackwardReferences, Element};
 use grovedb_query::QueryItem;
 use grovedb_version::version::GROVE_VERSIONS;
@@ -51,6 +52,12 @@ pub(super) enum Call {
     Trunk(u8, Option<u8>),
     /// A branch proof: the key of its root and its depth.
     Branch(Vec<u8>, u8),
+    /// The chunk of a restore under a chunk id (`chunk.rs`).
+    Chunk(Vec<u8>),
+    /// The chunk of a restore with an index.
+    ChunkAt(usize),
+    /// The chunks of a restore from a chunk id on, up to a limit of bytes.
+    MultiChunk(Vec<u8>, Option<usize>),
     /// The value under a key, from the nodes in memory or from the store.
     Get(Vec<u8>, bool),
     Exists(Vec<u8>),
@@ -156,6 +163,32 @@ pub(super) fn answer<'db, S: NodeStore<'db>>(
             });
             format!("{proved:?}")
         }
+        Call::Chunk(chunk_id) => {
+            let chunk = merk.chunks().and_then(|mut producer| {
+                let (chunk, next) = producer.chunk(chunk_id, grove_version)?;
+                Ok((encoded(&chunk), next))
+            });
+            format!("{chunk:?}")
+        }
+        Call::ChunkAt(index) => {
+            let chunk = merk.chunks().and_then(|mut producer| {
+                let (chunk, next) = producer.chunk_with_index(*index, grove_version)?;
+                Ok((encoded(&chunk), next))
+            });
+            format!("{chunk:?}")
+        }
+        Call::MultiChunk(chunk_id, limit) => {
+            let chunks = merk.chunks().and_then(|mut producer| {
+                let multi = producer.multi_chunk_with_limit(chunk_id, *limit, grove_version)?;
+                let ops = multi
+                    .chunk
+                    .iter()
+                    .flat_map(|op| op.encode().expect("an op"));
+                let bytes = hex::encode(ops.collect::<Vec<u8>>());
+                Ok((bytes, multi.next_index, multi.remaining_limit))
+            });
+            format!("{chunks:?}")
+        }
         Call::Get(key, from_memory) => {
             let got = merk.get(key, *from_memory, NO_VALUE_DEFINED_COST, grove_version);
             format!("{:?}", got.unwrap_add_cost(&mut read))
@@ -198,7 +231,7 @@ fn element_key(n: u8) -> Vec<u8> {
 /// Nodes whose values are elements of GroveDB of the kinds a proof tells
 /// apart, a value that is no element, and an empty one. Two of them are
 /// longer than a cell holds in line.
-fn elements(tree_type: TreeType) -> Vec<(Vec<u8>, Op)> {
+pub(super) fn elements(tree_type: TreeType) -> Vec<(Vec<u8>, Op)> {
     let serialized = |element: Element| element.serialize(version()).expect("an element");
     let reference = ReferencePathType::AbsolutePathReference(vec![vec![1], vec![2, 3]]);
     let referred = BackwardReferences::with_max_incoming(3);
@@ -352,6 +385,8 @@ fn kind(call: &Call) -> Option<&'static str> {
         Call::CountOffset(.., true) => "a local count-offset proof",
         Call::Trunk(..) => "a trunk",
         Call::Branch(..) => "a branch",
+        Call::Chunk(_) | Call::ChunkAt(_) => "a chunk",
+        Call::MultiChunk(..) => "chunks",
         Call::Get(..)
         | Call::Exists(_)
         | Call::ValueHash(_)
@@ -1107,8 +1142,8 @@ impl VfsFile for CountedFile {
 /// A store whose reads of the value log are counted, with a Merk of
 /// `nodes` nodes that is committed and written back: every value is in
 /// the value log, since each is longer than a cell holds in line.
-struct Counted {
-    lignin: Lignin,
+pub(super) struct Counted {
+    pub(super) lignin: Lignin,
     value_reads: Arc<AtomicU64>,
     rocks: TempStorage,
 }
@@ -1117,13 +1152,13 @@ const LONG: usize = 400;
 
 /// The value of the node `n` of a [`Counted`] store: an item, and another
 /// for each node.
-fn long_value(n: u64) -> Vec<u8> {
+pub(super) fn long_value(n: u64) -> Vec<u8> {
     let item = Element::new_item(vec![n as u8; LONG]);
     item.serialize(version()).expect("an item")
 }
 
 impl Counted {
-    fn new(tree_type: TreeType, nodes: u64) -> Self {
+    pub(super) fn new(tree_type: TreeType, nodes: u64) -> Self {
         let vfs = CountingVfs::default();
         let value_reads = vfs.value_reads.clone();
         let dir = tempfile::tempdir().expect("a directory");
@@ -1201,7 +1236,7 @@ impl Counted {
     /// that only reads. The answers and the costs are the same, and what
     /// is returned is the answers, and how many reads of the value log
     /// the open made and then each call.
-    fn reads(&self, tree_type: TreeType, calls: &[Call]) -> (Vec<String>, Vec<u64>) {
+    pub(super) fn reads(&self, tree_type: TreeType, calls: &[Call]) -> (Vec<String>, Vec<u64>) {
         let rocks_transaction = self.rocks.start_transaction();
         let context = self
             .rocks
