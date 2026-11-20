@@ -35,13 +35,19 @@ pub const DELETING_FILE_NAME: &str = "MANIFEST.deleting";
 /// **A directory of such a name is a creation's, with everything in it,
 /// and its callers open none as a database.** Nothing in the engine's open
 /// knows the name: it would take an empty one, or one with a lock file
-/// alone, for a place to make a database in. One whose lock is held is
-/// taken for one that is being built, and is left alone. Any other is
-/// taken for what a creation that was cut short left, a part of a
-/// checkpoint or a whole one that did not get its name: the next creation
-/// at the same target empties it and builds in it, and [`delete`] removes
-/// it. No checkpoint is made at a name that ends so
+/// alone, for a place to make a database in. One that holds something
+/// else than a file under the name of its lock file is refused
+/// ([`CheckpointError::NotALock`]). Of the others, one whose lock is held
+/// is taken for one that is being built, and is left alone, and one whose
+/// lock is had is taken for what a creation that was cut short left, a
+/// part of a checkpoint or a whole one that did not get its name: the
+/// next creation at the same target empties it and builds in it, and
+/// [`delete`] removes it. No checkpoint is made at a name that ends so
 /// ([`CheckpointError::ReservedName`]).
+///
+/// What is looked at for this, and what the looks do not tell, is in the
+/// [module documentation](super) ("Durability, and a creation that
+/// fails").
 pub const CREATING_SUFFIX: &str = ".creating";
 
 /// How many bytes of a file are copied at a time.
@@ -74,7 +80,8 @@ fn is_building(path: &Path) -> bool {
 
 /// What `path` is in the directory `parent` above it, which is listed and
 /// not followed: a directory of its own, a file, or something else, such
-/// as a link. `None` if nothing there has its name.
+/// as a link. `None` if `parent` lists nothing under the name of `path`,
+/// byte for byte.
 fn kind_of(
     vfs: &dyn Vfs,
     parent: &Path,
@@ -86,6 +93,116 @@ fn kind_of(
     let name = path.file_name();
     let named = beside.iter().find(|entry| Some(&*entry.name) == name);
     Ok(named.map(|entry| entry.kind))
+}
+
+/// Whether a file system may take `name` for the name of the lock file.
+/// One that does not tell capital letters from small ones takes other
+/// spellings for it, so this holds for the name itself, for a name that
+/// differs from it only in the case of its letters, and for every name
+/// with a byte outside ASCII, of which such a file system may make one of
+/// those letters.
+fn may_name_the_lock(name: &OsStr) -> bool {
+    let name = name.as_encoded_bytes();
+    name.eq_ignore_ascii_case(LOCK_FILE_NAME.as_bytes()) || !name.is_ascii()
+}
+
+/// The look at the directory `building`, which has a name that a creation
+/// builds under, before its lock is taken: whether a directory is there
+/// whose lock to take. `false` where the directory `parent` above lists
+/// the name as a file or as something else, such as a link, and where the
+/// file layer finds no directory to list at the path. Any other failure
+/// to list is returned.
+///
+/// A directory is refused that holds something else than a file under a
+/// name that may be the lock file's ([`may_name_the_lock`],
+/// [`CheckpointError::NotALock`]). Taking the lock opens what the path of
+/// the lock file leads to, and makes a file there if there is none: what
+/// a link leads to, where a link has that name.
+///
+/// Where `parent` lists nothing under the name of `building`, byte for
+/// byte, and a directory can be listed there all the same, as on a file
+/// system that keeps a name in another spelling than the one given, this
+/// look cannot tell a directory of its own from a link to one, and the
+/// look under the lock does ([`held_at`]).
+fn lockable(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<bool, CheckpointError> {
+    if matches!(kind_of(vfs, parent, building)?, Some(kind) if kind != EntryKind::Dir) {
+        return Ok(false);
+    }
+    let entries = match vfs.read_dir(building) {
+        Ok(entries) => entries,
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Ok(false);
+        }
+        Err(error) => return Err(CheckpointError::io("list", building)(error)),
+    };
+    let no_lock =
+        |entry: &&DirEntry| entry.kind != EntryKind::File && may_name_the_lock(&entry.name);
+    match entries.iter().find(no_lock) {
+        Some(entry) => Err(CheckpointError::NotALock {
+            path: building.join(&entry.name),
+        }),
+        None => Ok(true),
+    }
+}
+
+/// The look at the directory at `path` under its lock: whether the
+/// directory whose lock file `lock` is held on is there, as a directory of
+/// its own in the directory `parent` above. If it is, what it holds is
+/// returned. `parent` has to list `path` as a directory, the directory at
+/// `path` has to list its lock file, under that name byte for byte, as a
+/// file, and that file has to be the one `lock` is on. What is listed
+/// under the name of the lock file as something else is not looked into.
+///
+/// Where `parent` lists nothing under the name of `path`, byte for byte,
+/// the directory is known by its lock file alone. That is looked for in
+/// every entry of `parent` that is no file: it has to be found in a
+/// directory, and in nothing else. So a link through which it is found
+/// refuses the directory, whether `path` is that link or the link is
+/// beside it. An entry of which the file layer fails to say whether the
+/// lock file is in it counts as not having it if it is a directory, and
+/// as having it if not.
+fn held_at(
+    vfs: &dyn Vfs,
+    lock: &dyn VfsLock,
+    parent: &Path,
+    path: &Path,
+) -> Result<Option<Vec<DirEntry>>, CheckpointError> {
+    let lock_in = |dir: &Path| lock.is_at(&dir.join(LOCK_FILE_NAME));
+    let beside = vfs
+        .read_dir(parent)
+        .map_err(CheckpointError::io("list", parent))?;
+    let name = path.file_name();
+    let named = beside.iter().find(|entry| Some(&*entry.name) == name);
+    if named.is_some_and(|named| named.kind != EntryKind::Dir) {
+        return Ok(None);
+    }
+    let entries = match vfs.read_dir(path) {
+        Ok(entries) => entries,
+        Err(error) if matches!(error.kind(), ErrorKind::NotFound | ErrorKind::NotADirectory) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(CheckpointError::io("list", path)(error)),
+    };
+    let is_lock = |entry: &DirEntry| entry.name == LOCK_FILE_NAME && entry.kind == EntryKind::File;
+    if !entries.iter().any(is_lock)
+        || !lock_in(path).map_err(CheckpointError::io("look for the lock file in", path))?
+    {
+        return Ok(None);
+    }
+    if named.is_none() {
+        let mut found = false;
+        for entry in beside.iter().filter(|entry| entry.kind != EntryKind::File) {
+            match (entry.kind, lock_in(&parent.join(&entry.name))) {
+                (_, Ok(false)) | (EntryKind::Dir, Err(_)) => {}
+                (EntryKind::Dir, Ok(true)) => found = true,
+                _ => return Ok(None),
+            }
+        }
+        if !found {
+            return Ok(None);
+        }
+    }
+    Ok(Some(entries))
 }
 
 /// Whether a hard link that failed with `kind` is one that the system
@@ -192,18 +309,20 @@ impl Target {
     /// second creation builds in it.
     ///
     /// **A directory that is there under that name is a creation's**
-    /// ([`CREATING_SUFFIX`]). Where its lock is held, nothing of it is
-    /// touched ([`CheckpointError::Creating`]). Where the lock is had, it
-    /// is taken for what an earlier creation left ([`take_over`]):
+    /// ([`CREATING_SUFFIX`]). It is looked at before its lock is taken
+    /// ([`lockable`]): what is found to be no directory is refused
+    /// ([`CheckpointError::NotADirectory`]), and so is a directory with
+    /// something else than a file for a lock file
+    /// ([`CheckpointError::NotALock`]). Where its lock is held, nothing of
+    /// it is touched ([`CheckpointError::Creating`]). Where the lock is
+    /// had, it is taken for what an earlier creation left ([`take_over`]):
     /// everything in it goes but the lock file, and this creation builds
-    /// in it. Only a directory of its own is taken so: a link of that name
-    /// is refused ([`CheckpointError::NotADirectory`]), at the look before
-    /// the lock and at the one under it. A link that is put there between
-    /// two calls of this function is followed by the next: the file layer
-    /// names a directory by its path, and the lock file is made where the
-    /// path leads.
+    /// in it.
     ///
-    /// **The directory is looked at under its lock, whoever made it.** One
+    /// **The directory is looked at under its lock, whoever made it**
+    /// ([`held_at`]): what the path names then has to be a directory of
+    /// its own with the lock file that was just locked, or nothing is
+    /// emptied and nothing built ([`CheckpointError::Replaced`]). And one
     /// that this call has just made is empty until its lock file is in it,
     /// and a rename replaces an empty directory: another creation of the
     /// same target, which fails at that moment, can give its own directory
@@ -211,6 +330,9 @@ impl Target {
     /// its lock file once the lock is had is taken over like one that was
     /// there. From the lock on, the directory has an entry, and no rename
     /// replaces it.
+    ///
+    /// What these looks do not tell is in the [module
+    /// documentation](super) ("Durability, and a creation that fails").
     pub(super) fn make(vfs: Arc<dyn Vfs>, target: &Path) -> Result<Self, CheckpointError> {
         let (Some(parent), Some(dir)) = (parent_of(target), building_of(target)) else {
             return Err(CheckpointError::NoParent {
@@ -220,7 +342,7 @@ impl Target {
         let made = match vfs.create_dir(&dir) {
             Ok(()) => true,
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
-                if kind_of(&*vfs, parent, &dir)? != Some(EntryKind::Dir) {
+                if !lockable(&*vfs, parent, &dir)? {
                     return Err(CheckpointError::NotADirectory { dir });
                 }
                 false
@@ -240,12 +362,9 @@ impl Target {
                 return Err(CheckpointError::io("lock", &lock_path)(error));
             }
         };
-        if kind_of(&*vfs, parent, &dir)? != Some(EntryKind::Dir) {
-            return Err(CheckpointError::NotADirectory { dir });
-        }
-        let entries = vfs
-            .read_dir(&dir)
-            .map_err(CheckpointError::io("list", &dir))?;
+        let Some(entries) = held_at(&*vfs, &*lock, parent, &dir)? else {
+            return Err(CheckpointError::Replaced { dir });
+        };
         if !made || entries.iter().any(|entry| entry.name != LOCK_FILE_NAME) {
             take_over(&*vfs, parent, &dir)?;
         }
@@ -464,20 +583,22 @@ impl Target {
 
     /// Looks for the directory this creation built in, as it built it:
     /// at its path a directory of its own and not a link, with the lock
-    /// file this creation holds, and holding the directories and the files
-    /// the creation put into it and nothing else, each a directory of its
-    /// own or a file. [`CheckpointError::Replaced`] if it is not found so.
+    /// file this creation holds ([`held_at`]), and holding the directories
+    /// and the files the creation put into it and nothing else, each a
+    /// directory of its own or a file. [`CheckpointError::Replaced`] if it
+    /// is not found so.
     ///
     /// The file layer names everything by its path and keeps nobody from
     /// changing the directory meanwhile: this is what a look by names can
     /// tell. It does not tell a file from another file that was put under
-    /// its name.
+    /// its name. A name that a directory does not list as the creation
+    /// gave it is looked for as [`Self::respelled`] says.
     fn found_whole(&self) -> Result<(), CheckpointError> {
         let vfs = &*self.vfs;
         let replaced = || CheckpointError::Replaced {
             dir: self.dir.clone(),
         };
-        if !self.is_here(&self.dir)? {
+        if self.is_here(&self.dir)?.is_none() {
             return Err(replaced());
         }
         let name_of = |path: &Path| path.file_name().map(OsStr::to_os_string);
@@ -502,30 +623,66 @@ impl Target {
                 .map(|entry| (entry.name, entry.kind))
                 .collect();
             names.sort_by(|one, other| one.0.cmp(&other.0));
-            if listed != names {
+            if listed != names && !self.respelled(dir, &listed, &names) {
                 return Err(replaced());
             }
         }
         Ok(())
     }
 
+    /// Whether the directory `dir`, which lists `listed`, holds `names`
+    /// and nothing else though the two lists differ: it lists as many
+    /// files and as many directories as were put into it and nothing of
+    /// another kind, and each of `names` that it does not list, byte for
+    /// byte and as the kind it was put there as, is one it opens as a
+    /// file, or lists as a directory, all the same. That is a directory
+    /// of a file system which keeps a name in another spelling than the
+    /// one given. On one that keeps names as they are given, a name that
+    /// is not listed opens nothing.
+    fn respelled(
+        &self,
+        dir: &Path,
+        listed: &[(OsString, EntryKind)],
+        names: &[(OsString, EntryKind)],
+    ) -> bool {
+        let count =
+            |of: &[(OsString, EntryKind)], kind| of.iter().filter(|entry| entry.1 == kind).count();
+        let as_many = |kind| count(listed, kind) == count(names, kind);
+        let found = |(name, kind): &(OsString, EntryKind)| {
+            let path = dir.join(name);
+            match kind {
+                EntryKind::File => self.vfs.open(&path, OpenMode::Read).is_ok(),
+                _ => self.vfs.read_dir(&path).is_ok(),
+            }
+        };
+        listed.len() == names.len()
+            && as_many(EntryKind::File)
+            && as_many(EntryKind::Dir)
+            && (names.iter())
+                .filter(|name| !listed.contains(name))
+                .all(found)
+    }
+
     /// Whether the directory this creation built in is at `path`: a
-    /// directory of its own there, with the lock file this creation holds.
-    fn is_here(&self, path: &Path) -> Result<bool, CheckpointError> {
-        let lock_path = path.join(LOCK_FILE_NAME);
-        Ok(
-            kind_of(&*self.vfs, &self.parent, path)? == Some(EntryKind::Dir)
-                && (self.lock.is_at(&lock_path))
-                    .map_err(CheckpointError::io("look at", &lock_path))?,
-        )
+    /// directory of its own there, with the lock file this creation holds
+    /// ([`held_at`]).
+    fn is_here(&self, path: &Path) -> Result<Option<Vec<DirEntry>>, CheckpointError> {
+        held_at(&*self.vfs, &*self.lock, &self.parent, path)
     }
 
     /// Takes away what this creation made, as far as the file layer lets
-    /// it: the files it linked or wrote, the directories, the lock file
-    /// and the directory it built in. Nothing else is touched: a file that
-    /// somebody else put there since this creation began stays, and the
-    /// directory with it, for the next creation or a deletion to remove.
-    /// What cannot be removed stays in the same way.
+    /// it and as far as it is found. A file it linked or wrote, a
+    /// directory it made and the lock file go where the directory they
+    /// are in lists them, under the name the creation gave, as a file or
+    /// as a directory of its own. A file in a directory of it goes only if
+    /// that directory is listed so itself, and is not a link that was put
+    /// in its place. The directory it built in goes if that leaves it
+    /// empty. Whatever is listed otherwise stays, and the directory with
+    /// it, for the next creation or a deletion to remove: what has a name
+    /// the creation did not use, and what is listed, under a name it did
+    /// use, as something else than the creation put there. A file that
+    /// was put under the name of one of the creation's is not told from
+    /// that one, and goes. What cannot be removed stays in the same way.
     ///
     /// **Nothing is removed from a directory that has, or can come back
     /// with, the name of the target.** If the directory was given that
@@ -537,18 +694,18 @@ impl Target {
     ///
     /// **And nothing is renamed or removed at a path where the directory
     /// this creation built in is not found**: a directory of its own
-    /// there, with the lock file this creation holds. A file in a
-    /// directory of it goes only if that is a directory of its own still,
-    /// and not a link that was put in its place. These looks are made
-    /// once, before the first removal: what is changed after them is not
-    /// seen.
+    /// there, with the lock file this creation holds ([`held_at`]). These
+    /// looks, and the listings of the directory and of the directories in
+    /// it, are made once, before the first removal: what is changed after
+    /// them is not seen, and each removal is made where its path leads by
+    /// then.
     pub(super) fn remove(self) {
         let vfs = &*self.vfs;
         let at = match self.placed {
             true => &self.target,
             false => &self.dir,
         };
-        if !matches!(self.is_here(at), Ok(true)) {
+        if !matches!(self.is_here(at), Ok(Some(_))) {
             return;
         }
         if self.placed {
@@ -557,27 +714,42 @@ impl Target {
                 return;
             }
         }
-        let Ok(entries) = vfs.read_dir(&self.dir) else {
+        let Ok(root) = vfs.read_dir(&self.dir) else {
             return;
         };
-        let own = |dir: &Path| {
-            let is_dir = |entry: &DirEntry| {
-                Some(&*entry.name) == dir.file_name() && entry.kind == EntryKind::Dir
-            };
-            dir == self.dir || entries.iter().any(is_dir)
+        let named = |entries: &[DirEntry], path: &Path, kind: EntryKind| {
+            let is_it =
+                |entry: &DirEntry| Some(&*entry.name) == path.file_name() && entry.kind == kind;
+            entries.iter().any(is_it)
+        };
+        let mut listings = Vec::new();
+        for dir in &self.dirs {
+            if named(&root, dir, EntryKind::Dir)
+                && let Ok(entries) = vfs.read_dir(dir)
+            {
+                listings.push((dir.as_path(), entries));
+            }
+        }
+        listings.push((self.dir.as_path(), root));
+        let listed = |path: &Path, kind: EntryKind| {
+            (listings.iter())
+                .any(|(dir, entries)| path.parent() == Some(*dir) && named(entries, path, kind))
         };
         drop(self.written);
         for file in self.files.iter().rev() {
-            if file.parent().is_some_and(own) {
+            if listed(file, EntryKind::File) {
                 let _ = vfs.remove_file(file);
             }
         }
         for dir in self.dirs.iter().rev() {
-            if own(dir) {
+            if listed(dir, EntryKind::Dir) {
                 let _ = vfs.remove_dir(dir);
             }
         }
-        let _ = vfs.remove_file(&self.dir.join(LOCK_FILE_NAME));
+        let lock_path = self.dir.join(LOCK_FILE_NAME);
+        if listed(&lock_path, EntryKind::File) {
+            let _ = vfs.remove_file(&lock_path);
+        }
         drop(self.lock);
         let _ = vfs.remove_dir(&self.dir);
         let _ = vfs.sync_dir(&self.parent);
@@ -604,15 +776,17 @@ fn take_over(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<(), Checkp
 
 /// Removes the directory `building`, which has a name that a creation
 /// builds under ([`CREATING_SUFFIX`]), with everything in it, and says
-/// whether there was such a directory. Of one whose lock is held nothing
-/// is touched ([`CheckpointError::Creating`]). What has the name and is no
-/// directory of its own is left alone, at the look before the lock and at
-/// the one under it. A link that is put there between two calls of this
-/// function is followed by the next, as [`delete`] says of the path it is
-/// given: the lock file is then made where the link leads, and what is
-/// there is emptied if the link comes after the second look.
+/// whether there was such a directory. It is looked at before its lock is
+/// taken ([`lockable`]): `false` where no directory is found, and
+/// [`CheckpointError::NotALock`] for one with something else than a file
+/// for a lock file. Of one whose lock is held nothing is touched
+/// ([`CheckpointError::Creating`]). Under the lock it is looked at again
+/// ([`held_at`]), and nothing is removed unless the directory whose lock
+/// was taken is found at the path ([`CheckpointError::Replaced`]). What
+/// these looks do not tell is in the [module documentation](super)
+/// ("Durability, and a creation that fails").
 fn remove_leftover(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<bool, CheckpointError> {
-    if kind_of(vfs, parent, building)? != Some(EntryKind::Dir) {
+    if !lockable(vfs, parent, building)? {
         return Ok(false);
     }
     let lock_path = building.join(LOCK_FILE_NAME);
@@ -622,10 +796,10 @@ fn remove_leftover(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<bool
         },
         _ => CheckpointError::io("lock", &lock_path)(error),
     })?;
-    // The look is made again under the lock: a link that was put there
-    // since the first is not followed any further.
-    if kind_of(vfs, parent, building)? != Some(EntryKind::Dir) {
-        return Ok(false);
+    if held_at(vfs, &*lock, parent, building)?.is_none() {
+        return Err(CheckpointError::Replaced {
+            dir: building.to_path_buf(),
+        });
     }
     take_over(vfs, parent, building)?;
     vfs.remove_file(&lock_path)
@@ -683,9 +857,10 @@ fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), Checkpo
 /// all of this holds, unless the name is one that creations build under
 /// ([`CREATING_SUFFIX`]), which the end of this text is about:
 ///
-/// - `dir` is a directory of its own in the directory above it, and not a
-///   link to one ([`CheckpointError::NotADirectory`]): a link is not
-///   followed into what it leads to;
+/// - the directory above `dir` lists it, under the name given, as a
+///   directory of its own, and not as a link to one
+///   ([`CheckpointError::NotADirectory`]): a link is not followed into
+///   what it leads to;
 /// - the directory has a manifest of this engine, under the manifest's
 ///   name or under [`DELETING_FILE_NAME`], in a file of its own and not
 ///   behind a link ([`CheckpointError::NotADatabase`]). A name alone is no
@@ -699,8 +874,10 @@ fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), Checkpo
 /// A checkpoint is a database like any other once it is made, so the call
 /// cannot tell one from a database that was created, and deletes that
 /// too. It does not keep a path from being given another meaning while it
-/// runs: whoever replaces `dir`, or the directory beside it that a
-/// creation built in, by a link during the call has it followed.
+/// runs: each of its calls to the file layer acts where its path leads
+/// when that call is made, as the [module documentation](super) says of
+/// everything that comes after a look ("Durability, and a creation that
+/// fails").
 ///
 /// **The directory stops being a database before anything in it goes.**
 /// The manifest is renamed to [`DELETING_FILE_NAME`], nothing is left
@@ -724,15 +901,18 @@ fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), Checkpo
 ///
 /// **What a creation of a checkpoint at `dir` left beside it goes too**:
 /// the directory it built in ([`CREATING_SUFFIX`]), with everything in it
-/// and whatever it holds, under that directory's lock.
+/// and whatever it holds. It is looked at before its lock is taken and
+/// again under the lock, as a creation looks at one it is to build in,
+/// and is refused as there ([`CheckpointError::NotALock`],
+/// [`CheckpointError::Replaced`]).
 ///
 /// - Where `dir` was deleted, it goes afterwards. An error of its removal
 ///   is then returned though `dir` is gone. One whose lock is held is left
 ///   alone with no error: if a creation is building in it, a checkpoint
 ///   can get the name of `dir` again.
-/// - Where nothing has the name of `dir`, the call returns `Ok` if there
-///   was such a directory, and [`CheckpointError::Creating`] for one whose
-///   lock is held.
+/// - Where nothing is at `dir`, the call returns `Ok` if there was such a
+///   directory and it was removed, [`CheckpointError::Creating`] for one
+///   whose lock is held, and the error of the look that refused one.
 /// - Where `dir` is refused, it is not looked for, and stays.
 /// - Given such a directory as `dir`, the call removes it in the same
 ///   way, or fails with [`CheckpointError::NotADirectory`] if there is
@@ -764,7 +944,13 @@ pub fn delete(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
             }
         }
         Some(_) => Err(not_a_directory()),
-        None => found(left()?),
+        // Something that the directory above does not list under this
+        // name can still be there, on a file system that keeps a name in
+        // another spelling than the one given.
+        None => match vfs.read_dir(dir) {
+            Err(error) if error.kind() == ErrorKind::NotFound => found(left()?),
+            _ => Err(not_a_directory()),
+        },
     }
 }
 

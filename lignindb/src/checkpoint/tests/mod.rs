@@ -505,6 +505,11 @@ pub(super) struct Meddling {
     pub(super) before_list: Option<Before>,
     /// Before a directory is made.
     pub(super) before_create_dir: Option<Before>,
+    /// Under this directory the file system keeps a name in another
+    /// spelling than it is given in, as HFS+ does: a name that is given
+    /// with [`ONE_LETTER`] is listed with [`TWO_LETTERS`], and either
+    /// spelling names the same entry.
+    pub(super) respelled: Option<PathBuf>,
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
@@ -520,8 +525,23 @@ impl Meddling {
             before_remove: None,
             before_list: None,
             before_create_dir: None,
+            respelled: None,
             sets: Mutex::default(),
         }
+    }
+
+    /// `inner`, with the names under the directory `under` listed in
+    /// another spelling than they are given in.
+    pub(super) fn respelled(inner: Arc<dyn Vfs>, under: PathBuf) -> Self {
+        Self {
+            respelled: Some(under),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `path` as `inner` is given it.
+    fn kept(&self, path: &Path) -> PathBuf {
+        kept_under(self.respelled.as_deref(), path)
     }
 
     /// `inner`, with no hard link into the directory `under`.
@@ -566,19 +586,63 @@ impl std::fmt::Debug for Meddling {
     }
 }
 
+/// The letter `e` with an acute accent as one letter, and as the letter
+/// and a combining accent: two spellings that HFS+ takes for one name. It
+/// keeps and lists the second whichever it was given.
+pub(super) const ONE_LETTER: &str = "\u{e9}";
+pub(super) const TWO_LETTERS: &str = "e\u{301}";
+
+/// `path` in the one spelling that the file layer under a [`Meddling`]
+/// is given for a name under the directory `respelled`.
+fn kept_under(respelled: Option<&Path>, path: &Path) -> PathBuf {
+    match respelled {
+        Some(under) if path.starts_with(under) => {
+            let path = path.to_str().expect("a path of the tests");
+            PathBuf::from(path.replace(TWO_LETTERS, ONE_LETTER))
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// A guard of a [`Meddling`] that lists names in another spelling: it
+/// reads a path as that file layer does.
+#[derive(Debug)]
+struct RespelledLock {
+    lock: Box<dyn VfsLock>,
+    under: PathBuf,
+}
+
+impl VfsLock for RespelledLock {
+    fn is_at(&self, path: &Path) -> io::Result<bool> {
+        self.lock.is_at(&kept_under(Some(&self.under), path))
+    }
+}
+
+impl Meddling {
+    fn guard(&self, lock: Box<dyn VfsLock>) -> Box<dyn VfsLock> {
+        match &self.respelled {
+            Some(under) => Box::new(RespelledLock {
+                lock,
+                under: under.clone(),
+            }),
+            None => lock,
+        }
+    }
+}
+
 impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        self.inner.open(path, mode)
+        self.inner.open(&self.kept(path), mode)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.inner.rename(from, to)
+        self.inner.rename(&self.kept(from), &self.kept(to))
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
         match &self.no_links {
             Some((under, kind)) if link.starts_with(under) => Err((*kind).into()),
-            _ => self.inner.hard_link(original, link),
+            _ => (self.inner).hard_link(&self.kept(original), &self.kept(link)),
         }
     }
 
@@ -586,47 +650,67 @@ impl Vfs for Meddling {
         if let Some(before) = &self.before_remove {
             before(path)?;
         }
-        self.inner.remove_file(path)
+        self.inner.remove_file(&self.kept(path))
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
         if let Some(before) = &self.before_create_dir {
             before(path)?;
         }
-        self.inner.create_dir(path)
+        self.inner.create_dir(&self.kept(path))
     }
 
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.remove_dir(path)
+        self.inner.remove_dir(&self.kept(path))
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
         if let Some(before) = &self.before_list {
             before(path)?;
         }
-        self.inner.read_dir(path)
+        let mut entries = self.inner.read_dir(&self.kept(path))?;
+        if (self.respelled.as_deref()).is_some_and(|under| path.starts_with(under)) {
+            for entry in &mut entries {
+                let name = entry.name.to_str().expect("a name of the tests");
+                entry.name = name.replace(ONE_LETTER, TWO_LETTERS).into();
+            }
+            entries.sort_by(|one, other| one.name.cmp(&other.name));
+        }
+        Ok(entries)
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.sync_dir(path)
+        self.inner.sync_dir(&self.kept(path))
     }
 
     fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
         (self.sets.lock().expect("the sets")).push(items.len());
-        self.inner.sync_together(items)
+        let dirs: Vec<Option<PathBuf>> = (items.iter())
+            .map(|item| match item {
+                SyncItem::Dir(path) => Some(self.kept(path)),
+                _ => None,
+            })
+            .collect();
+        let kept: Vec<SyncItem<'_>> = (items.iter().zip(&dirs))
+            .map(|(item, dir)| match dir {
+                Some(dir) => SyncItem::Dir(dir),
+                None => *item,
+            })
+            .collect();
+        self.inner.sync_together(&kept)
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         if let Some(before) = &self.before_lock {
             before(path)?;
         }
-        self.inner.lock(path)
+        Ok(self.guard(self.inner.lock(&self.kept(path))?))
     }
 
     fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         if let Some(before) = &self.before_lock {
             before(path)?;
         }
-        self.inner.lock_existing(path)
+        Ok(self.guard(self.inner.lock_existing(&self.kept(path))?))
     }
 }

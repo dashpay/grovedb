@@ -67,7 +67,7 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
-//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. One whose lock is held is left alone, and the creation fails. | the lock of that directory, to the end |
+//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. One whose lock is held is left alone, and the creation fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
@@ -308,9 +308,9 @@
 //! [`delete`] removes it ("Deleting a checkpoint, and removing one that
 //! is open"). A directory of that name is taken for a creation's with
 //! everything in it, so whatever it holds goes then, and no checkpoint is
-//! made at a name that ends so. Only a directory of its own is taken for
-//! one: a link of that name is not followed. And one whose lock is held
-//! is left alone.
+//! made at a name that ends so. Only a directory of its own, with a lock
+//! file of its own or none, is taken for one, and one whose lock is held
+//! is left alone: what is looked at for that comes below.
 //!
 //! **The name of the target is the caller's to keep free.** A target that
 //! is there is refused before anything is done, and again right before
@@ -324,21 +324,66 @@
 //! file layer names everything by its path, so nothing keeps somebody who
 //! takes no lock from changing that directory while a checkpoint is built
 //! in it: from removing or replacing a file, or from putting a link where
-//! the directory, or a directory in it, was. A call that names a path
-//! through such a link follows it. What a creation does about it is look,
-//! and each look is good until the next call:
+//! the directory, or a directory in it, was. What a creation and a
+//! deletion do about it is look, and **a look says what was there when it
+//! was made, and no more**. Every call to the file layer that names a
+//! path after it acts where that path leads then: through a link, if one
+//! is there by then. So whatever this module says a call leaves alone,
+//! does not follow, or does only to a directory of its own, it says of
+//! what these looks found:
 //!
-//! - Right before the rename, the directory has to be a directory of its
-//!   own with the lock file the creation holds, and has to hold what the
-//!   creation put into it and nothing else, each a file or a directory of
-//!   its own. Otherwise nothing gets the name of the target
-//!   ([`CheckpointError::Replaced`]). The look does not tell a file from
-//!   another file that was put under its name.
-//! - A creation that fails looks in the same way for its directory, and
-//!   for the directories in it, before it removes what it made.
-//! - Whoever takes over or removes what a creation left looks at it
-//!   before it takes the lock and again under the lock: only a directory
-//!   of its own is emptied. The lock file is made where the path leads.
+//! - Whoever is to build in a directory that is there, or to remove one
+//!   that a creation left, looks before it takes the lock. A name that
+//!   the directory above lists as anything but a directory is not
+//!   locked: a creation refuses it ([`CheckpointError::NotADirectory`]),
+//!   and a deletion finds no directory that a creation left. A directory
+//!   is not locked either that holds something else than a file under
+//!   the name of its lock file, or under a name that a file system may
+//!   take for that name: one that differs from it in the case of its
+//!   letters, or has a byte outside ASCII
+//!   ([`CheckpointError::NotALock`]).
+//! - It looks again under the lock, and so does a creation in the
+//!   directory it has just made: the lock file at the path has to be the
+//!   one that was locked, the directory has to list it as a file, and
+//!   the directory above has to list the path as a directory. Where it
+//!   lists nothing under the name as it was given, every entry of it in
+//!   which that lock file is found has to be a directory. Only then is
+//!   anything emptied or built ([`CheckpointError::Replaced`]).
+//! - Right before the rename, the creation looks for that directory once
+//!   more, and for what it holds: what the creation put into it and
+//!   nothing else, each a file or a directory of its own. Otherwise
+//!   nothing is renamed ([`CheckpointError::Replaced`]).
+//! - A creation that fails looks in the same way for its directory
+//!   before it removes what it made, and removes a file or a directory
+//!   only where it is listed as one.
+//!
+//! What the looks do not tell:
+//!
+//! - **A change after a look.** Whatever is asked of the file layer by
+//!   a path after it is done where the path leads by then. So of what a
+//!   call removes after its look, some, all or none can be removed where
+//!   a link leads that was put there meanwhile, and a rename renames
+//!   what its path names when it is made.
+//! - **Where a lock file is made.** Taking the lock is the one call here
+//!   that makes a lock file, and it makes it where its path leads at that
+//!   moment: where a link leads, too, that came after the look before it.
+//! - **A file from another file that was put under its name.** Such a
+//!   file gets the name of the target with the rest, and a creation that
+//!   fails removes it with the rest. The lock file is told from another
+//!   file, but not a directory from another directory that holds a
+//!   second name of that same lock file, as a hard link gives it one.
+//! - **A directory from a link to one, before the lock, where the
+//!   directory above lists the name in another spelling than the one
+//!   given**, as a file system does that keeps names in a form of its
+//!   own. The lock is then taken where the path leads, and the look
+//!   under the lock refuses a directory whose lock file is found through
+//!   a link in the directory above, or beside which a link is that the
+//!   file layer fails to follow.
+//! - **A name inside the directory from another, where its directory
+//!   lists it in another spelling than the creation gave**, as a carried
+//!   file's can be. It is taken for the creation's where that directory
+//!   lists as many files and as many directories as the creation put
+//!   there and nothing else, and the name the creation gave opens there.
 //!
 //! When the creation fails, the live database is as it was (CK10), except
 //! that its log may be durable further. One failure is the live
@@ -346,15 +391,19 @@
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
 //! then removes what it made, and the directory it built in, so that the
-//! same call can be made again, with these exceptions. Of what came into
-//! that directory after the creation had taken it, it removes nothing it
-//! did not make: such a file stays, and the directory with it, as what a
-//! creation left. What the file layer does not let it remove stays in the
-//! same way, and so does a file whose making failed without the file
-//! layer saying whether it was made, and a directory that could not be
-//! looked at, or whose name could not be made durable, once its lock was
-//! taken. And a directory that had been given the name of the target is
-//! dealt with as the next paragraph says.
+//! same call can be made again, with these exceptions. It removes a file
+//! or a directory it made only where the directory that holds it lists
+//! it, under the name the creation gave, as a file or as a directory of
+//! its own. Whatever else the directory holds by then stays, and the
+//! directory with it, as what a creation left: what has a name the
+//! creation did not use, and what is listed, under a name it did use, as
+//! something else than the creation put there. What the file layer does
+//! not let it remove stays in the same way, and so does a file whose
+//! making failed without the file layer saying whether it was made, and
+//! a directory that could not be looked at, or whose name could not be
+//! made durable, once its lock was taken. And a directory that had been
+//! given the name of the target is dealt with as the next paragraph
+//! says.
 //!
 //! **A creation that fails, the next creation, and a deletion of what a
 //! creation left remove what is in a creation's directory only once that

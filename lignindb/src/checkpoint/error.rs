@@ -22,7 +22,8 @@ use crate::commit::Stopped;
 #[derive(Debug)]
 pub enum CheckpointError {
     /// The target is there already, as a directory or as anything else.
-    /// Nothing of it was touched (P-14 of `platform-requirements.md`).
+    /// The creation renamed nothing onto it and removed nothing of it
+    /// (P-14 of `platform-requirements.md`).
     TargetExists {
         /// The target.
         target: PathBuf,
@@ -49,15 +50,29 @@ pub enum CheckpointError {
         /// The directory that is being built in.
         dir: PathBuf,
     },
-    /// The directory the checkpoint was built in was not found as the
-    /// creation built it when it looked, right before the rename: at its
-    /// path a directory of its own with the creation's lock file, holding
-    /// what the creation put into it and nothing else. Somebody removed
-    /// or replaced it, or changed what is in it. Nothing was given the
-    /// name of the target.
+    /// A look at the path of a directory that checkpoints are built in
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) did not find what
+    /// the call looked for. Under a lock it has just taken, a creation,
+    /// or a deletion of what a creation left, looks for a directory of
+    /// its own in the directory above, with the lock file it holds. Right
+    /// before the rename, a creation looks for that directory holding
+    /// what the creation put into it and nothing else. The call does not
+    /// know why it was not found so. Nothing was given the name of the
+    /// target.
     Replaced {
-        /// The directory the checkpoint was built in.
+        /// The path of the directory.
         dir: PathBuf,
+    },
+    /// A directory that checkpoints are built in
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) holds, under the
+    /// name of its lock file or under a name that a file system may take
+    /// for it, something that is not a file of its own, such as a link or
+    /// a directory. Its lock is not taken, so a creation does not build
+    /// in it and [`delete`](super::delete) does not remove it. Nothing of
+    /// it was touched.
+    NotALock {
+        /// The path of what is there and is no file.
+        path: PathBuf,
     },
     /// A file that the checkpoint was to carry beside the store's own is
     /// not named by one plain name inside the database directory.
@@ -118,11 +133,13 @@ pub enum CheckpointError {
         /// The error of the file layer.
         source: io::Error,
     },
-    /// The path names no directory of its own in the directory above it:
-    /// nothing, a file, or a link to a directory, which is not followed.
-    /// [`delete`](super::delete) was given it, and where nothing has the
-    /// name, nothing that a creation left was beside it either; or it is
-    /// the name a creation was to build under. Nothing was removed.
+    /// The directory above the path does not list it, under the name
+    /// given, as a directory of its own: it lists nothing of that name,
+    /// or a file, or something else, such as a link to a directory, which
+    /// is not followed. [`delete`](super::delete) was given the path, and
+    /// where nothing is there at all, nothing that a creation left was
+    /// found beside it either; or it is the name a creation was to build
+    /// under. Nothing was removed.
     NotADirectory {
         /// The path.
         dir: PathBuf,
@@ -183,9 +200,14 @@ impl fmt::Display for CheckpointError {
             ),
             Self::Replaced { dir } => write!(
                 f,
-                "{} is not the directory the checkpoint was built in any more, or does not hold \
-                 what was put into it, and nothing was renamed",
+                "{} was not found to be the directory whose lock is held, with what was put \
+                 into it, and nothing was given the name of the target",
                 dir.display()
+            ),
+            Self::NotALock { path } => write!(
+                f,
+                "{} is not a file of its own, and the lock of its directory was not taken",
+                path.display()
             ),
             Self::CarriedName { name } => write!(
                 f,
@@ -254,6 +276,7 @@ impl Error for CheckpointError {
             | Self::ReservedName { .. }
             | Self::Creating { .. }
             | Self::Replaced { .. }
+            | Self::NotALock { .. }
             | Self::CarriedName { .. }
             | Self::Stopped(_)
             | Self::LogAhead { .. }
