@@ -115,10 +115,11 @@
 //!   ([`Rule::Directory`], [`Rule::FlatDropRecord`]). In a store with a
 //!   directory whose entries are not read, no Merk is walked and no flat
 //!   record is compared with its entries; where the records of range
-//!   deletes are not read, the pages they left are not walked. Any other
-//!   record of the directory that is not read, as one of a hosted Merk
-//!   under its host, is a finding of the directory's own check and holds
-//!   nothing back: the entries are all there, and are compared.
+//!   deletes are not read, the pages they left are not walked. An error
+//!   of the directory's own check is reported, the first that the check
+//!   meets, and holds nothing back: where the scans of the entries and of
+//!   the records of dropped Merks complete, the flat records are compared
+//!   with the entries and the Merks are walked and counted all the same.
 //!
 //! So one page that is not read gives the finding of that page, and the
 //! findings of what was read; the rest waits for a run over a store whose

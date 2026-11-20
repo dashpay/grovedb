@@ -1371,6 +1371,30 @@ fn a_directory_in_a_keyspace_out_of_key_order_is_not_read() {
     assert!(report.unreached.uncertain, "{report}");
 }
 
+/// The directory's own check ends at the first record it finds wrong. The
+/// entries are read all the same: the Merks are counted and walked, and
+/// the flat records are compared with their entries.
+#[test]
+fn a_directory_whose_own_check_fails_is_compared_all_the_same() {
+    let store = plant();
+    store.db.unchecked();
+    let sound = store.check().census;
+    assert!(sound.merks > 0 && sound.dropped_merks > 0);
+    let key = record::root_key(store.root(BIG));
+    store.write_flat(|pages| {
+        assert!(store.db.directory().delete(pages, &key).expect("a delete"));
+    });
+    let report = store.check();
+    assert_eq!(report.rules(), [Rule::Directory], "{report}");
+    assert!(!report.unreached.uncertain, "{report}");
+    let census = &report.census;
+    assert_eq!(census.merks, sound.merks);
+    assert_eq!(census.left_over_entries, sound.left_over_entries);
+    assert_eq!(census.dropped_merks, sound.dropped_merks);
+    assert_eq!(census.live_cells, sound.live_cells);
+    assert_eq!(census.hosted_roots, sound.hosted_roots);
+}
+
 /// Whether a finding of `report` says `words`.
 fn said(report: &Report, words: &str) -> bool {
     (report.findings.iter()).any(|finding| finding.detail.contains(words))

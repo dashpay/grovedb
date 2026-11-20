@@ -335,7 +335,7 @@ impl Run<'_, '_, '_> {
         if stored_len > FRAME_LEN + max {
             return refused(self, too_long(stored_len - FRAME_LEN));
         }
-        payload.clear();
+        // What is unpacked takes the place of every byte that is read.
         payload.resize(max, 0);
         let fits = |len: usize| {
             if len > stored_len.saturating_mul(LZ4_MAX_EXPANSION) {

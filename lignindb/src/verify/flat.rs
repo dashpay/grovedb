@@ -159,13 +159,10 @@ impl Run<'_, '_, '_> {
                 return None;
             }
         };
-        match directory.check(&pages) {
-            Ok(census) => {
-                self.census.merks = census.live;
-                self.census.left_over_entries = census.left_over;
-                self.census.dropped_merks = census.dropped;
-            }
-            Err(error) => self.add(Rule::Directory, place, || error.to_string()),
+        // The check ends at the first record it finds wrong. What the
+        // run counts of the directory, it counts from its own scans below.
+        if let Err(error) = directory.check(&pages) {
+            self.add(Rule::Directory, place, || error.to_string());
         }
         let mut entries = Entries::default();
         let mut walk = directory.entries();
@@ -193,6 +190,10 @@ impl Run<'_, '_, '_> {
                 Err(error) => return self.not_read_whole(place, &error),
             }
         }
+        let live = entries.merks.iter().filter(|merk| merk.live).count();
+        self.census.merks = live as u64;
+        self.census.left_over_entries = (entries.merks.len() - live) as u64;
+        self.census.dropped_merks = entries.drops.len() as u64;
         Some(entries)
     }
 
