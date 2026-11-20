@@ -76,6 +76,9 @@
 //! // commit.
 //! let flushed = db.flush()?;
 //! assert_eq!(flushed.version, published.version);
+//!
+//! // A transaction borrows the database, so it ends before the session.
+//! drop(txn);
 //! db.close()?;
 //!
 //! // The next session opens the same state, and a wipe empties it.
@@ -103,12 +106,15 @@
 //!
 //! **The engine touches these and nothing else** (P-03). Whatever else a
 //! directory holds is not the engine's: an open, a recovery, a wipe and a
-//! close read no other entry, and remove and rename none. A node keeps
+//! close see the names of the other entries when they list the directory,
+//! and open, write, remove and rename none of them. A node keeps
 //! `checkpoints/`, marker files and its own state beside the database, and
 //! they are as they were after each of those.
 //!
-//! **One handle at a time** (P-04). The lock is taken before anything is
-//! written and released when the handle is dropped, so the same path can
+//! **One handle at a time** (P-04). The lock is taken before anything of
+//! a database is written, and released when the handle is dropped. Only a
+//! directory that is not there is made before it, and the lock file
+//! itself, so the same path can
 //! be opened again in the same process once the handle is gone. A second
 //! open while one is alive fails with [`OpenError::Locked`].
 //!
@@ -124,7 +130,9 @@
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //!
 //! Each of these is found by reading alone, before the lock file is
-//! made ([`OpenError::left_untouched`]).
+//! made ([`OpenError::left_untouched`]). A `MANIFEST` that is too short
+//! to have a header is reported as a manifest that cannot be read
+//! ([`OpenError::Manifest`]), and nothing is written for it either.
 //!
 //! # A new database
 //!
@@ -188,10 +196,20 @@
 //! **Closing waits for a reclaiming that holds cells.** From the moment
 //! the record of a dropped Merk is out of the directory, the cells that
 //! are left of it are known to the session and to nothing on disk
-//! (`lignin_tree::drop`, "Reclaiming"). A close goes on with such a
-//! reclaiming until it is done, or until a page that the latest commit
-//! wrote holds it back. What a process that is killed leaves of it is
-//! space, and no state.
+//! (`lignin_tree::drop`, "Reclaiming"). A close goes on with each such
+//! reclaiming until it is done or does not move: a page that the latest
+//! commit wrote or that a write transaction has copied holds it back, or
+//! a step failed. What a close leaves of it then, and what a process
+//! that is killed leaves, is space and no state.
+//!
+//! **A directory that was removed is written to no more** (P-18). Platform
+//! removes the directory of a checkpoint while its handle is open. A
+//! close then ends the threads and does nothing else: no reclaiming is
+//! finished, no checkpoint is taken, no file is written through a
+//! descriptor that is still open, and nothing is made at the path
+//! ([`DbError::Removed`], which a drop of the handle keeps to itself).
+//! The same holds when the path has another database by then: the lock
+//! file or the manifest in it is not this session's.
 //!
 //! # Wipe
 //!
@@ -268,7 +286,7 @@ use std::{
     path::Path,
     sync::{atomic::Ordering, Arc, Mutex},
     thread::{self, JoinHandle},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
@@ -321,6 +339,50 @@ pub struct Background {
     pub last_error: Option<String>,
 }
 
+/// What the open of a database took, by its parts ([`DbStats::opening`]).
+///
+/// The recovery is the store's (`lignin_store::recovery`): the manifest,
+/// the table checkpoint, the log from the checkpoint on, and the syncs
+/// that make the first log file of the session, which are about a dozen
+/// whatever the size of the database and are most of the time on a disk.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Opening {
+    /// Looking at the directory, taking its lock and reading its
+    /// manifest, or making the directory and the first manifest.
+    pub directory: Duration,
+    /// The recovery of the store.
+    pub recovery: Duration,
+    /// Reading the catalog and loading the handle on the subtree
+    /// directory, or the first commit of a new database, and reading what
+    /// earlier drops left.
+    pub keyspaces: Duration,
+    /// Starting the two threads of the background work.
+    pub threads: Duration,
+}
+
+impl Opening {
+    /// The whole open.
+    pub fn total(&self) -> Duration {
+        self.directory + self.recovery + self.keyspaces + self.threads
+    }
+}
+
+impl fmt::Display for Opening {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let ms = |part: Duration| part.as_secs_f64() * 1e3;
+        write!(
+            f,
+            "opened in {:.2} ms: the directory {:.2}, the recovery {:.2}, the keyspaces {:.2}, \
+             the threads {:.2}",
+            ms(self.total()),
+            ms(self.directory),
+            ms(self.recovery),
+            ms(self.keyspaces),
+            ms(self.threads)
+        )
+    }
+}
+
 /// Every count of an open database ([`Db::stats`]).
 #[derive(Debug, Clone)]
 pub struct DbStats {
@@ -334,6 +396,8 @@ pub struct DbStats {
     pub commits: CommitStats,
     /// What the recovery that opened the session did.
     pub recovery: RecoveryReport,
+    /// How long the open took, by its parts.
+    pub opening: Opening,
     /// What the reclaiming of dropped subtrees has done, and what waits.
     pub reclaimed: ReclaimStats,
     /// Page ids that reclaims gave back to the allocator.
@@ -354,6 +418,7 @@ pub struct DbStats {
 impl fmt::Display for DbStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "version {}", self.version)?;
+        writeln!(f, "{}", self.opening)?;
         write!(f, "{}", self.store)?;
         writeln!(
             f,
@@ -401,6 +466,7 @@ pub struct Db {
     shared: Arc<Shared>,
     threads: Mutex<Option<Threads>>,
     created: bool,
+    opening: Opening,
     /// The lock of the directory. It is the last field, so that it is
     /// released when everything else of the handle is gone.
     _lock: Box<dyn VfsLock>,
@@ -467,12 +533,18 @@ impl Db {
     /// renamed.
     pub fn open(dir: impl AsRef<Path>, options: &Options) -> Result<Self, OpenError> {
         let dir = dir.as_ref();
+        let mut opening = Opening::default();
+        let began = Instant::now();
         let opened = open::open_dir(dir, options)?;
-        let (shared, directory) = open::open_store(dir, options, opened.manifest)?;
+        opening.directory = began.elapsed();
+        let (shared, directory, recovery) = open::open_store(dir, options, opened.manifest)?;
         // What earlier sessions dropped and did not reclaim.
         shared
             .adopt_drops(&directory)
             .map_err(OpenError::catalog("what earlier drops left"))?;
+        opening.recovery = recovery;
+        opening.keyspaces = began.elapsed() - opening.directory - recovery;
+        let started = Instant::now();
         let shared = Arc::new(shared);
         let writer = shared.clone();
         let write_back = spawn("lignindb-write-back", move || write_back(&writer))?;
@@ -488,6 +560,7 @@ impl Db {
                 return Err(error);
             }
         };
+        opening.threads = started.elapsed();
         Ok(Self {
             shared,
             threads: Mutex::new(Some(Threads {
@@ -495,6 +568,7 @@ impl Db {
                 reclaim,
             })),
             created: opened.created,
+            opening,
             _lock: opened.lock,
         })
     }
@@ -518,17 +592,32 @@ impl Db {
             return Ok(());
         };
         let shared = &*self.shared;
+        // A directory that was removed under the handle, or that holds
+        // another database now, is written to no more (P-18): the threads
+        // end where they are, and nothing is finished.
+        let gone = shared.store.gone();
+        if gone {
+            shared.store.signal.abandon();
+        }
         // The reclaimer first: what it has to end, it ends through
         // write-back's log.
         shared.store.signal.stop();
         let reclaimed = threads.reclaim.join();
         shared.write_back().stop();
         let written = threads.write_back.join();
-        let finished = shared.write_back().finish();
+        let finished = match gone {
+            true => Err(DbError::Removed {
+                dir: shared.store.dir.clone(),
+            }),
+            false => shared
+                .write_back()
+                .finish()
+                .map(drop)
+                .map_err(DbError::from),
+        };
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
-        finished?;
-        Ok(())
+        finished
     }
 
     /// The directory of the database.
@@ -593,7 +682,15 @@ impl Db {
     /// Rolls `txn` back (WT9): its writes, its private copies, its page
     /// ids and its savepoints go, and it can be written again. It is
     /// refused while a scope of the transaction is open.
+    ///
+    /// A transaction of another database is refused and left as it is,
+    /// as [`Self::commit`] leaves it.
     pub fn rollback(&self, txn: &WriteTxn<'_>) -> Result<(), TxnError> {
+        if !std::ptr::eq(txn.path().versions, &self.shared.versions) {
+            return Err(TxnError::Damaged(
+                "the transaction was begun from the write path of another database",
+            ));
+        }
         self.shared.committer().rollback(txn)
     }
 
@@ -630,24 +727,32 @@ impl Db {
     /// returned recovers that version or a later one. A commit that is
     /// published while it runs may or may not be covered.
     ///
-    /// It takes no lock that a reader, a writer or a committer needs.
+    /// It holds an operation guard and not the commit lock: commits are
+    /// made and published beside it. The sync itself is the log's, which
+    /// makes one sync at a time, and the counts of the value files are
+    /// read under their lock for a moment before and after it.
     ///
     /// If it fails nothing is promised, and the session takes no write any
     /// more ([`Reopen::NotDurable`]): after a sync that failed the log
-    /// makes nothing durable in this session.
+    /// makes nothing durable in this session. The failure is recorded
+    /// under the commit lock, so every commit is published before it or
+    /// refused.
     pub fn flush(&self) -> Result<Flushed, DbError> {
         let shared = &*self.shared;
-        // The target is read first: every commit up to it has its group
-        // in the log (CM3 steps 6 and 8).
-        let version = shared.versions.latest();
-        let _guard = shared.versions.guard();
+        // The guard first, then the target (PN5): every commit up to the
+        // target has its group in the log (CM3 steps 6 and 8), and no file
+        // of the log goes under the guard.
+        let guard = shared.versions.guard();
+        let version = guard.latest();
         match shared.write_back().sync_log() {
             Ok(durable) => Ok(Flushed { version, durable }),
             Err(error) => {
-                shared.store.refuse(Reopen::NotDurable {
-                    version,
-                    reason: error.to_string(),
-                });
+                drop(guard);
+                // Under the commit lock, so that no commit is published
+                // behind the record of the sync that failed.
+                let committing = &shared.store.committing;
+                let _commit = committing.lock();
+                committing.sync_failed(shared.versions.latest(), &error);
                 Err(DbError::Flush(error))
             }
         }
@@ -667,8 +772,9 @@ impl Db {
     /// wrote a record before the wipe was published fails its commit with
     /// a conflict. A snapshot from before keeps reading its version.
     ///
-    /// A database in which no subtree is entered has no record, and its
-    /// wipe writes nothing and takes no version ([`Committed::Empty`]).
+    /// A database in which no subtree is entered has no record. Its wipe
+    /// is a commit all the same, with a version and the key set of a wipe:
+    /// it enters one subtree and drops it.
     pub fn wipe(&self) -> Result<Committed, WriteError> {
         self.refused()?;
         let mut everything = KeySet::new();
@@ -676,17 +782,31 @@ impl Db {
         let committer = self.shared.committer();
         let committed = committer.commit_alone(&mut NoStaleHashes, Some(&everything), |txn| {
             let outermost = self.outermost()?;
-            if outermost.is_empty() {
-                return Ok(());
-            }
-            let drops: Vec<SubtreeWrite<'_>> = (outermost.iter())
-                .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
-                .collect();
             let scope = txn.scope()?;
-            scope.apply(&Batch {
-                subtrees: &drops,
-                ..Batch::default()
-            })?;
+            let apply = |subtrees: &[SubtreeWrite<'_>]| {
+                scope.apply(&Batch {
+                    subtrees,
+                    ..Batch::default()
+                })
+            };
+            if outermost.is_empty() {
+                // A wipe is a commit also where there is nothing to drop
+                // (CV3): a subtree is entered and dropped, so that the
+                // wipe has a version and its key set meets what open
+                // transactions wrote before it (CF5).
+                let subtree = Subtree::new([0; 32]);
+                apply(&[SubtreeWrite::Enter {
+                    subtree,
+                    tree_type: &[],
+                    host: None,
+                }])?;
+                apply(&[SubtreeWrite::Drop { subtree }])?;
+            } else {
+                let drops: Vec<SubtreeWrite<'_>> = (outermost.iter())
+                    .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
+                    .collect();
+                apply(&drops)?;
+            }
             scope.merge();
             Ok(())
         });
@@ -721,7 +841,8 @@ impl Db {
             version: shared.versions.latest(),
             store: store.stats.read(&shared.write_back()),
             commits: store.committing.stats(),
-            recovery: store.recovery.clone(),
+            recovery: store.recovery,
+            opening: self.opening,
             reclaimed: *lock(&store.reclaimed),
             ids_released: store.ids_released.load(Ordering::Relaxed),
             pins: shared.versions.pins_held(),
@@ -781,8 +902,9 @@ impl Db {
     }
 
     /// What the facade does with the end of a commit: the reclaimer is
-    /// handed what the commit dropped, write-back is woken, and an outcome
-    /// that ends the session for writes is recorded.
+    /// handed what the commit dropped, and write-back is woken. An outcome
+    /// that ends the session for writes was recorded by the commit path,
+    /// under the commit lock.
     fn settle(&self, committed: Result<Committed, CommitError>) -> Result<Committed, WriteError> {
         let shared = &*self.shared;
         let published = |published: &Published| {
@@ -792,21 +914,17 @@ impl Db {
         match &committed {
             Ok(Committed::Published(commit)) => published(commit),
             Err(CommitError::NotDurable {
-                published: commit,
-                source,
-            }) => {
-                published(commit);
-                shared.store.refuse(Reopen::NotDurable {
-                    version: commit.version,
-                    reason: source.to_string(),
-                });
-            }
+                published: commit, ..
+            }) => published(commit),
             _ => {}
         }
-        // `Halted`, `Unsettled` and a failed commit that found a group it
-        // never published have stopped the commit path.
-        let _ = shared.store.refusal();
-        committed.map_err(WriteError::Commit)
+        // A commit that waited for the commit lock while the session
+        // stopped is refused as one that came later is: the transaction is
+        // as it was.
+        committed.map_err(|error| match error {
+            CommitError::Stopped(stopped) => WriteError::Reopen(stopped.into()),
+            error => WriteError::Commit(error),
+        })
     }
 }
 

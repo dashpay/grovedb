@@ -3,7 +3,7 @@
 
 use std::{
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc,
     },
     thread,
@@ -65,8 +65,6 @@ const FULL: [Option<(usize, usize)>; 5] = [
 fn a_wipe_empties_every_column_in_one_commit() {
     let dir = temp();
     let db = Db::open(dir.path(), &options()).expect("a new database");
-    // A wipe of a database with no subtree writes nothing.
-    assert!(matches!(db.wipe(), Ok(Committed::Empty)));
     grove(&db);
     std::fs::write(dir.path().join(".fsck"), b"kept").expect("a file");
     let before = db.snapshot();
@@ -165,10 +163,9 @@ fn a_wipe_empties_every_column_in_one_commit() {
     assert_eq!(read(&db.snapshot().operation()), [None; 5]);
 
     // A second wipe drops the subtree that was entered after the first,
-    // a third writes nothing, and the database is used again: a subtree
-    // that is entered again starts empty.
+    // and the database is used again: a subtree that is entered again
+    // starts empty.
     assert!(matches!(db.wipe(), Ok(Committed::Published(_))));
-    assert!(matches!(db.wipe(), Ok(Committed::Empty)));
     let again = Writes {
         enter: vec![(subtree(4), None), (subtree(2), None)],
         ..Writes::default()
@@ -202,6 +199,68 @@ fn a_wipe_empties_every_column_in_one_commit() {
         seen(&snapshot.operation(), subtree(4), b"k"),
         Some((0, vec![]))
     );
+}
+
+/// CV3 and CF5 for a database with nothing in it: its wipe is a commit
+/// with a version and a group, and a transaction that entered a subtree
+/// and wrote a record before it fails with the conflict.
+#[test]
+fn a_wipe_of_a_database_with_no_subtree_is_a_commit() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    let wrote = db.begin();
+    let scope = wrote.scope().expect("a scope");
+    let staged = Writes {
+        enter: vec![(subtree(3), None)],
+        records: vec![(Column::Aux, subtree(3), b"t".to_vec(), b"mine".to_vec())],
+        ..Writes::default()
+    };
+    staged
+        .with(|batch| scope.apply(batch))
+        .expect("the batch is applied");
+    scope.merge();
+
+    let mut wrote = Some(wrote);
+    for wipe in 1..=2u64 {
+        let (at, logged) = (db.version(), db.stats().store.log_bytes);
+        let Ok(Committed::Published(wiped)) = db.wipe() else {
+            panic!("the wipe is a commit");
+        };
+        assert_eq!(Some(wiped.version), at.next(), "one commit");
+        assert!(db.stats().store.log_bytes > logged, "one group");
+        // Nothing is entered at the wipe's version: not the subtree the
+        // wipe made its commit of, and not the open transaction's.
+        let snapshot = db.snapshot();
+        assert_eq!(snapshot.version(), wiped.version);
+        let operation = snapshot.operation();
+        for subtree in [Subtree::new([0; 32]), subtree(3)] {
+            assert!(operation.open(subtree).expect("a lookup").is_none());
+        }
+        drop(operation);
+        drop(snapshot);
+        // The transaction that wrote before the first wipe meets it.
+        if let Some(wrote) = wrote.take() {
+            let error = db
+                .commit(&wrote, &mut NoStaleHashes)
+                .expect_err("a conflict");
+            assert!(error.is_conflict(), "{error}");
+        }
+        // What the wipe wrote to be a commit is taken out again.
+        reclaimed(&db, "the wipe's own subtree is reclaimed", |reclaimed| {
+            reclaimed.merks == wipe && reclaimed.waiting == 0
+        });
+    }
+    drop(wrote);
+    let wiped = db.version();
+    db.close().expect("the session ends");
+    let db = Db::open(dir.path(), &options()).expect("the database is opened again");
+    assert_eq!(db.version(), wiped);
+    assert!(db
+        .snapshot()
+        .operation()
+        .open(subtree(3))
+        .expect("a lookup")
+        .is_none());
 }
 
 /// T-WP1: a power cut around a wipe leaves the database as it was or
@@ -238,6 +297,8 @@ fn a_power_cut_around_a_wipe_leaves_all_or_nothing() {
         let found = read(&snapshot.operation());
         match db.version() == grown {
             true => {
+                // A wipe that a flush made durable is never lost.
+                assert!(seed % 2 == 1, "seed {seed}: the wipe was durable");
                 assert_eq!(found, FULL, "seed {seed}: as it was");
                 whole += 1;
             }
@@ -268,11 +329,13 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
     let dir = temp();
     let db = Db::open(dir.path(), &options()).expect("a new database");
     let done = AtomicBool::new(false);
+    // The version each subtree was entered at, once its writer knows it.
+    let entered: Vec<AtomicU64> = (0..WRITERS * ROUNDS).map(|_| AtomicU64::new(0)).collect();
     thread::scope(|threads| {
         let _ending = Ending(&done);
         let mut writers = Vec::new();
         for writer in 0..WRITERS {
-            let db = &db;
+            let (db, entered) = (&db, &entered);
             writers.push(threads.spawn(move || {
                 for round in 0..ROUNDS {
                     let subtree = numbered(writer * 1000 + round);
@@ -285,7 +348,11 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
                         ..Writes::default()
                     };
                     match planted.with(|batch| db.write(batch, &mut NoStaleHashes)) {
-                        Ok(Committed::Published(_)) => {}
+                        Ok(Committed::Published(planted)) => {
+                            let at = planted.version.get();
+                            entered[(writer * ROUNDS + round) as usize]
+                                .store(at, Ordering::Release);
+                        }
                         // A wipe was published while the write was made:
                         // its key set is every key.
                         Err(WriteError::Commit(CommitError::Conflict)) => continue,
@@ -328,32 +395,39 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
         });
         // A wipe every few milliseconds for as long as a writer writes,
         // and one when they are done.
-        let (mut wipes, mut at_the_wipe) = (0, 0);
+        let (mut wipes, mut beside, mut looked_at) = (0, 0, 0);
         loop {
             let writing = writers.iter().any(|writer| !writer.is_finished());
             let at = db.version();
-            match db.wipe().expect("a wipe") {
-                Committed::Empty => {}
-                Committed::Published(wiped) => {
-                    assert!(wiped.version > at);
-                    wipes += 1;
-                    // At the wipe's own version nothing is entered,
-                    // whatever was committed while it ran: a reader that
-                    // gets that version finds no subtree of any writer.
-                    let snapshot = db.snapshot();
-                    if snapshot.version() == wiped.version {
-                        let operation = snapshot.operation();
-                        for writer in 0..WRITERS {
-                            for round in 0..ROUNDS {
-                                let subtree = numbered(writer * 1000 + round);
-                                let found = operation.open(subtree).expect("a lookup");
-                                assert!(found.is_none(), "{writer}/{round} outlived a wipe");
-                            }
-                        }
-                        at_the_wipe += 1;
+            let Committed::Published(wiped) = db.wipe().expect("a wipe") else {
+                panic!("a wipe is a commit");
+            };
+            assert!(wiped.version > at);
+            // A wipe that found a Merk with nodes, and one that did while
+            // a writer was still writing.
+            let found = wiped.dropped.iter().any(|dropped| dropped.root.is_some());
+            wipes += u32::from(found);
+            beside += u32::from(found && writing);
+            // No subtree that was entered before the wipe's version is
+            // there at a later one: each is entered once, so one that is
+            // found outlived the wipe, whatever was committed while the
+            // wipe ran and since.
+            let snapshot = db.snapshot();
+            let operation = snapshot.operation();
+            for writer in 0..WRITERS {
+                for round in 0..ROUNDS {
+                    let at = entered[(writer * ROUNDS + round) as usize].load(Ordering::Acquire);
+                    if at == 0 || at >= wiped.version.get() {
+                        continue;
                     }
+                    let subtree = numbered(writer * 1000 + round);
+                    let found = operation.open(subtree).expect("a lookup");
+                    assert!(found.is_none(), "{writer}/{round} outlived a wipe");
+                    looked_at += 1;
                 }
             }
+            drop(operation);
+            drop(snapshot);
             if !writing {
                 break;
             }
@@ -362,8 +436,12 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
         for writer in writers {
             writer.join().expect("a writer ends");
         }
-        assert!(wipes > 0, "no wipe found a subtree");
-        println!("{wipes} wipes, {at_the_wipe} of them read at their own version");
+        assert!(
+            wipes > 0 && beside > 0,
+            "{wipes} wipes, {beside} beside a writer"
+        );
+        assert!(looked_at > 0, "no subtree was looked for after its wipe");
+        println!("{wipes} wipes, {beside} beside a writer, {looked_at} subtrees looked for");
         done.store(true, Ordering::Release);
         assert!(reader.join().expect("the reader ends") > 0);
     });

@@ -374,6 +374,125 @@ fn a_session_whose_sync_failed_takes_no_write() {
     enter(&db, &[2]);
 }
 
+/// A writer that was let in before the sync of another commit failed, and
+/// waits for the commit lock, is refused like one that comes later: the
+/// reason is recorded under the commit lock, before the lock is given up.
+/// Its transaction is as it was.
+#[test]
+fn a_writer_that_waits_for_the_commit_lock_is_refused_after_a_failed_sync() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let (fs, options) = sim(23, SyncPolicy::EveryCommit);
+    let db = Db::open("/db", &options).expect("a new database");
+    enter(&db, &[1, 2]);
+    halt_background(&db);
+
+    let waiting = db.begin();
+    let scope = waiting.scope().expect("a scope");
+    let more = Writes {
+        records: vec![aux(2, b"b", b"refused")],
+        ..Writes::default()
+    };
+    more.with(|batch| scope.apply(batch))
+        .expect("the batch is applied");
+    scope.merge();
+
+    // The first commit's sync has failed and its version is not published
+    // yet when the hook runs, with the commit lock held: the session
+    // refuses nothing yet. The second writer begins its commit then, and
+    // the first one goes on a moment later.
+    let (locked, calling) = (
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let refusing = Arc::new(AtomicBool::new(true));
+    let (shared, told) = (
+        db.shared.clone(),
+        (locked.clone(), calling.clone(), refusing.clone()),
+    );
+    (db.shared.store.committing).run_before_publication(move |_| {
+        let (locked, calling, refusing) = &told;
+        refusing.store(shared.store.refusal().is_some(), Ordering::Release);
+        locked.store(true, Ordering::Release);
+        wait_for("the second writer begins its commit", || {
+            calling.load(Ordering::Acquire)
+        });
+        std::thread::sleep(Duration::from_millis(100));
+    });
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS).forever());
+    let (first, second) = std::thread::scope(|threads| {
+        let second = threads.spawn(|| {
+            wait_for("the first commit holds the commit lock", || {
+                locked.load(Ordering::Acquire)
+            });
+            calling.store(true, Ordering::Release);
+            db.commit(&waiting, &mut NoStaleHashes)
+        });
+        let writes = Writes {
+            records: vec![aux(1, b"a", b"published")],
+            ..Writes::default()
+        };
+        let first = writes.with(|batch| db.write(batch, &mut NoStaleHashes));
+        (first, second.join().expect("the second writer ends"))
+    });
+    (db.shared.store.committing).run_before_publication(|_| {});
+    fs.clear_rules();
+    assert!(
+        !refusing.load(Ordering::Acquire),
+        "the session refused before the first commit was published"
+    );
+
+    let first = first.expect_err("the sync failed");
+    let version = first.published().expect("the commit is published").version;
+    let reason = first.reopen().expect("this commit ended the session");
+    assert!(matches!(&reason, Reopen::NotDurable { version: at, .. } if *at == version));
+    let second = second.expect_err("the session takes no write");
+    assert!(
+        matches!(&second, WriteError::Reopen(why) if *why == reason),
+        "{second:?}"
+    );
+    assert!(second.leaves_transaction_open());
+    assert_eq!(db.version(), version, "nothing was published behind it");
+    assert_eq!(db.stats().commits.not_durable, 1);
+    assert_eq!(waiting.stats().writes, 1, "the transaction is as it was");
+    assert_eq!(read_aux(&db.snapshot().operation(), 2, b"b"), None);
+    db.rollback(&waiting).expect("a rollback is taken");
+}
+
+/// A transaction is rolled back where it was begun: another database
+/// refuses it and leaves it as it is.
+#[test]
+fn a_transaction_of_another_database_is_not_rolled_back() {
+    let (one, other) = (temp(), temp());
+    let db = Db::open(one.path(), &options()).expect("a new database");
+    let elsewhere = Db::open(other.path(), &options()).expect("another database");
+    enter(&db, &[1]);
+    let txn = db.begin();
+    let scope = txn.scope().expect("a scope");
+    let writes = Writes {
+        records: vec![aux(1, b"a", b"mine")],
+        ..Writes::default()
+    };
+    writes
+        .with(|batch| scope.apply(batch))
+        .expect("the batch is applied");
+    scope.merge();
+
+    let rollbacks = elsewhere.stats().commits.rollbacks;
+    let error = elsewhere.rollback(&txn).expect_err("not its transaction");
+    assert!(error.to_string().contains("another database"), "{error}");
+    assert_eq!(elsewhere.stats().commits.rollbacks, rollbacks);
+    assert_eq!(txn.stats().writes, 1, "the transaction is as it was");
+    assert!(elsewhere.commit(&txn, &mut NoStaleHashes).is_err());
+    let committed = db
+        .commit(&txn, &mut NoStaleHashes)
+        .expect("its own database");
+    assert!(matches!(committed, Committed::Published(_)));
+    assert_eq!(
+        read_aux(&db.snapshot().operation(), 1, b"a"),
+        Some(b"mine".to_vec())
+    );
+}
+
 /// A flush whose sync fails promises nothing and ends the session for
 /// writes too.
 #[test]

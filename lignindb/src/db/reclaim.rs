@@ -229,7 +229,7 @@ impl Shared {
             return;
         }
         let mut queue = lock(&self.store.dropped);
-        queue.extend(dropped.iter().map(|dropped| (version, dropped.clone())));
+        queue.extend(dropped.iter().map(|dropped| (version, *dropped)));
         drop(queue);
         self.store.signal.wake();
     }
@@ -357,14 +357,23 @@ impl Shared {
         }
         match reclaimer.flat_drops(&self.store.catalog().flat_drops, &guard) {
             Ok(found) => {
+                // The records were read at the version that was the latest
+                // during the read, which a commit can have moved on from
+                // `latest`. A reader of any version before the one that
+                // wrote a record still reads what the record names, so the
+                // wait is for a version that is not before the read: the
+                // latest now.
+                let read_by = self.versions.latest();
                 for drop in found {
                     if work.known_flats.insert(drop.id) {
                         work.flats.push(FlatJob {
                             drop,
-                            wait: Wait::new(latest),
+                            wait: Wait::new(read_by),
                         });
                     }
                 }
+                // A commit that came during the read has the records read
+                // again.
                 work.scanned = Some(latest);
             }
             Err(error) => self.store.troubles.reclaim_failed(&error),
@@ -420,16 +429,20 @@ impl Shared {
                 thread::park_timeout(idle);
             }
         }
-        self.finish_reclaiming();
+        if !store.signal.abandoned() {
+            self.finish_reclaiming();
+        }
     }
 
-    /// What is done for the reclaiming when a session ends: a reclaiming
-    /// that holds cells goes on until it is done or held back, because
-    /// what it has left is known to nothing on disk.
+    /// What is done for the reclaiming when a session ends: every
+    /// reclaiming that holds cells goes on until it is done or held back,
+    /// because what it has left is known to nothing on disk. One that is
+    /// held back does not end the others: the rounds go on while one of
+    /// them moves.
     fn finish_reclaiming(&self) {
         loop {
             let round = self.reclaim_round(true);
-            if !round.holds_cells || round.held_back > 0 || !round.more {
+            if !round.holds_cells || !round.more {
                 return;
             }
         }

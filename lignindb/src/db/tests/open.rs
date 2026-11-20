@@ -15,7 +15,7 @@ use lignin_io::{
 use lignin_store::segment::ManifestStore;
 
 use super::*;
-use crate::db::{OpenError, WriteError};
+use crate::db::{DbError, OpenError, WriteError};
 
 fn version(raw: u64) -> CommitVersion {
     CommitVersion::new(raw).expect("a version")
@@ -220,7 +220,10 @@ fn a_directory_of_another_engine_or_format_version_is_refused_and_left_as_it_was
     let lost_manifest: Check =
         |error| matches!(error, OpenError::NoManifest { entry, .. } if entry == "seg");
 
-    let cases: [(&str, fn(&Path), Check, &str); 5] = [
+    // What the directory is, what makes it, the error of its open, and
+    // what the error says.
+    type Case = (&'static str, fn(&Path), Check, &'static str);
+    let cases: [Case; 5] = [
         (
             "RocksDB",
             rocksdb_directory,
@@ -383,31 +386,124 @@ fn entries_that_are_not_the_engines_are_left_alone() {
     assert_eq!(foreign(path), before, "after a recovery");
 }
 
-/// P-18: a handle whose directory was removed under it closes without a
-/// panic, makes no directory and reports what it could not do.
+/// The file layer of `watched` at rest: the background work has written
+/// what it had to, and nothing changes any more.
+fn at_rest(watched: &Watched) {
+    let (mut seen, mut since) = (watched.changes(), Instant::now());
+    wait_for("the background work comes to rest", || {
+        let now = watched.changes();
+        if now != seen {
+            (seen, since) = (now, Instant::now());
+        }
+        since.elapsed() > Duration::from_millis(300)
+    });
+}
+
+/// P-18: Platform removes the directory of a checkpoint while its handle
+/// is open. The handle then closes without a panic, makes no directory
+/// and no file, and writes nothing: not through a path, and not through a
+/// file it still has open.
 #[test]
-fn a_handle_whose_directory_was_removed_closes() {
+fn a_handle_whose_directory_was_removed_closes_and_writes_nothing() {
     for explicit in [true, false] {
         let dir = temp();
         let path = dir.path().join("db");
-        let db = Db::open(&path, &options()).expect("a new database");
+        let watched = Watched::default();
+        let options = Options {
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let db = Db::open(&path, &options).expect("a new database");
         plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-        // The database writes while its directory is taken away, so the
-        // removal is made until nothing is left.
-        while path.exists() {
-            let _ = fs::remove_dir_all(&path);
-        }
+        // A drop leaves the reclaimer work that a close would finish.
+        let writes = Writes {
+            drop: vec![subtree(1)],
+            ..Writes::default()
+        };
+        writes.commit(&db);
+        plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
+        db.flush().expect("the log is synced");
+        at_rest(&watched);
+        fs::remove_dir_all(&path).expect("the directory is removed");
+        let before = watched.changes();
         match explicit {
             true => {
-                let closed = db.close();
-                assert!(closed.is_err(), "nothing could be made durable");
-                let error = closed.expect_err("an error");
-                assert!(error.to_string().starts_with("write-back: "));
-                assert!(error.source().is_some());
+                let error = db.close().expect_err("nothing could be made durable");
+                assert!(matches!(&error, DbError::Removed { dir } if *dir == path));
+                assert!(error.to_string().contains("removed or replaced"));
+                assert!(error.source().is_none());
             }
             false => drop(db),
         }
+        assert_eq!(watched.changes(), before, "the close wrote");
         assert!(!path.exists(), "the directory was made again");
+    }
+}
+
+/// The same for a directory that holds another database when the handle
+/// closes: the path was removed and used again. Nothing of the new
+/// database is touched.
+#[test]
+fn a_handle_whose_directory_holds_another_database_closes_and_writes_nothing() {
+    let dir = temp();
+    let path = dir.path().join("db");
+    let watched = Watched::default();
+    let first = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let db = Db::open(&path, &first).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
+    db.flush().expect("the log is synced");
+    at_rest(&watched);
+    fs::remove_dir_all(&path).expect("the directory is removed");
+
+    let other = Db::open(&path, &options()).expect("another database in its place");
+    plant(&other, subtree(7), Merk::sized(b'k', 10, 20));
+    other.close().expect("its session ends");
+    let (before, changes) = (image(&path), watched.changes());
+    let error = db.close().expect_err("the directory is another database's");
+    assert!(matches!(error, DbError::Removed { .. }));
+    assert_eq!(watched.changes(), changes, "the close wrote");
+    assert_eq!(image(&path), before, "the other database was touched");
+    let other = Db::open(&path, &options()).expect("the other database opens");
+    let snapshot = other.snapshot();
+    assert_eq!(
+        seen(&snapshot.operation(), subtree(7), b"k"),
+        Some((10, vec![]))
+    );
+    assert_eq!(seen(&snapshot.operation(), subtree(1), b"k"), None);
+}
+
+/// A path with no root is made below the directory the process is in,
+/// and the name of every directory that is made is synced in the one
+/// above it: also the first, whose directory above has no name in the
+/// path.
+#[test]
+fn a_database_at_a_relative_path_has_its_name_made_durable() {
+    let dir = temp();
+    for (path, synced) in [
+        ("db", vec!["."]),
+        ("above/below/db", vec![".", "above", "above/below"]),
+    ] {
+        let watched = Watched::rooted(dir.path());
+        let options = Options {
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let db = Db::open(path, &options).expect("a new database");
+        assert!(db.created() && dir.path().join(path).join("MANIFEST").exists());
+        let dirs = watched.synced_dirs();
+        for above in &synced {
+            assert!(
+                dirs.iter().any(|dir| dir == Path::new(above)),
+                "{path}: {above} is not synced in {dirs:?}"
+            );
+        }
+        plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+        db.close().expect("the session ends");
+        let db = Db::open(path, &options).expect("the database is opened again");
+        assert!(!db.created());
     }
 }
 

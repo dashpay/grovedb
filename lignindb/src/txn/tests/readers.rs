@@ -302,6 +302,24 @@ fn a_reader_knows_the_drops_of_its_version_however_late_it_opens() {
         let opened = late.open(model::subtree(name)).expect("a lookup");
         assert!(opened.is_none(), "{opened:?}");
     }
+    // What a write transaction makes of the version it pins has the kept
+    // handle too, whenever it is made: the frames it writes in, and the
+    // committed subtrees its reads open. The cursors of the transaction
+    // pin the drop's version here, and both are made of it only now.
+    {
+        let path = db.path(&versions);
+        let guard = versions.guard();
+        let frames = crate::txn::frames::Awake::new(&path, &guard, dropped_at);
+        let frames = frames.expect("the frames of a pinned version");
+        assert_eq!(frames.root(&below).expect("a lookup"), None);
+        let mut slot = None;
+        let opened = crate::txn::opened::Opened::at(&mut slot, &path, &guard, dropped_at);
+        let opened = opened.expect("the handle of a pinned version");
+        for name in [HOST, BELOW] {
+            let root = opened.root(&path, &guard, &model::subtree(name));
+            assert_eq!(root.expect("a lookup"), None, "{name} is entered");
+        }
+    }
     // And the cursors of the write transaction, which first read here: no
     // record and no node of the subtree below is shown.
     records.seek_to_first().expect("the cursor is positioned");

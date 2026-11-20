@@ -129,14 +129,34 @@ pub enum Stopped {
         /// What failed.
         reason: String,
     },
+    /// A sync of the log failed with this version the latest: the version
+    /// is published, and is not known to be durable. The log makes
+    /// nothing durable any more in this session (`lignin_store::wal`), so
+    /// a commit that was taken now could be lost with no error to say so.
+    ///
+    /// Only a session that was told to end at a failed sync stops for it
+    /// ([`CommitState::ending_at_a_failed_sync`]): the engine's does.
+    ///
+    /// [`CommitState::ending_at_a_failed_sync`]: super::CommitState::ending_at_a_failed_sync
+    NotDurable {
+        /// The latest version when the sync failed.
+        version: CommitVersion,
+        /// What the sync said.
+        reason: String,
+    },
 }
 
 impl Stopped {
-    /// The version of the commit that the session stopped at: the latest
-    /// published version is the one before it, and stays so.
+    /// The version the session stopped at. For [`Self::Unsettled`] and
+    /// [`Self::Halted`] it is the version of a commit that this session
+    /// did not publish: the latest published version is the one before
+    /// it, and stays so. For [`Self::NotDurable`] it is the latest
+    /// published version.
     pub const fn version(&self) -> CommitVersion {
         match self {
-            Self::Unsettled { version, .. } | Self::Halted { version, .. } => *version,
+            Self::Unsettled { version, .. }
+            | Self::Halted { version, .. }
+            | Self::NotDurable { version, .. } => *version,
         }
     }
 }
@@ -151,6 +171,10 @@ impl fmt::Display for Stopped {
             Self::Halted { version, reason } => write!(
                 f,
                 "commit {version} is in the log and could not be installed ({reason})"
+            ),
+            Self::NotDurable { version, reason } => write!(
+                f,
+                "a sync of the log failed with version {version} published ({reason})"
             ),
         }
     }

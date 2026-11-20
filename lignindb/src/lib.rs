@@ -64,6 +64,7 @@
 //! drop(snapshot);
 //! db.flush()?;
 //! assert_eq!(db.stats().commits.published, 1);
+//! drop(txn);
 //! db.close()?;
 //! # Ok(())
 //! # }
@@ -147,10 +148,12 @@
 //! - **Published is not durable** (DU1). With the default sync policy a
 //!   commit is durable once [`Db::flush`] returned, or the session was
 //!   closed. A crash lands on one committed version (DU2).
-//! - **A reader never waits for a writer**, and holds back only space: a
-//!   snapshot that is kept for long keeps what was dropped since from
-//!   being reclaimed.
-//! - **Nothing of a subtree is read or written without its entry.** A
+//! - **A reader waits for no commit and for no write transaction**, and
+//!   holds back only space: a snapshot that is kept for long keeps what
+//!   was dropped since from being reclaimed. Where a reader and a writer
+//!   meet at a lock, it is held for a few instructions and over no read
+//!   of a file.
+//! - **No record of a subtree is read or written without its entry.** A
 //!   batch enters a subtree before it writes into it
 //!   ([`SubtreeWrite::Enter`](txn::SubtreeWrite::Enter)), in any column,
 //!   and a subtree that was dropped, with every subtree below it, is gone

@@ -41,7 +41,8 @@ fn what_a_drop_left_is_reclaimed_once_no_reader_from_before_is_left() {
         seen(&before.operation(), subtree(1), b"k"),
         Some((400, vec![]))
     );
-    let waiting = db.stats().reclaimed;
+    let held = db.stats();
+    let waiting = held.reclaimed;
     assert_eq!((waiting.merks, waiting.waiting, waiting.cells), (0, 1, 0));
 
     // With the reader gone the background thread takes it out: the drop
@@ -63,8 +64,16 @@ fn what_a_drop_left_is_reclaimed_once_no_reader_from_before_is_left() {
         "{reclaimed:?}"
     );
     assert_eq!(stats.background.reclaim_errors, 0, "{:?}", stats.background);
-    // The page steps went to the log through write-back.
-    assert!(stats.store.log_bytes > 0);
+    // The page steps went to the log through write-back: no commit was
+    // made since the reader was there, and the log has grown by their
+    // records.
+    assert_eq!(stats.commits.published, held.commits.published);
+    assert!(
+        stats.store.log_bytes > held.store.log_bytes,
+        "{} bytes logged before the steps and {} after",
+        held.store.log_bytes,
+        stats.store.log_bytes
+    );
     // The ids of the freed pages come back after the next commits, and
     // one handle on the directory is kept.
     plant(&db, subtree(3), Merk::sized(b'k', 10, 20));
@@ -197,9 +206,10 @@ fn the_reclaimer_runs_beside_a_writer_and_readers_on_threads() {
             // The index says which round the version is of.
             let opened = operation.open(index).expect("a lookup").expect("entered");
             let mut value = Vec::new();
-            let Ok(true) = opened.get(Column::Aux, b"round", &mut value) else {
+            let found = opened.get(Column::Aux, b"round", &mut value);
+            if !found.expect("a read") {
                 return 0;
-            };
+            }
             let round = u32::from_be_bytes(value[..].try_into().expect("four bytes"));
             for in_use in live(round) {
                 if in_use == 0 {

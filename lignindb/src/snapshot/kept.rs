@@ -47,9 +47,11 @@ use lignin_tree::directory::Directory;
 ///   the commit lock, so that the ids of the Merks that are gone for good
 ///   leave the handles ([`Self::set`] with the latest version).
 ///
-/// A reader takes a read lock for one lookup, once for each version it
-/// reads at, and a writer the write lock for a few instructions. No page
-/// is read under either.
+/// A reader takes a read lock for one lookup each time it takes a copy,
+/// which a snapshot, an operation and the frames of a write transaction
+/// do once and keep. A writer takes the write lock for a few
+/// instructions. No page is read and nothing else is locked under either,
+/// so a reader waits there for no more than those instructions.
 ///
 /// [`Published::directory`]: crate::commit::Published::directory
 pub struct Directories {

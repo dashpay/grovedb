@@ -1,6 +1,7 @@
 //! Every part of one open database, and the views that are made of them.
 
 use std::{
+    io::ErrorKind,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -17,7 +18,7 @@ use lignin_store::{
     flush::{FlushError, FlushState, Stores, WriteBack},
     load::PageLoader,
     recovery::RecoveryReport,
-    segment::{ManifestStore, SegmentStore},
+    segment::{read_manifest, ManifestStore, SegmentStore, SegmentStoreError},
     stats::Stats,
     table::{PageTable, TableCheckpoints},
     values::{OwnersError, ValueStore},
@@ -33,6 +34,7 @@ use lignin_tree::{
 
 use super::{
     error::Reopen,
+    open::LOCK_FILE,
     reclaim::{ReclaimStats, Reclaiming},
 };
 use crate::{
@@ -72,6 +74,9 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
+    /// Whether the thread ends without the work it does for the next
+    /// session: the directory is the database's no more.
+    abandon: AtomicBool,
 }
 
 impl Signal {
@@ -95,6 +100,15 @@ impl Signal {
 
     pub(super) fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire)
+    }
+
+    /// Tells the thread to end with nothing more written.
+    pub(super) fn abandon(&self) {
+        self.abandon.store(true, Ordering::Release);
+    }
+
+    pub(super) fn abandoned(&self) -> bool {
+        self.abandon.load(Ordering::Acquire)
     }
 }
 
@@ -152,10 +166,6 @@ pub(super) struct Store {
     pub(super) catalog: OnceLock<Catalog>,
     /// What the recovery that opened the session did.
     pub(super) recovery: RecoveryReport,
-    /// Why the session takes no write any more, if it does not.
-    pub(super) reopen: Mutex<Option<Reopen>>,
-    /// Set with [`Self::reopen`], so that a write looks at one flag.
-    pub(super) refusing: AtomicBool,
     /// What each commit of the session dropped or cleared, for the
     /// reclaimer to take.
     pub(super) dropped: Mutex<Vec<(CommitVersion, Dropped)>>,
@@ -197,25 +207,31 @@ impl Store {
         Committed::new(self.loader(), &self.values, guard, at)
     }
 
-    /// Records why the session takes no write any more. The first reason
-    /// stands.
-    pub(super) fn refuse(&self, reason: Reopen) {
-        lock(&self.reopen).get_or_insert(reason);
-        self.refusing.store(true, Ordering::Release);
+    /// Whether the directory holds this database no more: it is gone, the
+    /// lock file is not in it, or the manifest in it is not the one this
+    /// session wrote last. Someone removed the directory while the handle
+    /// was open, or put another in its place (P-18). An error of the file
+    /// layer that says none of these leaves the answer at no.
+    pub(super) fn gone(&self) -> bool {
+        match self.vfs.read_dir(&self.dir) {
+            Err(error) => return error.kind() == ErrorKind::NotFound,
+            Ok(entries) if !entries.iter().any(|entry| entry.name == LOCK_FILE) => return true,
+            Ok(_) => {}
+        }
+        // Under the lock no manifest is installed between the two.
+        let ours = lock(&self.manifest);
+        match (read_manifest(&*self.vfs, &self.dir), ours.manifest()) {
+            (Ok(stored), Ok(ours)) => stored != *ours,
+            (Err(SegmentStoreError::NoManifest { .. }), _) => true,
+            _ => false,
+        }
     }
 
-    /// Why the session takes no write any more, if it does not: what was
-    /// recorded, or what the commit path stopped for.
+    /// Why the session takes no write any more, if it does not. There is
+    /// one record of it, the commit path's, which every commit reads
+    /// again under the commit lock: the first reason stands.
     pub(super) fn refusal(&self) -> Option<Reopen> {
-        if self.refusing.load(Ordering::Acquire) {
-            if let Some(reopen) = lock(&self.reopen).clone() {
-                return Some(reopen);
-            }
-        }
-        let stopped = self.committing.stopped()?;
-        let reopen = Reopen::Stopped(stopped);
-        self.refuse(reopen.clone());
-        Some(reopen)
+        self.committing.stopped().map(Reopen::from)
     }
 }
 

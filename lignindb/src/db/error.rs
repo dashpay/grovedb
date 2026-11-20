@@ -85,7 +85,8 @@ pub enum OpenError {
     /// whether the directory is damaged or a file operation failed.
     Recovery(Box<RecoveryError>),
     /// The first commit of a new database, which makes its keyspaces,
-    /// failed. The next open makes it again.
+    /// failed. The next open makes it again, unless its group is whole in
+    /// the log: then the recovery of that open has it.
     Create {
         /// The step that failed.
         step: &'static str,
@@ -253,6 +254,15 @@ pub enum Reopen {
     Stopped(Stopped),
 }
 
+impl From<Stopped> for Reopen {
+    fn from(stopped: Stopped) -> Self {
+        match stopped {
+            Stopped::NotDurable { version, reason } => Self::NotDurable { version, reason },
+            stopped => Self::Stopped(stopped),
+        }
+    }
+}
+
 impl fmt::Display for Reopen {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str("the session takes no write, and the database has to be opened again: ")?;
@@ -319,7 +329,7 @@ impl WriteError {
                     reason: source.to_string(),
                 })
             }
-            Self::Commit(CommitError::Stopped(stopped)) => Some(Reopen::Stopped(stopped.clone())),
+            Self::Commit(CommitError::Stopped(stopped)) => Some(stopped.clone().into()),
             Self::Commit(CommitError::Unsettled { version, source }) => {
                 Some(Reopen::Stopped(Stopped::Unsettled {
                     version: *version,
@@ -379,6 +389,13 @@ pub enum DbError {
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.
     Panicked(&'static str),
+    /// The directory was removed while the database was open, or holds
+    /// another database now. The close wrote nothing and made nothing
+    /// durable (P-18).
+    Removed {
+        /// The directory the database was opened in.
+        dir: PathBuf,
+    },
 }
 
 impl fmt::Display for DbError {
@@ -386,6 +403,12 @@ impl fmt::Display for DbError {
         match self {
             Self::Flush(source) => write!(f, "write-back: {source}"),
             Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
+            Self::Removed { dir } => write!(
+                f,
+                "{} holds this database no more: it was removed or replaced while the database \
+                 was open, and nothing was written at the close",
+                dir.display()
+            ),
         }
     }
 }
@@ -394,7 +417,7 @@ impl Error for DbError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Flush(source) => Some(source),
-            Self::Panicked(_) => None,
+            Self::Panicked(_) | Self::Removed { .. } => None,
         }
     }
 }

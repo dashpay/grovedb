@@ -192,8 +192,10 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     pub(crate) values: TreeValues,
     pub(crate) source: ValueSource<'s>,
     pub(crate) flat: FlatFrames<'s, 'g, G>,
-    /// The subtree directory as these pages have it: loaded from them when
-    /// the frames are made, and told every root, every Merk that is entered
+    /// The subtree directory as these pages have it: a copy of the handle
+    /// that is kept for their version, taken when the frames are made
+    /// ([`WritePath::directory_at`]), and told every root, every Merk that
+    /// is entered
     /// and every one that leaves by the writes that are applied to them
     /// (`lignin_tree::directory`). It is made again with them.
     pub(crate) directory: Directory,

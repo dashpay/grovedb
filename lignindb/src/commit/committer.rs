@@ -616,6 +616,11 @@ impl<'s> Committer<'s> {
         if let Err(error) = path.versions.publish(version) {
             return Err(self.halted(version, error.into()));
         }
+        if let Err(error) = &synced {
+            // Under the commit lock, so that no commit that waits for it
+            // is published behind a sync that failed.
+            self.state.sync_failed(version, error);
+        }
         drop(lock);
 
         self.state.count(Counted::Published { group_len });

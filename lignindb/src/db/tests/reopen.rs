@@ -14,142 +14,11 @@
 //! memory a sync costs nothing, and on a disk the syncs are most of the
 //! time: the test says how many there were and how long they took.
 
-use std::{
-    fmt, io,
-    path::Path,
-    sync::{
-        atomic::{AtomicU64, Ordering},
-        Arc,
-    },
-    time::Instant,
-};
+use std::{path::Path, sync::Arc, time::Instant};
 
-use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
 use lignin_tree::directory::Directory;
 
 use super::*;
-
-/// The file layer of the operating system, with a count of the syncs and
-/// the reads and of the time they take: what a reopen is made of.
-#[derive(Debug, Default)]
-struct Counts {
-    syncs: AtomicU64,
-    sync_nanos: AtomicU64,
-    reads: AtomicU64,
-    read_bytes: AtomicU64,
-    opens: AtomicU64,
-}
-
-#[derive(Debug, Clone, Default)]
-struct Timed(Arc<Counts>);
-
-impl Timed {
-    fn sync<T>(&self, sync: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
-        let began = Instant::now();
-        let synced = sync();
-        let nanos = began.elapsed().as_nanos() as u64;
-        self.0.syncs.fetch_add(1, Ordering::Relaxed);
-        self.0.sync_nanos.fetch_add(nanos, Ordering::Relaxed);
-        synced
-    }
-
-    /// The counts since the last call: syncs, the milliseconds they took,
-    /// reads, the bytes they read, and files opened.
-    fn take(&self) -> (u64, f64, u64, u64, u64) {
-        let take = |count: &AtomicU64| count.swap(0, Ordering::Relaxed);
-        let counts = &self.0;
-        (
-            take(&counts.syncs),
-            take(&counts.sync_nanos) as f64 / 1e6,
-            take(&counts.reads),
-            take(&counts.read_bytes),
-            take(&counts.opens),
-        )
-    }
-}
-
-struct TimedFile(Box<dyn VfsFile>, Timed);
-
-impl fmt::Debug for TimedFile {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl VfsFile for TimedFile {
-    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
-        let read = self.0.read_at(buf, offset)?;
-        self.1 .0.reads.fetch_add(1, Ordering::Relaxed);
-        self.1
-             .0
-            .read_bytes
-            .fetch_add(read as u64, Ordering::Relaxed);
-        Ok(read)
-    }
-
-    fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
-        self.0.write_at(buf, offset)
-    }
-
-    fn append(&self, buf: &[u8]) -> io::Result<u64> {
-        self.0.append(buf)
-    }
-
-    fn sync_data(&self) -> io::Result<()> {
-        self.1.sync(|| self.0.sync_data())
-    }
-
-    fn sync_all(&self) -> io::Result<()> {
-        self.1.sync(|| self.0.sync_all())
-    }
-
-    fn len(&self) -> io::Result<u64> {
-        self.0.len()
-    }
-
-    fn set_len(&self, len: u64) -> io::Result<()> {
-        self.0.set_len(len)
-    }
-}
-
-impl Vfs for Timed {
-    fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        self.0.opens.fetch_add(1, Ordering::Relaxed);
-        Ok(Box::new(TimedFile(StdVfs.open(path, mode)?, self.clone())))
-    }
-
-    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        StdVfs.rename(from, to)
-    }
-
-    fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
-        StdVfs.hard_link(original, link)
-    }
-
-    fn remove_file(&self, path: &Path) -> io::Result<()> {
-        StdVfs.remove_file(path)
-    }
-
-    fn create_dir(&self, path: &Path) -> io::Result<()> {
-        StdVfs.create_dir(path)
-    }
-
-    fn remove_dir(&self, path: &Path) -> io::Result<()> {
-        StdVfs.remove_dir(path)
-    }
-
-    fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        StdVfs.read_dir(path)
-    }
-
-    fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        self.sync(|| StdVfs.sync_dir(path))
-    }
-
-    fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        StdVfs.lock(path)
-    }
-}
 
 /// What one reopen took, and what it was made of.
 #[derive(Debug)]
@@ -162,17 +31,20 @@ struct Reopened {
     files: u64,
     directory_ms: f64,
     close_ms: f64,
+    /// The parts of the open, as the engine timed them.
+    opening: crate::db::Opening,
 }
 
 /// Opens the database in `dir`, checks `check` on it, closes it, and says
 /// what the open took.
-fn reopen(dir: &Path, options: &Options, vfs: &Timed, check: impl Fn(&Db)) -> Reopened {
+fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> Reopened {
     vfs.take();
     let began = Instant::now();
     let db = Db::open(dir, options).expect("the database is opened again");
     let open_ms = began.elapsed().as_secs_f64() * 1e3;
     let (syncs, sync_ms, reads, read_bytes, files) = vfs.take();
     assert!(!db.created());
+    let opening = db.stats().opening;
     let recovery = db.stats().recovery;
     assert_eq!(
         recovery.commits, 0,
@@ -201,6 +73,7 @@ fn reopen(dir: &Path, options: &Options, vfs: &Timed, check: impl Fn(&Db)) -> Re
         files,
         directory_ms,
         close_ms: began.elapsed().as_secs_f64() * 1e3,
+        opening,
     }
 }
 
@@ -209,7 +82,7 @@ fn reopen(dir: &Path, options: &Options, vfs: &Timed, check: impl Fn(&Db)) -> Re
 #[test]
 fn a_database_that_was_closed_is_reopened_without_a_replay() {
     let dir = temp();
-    let vfs = Timed::default();
+    let vfs = Watched::default();
     let options = Options {
         vfs: Arc::new(vfs.clone()),
         ..options()
@@ -247,19 +120,14 @@ fn the_reopen_of_a_store_of_the_reference_size() {
     const DOCUMENT_MERKS: u32 = 2_000;
     const DOCUMENTS: u32 = 500;
     const INDEX_MERKS: u32 = 18_007;
-    let kept;
-    let dir = match std::env::var_os("LIGNINDB_REOPEN_DIR") {
-        Some(dir) => {
-            let dir = PathBuf::from(dir).join("reference");
-            let _ = fs::remove_dir_all(&dir);
-            dir
-        }
-        None => {
-            kept = temp();
-            kept.path().join("reference")
-        }
+    // A directory of this run's own, in the one that is named or in the
+    // temporary directory: it goes with `kept`, and nothing else does.
+    let kept = match std::env::var_os("LIGNINDB_REOPEN_DIR") {
+        Some(parent) => tempfile::tempdir_in(parent).expect("a directory for the store"),
+        None => temp(),
     };
-    let vfs = Timed::default();
+    let dir = kept.path().join("reference");
+    let vfs = Watched::default();
     let options = Options {
         vfs: Arc::new(vfs.clone()),
         ..Options::default()
@@ -336,7 +204,7 @@ fn the_reopen_of_a_store_of_the_reference_size() {
         let reopened = reopen(&dir, &options, &vfs, check);
         println!(
             "reopen {round}: {:.2} ms, of which {} syncs took {:.2} ms; {} reads of {} bytes \
-             from {} files; the directory handle loads in {:.3} ms; the close took {:.2} ms",
+             from {} files; the directory handle loads in {:.3} ms; the close took {:.2} ms\n  {}",
             reopened.open_ms,
             reopened.syncs,
             reopened.sync_ms,
@@ -345,6 +213,7 @@ fn the_reopen_of_a_store_of_the_reference_size() {
             reopened.files,
             reopened.directory_ms,
             reopened.close_ms,
+            reopened.opening,
         );
         opens.push(reopened);
     }
@@ -360,13 +229,12 @@ fn the_reopen_of_a_store_of_the_reference_size() {
         opens[0].open_ms,
         opens[opens.len() - 1].open_ms,
     );
-    // The row: within 60 ms. On a disk the syncs are the disk's, so what
-    // is held to the line is the reopen without them.
+    // The row: a reopen within 60 ms, all of it. About a dozen syncs are
+    // in every reopen, so on a disk whose sync takes several milliseconds
+    // this measures the disk: the parts above say which it is.
     assert!(
-        without_syncs < 60.0,
-        "{without_syncs:.2} ms without the syncs"
+        median.open_ms < 60.0,
+        "the median reopen took {:.2} ms, {without_syncs:.2} ms of it not in a sync",
+        median.open_ms
     );
-    if std::env::var_os("LIGNINDB_REOPEN_DIR").is_some() {
-        let _ = fs::remove_dir_all(&dir);
-    }
 }

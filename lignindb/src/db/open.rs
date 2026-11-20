@@ -6,6 +6,7 @@ use std::{
     io::ErrorKind,
     path::Path,
     sync::Arc,
+    time::{Duration, Instant},
 };
 
 use lignin_format::{
@@ -129,7 +130,14 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
 /// there, and makes its name durable. No directory is listed for it: the
 /// one above a new database can hold anything.
 fn create_dir(vfs: &dyn Vfs, dir: &Path) -> Result<(), OpenError> {
-    let parent = dir.parent().filter(|parent| !parent.as_os_str().is_empty());
+    // The directory above a path of one name is the one the process is
+    // in: the name is made durable there.
+    let parent = dir
+        .parent()
+        .map(|parent| match parent.as_os_str().is_empty() {
+            true => Path::new("."),
+            false => parent,
+        });
     match vfs.create_dir(dir) {
         Ok(()) => {}
         // Another opener made it meanwhile.
@@ -205,6 +213,12 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
             let store = ManifestStore::open(vfs.clone(), dir).map_err(OpenError::Manifest)?;
             (store, false)
         }
+        // The database that was seen before the lock was held is gone.
+        Found::Nothing { .. } if !options.create_if_missing => {
+            return Err(OpenError::NoDatabase {
+                dir: dir.to_path_buf(),
+            });
+        }
         Found::Nothing { .. } => {
             let size = options.page_size.unwrap_or(PageSize::DEFAULT);
             let empty = Manifest::new(size, Default::default(), None, Vec::new())
@@ -232,9 +246,11 @@ pub(super) fn open_store(
     dir: &Path,
     options: &Options,
     manifest: ManifestStore,
-) -> Result<(Shared, Directory), OpenError> {
+) -> Result<(Shared, Directory, Duration), OpenError> {
     let page_size = (manifest.manifest().map_err(OpenError::Manifest)?).page_size();
+    let began = Instant::now();
     let recovered = recover(manifest, &options.recovery())?;
+    let recovery = began.elapsed();
     let landed = recovered.landed();
     let troubles = Arc::new(super::store::Troubles::default());
     let told = troubles.clone();
@@ -255,12 +271,11 @@ pub(super) fn open_store(
         commits: crate::txn::Commits::new(landed),
         committing: crate::commit::CommitState::reporting(move |error| {
             told.write_back_failed(error);
-        }),
+        })
+        .ending_at_a_failed_sync(),
         directories: crate::snapshot::Directories::empty(),
         catalog: std::sync::OnceLock::new(),
         recovery: recovered.report,
-        reopen: Default::default(),
-        refusing: Default::default(),
         dropped: Default::default(),
         reclaiming: Default::default(),
         reclaimed: Default::default(),
@@ -273,7 +288,7 @@ pub(super) fn open_store(
         true => create_keyspaces(&shared)?,
         false => read_catalog(&shared, landed)?,
     };
-    Ok((shared, directory))
+    Ok((shared, directory, recovery))
 }
 
 /// The keys of the catalog, the flat keyspace in the first page of a

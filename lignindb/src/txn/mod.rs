@@ -142,7 +142,7 @@
 //! - **A handle on the directory is of one version, and none is loaded
 //!   here.** The engine keeps the handle of every version that is read
 //!   ([`Directories`](crate::snapshot::Directories)), and a transaction
-//!   takes copies ([`WritePath::directory_at`]): the frames one of their
+//!   takes copies (`WritePath::directory_at`): the frames one of their
 //!   base when they are made, so again after a commit of another landed
 //!   and after every rollback; the committed records beside them one of
 //!   the committed version of that read; and a cursor one of its own

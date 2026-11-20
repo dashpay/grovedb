@@ -74,9 +74,10 @@ pub struct Options {
     /// before committers are slowed. `None` is [`FlushConfig::new`] of the
     /// page size.
     pub flush: Option<FlushConfig>,
-    /// How long the background work sleeps when nobody wakes it. A reclaim
-    /// that a reader held back, and a step of the reclaimer that a write
-    /// transaction held back, are tried again after this long at most.
+    /// How long the reclaiming thread sleeps when nobody wakes it. A
+    /// reclaim that a reader held back, and a step of the reclaimer that a
+    /// write transaction held back, are tried again after this long at
+    /// most. Write-back's loop has its own idle time, in [`Self::flush`].
     pub idle: Duration,
     /// The file system the database is in. Tests pass a simulated one
     /// (`lignin_io::sim`).

@@ -11,10 +11,16 @@ mod writes;
 
 use std::{
     collections::BTreeMap,
-    fs,
+    fmt, fs, io,
     path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
     time::{Duration, Instant},
 };
+
+use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
 
 use lignin_format::{
     tree_page::{Hash, Side},
@@ -33,6 +39,187 @@ use crate::{
     },
     Db, Options,
 };
+
+/// What a [`Watched`] file layer saw.
+#[derive(Debug, Default)]
+pub(super) struct Counts {
+    syncs: AtomicU64,
+    sync_nanos: AtomicU64,
+    reads: AtomicU64,
+    read_bytes: AtomicU64,
+    opens: AtomicU64,
+    /// Calls that change a file or a directory, or make one durable.
+    changes: AtomicU64,
+    /// The directories that were synced, as the caller named them.
+    synced_dirs: Mutex<Vec<PathBuf>>,
+    /// The directory that paths with no root are in, if there is one.
+    root: Option<PathBuf>,
+}
+
+/// The file layer of the operating system, with a count of what is asked
+/// of it: the syncs and the time they take, the reads, and every call
+/// that changes something.
+#[derive(Debug, Clone, Default)]
+pub(super) struct Watched(Arc<Counts>);
+
+impl Watched {
+    /// A file layer whose relative paths are in `root`, as they would be
+    /// for a process whose working directory that is.
+    pub(super) fn rooted(root: &Path) -> Self {
+        Self(Arc::new(Counts {
+            root: Some(root.to_path_buf()),
+            ..Counts::default()
+        }))
+    }
+
+    fn at(&self, path: &Path) -> PathBuf {
+        match &self.0.root {
+            Some(root) if path.is_relative() => root.join(path),
+            _ => path.to_path_buf(),
+        }
+    }
+
+    fn changed(&self) {
+        self.0.changes.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn sync<T>(&self, sync: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+        self.changed();
+        let began = Instant::now();
+        let synced = sync();
+        let nanos = began.elapsed().as_nanos() as u64;
+        self.0.syncs.fetch_add(1, Ordering::Relaxed);
+        self.0.sync_nanos.fetch_add(nanos, Ordering::Relaxed);
+        synced
+    }
+
+    /// The counts since the last call: syncs, the milliseconds they took,
+    /// reads, the bytes they read, and files opened.
+    pub(super) fn take(&self) -> (u64, f64, u64, u64, u64) {
+        let take = |count: &AtomicU64| count.swap(0, Ordering::Relaxed);
+        let counts = &self.0;
+        (
+            take(&counts.syncs),
+            take(&counts.sync_nanos) as f64 / 1e6,
+            take(&counts.reads),
+            take(&counts.read_bytes),
+            take(&counts.opens),
+        )
+    }
+
+    /// How many calls so far wrote, removed, renamed, made or synced
+    /// something, or opened a file to write it.
+    pub(super) fn changes(&self) -> u64 {
+        self.0.changes.load(Ordering::Relaxed)
+    }
+
+    /// The directories that were synced so far, as the caller named them.
+    pub(super) fn synced_dirs(&self) -> Vec<PathBuf> {
+        self.0.synced_dirs.lock().expect("the list").clone()
+    }
+}
+
+struct WatchedFile {
+    file: Box<dyn VfsFile>,
+    watched: Watched,
+}
+
+impl fmt::Debug for WatchedFile {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.file.fmt(f)
+    }
+}
+
+impl VfsFile for WatchedFile {
+    fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        let read = self.file.read_at(buf, offset)?;
+        let counts = &self.watched.0;
+        counts.reads.fetch_add(1, Ordering::Relaxed);
+        counts.read_bytes.fetch_add(read as u64, Ordering::Relaxed);
+        Ok(read)
+    }
+
+    fn write_at(&self, buf: &[u8], offset: u64) -> io::Result<()> {
+        self.watched.changed();
+        self.file.write_at(buf, offset)
+    }
+
+    fn append(&self, buf: &[u8]) -> io::Result<u64> {
+        self.watched.changed();
+        self.file.append(buf)
+    }
+
+    fn sync_data(&self) -> io::Result<()> {
+        self.watched.sync(|| self.file.sync_data())
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
+        self.watched.sync(|| self.file.sync_all())
+    }
+
+    fn len(&self) -> io::Result<u64> {
+        self.file.len()
+    }
+
+    fn set_len(&self, len: u64) -> io::Result<()> {
+        self.watched.changed();
+        self.file.set_len(len)
+    }
+}
+
+impl Vfs for Watched {
+    fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
+        self.0.opens.fetch_add(1, Ordering::Relaxed);
+        if !matches!(mode, OpenMode::Read) {
+            self.changed();
+        }
+        let file = StdVfs.open(&self.at(path), mode)?;
+        Ok(Box::new(WatchedFile {
+            file,
+            watched: self.clone(),
+        }))
+    }
+
+    fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
+        self.changed();
+        StdVfs.rename(&self.at(from), &self.at(to))
+    }
+
+    fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
+        self.changed();
+        StdVfs.hard_link(&self.at(original), &self.at(link))
+    }
+
+    fn remove_file(&self, path: &Path) -> io::Result<()> {
+        self.changed();
+        StdVfs.remove_file(&self.at(path))
+    }
+
+    fn create_dir(&self, path: &Path) -> io::Result<()> {
+        self.changed();
+        StdVfs.create_dir(&self.at(path))
+    }
+
+    fn remove_dir(&self, path: &Path) -> io::Result<()> {
+        self.changed();
+        StdVfs.remove_dir(&self.at(path))
+    }
+
+    fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
+        StdVfs.read_dir(&self.at(path))
+    }
+
+    fn sync_dir(&self, path: &Path) -> io::Result<()> {
+        let mut synced = self.0.synced_dirs.lock().expect("the list");
+        synced.push(path.to_path_buf());
+        drop(synced);
+        self.sync(|| StdVfs.sync_dir(&self.at(path)))
+    }
+
+    fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        StdVfs.lock(&self.at(path))
+    }
+}
 
 /// The tree type the Merks of these tests are entered with.
 pub(super) const TREE_TYPE: &[u8] = b"merk";
@@ -179,11 +366,19 @@ impl Merk {
     }
 }
 
+/// A subtree to enter, with the subtree and the key of the node that
+/// hosts it, if one does.
+pub(super) type Entered = (Subtree, Option<(Subtree, Vec<u8>)>);
+
+/// What a reader finds of a subtree: the nodes of its Merk, and the record
+/// under one key in each column that has one.
+pub(super) type Seen = (usize, Vec<(Column, Vec<u8>)>);
+
 /// What one batch of these tests writes.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Writes {
     /// Subtrees to enter, each with the node that hosts it, if one does.
-    pub(super) enter: Vec<(Subtree, Option<(Subtree, Vec<u8>)>)>,
+    pub(super) enter: Vec<Entered>,
     /// Subtrees to drop.
     pub(super) drop: Vec<Subtree>,
     /// Whole Merks to write.
@@ -293,11 +488,7 @@ fn nodes(operation: &Operation<'_>, root: Option<CellAddress>) -> usize {
 /// What a reader finds of `subtree`: `None` if it is not entered, and
 /// otherwise the nodes of its Merk and the record under `key` in each
 /// column that has one.
-pub(super) fn seen(
-    operation: &Operation<'_>,
-    subtree: Subtree,
-    key: &[u8],
-) -> Option<(usize, Vec<(Column, Vec<u8>)>)> {
+pub(super) fn seen(operation: &Operation<'_>, subtree: Subtree, key: &[u8]) -> Option<Seen> {
     let opened = operation.open(subtree).expect("a lookup")?;
     let count = nodes(operation, opened.root());
     let mut records = Vec::new();
