@@ -1,9 +1,6 @@
 //! The handles a reader holds: a snapshot, and one operation of a reader.
 
-use std::{
-    fmt,
-    sync::{Arc, OnceLock},
-};
+use std::{fmt, sync::OnceLock};
 
 use lignin_format::{CommitVersion, PageId};
 use lignin_store::{
@@ -12,13 +9,14 @@ use lignin_store::{
     values::ValueStore,
 };
 use lignin_tree::{
-    flat::FlatTree,
+    directory::Directory,
     node::{Lease, NodeReader},
 };
 
 use super::{
     error::SnapshotError,
-    records::{Handle, Loaded, Records},
+    kept::Directories,
+    records::{Handle, Records},
     versions::{OperationGuard, VersionPin, Versions},
 };
 use crate::txn::Keyspaces;
@@ -43,10 +41,6 @@ impl<'s> ReadPath<'s> {
     /// The read path of the database whose versions are `versions` and
     /// whose pages `pages` loads. The caller vouches that the two are of
     /// one store: a pin on other versions keeps nothing of these pages.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-    )]
     pub(crate) fn new(versions: &'s Versions, pages: PageLoader<'s>) -> Self {
         Self {
             versions,
@@ -56,24 +50,21 @@ impl<'s> ReadPath<'s> {
     }
 
     /// The same read path, with where the records of the store are: its
-    /// value log, the flat keyspace of each column, and the keyspace of its
-    /// subtree directory. Its readers open subtrees and read their records
-    /// ([`Operation::open`]). The caller vouches that they are of the same
-    /// store as the pages.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-    )]
+    /// value log, the flat keyspace of each column, and the handles on its
+    /// subtree directory that the engine keeps, one for each version a
+    /// reader can read at ([`Directories`]). Its readers open subtrees and
+    /// read their records ([`Operation::open`]). The caller vouches that
+    /// they are of the same store as the pages.
     pub(crate) fn with_records(
         self,
         values: &'s ValueStore,
         keyspaces: Keyspaces,
-        directory: FlatTree,
+        directories: &'s Directories,
     ) -> Self {
         let records = Records {
             values,
             keyspaces,
-            directory,
+            directories,
         };
         Self {
             records: Some(records),
@@ -89,36 +80,17 @@ impl<'s> ReadPath<'s> {
     /// A snapshot of the latest version (RD1). A read with no transaction
     /// is one of these, held for one caller operation (RD2).
     ///
-    /// Where the read path names the records of the store, the subtree
-    /// directory of the snapshot's version is loaded here, and the version
-    /// is chosen again if it was not the latest any more when the load
-    /// ended: a handle is good for a reader's life only if it was loaded
-    /// while the reader's version was the latest (see
+    /// It reads no page and takes no lock. The handle on the subtree
+    /// directory of its version is taken from the engine's when the
+    /// snapshot first opens a subtree: the pin keeps it there (see
     /// [the module](super#the-records-of-a-subtree)).
     pub fn snapshot(&self) -> Snapshot<'s> {
-        let (pin, directory) = self.pin();
         Snapshot {
-            pin,
+            pin: self.versions.pin(),
             pages: self.pages,
             lease: OnceLock::new(),
             records: self.records,
-            directory,
-        }
-    }
-
-    /// A pin on the latest version, with the subtree directory of that
-    /// version, loaded while it was the latest.
-    fn pin(&self) -> (VersionPin<'s>, Option<Loaded>) {
-        let Some(records) = &self.records else {
-            return (self.versions.pin(), None);
-        };
-        loop {
-            let pin = self.versions.pin();
-            let guard = self.versions.guard();
-            let loaded = records.load(self.pages, &guard, pin.version());
-            if guard.latest() == pin.version() {
-                return (pin, Some(loaded.map_err(Arc::new)));
-            }
+            directory: OnceLock::new(),
         }
     }
 
@@ -214,10 +186,11 @@ pub struct Snapshot<'s> {
     pages: PageLoader<'s>,
     lease: OnceLock<Lease>,
     records: Option<Records<'s>>,
-    /// The subtree directory of the snapshot's version, loaded when the
-    /// snapshot was taken, while that version was the latest. It is good
-    /// for the snapshot's life.
-    directory: Option<Loaded>,
+    /// The handle on the subtree directory of the snapshot's version: a
+    /// copy of the one the engine keeps, taken when the snapshot first
+    /// opens a subtree and good for the snapshot's life. `None` inside if
+    /// the engine keeps none for the version.
+    directory: OnceLock<Option<Directory>>,
 }
 
 impl<'s> Snapshot<'s> {
@@ -247,7 +220,7 @@ impl<'s> Snapshot<'s> {
             lease: Leased::Snapshot(&self.lease),
             database: self.pin.versions().id(),
             records: self.records,
-            directory: Handle::Snapshot(self.directory.as_ref()),
+            directory: Handle::Snapshot(&self.directory),
         }
     }
 

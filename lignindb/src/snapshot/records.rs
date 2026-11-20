@@ -1,51 +1,34 @@
 //! The records of a database as a reader finds them: through the subtree
 //! directory of the version it reads.
 
-use std::{
-    error::Error,
-    fmt,
-    sync::{Arc, OnceLock},
-};
+use std::{error::Error, fmt, sync::OnceLock};
 
 use lignin_format::{CellAddress, CommitVersion};
-use lignin_store::{load::PageLoader, values::ValueStore};
+use lignin_store::values::ValueStore;
 use lignin_tree::{
     directory::{Directory, DirectoryError, Entry},
-    flat::{self, Committed, FlatError, FlatTree},
+    flat::{self, Committed, FlatError},
 };
 
-use super::{read::Operation, versions::OperationGuard};
+use super::{kept::Directories, read::Operation, versions::OperationGuard};
 use crate::txn::{Column, Keyspaces, Subtree};
 
 /// Where the records of one store are: its value log, the flat keyspace of
-/// each column, and the keyspace of its subtree directory. The engine's
-/// open pairs it with the store's [`ReadPath`](super::ReadPath).
+/// each column, and the handles on its subtree directory that the engine
+/// keeps. The engine's open pairs it with the store's
+/// [`ReadPath`](super::ReadPath).
 #[derive(Clone, Copy)]
 pub(super) struct Records<'s> {
     pub(super) values: &'s ValueStore,
     pub(super) keyspaces: Keyspaces,
-    pub(super) directory: FlatTree,
-}
-
-impl<'s> Records<'s> {
-    /// Loads the subtree directory of the version `at`, read under
-    /// `guard`: one walk of the records of what waits to be reclaimed.
-    pub(super) fn load(
-        &self,
-        pages: PageLoader<'s>,
-        guard: &OperationGuard<'s>,
-        at: CommitVersion,
-    ) -> Result<Directory, DirectoryError> {
-        let pages = Committed::new(pages, self.values, guard, at);
-        Directory::load(&pages, self.directory.root(), self.directory.config())
-    }
+    pub(super) directories: &'s Directories,
 }
 
 impl fmt::Debug for Records<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Records")
             .field("keyspaces", &self.keyspaces)
-            .field("directory", &self.directory)
+            .field("directories", &self.directories)
             .finish_non_exhaustive()
     }
 }
@@ -60,20 +43,14 @@ pub enum ReadError {
     Directory(DirectoryError),
     /// A flat keyspace could not be read.
     Flat(FlatError),
-    /// The subtree directory of the snapshot's version could not be loaded
-    /// when the snapshot was taken. Every open of the snapshot answers
-    /// this: a handle that is loaded later is not one of its version.
-    Unloaded(Arc<DirectoryError>),
-    /// An operation that pins no version opened its first subtree after
-    /// the latest version had moved on from the one it reads at. A handle
-    /// that is loaded then is not one of its version, so nothing is
-    /// opened: the caller begins another operation, which reads the newer
-    /// version.
-    Moved {
-        /// The version the operation reads at.
+    /// The engine keeps no handle on the subtree directory for the version
+    /// that is read. It keeps one for every version that is pinned, and
+    /// for the latest version of an operation under its guard
+    /// ([`Directories`]), so this is a read path whose versions were
+    /// published by something that is no commit of the engine.
+    NotKept {
+        /// The version the reader reads at.
         at: CommitVersion,
-        /// The latest version when it loaded its handle.
-        latest: CommitVersion,
     },
 }
 
@@ -83,14 +60,10 @@ impl fmt::Display for ReadError {
             Self::NoRecords => f.write_str("the read path names no records"),
             Self::Directory(error) => write!(f, "subtree directory: {error}"),
             Self::Flat(error) => write!(f, "flat keyspace: {error}"),
-            Self::Unloaded(error) => {
-                write!(f, "subtree directory, when the snapshot was taken: {error}")
-            }
-            Self::Moved { at, latest } => write!(
+            Self::NotKept { at } => write!(
                 f,
-                "the operation reads version {} and the latest is {}",
-                at.get(),
-                latest.get()
+                "no handle on the subtree directory is kept for version {}",
+                at.get()
             ),
         }
     }
@@ -99,10 +72,9 @@ impl fmt::Display for ReadError {
 impl Error for ReadError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
-            Self::NoRecords | Self::Moved { .. } => None,
+            Self::NoRecords | Self::NotKept { .. } => None,
             Self::Directory(error) => Some(error),
             Self::Flat(error) => Some(error),
-            Self::Unloaded(error) => Some(&**error),
         }
     }
 }
@@ -119,33 +91,24 @@ impl From<FlatError> for ReadError {
     }
 }
 
-/// What a snapshot has of the subtree directory of its version: the
-/// handle that was loaded when the version was chosen, or why there is
-/// none.
-pub(super) type Loaded = Result<Directory, Arc<DirectoryError>>;
-
 /// The directory handle of one operation: its snapshot's, or its own.
 ///
-/// **A handle is loaded while the version it is for is the latest one.**
-/// What waits to be reclaimed is taken out of the pages one step at a
-/// time, the record of a dropped Merk after the entries of the Merks that
-/// were below it, and each step is on the page versions that are current
-/// then. A reader of an older version may still have such an entry in a
-/// page version of its own while the record of the drop is gone from a
-/// page it shares with the latest version, so a handle that is loaded for
-/// its version then would take the entry for one in use. A handle that
-/// was loaded while the version was the latest has the id of the drop, or
-/// reads pages from which the entries are gone, and stays right: what is
-/// taken out later, it hides (`lignin_tree::directory`, "A handle is of
-/// the pages it was loaded from").
+/// **A handle is a copy of the one the engine keeps for the version**
+/// ([`Directories`]), taken when the reader first opens a subtree. The
+/// kept handle was made while its version was the newest, by the commit
+/// that made the version or by the open of the database, so it has the id
+/// of every Merk that is dropped there and not reclaimed, and it hides
+/// what is taken out of the pages afterwards (`lignin_tree::directory`, "A
+/// handle is of the pages it was loaded from"). A handle that a reader
+/// loaded itself for a version that is the latest no more would not: what
+/// a drop left is taken out one page step at a time, on the page versions
+/// that are current then, the record of the dropped Merk last.
 pub(super) enum Handle<'o> {
-    /// The snapshot's, loaded when it was taken. `None` where the read
-    /// path names no records.
-    Snapshot(Option<&'o Loaded>),
-    /// The handle of an operation that pins no version, loaded when it
-    /// first opens a subtree, and kept only if the latest version is still
-    /// the one it reads at ([`ReadError::Moved`]).
-    Own(OnceLock<Directory>),
+    /// The snapshot's, taken at its first open and kept for its life.
+    Snapshot(&'o OnceLock<Option<Directory>>),
+    /// The handle of an operation that pins no version: the kept one of
+    /// the latest version it read, which its guard keeps there.
+    Own(OnceLock<Option<Directory>>),
 }
 
 /// A subtree that a reader keeps from one operation to the next: its entry
@@ -167,22 +130,11 @@ impl<'o> Operation<'o> {
     /// The subtree directory of the operation's version ([`Handle`]).
     fn directory(&self, records: &Records<'o>) -> Result<&Directory, ReadError> {
         let cell = match &self.directory {
-            Handle::Snapshot(None) => return Err(ReadError::NoRecords),
-            Handle::Snapshot(Some(Ok(directory))) => return Ok(directory),
-            Handle::Snapshot(Some(Err(error))) => {
-                return Err(ReadError::Unloaded(Arc::clone(error)));
-            }
+            Handle::Snapshot(cell) => *cell,
             Handle::Own(cell) => cell,
         };
-        if let Some(directory) = cell.get() {
-            return Ok(directory);
-        }
-        let loaded = records.load(self.pages, self.guard(), self.at())?;
-        let (at, latest) = (self.at(), self.guard().latest());
-        if latest != at {
-            return Err(ReadError::Moved { at, latest });
-        }
-        Ok(cell.get_or_init(|| loaded))
+        let kept = cell.get_or_init(|| records.directories.at(self.at()));
+        kept.as_ref().ok_or(ReadError::NotKept { at: self.at() })
     }
 
     /// Opens `subtree`: its entry in the subtree directory of the version

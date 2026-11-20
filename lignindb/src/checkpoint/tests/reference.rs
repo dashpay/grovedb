@@ -483,6 +483,10 @@ impl Vfs for Counting {
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
         self.inner.lock(path)
     }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.inner.lock_existing(path)
+    }
 }
 
 impl Counts {

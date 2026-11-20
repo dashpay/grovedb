@@ -190,7 +190,7 @@ fn lock_follows_a_lock_file_replaced_while_it_was_being_locked() {
     let path = root.join("LOCK");
 
     let mut attempts = 0;
-    let lock = StdLock::acquire(&path, || {
+    let lock = StdLock::acquire(&path, true, || {
         attempts += 1;
         match attempts {
             1 => fs::remove_file(&path).unwrap(),
@@ -207,6 +207,47 @@ fn lock_follows_a_lock_file_replaced_while_it_was_being_locked() {
     assert!(lock.is_named(&path).unwrap());
     assert_eq!(vfs.lock(&path).unwrap_err().kind(), ErrorKind::WouldBlock);
     drop(vfs.lock(&root.join("moved")).unwrap());
+}
+
+/// A lock that makes no file follows a replaced lock file as the other
+/// does, and gives up with nothing made when the file is gone.
+#[test]
+#[cfg_attr(miri, ignore = "Miri has no inode numbers")]
+fn lock_existing_makes_no_file_when_the_lock_file_goes_while_it_is_locked() {
+    let (vfs, root, _dir) = setup();
+    let path = root.join("LOCK");
+    fs::write(&path, b"").unwrap();
+
+    let mut attempts = 0;
+    let gone = StdLock::acquire(&path, false, || {
+        attempts += 1;
+        // A second time here would be a file that was made again.
+        assert_eq!(attempts, 1, "the lock file was made");
+        fs::remove_file(&path).unwrap();
+    });
+    assert_eq!(gone.unwrap_err().kind(), ErrorKind::NotFound);
+    assert_eq!(attempts, 1);
+    assert_eq!(vfs.read_dir(&root).unwrap(), []);
+
+    // Another file under the name is the one that is locked.
+    fs::write(&path, b"first").unwrap();
+    let mut attempts = 0;
+    let lock = StdLock::acquire(&path, false, || {
+        attempts += 1;
+        if attempts == 1 {
+            fs::rename(&path, root.join("moved")).unwrap();
+            fs::write(&path, b"second").unwrap();
+        }
+    })
+    .unwrap();
+    assert_eq!(attempts, 2);
+    assert!(lock.is_named(&path).unwrap());
+    assert_eq!(fs::read(&path).unwrap(), b"second");
+    assert_eq!(
+        vfs.lock_existing(&path).unwrap_err().kind(),
+        ErrorKind::WouldBlock
+    );
+    drop(vfs.lock_existing(&root.join("moved")).unwrap());
 }
 
 #[test]

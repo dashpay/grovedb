@@ -289,7 +289,23 @@
 //!    commit wrote waits for the next one ([`Busy::Newborn`]).
 //! 3. **The free link is pushed for every freed page**, also one that no
 //!    segment holds: nothing older of it can be linked afterwards
-//!    (`page-table.md` T18).
+//!    (`page-table.md` T18). One page has none to be given: a page that
+//!    was made under an id which named another page before, and that
+//!    write-back has not written yet. The newest link of its id is still
+//!    the free link of the earlier page, and the table takes no second
+//!    one. The step goes on as for any page it frees, as a commit does
+//!    (`lignindb::commit`, "A page that is freed again before it was
+//!    written back"): no segment ever held the page, the pool takes its
+//!    versions off the lists of what is to be written back, and the id is
+//!    retired once. Write-back links no block of a page once the pool was
+//!    told that it is freed, and a pass that looked before that can have
+//!    linked the page behind the refused push: so the step pushes the free
+//!    link once more after the pool's word, and it then lands above that
+//!    link. [`Reclaimed::pages_never_linked`] and
+//!    [`FlatReclaimed::pages_never_linked`] count the pages that were
+//!    given no free link by either push. The record
+//!    of the step is in the log before the page is freed, which is what a
+//!    checkpoint of the page table needs of it (`page-table.md` K14).
 //! 4. **Every step holds the lock on the counts**, also one that releases
 //!    no pointer, from its record to its end: a sample of the counts then
 //!    finds every step whose record is before it made, as LG28 needs of

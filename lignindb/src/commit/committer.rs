@@ -144,10 +144,6 @@ impl<'s> Committer<'s> {
     /// `write_back`, with `table` and `log` the page table and the log
     /// that write-back works on. The caller vouches that all of them are
     /// of one store, and `state` is what that store's commits share.
-    #[cfg_attr(
-        any(not(any(test, feature = "testing")), loom),
-        expect(dead_code, reason = "the engine's open (TXN-07) is its one caller")
-    )]
     pub(crate) fn new(
         path: WritePath<'s>,
         write_back: WriteBack<'s>,
@@ -251,7 +247,7 @@ impl<'s> Committer<'s> {
         }
         self.look_at_log(true)?;
         let mut untold = None;
-        let committed = self.commit_locked(txn, &path, rules, also, &mut untold);
+        let committed = self.commit_locked(txn, &path, rules, also, |_| Ok(()), &mut untold);
         // No lock is held here: whoever is told may call the store.
         if let Some(error) = untold {
             self.state.write_back_failed(&error);
@@ -269,14 +265,22 @@ impl<'s> Committer<'s> {
     /// on every way out. `untold` is given what write-back answered when
     /// it could not take the group in, for the caller to tell once the
     /// locks are given back.
+    ///
+    /// `write` is run on the transaction once the lock is held and the
+    /// log was looked at, before the transaction is taken: a commit that
+    /// nothing is committed beside writes there
+    /// ([`Self::commit_alone`]), and every other commit writes nothing.
     fn commit_locked<'t, R: HashRules>(
         &self,
         txn: &WriteTxn<'t>,
         path: &WritePath<'t>,
         rules: &mut R,
         also: Option<&KeySet>,
+        write: impl FnOnce(&WriteTxn<'t>) -> Result<(), TxnError>,
         untold: &mut Option<FlushError>,
     ) -> Result<Committed, CommitError> {
+        #[cfg(test)]
+        self.state.before_lock();
         let lock = self.state.lock();
         if let Some(stopped) = self.state.stopped() {
             return Err(CommitError::Stopped(stopped));
@@ -286,6 +290,7 @@ impl<'s> Committer<'s> {
         // refused. An append that fails from here until the commit has
         // the lock on the counts ends the commit instead.
         self.look_at_log(false)?;
+        write(txn).map_err(CommitError::Refused)?;
         let parts = match txn.seal() {
             Ok(Sealed::Ready(parts)) => *parts,
             Ok(Sealed::Empty) => return Ok(self.empty()),
@@ -396,6 +401,45 @@ impl<'s> Committer<'s> {
             drop(txn);
             self.after();
         }
+        committed
+    }
+
+    /// A commit that no other commit comes between: `write` is given a
+    /// write transaction of its own while the commit lock is held, and
+    /// what it writes is committed under that same hold of the lock. So
+    /// what `write` reads of the latest version is what the commit is made
+    /// over, and the version it publishes is the one after it. The key set
+    /// of the commit holds `also` beside the keys of the writes
+    /// ([`Self::commit_covering`]).
+    ///
+    /// It is for the one write that has to see everything it replaces: a
+    /// wipe, which drops every subtree the latest version has and must
+    /// leave none that a commit beside it entered. `write` runs under the
+    /// commit lock, so it calls the transaction it is given and reads
+    /// committed pages, and commits nothing itself.
+    ///
+    /// The transaction is the commit's own, so whatever the error nothing
+    /// of it is left: a write that `write` refuses is
+    /// [`CommitError::Refused`], and nothing was written.
+    pub(crate) fn commit_alone<R: HashRules>(
+        &self,
+        rules: &mut R,
+        also: Option<&KeySet>,
+        write: impl FnOnce(&WriteTxn<'s>) -> Result<(), TxnError>,
+    ) -> Result<Committed, CommitError> {
+        if let Some(stopped) = self.state.stopped() {
+            return Err(CommitError::Stopped(stopped));
+        }
+        self.look_at_log(true)?;
+        let txn = self.path.begin();
+        let mut untold = None;
+        let committed = self.commit_locked(&txn, &self.path, rules, also, write, &mut untold);
+        if let Some(error) = untold {
+            self.state.write_back_failed(&error);
+        }
+        // The transaction goes with what it copied, whatever the outcome.
+        drop(txn);
+        self.after();
         committed
     }
 
@@ -565,8 +609,19 @@ impl<'s> Committer<'s> {
         // up holds nothing back and tells nobody.
         drop(pin);
         path.commits.record(version, keys);
+        // The handle on the subtree directory of the new version is kept
+        // before the version is published: whoever reads the version
+        // finds its handle, and loads none.
+        path.directories().set(version, directory.clone());
+        #[cfg(test)]
+        self.state.before_publication(version);
         if let Err(error) = path.versions.publish(version) {
             return Err(self.halted(version, error.into()));
+        }
+        if let Err(error) = &synced {
+            // Under the commit lock, so that no commit that waits for it
+            // is published behind a sync that failed.
+            self.state.sync_failed(version, error);
         }
         drop(lock);
 
@@ -809,14 +864,21 @@ impl<'s> Committer<'s> {
                 // The copy kept every page step off the page until here,
                 // under the lock on the counts.
                 pool.discard(copy)?;
-                match self.table.push(page, Link::free(version)) {
-                    Ok(()) => {}
-                    // See "A page that is freed again before it was
-                    // written back" in the module documentation.
-                    Err(LinkError::AlreadyFree) => done.freed_unlinked += 1,
-                    Err(error) => return Err(error.into()),
-                }
+                // See "A page that is freed again before it was written
+                // back" in the module documentation.
+                let free = || match self.table.push(page, Link::free(version)) {
+                    Ok(()) => Ok(false),
+                    Err(LinkError::AlreadyFree) => Ok(true),
+                    Err(error) => Err(error),
+                };
+                let unlinked = free()?;
                 pool.free(page, version)?;
+                // A write-back pass can have linked the page behind the
+                // first push, and none does once the pool is told: the
+                // free link then goes above that link.
+                if unlinked && free()? {
+                    done.freed_unlinked += 1;
+                }
                 ids.free(page, version)?;
                 done.freed.push(page);
             }

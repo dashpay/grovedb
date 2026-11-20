@@ -18,8 +18,9 @@ use crate::snapshot::OperationGuard;
 /// nothing is read for it: not a node, and not a flat record
 /// (`transactions.md` CV9).
 ///
-/// A handle is of the pages it was loaded from, so this is kept with its
-/// version and made again for another. An entry that was found stays good
+/// A handle is of one version: a copy of the one the engine keeps for it
+/// ([`WritePath::directory_at`]), so this is kept with its version and
+/// made again for another. An entry that was found stays good
 /// for that version; what the transaction itself dropped or cleared since
 /// is asked of its write set at every read ([`Self::seen`]).
 #[derive(Debug)]
@@ -31,17 +32,18 @@ pub(crate) struct Opened {
 
 impl Opened {
     /// The directory of the version `at` in `slot`: the one that is there,
-    /// or one that is loaded now, under `guard`.
+    /// or a copy of the handle the engine keeps for `at`. The caller pins
+    /// `at`, or read it as the latest version under `guard`.
     pub(crate) fn at<'a, 's>(
         slot: &'a mut Option<Self>,
         path: &WritePath<'s>,
-        guard: &OperationGuard<'s>,
+        _guard: &OperationGuard<'s>,
         at: CommitVersion,
     ) -> Result<&'a mut Self, TxnError> {
         if slot.as_ref().is_none_or(|opened| opened.at != at) {
             *slot = Some(Self {
                 at,
-                directory: path.load_directory(&path.committed(guard, at))?,
+                directory: path.directory_at(at)?,
                 entries: HashMap::new(),
             });
         }

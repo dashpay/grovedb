@@ -78,10 +78,24 @@ pub struct CommitState {
     /// The commit lock (`transactions.md` CM2, level 1 of LT7).
     commit: Mutex<Scratch>,
     stopped: Mutex<Option<Stopped>>,
+    /// Whether a sync of the log that fails stops the session.
+    ends_at_failed_sync: bool,
     counters: Counters,
     /// Whom an error of write-back in a committer's own turn is told.
     report: Option<Report>,
+    /// What a test runs between the last step before a publication and
+    /// the publication, with the commit lock held.
+    #[cfg(test)]
+    before_publication: Mutex<Option<Hook>>,
+    /// What a test runs when a commit is about to take the commit lock:
+    /// every check it makes without the lock is behind it.
+    #[cfg(test)]
+    before_lock: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
+
+/// What a test runs before a version is published.
+#[cfg(test)]
+type Hook = Box<dyn Fn(CommitVersion) + Send + Sync>;
 
 /// Whom an error of write-back is told.
 type Report = Box<dyn Fn(&FlushError) + Send + Sync>;
@@ -119,6 +133,33 @@ impl CommitState {
         }
     }
 
+    /// As `self`, and the session stops at a sync of the log that fails
+    /// ([`Stopped::NotDurable`]): the commit whose sync failed is
+    /// published and reported [`NotDurable`], and every commit after it is
+    /// refused with [`Stopped`], also one that was waiting for the commit
+    /// lock. Without this the session goes on, and its caller ends it
+    /// (see "A sync that failed stays failed for the session" in the
+    /// [module documentation](super)).
+    ///
+    /// [`NotDurable`]: super::CommitError::NotDurable
+    /// [`Stopped`]: super::CommitError::Stopped
+    pub fn ending_at_a_failed_sync(mut self) -> Self {
+        self.ends_at_failed_sync = true;
+        self
+    }
+
+    /// Stops a session that ends at a failed sync: a sync of the log
+    /// failed with `version` the latest. The caller holds the commit
+    /// lock, so no commit is published after the sync that failed.
+    pub(crate) fn sync_failed(&self, version: CommitVersion, error: &FlushError) {
+        if self.ends_at_failed_sync {
+            self.stop(Stopped::NotDurable {
+                version,
+                reason: error.to_string(),
+            });
+        }
+    }
+
     /// Takes the commit lock (CM2). It waits for a commit that is being
     /// made, and for nothing else.
     pub fn lock(&self) -> CommitLock<'_> {
@@ -153,6 +194,39 @@ impl CommitState {
             rollbacks: read(&counters.rollbacks),
             stalls: read(&counters.stalls),
             write_back_errors: read(&counters.write_back_errors),
+        }
+    }
+
+    /// Has `hook` run before each version is published from here on, on
+    /// the committing thread, which holds the commit lock: everything of
+    /// the commit is done but the publication.
+    #[cfg(test)]
+    pub(crate) fn run_before_publication(
+        &self,
+        hook: impl Fn(CommitVersion) + Send + Sync + 'static,
+    ) {
+        *lock(&self.before_publication) = Some(Box::new(hook));
+    }
+
+    /// Has `hook` run by every commit when it is about to take the commit
+    /// lock, on its own thread, after the last check it makes without the
+    /// lock.
+    #[cfg(test)]
+    pub(crate) fn run_before_lock(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *lock(&self.before_lock) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_lock(&self) {
+        if let Some(hook) = &*lock(&self.before_lock) {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_publication(&self, version: CommitVersion) {
+        if let Some(hook) = &*lock(&self.before_publication) {
+            hook(version);
         }
     }
 

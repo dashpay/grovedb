@@ -960,11 +960,22 @@ its log group (FL7). The cut that follows a failed append (CM9 item 4)
 replaces the manifest, and it is made before the next commit, not by one.
 
 **CM8. Commit waits only for the commit lock, for flusher backpressure**
-(FL5) **and for the counts lock** (LT7). It never waits for a reader, for
-another open write transaction or for the creation of a checkpoint beyond
-its sampling step. The flusher and the cleaner can make it wait only
-through the counts lock: for one hold of it, which covers at most one
-append to the log and no fsync.
+(FL5) **and for the counts lock** (LT7), **and, if its sync policy has it
+fsync the log (CM7), for an fsync of the log that someone else is making.**
+It never waits for a reader or for another open write transaction. Of the
+creation of a checkpoint it waits for the sampling step, and, with the
+exception that follows, for nothing more. The flusher and the cleaner can
+make it wait only through the counts lock, for one hold of it, which
+covers at most one append to the log and no fsync, and, by the same
+exception, the flusher through an fsync of the log.
+
+The exception is the fsync of CM7. The log makes one fsync at a time
+(STORE-01), so a commit that fsyncs the log waits at its own fsync for one
+that a `flush()`, a checkpoint or the flusher is making then (DU1a), and
+holds the commit lock while it does. A commit whose policy does not fsync
+at the commit does not join it. A `flush()` whose fsync failed holds the
+commit lock for the moment in which it records that the session ends
+(DU1a), which is a wait for the commit lock like any other.
 
 **CM9. The log decides whether a commit happened, and the engine must agree
 with it.** Recovery takes a commit exactly when it finds its group in the
@@ -1320,6 +1331,12 @@ holding a later one:
 
 Level 4a was added after levels 1 to 5 had been named in other documents,
 which is why it has no number of its own.
+
+One lock of level 5 is taken under another in one place: write-back pushes
+the link of a block in the page step of its page (`page-table.md` T18), so
+it takes the page table's lock under the lock of the page step. The page
+table calls nothing while it holds its lock, so no thread waits for a page
+step under it.
 
 **The counts lock (4a).** Every change point that changes a count of live
 values takes it: a commit whose cells stop holding value pointers, and a
@@ -1681,7 +1698,10 @@ database as well (DU1).
 
 **CK5. Commits go on after sampling.** Bytes appended to a shared file past
 its recorded length are not part of the checkpoint: its manifest gives each
-file's valid length. A commit never waits for the fsync or the linking.
+file's valid length. A commit never waits for the linking. It waits for the
+fsync only in the one case of CM8: a commit whose sync policy has it fsync
+the log (CM7) waits at its own fsync for an fsync of the log that the
+checkpoint is making then. No other commit waits for it.
 
 **CK6. A catch-up by the flusher before sampling is ordinary write-back**
 (FL1 to FL5). It changes no version.
@@ -1720,9 +1740,29 @@ No lock is needed for this. A commit appends its whole log group before it is
 published (CM3 steps 6 and 8), so when *F* is read every group up to *F* is
 already in the log, and `flush()` only has to fsync the log files that hold
 them. It holds an operation guard on those files (PN5), so none is deleted
-under it, and it makes no reader, writer or committer wait. A checkpoint
-running at the same time fsyncs for itself (CK4); the two do not need an
-order.
+under it. It takes the commit lock only to record a failure, and no other
+lock of LT7 but the one on the counts (4a), for a moment before the fsync
+and after it, where it reads how far the counts are durable (DU5). So no
+reader and no write transaction waits for it. A commit can wait for a
+`flush()` whose fsync succeeds at two of the locks this document names,
+and at no other:
+
+- at the counts lock, for one of those two moments, as it waits there for
+  any other holder (CM8);
+- at the fsync, if its sync policy has it sync at the commit (CM7). The
+  fsync is the log's, which makes one at a time (STORE-01), so such a
+  commit waits for the fsync of a `flush()` as it waits for that of another
+  commit, and holds the commit lock while it does. A commit whose policy
+  does not sync does not join the fsync.
+
+A checkpoint running at the same time fsyncs for itself (CK4); the two do
+not need an order.
+
+If the fsync fails, the engine records under the commit lock that the
+session takes no write any more (D-098), so that every commit is published
+before that record or refused. A commit of any sync policy that comes to
+the commit lock at that moment waits for the record there, and is then
+refused.
 
 **DU2. After a crash the state is one committed version.** Recovery lands on
 *S(Lr)* for a single *Lr*, with *Ld* ≤ *Lr* ≤ *Lc*, where *Ld* is the newest
@@ -1840,9 +1880,9 @@ whether either can be made to wait for the other.
 | 10 | Writer, cleaner | the committed pages under the writer's frames, their value pointers, what a dropped subtree left in them, page ids, and locations the writer kept | PN1 (base pin), PN5, PN8, PV4, PV7, WT3, WT11, CL5, CL6, ID1, ID2 | never; the cleaner leaves a copied page for later |
 | 11 | Writer, checkpoint | nothing: uncommitted writes are not captured | CK1, CK8 | never |
 | 12 | Committer, committer | *L*, the log, versions | CM2, CV4, CV5, CF2, CF7, CF8 | the second waits for the commit lock |
-| 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either |
+| 13 | Committer, flusher | the log, the page versions just born with their pending values, pages whose values the flusher places or regroups, and the counts of live values | CM3 steps 6 and 7, CM8, CM9, FL1, FL4 to FL7, PV6, PV7, LT7 | the committer, before it takes the lock (FL5); otherwise one page step, or one hold of the counts lock by either; a commit that fsyncs the log (CM7) waits for an fsync of the log that the flusher is making (CM8) |
 | 14 | Committer, cleaner | page-table entries; pages and ids the commit frees; pages whose value pointers the cleaner rewrites or whose left-over cells it removes; the counts of live values | CL4 to CL7, PV6, PV7, ID2, PN6, LT7 | one page step, or one hold of the counts lock by either |
-| 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling |
+| 15 | Committer, checkpoint | *L*, the log's length, the file set | CK2, CK5, LT7 | each waits for the other's hold on the commit lock; the checkpoint holds it only for sampling; a commit that fsyncs the log (CM7) waits for an fsync of the log that the checkpoint is making (CM8, CK5) |
 | 16 | Flusher, flusher | the pages being written back, and the counts of live values | PV4, FL3, FL7, LT7 levels 4a and 5 | one page step, or one hold of the counts lock |
 | 17 | Flusher, cleaner | page-table locations, segment and value-log files, the manifest, pages both would change in a page step, and the counts of live values | PV4, PV7, FL1, FL3, FL7, CL2, CL4, CL5, LT7 levels 3, 4a and 5 | the file-set lock; one page step, or one hold of the counts lock |
 | 18 | Flusher, checkpoint | the manifest and the open files | CK2, CK3, CK6 | the file-set lock, during sampling |
@@ -1872,7 +1912,7 @@ thread and are covered by the rules of that thread's row:
 | scope merge and scope rollback | SC6 |
 | rebase | WT7 |
 | a commit that fails | CM5, CM9 |
-| `flush()` | DU1a; it is an fsync and takes no lock that a reader, a writer or the committer needs |
+| `flush()` | DU1a; it is an fsync of the log, which makes one at a time. Of the locks of LT7 it takes the one on the counts for a moment before and after the fsync, and the commit lock only after an fsync that failed, to record that the session ends |
 | wipe | CV3, CF5; it is a commit, so a snapshot taken before it keeps reading its own version (RD1) |
 | subtree drop, and a clear that keeps the host | CV9, CF5; reclaiming what it leaves is the cleaner's (CL6) |
 | a committed read | RD10; it is a read, and takes what a read takes |

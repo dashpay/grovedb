@@ -43,6 +43,7 @@
 //! | The contract says | The simulator does |
 //! | --- | --- |
 //! | A process that exits loses nothing. | Dropping every handle and lock changes nothing in the file system: open it again and all of it is there. |
+//! | A lock is not durable. | No crash state has a guard: every lock file of a [`CrashImage::recover`]ed file system is free. Locking a file that is there records no change, with [`Vfs::lock`] or with [`Vfs::lock_existing`], and [`Vfs::lock`] records one [`NameChange`] when it makes the file. [`VfsLock::is_at`] is no operation: it is not counted, no fault falls on it, and with the power off it fails as every call does. |
 //! | Synced content is durable. | A sync that returns `Ok` moves the file's unsynced changes into its durable version. No crash plan can take them out. |
 //! | Any subset of the unsynced changes of a file survives. | Every `write_at`, `append` and `set_len` is one [`FileChange`], and a [`CrashPlan`] keeps any of them. |
 //! | In any order. | A plan lists the surviving changes in the order they are applied, which is free. |
@@ -497,7 +498,15 @@ impl Vfs for SimVfs {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        let file = self.shared.state().lock(path)?;
+        let file = self.shared.state().lock(path, true)?;
+        Ok(Box::new(SimLock {
+            shared: self.shared.clone(),
+            file,
+        }))
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        let file = self.shared.state().lock(path, false)?;
         Ok(Box::new(SimLock {
             shared: self.shared.clone(),
             file,
@@ -563,7 +572,11 @@ impl fmt::Debug for SimLock {
     }
 }
 
-impl VfsLock for SimLock {}
+impl VfsLock for SimLock {
+    fn is_at(&self, path: &Path) -> io::Result<bool> {
+        self.shared.state().is_at(path, self.file)
+    }
+}
 
 impl Drop for SimLock {
     fn drop(&mut self) {

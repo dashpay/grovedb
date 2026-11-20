@@ -181,32 +181,29 @@
 //! are read from there ([`Operation::nodes`]).
 //!
 //! A handle on the directory is of the pages it was loaded from, and
-//! **a reader's handle is loaded while the reader's version is the latest
-//! one.** What a drop left is taken out of the pages one step at a time,
-//! the record of the dropped subtree last, and each step is on the page
-//! versions that are current then. A reader of an older version can
-//! still have the entry of a subtree that was below the dropped one in a
-//! page version of its own, while the record of the drop is gone from a
+//! **a handle is good for a version only if it was made while that version
+//! was the newest.** What a drop left is taken out of the pages one step
+//! at a time, the record of the dropped subtree last, and each step is on
+//! the page versions that are current then. A reader of an older version
+//! can still have the entry of a subtree that was below the dropped one in
+//! a page version of its own, while the record of the drop is gone from a
 //! page it shares with the latest version: a handle that is loaded then
-//! does not know of the drop, and would open that subtree. A handle that
-//! was loaded while the version was the latest either has the drop or
-//! reads pages from which those entries are gone, and whatever is taken
-//! out afterwards it hides.
+//! does not know of the drop, and would open that subtree.
 //!
-//! - **A snapshot loads its handle when it is taken**
-//!   ([`ReadPath::snapshot`]), and takes its version again if a commit was
-//!   published before the load ended. It keeps the handle for its life.
-//!   That is one walk of the records of what waits to be reclaimed for
-//!   each snapshot of a read path that names its records, which finds
-//!   nothing in a store where nothing waits, and it is made whether or
-//!   not the snapshot opens a subtree. A load that fails is answered by
-//!   every open of the snapshot ([`ReadError::Unloaded`]).
-//! - **An operation that pins no version** loads its handle when it first
-//!   opens a subtree, and opens nothing if the latest version has moved
-//!   by then ([`ReadError::Moved`]): its caller begins another operation.
-//! - An engine that keeps the handle of the latest version, as the
-//!   directory expects of it, gives each reader a copy with its version in
-//!   the place of the load (TXN-07).
+//! So **no reader loads a handle. The engine keeps one for each version**
+//! ([`Directories`]): the handle the frames of the commit had, put there
+//! before the version is published, or the one the open of the database
+//! loaded. A reader takes a copy, which shares the ids:
+//!
+//! - **A snapshot** takes it when it first opens a subtree, and keeps it
+//!   for its life. [`ReadPath::snapshot`] reads no page.
+//! - **An operation that pins no version** takes the handle of the latest
+//!   version it read under its guard, when it first opens a subtree.
+//!
+//! A kept handle goes when no reader can ask for it any more, by the rule
+//! that frees a page id: no pin is on its version or an older one, and
+//! every guard that was held when that was found has been released. The
+//! database's [`Reclaim`] sees to it ([`Directories::reclaim`]).
 //!
 //! # Models and tests
 //!
@@ -223,6 +220,7 @@
 //!   `cargo test --release -p lignindb --lib -- --ignored --nocapture reader_throughput`.
 
 mod error;
+mod kept;
 mod read;
 mod records;
 mod slots;
@@ -233,6 +231,7 @@ mod versions;
 mod tests;
 
 pub use error::{PublishError, SnapshotError};
+pub use kept::Directories;
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
 pub use records::{Kept, Opened, ReadError, RecordCursor};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};

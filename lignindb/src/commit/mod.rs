@@ -23,9 +23,10 @@
 //! write-back, and `log-format.md` what a group is.
 //!
 //! No example runs here: a [`Committer`] is made where the database is
-//! opened, of the structures of one store (TXN-07). The tests make one over
-//! a store on disk and over the simulated file system
-//! (`txn/tests/store.rs`).
+//! opened, of the structures of one store, and a caller commits through
+//! [`Db::commit`](crate::Db::commit), whose page has an example. The
+//! tests make a committer over a store on disk and over the simulated
+//! file system (`txn/tests/store.rs`).
 //!
 //! # The steps of a commit
 //!
@@ -207,6 +208,14 @@
 //! the readers that can still ask for them, and the id goes back to the
 //! allocator once, at the commit's version. [`Published::freed_unlinked`]
 //! counts these pages.
+//!
+//! The free link of a page is also what keeps write-back from linking a
+//! block of it afterwards (`page-table.md` T18), and the earlier page's
+//! link is too old to do that for this one. Write-back therefore links
+//! a block only in a page step in which the pool still owes the page
+//! version of the block, and the commit pushes the free link once more
+//! after it has told the pool: a link that a pass pushed between the two
+//! has the free link above it, and the page is not counted here.
 //!
 //! What the free link would also have done is hold a checkpoint of the page
 //! table back until the log is durable through the freeing commit. That is

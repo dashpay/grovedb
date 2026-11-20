@@ -477,7 +477,8 @@ impl<'s> WriteBack<'s> {
     ///
     /// One pass runs at a time, and a second call waits for the first. A
     /// pass waits for no commit, and holds a page's step lock only to look
-    /// at the page and to place one value.
+    /// at the page, to place one value, and to push the link of a block
+    /// while the pool still owes its version (`page-table.md` T18).
     ///
     /// An error that is about one page does not end the pass: the other
     /// pages are written, and the pass returns the first such error when
@@ -840,7 +841,28 @@ impl<'s> WriteBack<'s> {
         };
 
         let counters = &self.state.counters;
-        match table.push(page, link) {
+        // The second look (`page-table.md` T18). The pass took the frame
+        // a while ago, and the page can have been freed since. A free
+        // link refuses the block's link by its version, but a page that
+        // was made under an id used before, and freed before it had a
+        // link, was given none: the newest link of its id is the free
+        // link of the page before it, which is older than this block.
+        // So the link is pushed in a page step, in which the pool is
+        // asked whether it still owes this version: `BufferPool::free`
+        // takes that lock, and takes what is owed of the page off its
+        // lists. The id may name another page by now, which is why the
+        // question is about the version and not about the page.
+        let pushed = {
+            let step = pool.page_step(page);
+            match step.owes(born) {
+                true => table.push(page, link),
+                false => {
+                    count(&counters.links_refused, 1);
+                    return Ok(Outcome::Refused);
+                }
+            }
+        };
+        match pushed {
             Ok(()) => {}
             Err(LinkError::OutOfOrder { .. }) => {
                 count(&counters.links_refused, 1);

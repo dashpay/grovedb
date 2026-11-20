@@ -27,7 +27,6 @@ testing = ["dep:tempfile"]
 loom = "0.7.2"
 
 [dev-dependencies]
-lignin-io = { version = "6.1.1", path = "../lignin-io" }
 tempfile = { workspace = true }
 
 [lints.rust]
