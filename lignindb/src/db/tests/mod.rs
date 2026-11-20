@@ -4,6 +4,7 @@
 
 mod backup;
 mod beside;
+mod check;
 mod ended;
 mod filling;
 mod full;
@@ -884,6 +885,8 @@ pub(super) fn open_at_rest(dir: impl AsRef<Path>, options: &Options) -> Result<D
         threads: Mutex::new(None),
         created: opened.created,
         opening: crate::db::Opening::default(),
+        unchecked: std::sync::atomic::AtomicBool::new(false),
+        hash_rules: Mutex::new(None),
         guard: opened.lock,
     })
 }

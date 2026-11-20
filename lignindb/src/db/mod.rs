@@ -362,6 +362,31 @@
 //! like what any drop leaves. No file is deleted by a wipe, and no entry
 //! of the directory that is not the engine's is touched.
 //!
+//! # The check at a close
+//!
+//! **In a debug build a close checks the store with the physical
+//! invariant checker** ([`crate::verify`], D-126): at its latest version,
+//! with what a store keeps beside its pages
+//! ([`Scope::Still`](verify::Scope::Still)), after the background work
+//! has ended and what could be written back was. A finding is a panic
+//! with the report's text, so a test that closes a database, or drops its
+//! handle, ends with the check. A release build makes no check at a
+//! close.
+//!
+//! The check is left out where there is nothing to say or nobody to say
+//! it to: on a thread that is panicking already; for a session that ended
+//! for writes ([`Db::reopen`]), whose store the next recovery makes
+//! whole; for a close that did not do all of its work (a directory that
+//! was removed, a failed checkpoint); and for a handle that was taken out
+//! ([`Db::unchecked_at_close`]). No stored hash is recomputed unless the
+//! caller gave the rules that make them ([`Db::check_hashes_by`]): the
+//! engine knows no Merk rule.
+//!
+//! In any build, [`Db::verify`] checks the latest version as a reader
+//! sees it, beside writers, and [`Db::close_and_verify`] closes and
+//! returns the report of the full check with no panic: a tool that checks
+//! a database calls these.
+//!
 //! # Choices made here that the plan left open
 //!
 //! 1. **The roots of the keyspaces are in a catalog in page 1**, written
@@ -374,8 +399,8 @@
 //!    They become options when they are recorded (PERF-08).
 //! 3. **A wipe finds the subtrees to drop by a walk of the directory's
 //!    entries**, which reads every entry, under the commit lock. A wipe of
-//!    a database in which no subtree is entered writes nothing and takes
-//!    no version (CV2).
+//!    a database in which no subtree is entered is a commit all the same,
+//!    with a version and the key set of a wipe ([`Db::wipe`]).
 //! 4. **A wipe is made under one hold of the commit lock**, and not as a
 //!    transaction that is made again when a commit lands beside it: a
 //!    commit that entered a subtree between the walk and the wipe's commit
@@ -410,7 +435,10 @@ use std::{
     ffi::OsString,
     fmt,
     path::Path,
-    sync::{atomic::Ordering, Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -595,6 +623,11 @@ pub struct Db {
     threads: Mutex<Option<Threads>>,
     created: bool,
     opening: Opening,
+    /// Whether the check that a close makes in a debug build is left out.
+    unchecked: AtomicBool,
+    /// The rules that the check of a close recomputes the hashes by, if
+    /// the caller gave some.
+    hash_rules: Mutex<Option<Box<dyn HashRules + Send>>>,
     /// The lock of the directory. It is the last field, so that it is
     /// released when everything else of the handle is gone.
     guard: Box<dyn VfsLock>,
@@ -697,6 +730,8 @@ impl Db {
             })),
             created: opened.created,
             opening,
+            unchecked: AtomicBool::new(false),
+            hash_rules: Mutex::new(None),
             guard: opened.lock,
         })
     }
@@ -790,12 +825,127 @@ impl Db {
     /// any more. A close does not wait for it: what it holds back from
     /// being reclaimed is reclaimed by the next session.
     pub fn close(self) -> Result<(), DbError> {
-        self.shut()
+        if self.shut()? {
+            self.check_at_close();
+        }
+        Ok(())
     }
 
-    fn shut(&self) -> Result<(), DbError> {
+    /// Ends the session as [`Self::close`] does and then checks the store
+    /// with the physical invariant checker ([`crate::verify`]), in every
+    /// build: at its latest version, with what a store keeps beside its
+    /// pages ([`Scope::Still`](verify::Scope::Still)), which can be
+    /// compared because nothing of the session writes any more. `rules`
+    /// are the functions that make the hashes of the nodes; with `None` no
+    /// stored hash is recomputed.
+    ///
+    /// The report is returned and nothing panics: a finding is the
+    /// caller's to act on. An error says that the close did not do all of
+    /// its work, and then nothing is checked.
+    pub fn close_and_verify(
+        self,
+        rules: Option<&mut dyn HashRules>,
+    ) -> Result<verify::Report, DbError> {
+        self.shut()?;
+        let at = self.shared.versions.latest();
+        Ok(self.check(at, verify::Scope::Still, rules))
+    }
+
+    /// Checks the latest version of the database as a reader sees it
+    /// ([`Scope::Reader`](verify::Scope::Reader)): its pages, its trees,
+    /// its directory and its values. It runs beside writers and the
+    /// background work, pins its version for the run, and changes nothing.
+    /// `rules` are the functions that make the hashes of the nodes; with
+    /// `None` no stored hash is recomputed.
+    ///
+    /// What a store keeps beside its pages (the page ids, the counts of
+    /// live values, the page table against its segments) can be compared
+    /// only in a store that is still: [`Self::close_and_verify`].
+    pub fn verify(&self, rules: Option<&mut dyn HashRules>) -> verify::Report {
+        let pin = self.shared.versions.pin();
+        self.check(pin.version(), verify::Scope::Reader, rules)
+    }
+
+    /// Leaves this handle out of the check that a close makes in a debug
+    /// build ("The check at a close" in the [module documentation](self)):
+    /// for a test that damages its store on purpose.
+    pub fn unchecked_at_close(&self) {
+        self.unchecked.store(true, Ordering::Relaxed);
+    }
+
+    /// Has the check that a close makes in a debug build recompute every
+    /// stored hash by `rules`. With none given it recomputes none.
+    pub fn check_hashes_by(&self, rules: Box<dyn HashRules + Send>) {
+        *lock(&self.hash_rules) = Some(rules);
+    }
+
+    /// The structures of this store as the checker reads them, checked at
+    /// the version `at`.
+    fn check(
+        &self,
+        at: CommitVersion,
+        scope: verify::Scope,
+        rules: Option<&mut dyn HashRules>,
+    ) -> verify::Report {
+        let shared = &*self.shared;
+        let store = &*shared.store;
+        let catalog = store.catalog();
+        let columns = catalog.keyspaces.columns();
+        // The catalog is the one flat keyspace that holds no record of a
+        // subtree.
+        let beside = [FlatTree::open(open::CATALOG_PAGE, store.config())];
+        let view = verify::Store {
+            loader: store.loader(),
+            table: &store.table,
+            segments: &store.segments,
+            values: &store.values,
+            page_size: store.page_size,
+            ids: Some(&store.ids),
+            grove: verify::Grove::Directory {
+                tree: catalog.directory,
+                columns: &columns,
+            },
+            flat_drops: Some(catalog.flat_drops),
+            flat: &beside,
+            values_counted: true,
+        };
+        let guard = shared.versions.guard();
+        verify::check(&view, &guard, verify::Options::new(at, scope), rules)
+    }
+
+    /// The check of a close, in a debug build: the store is still, and
+    /// every physical rule of it is checked at its latest version. A
+    /// finding is a panic with the report's text.
+    ///
+    /// It is left out where the test is failing already, where the handle
+    /// was taken out ([`Self::unchecked_at_close`]), and for a session
+    /// that ended for writes: what such a session leaves is the next
+    /// recovery's to make whole.
+    fn check_at_close(&self) {
+        if !cfg!(debug_assertions) || thread::panicking() {
+            return;
+        }
+        let store = &*self.shared.store;
+        if self.unchecked.load(Ordering::Relaxed) || store.refusal().is_some() {
+            return;
+        }
+        let at = self.shared.versions.latest();
+        let mut given = lock(&self.hash_rules);
+        let rules = given
+            .as_mut()
+            .map(|rules| &mut **rules as &mut dyn HashRules);
+        let report = self.check(at, verify::Scope::Still, rules);
+        assert!(
+            report.findings.is_empty() && report.more_findings == 0,
+            "the database in {} is left unsound at version {at}:\n{report}",
+            store.dir.display()
+        );
+    }
+
+    /// Ends the session. `false` if it had ended before.
+    fn shut(&self) -> Result<bool, DbError> {
         let Some(threads) = lock(&self.threads).take() else {
-            return Ok(());
+            return Ok(false);
         };
         let shared = &*self.shared;
         // Both threads end after the turn they are in, which is still
@@ -807,7 +957,7 @@ impl Db {
         let finished = self.finish();
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
-        finished
+        finished.map(|()| true)
     }
 
     /// What a close does for the next session, with the two threads
@@ -1216,7 +1366,9 @@ impl Drop for Db {
     fn drop(&mut self) {
         // What a close reports is dropped here: a handle whose directory
         // was removed under it closes without a word (P-18).
-        let _ = self.shut();
+        if let Ok(true) = self.shut() {
+            self.check_at_close();
+        }
     }
 }
 
