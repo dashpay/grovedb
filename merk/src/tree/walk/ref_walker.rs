@@ -101,6 +101,11 @@ where
     ///
     /// On a source that fetches whole nodes nothing changes: the nodes are
     /// retained in the tree as they are without this.
+    ///
+    /// A walk of this kind gives [`Self::walk`] no value-defined cost
+    /// function: its nodes are read and not written. At a node of the tree
+    /// one is still taken, and the child is fetched whole and retained.
+    /// Below a node the walk owns it is refused.
     pub fn values_on_demand(&mut self) {
         self.values_on_demand = true;
     }
@@ -119,7 +124,9 @@ where
     /// source if pruned. When fetching, the link is upgraded from
     /// `Link::Reference` to `Link::Loaded`, unless the node came without
     /// its value ([`Self::values_on_demand`]): the walker that is returned
-    /// then owns it, and the link stays as it is.
+    /// then owns it, and the link stays as it is. Below such a node a
+    /// value-defined cost function is an error, since nothing is retained
+    /// there.
     pub fn walk<V>(
         &mut self,
         left: bool,

@@ -527,66 +527,63 @@ fn a_read_after_a_proof_walks_the_nodes_of_the_proof_as_if_they_were_kept() {
                 let node = store.get_node(key, NO_VALUE_DEFINED_COST, version());
                 node.unwrap().unwrap().expect("a node that is linked")
             };
-            // A node at least two levels below the root with a sibling,
-            // and the way to it.
+            // A node two levels below the root, the way to it, and the
+            // node beside it: down the taller side, where a node that high
+            // has two children.
             let root_key = store.root_key().unwrap().unwrap().expect("a root");
-            let (mut way, mut sibling) = (vec![node(&root_key)], None);
-            while way.len() < 3 || sibling.is_none() {
-                let at = way.last().expect("a node");
-                let left =
-                    at.link(true).map_or(0, Link::height) >= at.link(false).map_or(0, Link::height);
-                sibling = at.link(!left).map(|link| link.key().to_vec());
-                way.push(node(
-                    at.link(left).expect("a child on the taller side").key(),
-                ));
+            let mut way = vec![node(&root_key)];
+            let mut sibling = None;
+            while way.len() < 3 {
+                let (below, beside) = {
+                    let at = way.last().expect("a node");
+                    let height = |left| at.link(left).map_or(0, Link::height);
+                    let left = height(true) >= height(false);
+                    let below = at.link(left).expect("a child on the taller side");
+                    (node(below.key()), at.link(!left).map(Link::key))
+                };
+                sibling = beside.map(<[u8]>::to_vec);
+                way.push(below);
             }
-            let target = way.last().expect("the target").key().to_vec();
-            let sibling = sibling.expect("a sibling");
-            // A key that is not there, on the way below the target or
-            // beside it: the proof that it is absent walks to where it
-            // would be.
-            let mut absent = target.clone();
-            absent.push(0);
+            let target = way[2].key().to_vec();
+            let sibling = sibling.expect("a node beside the target");
+            // A key that no Merk of these tests holds: the proof that it
+            // is not there walks to where it would be.
+            let absent = [target.as_slice(), &[0xff; 3]].concat();
 
             let prove = |call: Call| Act::Prove(version(), call);
             let point = |key: &Vec<u8>| Call::Query(vec![QueryItem::Key(key.clone())], None, true);
-            for immediate in [false, true] {
-                let answers = both.run(
-                    immediate,
-                    &[
-                        prove(point(&target)),
-                        prove(Call::Get(target.clone(), true)),
-                        prove(Call::Exists(target.clone())),
-                        prove(Call::ValueHash(target.clone())),
-                        prove(Call::Get(sibling.clone(), true)),
-                        prove(Call::Exists(sibling.clone())),
-                        prove(point(&absent)),
-                        prove(Call::Get(absent.clone(), true)),
-                        prove(Call::Exists(absent.clone())),
-                        // Without the nodes in memory every read is one
-                        // of the store.
-                        prove(Call::Get(target.clone(), false)),
-                    ],
-                );
-                let seeks = |n: usize| {
-                    let (_, seeks) = answers[n].rsplit_once(", in ").expect("a read");
-                    seeks.to_owned()
-                };
-                // At the node of the key.
-                assert_eq!(
-                    (seeks(2), seeks(3), seeks(4)),
-                    ("0 seeks".into(), "0 seeks".into(), "0 seeks".into())
-                );
-                assert!(answers[2].starts_with("Ok(Some(") && answers[3].starts_with("Ok(true)"));
-                // At a child that is not in memory: the sibling is a node
-                // the proof gave the hash of and did not fetch.
-                assert_eq!((seeks(5), seeks(6)), ("1 seeks".into(), "1 seeks".into()));
-                assert!(answers[5].starts_with("Ok(Some(") && answers[6].starts_with("Ok(true)"));
-                // At a side with no child.
-                assert_eq!((seeks(8), seeks(9)), ("0 seeks".into(), "0 seeks".into()));
-                assert!(answers[8].starts_with("Ok(None)") && answers[9].starts_with("Ok(false)"));
-                assert_eq!(seeks(10), "1 seeks");
-            }
+            let calls = [
+                prove(point(&target)),
+                prove(Call::Get(target.clone(), true)),
+                prove(Call::Exists(target.clone())),
+                prove(Call::ValueHash(target.clone())),
+                prove(Call::Get(sibling.clone(), true)),
+                prove(Call::Exists(sibling.clone())),
+                prove(point(&absent)),
+                prove(Call::Get(absent.clone(), true)),
+                prove(Call::Exists(absent.clone())),
+                // With no use of the nodes in memory, a read is one of
+                // the store.
+                prove(Call::Get(target.clone(), false)),
+            ];
+            // The first answer is that of the open.
+            let answers = both.deferred(&calls);
+            let seeks = |n: usize| answers[n].rsplit_once(", in ").expect("a read").1;
+            // At the node of the key.
+            assert_eq!([seeks(2), seeks(3), seeks(4)], ["0 seeks"; 3]);
+            assert!(answers[2].starts_with("Ok(Some(") && answers[3].starts_with("Ok(true)"));
+            assert!(answers[4].starts_with("Ok(Some("));
+            // At a child that is not in memory: the proof gave the hash
+            // of the node beside its target, and did not fetch it.
+            assert_eq!([seeks(5), seeks(6)], ["1 seeks"; 2]);
+            assert!(answers[5].starts_with("Ok(Some(") && answers[6].starts_with("Ok(true)"));
+            // At a side with no child.
+            assert_eq!([seeks(8), seeks(9)], ["0 seeks"; 2]);
+            assert!(answers[8].starts_with("Ok(None)") && answers[9].starts_with("Ok(false)"));
+            assert_eq!(seeks(10), "1 seeks");
+            // A handle that writes at once reads for nothing, on both
+            // engines.
+            both.immediate(&calls);
         });
     }
 }
@@ -722,6 +719,13 @@ impl Counted {
             FlushConfig::new(SIZE),
             Some(dir),
         );
+        // The store is checked at its drop as every store of these tests
+        // is: its values are put plainly.
+        let rules = MerkHashRules::for_check(version());
+        db.check_hashes_by(Box::new(RawValues {
+            rules,
+            stated: false,
+        }));
         let lignin = Lignin { db, versions };
         let rocks = TempStorage::new();
 

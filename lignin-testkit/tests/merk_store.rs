@@ -49,6 +49,12 @@
 //! on a `LigninNodeStore` is held by the tests of `merk::store::lignin`,
 //! which run the same batches on both.
 //!
+//! # Proofs (MERK-06)
+//!
+//! Where a step of a trace proves, Merk makes the proofs GroveDB asks of
+//! it on both engines, over the nodes the replay has handed over so far,
+//! and every proof is the same bytes at the same cost (`proofs`).
+//!
 //! # What the store charges (MERK-03)
 //!
 //! The replay also holds the store's charges to RocksDB's, on the nodes of

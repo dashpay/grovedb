@@ -400,8 +400,8 @@ impl<'db> LigninNodeStore<'db> {
     }
 
     /// Reads the value of `node`, which was read without it, if the node
-    /// under its key still has the two hashes that were read: they are the
-    /// hashes of the value, in every byte that a value is hashed with.
+    /// under its key still has the value hash and the key-value hash that
+    /// were read: a value whose hashed bytes changed has another.
     fn read_value_of(&self, node: &mut TreeNode) -> Result<(), Error> {
         if !node.value_absent() {
             return Ok(());

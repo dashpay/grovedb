@@ -829,7 +829,7 @@ LigninDB task MERK-03 ([task register 2](https://github.com/dashpay/grovedb/issu
 | --- | --- | --- |
 | R1 | `get_node`, `get_node_for_read`, `has_node` and `fetch_node` through a deferred or a read-only handle | `read(found)`, once for the operation, with N1 of the cell it found (section 15.2). A read the transaction did not perform is charged as one that found nothing. |
 | R1 | `fetch_node_without_value` through a deferred or a read-only handle (MERK-06) | `read(found)` with N1 of the cell, as `fetch_node`: the value's length is in the cell, and the value is not read. A link that leads to no node is charged as a read that found nothing. |
-| nothing | `load_node_value`, on every handle (MERK-06) | no call: the fetch of the node was charged its whole record. A value that is refused, because the node was written since, is charged nothing either. |
+| nothing | `load_node_value`, on every handle (MERK-06) | no call: the fetch of the node was charged its whole record. A value that is refused, because the node's value hash or key-value hash is no longer the one that was fetched, is charged nothing either. |
 | R1 | `root_key`, `get_aux_record`, `get_meta_record` | `read(found)` with the record's length |
 | R2 | every read through an immediate handle | `read_immediate()` |
 | `W-tx`, `B-part` | a commit, `write_node`, `set_root_key` and the meta writes on a deferred handle that has a batch | `staged_write()`. The writes are charged when `LigninBatch::apply` charges the batch. |
