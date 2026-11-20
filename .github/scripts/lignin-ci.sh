@@ -4,6 +4,8 @@
 # runs which, where and when.
 #
 #   lignin-ci.sh crates              the LigninDB crates, one a line
+#   lignin-ci.sh machine [--every S] the machine: cores, memory, swap, free disk;
+#                                    with --every, again every S seconds
 #   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
 #                                    machine (ARGS follow `cargo test`), then
 #                                    those of Merk's node store on LigninDB
@@ -95,9 +97,33 @@ refuse() {
     [ -z "$found" ] || fail "$what:"$'\n'"$found"
 }
 
+# Cores, memory and swap in use of total, and the disk free under the
+# checkout and the temporary directory.
+machine() {
+    local cores memory
+    if [ -r /proc/meminfo ]; then
+        cores=$(nproc)
+        memory=$(free -m | awk '/^Mem:/ { printf "memory %d of %d MiB used", $3, $2 } /^Swap:/ { printf ", swap %d of %d MiB", $3, $2 }')
+    else
+        cores=$(sysctl -n hw.ncpu)
+        memory="memory $(($(sysctl -n hw.memsize) / 1048576)) MiB, swap $(sysctl -n vm.swapusage)"
+    fi
+    printf '== %s machine: %s cores, %s; free disk: %s here, %s in %s\n' "$(date -u +%H:%M:%S)" \
+        "$cores" "$memory" "$(df -Pm . | awk 'NR == 2 { print $4 " MiB" }')" \
+        "$(df -Pm "${TMPDIR:-/tmp}" | awk 'NR == 2 { print $4 " MiB" }')" "${TMPDIR:-/tmp}"
+}
+
 case "${1:-}" in
 crates)
     listed crates
+    ;;
+
+machine)
+    case "$#:${2:-}" in
+    1:) machine ;;
+    3:--every) while machine; do sleep "$3"; done ;;
+    *) fail "usage: lignin-ci.sh machine [--every SECONDS]" ;;
+    esac
     ;;
 
 test)

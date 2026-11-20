@@ -67,6 +67,12 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 `lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
 
+### Hosted runners
+
+The jobs on GitHub's hosted runners (`ubuntu-24.04-arm`, `macos-15`) build the LigninDB crates' tests with `CARGO_PROFILE_DEV_DEBUG=line-tables-only`: a panic still names its file and line, and the build is about half the size. With full debug info, the default of Cargo's dev profile, `lignin-ci.sh test`'s first command builds 38 test executables of 9.3 GiB, 11.7 GiB of artifacts in all, beside 1.9 GiB of RocksDB's objects; at four build jobs, as on the arm runner, it held up to 14.9 GB of memory, page cache included, while it linked them. That is close to all of the runner's disk and memory: GitHub gives its standard arm runner 4 cores, 16 GB of memory and a 14 GB SSD. With line tables it is 5.3 GiB of executables, 7.2 GiB of artifacts and 8.0 GB of memory (measured on strixbox, x86_64, under a cap of 16 GiB with no swap; the arm build is of the same size within a little).
+
+Each of those jobs prints the runner's cores, memory, swap and free disk at its start (`lignin-ci.sh machine`), and again every minute while the tests build and run, so a runner that dies leaves what it had in the log.
+
 ## Nightly
 
 `.github/workflows/lignindb-nightly.yml`, at 02:17 UTC, and by hand from the Actions tab. GitHub runs a scheduled workflow from the default branch only, so these start once the workflow is on `develop`. A pull request that changes the workflow or `lignin-ci.sh` runs every job briefly instead, to show that its commands work.
