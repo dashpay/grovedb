@@ -45,10 +45,10 @@
 //! killed loses nothing it wrote. After a crash only this is certain:
 //!
 //! - **Synced content.** A file's bytes and length are durable once
-//!   [`VfsFile::sync_data`] or [`VfsFile::sync_all`] returns `Ok` on any
-//!   handle of that file. That covers every write, append and length change
-//!   that returned before the sync began, unless a sync of the file failed
-//!   after the change began and before that sync returned (see below).
+//!   [`VfsFile::sync_data`] or [`VfsFile::sync_all`] returns `Ok` on any handle
+//!   of that file. That covers every write, append and length change that
+//!   returned before the sync began, unless a sync of the file failed in
+//!   between (see below).
 //! - **Unsynced content.** After a crash a file is its last synced state with
 //!   some of the later changes applied: any subset of them, in any order, and
 //!   a write possibly only in part, torn at any byte. Each lands where it was
@@ -108,18 +108,16 @@
 //!   been made. Each file and each directory of the list is then durable as
 //!   its own call would have made it ([`VfsFile::sync_data`],
 //!   [`VfsFile::sync_all`] or [`Vfs::sync_dir`]), and nothing more is promised
-//!   than those calls promise: as for a single sync, `Ok` does not cover a
-//!   change if a sync of the same file, through whatever handle, failed after
-//!   the change began and before the call returned. Before it returns, a crash
-//!   may find any of the syncs made and any not, whatever their order in the
-//!   list: it leaves what it could leave if the calls had been made one by one
-//!   and it had come after some of them and before the others. The list is not
-//!   atomic, and a caller that needs one thing durable before another makes
-//!   two calls. What the one call gives is a lower cost where a sync ends with
-//!   a flush of a whole device: the file layer may make that flush once for
-//!   the list. If the call fails, any of the syncs may have been made, and the
-//!   error need not say which one failed. The next rule then holds for every
-//!   file of the list, and no directory of the list is known to be synced.
+//!   than those calls promise. Before it returns, a crash may find any of the
+//!   syncs made and any not, whatever their order in the list: it leaves what
+//!   it could leave if the calls had been made one by one and it had come
+//!   after some of them and before the others. The list is not atomic, and a
+//!   caller that needs one thing durable before another makes two calls. What
+//!   the one call gives is a lower cost where a sync ends with a flush of a
+//!   whole device: the file layer may make that flush once for the list. If
+//!   the call fails, any of the syncs may have been made, and the error need
+//!   not say which one failed. The next rule then holds for every file of the
+//!   list, and no directory of the list is known to be synced.
 //! - **A failed sync cannot be made good.** When a sync of a file fails, the
 //!   changes that were not yet synced are left unknown: the system may have
 //!   written them or dropped them, and it will not say which. A later sync
@@ -352,13 +350,12 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// [Durability](self#durability).
     ///
     /// When it returns `Ok`, each file and each directory of the list is
-    /// durable as the call its [`SyncItem`] names would have made it, for
-    /// every change that returned before this call began, and with that
-    /// call's exception: a sync of the file, through any handle, that failed
-    /// after the change began and before this call returned. Until then a
-    /// crash may find any of the syncs made and any not, and a file layer may
-    /// make them in another order than the list's. A list with nothing in it
-    /// is `Ok`, and a file or a directory may be in the list more than once.
+    /// durable as the call its [`SyncItem`] names would have made it, with
+    /// that call's exceptions, for every change that returned before this
+    /// call began. Until then a crash may find any of the syncs made and any
+    /// not, and a file layer may make them in another order than the list's.
+    /// A list with nothing in it is `Ok`, and a file or a directory may be in
+    /// the list more than once.
     ///
     /// If it fails, it fails as the call of one of its items does: with
     /// [`NotFound`](io::ErrorKind::NotFound) or

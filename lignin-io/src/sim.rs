@@ -45,7 +45,7 @@
 //! | A process that exits loses nothing. | Dropping every handle and lock changes nothing in the file system: open it again and all of it is there. |
 //! | A lock is not durable. | No crash state has a guard: every lock file of a [`CrashImage::recover`]ed file system is free. Locking a file that is there records no change, with [`Vfs::lock`] or with [`Vfs::lock_existing`], and [`Vfs::lock`] records one [`NameChange`] when it makes the file. [`VfsLock::is_at`] is no operation: it is not counted, no fault falls on it, and with the power off it fails as every call does. |
 //! | Synced content is durable. | A sync that returns `Ok` moves the file's unsynced changes into its durable version. No crash plan can take them out. |
-//! | Any subset of the unsynced changes of a file survives. | Every `write_at`, `append` and `set_len` is one [`FileChange`], and a [`CrashPlan`] keeps any of them. |
+//! | Any subset of the unsynced changes of a file survives. | Each change that a `write_at`, an `append` or a `set_len` makes is a [`FileChange`], and a [`CrashPlan`] keeps any of them. |
 //! | In any order. | A plan lists the surviving changes in the order they are applied, which is free. |
 //! | A write survives possibly in part. | A surviving write can carry a [`Tear`]: any of the sectors it touches survive, each whole. The sector size is [`SimConfig::sector_size`], 512 bytes unless set; with a sector size of 1 a write tears at any byte. |
 //! | Each change lands where it was made. | A change is recorded with its offset. An append is recorded as a write at the offset it returned. |
