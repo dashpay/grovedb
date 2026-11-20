@@ -248,20 +248,33 @@
 //! meanwhile, the operation would find no version of the page at the
 //! version it reads. So a pass puts the three questions as the cleaner
 //! does for its own trims (PN6, [`crate::cleaner`]): the oldest pin, then
-//! an epoch, and it trims at that version once every operation guard of
-//! before that epoch is released. Until then the page waits in a list
-//! that write-back keeps from pass to pass, and a later pass trims it:
-//! the first one after every operation that was running when the answer
-//! was given has ended, if that answer has reached the image.
+//! an epoch, and then the oldest guard, which every later pass asks for
+//! again. The first pass that finds no operation guard held from before
+//! that epoch, which can be the pass that asked, trims at that version,
+//! or at a higher answer whose epoch is ready as well. A page waits in a
+//! list that write-back keeps from pass to pass until chains are trimmed
+//! at the version of its newest image or at a later one.
 //!
-//! - When no operation is running, the image's commit is published and
-//!   no pin is below it, that is the pass that wrote the image, or the
-//!   next one if as many answers waited as write-back keeps.
-//! - When each operation ends before the pass after the one it was
-//!   running at, it is the next pass, however closely the operations
-//!   follow one another. An operation that goes on through more passes
-//!   holds the trim back through all of them.
-//! - A pin below the image holds it back until the pin is gone.
+//! So a trim waits for the operations that held a guard when the epoch
+//! was started, and for no other. One that began after the oldest pin
+//! was asked for and before the epoch is among them. One that ends
+//! before the pass looks at the guards holds nothing back.
+//!
+//! For a page that a pass gave an image, with the image's commit
+//! published and no pin below it, the answer that the pass gets, or one
+//! that waits already, reaches the image:
+//!
+//! - If the pass finds no guard held from before that answer's epoch, it
+//!   trims the chain itself.
+//! - If it finds one, the first later pass that finds none trims the
+//!   chain. That is the next pass when every such operation is over by
+//!   then, however closely operations follow one another, and a later
+//!   one when such an operation goes on through more passes.
+//!
+//! A pass that has as many answers waiting as write-back keeps takes no
+//! new one: a later pass that has room does. A pin below the image holds
+//! the trim back until the pin is gone, and a commit that is not
+//! published yet until it is.
 //!
 //! While a page waits, its chain is trimmed at each version that chains
 //! may be trimmed at, once. So a page that gets an image in every pass,

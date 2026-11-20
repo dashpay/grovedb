@@ -263,8 +263,8 @@ pub(super) struct Files {
     /// trimmed once no reader can ask for a version before it.
     pub(super) untrimmed: BTreeMap<PageId, Untrimmed>,
     /// Answers about the oldest pinned version, each with the epoch that
-    /// was started when it was given: no version pin is below it, and it
-    /// waits for the operations that were running then.
+    /// was started once it was given: no version pin is below it, and it
+    /// waits for the operations that held a guard when that epoch began.
     pub(super) trim_bounds: VecDeque<(Epoch, CommitVersion)>,
     /// The highest of those answers whose operations have ended: neither
     /// a version pin nor a running operation reads below it. Chains are
