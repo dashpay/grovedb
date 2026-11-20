@@ -197,6 +197,7 @@ pub mod options;
 pub mod savepoint;
 pub mod scope;
 pub mod snapshot;
+pub mod space;
 pub mod txn;
 pub mod verify;
 
