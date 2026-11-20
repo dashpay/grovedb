@@ -2,12 +2,17 @@
 //! directory, and on the simulated file system where a test cuts the power
 //! or fails a file operation.
 
+mod backup;
+mod ended;
+mod filling;
+mod full;
 mod guards;
 mod kept;
 mod open;
 mod reads;
 mod reclaim;
 mod reopen;
+mod room;
 mod wipe;
 mod writes;
 
