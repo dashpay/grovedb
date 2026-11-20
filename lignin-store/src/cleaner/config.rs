@@ -79,8 +79,8 @@ impl CleanerConfig {
     /// under a steady load of commits, as read after a pass of the
     /// cleaner: 14 that the cleaner leaves, and at most 4 more in what
     /// was emptied and waits to be deleted. That is for a store with no
-    /// reader on an old version, no operation and no checkpoint of the
-    /// database that keeps files for long, and blocks that are large
+    /// reader on an old version, no operation that runs for long, and
+    /// blocks that are large
     /// against [`Self::min_segment_len`]. What a burst of commits kills
     /// faster than [`Self::max_pass_bytes`] and [`Self::idle`] let the
     /// cleaner move shows until the cleaner has caught up.

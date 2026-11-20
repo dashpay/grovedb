@@ -6,7 +6,7 @@ use std::{
     io::ErrorKind,
     path::{Path, PathBuf},
     sync::{
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard,
     },
 };
@@ -56,21 +56,6 @@ pub struct Extent {
     /// that was appended, durable or not, and after the footer of a sealed
     /// segment.
     pub end: u64,
-}
-
-/// A hold on the files of a segment store, from
-/// [`SegmentStore::hold_files`]. While it lives no segment is taken out of
-/// the store and no segment file is deleted.
-#[derive(Debug)]
-#[must_use = "the files are held only while this lives"]
-pub struct FileHold {
-    holds: Arc<AtomicUsize>,
-}
-
-impl Drop for FileHold {
-    fn drop(&mut self) {
-        self.holds.fetch_sub(1, Ordering::SeqCst);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -414,9 +399,6 @@ pub struct SegmentStore {
     /// and it is taken before `segments`.
     creating: Mutex<Option<FileId>>,
     segments: RwLock<Segments>,
-    /// How many [`FileHold`]s live. It is raised, and looked at by whoever
-    /// drops or deletes a segment, under the write lock of `segments`.
-    holds: Arc<AtomicUsize>,
 }
 
 impl SegmentStore {
@@ -481,7 +463,6 @@ impl SegmentStore {
             read_only,
             creating: Mutex::new(last_id),
             segments: RwLock::new(segments),
-            holds: Arc::default(),
         })
     }
 
@@ -644,45 +625,18 @@ impl SegmentStore {
     /// still names the segment. That is the same as the replacement coming
     /// first: the file stays, a session that opens that manifest has the
     /// segment again, and the next replacement here leaves it out.
-    ///
-    /// While the files are held for a checkpoint that is being created
-    /// ([`Self::hold_files`]) no segment is taken out
-    /// ([`SegmentStoreError::SegmentHeld`]).
     pub fn drop_segment(&self, file: FileId) -> Result<(), SegmentStoreError> {
         self.check_writable()?;
         if self.segment(file)?.has_writer() {
             return Err(SegmentStoreError::SegmentBusy { file });
         }
         let mut segments = self.segments_mut();
-        if self.holds.load(Ordering::SeqCst) != 0 {
-            return Err(SegmentStoreError::SegmentHeld { file });
-        }
         let segment = segments
             .live
             .remove(&file)
             .ok_or(SegmentStoreError::UnknownSegment { file })?;
         segments.dropped.insert(file, segment.path.clone());
         Ok(())
-    }
-
-    /// A hold on every segment file the store has now, those of the
-    /// segments it has dropped and not yet deleted included. While the hold
-    /// lives, [`Self::drop_segment`] takes no segment out
-    /// ([`SegmentStoreError::SegmentHeld`]) and [`Self::manifest_replaced`]
-    /// deletes no file: a later call deletes what it left.
-    ///
-    /// A checkpoint that is being created takes it in its sampling step,
-    /// under the lock that makes the replacements of the manifest one at a
-    /// time and with the manifest it samples, and drops it once it has
-    /// linked the files (CK3 of `docs/lignindb/transactions.md`). Taken
-    /// under that lock, it comes before or after a whole replacement and
-    /// the deletions that follow it, never between them.
-    pub fn hold_files(&self) -> FileHold {
-        let _segments = self.segments_mut();
-        self.holds.fetch_add(1, Ordering::SeqCst);
-        FileHold {
-            holds: self.holds.clone(),
-        }
     }
 
     /// Every segment in the store as it is now, in the order of their ids:
@@ -764,8 +718,7 @@ impl SegmentStore {
     ///
     /// A new segment that the durable manifest names takes blocks from now
     /// on. The file of a dropped segment that the durable manifest no longer
-    /// names is deleted, unless the files are held ([`Self::hold_files`]):
-    /// then a later call deletes it.
+    /// names is deleted.
     ///
     /// A file that cannot be deleted does not stop the rest: the call ends
     /// with [`SegmentStoreError::NotDeleted`], and the next call tries the
@@ -782,9 +735,6 @@ impl SegmentStore {
 
         let unnamed = {
             let mut segments = self.segments_mut();
-            if self.holds.load(Ordering::SeqCst) != 0 {
-                return Ok(());
-            }
             let dropped = std::mem::take(&mut segments.dropped);
             let (kept, unnamed): (BTreeMap<_, _>, BTreeMap<_, _>) =
                 dropped.into_iter().partition(|(id, _)| named.contains(id));

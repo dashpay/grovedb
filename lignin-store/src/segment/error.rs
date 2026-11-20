@@ -224,13 +224,6 @@ pub enum SegmentStoreError {
         /// The segment.
         file: FileId,
     },
-    /// A checkpoint that is being created holds the store's files
-    /// ([`SegmentStore::hold_files`](super::SegmentStore::hold_files)), so
-    /// the segment is not taken out of the store now.
-    SegmentHeld {
-        /// The segment.
-        file: FileId,
-    },
     /// Every segment id has been used.
     FileIdsExhausted,
     /// The store was opened read-only.
@@ -342,10 +335,6 @@ impl fmt::Display for SegmentStoreError {
             Self::SegmentFailed { file } => write!(f, "a sync of segment {file} failed"),
             Self::SegmentFull { file } => write!(f, "segment {file} is full"),
             Self::SegmentBusy { file } => write!(f, "segment {file} still has a writer"),
-            Self::SegmentHeld { file } => write!(
-                f,
-                "segment {file} is held for a checkpoint that is being created"
-            ),
             Self::FileIdsExhausted => write!(f, "every segment id has been used"),
             Self::ReadOnly => write!(f, "the segment store is read-only"),
         }

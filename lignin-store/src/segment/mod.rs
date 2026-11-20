@@ -91,12 +91,6 @@
 //! | Drop | [`SegmentStore::drop_segment`] takes the segment out of the store. | Not named. |
 //! | Delete | [`SegmentStore::manifest_replaced`] removes the file, once a manifest that does not name it is durable. | |
 //!
-//! A checkpoint that is being created needs the files of the manifest it
-//! sampled until it has linked them (CK3 of `docs/lignindb/transactions.md`).
-//! It takes [`SegmentStore::hold_files`] in its sampling step: while the
-//! hold lives no segment is dropped, and one that was dropped before is not
-//! deleted.
-//!
 //! The store's own record of its segments is what is true now, and a manifest
 //! is a durable copy of it. [`SegmentStore::describe`] writes that record
 //! into a manifest, and [`SegmentStore::commit`] replaces the manifest with
@@ -203,5 +197,5 @@ pub(crate) mod tests;
 pub use error::{ManifestChange, SegmentStoreError};
 pub use files::{create_file, list_or_create_dir, FileNames};
 pub use manifest::{read_manifest, ManifestStore};
-pub use store::{BlockLocation, BlockWalk, Extent, FileHold, SegmentStore};
+pub use store::{BlockLocation, BlockWalk, Extent, SegmentStore};
 pub use writer::SegmentWriter;

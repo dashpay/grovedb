@@ -229,9 +229,8 @@
 //! that much waits for one, deletes what the checkpoint sets free, and
 //! the next round reads the table again. A pass ends when a round moves
 //! nothing, at the throttle, or after a few rounds. What waits for a
-//! running operation, or for a checkpoint of the database that holds the
-//! files, takes that room too: while it waits, no more is moved than the
-//! room allows.
+//! running operation takes that room too: while it waits, no more is
+//! moved than the room allows.
 //!
 //! A block is moved in three steps: it is read, which verifies its
 //! checksum; its payload is appended to the cleaner's segment as a block
@@ -280,15 +279,22 @@
 //! | --- | --- |
 //! | Every operation guard that was held when it was retired has been released ([`Pins::oldest_guard`]). | An operation may have read a location in it and not yet read the block (PN5). A version pin alone keeps nothing here: what a pin needs has its link. |
 //! | Neither the table checkpoint in force, nor one whose installation left the manifest in doubt, points into it ([`FlushState::checkpoint_segments`]). | A recovery starts from that checkpoint and reads the blocks it points to (`page-table.md` K6). The copies of moved blocks are in no checkpoint until the next one is named. |
-//! | No checkpoint of the database that is being created holds the files ([`SegmentStore::hold_files`]). | It links the files of the manifest it sampled (CK3). |
 //!
 //! The answer about the table checkpoint waits for a checkpoint that is
 //! being taken, and one that is begun later copies a table that points
 //! into no retired segment. The drop and the manifest that no longer
-//! names the segment are made under the manifest's lock, which a
-//! checkpoint of the database holds while it samples and takes its hold.
-//! A finished checkpoint of the database needs nothing here: it has its
-//! own links to the files (CK7).
+//! names the segment are made under the manifest's lock, and so is the
+//! deletion of the file. **A checkpoint of the database that is being
+//! created** holds that lock while it samples the manifest and links the
+//! segments it names (CK3, `lignindb::checkpoint`), so a segment is
+//! deleted before the sample, and is not in it, or after the links are
+//! made. The cleaner needs to know of no checkpoint. A finished one has
+//! its own links to the files (CK7): the bytes of a segment that the
+//! cleaner deletes stay on disk until the checkpoint goes too. The
+//! cleaner only reads a segment that it cleans, and writes to a segment
+//! only at its end: the copies to its own segment, and the footer that
+//! seals one. So what a checkpoint reads through its link does not
+//! change.
 //!
 //! **Waiting is not enough when nothing takes a table checkpoint.** A
 //! pass asks write-back for one ([`WriteBack::checkpoint`]) when the
@@ -421,10 +427,11 @@
 //!   ([`Cleaner::with_stats`]).
 //! - **Whoever closes it** stops the loop ([`Cleaner::stop`]) and calls
 //!   [`Cleaner::finish`], before write-back's own.
-//! - **A checkpoint of the database** (TXN-06) takes
-//!   [`SegmentStore::hold_files`] in its sampling step, under the
-//!   manifest's lock, beside its hold on the files of the value log, and
-//!   drops both once the files are linked.
+//! - **A checkpoint of the database** (TXN-06) holds the manifest's lock
+//!   while it samples the manifest and links the segments, and its hold
+//!   on the files of the value log
+//!   ([`ValueStore::hold_files`](crate::values::ValueStore::hold_files))
+//!   until those are linked. It asks nothing else of the cleaner.
 //! - **Whoever answers for the pins** ([`Published`]) gives true lower
 //!   bounds. The cleaner uses each answer as the bound it is and does not
 //!   assume that a later one is higher.
@@ -453,7 +460,6 @@
 //! [`Published`]: crate::flush::Published
 //! [`Pins::next_epoch`]: crate::alloc::Pins::next_epoch
 //! [`Pins::oldest_guard`]: crate::alloc::Pins::oldest_guard
-//! [`SegmentStore::hold_files`]: crate::segment::SegmentStore::hold_files
 //! [`ValueStore::copy_live`]: crate::values::ValueStore::copy_live
 //! [`ValueStore::install`]: crate::values::ValueStore::install
 //! [`ValueStore::retire`]: crate::values::ValueStore::retire

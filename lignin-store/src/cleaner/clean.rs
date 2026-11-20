@@ -388,9 +388,9 @@ impl<'s> Cleaner<'s> {
     ///
     /// Returns the bytes of the blocks of the segments that still wait to
     /// be deleted, whatever they wait for. One that waits for a running
-    /// operation, or for a hold on the files, takes its room as one that
-    /// waits for a checkpoint does: until it is deleted, the store holds
-    /// twice what was moved out of it.
+    /// operation takes its room as one that waits for a checkpoint does:
+    /// until it is deleted, the store holds twice what was moved out of
+    /// it.
     fn reclaim_with_checkpoint(
         &self,
         work: &mut Work,
@@ -749,9 +749,13 @@ impl<'s> Cleaner<'s> {
     /// - every operation that was running when the segment was retired
     ///   has ended (PN6);
     /// - neither the table checkpoint in force nor one whose installation
-    ///   is in doubt points into it (`page-table.md` K6);
-    /// - no checkpoint that is being created holds the store's files
-    ///   (CK3).
+    ///   is in doubt points into it (`page-table.md` K6).
+    ///
+    /// A checkpoint of the database that is being created needs the files
+    /// of the manifest it sampled until it has linked them (CK3). It
+    /// holds the manifest's lock for that, and under that lock the drop
+    /// is made here, the manifest that names the segment no more is
+    /// written, and the file is deleted.
     fn reclaim(&self, work: &mut Work, pass: &mut Pass) -> Result<u64, CleanerError> {
         let Stores {
             segments, versions, ..
@@ -788,9 +792,10 @@ impl<'s> Cleaner<'s> {
             return Ok(kept);
         }
 
-        // The drop and the manifest that no longer names the segment are
-        // one step under the manifest's lock, which a checkpoint that is
-        // being created holds while it samples and takes its hold.
+        // The drop, the manifest that no longer names the segment and the
+        // deletion of the file are one step under the manifest's lock,
+        // which a checkpoint of the database holds while it samples the
+        // manifest and links the files it names.
         let mut manifest = self.write_back.manifest()?;
         let (mut dropped, mut failed) = (0u64, None);
         for file in free {
@@ -806,7 +811,6 @@ impl<'s> Cleaner<'s> {
                 Err(SegmentStoreError::UnknownSegment { .. }) => {
                     work.retired.remove(&file);
                 }
-                Err(SegmentStoreError::SegmentHeld { .. }) => break,
                 // What was dropped before it is still taken out of the
                 // manifest.
                 Err(error) => {

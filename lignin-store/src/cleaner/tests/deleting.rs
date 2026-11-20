@@ -223,73 +223,48 @@ fn nothing_is_deleted_before_the_checkpoint_in_force_is_known() {
     db.check_cold();
 }
 
-/// **Test T-CK3, the cleaner's part.** While a checkpoint of the database
-/// that is being created holds the files, no segment is taken out of the
-/// store and none is deleted (CK3). Afterwards they go.
+/// **Test T-CK3, the cleaner's part.** A checkpoint of the database that
+/// is being created holds the manifest's lock while it samples the
+/// manifest and links the segments it names (CK3). The cleaner takes a
+/// segment out of the store, writes the manifest that names it no more
+/// and deletes its file under that lock: while another holds it, a pass
+/// that has a segment to delete does not end, and every segment keeps its
+/// place in the store and its file. The segments go once the lock is
+/// given back.
 #[test]
-fn nothing_is_deleted_while_a_checkpoint_being_created_holds_the_files() {
+fn nothing_is_deleted_while_another_holds_the_manifests_lock() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let db = churned(13);
     let state = CleanerState::new(eager());
     let cleaner = Cleaner::new(db.wb(), &state);
     let before = segment_ids(&db);
-    // The sampling step: under the manifest's lock.
-    let hold = {
-        let _manifest = db.manifest.lock().expect("the manifest");
-        db.segments.hold_files()
-    };
-    let done = settle(&cleaner);
-    assert!(done.retired > 0 && done.dropped == 0, "{done:?}");
-    for file in &before {
-        assert!(on_disk(&db, *file), "segment {file}");
-    }
-    assert!(segment_ids(&db).len() >= before.len());
-    // A second hold, and the first one given back: still held.
-    let second = db.segments.hold_files();
-    drop(hold);
-    assert_eq!(settle(&cleaner).dropped, 0);
-    drop(second);
-    let done = settle(&cleaner);
+    let (began, ended) = (AtomicBool::new(false), AtomicBool::new(false));
+    let manifest = db.manifest.lock().expect("the manifest");
+    let done = std::thread::scope(|scope| {
+        let passes = scope.spawn(|| {
+            began.store(true, Ordering::SeqCst);
+            let done = settle(&cleaner);
+            ended.store(true, Ordering::SeqCst);
+            done
+        });
+        while !began.load(Ordering::SeqCst) {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(!ended.load(Ordering::SeqCst), "the passes ended");
+        let held = segment_ids(&db);
+        for file in &before {
+            assert!(held.contains(file) && on_disk(&db, *file), "segment {file}");
+        }
+        drop(manifest);
+        passes.join().expect("the passes")
+    });
     assert!(done.dropped > 0 && done.waiting == 0, "{done:?}");
-    db.check_cold();
-}
-
-/// A segment that was dropped just before a hold was taken keeps its file
-/// until the hold is given back: the checkpoint sampled a manifest that
-/// may still name it.
-#[test]
-fn a_dropped_segment_is_not_deleted_under_a_hold() {
-    let db = churned(13);
-    let state = CleanerState::new(moving_only());
-    let cleaner = Cleaner::new(db.wb(), &state);
-    let space = cleaner.space().expect("the space");
-    let taken = |segment: &&SegmentSpace| !segment.has_writer;
-    let file = (space.segments.iter().filter(taken))
-        .find(|segment| segment.live_blocks == 0)
-        .map(|segment| segment.file)
-        .expect("an empty segment");
-    let other = (space.segments.iter().filter(taken))
-        .find(|segment| segment.file != file)
-        .map(|segment| segment.file)
-        .expect("another segment");
-    db.segments.drop_segment(file).expect("dropped");
-    let hold = db.segments.hold_files();
-    {
-        let mut manifest = db.manifest.lock().expect("the manifest");
-        db.segments.commit(&mut manifest).expect("a manifest");
-    }
-    assert!(on_disk(&db, file), "the file went under a hold");
-    assert!(matches!(
-        db.segments.drop_segment(other),
-        Err(crate::segment::SegmentStoreError::SegmentHeld { file }) if file == other
-    ));
-    drop(hold);
-    {
-        let mut manifest = db.manifest.lock().expect("the manifest");
-        db.segments.commit(&mut manifest).expect("a manifest");
-    }
-    assert!(!on_disk(&db, file));
-    // The cleaner finds the store as it is, and goes on.
-    settle(&cleaner);
+    let left = segment_ids(&db);
+    assert!(before
+        .iter()
+        .any(|file| !left.contains(file) && !on_disk(&db, *file)));
     db.check_cold();
 }
 
