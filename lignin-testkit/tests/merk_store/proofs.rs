@@ -14,8 +14,9 @@
 //!   an aggregate over a range is also proven as that aggregate.
 //! - For a trunk and for a branch chunk: the trunk or the branch proof of
 //!   the Merk at the path.
-//! - For chunks of a state sync (MERK-07): each chunk the step asks of the
-//!   Merk at the path, from one producer, as GroveDB serves them.
+//! - For chunks of a Merk by their ids (MERK-07): the chunk under each id
+//!   the step names, or the chunk at the root where it names none, from
+//!   one producer.
 //!
 //! Every answer is compared as its encoded bytes, or as its error, and
 //! every call must cost on LigninDB what it costs on RocksDB, the open of
@@ -56,7 +57,7 @@ pub struct Proved {
     /// Those that gave a proof, and the bytes of the proofs.
     pub proofs: u64,
     pub bytes: u64,
-    /// Those among them that gave chunks of a state sync, and their bytes.
+    /// Those among them that gave chunks of a Merk, and their bytes.
     pub chunk_calls: u64,
     pub chunk_bytes: u64,
 }

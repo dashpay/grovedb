@@ -2,22 +2,21 @@
 //! (MERK-07).
 //!
 //! When a trace has been replayed, Merks of the grove it leaves are copied
-//! as state sync copies a Merk, on RocksDB and on LigninDB: each live Merk
-//! that has a root and is the Merk of no axis, and whose host, where it
-//! has one, is an element that opens a Merk.
+//! by their chunks, on RocksDB and on LigninDB: each live Merk that has a
+//! root and is the Merk of no axis, and whose host, where it has one, is
+//! an element that opens a Merk.
 //!
 //! - **The chunks.** Every chunk of the Merk is produced from the Merk on
 //!   RocksDB, as the trace's transaction reads it, and from the Merk on the
 //!   LigninDB store, which the replay has handed every write. The two are
 //!   the same bytes.
 //! - **The restore.** A Merk is restored from those chunks on each engine,
-//!   in a store that holds the Merks restored from that grove and nothing
-//!   else: on RocksDB chunk by
-//!   chunk, and on LigninDB staged and handed over whole. The values are
-//!   finalized as elements, as GroveDB finalizes a subtree. Each chunk and
-//!   the end of the restore answer the same on both, and a restore that
-//!   finishes leaves the same root hash and the same record for every
-//!   node.
+//!   in a store that holds no node but those of the Merks restored from
+//!   that grove: on RocksDB chunk by chunk, and on LigninDB staged and
+//!   handed over whole. The values are finalized as elements
+//!   (`finalize_with_grovedb_elements`). Each chunk and the end of the
+//!   restore answer the same on both, and a restore that finishes leaves
+//!   the same root hash and the same record for every node.
 //!
 //! A restore that GroveDB drives, with the Merks of a grove entered under
 //! their elements, is GROVE-07's.
@@ -58,11 +57,11 @@ pub struct Restored {
     pub nodes: u64,
     /// The Merks whose restore both engines refused alike.
     pub refused: u64,
-    /// The Merks that give no chunk on either engine: their nodes are of
-    /// another family than the tree type they are opened under.
+    /// The Merks that give no chunk at their root on RocksDB, and none on
+    /// the store, with the same error.
     pub no_chunks: u64,
-    /// The Merks that were left out: what hosts them is no tree of a type
-    /// that opens one.
+    /// The Merks that were left out: their host is no element that opens a
+    /// Merk.
     pub skipped: u64,
 }
 
@@ -170,7 +169,7 @@ pub fn compare(
     grove_version: &GroveVersion,
 ) -> Restored {
     let mut restored = Restored::default();
-    // The stores the Merks are restored into, which hold nothing else. The
+    // The stores the Merks are restored into, which hold no other node. The
     // LigninDB transaction is not committed: a Merk that is restored alone
     // has elements whose Merks are not there.
     let rocks = TempStorage::new();
@@ -204,8 +203,8 @@ pub fn compare(
         let root_hash = expected.root_hash().unwrap();
         assert_eq!(source.root_hash().unwrap(), root_hash, "the Merk {at:?}");
 
-        // A Merk under a tree type of another family than its nodes are of
-        // gives no chunk, on either engine.
+        // A Merk that gives no chunk at its root on RocksDB gives none on
+        // the store, with the same error.
         let produced = (ChunkProducer::new(&expected))
             .and_then(|mut producer| producer.chunk(&[], grove_version).map(|_| ()));
         if let Err(refused) = produced {

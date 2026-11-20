@@ -271,8 +271,7 @@ struct Tally {
     hashed: hashes::Made,
     /// The proofs that Merk made on both engines where a trace proves.
     proved: proofs::Proved,
-    /// The Merks the replay left that were copied by chunks on both
-    /// engines.
+    /// What copying Merks by chunks came to (`restore::compare`).
     restored: restore::Restored,
 }
 
@@ -1224,10 +1223,9 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         });
     }
 
-    // Every Merk the trace leaves is copied as state sync copies one: its
-    // chunks are the same from both engines, and a restore from them
-    // leaves the same Merk on both. Once for a trace, whichever way its
-    // nodes were handed over.
+    // The Merks that `restore::compare` selects from those the trace
+    // leaves are copied by their chunks. Once for a trace: in its replay
+    // with the narrowest kinds.
     if kinds == Kinds::Narrowest {
         let reader = path.begin();
         let (block, grove) = (transactions.block(), observer.grove());
@@ -1406,10 +1404,9 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
             proved.proofs > 50_000 && proved.bytes > 10_000_000,
             "{tally:?}"
         );
-        // Chunks were served on both engines where a trace asks for chunks
-        // of a Merk by their ids, and Merks the traces leave were copied
-        // by chunks: Merks of several chunks among them, restores that
-        // finished, and more of those than were refused.
+        // Calls for chunks gave chunks, and Merks were copied by chunks:
+        // Merks of several chunks among them, restores that finished, and
+        // more of those than were refused.
         assert!(
             proved.chunk_calls > 0 && proved.chunk_bytes > 0,
             "{tally:?}"
