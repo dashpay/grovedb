@@ -271,6 +271,7 @@ impl TreeNode {
     ///
     /// It has no mutation baseline, so a commit would take it for a new
     /// node: it must never reach one, nor be put in the tree of a Merk.
+    #[cfg(any(feature = "lignin_storage", test))]
     pub(crate) fn new_without_value(
         key: Vec<u8>,
         kv_hash: CryptoHash,
@@ -303,6 +304,7 @@ impl TreeNode {
 
     /// Gives a node that was read without its value the value that was
     /// read for it.
+    #[cfg(any(feature = "lignin_storage", test))]
     pub(crate) fn put_read_value(&mut self, value: Vec<u8>) {
         self.inner.kv.value = value;
         self.inner.marks.value_absent = false;
