@@ -662,6 +662,9 @@ impl LigninBatch {
     /// [`LigninHost::hosted`](super::LigninHost::hosted).
     pub fn enter(&self, subtree: &LigninSubtree, tree_type: &[u8]) -> Result<(), Error> {
         entering(subtree, tree_type)?;
+        // What the element hosts and the enter are staged as one: no
+        // batch is taken between the two.
+        let _held = self.marks();
         self.host(subtree);
         (self.staged).enter(Subtree::new(subtree.prefix), tree_type);
         Ok(())
@@ -675,6 +678,7 @@ impl LigninBatch {
     /// is that element with the subtrees it hosts afterwards, and the batch
     /// names them in its node if it writes one.
     pub fn drop_subtree(&self, subtree: &LigninSubtree) {
+        let _held = self.marks();
         self.host(subtree);
         self.staged.drop_subtree(Subtree::new(subtree.prefix));
     }
@@ -855,7 +859,9 @@ impl LigninSettled {
     /// order: all of them or nothing. `enters` are subtrees that are
     /// entered with them, each with its tree type as the bytes the
     /// directory keeps: those that a part writes into and that neither the
-    /// transaction nor a part has entered.
+    /// transaction nor a part has entered, a subtree after the one its
+    /// host is in. Each is entered with the first part, or with the part
+    /// that enters the subtree its host is in.
     ///
     /// The cost is the storage cost of every part, which is owed only if
     /// the transaction took the writes (`cost-model.md`, B1).
@@ -868,8 +874,22 @@ impl LigninSettled {
         for part in &parts {
             pending += part.pending.clone();
         }
-        let applied = (enters.iter())
-            .map(|(subtree, tree_type)| entering(subtree, tree_type))
+        // A subtree is entered by the part that enters the subtree its
+        // host is in, or that the enter of that one goes with, and by the
+        // first part otherwise.
+        let mut entered_by: Vec<usize> = Vec::with_capacity(enters.len());
+        for (subtree, _) in enters {
+            let above = subtree.host.as_ref().map(|host| host.subtree);
+            let part = above.and_then(|above| {
+                let own = parts.iter().position(|part| part.enters(&above));
+                let given = (enters.iter().zip(&entered_by))
+                    .find_map(|((given, _), part)| (given.prefix == above).then_some(*part));
+                own.or(given)
+            });
+            entered_by.push(part.unwrap_or(0));
+        }
+        let applied = (enters.iter().zip(entered_by))
+            .map(|((subtree, tree_type), part)| Ok((part, entering(subtree, tree_type)?)))
             .collect::<Result<Vec<_>, _>>()
             .and_then(|enters| {
                 let batches: Vec<&dyn BatchPart> = (parts.iter())

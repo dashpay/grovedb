@@ -1450,7 +1450,7 @@ impl Access for Unsteady<'_> {
     fn apply_parts(
         &self,
         parts: &[&dyn BatchPart],
-        enters: &[SubtreeChange],
+        enters: &[(usize, SubtreeChange)],
     ) -> Result<Vec<Written>, Error> {
         self.under.apply_parts(parts, enters)
     }

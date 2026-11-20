@@ -331,7 +331,7 @@ impl Access for LigninSnapshot<'_> {
     fn apply_parts(
         &self,
         _parts: &[&dyn BatchPart],
-        _enters: &[SubtreeChange],
+        _enters: &[(usize, SubtreeChange)],
     ) -> Result<Vec<Written>, Error> {
         Err(read_only("the application of a batch"))
     }

@@ -672,11 +672,12 @@ fn a_writers_flat_cursor_starts_each_move_from_the_key_it_stands_on() {
     assert!(!cursor.valid().unwrap());
     cursor.seek(b"b").unwrap();
     assert_eq!(cursor.key().unwrap(), Some(b"c".as_slice()));
-    // The key it stands on goes and another is written past it: it has no
-    // value any more, and the step is from where the cursor stood.
+    // The key it stands on goes and another is written past it: the
+    // cursor shows what the move that came to the key read, and the step
+    // is from where the cursor stood.
     aux.delete(b"c", None).unwrap().expect("a delete");
     aux.put(b"d", b"d", None).unwrap().expect("a put");
-    assert_eq!(cursor.value().unwrap(), None);
+    assert_eq!(cursor.value().unwrap(), Some(b"c".as_slice()));
     cursor.next().unwrap();
     assert_eq!(cursor.key().unwrap(), Some(b"d".as_slice()));
     assert_eq!(cursor.value().unwrap(), Some(b"d".as_slice()));

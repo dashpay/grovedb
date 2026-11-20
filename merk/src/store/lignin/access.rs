@@ -327,11 +327,12 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
 
     /// Applies the batches of `parts` to the transaction, one operation
     /// each and in their order, and all of them or none. `enters` are
-    /// subtrees that the first of them enters besides its own.
+    /// subtrees that are entered with them, each with the part it is
+    /// entered by, besides those the part enters itself.
     fn apply_parts(
         &self,
         parts: &[&dyn BatchPart],
-        enters: &[SubtreeChange],
+        enters: &[(usize, SubtreeChange)],
     ) -> Result<Vec<Written>, Error>;
 }
 
@@ -910,22 +911,27 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
     )
 }
 
-/// Applies the batches of `parts` through `scope`, in their order, the
-/// first with `enters` before its own subtree writes.
+/// Applies the batches of `parts` through `scope`, in their order, each
+/// with the subtrees of `enters` that are entered by it.
 fn apply_parts(
     scope: &Scope<'_, '_>,
     parts: &[&dyn BatchPart],
-    enters: &[SubtreeChange],
+    enters: &[(usize, SubtreeChange)],
 ) -> Result<Vec<Written>, Error> {
-    let mut enters: Vec<SubtreeWrite<'_>> = enters.iter().map(subtree_write).collect();
+    if enters.iter().any(|(part, _)| *part >= parts.len()) {
+        return Err(refused("subtrees were to be entered with no batch"));
+    }
     let mut written = Vec::with_capacity(parts.len());
-    for part in parts {
-        // The enters of the caller go with the first part.
+    for (at, part) in parts.iter().enumerate() {
+        let enters: Vec<SubtreeWrite<'_>> = (enters.iter())
+            .filter(|(part, _)| *part == at)
+            .map(|(_, change)| subtree_write(change))
+            .collect();
         written.push(part.with_batch(&mut |batch| {
             if enters.is_empty() {
                 return apply_batch(scope, batch);
             }
-            let subtrees = with_enters(batch.subtrees, std::mem::take(&mut enters));
+            let subtrees = with_enters(batch.subtrees, &enters);
             apply_batch(
                 scope,
                 &Batch {
@@ -935,21 +941,15 @@ fn apply_parts(
             )
         })?);
     }
-    if !enters.is_empty() {
-        return Err(refused("subtrees were to be entered with no batch"));
-    }
     Ok(written)
 }
 
 /// The subtree writes of a batch with `enters` among them: what leaves
 /// first, as the batch has it, and then every enter after the enter of the
 /// subtree its host is in, and otherwise in the order they came.
-fn with_enters<'a>(
-    own: &[SubtreeWrite<'a>],
-    enters: Vec<SubtreeWrite<'a>>,
-) -> Vec<SubtreeWrite<'a>> {
+fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec<SubtreeWrite<'a>> {
     let (mut ordered, entered): (Vec<_>, Vec<_>) =
-        (own.iter().cloned().chain(enters)).partition(|write| !write.enters());
+        (own.iter().chain(enters).copied()).partition(|write| !write.enters());
     // The subtree that the host of an entered subtree is in, if that one
     // is entered here too.
     let above = |subtree: &Subtree| {
@@ -973,7 +973,7 @@ fn with_enters<'a>(
     };
     let mut by_depth: Vec<_> = entered.iter().map(|write| (depth(write), write)).collect();
     by_depth.sort_by_key(|(depth, _)| *depth);
-    ordered.extend(by_depth.into_iter().map(|(_, write)| write.clone()));
+    ordered.extend(by_depth.into_iter().map(|(_, write)| *write));
     ordered
 }
 
@@ -1157,7 +1157,7 @@ impl<A: Reader + super::flat::FlatAccess> Access for A {
     fn apply_parts(
         &self,
         parts: &[&dyn BatchPart],
-        enters: &[SubtreeChange],
+        enters: &[(usize, SubtreeChange)],
     ) -> Result<Vec<Written>, Error> {
         self.writing(parts.len(), |scope| apply_parts(scope, parts, enters))
     }

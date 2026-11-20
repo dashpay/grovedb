@@ -12,11 +12,15 @@
 //! keeps no cursor of the transaction: a cursor of a scope borrows the
 //! scope, which the handles of a writer share behind a lock, and the
 //! transaction offers no parked cursor over flat records as it does over
-//! nodes. It keeps the key it stands on, and each move takes the lock,
-//! seeks to that key in a cursor of the scope and steps from there. So it
-//! reads the committed state of each move, as the point reads of a scope
-//! do, and not that of the moment it was opened (RD6); the writes of its
-//! own scope it sees as any cursor of the scope does.
+//! nodes. It keeps the key it stands on with its value, and each move
+//! takes the lock, seeks to that key in a cursor of the scope and steps
+//! from there. So it reads the committed state of each move, as the point
+//! reads of a scope do, and not that of the moment it was opened (RD6):
+//! a commit outside the transaction that lands between two moves shows in
+//! the walk. The writes of its own scope it sees as any cursor of the
+//! scope does. GroveDB opens no write scope before GROVE-12, which is
+//! where a cursor of a scope that keeps its state has to come from the
+//! transaction.
 
 use std::cell::{OnceCell, RefCell};
 
@@ -97,15 +101,19 @@ impl FlatAccess for WriteTxn<'_> {
 struct WriterRecords<'a, 't, 's> {
     writer: &'a LigninWriter<'t, 's>,
     unit: Unit,
-    at: Option<Vec<u8>>,
+    /// The key the cursor stands on with the value under it, both as the
+    /// move that came to the key read them.
+    at: Option<(Vec<u8>, Vec<u8>)>,
 }
 
 impl FlatWalk for WriterRecords<'_, '_, '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
         key.clear();
+        let at = self.at.take();
+        let at = at.as_ref().map(|(key, _)| key.as_slice());
         let scope = self.writer.scope();
         let mut cursor = scope.cursor(self.unit);
-        match (to, &self.at) {
+        match (to, at) {
             (Seek::First, _) => cursor.seek_to_first(),
             (Seek::Last, _) => cursor.seek_to_last(),
             (Seek::From(key), _) => cursor.seek(key),
@@ -115,38 +123,34 @@ impl FlatWalk for WriterRecords<'_, '_, '_> {
             (Seek::Next, Some(at)) => {
                 cursor
                     .seek(at)
-                    .and_then(|()| match cursor.key() == Some(at.as_slice()) {
+                    .and_then(|()| match cursor.key() == Some(at) {
                         true => cursor.next(),
                         false => Ok(()),
                     })
             }
             (Seek::Prev, Some(at)) => {
-                cursor
-                    .seek_for_prev(at)
-                    .and_then(|()| match cursor.key() == Some(at.as_slice()) {
-                        true => cursor.prev(),
-                        false => Ok(()),
-                    })
+                (cursor.seek_for_prev(at)).and_then(|()| match cursor.key() == Some(at) {
+                    true => cursor.prev(),
+                    false => Ok(()),
+                })
             }
             (Seek::Next | Seek::Prev, None) => Ok(()),
         }
         .map_err(fault)?;
-        self.at = cursor.key().map(<[u8]>::to_vec);
         key.extend_from_slice(cursor.key().unwrap_or_default());
-        Ok(cursor.valid())
+        if cursor.valid() {
+            let mut value = Vec::new();
+            cursor.value(&mut value).map_err(fault)?;
+            self.at = Some((key.clone(), value));
+        }
+        Ok(self.at.is_some())
     }
 
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
-        let Some(at) = &self.at else {
-            return Ok(false);
-        };
-        let scope = self.writer.scope();
-        let mut cursor = scope.cursor(self.unit);
-        cursor.seek(at).map_err(fault)?;
-        match cursor.key() == Some(at.as_slice()) {
-            true => cursor.value(out).map_err(fault),
-            false => Ok(false),
+        if let Some((_, value)) = &self.at {
+            out.extend_from_slice(value);
         }
+        Ok(self.at.is_some())
     }
 }
 
@@ -447,14 +451,22 @@ impl<'db> FlatStore for LigninNodeStore<'db> {
     /// `Merk::clear`, and a subtree leaves with its element by a drop
     /// ([`LigninBatch::drop_subtree`](super::LigninBatch::drop_subtree)).
     fn clear(&self) -> CostResult<(), StorageError> {
-        match self.entry() {
+        // The subtree's Merk is looked at before the walk and after it:
+        // a commit outside the transaction that gave it a node in between
+        // took the flat records the walk was to remove.
+        let has_nodes = || match self.entry() {
             Ok(Some(entry)) if entry.root_key.is_some() => Err(StorageError::NotSupported(
                 "lignindb: the removal of the nodes of a Merk as the records of a flat keyspace"
                     .to_owned(),
-            ))
-            .wrap_with_cost(Default::default()),
-            Ok(_) => self.data().clear(),
-            Err(error) => Err(storage_error(error)).wrap_with_cost(Default::default()),
+            )),
+            Ok(_) => Ok(()),
+            Err(error) => Err(storage_error(error)),
+        };
+        if let Err(error) = has_nodes() {
+            return Err(error).wrap_with_cost(Default::default());
         }
+        let mut cost = OperationCost::default();
+        cost_return_on_error!(&mut cost, self.data().clear());
+        has_nodes().wrap_with_cost(cost)
     }
 }
