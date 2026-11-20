@@ -12,6 +12,7 @@ mod full;
 mod guards;
 mod kept;
 mod open;
+mod power;
 mod reads;
 mod reclaim;
 mod reopen;
