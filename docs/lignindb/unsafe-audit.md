@@ -12,11 +12,12 @@ A test reads this document and the sources and fails when they differ: `lignin-s
 | `lignin-io` | None. The file layer is written against `std` alone. | `#![deny(unsafe_code)]`, so that a later module (the direct I/O path, IO-03) can allow it for itself. |
 | `lignin-format`, `lignin-tree`, `lignindb`, `lignin-tools`, `lignin-testkit` and its `cost-model-storage` | None. | `#![forbid(unsafe_code)]` in each library. |
 | `merk/src/store/lignin` | None. | Merk's own lints; the scan below covers the directory. |
+| `grovedb/src/engine/lignin` | None. | GroveDB's own lints; the scan below covers the directory. |
 | Nine test targets (section 5) | A counting allocator each: one `unsafe impl GlobalAlloc` that hands every call to `System`. | A test target is a crate of its own, which the library's lint does not reach. The scan below does. |
 
 ## 2. What keeps it so
 
-`lignin-store/tests/unsafe_audit.rs` runs with the crate's tests, so in CI on every platform the LigninDB crates are tested on. It reads every `.rs` file under every workspace directory whose name begins with `lignin`, and under `merk/src/store/lignin`, with comments and string and character literals blanked, and checks:
+`lignin-store/tests/unsafe_audit.rs` runs with the crate's tests, so in CI on every platform the LigninDB crates are tested on. It reads every `.rs` file under every workspace directory whose name begins with `lignin`, and under `merk/src/store/lignin` and `grovedb/src/engine/lignin`, with comments and string and character literals blanked, and checks:
 
 1. **The keyword `unsafe` is in the files this document lists and in no other.** This holds for every target (libraries, binaries, tests, benches, build scripts), which a lint in a library does not. It holds for the code of documentation tests as well, which is read from the `///` and `//!` comments; a block documentation comment (`/** */`), which the reader does not take apart, is refused.
 2. **Every library forbids unsafe code** as an attribute of the crate itself, the two of section 1 deny it, and the lint `unsafe_code` is named nowhere else but in the one `allow`, which is on `mod frame`.

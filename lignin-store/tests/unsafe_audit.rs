@@ -49,7 +49,7 @@ const ALLOW: (&str, &str) = ("lignin-store/src/cache/mod.rs", "frame");
 
 /// What is scanned beside the directories of the LigninDB crates: the code
 /// another crate holds for LigninDB.
-const ALSO: [&str; 1] = ["merk/src/store/lignin"];
+const ALSO: [&str; 2] = ["merk/src/store/lignin", "grovedb/src/engine/lignin"];
 
 /// What may leave a named test, or the module it is in, out of a build: the
 /// build of the tests itself, and a build for a model, where every test but
