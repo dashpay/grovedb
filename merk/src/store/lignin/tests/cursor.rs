@@ -1118,6 +1118,24 @@ impl Access for Failing<'_> {
     fn apply(&self, write: &Write) -> Result<Written, Error> {
         self.under.apply(write)
     }
+
+    fn apply_parts(
+        &self,
+        parts: &[&dyn BatchPart],
+        enters: &[SubtreeChange],
+    ) -> Result<Vec<Written>, Error> {
+        self.under.apply_parts(parts, enters)
+    }
+}
+
+impl FlatAccess for Failing<'_> {
+    fn records<'a>(
+        &'a self,
+        keyspace: Keyspace,
+        subtree: &Prefix,
+    ) -> Result<Box<dyn FlatWalk + 'a>, Error> {
+        self.under.records(keyspace, subtree)
+    }
 }
 
 /// A walk that stops on an error is not the end of the nodes: the cursor
@@ -1336,7 +1354,7 @@ fn a_cursor_that_another_scopes_write_claim_refuses_is_no_empty_merk() {
     cursor.seek_to_first().unwrap();
     assert!(!cursor.valid().unwrap());
     let status = cursor.status().expect_err("the other scope holds the Merk");
-    let held = "another open scope of the transaction holds";
+    let held = "another open write scope holds";
     assert!(status.to_string().contains(held), "{status}");
     // The handle cannot read the root either, so the Merk is opened as
     // the caller that knows its root key has it: with no node loaded.
@@ -1393,7 +1411,7 @@ fn a_cursor_of_a_handle_that_only_reads_is_refused_beside_a_writing_scope() {
     );
     before.seek_to_first().unwrap();
     let status = before.status().expect_err("a scope is writing the Merk");
-    let held = "another open scope of the transaction holds";
+    let held = "another open write scope holds";
     assert!(status.to_string().contains(held), "{status}");
     let merk = open_layered(LigninNodeStore::read_only(&transaction, ROOT), None);
     assert!(!merk.is_empty_tree().unwrap(), "it could not be read");

@@ -82,6 +82,28 @@ impl<'db> LigninCursor<'db> {
         }
     }
 
+    /// Points the cursor at the Merk of the subtree `prefix`, in the
+    /// committed state it has read from since it was opened
+    /// (`engine.md`, "One state across subtrees"). It stands on no node
+    /// then. A cursor that cannot be pointed elsewhere, as the cursor of a
+    /// write transaction, stands on no node either, and
+    /// [`NodeCursor::status`] says why.
+    pub fn retarget(mut self, prefix: &Prefix) -> Self {
+        self.key.clear();
+        self.on_key = false;
+        self.record = OnceCell::new();
+        if let Some(walk) = self.walk.as_mut() {
+            match walk.get_mut().retarget(prefix) {
+                Ok(()) => *self.failure.get_mut() = None,
+                Err(error) => {
+                    self.walk = None;
+                    *self.failure.get_mut() = Some(error.to_string());
+                }
+            }
+        }
+        self
+    }
+
     /// Moves the cursor. A seek starts again after a failure, and a step
     /// from no key goes nowhere.
     fn go(&mut self, to: Seek<'_>) -> CostContext<()> {
