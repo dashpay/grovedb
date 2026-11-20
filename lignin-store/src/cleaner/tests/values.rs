@@ -2,7 +2,10 @@
 //! steps of a deletion, what holds a file back, and two kinds of owners.
 
 use super::*;
-use crate::values::{ValueStore, ValueStoreError};
+use crate::{
+    cleaner::values::BUSY_PASSES,
+    values::{ValueStore, ValueStoreError},
+};
 
 /// A store whose value-log files are full after two values of 400 bytes.
 fn store() -> Db {
@@ -26,8 +29,13 @@ fn set(at: (u32, u16), value: Val) -> Op {
 /// Four pages with two values each, written back page by page, so that
 /// the values of a page lie in a file of their own.
 fn filled() -> Db {
+    filled_pages(4)
+}
+
+/// The same, with `pages` pages.
+fn filled_pages(pages: u8) -> Db {
     let db = store();
-    for id in 1..=4u8 {
+    for id in 1..=pages {
         db.commit(&[
             insert((u32::from(id), 1), b"a", long(id, 400)),
             insert((u32::from(id), 2), b"b", long(id + 40, 400)),
@@ -314,20 +322,22 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
     assert_eq!(state.stats().value_bytes_copied, cleaned.copied_bytes);
     assert!(cleaned.copied_bytes > 400);
 
-    // While the copy is held, no file is cleaned for a few passes, and
-    // this one is left alone for longer: each try would append the value
-    // again.
-    let (pause, file_pause) = {
-        use crate::cleaner::values::{BUSY_FILE_PASSES, BUSY_PASSES};
-        (BUSY_PASSES, BUSY_FILE_PASSES)
+    // While the copy is held, the file is set aside for a few passes:
+    // each try appends the value again. Then it is tried, for nothing,
+    // and set aside again.
+    let set_aside = |tries: u64| {
+        for _ in 1..BUSY_PASSES {
+            let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+            assert!(pass.cleaned.is_none(), "{pass:?}");
+        }
+        let did = state.stats();
+        assert_eq!(did.value_bytes_copied, tries * cleaned.copied_bytes);
+        assert_eq!((did.value_files_cleaned, did.values_left), (tries, tries));
     };
-    assert!(pause < file_pause);
-    for _ in 1..file_pause {
-        let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
-        assert!(pass.cleaned.is_none(), "{pass:?}");
-    }
-    assert_eq!(state.stats().value_bytes_copied, cleaned.copied_bytes);
-    assert_eq!(state.stats().value_files_cleaned, 1);
+    set_aside(1);
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    assert_eq!(pass.cleaned, Some((file, cleaned)));
+    set_aside(2);
 
     txn.roll_back();
     // The file goes, and so does the one that took the copy nobody
@@ -336,6 +346,70 @@ fn a_move_under_a_private_copy_is_put_off_and_made_later() {
     assert_eq!(moved, 1);
     assert!(dropped.contains(&file), "{dropped:?}");
     assert_ne!(db.pointer(page(1), slot(1)), old);
+    db.check_warm();
+}
+
+/// Files whose values cannot be moved, because a write transaction holds
+/// copies of their pages, take no pass from a file that can be cleaned.
+/// Each of them is set aside when it was tried, for longer the more of
+/// them there are: about one pass in [`BUSY_PASSES`] tries one of them
+/// again, however many they are.
+#[test]
+fn files_with_busy_pages_keep_no_other_file_from_being_cleaned() {
+    const PAGES: u8 = 6;
+    let db = filled_pages(PAGES);
+    for id in 1..=PAGES {
+        db.commit(&[set((u32::from(id), 2), long(id + 80, 300))]);
+        db.wb().pass().expect("a pass");
+    }
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    // The first value of each page, which lives in a file half of which
+    // is dead: whether it is where it was before the cleaner began.
+    let pointers = || -> Vec<_> {
+        (1..=PAGES)
+            .map(|id| db.pointer(page(u32::from(id)), slot(1)))
+            .collect()
+    };
+    let old = pointers();
+    let unmoved = || -> Vec<bool> {
+        let now = pointers();
+        old.iter().zip(&now).map(|(old, now)| old == now).collect()
+    };
+    let busy = u64::from(PAGES) - 1;
+    let mut txn = db.begin();
+    for id in 1..PAGES {
+        txn.copy(page(u32::from(id)));
+    }
+
+    // Each file is tried once: five for nothing, and the one whose page
+    // nobody holds is cleaned.
+    for _ in 0..PAGES {
+        cleaner.pass_values(&Cells(&db)).expect("a pass");
+    }
+    let did = state.stats();
+    assert_eq!((did.values_moved, did.values_left), (1, busy), "{did:?}");
+    assert_eq!(unmoved(), [true, true, true, true, true, false]);
+
+    // From then on a pass now and then tries one of the five again.
+    let passes = 10 * BUSY_PASSES;
+    for _ in 0..passes {
+        cleaner.pass_values(&Cells(&db)).expect("a pass");
+    }
+    let tried = state.stats().values_left - did.values_left;
+    assert!(
+        (busy..=passes / BUSY_PASSES + 2).contains(&tried),
+        "{tried} tries in {passes} passes"
+    );
+    assert_eq!(unmoved(), [true, true, true, true, true, false]);
+
+    // Each of the five is tried again when its time has come, and moved.
+    txn.roll_back();
+    for _ in 0..BUSY_PASSES * u64::from(PAGES) {
+        cleaner.pass_values(&Cells(&db)).expect("a pass");
+    }
+    settle_values(&cleaner, &Cells(&db));
+    assert_eq!(unmoved(), [false; 6]);
     db.check_warm();
 }
 

@@ -93,10 +93,10 @@ pub(super) fn life() -> Vec<Act> {
         CleanValues,
         Store(Step::Release),
     ];
-    // The file is left alone for a while after a move that was put off.
-    // The passes in between change nothing, and the one after them makes
-    // the move.
-    acts.extend((0..crate::cleaner::values::BUSY_FILE_PASSES).map(|_| CleanValues));
+    // The file is set aside for a while after a move that was put off.
+    // The passes in between change nothing, and the last one makes the
+    // move.
+    acts.extend((0..crate::cleaner::values::BUSY_PASSES).map(|_| CleanValues));
     acts.extend([
         Store(commit(&[hash((3, 1), 5)])),
         Store(Step::Pass),

@@ -1,7 +1,20 @@
 //! The deletion of segments: retire first, reclaim later, and what holds
 //! a segment back.
 
+use std::sync::Arc;
+
+use lignin_format::{manifest::LiveFile, FileKind};
+use lignin_io::StdVfs;
+
 use super::*;
+use crate::{
+    segment::{
+        read_manifest,
+        tests::faulty::{FaultyVfs, Op as FileOp},
+        FileNames,
+    },
+    wal::LogOptions,
+};
 
 /// A segment with no live block that takes no more blocks is retired, and
 /// goes once nothing needs it. The blocks that never had a link, or lost
@@ -225,46 +238,49 @@ fn nothing_is_deleted_before_the_checkpoint_in_force_is_known() {
 
 /// **Test T-CK3, the cleaner's part.** A checkpoint of the database that
 /// is being created holds the manifest's lock while it samples the
-/// manifest and links the segments it names (CK3). The cleaner takes a
-/// segment out of the store, writes the manifest that names it no more
-/// and deletes its file under that lock: while another holds it, a pass
-/// that has a segment to delete does not end, and every segment keeps its
-/// place in the store and its file. The segments go once the lock is
-/// given back.
+/// manifest and links the segments it names (CK3). The cleaner deletes a
+/// segment's file while it holds that lock, and after the manifest that
+/// names the segment no more is in the directory. The deletion is stopped
+/// in the file layer: there the lock is held, the store has the segment
+/// no more, the manifest names it no more, and the file is still there.
+/// So a creation samples before all of it and links a file that is there,
+/// or after all of it and does not sample the segment.
 #[test]
-fn nothing_is_deleted_while_another_holds_the_manifests_lock() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    let db = churned(13);
-    let state = CleanerState::new(eager());
-    let cleaner = Cleaner::new(db.wb(), &state);
-    let before = segment_ids(&db);
-    let (began, ended) = (AtomicBool::new(false), AtomicBool::new(false));
-    let manifest = db.manifest.lock().expect("the manifest");
-    let done = std::thread::scope(|scope| {
-        let passes = scope.spawn(|| {
-            began.store(true, Ordering::SeqCst);
-            let done = settle(&cleaner);
-            ended.store(true, Ordering::SeqCst);
-            done
-        });
-        while !began.load(Ordering::SeqCst) {
-            std::thread::yield_now();
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(!ended.load(Ordering::SeqCst), "the passes ended");
-        let held = segment_ids(&db);
-        for file in &before {
-            assert!(held.contains(file) && on_disk(&db, *file), "segment {file}");
-        }
-        drop(manifest);
-        passes.join().expect("the passes")
+fn a_segment_is_deleted_under_the_manifests_lock_after_its_manifest() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let vfs = FaultyVfs::without_syncs(Arc::new(StdVfs));
+    let (config, log) = (small_segments(), LogOptions::default());
+    let db = churned_in(
+        Db::create(Arc::new(vfs.clone()), dir.path(), config, log),
+        13,
+    );
+    // It moves nothing: the manifest is replaced for the drop alone.
+    let state = CleanerState::new(CleanerConfig {
+        target_dead_percent: 100,
+        ..moving_only()
     });
-    assert!(done.dropped > 0 && done.waiting == 0, "{done:?}");
-    let left = segment_ids(&db);
-    assert!(before
-        .iter()
-        .any(|file| !left.contains(file) && !on_disk(&db, *file)));
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let empty = (cleaner.space().expect("the space").segments.iter())
+        .find(|segment| segment.live_blocks == 0 && !segment.has_writer)
+        .map(|segment| segment.file)
+        .expect("an empty segment");
+    let deletion = vfs.stop_after(0, FileOp::RemoveFile, &FileNames::SEGMENT.file_name(empty));
+    let pass = std::thread::scope(|scope| {
+        let pass = scope.spawn(|| cleaner.pass().expect("a pass"));
+        deletion.wait();
+        assert!(matches!(
+            db.manifest.try_lock(),
+            Err(std::sync::TryLockError::WouldBlock)
+        ));
+        assert!(!segment_ids(&db).contains(&empty) && on_disk(&db, empty));
+        let named = read_manifest(&StdVfs, &db.path).expect("the manifest");
+        let names_it = |file: &LiveFile| file.kind() == FileKind::Segment && file.id() == empty;
+        assert!(!named.files().iter().any(names_it), "{named:?}");
+        deletion.go_on();
+        pass.join().expect("the pass")
+    });
+    assert!(pass.dropped > 0 && pass.blocks_moved == 0, "{pass:?}");
+    assert!(!on_disk(&db, empty));
     db.check_cold();
 }
 

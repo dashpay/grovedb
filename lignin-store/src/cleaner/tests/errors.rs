@@ -266,8 +266,9 @@ fn a_round_chooses_no_more_than_can_wait_to_be_deleted() {
     assert_eq!(chosen(10, 25, 0), (vec![1, 2, 11], false));
     // 1,000 wait already: one large one, and the small one.
     assert_eq!(chosen(10, 25, 1000), (vec![1, 11], false));
-    // 2,000 wait already: no large one fits, and the small one does.
-    assert_eq!(chosen(10, 25, 2000), (vec![11], false));
+    // 2,000 wait already: no large one fits, and the small one does. The
+    // worst segment was passed over, which the caller is told.
+    assert_eq!(chosen(10, 25, 2000), (vec![11], true));
     // 2,400 wait already: none fits, and that is why none is chosen.
     assert_eq!(chosen(10, 25, 2400), (vec![], true));
     // Nothing waits, and no segment fits: one is taken all the same.

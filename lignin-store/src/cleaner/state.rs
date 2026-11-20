@@ -76,8 +76,6 @@ pub(super) struct Work {
     /// transactions held copies of the pages of their values, each with
     /// the pass from which it is tried again.
     pub(super) busy_files: BTreeMap<FileId, u64>,
-    /// The pass from which a file is cleaned again after such a cleaning.
-    pub(super) values_busy_until: u64,
     /// Answers about the oldest pinned version, each with the epoch that
     /// was started when it was given: no version pin is below it, and it
     /// waits for the operations that were running then.

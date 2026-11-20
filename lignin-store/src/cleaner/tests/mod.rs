@@ -244,7 +244,11 @@ pub(super) const PAGES: u32 = 6;
 /// *r*, so the pages are written at different rates, and what is live
 /// lies scattered among what is dead.
 pub(super) fn churned(rounds: u8) -> Db {
-    let db = Db::with(small_segments());
+    churned_in(Db::with(small_segments()), rounds)
+}
+
+/// The same, in the empty store `db`.
+pub(super) fn churned_in(db: Db, rounds: u8) -> Db {
     let cells: Vec<Op> = (1..=PAGES)
         .map(|id| insert((id, 1), b"key", inline(&noise(u64::from(id), 120))))
         .collect();

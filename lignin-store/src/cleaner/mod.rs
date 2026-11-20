@@ -342,11 +342,11 @@
 //! that waits is.
 //!
 //! A move is refused while a write transaction holds a private copy of
-//! the page (PV7), and the copy that was appended for it is dead. After a
-//! cleaning that moved nothing for that reason no file is cleaned for a
-//! few passes, and that file is left alone for longer, so that a long
-//! transaction does not have its values appended again ten times a
-//! second and the files after it have their turn.
+//! the page (PV7), and the copy that was appended for it is dead. A file
+//! whose cleaning moved nothing for that reason is set aside, for longer
+//! the more files are set aside with it. So a long transaction has values
+//! appended again in about one pass in eight, however many files it keeps
+//! busy, and the passes between are for the files that can be cleaned.
 //!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the

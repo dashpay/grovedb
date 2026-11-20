@@ -80,10 +80,10 @@ impl CleanerConfig {
     /// cleaner: 14 that the cleaner leaves, and at most 4 more in what
     /// was emptied and waits to be deleted. That is for a store with no
     /// reader on an old version, no operation that runs for long, and
-    /// blocks that are large
-    /// against [`Self::min_segment_len`]. What a burst of commits kills
-    /// faster than [`Self::max_pass_bytes`] and [`Self::idle`] let the
-    /// cleaner move shows until the cleaner has caught up.
+    /// blocks that are large against [`Self::min_segment_len`]. What a
+    /// burst of commits kills faster than [`Self::max_pass_bytes`] and
+    /// [`Self::idle`] let the cleaner move shows until the cleaner has
+    /// caught up.
     pub const fn new() -> Self {
         Self {
             target_dead_percent: DEFAULT_TARGET_DEAD_PERCENT,

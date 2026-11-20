@@ -357,8 +357,10 @@ impl<'s> Cleaner<'s> {
         };
         if chosen.no_room {
             // The dead space is above its target, and what waits to be
-            // deleted leaves no room for a copy: a table checkpoint sets
-            // free what waits for one.
+            // deleted leaves no room for the segment that is most worth
+            // it: a table checkpoint sets free what waits for one. What
+            // waits for a running operation stays, and a smaller segment
+            // is taken then.
             waiting = self.reclaim_with_checkpoint(work, pass, all, true)?;
             chosen = victims(&space, &out, &work.unreadable, config, waiting);
         }
@@ -877,8 +879,8 @@ fn mark_retired(space: &mut Space, work: &Work) {
 #[derive(Debug, Default)]
 pub(super) struct Chosen {
     pub(super) segments: Vec<FileId>,
-    /// Whether the dead space is above its target and no segment was
-    /// chosen because what waits for a table checkpoint leaves no room.
+    /// Whether the segment that is most worth it was passed over, because
+    /// what waits to be deleted leaves no room for it.
     pub(super) no_room: bool,
 }
 
@@ -896,7 +898,9 @@ pub(super) struct Chosen {
 /// which a checkpoint is asked for
 /// ([`CleanerConfig::checkpoint_dead_percent`]). With nothing waiting, one
 /// segment is chosen whatever its size. A segment that does not fit is
-/// passed over for one further down that does.
+/// passed over for one further down that does, and the caller is told if
+/// that was the first one ([`Chosen::no_room`]): a table checkpoint may
+/// make the room for it.
 ///
 /// `out` are the segments that are retired, or were when `space` was
 /// read. They are left out of the sums, and so are the segments that
@@ -938,7 +942,7 @@ pub(super) fn victims(
         other_share.cmp(&one_share).then(one.file.cmp(&other.file))
     });
     let mut chosen = Chosen::default();
-    let (mut waits, mut left_out) = (waiting, false);
+    let mut waits = waiting;
     for segment in candidates {
         if !is_over(dead, all, config.target_dead_percent) {
             break;
@@ -947,7 +951,7 @@ pub(super) fn victims(
         if waits != 0 && is_over(with_it, total, config.checkpoint_dead_percent) {
             // It does not fit beside what waits. A smaller one further
             // down may.
-            left_out = true;
+            chosen.no_room |= chosen.segments.is_empty();
             continue;
         }
         chosen.segments.push(segment.file);
@@ -955,6 +959,5 @@ pub(super) fn victims(
         all -= segment.dead_bytes();
         waits = with_it;
     }
-    chosen.no_room = left_out && chosen.segments.is_empty();
     chosen
 }
