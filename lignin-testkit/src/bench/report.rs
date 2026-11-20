@@ -486,8 +486,8 @@ pub struct Agreement {
     pub id: String,
     /// The row's phase.
     pub phase: String,
-    /// The looser of the two runs' kinds: for rows [`comparable`] accepts,
-    /// measured if either run has the row as measured; otherwise the first
+    /// The looser of the two runs' kinds: measured if one run has the row
+    /// as measured and the other as count or measured; otherwise the first
     /// run's.
     pub kind: RowKind,
     /// The unit.

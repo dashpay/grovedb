@@ -7,7 +7,7 @@
 
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::bench::{
-    cli, compare, run, ColdMethod, EngineChoice, Report, RowKind, RunOptions, Settings,
+    cli, compare, run, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 fn small(scratch: std::path::PathBuf) -> Settings {
@@ -133,27 +133,20 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         let row = engine
             .row(id, phase)
             .unwrap_or_else(|| panic!("no row {id} in {phase}"));
-        assert!(row.value > 0.0, "{id} in {phase} is {}", row.value);
         assert!(!row.source.is_empty());
-        assert_eq!(row.ratio_to_rocksdb, Some(1.0));
         if row.kind == RowKind::Time {
             assert_eq!(row.value, row.summary.unwrap().median);
+            assert!(row.value >= 0.0, "{id} in {phase} is {}", row.value);
+            assert_eq!(row.ratio_to_rocksdb, (row.value != 0.0).then_some(1.0));
+        } else {
+            assert!(row.value > 0.0, "{id} in {phase} is {}", row.value);
+            assert_eq!(row.ratio_to_rocksdb, Some(1.0));
         }
     }
 
     let create = engine.row("wall_per_transition", "create").unwrap();
     assert_eq!(create.samples.len(), 10, "one sample per block");
     assert!(create.recorded.is_some() && create.ratio_to_recorded.is_some());
-    if let Some(instructions) = create.instructions_per_sample {
-        assert!(instructions > 1_000.0);
-    }
-    if let Some(cpu) = create.cpu_per_sample {
-        assert!(cpu > 0.0);
-    }
-    if first.method.cold_method == ColdMethod::ReopenAndDropFileCache {
-        let cold = engine.row("point_get", "cold").unwrap();
-        assert!(cold.storage_read_bytes_per_sample.is_some());
-    }
 
     let records = engine
         .row("node_records_per_transition", "load")

@@ -135,7 +135,7 @@ On Linux, `/proc/self/io` `write_bytes` is reported beside the physical-bytes
 row as a cross-check. In the reference runs on disk it agreed with the log,
 flush and compaction sum to within 1%. It counts the whole process and the
 children it has waited for, so beside other work, or on a file system that
-does not count writes (tmpfs), it does not agree.
+does not count writes (tmpfs), it can differ.
 
 ### What LigninDB has to implement
 
