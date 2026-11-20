@@ -14,6 +14,7 @@ use super::{
 };
 use crate::{
     alloc::Epoch,
+    flush::trim_bound::TrimBound,
     segment::SegmentWriter,
     values::{ChangeMark, Retired, ValueWriter},
 };
@@ -76,14 +77,8 @@ pub(super) struct Work {
     /// transactions held copies of the pages of their values, each with
     /// the pass from which it is tried again.
     pub(super) busy_files: BTreeMap<FileId, u64>,
-    /// Answers about the oldest pinned version, each with the epoch that
-    /// was started when it was given: no version pin is below it, and it
-    /// waits for the operations that were running then.
-    pub(super) trim_bounds: VecDeque<(Epoch, CommitVersion)>,
-    /// The newest of those answers whose operations have ended: neither a
-    /// version pin nor a running operation reads below it. Chains are
-    /// trimmed at this version.
-    pub(super) trim_at: Option<CommitVersion>,
+    /// The version at which chains are trimmed.
+    pub(super) trim_bound: TrimBound,
     /// Where the blocks of each sealed segment end.
     pub(super) blocks_end: BTreeMap<FileId, u64>,
     /// Segments of which a live block could not be read.

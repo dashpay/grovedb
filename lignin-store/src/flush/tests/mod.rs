@@ -13,6 +13,7 @@ mod measure;
 pub(crate) mod recover;
 mod recovered;
 mod regroup;
+mod settle;
 mod stats;
 mod threads;
 mod trim;
