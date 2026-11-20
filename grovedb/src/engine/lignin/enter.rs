@@ -11,16 +11,18 @@
 //!   and is read as the empty tree that it is.
 //! - **Its host is the element its handle was opened under**: the key of
 //!   the last segment of the path, in the subtree of the segments before
-//!   ([`LigninSubtree::host`]), where that element is there once the
-//!   batch is applied. A subtree with no host is the root Merk of the
-//!   grove, or a keyspace that no element names: one opened by a prefix
-//!   alone, or under a key that holds no element.
+//!   ([`LigninSubtree::host`]). A subtree with no host is the root Merk of
+//!   the grove, or a keyspace that no element names, opened by its prefix
+//!   alone. A first write under a key that holds no element once the
+//!   batch is applied is refused with `Error::NotSupported`: the
+//!   directory would name a host that is no node, or name none for a
+//!   subtree that an element inserted later points at.
 //! - **Its tree type is the one of that element**, read from the value
 //!   that the last batch of the group to state one states for the
-//!   element, or with none from the transaction. Where there is no such
-//!   element, the group deletes it, or it is no tree, the directory keeps
-//!   no tree type for the subtree, and `Merk::open_from_directory` refuses
-//!   it as it refuses any other bytes.
+//!   element, or with none from the transaction. Where the element is no
+//!   tree, or the subtree has no host, the directory keeps no tree type
+//!   for the subtree, and `Merk::open_from_directory` refuses it as it
+//!   refuses any other bytes.
 //!
 //! An element that hosts more than one Merk, an indexed tree, is refused
 //! with `Error::NotSupported`: its Merks are named together, by its
@@ -35,11 +37,14 @@
 //!   entry keeps the tree type and the host it was entered with when its
 //!   element is written again as a tree of another type.
 //! - Two transactions that each write first into one subtree both enter
-//!   it, and the directory takes the enter of the first to commit. The
-//!   second is refused: as a conflict where the two wrote a key, which
-//!   two writes into a tree always did, and otherwise by the directory,
-//!   with the engine's words (`engine.md`, "Subtrees are entered by the
-//!   first batch that writes into them").
+//!   it, unless one commits before the other looks, and the directory
+//!   takes the enter of the first to commit. The second is refused where
+//!   its batch is applied, if the first committed by then, by the
+//!   directory and with the engine's words. Otherwise it is refused at
+//!   its commit: as a conflict where the two wrote a key, which two
+//!   writes into a tree always did, and by the directory where they
+//!   wrote none (`engine.md`, "Subtrees are entered by the first batch
+//!   that writes into them").
 
 use std::collections::BTreeMap;
 
@@ -149,21 +154,17 @@ pub(super) fn owed(
             continue;
         }
         // A subtree is entered under an element that is there once the
-        // group is applied, and under none otherwise: the directory names
-        // no host that is no node.
-        let (host, tree_type) = match host {
-            None if prefix == ROOT => (None, Some(TreeType::NormalTree)),
-            None | Some((_, Host::Removed)) => (None, None),
-            Some((host, Host::Stated(_))) => (Some(host), stated_tree),
-            Some((host, Host::Stored)) => match tree_read(view, host)? {
-                Some(tree_type) => (Some(host), one_merk(tree_type)?),
-                None => (None, None),
-            },
+        // group is applied: the directory names no host that is no node.
+        let no_element =
+            || not_supported("a write into a subtree under a key that holds no element");
+        let tree_type = match host {
+            None if prefix == ROOT => Some(TreeType::NormalTree),
+            None => None,
+            Some((_, Host::Stated(_))) => stated_tree,
+            Some((_, Host::Removed)) => return Err(no_element()),
+            Some((host, Host::Stored)) => one_merk(tree_read(view, host)?.ok_or_else(no_element)?)?,
         };
-        let named = LigninSubtree {
-            prefix,
-            host: host.cloned(),
-        };
+        let named = subtree.clone();
         owed.push((named, tree_type.map(tree_type_bytes).unwrap_or_default()));
     }
     // A subtree whose host is in a subtree that is entered here too comes

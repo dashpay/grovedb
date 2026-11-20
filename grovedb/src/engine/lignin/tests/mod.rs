@@ -1095,12 +1095,14 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     );
     drop(tx);
 
-    // A checkpoint is opened as a database, and none is made for it.
-    let nowhere = dir.path().join("no checkpoint");
-    assert!(LigninEngine::open_checkpoint(&nowhere).is_err());
-    assert!(!nowhere.exists());
+    // No checkpoint is opened either, so none is deleted: the directory
+    // of a database is not taken for one.
     drop(db);
-    let reopened = LigninEngine::open_checkpoint(dir.path()).expect("a database directory");
+    let error = LigninEngine::open_checkpoint(dir.path()).expect_err("a checkpoint");
+    not_supported(&error, matches!(error, StorageError::NotSupported(_)));
+    let deleted = Lignin::delete_checkpoint_with_engine(dir.path());
+    assert!(matches!(deleted, Err(Error::NotSupported(_))));
+    let reopened = LigninEngine::open(dir.path()).expect("the database is where it was");
     reopened.flush().expect("a flush");
     assert!(format!("{reopened:?}").starts_with("LigninEngine"));
 }
@@ -1189,6 +1191,25 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         class(WriteError::Commit(halted)),
         Some(CommitError::Unsettled)
     );
+    // A write that enters a subtree which a commit beside it entered is
+    // told from every other way a write ends.
+    let entered = || {
+        TxnError::Batch(lignindb::txn::BatchError::Entered {
+            subtree: lignindb::txn::Subtree::new([1; 32]),
+        })
+    };
+    assert!(error::entered_already(&WriteError::Commit(
+        Commit::Refused(entered())
+    )));
+    assert!(error::entered_already(&WriteError::Commit(Commit::Failed(
+        lignindb::commit::Failure::Txn(entered())
+    ))));
+    assert!(!error::entered_already(&WriteError::Commit(
+        Commit::Refused(too_deep())
+    )));
+    assert!(!error::entered_already(&WriteError::Commit(
+        Commit::Conflict
+    )));
     // A commit that found the log ahead of the session has failed, and
     // says that the database has to be opened again.
     let version = engine().1.database().version();
@@ -1315,29 +1336,59 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
     assert!(entry.tree_type.is_empty() && entry.tree_type().is_err());
     assert_eq!(entry.host.expect("a host").key, b"item");
     sound();
-    // A subtree and two below it that one batch writes first: the outer
-    // one is entered under its element. The inner ones are under keys
-    // that hold no element, and are entered with no host and no tree
-    // type: the directory names no host that is no node.
+    // A first write under a key that holds no element is refused with
+    // everything of its group: the directory names no host that is no
+    // node, and none for a subtree that an element could point at later.
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    for path in [path![b"tree", b"x"], path![b"tree"], path![b"tree", b"y"]] {
+    for path in [path![b"tree", b"x"], path![b"tree"]] {
         let handle = engine.subtree(path.into(), Some(&batch), &tx).unwrap();
         (handle.meta().put(b"k", b"v", None).unwrap()).expect("staging");
     }
-    let applied = engine.apply_batch(batch, &tx).unwrap();
-    applied.expect("the subtrees are entered");
-    engine.commit_transaction(tx).unwrap().expect("a commit");
-    let outer = entry_of(path![b"tree"]).expect("entered");
+    let refused = engine.apply_batch(batch, &tx).unwrap();
+    let refused = refused.expect_err("a key that holds no element");
+    assert!(
+        matches!(refused, StorageError::NotSupported(_)),
+        "{refused}"
+    );
+    drop(tx);
+    assert_eq!(entry_of(path![b"tree"]), None);
+    assert_eq!(entry_of(path![b"tree", b"x"]), None);
+    // A tree, a tree in it and an item in that, all made by one batch:
+    // each subtree is entered under its element, which the batch states,
+    // and the outer one first, whatever the order of their prefixes.
+    let nested = |path: &[&[u8]], key: &[u8], element: Element| {
+        let path = path.iter().map(|segment| segment.to_vec()).collect();
+        crate::batch::QualifiedGroveDbOp::insert_or_replace_op(path, key.to_vec(), element)
+    };
+    let ops = vec![
+        nested(&[], b"outer", Element::empty_tree()),
+        nested(&[b"outer"], b"inner", Element::empty_sum_tree()),
+        nested(&[b"outer", b"inner"], b"s", Element::new_sum_item(7)),
+    ];
+    (db.apply_batch(ops, None, None, v))
+        .unwrap()
+        .expect("a batch of nested trees");
+    let outer = entry_of(path![b"outer"]).expect("entered");
+    let host = outer.host.clone().expect("a host");
+    assert_eq!(
+        (host.subtree, host.key.as_slice()),
+        ([0; 32], &b"outer"[..])
+    );
     assert_eq!(
         outer.tree_type().expect("a tree type"),
         grovedb_merk::TreeType::NormalTree
     );
-    for inner in [b"x", b"y"] {
-        let entry = entry_of(path![b"tree", inner]).expect("entered");
-        assert!(entry.tree_type.is_empty());
-        assert_eq!(entry.host, None);
-    }
+    let inner = entry_of(path![b"outer", b"inner"]).expect("entered");
+    let host = inner.host.clone().expect("a host");
+    assert_eq!(
+        (host.subtree, host.key.as_slice()),
+        (build_prefix(path![b"outer"].into()).unwrap(), &b"inner"[..])
+    );
+    assert_eq!(
+        inner.tree_type().expect("a tree type"),
+        grovedb_merk::TreeType::SumTree
+    );
     sound();
     // A tree that is entered by the first write into it has the tree type
     // of its element, which is read from the transaction.
@@ -1365,10 +1416,13 @@ fn a_subtree_is_entered_under_what_its_handle_and_its_batch_say() {
     // so a write through it says the same host as one by path.
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    let prefix = build_prefix(path![b"tree"].into()).unwrap();
+    let prefix = build_prefix(path![b"outer"].into()).unwrap();
     let by_prefix = engine.subtree_by_prefix(prefix, Some(&batch), &tx).unwrap();
     let host = by_prefix.subtree().host.clone().expect("a host");
-    assert_eq!((host.subtree, host.key.as_slice()), ([0; 32], &b"tree"[..]));
+    assert_eq!(
+        (host.subtree, host.key.as_slice()),
+        ([0; 32], &b"outer"[..])
+    );
     // With no batch it writes nothing, and names none.
     let reader = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
     assert_eq!(reader.subtree().host, None);
@@ -1465,4 +1519,76 @@ fn two_transactions_that_both_write_first_into_one_subtree() {
     (engine.commit_transaction(first).unwrap()).expect("a commit of other keys");
     drop(engine);
     check(dir.path());
+}
+
+#[test]
+fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
+    use grovedb_merk::{tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType, TreeType};
+
+    const NO_COST: Option<fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>> = None;
+    let v = version();
+    let (_dir, engine) = engine();
+    let db = GroveDb::from_engine(engine);
+    (db.insert(ROOT, b"t", Element::empty_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree that nothing is written into");
+    let engine = db.engine();
+    let put = |element: Element| {
+        let bytes = element.serialize(v).expect("the bytes of an element");
+        Op::Put(bytes, TreeFeatureType::BasicMerkNode)
+    };
+    // A group of two batches that were made on one state, as the parts of
+    // a partial batch are. The first writes the element `t` again, as a
+    // tree of another type. The second writes a key beside it, which
+    // writes the node of `t` with the value it has, and writes into the
+    // subtree of `t`. The subtree is entered for the group under the
+    // element as the first batch states it. The group is never committed:
+    // the two batches hashed the root Merk each for itself.
+    let group_of = |stated: Element| {
+        let tx = engine.start_transaction();
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        for part in [true, false] {
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+            let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+                .unwrap()
+                .expect("the root Merk");
+            let (key, op) = match part {
+                true => (b"t".to_vec(), put(stated.clone())),
+                false => (b"u".to_vec(), put(Element::new_item(b"u".to_vec()))),
+            };
+            (merk.apply::<_, Vec<u8>>(&[(key, op)], &[], None, v))
+                .unwrap()
+                .expect("a write of the root Merk");
+            drop(merk);
+            if !part {
+                let below = engine
+                    .subtree(path![b"t"].into(), Some(&batch), &tx)
+                    .unwrap();
+                (below.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+            }
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        }
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        applied.map(|_| {
+            let below = engine.subtree(path![b"t"].into(), None, &tx).unwrap();
+            let entry = below.entry().expect("the directory answers");
+            entry.expect("entered").tree_type().expect("a tree type")
+        })
+    };
+    assert_eq!(
+        group_of(Element::empty_sum_tree()).expect("a group"),
+        TreeType::SumTree
+    );
+    // An indexed tree is refused where the group states it, although the
+    // transaction holds a tree of one Merk under the key.
+    let refused = group_of(Element::empty_provable_count_indexed_tree());
+    let refused = refused.expect_err("an indexed tree");
+    assert!(
+        matches!(refused, StorageError::NotSupported(_)),
+        "{refused}"
+    );
+    let tx = engine.start_read_transaction();
+    let below = engine.subtree(path![b"t"].into(), None, &tx).unwrap();
+    assert_eq!(below.entry().expect("the directory answers"), None);
 }

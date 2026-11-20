@@ -13,7 +13,7 @@ use lignindb::{
     commit::{CommitError as Commit, Failure},
     db::WriteError,
     savepoint::SavepointError,
-    txn::TxnError,
+    txn::{BatchError, TxnError},
 };
 
 /// An error of the engine that the seam has no class for, by its words.
@@ -41,6 +41,18 @@ pub(super) fn savepoint_error(error: SavepointError) -> Error {
     match error {
         SavepointError::ScopesOpen => Error::WriteScope(WriteScopeError::ScopesOpen),
         SavepointError::NoSavepoint => failed(error),
+    }
+}
+
+/// Whether a write was refused because a subtree it enters is entered:
+/// by a commit that landed after the writer looked.
+pub(super) fn entered_already(error: &WriteError) -> bool {
+    let entered = |error: &TxnError| matches!(error, TxnError::Batch(BatchError::Entered { .. }));
+    match error {
+        WriteError::Commit(Commit::Refused(error) | Commit::Failed(Failure::Txn(error))) => {
+            entered(error)
+        }
+        _ => false,
     }
 }
 

@@ -36,12 +36,14 @@
 //! # What it does not do yet
 //!
 //! Each is refused with `Error::NotSupported` and changes nothing: a
-//! checkpoint of an open database (GROVE-08), the move of a subtree
-//! (GROVE-03), a write into an indexed tree, whose element hosts more
-//! than one Merk (GROVE-04), and the removal of the records that a flat
-//! drop left (GROVE-05). The delete of a tree that holds elements is
-//! refused by its handle (`FlatStore::clear` of the node store), and a
-//! subtree is not dropped when its element goes (GROVE-05).
+//! checkpoint of an open database and the open of one (GROVE-08), the
+//! move of a subtree (GROVE-03), a write into an indexed tree, whose
+//! element hosts more than one Merk (GROVE-04), a first write into a
+//! subtree under a key that holds no element, and the removal of the
+//! records that a flat drop left (GROVE-05). The delete of a tree whose
+//! Merk holds elements is refused by its handle (`FlatStore::clear` of
+//! the node store), and a subtree is not dropped when its element goes
+//! (GROVE-05).
 
 mod enter;
 mod error;
@@ -125,7 +127,9 @@ impl LigninEngine {
     /// the namespace of the pending-drop records, which keeps no tree.
     ///
     /// Each is a commit of its own. One that a write of another thread
-    /// entered in between is entered, and is left as it is.
+    /// entered in between is entered, and is left as it is; any other
+    /// way the commit ends without being published and durable is the
+    /// error of the call.
     fn enter_hostless(&self) -> Result<(), Error> {
         let normal = tree_type_bytes(TreeType::NormalTree);
         let hostless: [(SubtreePrefix, &[u8]); 2] =
@@ -144,10 +148,11 @@ impl LigninEngine {
                 subtrees: &enter,
                 ..Batch::default()
             };
-            if let Err(error) = self.db.write(&batch, &mut NoStaleHashes) {
-                if !self.entered(subtree)? {
-                    return Err(write_error(error));
-                }
+            match self.db.write(&batch, &mut NoStaleHashes) {
+                // A write of another thread entered it in between.
+                Err(error) if error::entered_already(&error) => {}
+                Err(error) => return Err(write_error(error)),
+                Ok(_) => {}
             }
         }
         Ok(())
@@ -410,14 +415,11 @@ impl Engine for LigninEngine {
         Self::open_with(path, &Options::default())
     }
 
-    fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        // A checkpoint is a database directory, and is opened as one
-        // (`lignindb::checkpoint`). None is made where there is none.
-        let options = Options {
-            create_if_missing: false,
-            ..Options::default()
-        };
-        Self::open_with(path, &options)
+    fn open_checkpoint<P: AsRef<Path>>(_path: P) -> Result<Self, Error> {
+        // The engine makes no checkpoint yet, and has no way to tell one
+        // from the directory of a database: `GroveDb::delete_checkpoint`
+        // removes whatever this opens (GROVE-08).
+        Err(not_supported("the open of a checkpoint"))
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, _path: P) -> Result<(), Error> {
@@ -588,8 +590,9 @@ impl Engine for LigninEngine {
     ) -> CostResult<(), Error> {
         // A delete that came with no cost is charged from the record the
         // committed state holds, whatever a transaction wrote there
-        // (`transactions.md` RD10).
-        let committed = LigninSnapshot::new(self.db.snapshot());
+        // (`transactions.md` RD10): read where the delete is come to,
+        // through a write transaction that nothing is written into.
+        let committed = self.db.begin();
         batch
             .settle(&committed)
             .map_ok(|settled| {
