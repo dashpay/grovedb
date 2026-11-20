@@ -46,10 +46,7 @@ impl<'s> WriteBack<'s> {
         round: &mut Round,
     ) -> Result<(), FlushError> {
         let Stores {
-            pool,
-            values,
-            page_values,
-            ..
+            pool, page_values, ..
         } = self.stores;
         let ready: HashSet<(PageId, PendingValue)> = lock(&self.state.placing)
             .iter()
@@ -107,27 +104,38 @@ impl<'s> WriteBack<'s> {
             }
         }
 
-        // What was appended is covered whatever ended the walk.
-        if !fresh.is_empty() {
-            let synced = files.values.as_mut().map(|writer| writer.sync());
-            if let Some(Err(error)) = synced {
-                // The values cannot be made durable in that file any more.
-                // They are given up with their holds, and appended to
-                // another file by the next pass.
-                files.values = None;
-                return Err(error.into());
-            }
-            values.commit(&mut *self.manifest()?)?;
-            let mut placing = lock(&self.state.placing);
-            for appended in fresh {
-                if values.covers(appended.pointer) {
-                    placing.push(appended);
-                } else {
-                    count(&self.state.counters.values_given_up, 1);
-                }
+        // What was appended is covered whatever ended the walk, and what
+        // ended the walk is returned whatever becomes of the cover.
+        let covered = match fresh.is_empty() {
+            true => Ok(()),
+            false => self.cover(files, fresh),
+        };
+        ended.and(covered)
+    }
+
+    /// Makes the values in `fresh`, which were appended to the value-log
+    /// file that write-back fills, durable under a manifest that covers
+    /// them, and has them wait for their page steps.
+    fn cover(&self, files: &mut Files, fresh: Vec<Ready>) -> Result<(), FlushError> {
+        let values = self.stores.values;
+        let synced = files.values.as_mut().map(|writer| writer.sync());
+        if let Some(Err(error)) = synced {
+            // The values cannot be made durable in that file any more.
+            // They are given up with their holds, and appended to
+            // another file by the next pass.
+            files.values = None;
+            return Err(error.into());
+        }
+        values.commit(&mut *self.manifest()?)?;
+        let mut placing = lock(&self.state.placing);
+        for appended in fresh {
+            if values.covers(appended.pointer) {
+                placing.push(appended);
+            } else {
+                count(&self.state.counters.values_given_up, 1);
             }
         }
-        ended
+        Ok(())
     }
 
     /// Appends the bytes of one pending value to the value log, for the

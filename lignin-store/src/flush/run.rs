@@ -248,7 +248,16 @@ impl WriteBack<'_> {
     /// write transaction is open, stays in the log.
     ///
     /// The files are closed and the log is made durable whatever became of
-    /// the checkpoint, whose error comes first.
+    /// the checkpoint, whose error comes first. **Every step of the close
+    /// is made whatever became of the one before it**, and the first error
+    /// is returned: each of the three stores replaces the manifest with one
+    /// that names its files as they are, also when the store before it
+    /// could not delete a file.
+    ///
+    /// A manifest that a close could not write, or a session that was
+    /// killed, leaves the value log's file named as one that is still
+    /// written and the log named short of its end. The next session's
+    /// recovery reads both to their ends, and lands on the same commit.
     pub fn finish(&self) -> Result<Checkpointed, FlushError> {
         let checkpointed = self.checkpoint();
         let closed = self.close();
@@ -276,9 +285,12 @@ impl WriteBack<'_> {
                 log,
                 ..
             } = self.stores;
-            segments.commit(&mut manifest)?;
-            values.commit(&mut manifest)?;
-            log.commit(&mut manifest)?;
+            let segments = segments.commit(&mut manifest);
+            let values = values.commit(&mut manifest);
+            let log = log.commit(&mut manifest);
+            segments?;
+            values?;
+            log?;
             Ok(())
         });
         sealed.and(finished).and(synced).and(named)

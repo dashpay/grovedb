@@ -361,7 +361,16 @@ impl<'s> WriteBack<'s> {
         let durable = match self.sync_log() {
             Ok(durable) => durable,
             Err(error) => {
-                let _ = checkpoints.discard(info, &*self.manifest()?);
+                // The sync's error is the one the caller hears, whatever
+                // becomes of the checkpoint that was written. With the
+                // manifest it is deleted. Without it, when a doubt cannot
+                // be settled now, its file stays, named by no manifest,
+                // until the store is opened again: no log is held for it,
+                // and the session installs none after a log that could not
+                // be made durable.
+                if let Ok(manifest) = self.manifest() {
+                    let _ = checkpoints.discard(info, &manifest);
+                }
                 return Err(error);
             }
         };
