@@ -2,6 +2,7 @@
 //! directory, and on the simulated file system where a test cuts the power
 //! or fails a file operation.
 
+mod guards;
 mod kept;
 mod open;
 mod reclaim;
@@ -74,6 +75,8 @@ pub(super) struct Counts {
     after_lock: Mutex<Option<Change>>,
     /// What is run, once, after a directory was listed.
     after_listing: Mutex<Option<Change>>,
+    /// What is run, once, before a segment is read.
+    at_segment_read: Mutex<Option<Change>>,
 }
 
 impl fmt::Debug for Counts {
@@ -193,6 +196,20 @@ impl Watched {
         *self.0.after_listing.lock().expect("the hook") = Some(Box::new(change));
     }
 
+    /// Has `change` run before the next read of a segment, on the thread
+    /// that makes it: an operation that loads a page waits with the
+    /// location of its block in hand and the block not read.
+    pub(super) fn before_the_next_read_of_a_segment(&self, change: impl FnOnce() + Send + 'static) {
+        *self.0.at_segment_read.lock().expect("the hook") = Some(Box::new(change));
+    }
+
+    fn change_at_a_segment_read(&self) {
+        let change = self.0.at_segment_read.lock().expect("the hook").take();
+        if let Some(change) = change {
+            change();
+        }
+    }
+
     fn change_after_the_lock(&self) {
         let change = self.0.after_lock.lock().expect("the hook").take();
         if let Some(change) = change {
@@ -293,6 +310,9 @@ impl fmt::Debug for WatchedFile {
 
 impl VfsFile for WatchedFile {
     fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
+        if self.segment {
+            self.watched.change_at_a_segment_read();
+        }
         let read = self.file.read_at(buf, offset)?;
         let counts = &self.watched.0;
         counts.reads.fetch_add(1, Ordering::Relaxed);
