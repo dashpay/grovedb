@@ -301,6 +301,11 @@ pub(super) struct Checkpoints {
     pub(super) in_doubt: Option<(CheckpointInfo, Named)>,
     /// The place of the last sample that was taken (`page-table.md` K15).
     pub(super) last_sample: Option<LogPlace>,
+    /// Whether the log was turned for a checkpoint since one was last
+    /// installed or given up. It is turned once for each checkpoint, so a
+    /// checkpoint that is put off again and again does not make a log file
+    /// at every attempt.
+    pub(super) turned: bool,
 }
 
 /// What a waiting committer looks at: the turns of the background loop.

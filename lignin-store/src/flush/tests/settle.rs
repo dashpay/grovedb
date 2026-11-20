@@ -161,7 +161,9 @@ fn a_settling_tells_the_table_checkpoints_though_a_segment_was_not_deleted() {
     assert_eq!(table(&db), BTreeSet::new());
 
     db.commit(&[hash((1, 1), 2)]);
-    leave_a_replacement_in_doubt(&fs, &db, 0);
+    // The first replacement of this checkpoint names the log file it
+    // turns to, and the installation is the second.
+    leave_a_replacement_in_doubt(&fs, &db, 1);
     db.wb().checkpoint().expect_err("the installation fails");
 
     settle_with_the_segment_stuck(&db);
@@ -402,6 +404,12 @@ fn a_close_names_the_files_of_every_store_after_a_settling_that_ended_with_an_er
 fn the_next_session_recovers_from_a_close_that_named_neither_the_values_nor_the_log() {
     let (fs, db) = store(ONE_LOG_FILE);
     let ids = a_session_to_close(&fs, &db);
+    // The close's checkpoint is kept from turning the log, as it is when
+    // an attempt before it turned the log and was put off. It then takes
+    // its sample in the file the commits are in and takes no log file
+    // out, so the last manifest that names the log's files is the one
+    // from before the session's commits.
+    (db.state.checkpoints.lock().expect("the checkpoints")).turned = true;
     // The installation and the segment store's replacement are made, and
     // no manifest is written after them.
     let temporary = db.path.join(ManifestStore::TEMP_FILE_NAME);

@@ -350,8 +350,10 @@
 //! [`WriteBack::checkpoint`] takes a table checkpoint in the order
 //! `page-table.md` asks for (K1, K4, K14, K15; `log-format.md` LG29):
 //!
-//! 1. The log is rolled if that is due, and a pass writes back what it
-//!    can.
+//! 1. The log is rolled if that is due. Then it is turned to its next
+//!    file, if the file it ends in holds a commit, once for each
+//!    checkpoint that is installed (below). Then a pass writes back what
+//!    it can.
 //! 2. Under the lock on the value counts: the version *C* that the
 //!    checkpoint covers is fixed, the counts are sampled, the mark is
 //!    appended to the log, and the log is held from the end of the mark,
@@ -404,6 +406,33 @@
 //! holds still under that lock while it writes its group for a place.
 //! Whoever needs the log durable calls [`WriteBack::sync_log`], which also
 //! tells the value log how far its counts are durable.
+//!
+//! **The log is turned where a checkpoint begins**
+//! ([`LogStore::rotate_early`](crate::wal::LogStore::rotate_early)). A
+//! recovery reads the first log file its manifest names from the first
+//! item, and with a checkpoint in force no file before the file of the
+//! group of *C* + 1 or of the sample's place, whichever is earlier, is
+//! needed for it (step 7). With the log turned before the first pass,
+//! every commit up to that moment is in a file before the turn. Where the
+//! pass writes them all back, the checkpoint covers them and those files
+//! can go with it, and the next recovery then reads what was logged while
+//! the checkpoint was taken. Without the turn it reads up to a whole log
+//! file of commits that its pages have. The turn is made once for each
+//! checkpoint, so the attempts of a checkpoint that is put off do not
+//! make a file each. With no commit in the log's file, the checkpoint is
+//! taken where the log is, and so it is where the file for the turn
+//! cannot be made: the checkpoint does not rest on the turn, and an error
+//! of the turn's own does not fail it.
+//!
+//! **A file for the log to turn to** is made by whoever turns the log,
+//! where the log has none: a file is created, and a manifest names it. A
+//! recovery leaves that to the session
+//! ([`LogStore::begin`](crate::wal::LogStore::begin)), so that an open
+//! creates one log file and not two. A checkpoint makes the file for its
+//! own turn. [`WriteBack::roll_log`] makes the one it turns to away from
+//! a file that is full, and leaves another one ready behind that turn,
+//! which the next checkpoint's turn then takes without a sync. None of
+//! it is made inside a commit.
 //!
 //! # Backpressure
 //!

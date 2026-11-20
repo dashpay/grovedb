@@ -101,7 +101,10 @@ fn a_sample_from_before_the_last_one_is_refused() {
     let db = Db::new();
     db.commit(&[insert((1, 1), b"a", inline(b"v"))]);
     let (_, place, _) = installed(db.wb().checkpoint().expect("a checkpoint"));
-    let ahead = LogPlace::new(place.file(), place.offset() + 10_000).expect("a place");
+    // A place the log does not reach, whichever file the next checkpoint
+    // turns it to.
+    let far = lignin_format::FileId::new(place.file().get() + 1_000).expect("an id");
+    let ahead = LogPlace::new(far, place.offset()).expect("a place");
     db.state
         .checkpoints
         .lock()

@@ -163,6 +163,59 @@ impl<'s> WriteBack<'s> {
         Ok(log.rotate()?)
     }
 
+    /// Turns the log where a table checkpoint begins, if the file it ends
+    /// in holds a commit ([`LogStore::rotate_early`]). Returns whether it
+    /// turned.
+    ///
+    /// Where the log has no file to turn to, one is made ready first: it
+    /// is created, and a manifest names it. A recovery leaves the log
+    /// without one ([`LogStore::begin`]), and so does a turn that used the
+    /// file up. The turn itself is made with every commit and every page
+    /// step kept out.
+    ///
+    /// **The checkpoint does not rest on this turn**, so what fails here
+    /// does not fail it. Where the file cannot be created or named, or its
+    /// start record cannot be appended, the log stays in the file it is
+    /// in and the checkpoint is taken there, as it was before the log was
+    /// turned for checkpoints. So it is while the manifest is in doubt,
+    /// which this turn does not settle. What stood in the way meets
+    /// whoever needs it next: the turn away from a file that is full
+    /// ([`Self::roll_log`]), or the manifest that names this checkpoint.
+    /// Only a log that cannot say whether an item is in it ends the
+    /// attempt ([`LogError::Unsettled`]), as it ends everything else in
+    /// the session.
+    ///
+    /// [`LogStore::rotate_early`]: crate::wal::LogStore::rotate_early
+    /// [`LogStore::begin`]: crate::wal::LogStore::begin
+    fn turn_log_early(&self) -> Result<bool, FlushError> {
+        let Stores { values, log, .. } = self.stores;
+        if !log.holds_a_commit() {
+            return Ok(false);
+        }
+        if !log.has_file_ready() {
+            let mut manifest = lock(self.stores.manifest);
+            // A manifest in doubt is settled by whoever needs the
+            // manifest, and not for this turn.
+            let created = manifest.manifest().is_ok()
+                && matches!(log.create(), Ok(_) | Err(LogError::SpareExists { .. }));
+            if created {
+                // Whatever this answers, the question is whether a file
+                // is ready now: a manifest that could not delete a file
+                // it no longer names is in force all the same.
+                let _ = log.commit(&mut manifest);
+            }
+            drop(manifest);
+            if !log.has_file_ready() {
+                return Ok(false);
+            }
+        }
+        let _counts = values.step()?;
+        match log.rotate_early() {
+            Err(LogError::NotAppended { .. }) => Ok(false),
+            turned => Ok(turned?),
+        }
+    }
+
     /// Whether a table checkpoint is due: as many bytes were logged since
     /// the last one as the configuration says, or more log is held than
     /// it allows ([`Self::log_held`]).
@@ -240,8 +293,11 @@ impl<'s> WriteBack<'s> {
     ///
     /// The steps, in the order `page-table.md` 4.6 asks for:
     ///
-    /// 1. The log is rolled if that is due, and a pass writes back what it
-    ///    can.
+    /// 1. The log is rolled if that is due. Then it is turned to its next
+    ///    file, if the file it ends in holds a commit, once for each
+    ///    checkpoint that is installed ([`LogStore::rotate_early`]); a
+    ///    file to turn to is made ready first where the log has none.
+    ///    Then a pass writes back what it can.
     /// 2. Under the lock on the value counts: the version *C* the
     ///    checkpoint will cover is fixed, the counts are sampled, the mark
     ///    is appended to the log, and the log is held from the end of the
@@ -261,6 +317,8 @@ impl<'s> WriteBack<'s> {
     ///
     /// One checkpoint is taken at a time, and a second call waits for the
     /// first.
+    ///
+    /// [`LogStore::rotate_early`]: crate::wal::LogStore::rotate_early
     pub fn checkpoint(&self) -> Result<Checkpointed, FlushError> {
         let checkpointed = self.try_checkpoint();
         if checkpointed.is_err() {
@@ -286,6 +344,13 @@ impl<'s> WriteBack<'s> {
             return Err(FlushError::SegmentsNotDurable);
         }
         self.roll_log()?;
+        // The log goes on in its next file from here, once for each
+        // checkpoint that is installed: every commit up to this moment is
+        // in a file before that one, and is there for the pass to write
+        // back.
+        if !state.turned {
+            state.turned = self.turn_log_early()?;
+        }
         self.pass()?;
 
         let in_force = state.in_force.as_ref().map(|named| named.covers);
@@ -404,6 +469,7 @@ impl<'s> WriteBack<'s> {
         }
         drop(manifest);
         state.in_force = Some(named);
+        state.turned = false;
         count(&counters.checkpoints, 1);
         self.state.logged.store(0, Ordering::Relaxed);
         let log_files_dropped = self.drop_log(covers, place)?;
@@ -433,8 +499,12 @@ impl<'s> WriteBack<'s> {
             .is_some_and(|table| table.file() == info.file());
         if is_named {
             state.in_force = Some(named);
+            state.turned = false;
             count(&self.state.counters.checkpoints, 1);
         } else {
+            // The checkpoint the log was turned for is gone: the next one
+            // turns it again.
+            state.turned = false;
             let _ = self.stores.checkpoints.discard(info, &manifest);
         }
         Ok(())

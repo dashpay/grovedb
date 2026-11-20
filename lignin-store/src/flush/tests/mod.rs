@@ -9,6 +9,7 @@ pub(crate) mod crash;
 mod errors;
 mod faults;
 mod flat;
+mod log_files;
 mod measure;
 pub(crate) mod recover;
 mod recovered;
