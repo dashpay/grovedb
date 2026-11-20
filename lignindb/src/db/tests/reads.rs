@@ -18,12 +18,12 @@ fn key(lead: u8, number: u32) -> Vec<u8> {
     key
 }
 
-/// The key and the value of the node `read` is shown, with the key of
+/// A node as a reader is shown it: its key, its value, and the key of
 /// each child.
-fn shown(
-    opened: &crate::snapshot::Opened<'_, '_>,
-    at: &[u8],
-) -> Option<(Vec<u8>, Vec<u8>, [Vec<u8>; 2])> {
+type Shown = (Vec<u8>, Vec<u8>, [Vec<u8>; 2]);
+
+/// The node under `at` as `opened` shows it.
+fn shown(opened: &crate::snapshot::Opened<'_, '_>, at: &[u8]) -> Option<Shown> {
     let mut children = ChildKeys::new();
     let node = opened
         .node(at, Some(&mut children), |view| {
@@ -123,7 +123,7 @@ fn a_reader_reads_the_nodes_of_a_merk_by_key_and_in_key_order() {
             .expect("a move");
         assert_eq!(walk.key(), Some(key(b'k', 3).as_slice()));
         // On no node it shows none.
-        walk.seek(&before.operation(), &[b'l']).expect("a move");
+        walk.seek(&before.operation(), b"l").expect("a move");
         let none = walk.node_with_children(&before.operation(), &mut ChildKeys::new(), |view| {
             view.is_none()
         });

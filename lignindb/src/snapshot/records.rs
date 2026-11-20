@@ -342,8 +342,10 @@ impl Opened<'_, '_> {
 /// reader keeps from one operation to the next ([`Opened::record_walk`]).
 ///
 /// It holds no page between two calls. Each call is given the operation it
-/// is made in, which reads the version the cursor was made at: the
-/// operations of one snapshot do.
+/// is made in, which has to read the version the cursor was made at: the
+/// operations of one snapshot do. The cursor does not check it, as a
+/// [`NodeWalk`](super::NodeWalk) does: what a call with an operation of
+/// another version reads is not defined.
 pub struct RecordWalk {
     cursor: flat::Cursor,
 }

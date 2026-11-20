@@ -8,7 +8,9 @@
 //!   subtree.
 //! - [`Resolved`] is the batch when no more calls are made on it: the
 //!   [`Outcome`] of each key, in the order a storage batch is charged in,
-//!   and the one [`txn::Batch`](crate::txn::Batch) they are.
+//!   what it holds for one key ([`Resolved::held`]), the subtrees it
+//!   enters ([`Resolved::enters`]), and the one
+//!   [`txn::Batch`](crate::txn::Batch) they are.
 //!
 //! It keeps the rules of `StorageBatch` (`storage/src/storage.rs`), which
 //! `docs/lignindb/transactions.md` states as GM0, and whose unit tests run
