@@ -5,7 +5,8 @@
 #
 #   lignin-ci.sh crates              the LigninDB crates, one a line
 #   lignin-ci.sh test [ARGS]         the tests of every LigninDB crate on this
-#                                    machine; ARGS follow `cargo test`
+#                                    machine (ARGS follow `cargo test`), then
+#                                    those of Merk's node store on LigninDB
 #   lignin-ci.sh features            the feature sets that must build apart:
 #                                    GroveDB with no engine, Merk on each engine
 #                                    alone, the engine crates on their own
@@ -108,7 +109,22 @@ test)
     fi
     ulimit -n "$limit"
     say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
-    cargo test "${packages[@]}" --all-features --no-fail-fast "$@"
+    status=0
+    cargo test "${packages[@]}" --all-features --no-fail-fast "$@" || status=$?
+    # Merk's node store on LigninDB is LigninDB code in grovedb-merk, behind
+    # its feature lignin_storage. It runs whether or not the crates passed.
+    store=(-p grovedb-merk --features lignin_storage --lib store::lignin)
+    say "cargo test ${store[*]}"
+    if ! found=$(cargo test "${store[@]}" -- --list); then
+        printf 'lignin-ci: the tests of grovedb-merk with lignin_storage do not build\n' >&2
+        status=1
+    elif grep -q ': test$' <<<"$found"; then
+        cargo test "${store[@]}" || status=$?
+    else
+        printf 'lignin-ci: no test of grovedb-merk matches store::lignin\n' >&2
+        status=1
+    fi
+    exit "$status"
     ;;
 
 features)

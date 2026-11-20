@@ -24,17 +24,19 @@ use crate::vfs::{Create, DirEntry, EntryKind, OpenMode, Vfs, VfsFile};
 /// test and gives `(vfs, root, cleanup)`: the backend, an empty directory in
 /// it, and a value kept alive until the test ends.
 ///
-/// A backend over the operating system's files adds `no_hard_links_under_miri`
-/// after `$setup`: Miri has no hard links, and the cases that need them are
-/// then ignored under it.
+/// A backend over the operating system's files adds `host_files` after
+/// `$setup`. Under Miri, which runs its file calls on the host's files, the
+/// cases Miri cannot emulate are then ignored: those that need hard links,
+/// which Miri does not have, and a read far beyond the end of a file (see
+/// [`read_at_just_below_the_largest_offset_reads_nothing`]).
 macro_rules! conformance_tests {
     ($setup:expr) => {
         $crate::conformance::conformance_tests!(@list $setup; any());
     };
-    ($setup:expr, no_hard_links_under_miri) => {
+    ($setup:expr, host_files) => {
         $crate::conformance::conformance_tests!(@list $setup; miri);
     };
-    (@list $setup:expr; $no_hard_links:meta) => {
+    (@list $setup:expr; $host_files_under_miri:meta) => {
         $crate::conformance::conformance_tests! {
             @cases $setup;
             open_of_a_missing_file_is_not_found,
@@ -44,6 +46,11 @@ macro_rules! conformance_tests {
             write_at_round_trips_and_overwrites,
             write_at_past_the_end_leaves_zeros,
             read_at_stops_at_the_end_of_the_file,
+            #[cfg_attr(
+                $host_files_under_miri,
+                ignore = "Miri's seek can fail past the largest file of the host's file system"
+            )]
+            read_at_just_below_the_largest_offset_reads_nothing,
             read_exact_at_needs_every_byte,
             large_unaligned_io_round_trips,
             append_returns_consecutive_offsets,
@@ -59,13 +66,13 @@ macro_rules! conformance_tests {
             rename_moves_a_file,
             rename_replaces_the_destination,
             rename_of_a_missing_file_is_not_found,
-            #[cfg_attr($no_hard_links, ignore = "Miri has no hard links")]
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             rename_between_names_of_one_file_changes_nothing,
-            #[cfg_attr($no_hard_links, ignore = "Miri has no hard links")]
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             hard_link_is_another_name_for_the_same_file,
-            #[cfg_attr($no_hard_links, ignore = "Miri has no hard links")]
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             hard_link_refuses_a_taken_name_and_a_missing_file,
-            #[cfg_attr($no_hard_links, ignore = "Miri has no hard links")]
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             hard_link_outlives_the_original_name,
             remove_file_removes_the_name_only,
             create_dir_needs_its_parent_and_a_free_name,
@@ -77,7 +84,7 @@ macro_rules! conformance_tests {
             locks_on_different_files_are_independent,
             one_thread_wins_a_contended_lock,
             a_file_is_replaced_by_write_sync_rename_sync_dir,
-            #[cfg_attr($no_hard_links, ignore = "Miri has no hard links")]
+            #[cfg_attr($host_files_under_miri, ignore = "Miri has no hard links")]
             a_checkpoint_is_a_directory_of_hard_links,
         }
     };
@@ -268,10 +275,29 @@ pub(crate) fn read_at_stops_at_the_end_of_the_file(vfs: &dyn Vfs, root: &Path) {
     assert_eq!(buf[..100], content[900..]);
     assert_eq!(file.read_at(&mut buf, 1_000).unwrap(), 0);
     assert_eq!(file.read_at(&mut buf, 1_000_000).unwrap(), 0);
-    for beyond_any_file in [i64::MAX as u64 - 1, i64::MAX as u64, u64::MAX] {
+    for beyond_any_file in [i64::MAX as u64, u64::MAX] {
         assert_eq!(file.read_at(&mut buf, beyond_any_file).unwrap(), 0);
     }
     assert_eq!(file.read_at(&mut [], 0).unwrap(), 0);
+}
+
+/// A read past the end of a 1,000-byte file, whose bytes would end at the
+/// largest offset a file can have (`i64::MAX`), reads nothing. The range does
+/// not overflow, so `pread` takes it, also on a file system whose files end
+/// earlier (ext4 with 4 KiB blocks at 16 TiB).
+///
+/// Under Miri the backend over host files skips this case, whatever the file
+/// system. Miri emulates `pread` as a seek, a read and a seek back, and on
+/// Linux a seek past the largest file of the file system fails with `EINVAL`
+/// where `pread` reads nothing; on tmpfs and btrfs, whose files reach
+/// `i64::MAX`, the seek succeeds. On GitHub's hosted x86_64 runner the case
+/// failed under Miri alone.
+pub(crate) fn read_at_just_below_the_largest_offset_reads_nothing(vfs: &dyn Vfs, root: &Path) {
+    let path = root.join("file");
+    write_new(vfs, &path, &bytes(1_000, 4));
+    let file = open(vfs, &path, OpenMode::Read);
+    let mut buf = [0; 300];
+    assert_eq!(file.read_at(&mut buf, i64::MAX as u64 - 1).unwrap(), 0);
 }
 
 pub(crate) fn read_exact_at_needs_every_byte(vfs: &dyn Vfs, root: &Path) {
