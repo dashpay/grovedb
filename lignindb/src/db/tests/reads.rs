@@ -254,6 +254,21 @@ fn a_reader_walks_the_records_of_a_column_across_its_operations() {
     assert!(matches!(refused, Err(ReadError::OtherVersion { .. })));
     assert_eq!(walk.key(), Some(b"a".as_slice()));
     assert_eq!(value(&walk), Some(b"1".to_vec()));
+    // And of its database: an operation of another one is refused at the
+    // same version.
+    let other_dir = temp();
+    let other = Db::open(other_dir.path(), &options()).expect("a new database");
+    Writes {
+        enter: vec![(subtree(1), None)],
+        records: vec![record(1, b"a", b"elsewhere")],
+        ..Writes::default()
+    }
+    .commit(&other);
+    let elsewhere = other.snapshot();
+    assert_eq!(elsewhere.version(), before.version());
+    let refused = walk.next(&elsewhere.operation());
+    assert!(matches!(refused, Err(ReadError::OtherVersion { .. })));
+    assert_eq!(value(&walk), Some(b"1".to_vec()));
 }
 
 #[test]
