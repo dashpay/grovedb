@@ -964,8 +964,9 @@ fn the_store_refuses_a_whole_merk_where_the_merk_has_a_root() {
     });
 }
 
-/// A restore into a subtree that is not entered is refused when the Merk
-/// is handed over, as every write to such a subtree is, and leaves nothing.
+/// A restore into a subtree that is not entered is refused by the handle
+/// when the Merk is handed over, as a whole change set for a subtree that
+/// is not entered, and leaves no write.
 #[test]
 fn a_restore_into_a_subtree_that_is_not_entered_is_refused_at_the_hand_over() {
     let tree_type = TreeType::NormalTree;
@@ -978,7 +979,7 @@ fn a_restore_into_a_subtree_that_is_not_entered_is_refused_at_the_hand_over() {
         let restorer = fed(open(store, tree_type), root_hash, &chunks);
         let refused = restorer.finalize(version()).map(|_| ());
         assert!(
-            matches!(&refused, Err(Error::StorageError(what)) if what.to_string().contains("is not entered")),
+            matches!(&refused, Err(Error::StorageError(what)) if what.to_string().contains("for a subtree that is not entered")),
             "{refused:?}"
         );
         assert_eq!(transaction.stats().writes, writes);
@@ -1018,14 +1019,16 @@ fn a_restore_through_a_deferred_handle_is_refused_at_the_hand_over() {
     });
 }
 
-/// An immediate handle on a write transaction writes through a scope that
-/// is opened for the one write. A restore on such a handle is handed over
-/// in one such write and reads its root back from the transaction. A
-/// second whole Merk for the subtree is refused by what the scope of that
-/// write reads of the directory, and the database that is committed is
-/// sound.
+/// A restore on an immediate handle of a write transaction, which opens a
+/// scope for each of its writes: it finishes with the root hash of its
+/// source and leaves no scope open, and a second whole change set for the
+/// subtree is refused as for a Merk that has a root. With a writer's scope
+/// of the transaction held open, so that the handle's scope for the write
+/// opens beside it, a restore into a subtree that is not entered is
+/// refused and writes nothing, and so is one through a second writer. The
+/// database that is committed is sound.
 #[test]
-fn a_restore_on_a_write_transaction_is_handed_over_through_a_scope_of_its_own() {
+fn a_restore_on_a_write_transaction_finishes_and_leaves_no_scope_open() {
     let tree_type = TreeType::NormalTree;
     let facade = Facade::new();
     let transaction = facade.db.begin();
@@ -1072,6 +1075,31 @@ fn a_restore_on_a_write_transaction_is_handed_over_through_a_scope_of_its_own() 
     assert_eq!(again.root_key().unwrap().expect("a read"), root_key);
     assert_eq!(records(&again, root_key).len(), nodes.len());
     drop(again);
+
+    let beside = LigninWriter::new(transaction.scope().expect("a scope"));
+    let writes = transaction.stats().writes;
+    let not_entered = |refused: Result<(), Error>| {
+        assert!(
+            matches!(
+                &refused,
+                Err(Error::StorageError(what))
+                    if what.to_string().contains("for a subtree that is not entered")
+            ),
+            "{refused:?}"
+        );
+    };
+    let nowhere = LigninNodeStore::immediate(&transaction, at(9));
+    let restorer = fed(open(nowhere, tree_type), root_hash, &chunks);
+    not_entered(restorer.finalize(version()).map(|_| ()));
+    // The same through a second writer, whose scope is open beside the
+    // first one's.
+    let second = LigninWriter::new(transaction.scope().expect("a scope"));
+    let nowhere = LigninNodeStore::immediate(&second, at(9));
+    let restorer = fed(open(nowhere, tree_type), root_hash, &chunks);
+    not_entered(restorer.finalize(version()).map(|_| ()));
+    second.into_scope().merge();
+    beside.into_scope().merge();
+    assert_eq!(transaction.stats().writes, writes);
     facade.commit(&transaction);
     facade.sound();
 }

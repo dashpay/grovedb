@@ -790,10 +790,10 @@ thread_local! {
 /// where Merk says the value is unchanged, and the comparing read here,
 /// which is of exactly the bytes that are kept. A Merk whose subtree the
 /// batch enters has no node before the write, whatever the transaction
-/// holds under its prefix until then: nothing of it is read. Nor is
-/// anything read of a Merk that `whole` marks, by its place among the
-/// Merks of the batch: its change set says that it is the whole Merk, and
-/// `apply` has checked what that asks.
+/// holds under its prefix until then: no node of it is read here to
+/// compare. Nor is a node read here to compare for a Merk that `whole`
+/// marks, by its place among the Merks of the batch: its change set says
+/// that it is the whole Merk, and `apply` has checked it.
 pub(super) fn apply_batch(
     scope: &Scope<'_, '_>,
     batch: &Batch<'_>,
@@ -876,9 +876,12 @@ pub(super) fn link_of(link: &Option<LinkWrite>) -> Option<LinkPut<'_>> {
 }
 
 fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
-    // A change set that says it is the whole Merk is applied with no read
-    // of the nodes it names. So it states every value and removes nothing,
-    // and it is refused for a Merk whose entry names a root.
+    // No node of a change set that says it is the whole Merk is read here
+    // to compare its value. So such a change set must state every value
+    // and remove nothing, and it is refused for a subtree with no entry
+    // and for a Merk whose entry names a root. The entry is read before the
+    // write, as a read of its own: what a commit outside the transaction
+    // does to the entry after that read is not checked here.
     for merk in write.merks.iter().filter(|merk| merk.whole) {
         let keeps = |node: &NodeWrite| matches!(node.value, ValueWrite::Kept);
         if merk.nodes.iter().any(keeps) || !merk.removed.is_empty() {
@@ -886,8 +889,14 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
                 "a change set that is said to be the whole Merk keeps a value or removes a node",
             ));
         }
+        let entry = read_subtree(scope, &merk.subtree)?;
+        if entry.is_none() {
+            return Err(refused(
+                "a change set that is said to be the whole Merk, for a subtree that is not entered",
+            ));
+        }
         let has_root = |entry: LigninEntry| entry.root_key.is_some();
-        if read_subtree(scope, &merk.subtree)?.is_some_and(has_root) {
+        if entry.is_some_and(has_root) {
             return Err(refused(
                 "a change set that is said to be the whole Merk, for a Merk that has a root",
             ));
