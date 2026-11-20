@@ -268,7 +268,7 @@ fn clean_on(state: &SimVfs, ran: &Ran, sequels: &mut Sequels, tally: &mut Tally)
     check_space(&db, &space);
     for segment in &space.segments {
         assert!(
-            segment.is_written() || segment.dead_bytes() == 0,
+            segment.has_writer || segment.dead_bytes() == 0,
             "{}",
             describe(&db, &space)
         );

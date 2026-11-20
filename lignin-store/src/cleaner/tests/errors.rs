@@ -208,6 +208,111 @@ fn no_segment_is_cleaned_for_the_sake_of_one_that_cannot_be_read() {
     assert!(chosen.segments.is_empty() && !chosen.no_room, "{chosen:?}");
 }
 
+/// The segments a round moves the blocks out of: the one with the largest
+/// share of dead bytes first, as many as bring the dead space within its
+/// target, and no more than can wait to be deleted at once.
+#[test]
+fn a_round_chooses_no_more_than_can_wait_to_be_deleted() {
+    use std::collections::BTreeSet;
+
+    use lignin_format::manifest::FileState;
+
+    use crate::cleaner::clean::victims;
+
+    let file = |raw| FileId::new(raw).expect("an id");
+    let segment = |raw, live_bytes| SegmentSpace {
+        file: file(raw),
+        state: FileState::Sealed,
+        has_writer: false,
+        block_bytes: 1000,
+        live_bytes,
+        live_blocks: 1,
+        pinned_bytes: 0,
+        retired: false,
+    };
+    // Ten segments of 1000 bytes. Of 10,000 bytes 3,450 are dead: 700 in
+    // the first, 50 fewer in each one up to the sixth, none in the rest.
+    let live = |raw: u32| match raw {
+        1..=6 => 250 + 50 * u64::from(raw),
+        _ => 1000,
+    };
+    let space = Space {
+        segments: (1..=10).map(|raw| segment(raw, live(raw))).collect(),
+        oldest_pin: None,
+    };
+    assert_eq!((space.block_bytes(), space.dead_bytes()), (10_000, 3450));
+    let none = BTreeSet::new();
+    let chosen = |target, room, waiting| {
+        let config = CleanerConfig {
+            target_dead_percent: target,
+            checkpoint_dead_percent: room,
+            ..CleanerConfig::new()
+        };
+        let chosen = victims(&space, &none, &none, &config, waiting);
+        let files: Vec<u32> = chosen.segments.iter().map(|file| file.get()).collect();
+        (files, chosen.no_room)
+    };
+    // With room for everything: the five worst, after which 450 bytes of
+    // 7,000 are dead.
+    assert_eq!(chosen(10, 100, 0), (vec![1, 2, 3, 4, 5], false));
+    // 2,500 bytes may wait: two segments, and a third would be too many.
+    assert_eq!(chosen(10, 25, 0), (vec![1, 2], false));
+    // 1,000 wait already: one more.
+    assert_eq!(chosen(10, 25, 1000), (vec![1], false));
+    // 2,000 wait already: none, and that is why.
+    assert_eq!(chosen(10, 25, 2000), (vec![], true));
+    // Nothing waits, and no segment fits: one is taken all the same.
+    assert_eq!(chosen(10, 5, 0), (vec![1], false));
+    // Within the target nothing is chosen, whatever room there is.
+    assert_eq!(chosen(35, 100, 0), (vec![], false));
+    assert_eq!(chosen(35, 25, 2000), (vec![], false));
+}
+
+/// A sealed segment whose footer cannot be read is accounted for by the
+/// end of its file, and is cleaned like any other: no reader uses the
+/// footer, and the cleaner does not stop for it.
+#[test]
+fn a_segment_whose_footer_cannot_be_read_is_cleaned_all_the_same() {
+    use lignin_format::manifest::FileState;
+
+    let db = churned(13);
+    let first = CleanerState::new(moving_only());
+    let space = Cleaner::new(db.wb(), &first).space().expect("the space");
+    let held = (space.segments.iter())
+        .find(|segment| {
+            segment.state == FileState::Sealed
+                && segment.live_blocks != 0
+                && segment.dead_bytes() != 0
+        })
+        .expect("a sealed segment with live and dead blocks");
+    let end = (db.segments.extents().iter())
+        .find(|extent| extent.file == held.file)
+        .map(|extent| extent.end)
+        .expect("its extent");
+    let blocks_end = db.segments.blocks_end(held.file).expect("the footer");
+    let footer = BlockLocation {
+        file: held.file,
+        offset: blocks_end,
+        len: 0,
+    };
+    overwrite(&db, footer, &vec![0xA5; (end - blocks_end) as usize]);
+    assert!(db.segments.blocks_end(held.file).is_err());
+
+    // A cleaner that has not read the footer before.
+    let state = CleanerState::new(moving_only());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let found = cleaner.space().expect("the space is read");
+    let counted = found.segment(held.file).expect("the segment");
+    assert_eq!(counted.block_bytes, held.block_bytes + (end - blocks_end));
+    assert_eq!(counted.live_bytes, held.live_bytes);
+    let done = settle(&cleaner);
+    assert!(done.blocks_moved > 0 && done.dropped > 0, "{done:?}");
+    assert!(!on_disk(&db, held.file), "the segment was emptied and went");
+    assert_eq!(state.stats().errors, 0);
+    db.check_warm();
+    db.check_cold();
+}
+
 /// A live block that is damaged is not moved, and its segment is left
 /// alone for the session: it keeps a link, so it can never be deleted.
 /// Every other segment is cleaned.

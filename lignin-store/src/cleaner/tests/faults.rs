@@ -190,7 +190,7 @@ fn run(script: &[Act], target: Target) -> (End, bool) {
             check_space(&db, &space);
             for segment in &space.segments {
                 assert!(
-                    segment.is_written() || segment.dead_bytes() == 0,
+                    segment.has_writer || segment.dead_bytes() == 0,
                     "{}",
                     describe(&db, &space)
                 );

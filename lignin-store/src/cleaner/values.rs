@@ -2,7 +2,11 @@
 //! of a cleaning in their order, and the two-step deletion of the files
 //! that hold no live value any more.
 
-use lignin_format::{manifest::FileState, value_log::FIRST_RECORD_OFFSET, FileId};
+use lignin_format::{
+    manifest::{FileState, LiveFile},
+    value_log::FIRST_RECORD_OFFSET,
+    FileId,
+};
 
 use super::{
     clean::Cleaner,
@@ -13,7 +17,7 @@ use super::{
 };
 use crate::{
     flush::Stores,
-    values::{Cleaned, ValueOwners, ValueStoreError, ValueWriter},
+    values::{Cleaned, ValueOwners, ValueStore, ValueStoreError, ValueWriter},
 };
 
 /// How many answers of [`ValueStore::retire`](crate::values::ValueStore::retire)
@@ -27,6 +31,21 @@ const MAX_TOKENS: usize = 8;
 /// checkpoint's hold kept is free once the hold is given back, and nothing
 /// else tells the cleaner of that.
 const ASK_AGAIN_AFTER: u32 = 16;
+
+/// For how many passes a file is left alone after a cleaning that moved
+/// nothing, because write transactions held copies of the pages of its
+/// values. Each try appends those values again, and the copies are dead.
+pub(super) const BUSY_PASSES: u64 = 8;
+
+/// The bytes of the values of a value-log file: what follows its header.
+fn value_bytes(file: &LiveFile) -> u64 {
+    file.valid_len().saturating_sub(FIRST_RECORD_OFFSET)
+}
+
+/// The bytes of the live values of the file `file`.
+fn live_bytes(values: &ValueStore, file: FileId) -> u64 {
+    values.count(file).map_or(0, |count| count.bytes)
+}
 
 /// What one pass over the value log did ([`Cleaner::pass_values`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -54,7 +73,7 @@ impl<'s> Cleaner<'s> {
         let counts = values.counts();
         let mut space = ValueSpace::default();
         for file in values.files_named()? {
-            let held = file.valid_len().saturating_sub(FIRST_RECORD_OFFSET);
+            let held = value_bytes(&file);
             space.files += 1;
             space.bytes += held;
             let counted = counts.binary_search_by_key(&file.id(), |count| count.file);
@@ -121,38 +140,43 @@ impl<'s> Cleaner<'s> {
             values, versions, ..
         } = self.stores();
         let counters = &self.state.counters;
+        work.value_passes += 1;
         self.drop_values(work, pass)?;
         self.close_dead_files(work)?;
 
-        let worst = self.worst_value_file()?;
-        let mut cleaned = None;
-        if let Some(file) = worst {
-            versions.guarded(&mut || cleaned = Some((file, self.clean_file(work, file, owners))));
-        }
         let mut failed = None;
-        match cleaned {
-            Some((file, Ok(cleaned))) => pass.cleaned = Some((file, cleaned)),
-            // The values that were moved stand, and so does the count of
-            // the file: the pass goes on to what can be dropped.
-            Some((
-                file,
-                Err(CleanerError::Values(ValueStoreError::OwnersNotFound { cleaned, .. })),
-            )) => {
-                pass.cleaned = Some((file, cleaned));
-                failed = Some(CleanerError::Values(ValueStoreError::OwnersNotFound {
-                    file,
-                    cleaned,
-                }));
+        if let Some(file) = self.worst_value_file(work)? {
+            let mut cleaned = None;
+            versions.guarded(&mut || cleaned = Some(self.clean_file(work, file, owners)));
+            match cleaned {
+                Some(Ok(cleaned)) => pass.cleaned = Some((file, cleaned)),
+                // The values that were moved stand, and so does the count
+                // of the file: the pass goes on to what can be dropped.
+                Some(Err(
+                    error @ CleanerError::Values(ValueStoreError::OwnersNotFound {
+                        cleaned, ..
+                    }),
+                )) => {
+                    pass.cleaned = Some((file, cleaned));
+                    failed = Some(error);
+                }
+                Some(Err(error)) => return Err(error),
+                None => {}
             }
-            Some((_, Err(error))) => return Err(error),
-            None => {}
         }
-        if let Some((_, cleaned)) = pass.cleaned {
+        if let Some((file, cleaned)) = pass.cleaned {
             count(&counters.value_files_cleaned, 1);
             count(&counters.values_moved, cleaned.moved);
             count(&counters.values_left, cleaned.gone + cleaned.busy);
             count(&counters.value_bytes_copied, cleaned.copied_bytes);
             self.wrote(cleaned.copied_bytes);
+            match cleaned.moved == 0 && cleaned.busy != 0 {
+                true => drop(
+                    work.busy_files
+                        .insert(file, work.value_passes + BUSY_PASSES),
+                ),
+                false => drop(work.busy_files.remove(&file)),
+            }
         }
 
         // A closed file that no count lists holds no live value: a
@@ -179,12 +203,9 @@ impl<'s> Cleaner<'s> {
             // The same answer drops what it dropped before, unless a hold
             // on the files was given back meanwhile: it is asked for again
             // now and then, and not in every pass.
-            let again = work.values_asked == Some(asked);
-            work.asks_spared = match again {
-                true => work.asks_spared + 1,
-                false => 0,
-            };
-            if !again || work.asks_spared >= ASK_AGAIN_AFTER {
+            if work.values_asked == Some(asked) && work.asks_spared + 1 < ASK_AGAIN_AFTER {
+                work.asks_spared += 1;
+            } else {
                 work.asks_spared = 0;
                 work.values_asked = Some(asked);
                 work.value_tokens
@@ -206,7 +227,11 @@ impl<'s> Cleaner<'s> {
     /// their bytes are dead whatever is moved out of the other files, and
     /// counted, they would have file after file cleaned for nothing while
     /// a pin keeps them.
-    fn worst_value_file(&self) -> Result<Option<FileId>, CleanerError> {
+    ///
+    /// A file whose last cleaning moved nothing, because write
+    /// transactions held copies of the pages of its values, is passed
+    /// over for a few passes, and the next one is taken.
+    fn worst_value_file(&self, work: &mut Work) -> Result<Option<FileId>, CleanerError> {
         let values = self.stores().values;
         let cleanable = values.cleanable(0);
         let dead_of = |len: u64, live: u64| len.saturating_sub(live);
@@ -217,17 +242,23 @@ impl<'s> Cleaner<'s> {
         }
         let named = values.files_named()?;
         for file in named.iter().filter(|file| file.state() == FileState::Open) {
-            let len = file.valid_len().saturating_sub(FIRST_RECORD_OFFSET);
-            let live = values.count(file.id()).map_or(0, |count| count.bytes);
+            let len = value_bytes(file);
             all += len;
-            dead += dead_of(len, live);
+            dead += dead_of(len, live_bytes(values, file.id()));
         }
+        let now = work.value_passes;
+        work.busy_files
+            .retain(|file, _| cleanable.iter().any(|held| held.file == *file));
         if !is_over(dead, all, self.state.config.value_dead_percent) {
             return Ok(None);
         }
-        // The first is the one with the largest share. A file of which
-        // less than one byte in a hundred is dead is not worth a cleaning.
-        let worst = cleanable.first();
+        // They come with the largest share first. A file of which less
+        // than one byte in a hundred is dead is not worth a cleaning.
+        let worst = cleanable.iter().find(|held| {
+            work.busy_files
+                .get(&held.file)
+                .is_none_or(|from| *from <= now)
+        });
         Ok(worst
             .filter(|file| is_at_least(dead_of(file.len, file.live_bytes), file.len, 1))
             .map(|file| file.file))
@@ -240,13 +271,11 @@ impl<'s> Cleaner<'s> {
         let values = self.stores().values;
         let config = &self.state.config;
         let named = values.files_named()?;
-        let held = |len: u64| len.saturating_sub(FIRST_RECORD_OFFSET);
-        let all: u64 = named.iter().map(|file| held(file.valid_len())).sum();
+        let all: u64 = named.iter().map(value_bytes).sum();
         let own = work.values.as_ref().map(ValueWriter::file_id);
         for file in named.iter().filter(|file| file.state() == FileState::Open) {
-            let len = held(file.valid_len());
-            let live = values.count(file.id()).map_or(0, |count| count.bytes);
-            let dead = len.saturating_sub(live);
+            let len = value_bytes(file);
+            let dead = len.saturating_sub(live_bytes(values, file.id()));
             let closes = is_at_least(dead, all, config.seal_dead_percent)
                 || is_at_least(len, all, config.max_segment_percent);
             if len < config.min_segment_len || !closes {
@@ -311,25 +340,38 @@ impl<'s> Cleaner<'s> {
             work.values = Some(made);
         }
         let writer = work.values.as_mut().expect("a file was just made");
-        let cleaned = (|| -> Result<Cleaned, CleanerError> {
-            let copies = values.copy_live(file, writer, owners)?;
-            if !copies.is_empty() {
-                // Every copy is durable, under a manifest that covers it,
-                // before a page points at one.
-                writer.sync()?;
-                values.commit(&mut *self.write_back.manifest()?)?;
-            }
-            Ok(values.install(copies, owners)?)
-        })();
-        let not_found = matches!(
-            cleaned,
-            Err(CleanerError::Values(ValueStoreError::OwnersNotFound { .. }))
-        );
-        if cleaned.is_err() && !not_found {
+        let cleaned = self.copy_and_install(writer, file, owners);
+        let not_found = |error: &CleanerError| {
+            matches!(
+                error,
+                CleanerError::Values(ValueStoreError::OwnersNotFound { .. })
+            )
+        };
+        if cleaned.as_ref().is_err_and(|error| !not_found(error)) {
             // The copies are given up, and the next value goes to another
             // file: a sync of this one may have failed.
             work.values = None;
         }
         cleaned
+    }
+
+    /// The steps of a cleaning in their order: the live values of `file`
+    /// are copied to `writer`, the copies are made durable under a
+    /// manifest that covers them, and each owner is given its pointer.
+    fn copy_and_install<O: ValueOwners + ?Sized>(
+        &self,
+        writer: &mut ValueWriter,
+        file: FileId,
+        owners: &O,
+    ) -> Result<Cleaned, CleanerError> {
+        let values = self.stores().values;
+        let copies = values.copy_live(file, writer, owners)?;
+        if !copies.is_empty() {
+            // Every copy is durable, under a manifest that covers it,
+            // before a page points at one.
+            writer.sync()?;
+            values.commit(&mut *self.write_back.manifest()?)?;
+        }
+        Ok(values.install(copies, owners)?)
     }
 }

@@ -223,12 +223,15 @@
 //! what was moved out of it twice, and a segment that the table
 //! checkpoint in force points into is deleted only after the next one.
 //! So a round chooses segments whose blocks, with those of the segments
-//! that wait for a checkpoint already, are at most
+//! that wait to be deleted already, are at most
 //! [`CleanerConfig::checkpoint_dead_percent`] of the bytes of all blocks,
 //! or one segment if nothing waits. Then it has a checkpoint taken if
-//! that much waits, deletes what the checkpoint sets free, and the next
-//! round reads the table again. A pass ends when a round moves nothing,
-//! at the throttle, or after a few rounds.
+//! that much waits for one, deletes what the checkpoint sets free, and
+//! the next round reads the table again. A pass ends when a round moves
+//! nothing, at the throttle, or after a few rounds. What waits for a
+//! running operation, or for a checkpoint of the database that holds the
+//! files, takes that room too: while it waits, no more is moved than the
+//! room allows.
 //!
 //! A block is moved in three steps: it is read, which verifies its
 //! checksum; its payload is appended to the cleaner's segment as a block
@@ -332,6 +335,12 @@
 //! left out when the dead space is held against its target, as a segment
 //! that waits is.
 //!
+//! A move is refused while a write transaction holds a private copy of
+//! the page (PV7), and the copy that was appended for it is dead. A file
+//! of which a cleaning moved nothing for that reason is left alone for a
+//! few passes, so that a long transaction does not have its values
+//! appended again ten times a second.
+//!
 //! A cleaning rewrites pointers in the pool, and the pages it changed are
 //! unwritten until write-back's next pass. Until then the block that the
 //! segments hold of such a page points into the file that was cleaned,
@@ -365,14 +374,17 @@
 //! lock on its checkpoints (for the segments of the checkpoint in force,
 //! and for a checkpoint it asks for), write-back's lock on the files it
 //! appends to (for a trim, and for the sealing of a segment), and the
-//! manifest (level 3 of `transactions.md` LT7). It takes no latch, no
-//! page step and no lock on the value counts itself: a pointer rewrite
-//! takes them in [`ValueStore::install`].
+//! manifest (level 3 of `transactions.md` LT7). It takes no latch and no
+//! page step: a pointer rewrite takes them in [`ValueStore::install`].
+//! The value log takes its lock on the counts for each question the
+//! cleaner asks it, and gives it back before it answers.
 //!
 //! **No reader and no committer waits for the cleaner** (CL7). A reader
 //! takes none of those locks. A committer waits for write-back's turns
-//! when write-back is over its bounds, and a trim or a sealing holds
-//! write-back's files only for the table's own steps or one footer.
+//! when write-back is over its bounds, and the cleaner holds write-back's
+//! files for one footer, or for the table's own steps on a thousand
+//! chains: the chains that a large drop left are trimmed a thousand at a
+//! time, with a pass of write-back let in between.
 //!
 //! # When something fails
 //!
@@ -386,6 +398,7 @@
 //! | A sync of the cleaner's segment | Links point to copies that cannot be made durable. The segment's writer is kept, so that they stay readable, and write-back installs no table checkpoint until the store is opened again, so no segment that a recovery needs is deleted ([`CleanerError::SegmentNotDurable`]). |
 //! | The manifest that stops naming a dropped segment | The segment is out of the store. Its file is deleted by a later replacement of the manifest or by the next session. |
 //! | A table checkpoint the cleaner asked for | The checkpoint in force stays, and the retired segments wait. |
+//! | The read of the footer of a sealed segment | Nothing of the segment: no reader uses the footer. The accounting takes the end of the file for the end of its blocks, and the segment is cleaned like any other. |
 //! | A cleaning of a value-log file | What [`crate::values`] says: the rewrites that were installed stand, each counted, and the other copies are dead space. |
 //!
 //! After a crash nothing of the cleaner is left to undo. The page table

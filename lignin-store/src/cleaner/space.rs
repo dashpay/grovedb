@@ -44,13 +44,6 @@ impl SegmentSpace {
     pub fn dead_bytes(&self) -> u64 {
         self.block_bytes.saturating_sub(self.live_bytes)
     }
-
-    /// Whether blocks can still be appended to the segment: a writer of
-    /// this session has it. A segment that is named open and has no
-    /// writer takes none: its writer was dropped before it was sealed.
-    pub fn is_written(&self) -> bool {
-        self.has_writer
-    }
 }
 
 /// What the segments of a store hold: the result of the cleaner's

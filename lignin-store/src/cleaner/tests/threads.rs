@@ -357,7 +357,7 @@ fn the_cleaner_runs_beside_commits_write_back_and_a_reader_with_a_pin() {
     check_space(&db, &space);
     for segment in &space.segments {
         assert!(
-            segment.is_written() || segment.dead_bytes() == 0,
+            segment.has_writer || segment.dead_bytes() == 0,
             "{}",
             describe(&db, &space)
         );

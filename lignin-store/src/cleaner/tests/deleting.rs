@@ -40,6 +40,66 @@ fn a_segment_that_nothing_points_into_is_deleted() {
     db.check_cold();
 }
 
+/// A segment that waits for a running operation takes the room of the
+/// copies as one that waits for a table checkpoint does: while it waits,
+/// no more is moved than may wait at once.
+#[test]
+fn what_waits_for_an_operation_counts_against_the_room_for_copies() {
+    let db = churned(13);
+    // The segments that hold nothing live go first, with no operation
+    // running: a cleaner that moves nothing deletes them.
+    let emptied = CleanerState::new(CleanerConfig {
+        target_dead_percent: 100,
+        ..moving_only()
+    });
+    let swept = settle(&Cleaner::new(db.wb(), &emptied));
+    assert!(swept.dropped > 0 && swept.blocks_moved == 0, "{swept:?}");
+
+    let state = CleanerState::new(CleanerConfig {
+        checkpoint_dead_percent: 10,
+        ..moving_only()
+    });
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let before = cleaner.space().expect("the space");
+    let largest = (before.segments.iter().map(|segment| segment.block_bytes))
+        .max()
+        .expect("a segment");
+    assert_eq!(before.retired_bytes(), 0);
+    assert!(before.dead_bytes() > before.block_bytes() / 4, "{before:?}");
+
+    db.versions.hold_guard();
+    let done = settle(&cleaner);
+    assert!(done.blocks_moved > 0 && done.retired > 0, "{done:?}");
+    assert_eq!(done.dropped, 0, "an operation is still running");
+    let waiting = cleaner.space().expect("the space");
+    let room = (waiting.block_bytes() / 10).max(largest);
+    assert!(
+        waiting.retired_bytes() <= room,
+        "{} bytes wait, and there is room for {room}",
+        waiting.retired_bytes()
+    );
+    // There was more to move: what is dead is not all in what waits.
+    assert!(
+        waiting.dead_bytes() > 2 * waiting.retired_bytes(),
+        "{waiting:?}"
+    );
+    for _ in 0..3 {
+        let pass = cleaner.pass().expect("a pass");
+        assert_eq!((pass.blocks_moved, pass.dropped), (0, 0), "{pass:?}");
+    }
+
+    // The operation ends: what waited goes, and the rest is moved.
+    db.versions.release_guard();
+    let rest = settle(&cleaner);
+    assert!(
+        rest.blocks_moved > 0 && rest.dropped > done.retired,
+        "{rest:?}"
+    );
+    let space = cleaner.space().expect("the space");
+    assert_eq!(space.retired_bytes(), 0);
+    db.check_cold();
+}
+
 /// **Test T-PN5.** A segment is not deleted while an operation that was
 /// running when it was retired is running: the operation may have read a
 /// location in it (PN5, PN6). A pin alone holds nothing back here.
@@ -201,11 +261,16 @@ fn a_dropped_segment_is_not_deleted_under_a_hold() {
     let db = churned(13);
     let state = CleanerState::new(moving_only());
     let cleaner = Cleaner::new(db.wb(), &state);
-    let empty: Vec<FileId> = (cleaner.space().expect("the space").segments.iter())
-        .filter(|segment| segment.live_blocks == 0 && !segment.has_writer)
+    let space = cleaner.space().expect("the space");
+    let taken = |segment: &&SegmentSpace| !segment.has_writer;
+    let file = (space.segments.iter().filter(taken))
+        .find(|segment| segment.live_blocks == 0)
         .map(|segment| segment.file)
-        .collect();
-    let file = *empty.first().expect("an empty segment");
+        .expect("an empty segment");
+    let other = (space.segments.iter().filter(taken))
+        .find(|segment| segment.file != file)
+        .map(|segment| segment.file)
+        .expect("another segment");
     db.segments.drop_segment(file).expect("dropped");
     let hold = db.segments.hold_files();
     {
@@ -214,9 +279,8 @@ fn a_dropped_segment_is_not_deleted_under_a_hold() {
     }
     assert!(on_disk(&db, file), "the file went under a hold");
     assert!(matches!(
-        db.segments.drop_segment(*empty.last().expect("one")),
-        Err(crate::segment::SegmentStoreError::SegmentHeld { .. })
-            | Err(crate::segment::SegmentStoreError::UnknownSegment { .. })
+        db.segments.drop_segment(other),
+        Err(crate::segment::SegmentStoreError::SegmentHeld { file }) if file == other
     ));
     drop(hold);
     {
@@ -253,7 +317,7 @@ fn the_segment_being_filled_is_sealed_when_too_much_of_it_is_dead() {
     assert!(pass.sealed.is_empty() && pass.blocks_moved == 0, "{pass:?}");
     let space = cleaner.space().expect("the space");
     assert!(space.dead_percent() > 80.0, "{}", space.dead_percent());
-    assert!(space.segments[0].is_written());
+    assert!(space.segments[0].has_writer);
 
     // A segment that is too small to be worth sealing is left as well.
     let large = CleanerState::new(CleanerConfig {

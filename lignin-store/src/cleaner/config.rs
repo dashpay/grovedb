@@ -106,8 +106,9 @@ pub struct CleanerStats {
     /// Reads of the whole page table: one for each round of a pass, and
     /// none for a pass that found the store as the pass before left it.
     pub scans: u64,
-    /// Links that were trimmed out of chains at the cleaner's asking: no
-    /// reader at the oldest pinned version or later needed them.
+    /// Links to blocks that were trimmed out of chains at the cleaner's
+    /// asking: no reader at the oldest pinned version or later needed
+    /// them.
     pub links_trimmed: u64,
     /// The bytes their blocks take in their segments.
     pub bytes_trimmed: u64,

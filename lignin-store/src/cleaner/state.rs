@@ -67,6 +67,12 @@ pub(super) struct Work {
     /// since because the answer would have been the same.
     pub(super) values_asked: Option<(Retired, ChangeMark)>,
     pub(super) asks_spared: u32,
+    /// How many passes over the value log have begun.
+    pub(super) value_passes: u64,
+    /// The files whose last cleaning moved nothing because write
+    /// transactions held copies of the pages of their values, each with
+    /// the pass from which it is tried again.
+    pub(super) busy_files: BTreeMap<FileId, u64>,
     /// Answers about the oldest pinned version, each with the epoch that
     /// was started when it was given: no version pin is below it, and it
     /// waits for the operations that were running then.

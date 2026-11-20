@@ -85,13 +85,9 @@ pub(super) fn blocks_of(db: &Db, file: FileId) -> (u64, u64) {
 /// Every link of the page table that points to a block, with its page.
 pub(super) fn links_of(db: &Db) -> Vec<(PageId, Link)> {
     let mut all = Vec::new();
-    let mut links = Vec::new();
-    let mut next = Some(PageId::MIN);
-    while let Some(from) = next {
-        links.clear();
-        next = db.table.scan(from, &mut links);
+    super::clean::scan_table(&db.table, |links| {
         all.extend(links.iter().filter(|(_, link)| link.location().is_some()));
-    }
+    });
     all
 }
 

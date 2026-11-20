@@ -24,7 +24,7 @@ use lignin_io::{
 };
 use lignin_store::{
     cleaner::{BothOwners, Cleaner, CleanerConfig, CleanerError, CleanerState, ValuePass},
-    flush::{FlushConfig, WriteBack},
+    flush::FlushConfig,
     load::LoadBuffers,
     wal::{LogOptions, SyncPolicy},
 };
@@ -378,30 +378,13 @@ fn without_the_cleaner_most_of_what_the_engine_wrote_is_dead() {
     assert!(measured.most_dead > 50.0, "{measured:?}");
 }
 
-/// Ends write-back's loop when it goes, however it goes.
-struct StopWriteBack<'s>(WriteBack<'s>);
+/// Runs what it was given when it goes, however the scope ends: a loop
+/// on another thread is stopped although the test fails.
+struct OnDrop<F: FnMut()>(F);
 
-impl Drop for StopWriteBack<'_> {
+impl<F: FnMut()> Drop for OnDrop<F> {
     fn drop(&mut self) {
-        self.0.stop();
-    }
-}
-
-/// Ends the cleaner's loop when it goes.
-struct StopCleaner<'s>(Cleaner<'s>);
-
-impl Drop for StopCleaner<'_> {
-    fn drop(&mut self) {
-        self.0.stop();
-    }
-}
-
-/// Says that the committer is done when it goes.
-struct Done<'a>(&'a AtomicBool);
-
-impl Drop for Done<'_> {
-    fn drop(&mut self) {
-        self.0.store(true, Ordering::SeqCst);
+        (self.0)()
     }
 }
 
@@ -468,14 +451,14 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
 
     std::thread::scope(|scope| {
         scope.spawn(|| write_back.run(|_| failed.store(true, Ordering::Relaxed)));
-        let _stop = StopWriteBack(write_back);
+        let _stop = OnDrop(|| write_back.stop());
         scope.spawn(|| {
             cleaner.run(
                 |cleaner| clean_values(cleaner, &db, &versions),
                 |error| (cleaner_errors.lock().expect("the errors")).push(error.to_string()),
             )
         });
-        let _stop_cleaner = StopCleaner(cleaner);
+        let _stop_cleaner = OnDrop(|| cleaner.stop());
         scope.spawn(|| {
             let reads = db.reads(&versions);
             let ended = || done.load(Ordering::SeqCst) || waits.load(Ordering::SeqCst);
@@ -502,7 +485,7 @@ fn the_cleaner_runs_beside_the_commit_path_write_back_and_a_snapshot() {
             }
         });
 
-        let _done = Done(&done);
+        let _done = OnDrop(|| done.store(true, Ordering::SeqCst));
         for round in 0..BLOCKS {
             let tx = grove.write(&world, round, true);
             {

@@ -81,6 +81,17 @@ enum Phase {
     Sealed,
 }
 
+impl Phase {
+    /// The state a manifest names a segment in this phase with.
+    fn file_state(self) -> FileState {
+        match self {
+            Self::Created | Self::Open => FileState::Open,
+            Self::Closed => FileState::Closed,
+            Self::Sealed => FileState::Sealed,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct State {
     phase: Phase,
@@ -276,11 +287,7 @@ impl Segment {
 
     fn live_file(&self) -> Result<LiveFile, SegmentStoreError> {
         let state = self.state();
-        let file_state = match state.phase {
-            Phase::Created | Phase::Open => FileState::Open,
-            Phase::Closed => FileState::Closed,
-            Phase::Sealed => FileState::Sealed,
-        };
+        let file_state = state.phase.file_state();
         LiveFile::new(FileKind::Segment, self.id, file_state, state.durable_len)
             .map_err(self.format_error(0))
     }
@@ -691,11 +698,7 @@ impl SegmentStore {
                 let state = segment.state();
                 Extent {
                     file: segment.id,
-                    state: match state.phase {
-                        Phase::Created | Phase::Open => FileState::Open,
-                        Phase::Closed => FileState::Closed,
-                        Phase::Sealed => FileState::Sealed,
-                    },
+                    state: state.phase.file_state(),
                     has_writer: state.has_writer,
                     end: segment.end.load(Ordering::Acquire),
                 }
