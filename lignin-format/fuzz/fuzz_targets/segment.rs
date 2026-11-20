@@ -123,9 +123,9 @@ fn footer(file: &[u8], version: FormatVersion, max_payload_len: usize, control: 
     let Some(index) = tail.filter(|_| stated == file.len() as u64) else {
         return;
     };
-    assert_eq!(index.is_empty(), index.len() == 0);
     let listed: Vec<_> = index.blocks().collect();
     assert_eq!(listed.len(), index.len());
+    assert_eq!(index.is_empty(), listed.is_empty());
     let entries: Vec<IndexEntry> = listed
         .iter()
         .map(|block| IndexEntry {

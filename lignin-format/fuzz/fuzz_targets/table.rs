@@ -157,7 +157,7 @@ fn expand(mut bytes: &[u8], keeps_checksums: bool) -> Vec<u8> {
             file: FileId::new(1 + index as u32 * file_step)?,
             values: index as u64,
             bytes: index as u64 * 100,
-            miscounted: index % 3 == 0,
+            miscounted: index.is_multiple_of(3),
         })
     };
     let covers = CommitVersion::new(links as u64).unwrap();
