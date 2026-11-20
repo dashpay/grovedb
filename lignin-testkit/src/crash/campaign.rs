@@ -1931,9 +1931,11 @@ mod tests {
         let first = *(lineage.history.point(1).pages.keys().next()).expect("a page");
         assert_eq!(counts(&run), (2, 0, 0));
 
-        // The append of a third commit fails. Its error is its own
+        // The append of a third commit fails and is undone: one that is
+        // left in the file whole is in the log. Its error is its own
         // fault's, and the log takes no item from here on.
-        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
+        let undone = FaultRule::new(Fault::Eio).on(OpSet::WRITES);
+        fs.add_rule(undone.torn_append(false));
         assert!(run.step(&mut lineage, page()));
         assert_eq!((fs.stats().faults, counts(&run)), (1, (2, 1, 0)));
         assert_eq!(lineage.observer.lasting_faults(), 0);
