@@ -629,6 +629,7 @@ pub(super) fn foreign_entries(vfs: &dyn Vfs, dir: &Path) -> std::io::Result<Vec<
             || name == LOCK_FILE
             || name == ManifestStore::FILE_NAME
             || name == ManifestStore::TEMP_FILE_NAME
+            || name == DELETING_FILE_NAME
     };
     let entries = vfs.read_dir(dir)?;
     let mut names: Vec<OsString> = (entries.into_iter())

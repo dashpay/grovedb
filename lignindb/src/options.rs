@@ -82,9 +82,9 @@ pub struct Options {
     /// log ([`CleanerConfig::value_dead_percent`]), and its throttle, the
     /// bytes one pass may copy ([`CleanerConfig::max_pass_bytes`]) and the
     /// sleep between two passes ([`CleanerConfig::idle`]). `None` is
-    /// [`CleanerConfig::new`], with which dead space stays below 20 bytes
-    /// in a hundred under a steady load. None of it changes what a reader
-    /// is given.
+    /// [`CleanerConfig::new`], which says what its values hold dead space
+    /// to and where they do not. None of it changes what a reader is
+    /// given.
     pub cleaner: Option<CleanerConfig>,
     /// How long the reclaiming thread sleeps when nobody wakes it. A
     /// reclaim that a reader held back, and a step of the reclaimer that a

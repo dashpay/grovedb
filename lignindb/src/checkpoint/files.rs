@@ -591,9 +591,10 @@ fn empty(vfs: &dyn Vfs, dir: &Path) -> Result<(), CheckpointError> {
     }
     // The renamed manifest goes last, and only once every other removal is
     // durable: what a power cut leaves is known by it for what it is, or
-    // is empty. The lock file goes before it for that reason. Whoever
-    // takes the lock of the directory from here makes a new lock file and
-    // finds no database. Nothing but the renamed manifest is removed any
+    // is empty. The lock file goes before it for that reason. An open of
+    // the engine is refused from here by the mark, before it locks.
+    // Whoever else takes the lock of the directory makes a new lock file
+    // and finds no database. Nothing but the renamed manifest is removed any
     // more, so their lock file stays, and the directory with it, for the
     // next call to remove.
     remove(LOCK_FILE_NAME)?;

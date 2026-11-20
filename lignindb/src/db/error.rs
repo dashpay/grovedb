@@ -107,13 +107,16 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
-    /// The directory holds `MANIFEST.deleting`: the removal of a database
-    /// or of a checkpoint was begun there and cut short
-    /// (`lignindb::checkpoint::delete`). Nothing opens what is left and no
-    /// database is made in it, also where a `MANIFEST` is beside the
-    /// mark. The same call finishes the removal, and the path is a place
-    /// for a new database then. Whoever wants a database that is beside
-    /// the mark removes the mark.
+    /// The directory holds an entry named `MANIFEST.deleting`, the mark
+    /// of a removal of a database or of a checkpoint that was begun and
+    /// cut short (`lignindb::checkpoint::delete`). Nothing opens what is
+    /// left and no database is made in it, also where a `MANIFEST` is
+    /// beside the mark. Where the mark is the file that a removal makes,
+    /// the manifest under that name, the same call finishes the removal,
+    /// and the path is a place for a new database then. An entry of that
+    /// name that is anything else is no removal's: that call refuses it
+    /// too, and whoever made it removes it. Whoever wants a database
+    /// that is beside the mark removes the mark.
     Deleting {
         /// The directory.
         dir: PathBuf,
@@ -269,8 +272,8 @@ impl fmt::Display for OpenError {
             ),
             Self::Deleting { dir } => write!(
                 f,
-                "{} holds MANIFEST.deleting: the removal of a database was begun there and not \
-                 finished, and no database is opened or made in what is left",
+                "{} holds an entry named MANIFEST.deleting, the mark of a database whose removal \
+                 was begun and not finished: no database is opened or made in what is left",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(

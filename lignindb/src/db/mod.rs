@@ -2,9 +2,9 @@
 //!
 //! A [`Db`] is a database directory, opened: the store that
 //! [recovery](lignin_store::recovery) brought to one committed version, its
-//! write-back and its reclaimers running on two threads, and the versions
-//! its readers pin. Everything a caller does to a database goes through
-//! it:
+//! write-back, its cleaner and its reclaimers running on three threads,
+//! and the versions its readers pin. Everything a caller does to a
+//! database goes through it:
 //!
 //! | Call | What it does | Rule |
 //! | --- | --- | --- |
@@ -175,7 +175,8 @@
 //! directory that is not there, in an empty one, in one that holds only
 //! entries that are not the engine's, and in one that holds a `LOCK` and
 //! nothing else of the engine, which an open that failed leaves. It is
-//! made in no directory that one of the rows above refuses. So what a
+//! made in no directory that one of the rows above refuses, and
+//! `MANIFEST.deleting` counts as the engine's. So what a
 //! removal that was cut short left gets no database
 //! (`lignindb::checkpoint::delete` finishes it, and the path is a place
 //! again), and neither does what a creation of a checkpoint left with a
@@ -539,7 +540,7 @@ pub struct Opening {
     /// directory, or the first commit of a new database, and reading what
     /// earlier drops left.
     pub keyspaces: Duration,
-    /// Starting the two threads of the background work.
+    /// Starting the threads of the background work.
     pub threads: Duration,
 }
 
@@ -793,7 +794,9 @@ impl Db {
     /// taken, the session's files are closed and the log is made durable,
     /// so that the next open has little to replay.
     ///
-    /// Dropping the handle does the same and reports nothing. Either way
+    /// Dropping the handle does the same and returns no error of it; in a
+    /// debug build both run the check at a close, which panics on a
+    /// finding (see the module documentation). Either way
     /// every commit that was published is in the log, and the next open
     /// recovers what was durable or more (DU2). An error here says that
     /// something of the above was not done: the database is closed all the
@@ -894,6 +897,11 @@ impl Db {
     /// The report is returned and nothing panics: a finding is the
     /// caller's to act on. An error says that the close did not do all of
     /// its work, and then nothing is checked.
+    ///
+    /// A session that ended for writes ([`WriteError::Reopen`]) is
+    /// checked here like any other, and its findings can be what it left
+    /// half done: the next open's recovery makes that whole, and the check
+    /// of the database it opens is the one that counts.
     pub fn close_and_verify(
         self,
         rules: Option<&mut dyn HashRules>,
@@ -1015,10 +1023,10 @@ impl Db {
         finished.map(|()| true)
     }
 
-    /// What a close does for the next session, with the two threads
-    /// ended: only in a directory that is found to be this database's
-    /// still. One that was removed under the handle, or that holds
-    /// another database now, is written to no more (P-18).
+    /// What a close does for the next session, with the background
+    /// threads ended: only in a directory that is found to be this
+    /// database's still. One that was removed under the handle, or that
+    /// holds another database now, is written to no more (P-18).
     fn finish(&self) -> Result<(), DbError> {
         let shared = &*self.shared;
         let ours = match shared.store.ours(&*self.guard) {
@@ -1424,8 +1432,9 @@ impl Db {
 
 impl Drop for Db {
     fn drop(&mut self) {
-        // What a close reports is dropped here: a handle whose directory
-        // was removed under it closes without a word (P-18).
+        // The error a close returns is dropped here: a handle whose
+        // directory was removed under it closes without a word (P-18).
+        // The check of a debug build is made as at a close.
         if let Ok(true) = self.shut() {
             self.check_at_close();
         }
