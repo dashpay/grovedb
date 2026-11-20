@@ -1161,14 +1161,14 @@ owner can overrule one while version 1 is still open (U10).
     same from the table's side.
 29. **A closed log file is held to its valid length and to nothing behind
     it** (LG32; found by VER-05 and OPS-08, the owner's decision D-171).
-    The store measured every log file again when it opened the log for
-    writing, and refused one whose length was not the length its reader
-    had found. For a file that is named closed that asked for more than
-    the log reads: the reader is given the file to its valid length only,
-    and only a file shorter than that is wrong. It refused a checkpoint
-    that was opened while the live database appended to the log file the
-    two share. For a file that is named open the comparison stays: an
-    item appended since the read would be in no end of the log.
+    When the store opens the log for writing it measures every log file
+    again. Of a file that is named closed it asks that the file is not
+    shorter than its valid length: the reader is given the file to that
+    length only. Of a file that is named open it asks for the length the
+    reader found: an item appended since the read would be in no end of
+    the log. Before this change it asked for the reader's length of every
+    file, and so refused a checkpoint that was opened while the live
+    database appended to the log file the two share.
 
 ## 13. Code and tests
 
