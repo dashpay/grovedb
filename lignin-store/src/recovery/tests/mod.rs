@@ -15,6 +15,7 @@ mod acceptance;
 mod damage;
 mod errors;
 mod rules;
+mod shared;
 
 use std::{
     collections::BTreeMap,
