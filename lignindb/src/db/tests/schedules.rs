@@ -39,8 +39,8 @@
 //! write-back is made to pass, and the checker reads the store at rest:
 //! no finding, and no cell that nothing reaches. Beside it: no error of
 //! the step, of write-back or of a reclaiming; every subtree read through a
-//! snapshot is what the model of the stress test has; a checkpoint that was
-//! the step holds exactly its version.
+//! snapshot is what the model of the stress test has; a checkpoint that
+//! the step made or opened holds exactly its version.
 //!
 //! # What a schedule does not reach
 //!
@@ -63,6 +63,7 @@
 //! | D-116: a page freed under a reused id while a pass of write-back held its frame was linked | a turn of write-back against blocks that drop, reclaim and write again |
 //! | a page that a commit freed, and whose frames the pool dropped, between write-back's look and its hold, was an error of the pass (`Replaced`) | the same |
 //! | STORE-08: the owners of values read a page at the published version where a newer one was installed; a value-log file was stamped empty at too old a version | a pass over the value log against blocks |
+//! | D-172: an open of a checkpoint refused a log file that the database it was made of had appended to since the open first read it (`WrongLogEnd`) | an open of a checkpoint against any burst |
 
 use std::{
     io,
@@ -461,6 +462,11 @@ enum Step {
     Read,
     /// The same through a snapshot, which pins its version (RD1).
     ReadPinned,
+    /// The open of a checkpoint of the database, which was created with
+    /// the database at rest. Its points are the operations of the open on
+    /// the files of the checkpoint, most of which it shares with the
+    /// database that goes on beside it (CK5, CK7).
+    OpenCheckpoint,
 }
 
 impl Step {
@@ -746,10 +752,11 @@ fn act(
     };
     let mut failed = Vec::new();
     let write_back = db.shared.write_back();
-    if step.reads() || step == Step::Checkpoint {
-        // Everything of the background work has its turns under a reader
-        // and under the creation of a checkpoint, more than once: a
-        // reclaiming that waits for the step is left waiting.
+    if step.reads() || matches!(step, Step::Checkpoint | Step::OpenCheckpoint) {
+        // Everything of the background work has its turns under a reader,
+        // under the creation of a checkpoint and beside the open of one,
+        // more than once: a reclaiming that waits for the step is left
+        // waiting.
         let cleaner = Cleaner::new(write_back, cleaner_state);
         let steps = db.shared.steps();
         for round in 0..3 {
@@ -859,14 +866,22 @@ fn reclaimer<'a, L: StepLog>(db: &'a Db, log: L) -> Reclaimer<'a, L> {
     )
 }
 
+/// The checkpoint a step made: its version, and the checkpoint itself if
+/// the step opened it.
+#[derive(Default)]
+struct Made {
+    version: Option<CommitVersion>,
+    opened: Option<Db>,
+}
+
 /// The step, on the calling thread, which the gate paces.
 fn work(
-    (db, history): (&Db, &History),
+    (db, history, options): (&Db, &History, &Options),
     gate: &Gate,
     step: Step,
     jobs: &mut [Job],
     cleaner_state: &CleanerState,
-    made: &mut Option<CommitVersion>,
+    made: &mut Made,
     errors: &mut Vec<String>,
 ) -> String {
     let store = &*db.shared.store;
@@ -905,8 +920,34 @@ fn work(
             let committer = db.shared.committer();
             match Checkpointer::new(&committer).create(Path::new(CHECKPOINT)) {
                 Ok(created) => {
-                    *made = Some(created.version);
+                    made.version = Some(created.version);
                     Ok(format!("{created:?}"))
+                }
+                Err(error) => Err(format!("the checkpoint: {error}")),
+            }
+        }
+        Step::OpenCheckpoint => {
+            // The creation is no part of the step, and it is over, with
+            // what it held, before the first point.
+            gate.rest();
+            let created = {
+                let committer = db.shared.committer();
+                Checkpointer::new(&committer).create(Path::new(CHECKPOINT))
+            };
+            gate.pace();
+            match created {
+                Ok(created) => {
+                    made.version = Some(created.version);
+                    match Db::open(CHECKPOINT, options) {
+                        Ok(opened) => {
+                            halt_background(&opened);
+                            made.opened = Some(opened);
+                            Ok(format!("opened, {created:?}"))
+                        }
+                        Err(error) => Err(format!(
+                            "the checkpoint is opened beside the database it was made of: {error}"
+                        )),
+                    }
                 }
                 Err(error) => Err(format!("the checkpoint: {error}")),
             }
@@ -998,7 +1039,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     };
     let cleaner_state = CleanerState::new(cleaner_config());
     let burst_errors = Mutex::new(Vec::new());
-    let mut made = None;
+    let mut made = Made::default();
     let (did, (took, pages)) = thread::scope(|threads| {
         let (db, history, writers) = (&db, &history, &mut writers);
         let (pinned, burst_errors, cleaner_state) = (&pinned, &burst_errors, &cleaner_state);
@@ -1023,7 +1064,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         });
         gate.pace();
         let did = work(
-            (db, history),
+            (db, history, &options),
             &gate,
             step,
             &mut jobs,
@@ -1078,9 +1119,13 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         ));
     }
     compare_all(&db, &history);
-    if let Some(version) = made {
-        // The checkpoint is a database of exactly its version.
-        let opened = Db::open(CHECKPOINT, &options).expect("the checkpoint is opened");
+    if let Some(version) = made.version {
+        // The checkpoint is a database of exactly its version, whatever
+        // was committed beside its creation or its open.
+        let opened = match made.opened.take() {
+            Some(opened) => opened,
+            None => Db::open(CHECKPOINT, &options).expect("the checkpoint is opened"),
+        };
         assert_eq!(opened.version(), version);
         compare_all(&opened, &history);
         opened.close().expect("the checkpoint is closed");
@@ -1258,4 +1303,7 @@ schedules! {
     a_snapshot_against_commits_that_merge_the_leaves_of_the_directory: ReadPinned, Merge;
     a_snapshot_against_commits_that_split_the_leaves_of_the_directory: ReadPinned, Split;
     a_snapshot_against_blocks: ReadPinned, Blocks;
+    an_open_of_a_checkpoint_against_commits_that_merge_the_leaves_of_the_directory: OpenCheckpoint, Merge;
+    an_open_of_a_checkpoint_against_commits_that_split_the_leaves_of_the_directory: OpenCheckpoint, Split;
+    an_open_of_a_checkpoint_against_blocks: OpenCheckpoint, Blocks;
 }
