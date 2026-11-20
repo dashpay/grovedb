@@ -31,7 +31,7 @@ use grovedb_costs::{
     CostResult,
 };
 use grovedb_query::QueryItem;
-use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError, StorageContext};
+use grovedb_storage::{rocksdb_storage::RocksDbStorage, Error as StorageError};
 use grovedb_version::version::GROVE_VERSIONS;
 
 use super::*;
@@ -2164,11 +2164,14 @@ fn a_merk_cleared_as_the_records_of_its_keyspace_costs_what_it_costs_on_rocksdb(
 fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
     // The repair of an indexed tree's ranking removes a row that no node of
     // the ranking's Merk links, with a cost it worked out itself, in a
-    // change set that states no root (GroveDB #1063). On RocksDB such a
-    // row is a record under the Merk's prefix. The store holds no record
-    // that no link leads to, so it has nothing to remove.
+    // change set that states no root (GroveDB #1063). Such a row is a
+    // record under the Merk's prefix, on both engines, where a put stood
+    // over a later delete of its key inside one operation (GM0). The
+    // removal is first made where the key holds nothing, and then where it
+    // holds such a record.
     let a = plain(b"a", 40);
-    let orphan = b"orphan".to_vec();
+    let row = plain(b"orphan", 40);
+    let orphan = row.key.clone();
     let cost = freeing(Freed::Plain(39), Freed::Plain(120));
     let removal = |cost| {
         vec![step(
@@ -2201,8 +2204,8 @@ fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
     writer.into_scope().merge();
     assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
     rocks.commit_transaction(rocks_tx).unwrap().unwrap();
-    let transaction = path.begin();
-    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let mut transaction = path.begin();
+    let mut writer = LigninWriter::new(transaction.scope().unwrap());
     let mut rocks_tx = rocks.start_transaction();
 
     // With the cost the repair gives, the removal is charged as any removal
@@ -2221,35 +2224,74 @@ fn a_removal_of_a_key_that_is_no_node_is_charged_and_changes_nothing() {
     assert_eq!(read, unstaged_on_rocks(&rocks, &rocks_tx, &the_tree));
     assert_eq!(read.last(), Some(&(seek_and_load(0), Ended::Held(false))));
 
-    // RocksDB is charged the same when it holds a record under the key
-    // that no node links, which is what the repair removes there: a
-    // removal with a cost measures nothing.
-    let record = [7; 120];
-    let under_the_merk = rocks
-        .get_immediate_storage_context_by_subtree_prefix(at(10), &rocks_tx)
-        .unwrap();
-    StorageContext::put(&under_the_merk, &orphan, &record, None, None)
-        .unwrap()
-        .expect("the record is put");
-    rocks.commit_transaction(rocks_tx).unwrap().unwrap();
-    rocks_tx = rocks.start_transaction();
+    // Both engines are charged the same when they hold a record under the
+    // key that no node links, which is what the repair removes: a removal
+    // with a cost measures nothing. The record is a node that a change set
+    // puts and that the root, which the change set leaves as it is, does
+    // not reach.
+    let left_behind = vec![step(
+        10,
+        Step::Commit(vec![Change::Put(
+            row.clone(),
+            NodeChange::ValueWritten,
+            Bill::New,
+        )]),
+    )];
+    let record_len = row.node().encode().len() as u32;
     let held = vec![step(10, Step::Has(orphan.clone()))];
-    let is_held = |held: bool| vec![(seek_and_load(if held { 120 } else { 0 }), Ended::Held(held))];
-    assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(true));
-    let on_rocks = deferred_on_rocks(&rocks, &rocks_tx, &removal(cost.clone()));
-    assert_eq!(on_rocks, found);
-    assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(false));
-    // Removed with no cost, such a record is measured where it is
-    // committed. That is a charge the store cannot make while it holds no
-    // such record, and the repair does not ask for it.
-    let measured = deferred_on_rocks(&rocks, &rocks_tx, &removal(None));
-    let from_the_record = OperationCost {
-        storage_loaded_bytes: 120,
-        ..charged(2, 38 + 120 + 1 + 1)
+    let is_held = |held: bool| {
+        let loaded = if held { record_len as usize } else { 0 };
+        vec![(seek_and_load(loaded), Ended::Held(held))]
     };
-    assert_eq!(measured.1, Some((from_the_record, Ended::Done)));
-    rocks.commit_transaction(rocks_tx).unwrap().unwrap();
-    rocks_tx = rocks.start_transaction();
+    for with_cost in [true, false] {
+        let planted = deferred_on_lignin(&writer, &left_behind);
+        assert_eq!(
+            planted,
+            deferred_on_rocks(&rocks, &rocks_tx, &left_behind),
+            "the put of a node that the root does not reach"
+        );
+        // The transaction that wrote it reads it, and so does the next.
+        assert_eq!(unstaged_on_lignin(&writer, &held), is_held(true));
+        assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(true));
+        writer.into_scope().merge();
+        assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+        rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+        transaction = path.begin();
+        writer = LigninWriter::new(transaction.scope().unwrap());
+        rocks_tx = rocks.start_transaction();
+        assert_eq!(unstaged_on_lignin(&writer, &held), is_held(true));
+        assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(true));
+
+        let removal = removal(match with_cost {
+            true => cost.clone(),
+            false => None,
+        });
+        let removed = deferred_on_lignin(&writer, &removal);
+        assert_eq!(removed, deferred_on_rocks(&rocks, &rocks_tx, &removal));
+        let charge = match with_cost {
+            // What it was charged where the key held nothing.
+            true => charged(1, 159),
+            // Removed with no cost, the record is measured where it is
+            // committed: a second seek, its bytes loaded, and the stored
+            // key and the record removed, each with the byte of its
+            // length.
+            false => OperationCost {
+                storage_loaded_bytes: u64::from(record_len),
+                ..charged(2, 38 + record_len + 1 + 1)
+            },
+        };
+        assert_eq!(removed.1, Some((charge, Ended::Done)));
+        assert_eq!(unstaged_on_lignin(&writer, &held), is_held(false));
+        assert_eq!(unstaged_on_rocks(&rocks, &rocks_tx, &held), is_held(false));
+        let read = unstaged_on_lignin(&writer, &the_tree);
+        assert_eq!(read, unstaged_on_rocks(&rocks, &rocks_tx, &the_tree));
+        writer.into_scope().merge();
+        assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+        rocks.commit_transaction(rocks_tx).unwrap().unwrap();
+        transaction = path.begin();
+        writer = LigninWriter::new(transaction.scope().unwrap());
+        rocks_tx = rocks.start_transaction();
+    }
 
     // With no cost and no such record, it is charged as the removal of a
     // key the committed state lacks: two seeks, nothing loaded, and the
@@ -2502,6 +2544,18 @@ fn a_conversion_costs_the_same(
         let (Some(on_rocks), Some(on_lignin)) = (on_rocks, on_lignin) else {
             return false;
         };
+        // The Merk is stated anew in the subtree directory, at once on a
+        // handle that writes at once.
+        let wide = on_lignin.tree_type;
+        (on_lignin.storage.convert(wide)).expect("the conversion is stated");
+        let entry = on_lignin.storage.entry().unwrap();
+        let entry = entry.expect("the Merk is entered");
+        assert_eq!(
+            entry.tree_type().unwrap(),
+            wide,
+            "{}",
+            at("the tree type in the directory")
+        );
         assert_eq!(
             read_as_a_client(&on_lignin, &keys, turn, grove_version),
             read_as_a_client(&on_rocks, &keys, turn, grove_version),
@@ -2594,6 +2648,12 @@ fn a_conversion_costs_the_same(
     let (cost, on_lignin, found) = convert_as_a_client(on_lignin, grove_version);
     assert_eq!(found, expected, "{}", at("the conversion"));
     assert_eq!(cost, expected_cost, "{}", at("the cost of the conversion"));
+    // The batch that writes the nodes of the wide tree states the Merk
+    // anew in the subtree directory. That is no write of a record: the
+    // batch is charged what it is charged on RocksDB.
+    if let (Some(merk), Ok((wide, ..))) = (&on_lignin, &found) {
+        (merk.storage.convert(*wide)).expect("the conversion is stated");
+    }
     drop((on_rocks, on_lignin));
     let expected = rocks.commit_multi_context_batch(storage_batch, Some(&rocks_tx));
     let read_before = reads(&transaction);
@@ -2624,6 +2684,14 @@ fn a_conversion_costs_the_same(
         &records(&store, root.clone()),
         &stored,
         &at("the converted tree"),
+    );
+    // The directory names the wide tree, with the root the Merk has.
+    let entry = store.entry().unwrap().expect("the Merk is entered");
+    assert_eq!(
+        (entry.tree_type().unwrap(), entry.root_key),
+        (wide, root.clone()),
+        "{}",
+        at("the entry of the converted tree")
     );
     let nodes = stored.len();
     assert_eq!(

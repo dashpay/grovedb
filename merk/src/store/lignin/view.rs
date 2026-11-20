@@ -60,10 +60,11 @@ impl<'a> From<&'a LigninSnapshot<'_>> for LigninView<'a> {
 /// A snapshot of a LigninDB database as the store reads it: one committed
 /// version, pinned for as long as this lives (`transactions.md` RD1).
 ///
-/// Every read through it is one operation of the snapshot. A subtree is
-/// looked up in the subtree directory once, and its entry is kept for the
-/// reads that follow: a snapshot's version does not change. A write
-/// through it is refused with `SnapshotReadOnlyTransaction`.
+/// Every read through it is one operation of the snapshot. The entry of
+/// a subtree that was looked up in the subtree directory is kept, and the
+/// reads that follow open the subtree from the kept entry: a snapshot's
+/// version does not change. A write through it is refused with
+/// `SnapshotReadOnlyTransaction`.
 pub struct LigninSnapshot<'s> {
     snapshot: Snapshot<'s>,
     /// The subtrees that were opened, each with its entry, or with none

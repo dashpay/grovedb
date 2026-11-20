@@ -46,6 +46,7 @@ use crate::{
 mod chunk;
 mod cursor;
 mod proof;
+mod unlinked;
 mod views;
 
 pub(super) const NO_VALUE_DEFINED_COST: Option<

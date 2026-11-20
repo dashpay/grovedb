@@ -78,6 +78,14 @@
 //! commit through a handle that has not loaded it has its value stated,
 //! whatever change the caller names ([`NodeStore::write_node`]).
 //!
+//! An unlinked record has no cell that keeps a value
+//! (`lignindb::txn::MerkWrite`, "Unlinked records"). A node that is
+//! handed over with its value kept, under a key the handle knows to hold
+//! such a record, has its value stated: the value of the node as it is
+//! handed over, which is what a store of whole records is handed. The
+//! handle knows it of a key from its last load of the key, and from the
+//! report of a write that it took in since.
+//!
 //! A handle dates a node by its own loads, so a node that is handed to it
 //! with its value kept has to be one it loaded, as a Merk loads what it
 //! changes through the handle it writes with. Of a node that another
@@ -164,6 +172,7 @@ use std::{
     cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
@@ -282,6 +291,30 @@ pub struct LigninNodeStore<'db> {
     /// The path the handle was opened by, if it was told one
     /// ([`Self::at_path`]).
     path: Option<Vec<Vec<u8>>>,
+    /// The keys the handle knows to hold an unlinked record.
+    loose: Loose,
+}
+
+/// The keys a handle knows to hold an unlinked record: those its last
+/// load of the key showed as one, and those the report of a write that it
+/// took in since named as one. The handle shares the set with its change
+/// sets, which prepare a node by what the handle knows then.
+#[derive(Clone, Debug, Default)]
+pub(super) struct Loose(Arc<Mutex<HashSet<Vec<u8>>>>);
+
+impl Loose {
+    pub(super) fn holds(&self, key: &[u8]) -> bool {
+        let keys = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        keys.contains(key)
+    }
+
+    fn set(&self, key: &[u8], unlinked: bool) {
+        let mut keys = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        match unlinked {
+            true => keys.insert(key.to_vec()),
+            false => keys.remove(key),
+        };
+    }
 }
 
 impl fmt::Debug for LigninNodeStore<'_> {
@@ -361,6 +394,7 @@ impl<'db> LigninNodeStore<'db> {
             began: Cell::new(None),
             placed: Cell::new(false),
             path: None,
+            loose: Loose::default(),
         }
     }
 
@@ -406,11 +440,21 @@ impl<'db> LigninNodeStore<'db> {
     /// Takes in where the application of a batch put the nodes of this
     /// subtree, so that the handle finds them without a lookup by key.
     pub fn take_locations(&self, applied: &LigninApplied) {
-        let mut hints = self.hints.borrow_mut();
         applied.locations(&self.subtree.prefix, |key, location| {
-            hints.insert(key.to_vec(), location);
+            self.left_at(key, location);
             self.placed.set(true);
         });
+    }
+
+    /// Takes in where a write left the node under `key`: in the cell at
+    /// `location`, or with none, as an unlinked record.
+    fn left_at(&self, key: &[u8], location: Option<Location>) {
+        let mut hints = self.hints.borrow_mut();
+        match location {
+            Some(location) => hints.insert(key.to_vec(), location),
+            None => hints.remove(key),
+        };
+        self.loose.set(key, location.is_none());
     }
 
     fn read_cost(&self, found: Option<usize>) -> OperationCost {
@@ -436,6 +480,7 @@ impl<'db> LigninNodeStore<'db> {
         let mut hint = self.hint(key);
         'node: for _ in 0..READ_ATTEMPTS {
             let Some(mut node) = self.access.node(prefix, key, hint, with_value)? else {
+                self.loose.set(key, false);
                 return Ok(None);
             };
             hash::refuse_stale(node.stale)?;
@@ -463,6 +508,7 @@ impl<'db> LigninNodeStore<'db> {
                 Some(location) => hints.insert(key.to_vec(), location),
                 None => hints.remove(key),
             };
+            self.loose.set(key, node.unlinked);
             let mut reads = self.reads.borrow_mut();
             reads.entry(key.to_vec()).or_insert(node.location);
             self.note_tree(key, node.value.as_deref());
@@ -604,13 +650,13 @@ impl<'db> LigninNodeStore<'db> {
     /// where its nodes are now.
     fn apply(&self, write: &access::Write) -> Result<(), Error> {
         let written = self.access.apply(write)?;
-        let mut hints = self.hints.borrow_mut();
         for (merk, locations) in write.merks.iter().zip(&written.locations) {
             for key in &merk.removed {
-                hints.remove(key);
+                self.hints.borrow_mut().remove(key);
+                self.loose.set(key, false);
             }
             for (node, location) in merk.nodes.iter().zip(locations) {
-                hints.insert(node.key.clone(), *location);
+                self.left_at(&node.key, *location);
             }
         }
         Ok(())
@@ -689,17 +735,20 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.charged(len.map(|len| (len.is_some(), len)))
     }
 
-    /// A cell names a child by where the child's cell is, so a link is
-    /// written only to a node the Merk holds or the same change set writes.
+    /// A cell names a child by where the child's cell is, so the link of
+    /// a cell is written only to a node the Merk holds or the same change
+    /// set writes.
     fn takes_links_to_absent_nodes(&self) -> bool {
         false
     }
 
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
         // A value is kept by the read it was kept from. Of a node this
-        // handle has not loaded there is none to name, so its value is
+        // handle has not loaded there is none to name, and an unlinked
+        // record has no cell that keeps one. The value of such a node is
         // stated: it is written only where other bytes are held.
-        let change = match self.reads.borrow().contains_key(node.key()) {
+        let loaded = self.reads.borrow().contains_key(node.key());
+        let change = match loaded && !self.loose.holds(node.key()) {
             true => change,
             false => NodeChange::ValueWritten,
         };
@@ -722,7 +771,8 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn change_set(&self) -> LigninChangeSet {
-        LigninChangeSet::new(self.subtree.clone(), matches!(self.mode, Mode::Immediate))
+        let immediate = matches!(self.mode, Mode::Immediate);
+        LigninChangeSet::new(self.subtree.clone(), immediate).of_handle(self.loose.clone())
     }
 
     fn commit(&self, change_set: LigninChangeSet) -> CostResult<(), Error> {

@@ -1378,8 +1378,7 @@ fn a_session_into_a_grove_that_was_not_wiped_is_refused_on_lignindb() {
 }
 
 /// What a receiving node makes of an empty chunk in the place of a
-/// subtree's payload: the answer LigninDB gives a request that names a
-/// subtree of flat records as a Merk. For a Merk that its parent commits
+/// subtree's payload. For a Merk that its parent commits
 /// to as holding nodes, for an append-only tree and for an indexed tree,
 /// the session is refused the chunk, commits nothing, and leaves the
 /// target as it was.
@@ -1449,10 +1448,9 @@ fn an_empty_chunk_is_refused<S: Side, T: Side>(v: &GroveVersion) -> Vec<String> 
 /// What a receiving node makes of an indexed tree that holds children and
 /// is served as one that holds none. Its header request is answered with
 /// a header that gives the hash of an empty Merk for the primary and for
-/// each axis, and an empty root chunk of the primary, which is what
-/// LigninDB answers a header request that names a subtree of flat
-/// records. The request of each secondary after it is answered with an
-/// empty chunk. The session takes the header and the empty Merks, and
+/// each axis, and an empty root chunk of the primary. The request of
+/// each secondary after it is answered with an empty chunk. The session
+/// takes the header and the empty Merks, and
 /// refuses them where it holds the roots of the tree's Merks against what
 /// the element commits to. It commits nothing, and leaves the target as
 /// it was.

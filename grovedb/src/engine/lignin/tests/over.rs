@@ -401,6 +401,22 @@ fn moved_beside(
     [Vec<([u8; 32], [u8; 32])>; 2],
     ([u8; 32], [u8; 32]),
 ) {
+    let (walked, told, asked) = walked_beside(db, at, other);
+    (walked.expect("a step of the walk"), told, asked)
+}
+
+/// As [`moved_beside`], with the keys the walk showed to its end, or the
+/// failure of the step that ended it.
+#[allow(clippy::type_complexity)]
+fn walked_beside(
+    db: &Lignin,
+    at: &[&[u8]],
+    other: Box<dyn FnOnce()>,
+) -> (
+    Result<Vec<Vec<u8>>, crate::Error>,
+    [Vec<([u8; 32], [u8; 32])>; 2],
+    ([u8; 32], [u8; 32]),
+) {
     let engine = db.engine();
     let from = build_prefix(at.into()).unwrap();
     let to = build_prefix([b"u".as_slice()].as_ref().into()).unwrap();
@@ -409,14 +425,15 @@ fn moved_beside(
     AFTER_ENTRY_READS.set(Some((1, other)));
     let mut moving = engine.move_subtree(from, to, &batch, &tx).unwrap();
     assert!(AFTER_ENTRY_READS.take().is_none());
-    let mut walked = Vec::new();
-    loop {
+    let mut keys = Vec::new();
+    let walked = loop {
         let moved = moving.move_next(|key, _| Ok(key.to_vec()), |_, _| Default::default());
-        match moved.unwrap().expect("a step of the walk") {
-            Some(key) => walked.push(key),
-            None => break,
+        match moved.unwrap() {
+            Ok(Some(key)) => keys.push(key),
+            Ok(None) => break Ok(keys),
+            Err(error) => break Err(error),
         }
-    }
+    };
     drop(moving);
     let mut group = <LigninEngine as Engine>::WriteGroup::default();
     (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
@@ -446,12 +463,15 @@ fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batc
     assert_eq!((moves, none), (vec![asked], vec![]));
 }
 
-/// The same for a tree that keeps its data flat. The cursor was made for
-/// the nodes of a Merk, since the subtree was not entered, and shows
-/// none of the records that the other writer's commit put there: the
-/// batch is told of the move all the same, where the walk ends.
+/// A tree that keeps its data flat, entered so. The cursor was made for
+/// the nodes of a Merk, since the subtree was not entered. It shows the
+/// key of the record that the other writer's commit put there and refuses
+/// its value, until it shows the record's bytes (`MERK-05-F1` part 2): the
+/// walk fails at that record, and the batch is told nothing of the move.
+/// A tree that nothing was appended to, with no writer beside the mover,
+/// is told to the batch as a walk that found none.
 #[test]
-fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batch() {
+fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_fails_the_walk() {
     let v = version();
     let (_dir, db) = grove(false);
     let root: &[&[u8]] = &[];
@@ -464,10 +484,15 @@ fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_ba
             .unwrap()
             .expect("the first leaf");
     });
-    let (walked, [moves, none], asked) = moved_beside(&db, &[b"m"], other);
+    let (walked, [moves, none], _) = walked_beside(&db, &[b"m"], other);
     assert!(done.get());
-    assert_eq!(walked, Vec::<Vec<u8>>::new());
-    assert_eq!((moves, none), (vec![asked], vec![]));
+    let failed = walked.expect_err("the walk comes to a flat record");
+    let no_value = "a raw iterator at a record returned no key or value";
+    assert!(
+        matches!(&failed, crate::Error::CorruptedData(said) if said == no_value),
+        "{failed:?}"
+    );
+    assert_eq!((moves, none), (vec![], vec![]));
     // With no writer beside it, the tree nothing was appended to is no
     // move of its batch: the batch is told that the walk found none.
     (db.insert(root, b"n", Element::empty_mmr_tree(), None, None, v))
