@@ -38,6 +38,14 @@ fn a_checkpoint_opens_while_the_live_database_appends_to_the_log_they_share() {
     assert_eq!(created.version, live.version());
     assert!(created.linked > 0 && created.copied == 0, "{created:?}");
 
+    // The log file that the two share: the last one the checkpoint has.
+    let shared = (std::fs::read_dir(target.join("wal")).expect("the checkpoint's log"))
+        .map(|entry| entry.expect("an entry").path())
+        .max()
+        .expect("a log file");
+    let len = |path: &Path| std::fs::metadata(path).expect("the file").len();
+    let sampled = len(&shared);
+
     let looks = Arc::new(AtomicU32::new(0));
     let (beside, counted) = (live.clone(), looks.clone());
     vfs.before_every_read_of_a_log_file_in(&target, move || {
@@ -47,6 +55,10 @@ fn a_checkpoint_opens_while_the_live_database_appends_to_the_log_they_share() {
     let opened = Db::open(&target, &options);
     let looks = looks.load(Ordering::Relaxed);
     assert!(looks >= 2, "the open looked at its log {looks} times");
+    assert!(
+        len(&shared) > sampled,
+        "the commits beside the open appended to the file the two share"
+    );
     assert_eq!(
         live.version().get(),
         created.version.get() + u64::from(looks)

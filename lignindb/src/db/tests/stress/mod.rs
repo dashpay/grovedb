@@ -12,7 +12,7 @@
 //! | --- | --- | --- |
 //! | the block writer | One write transaction after another. Each has two scopes that are open at once, one of them on a second thread for as long as the scopes last; now and then a scope that is rolled back, a scope that is refused for an overlap, a savepoint that is rolled back to, and a rollback of the whole transaction. It writes Merks of its own, generations of subtrees that it enters and drops, and keys that the other writer writes too. | 7a, 8a, 8b, 9, 10, 12 to 14 |
 //! | the writer with no transaction | One batch after another, each a commit ([`Db::write`]), beside the open block transaction. Every few commits it makes a checkpoint, opens it as a database, reads all of it and deletes it. | 7b, 8b, 12, 15, 18, 20 |
-//! | the reader | Snapshots of three ages, and operations that pin nothing. Each look compares whole subtrees with the model. Every few looks the physical invariant checker reads the latest version as a reader, with the reclaimer of dropped subtrees held back from the moment the version is pinned to the end of the run. | 1 to 6 |
+//! | the reader | Snapshots of three ages, and operations that pin nothing. Each look compares whole subtrees with the model. Every few looks it has the log made durable ([`Db::flush`]), and the physical invariant checker reads the latest version as a reader, with the reclaimer of dropped subtrees held back from the moment the version is pinned to the end of that check. | 1 to 6, and `flush()` beside a commit (DU1a) |
 //! | the cleaner | [`Cleaner::run`], as the engine will run it once it is wired into [`Db`]: the segments, and the value log with the owners of values of both kinds. | 5, 10, 14, 17, 19, 20 |
 //! | write-back, the reclaimer | The engine's own threads, with small files and low bounds, so that committers are slowed (FL5), table checkpoints are taken and log files go all the time. | 4, 9, 13, 16, 17 |
 //!
@@ -48,9 +48,9 @@
 //! # How it is run
 //!
 //! [`a_short_stress`] runs with the crate's tests: two epochs that end by
-//! counts, so that it takes seconds and does the same amount of work on
-//! any machine. [`an_hour_of_stress`] is the long form, ignored unless it
-//! is asked for:
+//! counts, so that it takes seconds, and on any machine its block writer
+//! writes as many blocks and each other thread does its least.
+//! [`an_hour_of_stress`] is the long form, ignored unless it is asked for:
 //!
 //! ```text
 //! LIGNIN_STRESS_SECONDS=3600 cargo test -p lignindb --release --lib \
@@ -120,6 +120,11 @@ const GENERATIONS: usize = 3;
 const CHECKPOINT_EVERY: u64 = 12;
 /// Every so many looks the reader runs the checker on a pinned version.
 const VERIFY_EVERY: u64 = 40;
+/// Every so many looks the reader has the log made durable.
+const FLUSH_EVERY: u64 = 8;
+/// The blocks an epoch that ends by the clock writes at least: as many as
+/// the short form writes in all.
+const LEAST_BLOCKS: u64 = 96;
 /// How many commits a snapshot of the reader is held for, at least, by
 /// its age.
 const AGES: [u64; 3] = [1, 8, 40];
@@ -130,7 +135,8 @@ enum Until {
     /// So many blocks of the block writer, and then until the other
     /// threads have each done their least.
     Blocks(u64),
-    /// So long.
+    /// So long, and no fewer than [`LEAST_BLOCKS`] blocks, and then until
+    /// the other threads have each done their least.
     Elapsed(Duration),
 }
 
@@ -205,6 +211,7 @@ struct Tally {
     looks_behind: AtomicU64,
     looks_unpinned: AtomicU64,
     verifies: AtomicU64,
+    flushes: AtomicU64,
     nodes: AtomicU64,
     records: AtomicU64,
     absent: AtomicU64,
@@ -329,7 +336,12 @@ fn sound(report: &Report, what: &str) {
 /// latest version of `db`, and compares each with the history.
 pub(super) fn compare_all(db: &Db, history: &History) -> Read {
     let snapshot = db.snapshot();
-    let at = snapshot.version().get();
+    compare_at(db, history, &snapshot.operation())
+}
+
+/// The same at the version of `operation`.
+pub(super) fn compare_at(db: &Db, history: &History, operation: &Operation<'_>) -> Read {
+    let at = operation.at().get();
     let state = history.through(at);
     let mut subtrees = state.subtrees();
     subtrees.push(shared());
@@ -337,12 +349,32 @@ pub(super) fn compare_all(db: &Db, history: &History) -> Read {
         .map(|subtree| Expected::of(&state, subtree, at))
         .collect();
     drop(state);
-    let operation = snapshot.operation();
     let mut read = Read::default();
     for expected in &expected {
-        read += expected.check(db, &operation);
+        read += expected.check(db, operation);
     }
     read
+}
+
+/// Commits `batch` with no transaction, and tells the model.
+pub(super) fn record(db: &Db, history: &History, batch: &OwnedBatch) {
+    let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
+    let Ok(Committed::Published(published)) = committed else {
+        panic!("a commit with no transaction: {committed:?}");
+    };
+    history.commit(published.version.get(), batch.writes());
+}
+
+/// A commit that writes one record, so that the version moves on: a page
+/// that the latest commit wrote is freed after the next one.
+pub(super) fn tick(db: &Db, history: &History, round: u32) {
+    let mut batch = OwnedBatch::default();
+    let unit = Unit::new(Column::Meta, shared());
+    let value = Val::Flat(round.to_be_bytes().to_vec());
+    batch
+        .records
+        .push(Write::Put(unit, b"tick".to_vec(), value));
+    record(db, history, &batch);
 }
 
 /// Applies `pieces` through one scope of `txn`, which is then merged, or
@@ -715,6 +747,12 @@ fn reader(run: &Run<'_>) {
         add(&tally.looks_behind, u64::from(at < run.version()));
         looks += 1;
 
+        if looks.is_multiple_of(FLUSH_EVERY) {
+            // The log is made durable beside the commits that append to
+            // it (DU1a).
+            db.flush().expect("the log is made durable");
+            add(&tally.flushes, 1);
+        }
         if looks.is_multiple_of(VERIFY_EVERY) {
             // The checker reads a pinned version as a reader, beside the
             // writers, write-back and the cleaner. A step of the reclaimer
@@ -795,11 +833,7 @@ fn epoch(
             ));
         batch.subtrees.extend(writers.0.enters());
         batch.subtrees.extend(writers.1.enters());
-        let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
-        let Ok(Committed::Published(published)) = committed else {
-            panic!("the first commit: {committed:?}");
-        };
-        history.commit(published.version.get(), batch.writes());
+        record(&db, history, &batch);
     }
     // What the session before left, as this one opened it.
     assert_eq!(db.version().get(), history.version());
@@ -873,24 +907,24 @@ fn epoch(
             blocks += 1;
             match config.until {
                 Until::Blocks(enough) if blocks >= enough => break,
-                Until::Elapsed(long) if began.elapsed() >= long => break,
+                Until::Elapsed(long) if began.elapsed() >= long && blocks >= LEAST_BLOCKS => {
+                    break;
+                }
                 _ => {}
             }
         }
-        if let Until::Blocks(_) = config.until {
-            // Each of the other threads has done its least before the
-            // epoch ends, so that a short run holds what a long one does.
-            let done = |count: &AtomicU64, was: u64, least: u64| get(count) >= was + least;
-            until("the other threads to do their least", || {
-                run.stopped()
-                    || (done(&tally.looks, before.0, 2 * VERIFY_EVERY)
-                        && done(&tally.outside, before.1, CHECKPOINT_EVERY)
-                        && done(&tally.checkpoints, before.2, 1)
-                        && done(&tally.verifies, before.3, 1)
-                        && cleaner_state.stats().passes >= 3
-                        && cleaner_state.stats().value_passes >= 3)
-            });
-        }
+        // Each of the other threads has done its least before the epoch
+        // ends, so that a run of any length holds what `held` asks for.
+        let done = |count: &AtomicU64, was: u64, least: u64| get(count) >= was + least;
+        until("the other threads to do their least", || {
+            run.stopped()
+                || (done(&tally.looks, before.0, 2 * VERIFY_EVERY)
+                    && done(&tally.outside, before.1, CHECKPOINT_EVERY)
+                    && done(&tally.checkpoints, before.2, 1)
+                    && done(&tally.verifies, before.3, 1)
+                    && cleaner_state.stats().passes >= 3
+                    && cleaner_state.stats().value_passes >= 3)
+        });
     });
     let cleaner_errors = cleaner_errors.into_inner().expect("the errors");
     assert!(cleaner_errors.is_empty(), "the cleaner: {cleaner_errors:?}");
@@ -905,23 +939,13 @@ fn epoch(
     // Everything that was dropped is reclaimed. A page that the latest
     // commit wrote is freed after the next one, so commits are made until
     // nothing waits.
-    let tick = Unit::new(Column::Meta, shared());
     for round in 0u32.. {
         let waiting = db.reclaim().waiting;
         if waiting == 0 && db.stats().reclaimed.waiting == 0 {
             break;
         }
         assert!(round < 2_000, "the drops are not reclaimed: {}", db.stats());
-        let mut batch = OwnedBatch::default();
-        let value = Val::Flat(round.to_be_bytes().to_vec());
-        batch
-            .records
-            .push(Write::Put(tick, b"tick".to_vec(), value));
-        let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
-        let Ok(Committed::Published(published)) = committed else {
-            panic!("a commit with every writer gone: {committed:?}");
-        };
-        history.commit(published.version.get(), batch.writes());
+        tick(&db, history, round);
         add(&tally.ticks, 1);
     }
     cleaner.finish().expect("the cleaner's files are closed");
@@ -1015,6 +1039,7 @@ fn held(tally: &Tally) {
         ("checkpoints", &tally.checkpoints),
         ("looks of the reader", &tally.looks),
         ("runs of the checker beside the writers", &tally.verifies),
+        ("flushes beside the commits", &tally.flushes),
         ("nodes read", &tally.nodes),
         ("records read", &tally.records),
         ("subtrees found dropped", &tally.absent),

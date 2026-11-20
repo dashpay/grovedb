@@ -1,6 +1,6 @@
-//! Models of what the parts of the engine do to each other across the
-//! crates' borders, each on the code of both sides (VER-05;
-//! `transactions.md` section 15.2, "Loom models owed by VER-05").
+//! Models of what the parts of the engine do to each other, on the code
+//! of each part (VER-05; `transactions.md` section 15.2, "Loom models owed
+//! by VER-05").
 //!
 //! The buffer pool, the page id allocator and the page table are
 //! `lignin-store`'s, and what they are asked about, the version pins and
@@ -11,7 +11,9 @@
 //! that plays a page version. Here the two run together: a reader takes its
 //! pin from the real [`Versions`] and its page from the real pool, a commit
 //! installs in the one and publishes in the other, and the reclaim that the
-//! versions start is the pool's and the allocator's own.
+//! versions start is the pool's and the allocator's own. One model more is
+//! of the pool and the page table, with no versions: a page that is freed
+//! while write-back holds it (D-116).
 //!
 //! Each model is written once and run two ways:
 //!

@@ -775,8 +775,8 @@ fn a_step_that_the_log_refuses_is_made_again() {
 /// passed over: it holds the lock on the counts of values there, which a
 /// commit waits for, so no commit lands at such a read. Whether a read is
 /// one of those is asked of the lock itself, with no wait
-/// (`ValueStore::try_step`): at every other read the commit lands,
-/// however slow the machine is, and the test says at how many.
+/// (`ValueStore::try_step`): at every other read the commit is let in and
+/// waited for, and the test says at how many reads one landed.
 #[test]
 fn a_commit_at_any_read_of_the_reclaimer_leaves_no_record_behind() {
     use std::{cell::Cell, rc::Rc, sync::mpsc};

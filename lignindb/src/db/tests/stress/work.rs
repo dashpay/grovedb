@@ -368,6 +368,24 @@ impl Writer {
         (count > 0).then_some(piece)
     }
 
+    /// The removal of the one node of each of the `count` newest members
+    /// of its crowd, in one batch. The members stay entered, and the page
+    /// that held the node of each keeps no cell.
+    pub(in crate::db::tests) fn empty_newest(&mut self, count: usize) -> Piece {
+        let mut batch = OwnedBatch::default();
+        for member in self.crowd.iter().rev().take(count) {
+            let subtree = named(5, self.id, *member);
+            let items = BTreeMap::from([(document_key(*member), told(*member, 0, 40))]);
+            let view = (model::records(&items).1.into_iter())
+                .map(|(key, node)| (key, Val::Node(node)))
+                .collect();
+            let merk = OwnedMerk::change(subtree, &view, &BTreeMap::new());
+            batch.records.extend(World::root_record(&merk));
+            batch.merks.push(merk);
+        }
+        Piece::new(batch, Then::Nothing)
+    }
+
     pub(in crate::db::tests) fn crowded(&self) -> usize {
         self.crowd.len()
     }

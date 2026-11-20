@@ -23,18 +23,24 @@
 //! | an operation on a file: a page that is read from a segment, a block or a record that is appended, a manifest that is replaced, a sync | [`Vfs`] |
 //!
 //! The step runs on the thread of the test. At its point it wakes a second
-//! thread, which makes the burst, and waits for it. Where the step holds a
-//! lock that the burst needs, the step goes on after a while and the burst
-//! lands behind the lock, which is a schedule as well. [`sweep`] tries
-//! the points of a step, each from the same state: a database that was
-//! written by both writers of the stress test, closed, opened again with
-//! nothing in memory, and written a little more with no write-back, so that
-//! page versions are owed, values are pending and drops wait.
+//! thread, which makes the burst, and waits for it. Where the step holds
+//! the commit lock or the lock on the counts of values at its point, no
+//! commit can come in: the step goes on after a while and the burst lands
+//! behind the lock, which is a schedule as well. Where it holds neither,
+//! the step waits until a commit of the burst is published
+//! ([`Gate::await_a_commit`]). [`sweep`] tries the points of a step, each
+//! from the same state: a database that was written by both writers of
+//! the stress test, closed, opened again with nothing in memory, and
+//! written a little more with no write-back ([`prelude`]), so that page
+//! versions are owed, values are pending and drops wait.
 //!
 //! With the crate's tests a sweep tries a sample of the points of its
 //! step, evenly spread. `LIGNIN_SCHEDULE_POINTS=all` has it try every
 //! point, which the nightly run does (`lignin-ci.sh schedules`), and
-//! `LIGNIN_SCHEDULE_POINTS=N` at most `N`.
+//! `LIGNIN_SCHEDULE_POINTS=N` at most `N`. The sweep of
+//! [`Burst::Empties`] is apart in both: its state is made for it
+//! ([`pages_to_empty`]), and it tries every point of the step, which has
+//! few, whatever is asked.
 //!
 //! # The oracle
 //!
@@ -51,7 +57,8 @@
 //!
 //! **A point is a seam, not an instruction.** Between two reads of pages
 //! that are both in the buffer pool there is no point unless the step asks
-//! for the latest version between them, so a step that reads two levels of
+//! about versions, pins, guards or epochs between them, so a step that
+//! reads two levels of
 //! a tree at one version it asked for once is swept before and after the
 //! walk and not inside it. That is the form such a walk has to have
 //! (D-145), and what makes it safe there is that it reads one version; the
@@ -60,15 +67,18 @@
 //! point: two bursts at two points of one step are the stress test's
 //! (`super::stress`), by chance.
 //!
+//! Nor does a step stand inside a commit: at its point it waits for the
+//! publication of the commit it let in. What a thread sees between the
+//! install of a commit and its publication is reached only where a burst
+//! outlasts the step's patience, by chance.
+//!
 //! # What was found by chance, and which schedule finds it on purpose
 //!
 //! | Defect | Schedule |
 //! | --- | --- |
-//! | D-145: the reclaimer walked to a record's leaf with each level at the then-latest version; a commit that freed or split the leaf between two levels gave an error, or left a root record with no entry | a reclaiming against a burst that merges, and one that splits, the leaves of the directory |
-//! | D-116: a page freed under a reused id while a pass of write-back held its frame was linked | a turn of write-back against blocks that drop, reclaim and write again |
-//! | a page that a commit freed, and whose frames the pool dropped, between write-back's look and its hold, was an error of the pass (`Replaced`) | the same |
-//! | STORE-08: the owners of values read a page at the published version where a newer one was installed; a value-log file was stamped empty at too old a version | a pass over the value log against blocks |
-//! | D-172: an open of a checkpoint refused a log file that the database it was made of had appended to since the open first read it (`WrongLogEnd`) | an open of a checkpoint against any burst |
+//! | D-145: the reclaimer walked to a record's leaf with each level at the then-current version of its page; a commit that freed or split the leaf between two levels gave an error, or left a root record with no entry | a reclaiming against a burst that merges, and one that splits, the leaves of the directory |
+//! | D-116: a page that was made under an id used before, and freed while a pass of write-back had its block appended and not yet linked, was linked | a turn of write-back against a commit that empties pages it has not written ([`Burst::Empties`]) |
+//! | D-172: an open of a checkpoint refused a log file that the database it was made of had appended to since the open first read it (`WrongLogEnd`) | `super::beside`, which commits before every look of the open at its log; the opens of a checkpoint here commit at one point each |
 
 use std::{
     io,
@@ -100,10 +110,10 @@ use lignin_tree::{
 
 use super::{
     stress::{
-        compare_all,
+        compare_all, compare_at,
         history::History,
-        stress_options, verify,
-        work::{joined, shared, write, Expected, Piece, Read, Writer},
+        record, stress_options, tick, verify,
+        work::{joined, shared, write, Piece, Writer},
     },
     *,
 };
@@ -146,9 +156,8 @@ struct Gate {
     /// point, and for a schedule with none.
     open: Mutex<Option<bool>>,
     /// Whether a commit of the burst was published before the step went
-    /// on from its point, and whether one that could come in did not.
+    /// on from its point.
     committed: AtomicBool,
-    stuck: AtomicBool,
 }
 
 /// The database a gate asks, while a schedule has one open.
@@ -161,9 +170,10 @@ impl std::fmt::Debug for Database {
     }
 }
 
-/// How long a commit that nothing keeps out is waited for at a point
-/// before the schedule is given up as one the harness has wrong.
-const COMMIT_LANDS_WITHIN: Duration = Duration::from_secs(10);
+/// How long a commit that neither lock keeps out is waited for at a
+/// point. A schedule in which none is published in that time fails: a
+/// commit waits there for something the harness does not ask about.
+const COMMIT_LANDS_WITHIN: Duration = Duration::from_secs(60);
 
 impl Gate {
     /// A gate, with what the thread of the burst waits on and answers by.
@@ -184,7 +194,6 @@ impl Gate {
             asks: Database::default(),
             open: Mutex::new(None),
             committed: AtomicBool::new(false),
-            stuck: AtomicBool::new(false),
         };
         (Arc::new(gate), gone, finished)
     }
@@ -218,11 +227,12 @@ impl Gate {
     }
 
     /// Lets the burst in at the point and, where a commit can come in,
-    /// waits until one of the burst is published, for as long as that
-    /// takes. Whether one can is asked of the two locks that every commit
-    /// takes, with no wait: the paced thread, which asks, holds them here
-    /// or nobody does. So a commit lands at every such point however slow
-    /// the machine is, and at no other.
+    /// waits until one of the burst is published, up to
+    /// [`COMMIT_LANDS_WITHIN`]. Whether one can is asked of the two locks
+    /// that every commit takes, with no wait: the paced thread, which
+    /// asks, holds them here or nobody does. So the step goes on from
+    /// such a point when a commit has landed there, and not when a time
+    /// that a fast machine needs for one has passed.
     fn await_a_commit(&self) {
         let Some(shared) = lock(&self.asks.0).clone() else {
             return;
@@ -236,33 +246,33 @@ impl Gate {
             return;
         }
         let before = shared.versions.latest();
+        self.go();
+        let began = Instant::now();
+        while shared.versions.latest() == before && began.elapsed() < COMMIT_LANDS_WITHIN {
+            match lock(&self.made).try_recv() {
+                Ok(()) => {
+                    self.finished.store(true, Ordering::Relaxed);
+                    break;
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+                Err(mpsc::TryRecvError::Empty) => thread::sleep(Duration::from_micros(200)),
+            }
+        }
+        let committed = shared.versions.latest() != before;
+        self.committed.store(committed, Ordering::Relaxed);
+    }
+
+    /// Wakes the thread of the burst, once.
+    fn go(&self) {
         if let Some(go) = lock(&self.go).take() {
             let _ = go.send(());
-        }
-        let began = Instant::now();
-        while shared.versions.latest() == before {
-            match lock(&self.made).try_recv() {
-                Ok(()) => self.finished.store(true, Ordering::Relaxed),
-                Err(mpsc::TryRecvError::Empty) if began.elapsed() < COMMIT_LANDS_WITHIN => {
-                    thread::sleep(Duration::from_micros(200));
-                    continue;
-                }
-                Err(_) => {}
-            }
-            break;
-        }
-        match shared.versions.latest() == before {
-            true => self.stuck.store(true, Ordering::Relaxed),
-            false => self.committed.store(true, Ordering::Relaxed),
         }
     }
 
     /// Lets the burst in, if it was not, and waits until it is made: for
     /// `patience`, or for as long as it takes. Returns whether it is made.
     fn let_in(&self, patience: Option<Duration>) -> bool {
-        if let Some(go) = lock(&self.go).take() {
-            let _ = go.send(());
-        }
+        self.go();
         if self.finished.load(Ordering::Relaxed) {
             return true;
         }
@@ -492,7 +502,18 @@ enum Burst {
     /// A commit that enters a crowd of small subtrees: the leaves of the
     /// directory's keyspace are split.
     Split,
+    /// A commit that takes the one node out of each of a few Merks which
+    /// the state has just entered, under page ids that named other pages
+    /// before, and of which nothing is written back: the page of each is
+    /// freed with no free link of its own (`page-table.md` T18, D-116).
+    /// The state of this burst has those pages and little else that is
+    /// unwritten ([`pages_to_empty`]), and its sweep tries every point.
+    Empties,
 }
+
+/// How many Merks the state of [`Burst::Empties`] has just entered, each
+/// with its node in a page of its own.
+const FRESH: usize = 8;
 
 /// The pool of a database under a schedule: less than the database holds.
 const POOL: usize = 1 << 20;
@@ -520,9 +541,19 @@ struct World {
     writers: [Writer; 2],
 }
 
+/// What a commit did to the pages of the store: how many it made, how
+/// many it freed, and how many of the freed ones no segment ever held
+/// under their id's present life (`Published::freed_unlinked`).
+#[derive(Debug, Default, Clone, Copy)]
+struct Pages {
+    made: usize,
+    freed: usize,
+    unlinked: usize,
+}
+
 /// Commits `pieces` of `writer` in one batch, through a transaction of its
-/// own, and tells the model.
-fn commit(db: &Db, history: &History, writer: &mut Writer, pieces: Vec<Piece>) -> (usize, usize) {
+/// own, and tells the model. Returns what it did to the pages.
+fn commit(db: &Db, history: &History, writer: &mut Writer, pieces: Vec<Piece>) -> Pages {
     let batch = joined(&pieces);
     let committed = write(db, &batch);
     let Ok(Committed::Published(published)) = committed else {
@@ -532,18 +563,16 @@ fn commit(db: &Db, history: &History, writer: &mut Writer, pieces: Vec<Piece>) -
     let writes = pieces.iter().flat_map(|piece| piece.writes.iter().cloned());
     history.commit(published.version.get(), writes.collect());
     writer.committed(pieces);
-    (published.created.len(), published.freed.len())
+    Pages {
+        made: published.created.len(),
+        freed: published.freed.len(),
+        unlinked: published.freed_unlinked,
+    }
 }
 
 /// One block of `writer`: documents, a new generation every other block,
 /// and with `drops` the drop of the oldest generation beyond those kept.
-fn block(
-    db: &Db,
-    history: &History,
-    writer: &mut Writer,
-    number: u64,
-    drops: bool,
-) -> (usize, usize) {
+fn block(db: &Db, history: &History, writer: &mut Writer, number: u64, drops: bool) {
     let mut pieces = vec![writer.documents(number as usize % Writer::MERKS)];
     if number.is_multiple_of(2) {
         pieces.push(writer.generation());
@@ -551,23 +580,7 @@ fn block(
     if drops && writer.generations() > GENERATIONS {
         pieces.extend(writer.drop_oldest());
     }
-    commit(db, history, writer, pieces)
-}
-
-/// A commit that writes one record, so that the version moves on: a page
-/// that the latest commit wrote is freed after the next one.
-fn tick(db: &Db, history: &History, round: u32) {
-    let mut batch = OwnedBatch::default();
-    let unit = Unit::new(Column::Meta, shared());
-    let value = Val::Flat(round.to_be_bytes().to_vec());
-    batch
-        .records
-        .push(Write::Put(unit, b"tick".to_vec(), value));
-    let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
-    let Ok(Committed::Published(published)) = committed else {
-        panic!("a commit of one record: {committed:?}");
-    };
-    history.commit(published.version.get(), batch.writes());
+    commit(db, history, writer, pieces);
 }
 
 /// Reclaims everything that the database knows to be dropped, with the
@@ -656,11 +669,7 @@ fn base(seed: u64) -> Base {
     first.subtrees.push(OwnedSubtree::Enter(shared(), None));
     first.subtrees.extend(writers[0].enters());
     first.subtrees.extend(writers[1].enters());
-    let committed = first.with(|batch| db.write(batch, &mut NoStaleHashes));
-    let Ok(Committed::Published(published)) = committed else {
-        panic!("the first commit: {committed:?}");
-    };
-    history.commit(published.version.get(), first.writes());
+    record(&db, &history, &first);
     let crowd = writers[0].crowd(CROWD);
     commit(&db, &history, &mut writers[0], vec![crowd]);
 
@@ -701,18 +710,19 @@ struct Outcome {
     kinds: Vec<&'static str>,
     /// Whether the burst was made before the step went on from its point.
     landed: bool,
-    /// Whether a commit could come in at the point, whether one of the
-    /// burst was published there, and whether one that could come in was
-    /// not seen to.
+    /// Whether a commit could come in at the point, and whether one of
+    /// the burst was published there.
     open: Option<bool>,
     committed: bool,
-    stuck: bool,
     /// What the step did, in its own words.
     did: String,
-    /// How long the burst took, and the pages its first commit made and
-    /// freed.
+    /// How many links of blocks write-back was refused while the step
+    /// ran.
+    refused: u64,
+    /// How long the burst took, and what its first commit did to the
+    /// pages.
     burst: Duration,
-    pages: (usize, usize),
+    pages: Pages,
     /// Everything that is no sound end of a schedule.
     errors: Vec<String>,
 }
@@ -728,7 +738,7 @@ fn act(
     (step, burst): (Step, Burst),
     cleaner_state: &CleanerState,
     errors: &Mutex<Vec<String>>,
-) -> (usize, usize) {
+) -> Pages {
     drop(lock(pinned).take());
     let pages = match burst {
         Burst::Blocks => {
@@ -753,6 +763,10 @@ fn act(
         Burst::Split => {
             let crowd = writers[1].crowd(CROWD);
             commit(db, history, &mut writers[1], vec![crowd])
+        }
+        Burst::Empties => {
+            let emptied = writers[0].empty_newest(FRESH);
+            commit(db, history, &mut writers[0], vec![emptied])
         }
     };
     let mut failed = Vec::new();
@@ -965,18 +979,8 @@ fn work(
                 Some(snapshot) => snapshot.operation(),
                 None => db.read(&mut lease),
             };
+            let read = compare_at(db, history, &operation);
             let at = operation.at().get();
-            let state = history.through(at);
-            let mut subtrees = state.subtrees();
-            subtrees.push(shared());
-            let expected: Vec<Expected> = (subtrees.into_iter())
-                .map(|subtree| Expected::of(&state, subtree, at))
-                .collect();
-            drop(state);
-            let mut read = Read::default();
-            for expected in &expected {
-                read += expected.check(db, &operation);
-            }
             Ok(format!("{read:?} at version {at}"))
         }
     };
@@ -987,6 +991,54 @@ fn work(
 }
 
 const CHECKPOINT: &str = "/checkpoint";
+
+/// What every schedule but those of [`Burst::Empties`] begins with,
+/// written with no write-back: page versions are owed, values are pending,
+/// and what is dropped waits. A reader pins a version after the drops, and
+/// the blocks after it supersede what it reads. Returns the reader's pin.
+fn prelude<'d>(db: &'d Db, history: &History, writers: &mut [Writer; 2]) -> Snapshot<'d> {
+    for number in 0..PRELUDE {
+        block(
+            db,
+            history,
+            &mut writers[number as usize % 2],
+            1_000 + number,
+            true,
+        );
+    }
+    let thinned = writers[0].thin(3).expect("the crowd of the state");
+    commit(db, history, &mut writers[0], vec![thinned]);
+    let pinned = db.snapshot();
+    for number in PRELUDE..PRELUDE + PINNED {
+        block(
+            db,
+            history,
+            &mut writers[number as usize % 2],
+            1_000 + number,
+            false,
+        );
+    }
+    pinned
+}
+
+/// What a schedule of [`Burst::Empties`] begins with. [`FRESH`] members of
+/// the crowd are dropped and reclaimed, which frees their pages and
+/// releases the ids. As many members are entered then, with no write-back,
+/// so that their pages can take ids that were used before. Whether they
+/// did, the commit of the burst says when it frees them
+/// ([`Pages::unlinked`]).
+fn pages_to_empty(db: &Db, history: &History, writer: &mut Writer, errors: &mut Vec<String>) {
+    let leaving = writer.thin(FRESH).expect("the crowd of the state");
+    commit(db, history, writer, vec![leaving]);
+    settle(db, history, errors);
+    // A retired id is given out again a round or two after its page went.
+    for round in 0..3 {
+        db.reclaim();
+        tick(db, history, 2_000 + round);
+    }
+    let crowd = writer.crowd(FRESH as u64);
+    commit(db, history, writer, vec![crowd]);
+}
 
 /// One schedule: the state is opened, written a little more, and `step`
 /// runs with `burst` let in at its point `at`, or after it with zero. Then
@@ -1006,30 +1058,16 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     assert_eq!(db.version().get(), history.version());
     let mut errors = Vec::new();
 
-    // Written with no write-back: page versions are owed, values are
-    // pending, and what is dropped waits. A reader pins a version after
-    // the drops, and the blocks after it supersede what it reads.
-    for number in 0..PRELUDE {
-        block(
-            &db,
-            &history,
-            &mut writers[number as usize % 2],
-            1_000 + number,
-            true,
-        );
-    }
-    let thinned = writers[0].thin(3).expect("the crowd of the state");
-    commit(&db, &history, &mut writers[0], vec![thinned]);
-    let pinned = Mutex::new(Some(db.snapshot()));
-    for number in PRELUDE..PRELUDE + PINNED {
-        block(
-            &db,
-            &history,
-            &mut writers[number as usize % 2],
-            1_000 + number,
-            false,
-        );
-    }
+    let pinned = match burst {
+        Burst::Empties => {
+            pages_to_empty(&db, &history, &mut writers[0], &mut errors);
+            None
+        }
+        _ => Some(prelude(&db, &history, &mut writers)),
+    };
+    let pinned = Mutex::new(pinned);
+    let refused = || db.shared.write_back().state().stats().links_refused;
+    let refused_before = refused();
 
     // The reclaimings that are the step are the schedule's own, under its
     // pace: the engine's rounds are not given them.
@@ -1053,7 +1091,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         let _released = Released(&gate);
         let beside = threads.spawn(move || {
             if gone.recv().is_err() {
-                return (Duration::ZERO, (0, 0));
+                return (Duration::ZERO, Pages::default());
             }
             let began = Instant::now();
             let pages = act(
@@ -1084,6 +1122,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     });
     errors.extend(burst_errors.into_inner().expect("the errors"));
     drop(lock(&gate.asks.0).take());
+    let refused = refused() - refused_before;
 
     // To rest. The reclaimings of the step are taken to their end, with
     // commits between the tries: a page that the latest commit wrote is
@@ -1144,8 +1183,8 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         landed: gate.landed.load(Ordering::Relaxed),
         open: *lock(&gate.open),
         committed: gate.committed.load(Ordering::Relaxed),
-        stuck: gate.stuck.load(Ordering::Relaxed),
         did,
+        refused,
         burst: took,
         pages,
         errors,
@@ -1187,10 +1226,15 @@ fn sweep(step: Step, burst: Burst) {
     );
     let points = calm.kinds.len() as u64;
     assert!(points > 0, "the step has no point: {}", calm.did);
+    let every = burst == Burst::Empties;
     let patience = (calm.burst * 4).max(Duration::from_millis(200));
     let (mut failures, mut landed, mut tried) = (Vec::new(), 0u64, 0u64);
-    let (mut open, mut committed) = (0u64, 0u64);
-    for at in chosen(points) {
+    let (mut open, mut committed, mut in_hand) = (0u64, 0u64, 0u64);
+    let tried_at = match every {
+        true => (1..=points).collect(),
+        false => chosen(points),
+    };
+    for at in tried_at {
         let kind = calm.kinds[at as usize - 1];
         let schedule = format!("the burst at point {at} of {points} ({kind})");
         let outcome = catch_unwind(AssertUnwindSafe(|| run(&base, step, burst, at, patience)));
@@ -1200,7 +1244,9 @@ fn sweep(step: Step, burst: Burst) {
                 landed += u64::from(outcome.landed);
                 open += u64::from(outcome.open == Some(true));
                 committed += u64::from(outcome.committed);
-                if outcome.stuck {
+                let unlinked = outcome.pages.unlinked > 0;
+                in_hand += u64::from(unlinked && outcome.refused > calm.refused);
+                if outcome.open == Some(true) && !outcome.committed {
                     failures.push(format!(
                         "{schedule}: no commit of the burst was published within \
                          {COMMIT_LANDS_WITHIN:?}, where neither the commit lock nor the lock on \
@@ -1229,18 +1275,34 @@ fn sweep(step: Step, burst: Burst) {
          commit made {} pages and freed {}. The step alone: {}",
         failures.len(),
         calm.burst,
-        calm.pages.0,
-        calm.pages.1,
+        calm.pages.made,
+        calm.pages.freed,
         calm.did
     );
+    if every {
+        println!(
+            "{step:?} against {burst:?}: the burst freed a page that no segment held, and \
+             write-back was refused a link, in {in_hand} schedules"
+        );
+    }
     assert!(
         failures.is_empty(),
         "{step:?} against {burst:?}: {failures:#?}"
     );
-    // By construction, and not by how fast the machine is: a commit is
-    // waited for wherever one can come in.
+    // A commit was waited for wherever one could come in, and each of
+    // those schedules that has not failed had one published at its point.
     assert!(open > 0, "a commit could come in at no point of the step");
-    assert_eq!(committed, open, "a commit that could come in did not");
+    if every {
+        // By construction: in some schedule the commit of the burst freed
+        // a page that no segment held under an id used before, and the
+        // turn was refused a link that it is given with the burst behind
+        // it. The turn had the block of such a page appended, and the page
+        // was freed before the link was pushed.
+        assert!(
+            in_hand > 0,
+            "in no schedule did the burst free a page that write-back had in hand"
+        );
+    }
 }
 
 /// **A checkpoint that is sampled right after the log turned to a new file
@@ -1317,15 +1379,6 @@ fn dropped_just_now() -> (Db, History) {
     (db, history)
 }
 
-/// Commits `batch` with no transaction, and tells the model.
-fn record(db: &Db, history: &History, batch: &OwnedBatch) {
-    let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
-    let Ok(Committed::Published(published)) = committed else {
-        panic!("a commit with no transaction: {committed:?}");
-    };
-    history.commit(published.version.get(), batch.writes());
-}
-
 /// The commit of `behind`.
 fn commit_behind(db: &Db, history: &History, behind: Behind) {
     let mut batch = OwnedBatch::default();
@@ -1358,23 +1411,6 @@ fn reclaim_all(db: &Db, history: &History) {
         }
     }
     panic!("the drop is not reclaimed: {:?}", db.stats().reclaimed);
-}
-
-/// Reads every subtree of the version of `snapshot` and compares it with
-/// the model.
-fn reads_what_the_model_has(db: &Db, history: &History, snapshot: &Snapshot<'_>) {
-    let at = snapshot.version().get();
-    let state = history.through(at);
-    let mut subtrees = state.subtrees();
-    subtrees.push(shared());
-    let expected: Vec<Expected> = (subtrees.into_iter())
-        .map(|subtree| Expected::of(&state, subtree, at))
-        .collect();
-    drop(state);
-    let operation = snapshot.operation();
-    for expected in &expected {
-        expected.check(db, &operation);
-    }
 }
 
 /// **The physical checker reads a pinned version soundly where no step of
@@ -1412,7 +1448,7 @@ fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on() {
         report.findings.len() == 1 && report.has(Rule::FlatRecordWithoutEntry),
         "{report}"
     );
-    reads_what_the_model_has(&db, &history, &pinned);
+    compare_at(&db, &history, &pinned.operation());
     let latest = db.snapshot();
     let at_latest = verify(&db, Scope::Reader, latest.version());
     assert!(at_latest.is_sound(), "{at_latest}");
@@ -1432,7 +1468,7 @@ fn a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on() {
             beside.join().expect("the drop is reclaimed");
         });
         assert_eq!(db.stats().reclaimed.merks, 1, "{behind:?}");
-        reads_what_the_model_has(&db, &history, &pinned);
+        compare_at(&db, &history, &pinned.operation());
     }
 }
 
@@ -1472,4 +1508,5 @@ schedules! {
     an_open_of_a_checkpoint_against_commits_that_merge_the_leaves_of_the_directory: OpenCheckpoint, Merge;
     an_open_of_a_checkpoint_against_commits_that_split_the_leaves_of_the_directory: OpenCheckpoint, Split;
     an_open_of_a_checkpoint_against_blocks: OpenCheckpoint, Blocks;
+    a_turn_of_write_back_against_a_commit_that_empties_pages_it_has_not_written: WriteBack, Empties;
 }
