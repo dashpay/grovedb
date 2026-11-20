@@ -112,6 +112,10 @@ pub(super) struct NodeWrite {
     /// they are left to the engine (`store::lignin::hash`).
     pub(super) stale: Stale,
     pub(super) hint: Option<Location>,
+    /// The handle the store read the node's value with: what a node that
+    /// keeps its value names as the read it is kept from. A hint is where
+    /// the node is, and need not be a read of it.
+    pub(super) read: Option<Location>,
     /// The Merks the node's element hosts, by position, when the write
     /// names them. Without it the node keeps the ones it has.
     pub(super) hosted: Option<Vec<Prefix>>,
@@ -628,6 +632,11 @@ fn read_subtree(reads: &impl Reads, subtree: &Prefix) -> Result<Option<LigninEnt
 struct Held {
     /// Whether it holds the value the write states, byte for byte.
     value: bool,
+    /// The handle the node was shown with for that comparison, where the
+    /// value is held: none for the transaction's own record of the node.
+    /// The node then keeps its value, and names this as the read it is
+    /// kept from.
+    read: Option<NodeHandle>,
     /// The bytes it has for the hash of each child that the write leaves
     /// stale, where it has a link on that side.
     links: [Option<CryptoHash>; 2],
@@ -657,12 +666,13 @@ fn held(scope: &Scope<'_, '_>, subtree: Subtree, node: &NodeWrite) -> Result<Hel
             }
             _ => false,
         };
+        let read = view.handle().filter(|_| value);
         let links = Side::BOTH.map(|side| {
             let link = view.link(side);
             let link = link.filter(|_| node.stale.has(HashField::Child(side)));
             link.map(|link| *link.hash)
         });
-        Ok(Held { value, links })
+        Ok(Held { value, read, links })
     })
     .and_then(|held| held)
     .map_err(fault)
@@ -685,7 +695,10 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
 
     // A stated value that the transaction holds already is kept where it
     // is, so that a value is written only when it changed. A hash that is
-    // left stale keeps the bytes it has.
+    // left stale keeps the bytes it has. A node that keeps its value names
+    // the read the value is kept from: the store's own read of the node
+    // where Merk says the value is unchanged, and the comparing read here,
+    // which is of exactly the bytes that are kept.
     let mut keep = Vec::with_capacity(write.merks.len());
     for merk in &write.merks {
         let subtree = Subtree::new(merk.subtree);
@@ -734,7 +747,11 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
                         (ValueWrite::Stated(stated), false) => ValuePut::Value(stated),
                         _ => ValuePut::Keep,
                     },
-                    at: node.hint.map(|Location(handle)| handle),
+                    at: match (&node.value, keep.value) {
+                        (ValueWrite::Kept, _) => node.read.map(|Location(handle)| handle),
+                        (ValueWrite::Stated(_), true) => keep.read,
+                        (ValueWrite::Stated(_), false) => node.hint.map(|Location(handle)| handle),
+                    },
                     stale: node.stale,
                 });
             puts.collect()

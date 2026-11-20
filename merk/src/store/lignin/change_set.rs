@@ -99,6 +99,7 @@ fn prepare(node: &TreeNode, change: NodeChange) -> Result<(NodeWrite, usize), Er
             },
             stale,
             hint: None,
+            read: None,
             hosted: None,
         },
         record_len,
@@ -199,10 +200,16 @@ impl LigninChangeSet {
         change_set
     }
 
-    /// Takes the hint of each written node from `hints`.
-    pub(super) fn hint(&mut self, hints: &HashMap<Vec<u8>, Location>) {
+    /// Takes the hint of each written node from `hints`, and the handle its
+    /// value was read with from `reads`.
+    pub(super) fn hint(
+        &mut self,
+        hints: &HashMap<Vec<u8>, Location>,
+        reads: &HashMap<Vec<u8>, Option<Location>>,
+    ) {
         for (node, _) in &mut self.nodes {
             node.hint = hints.get(&node.key).copied();
+            node.read = reads.get(&node.key).copied().flatten();
         }
     }
 

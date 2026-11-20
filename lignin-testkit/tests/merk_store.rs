@@ -15,13 +15,11 @@
 //!    with `prepare_node`, `put_node`, `delete_node` and `state_root` from
 //!    the nodes as RocksDB holds them, all change sets of the operation in
 //!    one batch, with each Merk named in the element that hosts it. A
-//!    node that was there before the operation is loaded through the
-//!    handle before it is put, as Merk loads a node before it changes it:
-//!    a write that keeps the node's value names that read, and the store
-//!    keeps a stated value where the transaction holds the same bytes. The
-//!    batch enters each Merk the operation made, and drops each tree it
-//!    removed: a tree that is moved, or deleted and inserted again, is
-//!    dropped and entered in one batch.
+//!    node that is put with its value kept is loaded through the handle
+//!    first, as Merk loads a node before it changes it: the write names
+//!    that read. The batch enters each Merk the operation made, and drops
+//!    each tree it removed: a tree that is moved, or deleted and inserted
+//!    again, is dropped and entered in one batch.
 //! 4. Every written node is read back through `LigninNodeStore` and must
 //!    be, as a record, the record RocksDB holds: the same value, feature,
 //!    hashes, links, heights and aggregates.
@@ -703,16 +701,15 @@ impl Replay<'_> {
                     (_, false, false, true) => NodeChange::StructureChanged,
                     (_, false, false, false) => NodeChange::HashOnly,
                 };
-                if !fresh && !created {
-                    // A write that keeps a node's value has to name the
-                    // read the value is kept from (LigninDB's
-                    // `BatchError::NoRead`), and the store keeps a stated
-                    // value too where the transaction holds the same
-                    // bytes. So the handle loads every node that was there
-                    // before the operation, as a Merk has loaded every
-                    // node it changes.
+                if kind != NodeChange::ValueWritten {
+                    // The node keeps its value, and the write has to name
+                    // the read the value is kept from (LigninDB's
+                    // `BatchError::NoRead`). The change set holds no value
+                    // for such a node, so the store cannot state it in its
+                    // place. So the handle loads the node first, as a Merk
+                    // has loaded every node it changes.
                     read(store.get_node(key, NO_VALUE_DEFINED_COST, version))
-                        .expect("a node that was there before is read");
+                        .expect("a node that keeps its value is there");
                 }
                 let prepared = change_set.prepare_node(&node, kind);
                 (change_set.put_node(key, prepared, None)).expect("the node is put");
