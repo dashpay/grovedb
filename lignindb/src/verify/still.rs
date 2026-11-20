@@ -198,7 +198,9 @@ impl Run<'_, '_, '_> {
 
     /// Reads the block at `location` as `content`, and returns the length
     /// of its payload, which is in `payload`, with the format version of
-    /// its segment.
+    /// its segment. `fits` is asked for the length that the payload
+    /// states before the payload is unpacked, and says what is wrong with
+    /// a length that the store does not allow.
     fn read_block(
         &mut self,
         location: BlockLocation,
@@ -206,6 +208,7 @@ impl Run<'_, '_, '_> {
         max_payload_len: usize,
         block: &mut Vec<u8>,
         payload: &mut [u8],
+        fits: impl FnOnce(usize) -> Result<(), String>,
     ) -> Option<(usize, FormatVersion)> {
         let place = Place::Block(location);
         let segments = self.store.segments;
@@ -230,12 +233,12 @@ impl Run<'_, '_, '_> {
             return None;
         }
         let len = stored.payload_len();
-        let unpacked = match payload.get_mut(..len) {
+        let unpacked = fits(len).and_then(|()| match payload.get_mut(..len) {
             Some(into) => stored
                 .copy_payload_to(into)
                 .map_err(|error| error.to_string()),
             None => Err(format!("a payload of {len} bytes")),
-        };
+        });
         if let Err(error) = unpacked {
             self.add(Rule::Block, place, || error);
             return None;
@@ -259,6 +262,7 @@ impl Run<'_, '_, '_> {
             size.image_capacity(),
             block,
             frame,
+            |_| Ok(()),
         ) else {
             return Built::Broken;
         };
@@ -320,7 +324,7 @@ impl Run<'_, '_, '_> {
         // A run is at most one page size, and the loader refuses a longer
         // one (`lignin_store::load`, `LoadError::RunTooLong`): a block that
         // is longer than such a run can be stored as before it is read, and
-        // a run that states a longer payload.
+        // a run that states a longer payload before it is unpacked.
         let max = max_run_len(size);
         let too_long = |len: usize| {
             format!(
@@ -332,18 +336,28 @@ impl Run<'_, '_, '_> {
             return refused(self, too_long(stored_len - FRAME_LEN));
         }
         payload.clear();
-        payload.resize(
-            MAX_BODY_LEN.min(stored_len.saturating_mul(LZ4_MAX_EXPANSION)),
-            0,
-        );
-        let Some((len, run_version)) =
-            self.read_block(location, BlockContent::Delta, MAX_BODY_LEN, block, payload)
-        else {
+        payload.resize(max, 0);
+        let fits = |len: usize| {
+            if len > stored_len.saturating_mul(LZ4_MAX_EXPANSION) {
+                Err(format!(
+                    "a payload of {len} bytes in a block of {stored_len}"
+                ))
+            } else if len > max {
+                Err(too_long(len))
+            } else {
+                Ok(())
+            }
+        };
+        let Some((len, run_version)) = self.read_block(
+            location,
+            BlockContent::Delta,
+            MAX_BODY_LEN,
+            block,
+            payload,
+            fits,
+        ) else {
             return Built::Broken;
         };
-        if len > max {
-            return refused(self, too_long(len));
-        }
         let run = match DeltaRun::decode(&payload[..len], run_version) {
             Ok(run) => run,
             Err(error) => return refused(self, error.to_string()),

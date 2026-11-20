@@ -108,11 +108,17 @@
 //!   over a keyspace whose walk found nothing: every page read and
 //!   reached once, every level and every key in its place. The engine's
 //!   cursor ends a scan at the first key outside its range, so over
-//!   leaves that are out of their order it would end early with no
-//!   error. Where the walk has a finding, or a scan ends at an error, the
+//!   leaves that are out of their order it can end early with no
+//!   error. Where the walk has a finding, or the scan of the directory's
+//!   entries or of its records of dropped Merks ends at an error, the
 //!   records are not read, which is a finding of its own
-//!   ([`Rule::Directory`], [`Rule::FlatDropRecord`]). With no directory,
-//!   no Merk is walked and no flat record is compared with its entries.
+//!   ([`Rule::Directory`], [`Rule::FlatDropRecord`]). In a store with a
+//!   directory whose entries are not read, no Merk is walked and no flat
+//!   record is compared with its entries; where the records of range
+//!   deletes are not read, the pages they left are not walked. Any other
+//!   record of the directory that is not read, as one of a hosted Merk
+//!   under its host, is a finding of the directory's own check and holds
+//!   nothing back: the entries are all there, and are compared.
 //!
 //! So one page that is not read gives the finding of that page, and the
 //! findings of what was read; the rest waits for a run over a store whose
@@ -336,9 +342,10 @@ impl Options {
 /// The run returns its findings and never fails: a page that cannot be
 /// read is a finding, and what could only be reached through it is not
 /// looked at. So with a directory whose keyspace has a finding of its
-/// own, or whose records are not all read, no Merk is walked and no flat
-/// record is compared with its entries: the cells are then counted as
-/// reached by nothing, beside the finding that says why.
+/// own, or whose entries or records of dropped Merks are not read to
+/// their end, no Merk is walked and no flat record is compared with its
+/// entries: the cells are then counted as reached by nothing, beside the
+/// finding that says why.
 pub fn check<G: OperationGuard + ?Sized>(
     store: &Store<'_, '_>,
     guard: &G,

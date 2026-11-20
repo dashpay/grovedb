@@ -247,8 +247,8 @@ impl Run<'_, '_, '_> {
     /// read by the engine's cursor (`lignin_tree::flat`), which finds its
     /// way by the separators and the levels, and ends a scan at the first
     /// key that is not of the scan's range. Over leaves that are out of
-    /// their order it ends before the last record with no error, and what
-    /// it gave would be taken for all there is.
+    /// their order it can end before the last record with no error, and
+    /// what it gave would then be taken for all there is.
     fn walk_flat(&mut self, tree: &FlatTree, records: Records<'_>) -> bool {
         let before = self.found.count();
         let whole = self.walk_flat_from(Visit::root(tree.root(), None), tree, records, From::Tree);
