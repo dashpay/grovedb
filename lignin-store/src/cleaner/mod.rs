@@ -414,8 +414,8 @@
 //!
 //! | What fails | What is left |
 //! | --- | --- |
-//! | A live block that is damaged: its checksum, its frame or its payload | The block and its link, as they were. The segment is left alone until the store is opened again ([`CleanerError::Block`], [`CleanerError::Payload`], [`CleanerStats::segments_unreadable`]): it can never be emptied, so moving the rest of it would gain nothing. |
-//! | A read of a live block that the file layer failed | The block and its link, as they were. The pass ends with the error, and a later pass reads the block again: nothing says that the block is damaged. |
+//! | A live block that is damaged: its checksum, its frame or its payload | The block and its link, as they were. The segment is left alone until the store is opened again ([`CleanerError::Block`], [`CleanerError::Payload`], [`CleanerStats::segments_unreadable`]): it can never be emptied, so moving the rest of it would gain nothing. The pass goes on with the other segments, and ends with the error of the first damaged block it met, whatever fails after it. |
+//! | A read of a live block that the file layer failed | The block and its link, as they were. The pass ends there, with that error or, if it met a damaged block before, with the error of that block. A later pass reads the block again: nothing says that the block is damaged. |
 //! | An append to the cleaner's segment, or its sealing | What the segment holds is synced, and the next copy goes to a new segment. The block that was being moved is where it was. |
 //! | A sync of the cleaner's segment | Links point to copies that cannot be made durable. The segment's writer is kept, so that they stay readable, and write-back installs no table checkpoint until the store is opened again, so no segment that a recovery needs is deleted ([`CleanerError::SegmentNotDurable`]). |
 //! | The manifest that stops naming a dropped segment | The segment is out of the store. Its file is deleted by a later replacement of the manifest or by the next session. |
