@@ -2,7 +2,7 @@
 
 LigninDB task SEAM-04 ([plan](https://github.com/dashpay/grovedb/issues/1052), [task register 1](https://github.com/dashpay/grovedb/issues/1052#issuecomment-6960582299)).
 
-`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it, and the one implementation today is `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait. GROVE-01 adds `LigninEngine` in `grovedb::engine::lignin`. GroveDB builds with no engine at all: [Features and engines](#features-and-engines) (SEAM-07).
+`Engine` is everything `GroveDb` asks of a storage engine. It lives in `grovedb/src/engine/mod.rs`. `GroveDb<E: Engine = RocksDbEngine>` is generic over it. It has two implementations: `RocksDbEngine` (`grovedb/src/engine/rocksdb.rs`), which is `grovedb-storage` behind the trait, and `LigninEngine` (`grovedb/src/engine/lignin`, GROVE-01), which is `lignindb` behind it: [The LigninDB engine](#the-lignindb-engine). GroveDB builds with no engine at all: [Features and engines](#features-and-engines) (SEAM-07).
 
 This document states the contract of the trait, how the RocksDB engine meets it, what `GroveDb<E>` looks like to its callers, and the choices the plan left to this task. It builds on the two seams below it, [`NodeStore`](node-store.md) and [`FlatStore`](flat-store.md), and on the transaction rules of [`transactions.md`](transactions.md).
 
@@ -19,7 +19,7 @@ GroveDb<E: Engine>           operations, batches, proofs, references, state sync
       FlatStore              its data keyspace, and aux() and meta() (SEAM-03)
 ---------------------------- engines -------------------------------------------
 RocksDbEngine                RocksDbStorage, Tx, StorageBatch, the storage contexts
-LigninEngine                 GROVE-01
+LigninEngine                 lignindb::Db, LigninTransaction, LigninBatch, LigninNodeStore
 ```
 
 An engine is `Send + Sync + 'static`: it is a database handle that every thread of a node shares. Everything else is an associated type, so no call through the seam is dispatched dynamically.
@@ -232,6 +232,7 @@ GroveDB's Cargo features separate what is written for any engine from the engine
 | `rocksdb_storage` | `engine_generic` and `RocksDbEngine`: the default engine, `GroveDb::open`, `open_checkpoint`, `delete_checkpoint` and `open_with_cidx_integrity_check` | yes |
 | `unsafe-dump-load` | `rocksdb_storage` and the hatches `raw_storage` and `ingest_subtree_sst`. Before, it turned on the storage crate's feature only, and the hatches came with `minimal` | yes |
 | `grovedbg` | `full` and the debugger, with `start_visualizer` | yes |
+| `lignin_storage` | `engine_generic` and `LigninEngine`, with the LigninDB crates. It is in no other feature and not among the defaults. Without `rocksdb_storage` it is the default engine, and `GroveDb::open`, `open_checkpoint` and `delete_checkpoint` are on it | no |
 | `minimal` | `engine_generic` and `rocksdb_storage`, which is what it compiled before | yes |
 | `full` | `minimal` and Merk's `full`: its test helpers and coloured `Debug` output | yes |
 
@@ -242,7 +243,7 @@ The default is `full` and `estimated_costs`.
 - A build with `minimal` and `estimated_costs` and not `full`, which is Platform's, got Merk's `full` through `estimated_costs` before. It keeps `colored_debug`, which `estimated_costs` still turns on so that the `Debug` output of a Merk node is what it was, and loses Merk's `test_utils` module, which Platform does not name.
 - `grovedb-storage` without `rocksdb_storage` is the seams: `FlatStore`, the storage traits, the multi-context batch, the errors, `prefix` and `worst_case_costs`.
 
-With `engine_generic` and no engine compiled in, `GroveDb` with no engine named is `GroveDb<NoEngine>`. (With `verify` alone there is no `GroveDb<E>` at all, as above.) `NoEngine` (`grovedb::engine::NoEngine`) is not an `Engine` and has no value, so there is no database of it. It is where the associated functions of rule 2 live in such a build: the proof verifiers and the estimated costs resolve as `GroveDb::verify_query(..)` and `GroveDb::average_case_for_get(..)` there too. `Transaction<'db, E>`, `TransactionArg<'db, 'a, E>` and `MultiStateSyncSession<'db, E>` have no default for `E` in that build. With `rocksdb_storage`, all four are what they were, and `NoEngine` does not exist. So code names `GroveDb`, never `GroveDb<NoEngine>`: a feature another crate of the build turns on would take the name away.
+With `engine_generic` and no engine compiled in (neither `rocksdb_storage` nor `lignin_storage`), `GroveDb` with no engine named is `GroveDb<NoEngine>`. (With `verify` alone there is no `GroveDb<E>` at all, as above.) `NoEngine` (`grovedb::engine::NoEngine`) is not an `Engine` and has no value, so there is no database of it. It is where the associated functions of rule 2 live in such a build: the proof verifiers and the estimated costs resolve as `GroveDb::verify_query(..)` and `GroveDb::average_case_for_get(..)` there too. `Transaction<'db, E>`, `TransactionArg<'db, 'a, E>` and `MultiStateSyncSession<'db, E>` have no default for `E` in that build. With `rocksdb_storage`, all four are what they were, and `NoEngine` does not exist. With `lignin_storage` alone their default is `LigninEngine`. So code names `GroveDb`, never `GroveDb<NoEngine>`: a feature another crate of the build turns on would take the name away.
 
 The fifteen estimated-cost helpers that take a storage type parameter (`GroveDb::add_worst_case_get_merk_at_path::<S>` and the others, `S: Storage`) never used it. Each is now a call of a function of the same name with `_engine_free` appended and no type parameter, which holds the estimate. GroveDB's own code calls the engine-free one. A caller that writes `::<RocksDbStorage>`, as Platform does for two of them (`average_case_delete_operation_for_delete` and `average_case_delete_operations_for_delete_up_tree_while_empty`, six call sites outside its tests), compiles as before, and OPS-03 moves it to the engine-free name.
 
@@ -254,7 +255,7 @@ The tests of `grovedb` that open no database run with no engine compiled in: `ca
 - An integration test under `grovedb/tests` that opens a database is under `rocksdb_storage`. Three files hold tests that only decode proofs, and those run in both builds.
 - The doc tests open a database, so the command has `--lib --tests` and leaves them out.
 
-A test that needs a database needs an engine for the suite, not RocksDB by name: the gates above are on the cfg of the suite (SEAM-06). The type default of `GroveDb` is still under `rocksdb_storage`, and GROVE-01 makes that "an engine is compiled in" when it adds the second one. In the test build with no engine, what only the left-out tests call is unused, and `dead_code` is allowed for the crate in that build alone.
+A test that needs a database needs an engine for the suite, not RocksDB by name: the gates above are on the cfg of the suite (SEAM-06). The type default of `GroveDb` is there where an engine is compiled in: with `rocksdb_storage` it is the RocksDB engine, and with `lignin_storage` and without `rocksdb_storage` it is the LigninDB engine. In the test build with no engine, what only the left-out tests call is unused, and `dead_code` is allowed for the crate in that build alone.
 
 `MultiStateSyncSession<'db, E = RocksDbEngine>` is generic in the same way.
 
@@ -300,6 +301,109 @@ Functions that take a `Merk<S>` are bounded by `S: NodeStore<'db>` and not by an
 
 Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, and so do the GroveDB and Merk suites.
 
+## The LigninDB engine
+
+`LigninEngine` (`grovedb/src/engine/lignin`, GROVE-01, Cargo feature `lignin_storage`) is one open LigninDB database, `lignindb::Db`. `LigninEngine::open_with(path, &Options)` opens one with options of the caller's, `LigninEngine::new(db)` takes one that is open, and `database()` gives it back. Its handles are the node store of Merk on LigninDB ([node-store.md](node-store.md#the-lignindb-store)), and its batch is that store's batch.
+
+| Associated type | On LigninDB |
+| --- | --- |
+| `Transaction<'db>` | `LigninTransaction<'db>`: a write transaction (`lignindb::txn::WriteTxn`), a snapshot (`lignindb::snapshot::Snapshot`), or the view of a write scope |
+| `Batch` | `LigninBatch` of `merk::store::lignin`, which is `lignindb::batch::StagedBatch` with what each write is charged |
+| `WriteGroup` | `LigninWriteGroup`: the settled batches (`LigninSettled`) in the order they were settled |
+| `Applied` | `LigninApplied`: where the written nodes are (`tree-layout.md` P5), for a handle that stays open (`LigninNodeStore::take_locations`) |
+| `Subtree<'a>`, `ImmediateSubtree<'a>` | `LigninNodeStore<'a>`, deferred or immediate. `Aux<'_>` and `Meta<'_>` are `LigninKeyspace` |
+| `SubtreeMove<'a>` | `LigninSubtreeMove`, whose first step is refused (GROVE-03) |
+| `WriteScope<'a>` | `LigninWriteScope<'a>`: a scope of the transaction (`lignindb::scope`) |
+
+### Each operation
+
+| Operation | On LigninDB |
+| --- | --- |
+| `open(path)` | `Db::open` with the default `Options`, which makes the database if the directory has none. A directory of another engine is refused and left as it is (the module documentation of `lignindb::db`). Then the root Merk is entered, if it is not: see [Subtrees](#subtrees-are-entered-by-the-first-batch-that-writes-into-them). |
+| `open_checkpoint(path)` | `Db::open` with `create_if_missing` off: a checkpoint is a database directory. |
+| `create_checkpoint(path)` | refused, `Error::NotSupported`: the facade has no checkpoint of an open database yet (GROVE-08). |
+| `flush()` | `Db::flush` (DU1a). |
+| `wipe()` | `Db::wipe`, one commit (CV3), and then the root Merk is entered again, as a second commit. |
+| `start_transaction()` | `Db::begin`. Any number are open, and one commits at a time. |
+| `start_snapshot_read_transaction()`, `start_read_transaction()` | `Db::snapshot`: both are pinned (RD1, RD2). |
+| `commit_transaction(tx)` | `Db::commit` with `NoStaleHashes`, the rules of every existing GroveVersion: a Merk hashes its tree before it commits, so no hash is left to the engine. The transaction is dropped however the commit ends. A snapshot refuses with `SnapshotReadOnlyTransaction`. Charged nothing. |
+| `rollback_transaction(&tx)` | `Db::rollback`. On a snapshot it does nothing. |
+| `set_savepoint`, `rollback_to_savepoint` | `WriteTxn::set_savepoint` and `rollback_to_savepoint`, refused with `ScopesOpen` while a scope is open. A snapshot counts its savepoints and has nothing to undo. |
+| `open_write_scope`, `scope_transaction`, `merge_write_scope`, `rollback_write_scope` | `WriteTxn::scope`, kept behind the store's `LigninWriter`; the view is a `LigninTransaction` of the scope; `Scope::merge` and `Scope::rollback`. A scope that is dropped is rolled back. |
+| `subtree(path, batch, &tx)`, `immediate_subtree(path, &tx)` | the prefix of the path (`build_prefix`, charged `P-path`), and a handle on the transaction's view. Where the handle can write, it also names the element that hosts its subtree: the key of the path's last segment in the subtree of the segments before. That second prefix is not charged. |
+| `subtree_by_prefix`, `immediate_subtree_by_prefix` | a handle of the prefix, charged nothing. Where it can write, its host is read from the subtree directory as the transaction has it. |
+| `settle_batch(&mut group, batch)` | `LigninBatch::settle`: the batch is resolved to one outcome for each key, and charged as a storage batch is at once (`cost-model.md` B1). A delete that came with no cost is charged from the record that the committed state holds, read through a snapshot taken there (RD10). The storage cost joins the group's pending cost. |
+| `apply_write_group(group, &tx)` | every settled batch is applied to the transaction, one operation each, in one scope: all of them or none. The pending cost is charged if the transaction took them. |
+| `retarget_cursor(cursor, prefix)` | `LigninCursor::retarget`. A cursor of a snapshot goes on in its snapshot. A cursor of a write transaction is refused: it stands on no node and its `status` says why. |
+| `move_subtree` | a move whose first step is refused, `Error::NotSupported` (GROVE-03). |
+| `pending_prefix_drop_records()` | the meta records of the pending-drops namespace, read through a snapshot. |
+| `remove_pending_prefix_drop_record(prefix)` | one write with no transaction (`Db::write`), which deletes the record. |
+| `delete_prefix_ranges(prefixes)` | refused, `Error::NotSupported` (GROVE-05). |
+
+### What a transaction is
+
+- **A write transaction has no writer of its own.** Its handles read it from outside every scope (`transactions.md` RD3), and each write, the application of a batch or one write of an immediate handle, goes through a scope that is opened for it and merged when it is made, or rolled back if the transaction refuses it (SC1). So no scope is open between two calls, and a savepoint, a rollback and the commit find every scope closed (SC8). A scope that is opened while no other is open has its writes laid out as it makes them, so this is the path of one writer.
+- **A read with no transaction is a snapshot** held for the operation (RD2), and so is a snapshot read transaction (RD1). The subtree directory is asked once for each subtree a snapshot reads, and the entry is kept for its later reads.
+- **A write with no transaction** is made by `GroveDb` as a write transaction of its own, committed at once (RD7). It waits for no open write transaction. An open one reads it wherever it has not written the key itself, and its commit then fails with `Error::Commit(CommitError::Conflict)` exactly where the two wrote a key (CF2): the rule of RocksDB's optimistic transactions. On existing GroveVersions any two tree changes share the root node of the root Merk (GM1), so a transaction that has changed the tree conflicts with every tree change committed beside it, and not with an aux record.
+- **A write scope's view** reads as the scope does and writes through it. A group of more than one settled batch is refused through a view: a scope that lives on cannot take a part of them back.
+
+### Errors
+
+| LigninDB | At the seam |
+| --- | --- |
+| a commit that met another (`CommitError::Conflict`) | `Error::Commit(CommitError::Conflict)` |
+| a commit that is published and not known to be durable; one the log cannot say it holds | `Error::Commit(CommitError::NotDurable)`, `Error::Commit(CommitError::Unsettled)` |
+| a scope is open (`TxnError::ScopeOpen`, `SavepointError::ScopesOpen`) | `Error::WriteScope(WriteScopeError::ScopesOpen)` |
+| another open scope holds the unit (`TxnError::ScopeOverlap`), from an operation and from a read or a write of a handle | `Error::WriteScope(WriteScopeError::Overlap)` |
+| a write through a snapshot | `Error::SnapshotReadOnlyTransaction` |
+| a Merk more than 65,535 Merks deep (`DirectoryError::TooDeep`), from an operation or from a commit; an operation the engine has not | `Error::NotSupported`, which `GroveDb` hands on as `grovedb::Error::NotSupported` and not as a storage error |
+| anything else | `Error::StorageError` with the engine's words |
+
+`Error::NotSupported` is a variant of `grovedb_storage::Error` that this engine added. RocksDB has no limit on the depth of a grove, and never returns it.
+
+### Subtrees are entered by the first batch that writes into them
+
+LigninDB reads and writes no record of a subtree that its subtree directory has no entry for (`transactions.md` CV9). On RocksDB a subtree is its prefix, and GroveDB says of no operation which subtrees it makes. So the engine says it, where a group is applied (`grovedb/src/engine/lignin/enter.rs`):
+
+- A subtree that a batch writes into, in any column, and that neither the transaction nor a batch of the group has entered, is entered with the first batch of the group. A batch knows the subtrees it writes into from the handles that staged the writes (`LigninSettled::written`).
+- Its host is the element its handle named: the last segment of the path it was opened by, or what the directory holds for a handle by prefix. A subtree is entered after the one its host is in.
+- Its tree type is the one of that element, from the value the group states for the element, or with none from the transaction. With no such element, or one that is no tree, the directory keeps no tree type, and `Merk::open_from_directory` refuses the subtree as it refuses any other bytes. Nothing in GroveDB opens a Merk from the directory yet.
+- The root Merk has no element. It is entered when the engine opens a database that does not have it: a new one, and after a wipe.
+
+So a tree that was inserted and never written into is in no directory, and is read as the empty tree it is: an open of it costs what it costs on RocksDB and finds no node. The enter is charged nothing and is a write of its transaction like any other: it is rolled back with it and conflicts as a write of the subtree does.
+
+What this leaves to later tasks:
+
+- **A subtree is not dropped when its element goes** (GROVE-05). After a delete of a tree that was written into, the directory still has the entry, whose host is no node any more: the physical checker reports it (`EntryHost`), and a tree inserted under the same key again finds the old entry.
+- **An element that hosts more than one Merk is refused** (GROVE-04): the Merks of an indexed tree are named together, by the element, and a handle knows one prefix. The batch that would enter the first of them fails with `Error::NotSupported`.
+- **An immediate handle enters nothing.** A write through one into a subtree that is not entered is refused by the transaction. State sync restores through immediate handles (GROVE-07), and enters through `LigninNodeStore::enter`.
+
+### Choices made here that the plan left open
+
+1. **Scopes map to operations one to one in iteration one** (SC1): a scope for each application, opened and merged inside the call. The alternative, one scope that a transaction keeps for its life, would have to be merged and opened again around every savepoint and before the commit, and a transaction would be a value that borrows itself.
+2. **Subtrees are entered by the engine, lazily**, as above. The alternative is a call in the seam with which GroveDB names each subtree where it writes the element; GROVE-04 and GROVE-05 need such a statement for the Merks of an indexed tree and for drops, and this rule can be replaced by it then.
+3. **`settle_batch` reads the committed state through a snapshot of the database**, because the seam gives it no transaction. It is the state the application's first-write version is taken from unless a commit lands between the two calls, which is the window RocksDB has between `continue_write_batch` and the write.
+4. **A read with no transaction is pinned** (RD2, `transactions.md` 14.5 D1), which the seam allows and the `pinned-reads` engine of the suite has held GroveDB to.
+5. **`Error::NotSupported` in `grovedb_storage::Error`**, mapped by `From` to `grovedb::Error::NotSupported`: a limit of the engine is told apart from a fault of the storage, as the node store does for a write (`node-store.md`, "A Merk too deep for the directory").
+6. **A cursor is retargeted in a snapshot only.** GroveDB retargets for local count offsets and for the paginated reads of an indexed tree's secondary; with a write transaction of the caller's those are refused until the transaction can point the committed side of a cursor at another Merk (GROVE-06).
+7. **`lignindb` gained four things for the engine**: a node of a Merk read by key through a reader's opened subtree (`Opened::node`), cursors over nodes and over flat records that a reader keeps from one operation to the next (`NodeWalk`, `RecordWalk`), two variants of `ReadError` for them, and `Db::check`, which runs the physical checker on an open database. The tests of the engine run it on every database they leave, after a close and an open.
+
+### How the LigninDB engine is checked
+
+`grovedb/src/engine/lignin/tests` runs with `cargo test -p grovedb --features lignin_storage --lib engine::lignin`, on LigninDB, and where the RocksDB engine is compiled in also on RocksDB, by the same code.
+
+| Test | What it holds |
+| --- | --- |
+| `grovedb_opens_inserts_reads_and_reopens_on_lignindb` | A grove is made, written and read: trees of three kinds four deep, 40 items, sum items, a reference, replaced and deleted items, aux records, conditional inserts, reads of what is and is not there, and a transaction that is rolled back to a savepoint and committed. The database is closed and opened again, reads the same root hash and the same elements, and is written again. Every answer, every `OperationCost` and the root hash after every write are those of the same calls on RocksDB. The physical checker finds the closed database sound, with every hash of every node made again by Merk's rules. |
+| `a_write_with_no_transaction_beside_an_open_one_behaves_as_on_rocksdb` | The seven steps of [`transactions.md` 14.3](transactions.md#143-the-mainnet-case-step-by-step): each observation, the conflict by its engine-neutral class, and on both engines the same `OperationCost` for each of the twelve calls (T-RD4). |
+| `the_recorded_raw_cases_give_their_results_on_lignindb`, `..._on_rocksdb` | The 24 cases of `transactions.md` 16.3 that are cases of the seam (T-RD2, T-RD3, T-CF1, T-SP1), each written once for any `Engine`. The seven others need a range delete outside a transaction, RocksDB's memtables or the ingestion of a file. |
+| `the_recorded_grovedb_cases_give_their_results_on_lignindb`, `..._on_rocksdb` | The 21 cases of 16.4 other than B8, each written once for any `GroveDb<E>`. |
+| `a_tree_that_was_never_written_into_is_read_as_empty_and_entered_by_its_first_write` | The rule of the section above: no entry for a tree nothing was written into, and after the first write an entry with the element as its host, the element's tree type and the root key. |
+| `a_wipe_leaves_a_grove_that_is_written_again` | After a wipe nothing is read, a snapshot from before reads its version, and the grove is written again. |
+| `a_handle_by_path_is_charged_the_prefix_of_its_path_and_one_by_prefix_nothing`, `a_deferred_handle_stages_and_an_immediate_one_writes_at_once` | The handles: their costs and write modes, a group of two settled batches, and the data keyspace of a subtree as flat records with its cursor. |
+| `a_snapshot_reads_one_version_and_refuses_every_write`, `a_write_scope_is_one_writers_part_of_its_transaction`, `a_cursor_of_a_snapshot_is_pointed_at_another_subtree_in_the_same_state` | The transaction rules of the contract on LigninDB, each refusal by its typed error. |
+| `what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing`, `pending_drop_records_are_read_and_removed_outside_any_transaction`, `the_errors_of_lignindb_are_named_by_what_the_seam_knows` | What is refused and how it is named. |
+
 ## What later tasks get
 
 | Task | What it builds on |
@@ -307,7 +411,7 @@ Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, a
 | SEAM-05 | Every storage charge GroveDB sees comes back from a call on `Engine`, on a handle or on a cursor. The fee rules that sit in the RocksDB engine today are listed under [Choices](#choices-this-task-made), item 9. |
 | SEAM-06 | Every operation of `GroveDb` is on `GroveDb<E>`. The tests name `GroveDb`, which in a test build is the engine the suite was built for, and the suite is built and run once for every registered engine. A test that reaches under GroveDB to read or damage stored records says so: it calls `RocksDbEngine::storage()`, works on the storage contexts, and is compiled for the RocksDB engine alone. `merk/src/test_utils` is a harness over a `TestEngine` of Merk's own. All of it is in [`test-engines.md`](test-engines.md). |
 | SEAM-07 | Done: see [Features and engines](#features-and-engines). What named RocksDB in `grovedb` outside `grovedb::engine` was `RocksDbStorage::build_prefix` and `secondary_prefix_for`, the estimated-cost helpers with their `S: Storage` parameter, the debugger, `raw_storage` and `ingest_subtree_sst`, and the `impl GroveDb` blocks of rule 2, which exist for the default engine. |
-| GROVE-01 | The trait to implement. `Transaction<'db>` has to stand for a write transaction, a snapshot, the transaction of one read and a scope's view. `start_read_transaction` is where RD2 goes: a snapshot held for the operation. `Subtree<'a>` has to be a type of Merk that is a `NodeStore` (see [the RocksDB adapter](node-store.md#the-rocksdb-adapter)) and a `FlatStore`. The conflict maps to `Error::Commit(CommitError::Conflict)`. |
+| GROVE-01 | Done: see [The LigninDB engine](#the-lignindb-engine). |
 | GROVE-03 | `SubtreeMove`: the re-hosting move behind the stepper, with the charges of the copy. |
 | GROVE-05 | `PendingPrefixDrops` on the engine. `FlatStore::clear` on a handle is today's clear of a subtree's data keyspace, Merk nodes included. |
 | GROVE-08 | `create_checkpoint`, `open_checkpoint`, and the generic checkpoint constructors of `GroveDb`. |

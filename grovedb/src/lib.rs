@@ -197,11 +197,16 @@ pub use element::aggregate_sum_query::{AggregateSumQueryOptions, AggregateSumQue
 pub use element::Element;
 #[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use element::ElementFlags;
-#[cfg(feature = "rocksdb_storage")]
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 use engine::DefaultEngine;
 #[cfg(feature = "engine_generic")]
 pub use engine::Engine;
-#[cfg(all(feature = "engine_generic", not(feature = "rocksdb_storage")))]
+#[cfg(feature = "lignin_storage")]
+pub use engine::LigninEngine;
+#[cfg(all(
+    feature = "engine_generic",
+    not(any(feature = "rocksdb_storage", feature = "lignin_storage"))
+))]
 use engine::NoEngine;
 #[cfg(feature = "rocksdb_storage")]
 pub use engine::RocksDbEngine;
@@ -350,8 +355,8 @@ type Hash = [u8; 32];
 /// verifiers and the estimated costs.
 #[cfg(feature = "engine_generic")]
 pub struct GroveDb<
-    #[cfg(feature = "rocksdb_storage")] E: Engine = DefaultEngine,
-    #[cfg(not(feature = "rocksdb_storage"))] E = NoEngine,
+    #[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))] E: Engine = DefaultEngine,
+    #[cfg(not(any(feature = "rocksdb_storage", feature = "lignin_storage")))] E = NoEngine,
 > {
     db: E,
 }
@@ -369,8 +374,8 @@ pub(crate) type SubtreePrefix = [u8; blake3::OUT_LEN];
 #[cfg(feature = "engine_generic")]
 pub type Transaction<
     'db,
-    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
-    #[cfg(not(feature = "rocksdb_storage"))] E,
+    #[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))] E = DefaultEngine,
+    #[cfg(not(any(feature = "rocksdb_storage", feature = "lignin_storage")))] E,
 > = <E as Engine>::Transaction<'db>;
 /// An optional transaction: `None` runs the operation in a transaction of
 /// its own.
@@ -378,8 +383,8 @@ pub type Transaction<
 pub type TransactionArg<
     'db,
     'a,
-    #[cfg(feature = "rocksdb_storage")] E = DefaultEngine,
-    #[cfg(not(feature = "rocksdb_storage"))] E,
+    #[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))] E = DefaultEngine,
+    #[cfg(not(any(feature = "rocksdb_storage", feature = "lignin_storage")))] E,
 > = Option<&'a Transaction<'db, E>>;
 
 /// Type alias for the return type of the `verify_merk_and_submerks` and
@@ -426,7 +431,7 @@ impl<E: Engine> GroveDb<E> {
     }
 }
 
-#[cfg(feature = "rocksdb_storage")]
+#[cfg(any(feature = "rocksdb_storage", feature = "lignin_storage"))]
 impl GroveDb {
     /// Opens a given path
     pub fn open<P: AsRef<Path>>(path: P) -> Result<Self, Error> {

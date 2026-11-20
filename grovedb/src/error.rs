@@ -88,7 +88,7 @@ pub enum Error {
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
-    StorageError(#[from] grovedb_storage::error::Error),
+    StorageError(grovedb_storage::error::Error),
 
     #[error("data corruption error: {0}")]
     /// Corrupted data
@@ -253,6 +253,19 @@ impl<T> GroveDbErrorExt for CostResult<T, Error> {
             e.add_context(append.as_ref());
             e
         })
+    }
+}
+
+/// An error of the engine is a storage error, but for what the engine
+/// does not support: that is no fault of the storage, and callers are told
+/// so as they are by every other layer.
+#[cfg(feature = "engine_generic")]
+impl From<grovedb_storage::error::Error> for Error {
+    fn from(error: grovedb_storage::error::Error) -> Self {
+        match error {
+            grovedb_storage::error::Error::NotSupported(what) => Error::NotSupported(what),
+            error => Error::StorageError(error),
+        }
     }
 }
 

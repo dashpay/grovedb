@@ -59,6 +59,11 @@ pub enum Error {
     /// A write scope could not do what was asked of it.
     #[error("write scope error: {0}")]
     WriteScope(WriteScopeError),
+    /// The engine does not do what was asked of it: an operation it has
+    /// not, or a limit of it that the operation met. Nothing was changed,
+    /// and the stored data is not at fault.
+    #[error("not supported: {0}")]
+    NotSupported(String),
 }
 
 /// How a commit ended when it did not end in plain success, in terms that
