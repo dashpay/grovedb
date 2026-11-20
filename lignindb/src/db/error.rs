@@ -107,16 +107,20 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
-    /// The directory holds an entry named `MANIFEST.deleting`, the mark
-    /// of a removal of a database or of a checkpoint that was begun and
-    /// cut short (`lignindb::checkpoint::delete`). Nothing opens what is
-    /// left and no database is made in it, also where a `MANIFEST` is
-    /// beside the mark. Where the mark is the file that a removal makes,
-    /// the manifest under that name, the same call finishes the removal,
-    /// and the path is a place for a new database then. An entry of that
-    /// name that is anything else is no removal's: that call refuses it
-    /// too, and whoever made it removes it. Whoever wants a database
-    /// that is beside the mark removes the mark.
+    /// The directory holds an entry named `MANIFEST.deleting`: the name
+    /// that a removal gives the manifest of what it removes
+    /// (`lignindb::checkpoint::delete`). Nothing opens such a directory
+    /// and no database is made in it, whatever else it holds. The name
+    /// alone is what the open goes by: it does not read the entry.
+    ///
+    /// `lignindb::checkpoint::delete` removes the directory if it finds a
+    /// manifest of this engine in it under either name. So it finishes a
+    /// removal that was cut short, and it also removes a database whose
+    /// `MANIFEST` is whole beside an entry of that name that something
+    /// else made. Whoever wants to keep a database that is beside such an
+    /// entry removes the entry and nothing else. Where neither name holds
+    /// a manifest, that call refuses the directory, and whoever made the
+    /// entry removes it.
     Deleting {
         /// The directory.
         dir: PathBuf,
@@ -214,9 +218,9 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest or its lock file, its removal was begun, its
-    /// pages are of another size,
-    /// or it was removed or put in the place of another while it was
+    /// lost its manifest or its lock file, it holds an entry with the
+    /// name of a removal's mark, its pages are of another size, or it was
+    /// removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
     /// was there. That holds for a directory that nobody else changes
@@ -272,8 +276,8 @@ impl fmt::Display for OpenError {
             ),
             Self::Deleting { dir } => write!(
                 f,
-                "{} holds an entry named MANIFEST.deleting, the mark of a database whose removal \
-                 was begun and not finished: no database is opened or made in what is left",
+                "{} holds an entry named MANIFEST.deleting, the name a removal gives the manifest \
+                 of what it removes: no database is opened or made beside it",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(

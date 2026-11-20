@@ -79,9 +79,9 @@ fn is_own_dir(name: &OsStr) -> bool {
 
 /// Looks at the directory `dir` and says what it holds, reading only.
 ///
-/// A directory of another engine, a database of a format version this
-/// build does not read, files of a database with no manifest and what a
-/// removal that was cut short left are each refused here, before
+/// A directory that holds the mark of a removal, a directory of another
+/// engine, a database of a format version this build does not read and
+/// files of a database with no manifest are each refused here, before
 /// anything is written (P-02).
 fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     let entries = match vfs.read_dir(dir) {
@@ -96,16 +96,17 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
         engine,
         entry: entry.to_os_string(),
     };
-    if let Some(entry) = entries.iter().find(|entry| is_rocksdb(&entry.name)) {
-        return Err(foreign("RocksDB", &entry.name));
-    }
-    // A database whose removal was begun is none any more, and none is
-    // made in what is left of it, with a manifest beside the mark or
-    // without (`crate::checkpoint`, D-128 B).
+    // The name that a removal gives the manifest of what it removes
+    // (`crate::checkpoint`, D-128 B, D-168): nothing is opened and nothing
+    // is made beside it, whatever else the directory holds, a manifest or
+    // the files of another engine.
     if (entries.iter()).any(|entry| entry.name == DELETING_FILE_NAME) {
         return Err(OpenError::Deleting {
             dir: dir.to_path_buf(),
         });
+    }
+    if let Some(entry) = entries.iter().find(|entry| is_rocksdb(&entry.name)) {
+        return Err(foreign("RocksDB", &entry.name));
     }
     match read_manifest(vfs, dir) {
         Ok(manifest) => Ok(Found::Database(Box::new(manifest))),
