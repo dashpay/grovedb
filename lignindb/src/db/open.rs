@@ -239,7 +239,7 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
     let changed = |error: OpenError| match made && error.left_untouched() {
         true => OpenError::Changed {
             dir: dir.to_path_buf(),
-            found: Box::new(error),
+            found: error.to_string(),
         },
         false => error,
     };

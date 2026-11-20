@@ -960,13 +960,21 @@ its log group (FL7). The cut that follows a failed append (CM9 item 4)
 replaces the manifest, and it is made before the next commit, not by one.
 
 **CM8. Commit waits only for the commit lock, for flusher backpressure**
-(FL5) **and for the counts lock** (LT7). It never waits for a reader, for
-another open write transaction or for the creation of a checkpoint beyond
-its sampling step. The flusher and the cleaner can make it wait only
-through the counts lock: for one hold of it, which covers at most one
-append to the log and no fsync. A commit whose sync policy has it fsync
-the log (CM7) waits there for an fsync of the log that someone else is
-making, a `flush()` or a checkpoint: the log makes one at a time (DU1a).
+(FL5) **and for the counts lock** (LT7), **and, if its sync policy has it
+fsync the log (CM7), for an fsync of the log that someone else is making.**
+It never waits for a reader or for another open write transaction. Of the
+creation of a checkpoint it waits for the sampling step, and, with the
+exception that follows, for nothing more. The flusher and the cleaner can
+make it wait only through the counts lock: for one hold of it, which
+covers at most one append to the log and no fsync.
+
+The exception is the fsync of CM7. The log makes one fsync at a time
+(STORE-01), so a commit that fsyncs the log waits at its own fsync for one
+that a `flush()`, a checkpoint or the flusher is making then (DU1a), and
+holds the commit lock while it does. A commit whose policy does not fsync
+at the commit does not join it. A `flush()` whose fsync failed holds the
+commit lock for the moment in which it records that the session ends
+(DU1a), which is a wait for the commit lock like any other.
 
 **CM9. The log decides whether a commit happened, and the engine must agree
 with it.** Recovery takes a commit exactly when it finds its group in the
@@ -1731,8 +1739,9 @@ them. It holds an operation guard on those files (PN5), so none is deleted
 under it. It takes the commit lock only to record a failure, and no other
 lock of LT7 but the one on the counts (4a), for a moment before the fsync
 and after it, where it reads how far the counts are durable (DU5). So no
-reader and no write transaction waits for it. A commit can wait for it in
-two places, and in no other:
+reader and no write transaction waits for it. A commit can wait for a
+`flush()` whose fsync succeeds at two of the locks this document names,
+and at no other:
 
 - at the counts lock, for one of those two moments, as it waits there for
   any other holder (CM8);
@@ -1747,7 +1756,9 @@ not need an order.
 
 If the fsync fails, the engine records under the commit lock that the
 session takes no write any more (D-098), so that every commit is published
-before that record or refused.
+before that record or refused. A commit of any sync policy that comes to
+the commit lock at that moment waits for the record there, and is then
+refused.
 
 **DU2. After a crash the state is one committed version.** Recovery lands on
 *S(Lr)* for a single *Lr*, with *Ld* ≤ *Lr* ≤ *Lc*, where *Ld* is the newest

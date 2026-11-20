@@ -115,8 +115,10 @@ pub enum OpenError {
     Changed {
         /// The directory.
         dir: PathBuf,
-        /// What the directory is refused for now.
-        found: Box<OpenError>,
+        /// What the directory is refused for now, as text: the refusal is
+        /// one that would say the directory was left untouched, which is
+        /// not known of this one.
+        found: String,
     },
 }
 
@@ -237,7 +239,7 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
-            Self::Changed { found, .. } => Some(&**found),
+            Self::Changed { .. } => None,
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }

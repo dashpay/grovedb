@@ -386,46 +386,21 @@ fn entries_that_are_not_the_engines_are_left_alone() {
     assert_eq!(foreign(path), before, "after a recovery");
 }
 
-/// The file layer of `watched` at rest: the background work has written
-/// what it had to, and nothing changes any more.
-fn at_rest(watched: &Watched) {
-    let (mut seen, mut since) = (watched.changes(), Instant::now());
-    wait_for("the background work comes to rest", || {
-        let now = watched.changes();
-        if now != seen {
-            (seen, since) = (now, Instant::now());
-        }
-        since.elapsed() > Duration::from_millis(300)
-    });
-}
-
 /// P-18: Platform removes the directory of a checkpoint while its handle
-/// is open. The handle then closes without a panic, makes no directory
-/// and no file, and writes nothing: not through a path, and not through a
-/// file it still has open.
+/// is open. The handle then closes without a panic, with the threads of
+/// its background work running to the end, and makes no directory.
 #[test]
-fn a_handle_whose_directory_was_removed_closes_and_writes_nothing() {
+fn a_handle_whose_directory_was_removed_closes() {
     for explicit in [true, false] {
         let dir = temp();
         let path = dir.path().join("db");
-        let watched = Watched::default();
-        let options = Options {
-            vfs: Arc::new(watched.clone()),
-            ..options()
-        };
-        let db = Db::open(&path, &options).expect("a new database");
+        let db = Db::open(&path, &options()).expect("a new database");
         plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-        // A drop leaves the reclaimer work that a close would finish.
-        let writes = Writes {
-            drop: vec![subtree(1)],
-            ..Writes::default()
-        };
-        writes.commit(&db);
-        plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
-        db.flush().expect("the log is synced");
-        at_rest(&watched);
-        fs::remove_dir_all(&path).expect("the directory is removed");
-        let before = watched.changes();
+        // The database writes while its directory is taken away, so the
+        // removal is made until nothing is left.
+        while path.exists() {
+            let _ = fs::remove_dir_all(&path);
+        }
         match explicit {
             true => {
                 let error = db.close().expect_err("nothing could be made durable");
@@ -435,8 +410,60 @@ fn a_handle_whose_directory_was_removed_closes_and_writes_nothing() {
             }
             false => drop(db),
         }
-        assert_eq!(watched.changes(), before, "the close wrote");
         assert!(!path.exists(), "the directory was made again");
+    }
+}
+
+/// A database on `watched` with two Merks, a drop that leaves the close a
+/// reclaiming to go on with, and pages that are not written back: its two
+/// threads are ended, so that nothing of it runs but what the test calls.
+/// What a close does then is `Db::finish`.
+fn at_its_close(path: &Path, watched: &Watched) -> Db {
+    let options = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let db = Db::open(path, &options).expect("a new database");
+    plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
+    plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
+    db.flush().expect("the log is synced");
+    halt_background(&db);
+    let writes = Writes {
+        drop: vec![subtree(1)],
+        ..Writes::default()
+    };
+    writes.commit(&db);
+    db
+}
+
+/// The same, for what the close writes: nothing, through a path or
+/// through a file it still has open, though it has a reclaiming to go on
+/// with, pages to write back and a checkpoint to take. A directory that is
+/// there is finished, to tell the two apart.
+#[test]
+fn a_close_writes_nothing_once_its_directory_was_removed() {
+    let dir = temp();
+    for removed in [false, true] {
+        let path = dir.path().join(format!("db-{removed}"));
+        let watched = Watched::default();
+        let db = at_its_close(&path, &watched);
+        if removed {
+            fs::remove_dir_all(&path).expect("the directory is removed");
+        }
+        let before = watched.changes();
+        let finished = db.finish();
+        match removed {
+            false => {
+                finished.expect("the close finishes");
+                assert!(watched.changes() > before, "the close wrote nothing");
+            }
+            true => {
+                let error = finished.expect_err("nothing could be made durable");
+                assert!(matches!(&error, DbError::Removed { dir } if *dir == path));
+                assert_eq!(watched.changes(), before, "the close wrote");
+                assert!(!path.exists(), "the directory was made again");
+            }
+        }
     }
 }
 
@@ -444,25 +471,20 @@ fn a_handle_whose_directory_was_removed_closes_and_writes_nothing() {
 /// closes: the path was removed and used again. Nothing of the new
 /// database is touched.
 #[test]
-fn a_handle_whose_directory_holds_another_database_closes_and_writes_nothing() {
+fn a_close_writes_nothing_once_its_directory_holds_another_database() {
     let dir = temp();
     let path = dir.path().join("db");
     let watched = Watched::default();
-    let first = Options {
-        vfs: Arc::new(watched.clone()),
-        ..options()
-    };
-    let db = Db::open(&path, &first).expect("a new database");
-    plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-    db.flush().expect("the log is synced");
-    at_rest(&watched);
+    let db = at_its_close(&path, &watched);
     fs::remove_dir_all(&path).expect("the directory is removed");
 
     let other = Db::open(&path, &options()).expect("another database in its place");
     plant(&other, subtree(7), Merk::sized(b'k', 10, 20));
     other.close().expect("its session ends");
     let (before, changes) = (image(&path), watched.changes());
-    let error = db.close().expect_err("the directory is another database's");
+    let error = db
+        .finish()
+        .expect_err("the directory is another database's");
     assert!(matches!(error, DbError::Removed { .. }));
     assert_eq!(watched.changes(), changes, "the close wrote");
     assert_eq!(image(&path), before, "the other database was touched");
@@ -472,22 +494,21 @@ fn a_handle_whose_directory_holds_another_database_closes_and_writes_nothing() {
         seen(&snapshot.operation(), subtree(7), b"k"),
         Some((10, vec![]))
     );
-    assert_eq!(seen(&snapshot.operation(), subtree(1), b"k"), None);
+    assert_eq!(seen(&snapshot.operation(), subtree(2), b"k"), None);
 }
 
 /// A directory that holds this database's files and is another directory:
-/// the one the handle has open was removed, and a copy of it, made while
-/// the session was at rest, is in its place. The manifest in it is the
-/// session's own, and another opener holds the lock of the copy, as one
-/// does between taking the lock and its recovery. The close finds that
-/// the lock file there is not the file its guard is on, and writes
-/// nothing, though it has a checkpoint to take.
+/// the one the handle has open was removed, and a copy of it is in its
+/// place. The manifest in it is the session's own, and another opener
+/// holds the lock of the copy, as one does between taking the lock and
+/// its recovery. The close finds that the lock file there is not the file
+/// its guard is on, and writes nothing.
 ///
 /// The session makes no commit between the two. One that goes on writing
 /// after its directory was replaced installs its manifests at the path,
 /// which no look at the close can undo.
 #[test]
-fn a_handle_whose_directory_is_a_copy_of_it_closes_and_writes_nothing() {
+fn a_close_writes_nothing_into_a_copy_of_its_directory() {
     fn copy(from: &Path, to: &Path) {
         fs::create_dir(to).expect("a directory");
         for entry in fs::read_dir(from).expect("a directory") {
@@ -503,15 +524,7 @@ fn a_handle_whose_directory_is_a_copy_of_it_closes_and_writes_nothing() {
         let dir = temp();
         let (path, aside) = (dir.path().join("db"), dir.path().join("aside"));
         let watched = Watched::default();
-        let options = Options {
-            vfs: Arc::new(watched.clone()),
-            ..options()
-        };
-        let db = Db::open(&path, &options).expect("a new database");
-        plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-        plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
-        db.flush().expect("the log is synced");
-        at_rest(&watched);
+        let db = at_its_close(&path, &watched);
         copy(&path, &aside);
         fs::remove_dir_all(&path).expect("the directory is removed");
         fs::rename(&aside, &path).expect("the copy takes its place");
@@ -530,21 +543,21 @@ fn a_handle_whose_directory_is_a_copy_of_it_closes_and_writes_nothing() {
 
         let (before, changes) = (image(&path), watched.changes());
         let error = db
-            .close()
+            .finish()
             .expect_err("the directory is not the one it opened");
         assert!(matches!(error, DbError::Removed { .. }));
         assert_eq!(watched.changes(), changes, "the close wrote");
         assert_eq!(image(&path), before, "the copy was touched");
-        // The copy is the database as it was when it was copied.
+        // The copy is the database as it was when it was copied: what its
+        // log has, with the drop.
         drop(other);
-        let copied = Db::open(&path, &options).expect("the copy opens");
+        let copied = Db::open(&path, &options()).expect("the copy opens");
         let snapshot = copied.snapshot();
-        for name in [1, 2] {
-            assert_eq!(
-                seen(&snapshot.operation(), subtree(name), b"k"),
-                Some((100, vec![]))
-            );
-        }
+        assert_eq!(seen(&snapshot.operation(), subtree(1), b"k"), None);
+        assert_eq!(
+            seen(&snapshot.operation(), subtree(2), b"k"),
+            Some((100, vec![]))
+        );
     }
 }
 
@@ -634,11 +647,10 @@ fn a_directory_that_is_changed_while_its_lock_file_is_made_is_refused_as_changed
         panic!("{error:?}");
     };
     assert_eq!(named, &path);
-    assert!(matches!(**found, OpenError::OtherEngine { .. }));
-    assert!(!error.left_untouched());
+    assert!(found.contains("RocksDB"), "{found}");
+    assert!(!error.left_untouched() && error.source().is_none());
     let text = error.to_string();
     assert!(text.contains("a lock file may have been made") && text.contains("RocksDB"));
-    assert!(error.source().is_some());
     let mut expected = (put.lock().expect("the image").take()).expect("the hook ran");
     expected.insert(PathBuf::from("LOCK"), Some(Vec::new()));
     assert_eq!(image(&path), expected);

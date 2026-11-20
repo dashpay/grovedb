@@ -620,25 +620,28 @@ impl Db {
         shared.write_back().stop();
         let reclaimed = threads.reclaim.join();
         let written = threads.write_back.join();
-        // What a close does for the next session, it does only in a
-        // directory that is found to be this database's still. One that
-        // was removed under the handle, or that holds another database
-        // now, is written to no more (P-18).
-        let finished = match shared.store.ours(&*self.guard) {
-            false => Err(DbError::Removed {
-                dir: shared.store.dir.clone(),
-            }),
-            true => {
-                // The reclaimings that hold cells first: their steps go
-                // to the log that the finish makes durable.
-                shared.finish_reclaiming();
-                let finished = shared.write_back().finish();
-                finished.map(drop).map_err(DbError::from)
-            }
-        };
+        let finished = self.finish();
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;
         finished
+    }
+
+    /// What a close does for the next session, with the two threads
+    /// ended: only in a directory that is found to be this database's
+    /// still. One that was removed under the handle, or that holds
+    /// another database now, is written to no more (P-18).
+    fn finish(&self) -> Result<(), DbError> {
+        let shared = &*self.shared;
+        if !shared.store.ours(&*self.guard) {
+            return Err(DbError::Removed {
+                dir: shared.store.dir.clone(),
+            });
+        }
+        // The reclaimings that hold cells first: their steps go to the log
+        // that the finish makes durable.
+        shared.finish_reclaiming();
+        shared.write_back().finish()?;
+        Ok(())
     }
 
     /// The directory of the database.
