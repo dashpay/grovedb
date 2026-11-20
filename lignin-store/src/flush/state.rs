@@ -15,9 +15,9 @@ use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, PageId};
 use super::{
     config::{Counters, Dead, DeadSpace, FlushConfig, FlushStats},
     page::{ChainBuffers, PendingCell},
+    trim_bound::TrimBound,
 };
 use crate::{
-    alloc::Epoch,
     segment::SegmentWriter,
     table::{CheckpointInfo, Link, LogPlace},
     values::{ValueHold, ValueWriter},
@@ -262,14 +262,8 @@ pub(super) struct Files {
     /// Pages that got a base image: the links older than an image are
     /// trimmed once no reader can ask for a version before it.
     pub(super) untrimmed: BTreeMap<PageId, Untrimmed>,
-    /// Answers about the oldest pinned version, each with the epoch that
-    /// was started once it was given: no version pin is below it, and it
-    /// waits for the operations that held a guard when that epoch began.
-    pub(super) trim_bounds: VecDeque<(Epoch, CommitVersion)>,
-    /// The highest of those answers whose operations have ended: neither
-    /// a version pin nor a running operation reads below it. Chains are
-    /// trimmed at this version.
-    pub(super) trim_at: Option<CommitVersion>,
+    /// The version at which the chains of those pages are trimmed.
+    pub(super) trim_bound: TrimBound,
     pub(super) chain: ChainBuffers,
     pub(super) links: Vec<Link>,
     pub(super) image: Vec<u8>,

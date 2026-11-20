@@ -42,7 +42,7 @@ fn reads(db: &Db, at: CommitVersion) {
 /// pin wait for their operations.
 fn waiting(db: &Db) -> (usize, usize) {
     let files = db.state.files.lock().expect("the files");
-    (files.untrimmed.len(), files.trim_bounds.len())
+    (files.untrimmed.len(), files.trim_bound.waiting())
 }
 
 /// The window: an operation holds a guard and no pin, and reads the
@@ -184,7 +184,7 @@ fn a_guard_that_is_not_released_holds_the_trims_and_nothing_else() {
         assert!(db.wb().has_room());
     }
     assert_eq!(db.shape(page(1)), "B".repeat(1 + usize::from(ROUNDS)));
-    assert_eq!(waiting(&db), (1, write_back::MAX_TRIM_BOUNDS));
+    assert_eq!(waiting(&db), (1, trim_bound::MAX_BOUNDS));
     assert_eq!(db.dead_blocks(), 0);
     for at in (read_at.get()..=db.latest().get()).map(version) {
         reads(&db, at);

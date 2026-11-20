@@ -77,11 +77,6 @@ impl Pass {
 /// checkpoint.
 const MAX_ROUNDS: usize = 8;
 
-/// How many answers about the oldest pinned version wait for their
-/// operations at once. An answer that has no room is not kept: a later
-/// pass asks again.
-const MAX_BOUNDS: usize = 8;
-
 /// What became of a block that was copied.
 enum Moved {
     /// Its link points at the copy.
@@ -258,7 +253,7 @@ impl<'s> Cleaner<'s> {
             }
         }
         failed.map_or(Ok(()), Err)?;
-        let waits = !work.retired.is_empty() || !work.trim_bounds.is_empty();
+        let waits = !work.retired.is_empty() || work.trim_bound.waiting() > 0;
         if !pass.progressed() && !pass.more && !waits {
             work.idle_at = Some(seen);
         }
@@ -276,7 +271,7 @@ impl<'s> Cleaner<'s> {
     ) -> Result<bool, CleanerError> {
         let config = &self.state.config;
         let counters = &self.state.counters;
-        let trim_at = self.trim_bound(work);
+        let trim_at = work.trim_bound.ask(self.stores().versions);
         let (mut space, trim) = self.read_table(work, trim_at)?;
         pass.scanned = true;
         count(&counters.scans, 1);
@@ -429,37 +424,6 @@ impl<'s> Cleaner<'s> {
             .values()
             .map(|retired| retired.block_bytes)
             .sum())
-    }
-
-    /// The version at which chains are trimmed in this pass: one that no
-    /// version pin and no running operation reads below.
-    ///
-    /// The page table asks for the first alone (`page-table.md` T11). An
-    /// operation that holds no pin reads the latest version of its
-    /// beginning, and a link it has not looked up yet is no location it
-    /// has read (`transactions.md` PN5): were the chain of a page that a
-    /// commit freed meanwhile trimmed at once, the operation would find no
-    /// such page. So the cleaner puts the three questions here as it does
-    /// for a file (PN6): the oldest pin, then an epoch, and the bound is
-    /// used once every guard of before that epoch is released. An
-    /// operation that begins later reads a version at or after the bound.
-    fn trim_bound(&self, work: &mut Work) -> Option<CommitVersion> {
-        let versions = self.stores().versions;
-        let oldest = versions.oldest_pin();
-        let asked = work.trim_bounds.back().map(|(_, at)| *at).or(work.trim_at);
-        // A later answer can be lower than an earlier one, and both are
-        // true: only an answer that allows more is worth an epoch.
-        if asked.is_none_or(|asked| oldest > asked) && work.trim_bounds.len() < MAX_BOUNDS {
-            work.trim_bounds.push_back((versions.next_epoch(), oldest));
-        }
-        let oldest_guard = versions.oldest_guard();
-        while let Some((_, at)) = work
-            .trim_bounds
-            .pop_front_if(|(epoch, _)| *epoch <= oldest_guard)
-        {
-            work.trim_at = work.trim_at.max(Some(at));
-        }
-        work.trim_at
     }
 
     /// Reads the page table through: what each segment holds that a link

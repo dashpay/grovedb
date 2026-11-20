@@ -583,6 +583,7 @@ pub(crate) mod page;
 mod place;
 mod run;
 mod state;
+pub(crate) mod trim_bound;
 mod write_back;
 
 #[cfg(test)]

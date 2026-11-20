@@ -33,11 +33,6 @@ use crate::{
 /// compress, and the attempt costs more than it could save.
 const COMPRESS_FROM: usize = 512;
 
-/// How many answers about the oldest pinned version wait for their
-/// operations at once. An answer that has no room is not kept: a later
-/// pass asks again.
-pub(super) const MAX_TRIM_BOUNDS: usize = 8;
-
 /// What write-back asks of whoever publishes commits and keeps the version
 /// pins and the operation guards (`transactions.md` CM3, PN5, PN6).
 pub trait Published: Pins + Sync {
@@ -1233,18 +1228,20 @@ impl<'s> WriteBack<'s> {
     /// version before that image's (`page-table.md` T11).
     ///
     /// A page stays in the list while its newest image is newer than the
-    /// version the chains may be trimmed at ([`Self::trim_bound`]), and a
-    /// later pass trims it. Meanwhile its chain is trimmed at that
-    /// version, once for each version: the links under an older image of
-    /// the page go as soon as no reader is below that image, whatever
-    /// newer images the page has got since. A page that gets an image in
-    /// every pass would keep them all otherwise, while operations follow
-    /// one another closely enough that the version is always a pass old.
+    /// version the chains may be trimmed at, which is found by the rule
+    /// the cleaner's trims go by too
+    /// ([`TrimBound`](super::trim_bound::TrimBound)), and a later pass
+    /// trims it. Meanwhile its chain is trimmed at that version, once for
+    /// each version: the links under an older image of the page go as
+    /// soon as no reader is below that image, whatever newer images the
+    /// page has got since. A page that gets an image in every pass would
+    /// keep them all otherwise, while operations follow one another
+    /// closely enough that the version is always a pass old.
     fn trim(&self, files: &mut Files) {
         if files.untrimmed.is_empty() {
             return;
         }
-        let Some(at) = self.trim_bound(files) else {
+        let Some(at) = files.trim_bound.ask(self.stores.versions) else {
             return;
         };
         let mut removed = Vec::new();
@@ -1259,37 +1256,5 @@ impl<'s> WriteBack<'s> {
             let mut kept = lock(&self.state.kept);
             removed.iter().for_each(|link| kept.died(link));
         }
-    }
-
-    /// The version at which this pass may trim chains: one that no version
-    /// pin and no running operation reads below, or `None` while no such
-    /// version is known.
-    ///
-    /// The oldest pin alone is not that version. An operation that holds
-    /// no pin reads the latest version of its beginning under its guard,
-    /// and a link it has not looked up yet is no location it has read
-    /// (`transactions.md` RD4, PN5): were the chain of a page that a
-    /// commit superseded meanwhile trimmed at once, the operation would
-    /// find no version of the page. So the three questions are put here
-    /// as the cleaner puts them for its own trims (PN6): the oldest pin,
-    /// then an epoch, and the answer is used once every operation guard
-    /// of before that epoch is released. An operation that begins later
-    /// reads a version at or after the answer.
-    fn trim_bound(&self, files: &mut Files) -> Option<CommitVersion> {
-        let versions = self.stores.versions;
-        let oldest = versions.oldest_pin();
-        let asked = (files.trim_bounds.back().map(|(_, at)| *at)).or(files.trim_at);
-        // A later answer can be lower than an earlier one, and both are
-        // true: only an answer that allows more is worth an epoch.
-        if asked.is_none_or(|asked| oldest > asked) && files.trim_bounds.len() < MAX_TRIM_BOUNDS {
-            (files.trim_bounds).push_back((versions.next_epoch(), oldest));
-        }
-        let oldest_guard = versions.oldest_guard();
-        while let Some((_, at)) =
-            (files.trim_bounds).pop_front_if(|(epoch, _)| *epoch <= oldest_guard)
-        {
-            files.trim_at = files.trim_at.max(Some(at));
-        }
-        files.trim_at
     }
 }
