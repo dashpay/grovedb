@@ -125,6 +125,94 @@
 //! kept in the write set by key is looked at when it is laid out, and its
 //! nodes are read as the write set's records until then.
 //!
+//! # A load
+//!
+//! A change set can say that it is the whole Merk ([`MerkWrite::whole`]):
+//! a Merk that has no root, handed over in one change set, every node
+//! once, a child before its parent, with every value stated, every hash
+//! made and the root named. Such a change set that has a node is a
+//! **load** (`transactions.md` LD1 to LD7). A state-sync restore, the
+//! load hatch and the migrator from RocksDB hand their Merks over so.
+//! One that is not what it says is refused with nothing changed
+//! ([`BatchError::NotWhole`], [`WholeFault`]).
+//!
+//! **The records are those of the same change set that does not say so.**
+//! A load is in the write set as the puts of its nodes, one entry each, so
+//! the claims of scopes, the conflict rule, the service by key and the
+//! rollback to a mark are for it what they are for any write. What
+//! differs is where the cells and the values go.
+//!
+//! - **The layout is the bulk loader's** ([`lignin_tree::bulk`]). The
+//!   loads of one batch are laid out before its other change sets are
+//!   applied, all through one loader, in pages that the loader starts and
+//!   fills as it fills any ([`Applied::load`] has its counts). The nodes
+//!   are reported with their handles, as those of any write
+//!   ([`Applied::nodes`]).
+//! - **A node of a load that hosts a Merk** names the cell of the Merk's
+//!   root: of another load of the batch, which is laid out before it
+//!   wherever it stands in the batch, or of a Merk the batch does not
+//!   write. No Merk is laid out inside the fragment of its host. A node of
+//!   a load does not host a Merk that the batch writes node by node, and a
+//!   node that is written as any other can host a load.
+//! - **The hashes are the ones the change set states.** The loader asks
+//!   for each hash of a node when the node arrives, and is answered with
+//!   what the change set says: no rule is known here. The hash of the
+//!   root, which no node of its Merk states, is in no cell.
+//! - **A value out of line goes into the value log when its cell gets its
+//!   page**, into the file that the loads of the store append to
+//!   ([`LoadFiles`]), and the cell is written with the pointer. It is the
+//!   one write a transaction makes to a data file before its commit (LD2).
+//!   The write set keeps where the value is in the place of its bytes
+//!   (LD3), and the frames keep nothing of it. The transaction holds the
+//!   file ([`ValueHold`](lignin_store::values::ValueHold)) until its
+//!   commit has counted the values, or until its write set is empty
+//!   again. The first value of a session's loads, and the first after a
+//!   file is full, has the file created and named by a manifest: one
+//!   replacement of the manifest, in the operation of the load.
+//! - **The commit takes the values over** ([`crate::commit`], "The commit
+//!   of a load").
+//!
+//! **Frames that are made again lay a load out again** (LD4): after a
+//! commit of another transaction (WT7a), a rollback to a mark, an
+//! operation that failed half way, and when a scope that was open beside
+//! another is laid out. The loader lays the change set out anew, in new
+//! pages, and each value out of line is read from where the write set
+//! says and appended again, for the page its cell is in now: one read and
+//! one append for each, with one value in memory at a time. The records
+//! are what they were. The copies that no cell holds are dead space of
+//! the value log.
+//!
+//! **A load that is taken by key has no page**: where a write of the
+//! transaction is met (WT7b), and for a scope that keeps its writes in
+//! the write set ([`crate::scope`]). Its values are in the write set like
+//! those of any write, and stay there. When its frames are made, the load
+//! is laid out from those bytes, and its values out of line go into the
+//! value log then.
+//!
+//! **To the conflict rule a load is the puts of its nodes** (LD6), and
+//! the first node of its Merk: it is not laid out over a root that a
+//! commit outside gave the Merk since ([`BatchError::RootTaken`], choice 8
+//! below). It is no range: a commit that wrote a key the load does not
+//! hold does not meet it. A batch that clears a Merk and loads it is a
+//! range by its clear. A load keeps no value, so no read is dated for it.
+//!
+//! **What a load holds in memory** (LD7), from its operation until the
+//! transaction's commit or rollback:
+//!
+//! - its pages as private copies, every cell of the Merk, and with each
+//!   page the run of records that made it, which is what the commit logs:
+//!   the bytes of the cells once more
+//! - one entry of the write set for each node, with the key, the feature,
+//!   the two hashes, the links and the value if that is in its cell, and
+//!   the node's key once more in the index
+//! - for a value out of line the 12 bytes of its place, in the cell and in
+//!   the run, and 20 bytes in the write set
+//!
+//! While the operation runs, the loader keeps the nodes whose cells are in
+//! no page yet, each with its value. The batch itself is its caller's.
+//! Nothing of this grows with the bytes of the values that are out of
+//! line ([`TxnStats`] has the pages and the bytes of the write set).
+//!
 //! # Subtrees and the directory
 //!
 //! Where the root of a Merk is, the subtree directory says
@@ -249,7 +337,8 @@
 //! with the transaction's frames until its commit carries them in the log
 //! group and attaches them to the frame of their page (WT4, FL7). Every
 //! rebuild of the frames states the write set to values that have not
-//! seen it.
+//! seen it. The values of a load are the exception: they go into the
+//! value log when the load is applied ("A load").
 //!
 //! **Stale hashes** (`lignin_tree::hash`). A node is written with the
 //! hashes its writer made, and says which it did not make
@@ -479,6 +568,11 @@
 //!   transaction that opens cursor after cursor stay until it ends, also
 //!   those of cursors that are gone. A key set is shared with every
 //!   transaction that keeps it.
+//! - **A hold on the value-log files its loads appended to**, from the
+//!   first value out of line of a load until its commit has counted the
+//!   values its cells hold, or until its write set is empty again: by a
+//!   rollback, a rollback to a savepoint that takes every write out, or
+//!   its drop. While it holds them, no such file is deleted.
 //! - **A place among the open write transactions of the store's counts**
 //!   ([`WritePath::stats`]), from its first write until its write set is
 //!   empty again: by its commit, a rollback, a rollback to a savepoint
@@ -543,8 +637,38 @@
 //!     a root that is kept, a written node that has a cell stays in its
 //!     tree ([`MerkWrite`], "Unlinked records").
 //!
+//! 10. **A load is stated by its change set**, and the engine does not
+//!     take a change set for one by its shape. The commit of a load syncs
+//!     a file and replaces the manifest, which no other commit does
+//!     (DEC-04), so a caller asks for it.
+//! 11. **The loads of a store append to one value-log file at a time**
+//!     ([`LoadFiles`]), not each transaction to a file of its own: a
+//!     session that loads in many transactions would otherwise leave a
+//!     file for each.
+//! 12. **Frames that are made again append the values of a load again.**
+//!     The record of a value names the page of its cell, and pages that
+//!     are made again have other ids. Keeping the pages of a load through
+//!     a rebuild would spare it, and needs pages that outlive the frames
+//!     they are of.
+//! 13. **A Merk that a node of a load hosts is laid out beside its host,
+//!     not inside the host's fragment**, which the loader can also do
+//!     ([`HostedLoad::Loaded`](lignin_tree::bulk::HostedLoad::Loaded)).
+//!     The cells of one write of the loader are then of one Merk, which
+//!     is how the handles of a load's nodes are told apart by their keys.
+//! 14. **The loads of one batch share the loader's pages, and those of
+//!     two batches do not.** A loader fills a page of each level until it
+//!     is done, and nothing else may write those pages meanwhile. So a
+//!     caller that loads many small Merks hands them over in one batch.
+//!
 //! # What is not here
 //!
+//! - **A stale hash in a load**: a load states every hash
+//!   ([`WholeFault::StaleHash`]). Where iteration two hands a Merk over
+//!   with hashes left to finalize, it marks them in a write after the
+//!   load (GROVE-11).
+//! - **A Merk in two loads**: a load is the whole of a Merk that had no
+//!   root. A Merk too large for one change set is the caller's to cut
+//!   another way (`DECISIONS.md` D-087 item 5).
 //! - **The record Merk's callers expect from a cursor**, which Merk's
 //!   store builds (`merk::store::lignin`). A cursor over a Merk shows the
 //!   node ([`MerkCursor::node`]): the transaction's own, or the one that
@@ -575,6 +699,7 @@ mod cursor;
 mod error;
 mod frames;
 mod key;
+pub(crate) mod load;
 mod opened;
 mod pages;
 mod path;
@@ -608,8 +733,9 @@ pub(crate) mod tests;
 
 pub use commits::Commits;
 pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed};
-pub use error::{BatchError, Differs, HostName, TxnError};
+pub use error::{BatchError, Differs, HostName, TxnError, WholeFault};
 pub use key::{Column, KeySet, Subtree, Unit};
+pub use load::LoadFiles;
 pub(crate) use path::Store;
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
 pub(crate) use txn::Held;

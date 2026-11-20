@@ -24,6 +24,7 @@ use super::{
     error::{BatchError, TxnError},
     frames::{stored_key, Awake, Frames, Parked, Woken},
     key::{Column, KeySet, Subtree, Unit},
+    load::{cover, is_load, Loaded},
     opened::Opened,
     pages::{child_keys, find, follow, CommittedPages, NodePages},
     path::WritePath,
@@ -31,7 +32,7 @@ use super::{
     unlinked,
     view::{ChildKeys, NodeView, SubtreeView},
     write::{Applied, Batch, Hosted, Moving, SubtreeWrite, ValuePut},
-    write_set::{EntryId, Mark, Own, OwnSubtree, Restated, Said, WriteSet},
+    write_set::{EntryId, Mark, NodeValue, Own, OwnSubtree, Restated, Said, WriteSet},
 };
 use crate::{
     scope::table::{Scopes, Who},
@@ -89,6 +90,11 @@ struct State<'s> {
     base: Option<VersionPin<'s>>,
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
+    /// The values that the transaction's loads put into the value log:
+    /// the hold on their files, from the first of them until the commit
+    /// has counted those its cells hold, or until the write set is empty
+    /// again (`super::load`).
+    loaded: Loaded,
     /// The watch on the key sets of the commits: from the transaction's
     /// first write or the first node it is shown, whichever comes first,
     /// until it has no write and remembers no lease.
@@ -171,6 +177,9 @@ impl State<'_> {
             self.under.clear();
             self.above.clear();
             self.owed.clear();
+            // No write is left that could name a value of a load: what the
+            // loads put into the value log is dead space from here on.
+            self.loaded = Loaded::default();
         }
     }
 
@@ -665,6 +674,7 @@ impl<'s> WriteTxn<'s> {
                 set: WriteSet::new(),
                 base: None,
                 frames: None,
+                loaded: Loaded::default(),
                 watch: None,
                 reads: Reads::default(),
                 committed: None,
@@ -956,7 +966,15 @@ impl<'s> WriteTxn<'s> {
                 at = pin.version();
                 continue;
             }
-            match Self::build(path, &guard, at, &state.set, &state.scopes) {
+            let built = Self::build(
+                path,
+                &guard,
+                at,
+                &state.set,
+                &state.scopes,
+                &mut state.loaded,
+            );
+            match built {
                 Ok(frames) => {
                     if !state.set.is_empty() {
                         state.rebuilds += 1;
@@ -1086,10 +1104,10 @@ impl<'s> WriteTxn<'s> {
             },
             false => Vec::new(),
         };
-        match frames.apply(path, batch, None) {
+        match frames.apply(path, batch, None, &mut state.loaded) {
             Ok(applied) => {
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
-                let first = state.set.add(batch, op.at, empty, &cut, left);
+                let first = state.set.add(batch, op.at, empty, &cut, left, frames.stored());
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);
@@ -1114,7 +1132,9 @@ impl<'s> WriteTxn<'s> {
                     // again from the write set, which does not (WT10).
                     frames.discard();
                     state.renew_lease();
-                    let frames = Self::build(path, &op.guard, op.at, &state.set, &state.scopes);
+                    let (set, scopes) = (&state.set, &state.scopes);
+                    let frames =
+                        Self::build(path, &op.guard, op.at, set, scopes, &mut state.loaded);
                     if let Ok(frames) = frames {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
@@ -1198,7 +1218,9 @@ impl<'s> WriteTxn<'s> {
             return BatchError::MovedByKey { subtree }.into();
         }
         if let Some((at, _)) = state.stuck.filter(|(_, ops)| *ops == state.set.ops()) {
-            let frames = Self::build(&self.path, guard, at, &state.set, &state.scopes);
+            let mut loaded = Loaded::default();
+            let (set, scopes) = (&state.set, &state.scopes);
+            let frames = Self::build(&self.path, guard, at, set, scopes, &mut loaded);
             if let Err(refused) = frames {
                 return refused;
             }
@@ -1697,7 +1719,13 @@ impl<'s> WriteTxn<'s> {
         for merk in batch.merks {
             let subtree = merk.subtree;
             let left = batch.leaves(subtree);
-            empty.push(left || !self.rooted(state, op, &subtree)?);
+            let rootless = left || !self.rooted(state, op, &subtree)?;
+            if is_load(merk) && !rootless {
+                // A load is the whole of a Merk that had no root.
+                let fault = super::error::WholeFault::HasRoot;
+                return Err(BatchError::NotWhole { subtree, fault }.into());
+            }
+            empty.push(rootless);
             for node in merk.nodes {
                 entry += 1;
                 if node.value != ValuePut::Keep {
@@ -1709,8 +1737,14 @@ impl<'s> WriteTxn<'s> {
                     // its nodes are written, the transaction's own node
                     // with it.
                     _ if left => None,
-                    Own::Node(id) => match state.set.node_value(id).map(<[u8]>::to_vec) {
-                        Some(value) => Some(value),
+                    Own::Node(id) => match state.set.node_value(id) {
+                        Some(NodeValue::Bytes(value)) => Some(value.to_vec()),
+                        // A value that a load put into the value log.
+                        Some(NodeValue::Stored(stored)) => {
+                            let (mut records, mut joined) = (Vec::new(), Vec::new());
+                            let value = stored.read(path.values, &mut records, &mut joined)?;
+                            Some(value.to_vec())
+                        }
                         // The node is one of the frames, which hold its
                         // value: the batch is one that is not laid out.
                         None => self.framed_value(state, op, &subtree, node.key)?,
@@ -1749,7 +1783,9 @@ impl<'s> WriteTxn<'s> {
             state.renew_lease();
             state.lease_at = Some(op.at);
         }
-        let first = state.set.add(batch, op.at, &empty, &cut, &[]);
+        // A load that is taken by key has no page: its values stay with
+        // the write set until its frames are made.
+        let first = state.set.add(batch, op.at, &empty, &cut, &[], &[]);
         for (offset, value) in kept {
             state.set.keep(first + offset, &value);
         }
@@ -2121,7 +2157,10 @@ impl<'s> WriteTxn<'s> {
             state.keyed += 1;
         }
         match own {
-            Own::Node(id) => Ok(Ok(read(Some(NodeView::record(&state.set, id))))),
+            Own::Node(id) => {
+                let record = NodeView::record(&state.set, id, self.path.values);
+                Ok(Ok(read(Some(record))))
+            }
             Own::Deleted => Ok(Ok(read(None))),
             Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
             Own::Unwritten => Ok(Err(read)),
@@ -2413,7 +2452,10 @@ impl<'s> WriteTxn<'s> {
                 found.ok_or(NodeError::NoNode { address })?;
                 match state.set.own(unit, &key) {
                     Own::Unwritten => show_committed(&mut pages, Some(address), read),
-                    Own::Node(id) => Ok(read(Some(NodeView::record(&state.set, id)))),
+                    Own::Node(id) => {
+                        let record = NodeView::record(&state.set, id, self.path.values);
+                        Ok(read(Some(record)))
+                    }
                     Own::Deleted => Ok(read(None)),
                     Own::Put(_) => Err(TxnError::Damaged("a flat record is read as a Merk node")),
                 }
@@ -2507,15 +2549,18 @@ impl<'s> WriteTxn<'s> {
                 return Ok(Sealed::Conflict);
             }
             // The write set names what the committed state does not hold.
-            return Err(
-                match Self::build(&self.path, &op.guard, op.at, &state.set, &state.scopes) {
-                    Err(error) => error,
-                    Ok(_) => TxnError::Damaged("frames that could not be made are made"),
-                },
-            );
+            let (set, scopes) = (&state.set, &state.scopes);
+            let built = Self::build(&self.path, &op.guard, op.at, set, scopes, &mut state.loaded);
+            return Err(match built {
+                Err(error) => error,
+                Ok(_) => TxnError::Damaged("frames that could not be made are made"),
+            });
         };
         let keys = state.set.key_set();
         let pin = state.base.take();
+        // The hold on the values of its loads goes to the commit, which
+        // counts those that cells hold (`log-format.md` LG16).
+        let loaded = std::mem::take(&mut state.loaded);
         state.end();
         let Frames {
             tree,
@@ -2536,7 +2581,24 @@ impl<'s> WriteTxn<'s> {
             directory,
             dropped,
             keys,
+            loaded,
         })))
+    }
+
+    /// Has a durable manifest cover the values that the transaction's
+    /// loads put into the value log, if it has any that none covers: the
+    /// part of a load's commit that syncs a file and replaces the
+    /// manifest, made before the commit lock is taken ([`cover`]).
+    pub(crate) fn cover_loaded(&self) -> Result<(), TxnError> {
+        let state = self.lock();
+        cover(&self.path, &state.loaded)
+    }
+
+    /// How many stretches of value-log files hold the values of the
+    /// transaction's loads.
+    #[cfg(all(test, not(loom)))]
+    pub(crate) fn loaded_runs(&self) -> usize {
+        self.lock().loaded.runs()
     }
 }
 
@@ -2622,6 +2684,11 @@ pub(crate) struct Parts<'s> {
     pub(crate) dropped: Vec<lignin_tree::directory::Dropped>,
     /// The key set of the commit (CF1).
     pub(crate) keys: super::key::KeySet,
+    /// The values that the transaction's loads put into the value log,
+    /// with the hold on their files: the commit acquires the pointers that
+    /// cells of the tree pages hold, and gives the hold up when they are
+    /// counted (`super::load`).
+    pub(crate) loaded: Loaded,
 }
 
 /// Shows the cell at `at` in the frames, or no node.

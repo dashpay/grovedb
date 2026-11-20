@@ -9,7 +9,7 @@ use lignin_tree::{
     directory::Entry,
     hash::Stale,
     node::{NodeHandle, NodeRef, PinnedNode},
-    value::{read_value, TreeValues, ValueBuf, ValueSource},
+    value::{read_placed, read_value, TreeValues, ValueBuf, ValueSource},
 };
 
 use super::{
@@ -17,7 +17,7 @@ use super::{
     key::Subtree,
     unlinked::Unlinked,
     write::HostPut,
-    write_set::{hash_of, EntryId, Kind, LinkEntry, NodeEntry, WriteSet},
+    write_set::{hash_of, EntryId, Kind, LinkEntry, NodeEntry, NodeValue, WriteSet},
 };
 
 /// What the subtree directory holds of an entered subtree, as an operation
@@ -154,6 +154,8 @@ enum Source<'a> {
     Record {
         set: &'a WriteSet,
         id: EntryId,
+        /// The value log, for a value that a load put there.
+        store: &'a ValueStore,
     },
     Unlinked(Unlinked<'a>),
 }
@@ -219,10 +221,13 @@ impl<'a> NodeView<'a> {
         }
     }
 
-    pub(crate) fn record(set: &'a WriteSet, id: EntryId) -> Self {
+    /// A node the transaction wrote, as its write set has it. `store` is
+    /// the value log, which holds the value of a node that a load wrote
+    /// with its value out of line.
+    pub(crate) fn record(set: &'a WriteSet, id: EntryId, store: &'a ValueStore) -> Self {
         debug_assert!(matches!(set.entry(id).kind, Kind::Node(_)));
         Self {
-            source: Source::Record { set, id },
+            source: Source::Record { set, id, store },
         }
     }
 
@@ -244,7 +249,7 @@ impl<'a> NodeView<'a> {
     pub fn key(&self) -> &'a [u8] {
         match self.source {
             Source::Cell { node, .. } => node.key(),
-            Source::Record { set, id } => set.key(id),
+            Source::Record { set, id, .. } => set.key(id),
             Source::Unlinked(record) => record.key,
         }
     }
@@ -253,7 +258,7 @@ impl<'a> NodeView<'a> {
     pub fn feature(&self) -> &'a [u8] {
         match self.source {
             Source::Cell { node, .. } => node.feature(),
-            Source::Record { set, id } => set.bytes_at(Self::entry(set, id).feature),
+            Source::Record { set, id, .. } => set.bytes_at(Self::entry(set, id).feature),
             Source::Unlinked(record) => record.feature,
         }
     }
@@ -262,7 +267,9 @@ impl<'a> NodeView<'a> {
     pub fn value_hash(&self) -> &'a Hash {
         match self.source {
             Source::Cell { node, .. } => node.value_hash(),
-            Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).value_hash)),
+            Source::Record { set, id, .. } => {
+                hash_of(set.bytes_at(Self::entry(set, id).value_hash))
+            }
             Source::Unlinked(record) => record.value_hash,
         }
     }
@@ -271,7 +278,7 @@ impl<'a> NodeView<'a> {
     pub fn kv_hash(&self) -> &'a Hash {
         match self.source {
             Source::Cell { node, .. } => node.kv_hash(),
-            Source::Record { set, id } => hash_of(set.bytes_at(Self::entry(set, id).kv_hash)),
+            Source::Record { set, id, .. } => hash_of(set.bytes_at(Self::entry(set, id).kv_hash)),
             Source::Unlinked(record) => record.kv_hash,
         }
     }
@@ -298,8 +305,15 @@ impl<'a> NodeView<'a> {
                 Values::Committed { store, node } => Ok(read_value(store, node, buf)?),
             },
             // A record is shown only once the transaction has its own copy
-            // of every value its write set refers to (WT7).
-            Source::Record { set, id } => Ok(set.node_value(id).unwrap_or_default()),
+            // of every value its write set refers to (WT7). A value that a
+            // load put into the value log is read from there.
+            Source::Record { set, id, store } => match set.node_value(id) {
+                None => Ok(&[]),
+                Some(NodeValue::Bytes(bytes)) => Ok(bytes),
+                Some(NodeValue::Stored(stored)) => {
+                    Ok(read_placed(store, stored.pointer, stored.owner, buf)?)
+                }
+            },
             Source::Unlinked(record) => Ok(record.value),
         }
     }
@@ -308,7 +322,7 @@ impl<'a> NodeView<'a> {
     pub fn value_len(&self) -> u32 {
         match self.source {
             Source::Cell { node, .. } => node.value_len(),
-            Source::Record { set, id } => set.node_value(id).map_or(0, |value| value.len() as u32),
+            Source::Record { set, id, .. } => set.node_value(id).map_or(0, |value| value.len()),
             Source::Unlinked(record) => record.value.len() as u32,
         }
     }
@@ -319,7 +333,7 @@ impl<'a> NodeView<'a> {
     pub fn stale(&self) -> Stale {
         match self.source {
             Source::Cell { stale, .. } => stale,
-            Source::Record { set, id } => Self::entry(set, id).stale,
+            Source::Record { set, id, .. } => Self::entry(set, id).stale,
             // An unlinked record is in no hash: nothing of it is evaluated.
             Source::Unlinked(_) => Stale::NONE,
         }
@@ -335,7 +349,7 @@ impl<'a> NodeView<'a> {
                 aggregate: link.aggregate,
                 key: None,
             }),
-            Source::Record { set, id } => {
+            Source::Record { set, id, .. } => {
                 let node = Self::entry(set, id);
                 let link: Option<LinkEntry> = match side {
                     Side::Left => node.left,

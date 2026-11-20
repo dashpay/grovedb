@@ -759,6 +759,7 @@ fn a_drop_ends_the_handles_that_were_read_before_it() {
             removed: &[],
             root: RootPut::Set(Some(key)),
             anchored: false,
+            whole: false,
         }];
         let clear = [SubtreeWrite::Clear { subtree }];
         let scope = tx.txn.scope().expect("a scope");
@@ -1051,6 +1052,7 @@ fn the_roots_of_one_write_are_told_together() {
         removed: &[],
         root,
         anchored: false,
+        whole: false,
     };
 
     // Three Merks with their roots in one page.

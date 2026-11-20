@@ -1083,6 +1083,7 @@ fn apply(scope: &Scope<'_, '_>, write: &Write) -> Result<Written, Error> {
                 RootWrite::Set(root) => RootPut::Set(root.as_deref()),
             },
             anchored: merk.anchored,
+            whole: false,
         })
         .collect();
     let records: Vec<RecordWrite<'_>> = (write.records.iter())

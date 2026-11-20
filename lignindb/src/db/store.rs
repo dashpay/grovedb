@@ -184,6 +184,8 @@ pub(super) struct Store {
     pub(super) stats: Stats,
     /// The key sets of the session's commits.
     pub(super) commits: Commits,
+    /// The value-log file the session's loads append to (TXN-10).
+    pub(super) load_files: crate::txn::LoadFiles,
     /// What the commits of the session share.
     pub(super) committing: CommitState,
     /// The handles on the subtree directory, by version.
@@ -531,6 +533,8 @@ impl Shared {
             directory: catalog.directory,
             directories: &store.directories,
             flat_drops: catalog.flat_drops,
+            load_files: &store.load_files,
+            manifest: &store.manifest,
         };
         WritePath::new(
             parts,

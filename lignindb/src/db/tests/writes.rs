@@ -208,6 +208,7 @@ fn the_counts_of_the_store_are_read_through_the_facade() {
         removed: &[],
         root: RootPut::Set(Some(b"stale")),
         anchored: false,
+        whole: false,
     }];
     scope
         .apply(&Batch {

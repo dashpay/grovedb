@@ -58,6 +58,7 @@
 //! **The log is the only file a commit writes, and it is appended to
 //! once** (CM7). No value-log file is written, no manifest is replaced:
 //! the values travel in the group (FL7) and write-back places them later.
+//! The commit of a load is the exception ("The commit of a load").
 //! A commit that changes no page appends a group all the same and takes a
 //! version (CV3): a delete of a key that has no record is a write (ST5).
 //!
@@ -77,6 +78,32 @@
 //! published before the sync, and whether the sync succeeds changes
 //! nothing that was installed, because a group that is in the log has
 //! happened either way (CM9 item 2).
+//!
+//! # The commit of a load
+//!
+//! A transaction whose loads put values into the value log
+//! ([`crate::txn`], "A load") holds them there under no count and no
+//! manifest. Its commit takes them over (`transactions.md` LD5,
+//! `log-format.md` LG16). It is a commit like any other, with this more:
+//!
+//! | Step | What is done | Locks held |
+//! | --- | --- | --- |
+//! | before | The file the loads append to is synced, and the manifest is replaced so that it covers their values, unless a durable manifest covers them all already. A failure refuses the commit with the transaction whole ([`CommitError::Refused`]). | the transaction's own, the manifest's |
+//! | after 5 | The pointers that cells of the transaction's pages hold to values of its loads are read from the cells. If a manifest does not cover one, which is so where steps 2 to 4 made the frames again and the values were appended anew, the file is synced and the manifest replaced here. A value that is still not covered fails the commit ([`CommitError::Failed`]). | commit lock, the manifest's |
+//! | 6 | The group lists those pointers as acquired, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
+//! | 7 | The acquired pointers are counted with the released ones, and the hold on the files of the loads ends. | as for any commit |
+//!
+//! So such a commit syncs a value-log file and replaces the manifest,
+//! which costs what those cost on the store's disk, and makes them before
+//! it takes the commit lock: another commit waits for them only in the
+//! case of the second row (CM8). [`Published::acquired`] counts the
+//! pointers.
+//!
+//! **After a crash the store has all of a load or none of it.** A manifest
+//! that covers every value is durable before the group that names their
+//! pointers is appended. Where recovery keeps the group, each pointer
+//! leads to its value. Where it does not, no cell that it keeps points at
+//! a value of the load, and no count includes one: they are dead space.
 //!
 //! # How a commit ends
 //!
@@ -275,10 +302,9 @@
 //!   the write path the store's counts
 //!   ([`WritePath::stats`](crate::txn::WritePath::stats)), in which a
 //!   write transaction is open from its first write until its commit or
-//!   its rollback ends it. A bulk load
-//!   that takes value pointers over from loaded files (`log-format.md`
-//!   LG16) is its commit to make: a commit here lists no pointer as taken
-//!   over.
+//!   its rollback ends it. It gives the write path the value-log file
+//!   that loads append to
+//!   ([`LoadFiles`](crate::txn::LoadFiles)) and the manifest's lock.
 //! - **Pending marks** ([`crate::scope`], SC9): a transaction on which one
 //!   stands is not committed ([`CommitError::NotFinalized`], CM1). The
 //!   write that takes the mark off is finalize's (GROVE-11).

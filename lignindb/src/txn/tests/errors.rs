@@ -42,6 +42,7 @@ fn merk<'a>(name: u8, nodes: &'a [NodePut<'a>], root: RootPut<'a>) -> MerkWrite<
         removed: &[],
         root,
         anchored: false,
+        whole: false,
     }
 }
 

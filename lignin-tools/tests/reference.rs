@@ -443,6 +443,7 @@ impl Grove {
                 removed: &[],
                 root: RootPut::Set(merk.root.map(|root| &merk.nodes[root as usize].key[..])),
                 anchored: false,
+                whole: false,
             }];
             if let Some((host_merk, _)) = merk.host {
                 // The node above the host is not written here: the host's
@@ -453,6 +454,7 @@ impl Grove {
                     removed: &[],
                     root: RootPut::Keep,
                     anchored: self.merks[host_merk].host.is_some(),
+                    whole: false,
                 });
             }
             scope
@@ -503,6 +505,7 @@ impl Grove {
                 removed: &[],
                 root: RootPut::Keep,
                 anchored: false,
+                whole: false,
             })
             .collect();
         let batch = Batch {

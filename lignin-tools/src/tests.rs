@@ -220,6 +220,7 @@ fn write_grove(db: &Db, documents: u32, round: Option<u8>) {
             removed: &[],
             root: RootPut::Set(root_root.as_deref()),
             anchored: false,
+            whole: false,
         },
         MerkWrite {
             subtree: DOCS,
@@ -227,6 +228,7 @@ fn write_grove(db: &Db, documents: u32, round: Option<u8>) {
             removed: &[],
             root: RootPut::Set(doc_root.as_deref()),
             anchored: false,
+            whole: false,
         },
         MerkWrite {
             subtree: MID,
@@ -234,6 +236,7 @@ fn write_grove(db: &Db, documents: u32, round: Option<u8>) {
             removed: &[],
             root: RootPut::Set(mid_root.as_deref()),
             anchored: false,
+            whole: false,
         },
         MerkWrite {
             subtree: SUB,
@@ -241,6 +244,7 @@ fn write_grove(db: &Db, documents: u32, round: Option<u8>) {
             removed: &[],
             root: RootPut::Set(sub_root.as_deref()),
             anchored: false,
+            whole: false,
         },
     ];
     let enters = [

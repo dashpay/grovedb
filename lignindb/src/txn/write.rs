@@ -2,7 +2,7 @@
 //! told when they are applied.
 
 use lignin_format::{tree_page::Hash, CellAddress};
-use lignin_tree::{hash::Stale, node::NodeHandle};
+use lignin_tree::{bulk::LoadCounters, hash::Stale, node::NodeHandle};
 
 use super::key::{Column, Subtree, Unit};
 
@@ -308,6 +308,37 @@ pub struct MerkWrite<'a> {
     /// host (`tree-layout.md` T3). Never on existing GroveVersions, where
     /// every write holds the path up to the root of the grove.
     pub anchored: bool,
+    /// Whether the change set is the whole Merk, handed over in the order
+    /// of the bulk loader: a **load** (`crate::txn`, "A load").
+    ///
+    /// The Merk has no root before the operation, and the change set
+    /// states all of it:
+    ///
+    /// - every node once, **a child before its parent**: each link names a
+    ///   node that stands before its node in [`Self::nodes`]
+    /// - every value stated ([`ValuePut::Value`]) and every hash made
+    ///   ([`Stale::NONE`]), with the final heights and aggregates
+    /// - no key removed, and the root set to one of the nodes
+    /// - a node hosts no Merk that another change set of the same batch
+    ///   writes, unless that change set is a load as well
+    ///
+    /// Anything else is refused
+    /// ([`BatchError::NotWhole`](super::BatchError::NotWhole)), and so is
+    /// a load into a Merk that has a root. Where the root is one that a
+    /// commit outside made after the load was applied, the refusal is the
+    /// one of any first writer of a Merk
+    /// ([`BatchError::RootTaken`](super::BatchError::RootTaken)).
+    ///
+    /// A change set with no node loads nothing, and is taken as any other.
+    ///
+    /// The records are those of the same change set with this left
+    /// `false`. What differs is the layout and where the values go: the
+    /// loads of one batch are laid out by
+    /// [`lignin_tree::bulk`] in new pages at the loader's fill, and a value
+    /// out of line goes into the value log when its cell gets its page,
+    /// where the transaction's commit takes it over. No hint is followed
+    /// ([`NodePut::at`]): a Merk with no root has no cell to name.
+    pub whole: bool,
 }
 
 /// The element that hosts an entered subtree: the node it is, and which of
@@ -808,4 +839,10 @@ pub struct Applied {
     /// Every cell the write carried to another page: where it was, and the
     /// node where it is now.
     pub carried: Vec<(CellAddress, NodeHandle)>,
+    /// What the loader did for the change sets of the batch that are whole
+    /// Merks ([`MerkWrite::whole`]): the nodes, the pages it started and
+    /// their fill ([`LoadCounters::fill_percent`]), and the values it put
+    /// out of line. `None` for a batch with no load, and while the
+    /// transaction serves its records by key.
+    pub load: Option<LoadCounters>,
 }

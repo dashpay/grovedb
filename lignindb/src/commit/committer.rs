@@ -6,12 +6,16 @@ use std::{
 };
 
 use lignin_format::{
-    delta::DeltaRun, tree_page::Hash, value_log::ValuePointer, wal::GroupWriter, CommitVersion,
-    FormatVersion, PageId,
+    delta::DeltaRun,
+    tree_page::{CellValue, Hash, TreePage},
+    value_log::ValuePointer,
+    wal::GroupWriter,
+    CommitVersion, FormatVersion, PageId,
 };
 use lignin_store::{
     cache::PrivateRef,
     flush::{FlushError, Room, WriteBack},
+    load::FRAME_FORMAT,
     table::{Link, LinkError, PageTable},
     values::{CountStep, ValueChange},
     wal::{GroupPlace, LogError, LogStore, SyncPolicy},
@@ -30,6 +34,7 @@ use super::{
 use crate::{
     snapshot::OperationGuard,
     txn::{
+        load::{cover, Loaded},
         Batch, FlatFrames, KeySet, Parts, Sealed, TreeCopy, TreePages, TxnError, WritePath,
         WriteTxn,
     },
@@ -246,6 +251,10 @@ impl<'s> Committer<'s> {
             return Err(CommitError::Stopped(stopped));
         }
         self.look_at_log(true)?;
+        // The commit of a load: the values its loads put into the value
+        // log are made durable, under a manifest that covers them, before
+        // the commit lock is taken (`log-format.md` LG16).
+        txn.cover_loaded().map_err(CommitError::Refused)?;
         let mut untold = None;
         let committed = self.commit_locked(txn, &path, rules, also, |_| Ok(()), &mut untold);
         // No lock is held here: whoever is told may call the store.
@@ -512,6 +521,7 @@ impl<'s> Committer<'s> {
             directory,
             dropped,
             mut keys,
+            loaded,
         } = parts;
         // The commit lock is held, so the latest version is the one the
         // frames were made over, and stays so until this publishes.
@@ -528,6 +538,27 @@ impl<'s> Committer<'s> {
             hashes
                 .evaluate_all(&mut tree, &mut values.reader(&source), rules)
                 .map_err(|error| self.failed(error.into()))?;
+        }
+
+        // The values of the transaction's loads that cells of its pages
+        // hold are acquired by this commit (`log-format.md` LG16): a
+        // durable manifest covers each before the group names it. It does
+        // already, unless the frames were made again under the commit
+        // lock, after a commit of another: the values were appended anew
+        // then, and the file is synced and the manifest replaced here.
+        let acquired = match loaded.is_empty() {
+            true => Vec::new(),
+            false => Self::acquired(&tree, &loaded).map_err(|failure| self.failed(failure))?,
+        };
+        let covered = |acquired: &[ValuePointer]| {
+            (acquired.iter()).all(|pointer| path.values.covers(*pointer))
+        };
+        if !covered(&acquired) {
+            cover(path, &loaded).map_err(|error| self.failed(error.into()))?;
+            if !covered(&acquired) {
+                let lost = TxnError::Damaged("a value of a load is covered by no manifest");
+                return Err(self.failed(lost.into()));
+            }
         }
 
         // Step 6. The lock on the counts is taken before the log is asked
@@ -558,8 +589,10 @@ impl<'s> Committer<'s> {
                 return Err(self.failed(gap));
             }
             let group = &mut lock.scratch.group;
-            let logged = Self::write_group(group, &at, &mut tree, &mut values, &source, &mut flat)
-                .map_err(|failure| self.failed(failure))?;
+            let own = (&loaded, &acquired[..]);
+            let logged =
+                Self::write_group(group, &at, &mut tree, &mut values, &source, &mut flat, own)
+                    .map_err(|failure| self.failed(failure))?;
             match self.log.append_group(&at, &lock.scratch.group) {
                 Ok(appended) => break (appended, logged),
                 Err(LogError::PlaceTaken { .. }) if places < MAX_PLACES => {
@@ -592,9 +625,15 @@ impl<'s> Committer<'s> {
         for &pointer in &logged.released {
             change.release(pointer);
         }
+        for &pointer in &acquired {
+            change.acquire(pointer);
+        }
         // The count is the last thing done under the lock on the counts,
         // which this gives back.
         let miscounted = counts.apply(&change, version).err();
+        // The values of the loads are counted: the hold on their files
+        // ends here. What no cell holds of them is dead space.
+        drop(loaded);
 
         // The fsync of the commit, if the sync policy asks for one (CM7):
         // before anything is published, and under no lock but the commit
@@ -657,6 +696,7 @@ impl<'s> Committer<'s> {
             value_pages,
             value_bytes: logged.value_bytes,
             released: logged.released.len(),
+            acquired: acquired.len(),
             evaluated,
             dropped,
             directory,
@@ -683,6 +723,11 @@ impl<'s> Committer<'s> {
     ///
     /// It can be called again, for another place: every call writes and
     /// names the values anew (LG22).
+    ///
+    /// `own` is what the transaction's loads put into the value log, and
+    /// which of those pointers its cells hold: the group lists these as
+    /// acquired (LG16). A pointer of its own that a cell stopped holding
+    /// again was never counted, and is not listed as released.
     fn write_group<'t, 'g>(
         out: &mut Vec<u8>,
         at: &GroupPlace,
@@ -690,6 +735,7 @@ impl<'s> Committer<'s> {
         values: &mut TreeValues,
         source: &ValueSource<'_>,
         flat: &mut FlatFrames<'t, 'g, OperationGuard<'t>>,
+        (loaded, acquired): (&Loaded, &[ValuePointer]),
     ) -> Result<Logged, Failure> {
         out.clear();
         let mut group = GroupWriter::new(at.version(), at.address(), out)?;
@@ -722,9 +768,13 @@ impl<'s> Committer<'s> {
 
         let mut released = values.released_pointers().to_vec();
         released.extend_from_slice(flat.released());
+        released.retain(|pointer| !loaded.owns(pointer));
         released.sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
         for pointer in &released {
             group.released(pointer)?;
+        }
+        for pointer in acquired {
+            group.acquired(pointer)?;
         }
         group.finish();
 
@@ -740,6 +790,29 @@ impl<'s> Committer<'s> {
             value_bytes,
             released,
         })
+    }
+
+    /// The value pointers that cells of the pages `tree` hold and that
+    /// name a value the transaction's loads put into the value log, in
+    /// ascending order of file and offset: what the commit acquires
+    /// (`log-format.md` LG14, LG16).
+    ///
+    /// They are read from the cells, and not kept beside them: a load
+    /// that was laid out again, a node that was written over and a cell
+    /// that was carried each left a value in the value log that no cell
+    /// holds.
+    fn acquired(tree: &TreePages<'_>, loaded: &Loaded) -> Result<Vec<ValuePointer>, Failure> {
+        let mut acquired = Vec::new();
+        for (_, copy) in tree.written().filter(|(_, copy)| !copy.is_unchanged()) {
+            let latch = copy.frame.read();
+            let page = TreePage::from_validated(&latch, FRAME_FORMAT).map_err(TxnError::from)?;
+            acquired.extend(page.cells().filter_map(|(_, cell)| match cell.value() {
+                CellValue::OutOfLine(pointer) if loaded.owns(&pointer) => Some(pointer),
+                _ => None,
+            }));
+        }
+        acquired.sort_unstable_by_key(|pointer| (pointer.file(), pointer.offset()));
+        Ok(acquired)
     }
 
     /// What a commit is whose append the log did not take (CM9).

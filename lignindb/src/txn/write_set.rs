@@ -13,6 +13,7 @@ use super::{
     arena::{Arena, ArenaMark, Span},
     error::BatchError,
     key::{in_range, ranges_meet, Column, KeySet, Subtree, Unit},
+    load::StoredValue,
     view::SubtreeView,
     write::{
         Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, Moving, NodePut, RecordWrite,
@@ -45,6 +46,41 @@ pub(crate) enum ValueEntry {
     /// The transaction's own copy of the committed value the entry kept, in
     /// the arena of kept values (WT3, WT7).
     Kept(Span),
+    /// The value the write stated, which a load put into the value log:
+    /// where it is ([`StoredValue`]), in the place of its bytes.
+    Stored(Span),
+}
+
+/// The value of a written node, as the write set has it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NodeValue<'a> {
+    /// The value's bytes.
+    Bytes(&'a [u8]),
+    /// A value that a load put into the value log.
+    Stored(StoredValue),
+}
+
+impl NodeValue<'_> {
+    /// The length of the value in bytes.
+    pub(crate) fn len(&self) -> u32 {
+        match self {
+            Self::Bytes(bytes) => bytes.len() as u32,
+            Self::Stored(stored) => stored.pointer.value_len(),
+        }
+    }
+}
+
+/// What an operation that is applied again is given beside its batch
+/// ([`WriteSet::with_batch`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Again<'a> {
+    /// For each Merk of the batch, whether the operation gave it a root
+    /// when it had none ([`WriteSet::made`]).
+    pub(crate) made: &'a [bool],
+    /// The values of the batch that a load put into the value log, each by
+    /// the place of its node among the entries of the batch's change sets,
+    /// in ascending order. The batch states no bytes for them.
+    pub(crate) stored: &'a [(u32, StoredValue)],
 }
 
 /// The Merks a written node hosts.
@@ -233,6 +269,8 @@ struct MerkEntry {
     /// Whether the operation gave a root to a Merk that had none in the
     /// transaction's view.
     made: bool,
+    /// Whether the change set said that it is the whole Merk.
+    whole: bool,
     nodes: u32,
     removed: u32,
 }
@@ -469,6 +507,7 @@ impl<'a> OpBatch<'a> {
                     Some(root) => RootPut::Set(root.map(|key| self.arena.get(key))),
                 },
                 anchored: merk.anchored,
+                whole: merk.whole,
             })
             .collect()
     }
@@ -761,7 +800,9 @@ impl WriteSet {
     /// transaction had written that are below one the batch drops or
     /// clears: the first of those entries covers them. `left` has the
     /// subtrees that left with the moves of the batch, which their entry
-    /// keeps.
+    /// keeps. `stored` has the values that a load of the batch put into
+    /// the value log, as [`Again::stored`] has them: the entry of such a
+    /// node keeps where the value is, and not its bytes.
     pub(crate) fn add(
         &mut self,
         batch: &Batch<'_>,
@@ -769,6 +810,7 @@ impl WriteSet {
         empty: &[bool],
         cut: &[Subtree],
         left: &[Subtree],
+        stored: &[(u32, StoredValue)],
     ) -> EntryId {
         self.serial += 1;
         self.ops.push(Op {
@@ -862,9 +904,12 @@ impl WriteSet {
             self.left += 1;
         }
         let first = self.entries.len() as EntryId;
+        let mut stored = stored.iter().peekable();
         for (merk, empty) in batch.merks.iter().zip(empty) {
             let unit = Unit::data(merk.subtree);
             for node in merk.nodes {
+                let place = self.entries.len() as EntryId - first;
+                let in_log = stored.next_if(|(at, _)| *at == place);
                 let hosted = match node.hosted {
                     Hosted::Keep => HostedEntry::Keep,
                     Hosted::Set(subtrees) => {
@@ -872,9 +917,12 @@ impl WriteSet {
                         HostedEntry::Set(self.arena.put(&bytes))
                     }
                 };
-                let value = match node.value {
-                    ValuePut::Keep => ValueEntry::Keep,
-                    ValuePut::Value(value) => ValueEntry::Value(self.arena.put(value)),
+                let value = match (node.value, in_log) {
+                    (ValuePut::Keep, _) => ValueEntry::Keep,
+                    (ValuePut::Value(_), Some((_, stored))) => {
+                        ValueEntry::Stored(self.arena.put(&stored.encode()))
+                    }
+                    (ValuePut::Value(value), None) => ValueEntry::Value(self.arena.put(value)),
                 };
                 let entry = NodeEntry {
                     feature: self.arena.put(node.feature),
@@ -904,6 +952,7 @@ impl WriteSet {
                 root,
                 anchored: merk.anchored,
                 made: *empty && matches!(merk.root, RootPut::Set(Some(_))),
+                whole: merk.whole,
                 nodes: merk.nodes.len() as u32,
                 removed: merk.removed.len() as u32,
             });
@@ -999,11 +1048,13 @@ impl WriteSet {
     }
 
     /// Calls `apply` with the operation `op` as the batch it was, and with
-    /// what [`Self::made`] says of its Merks: for applying it again by key.
+    /// what [`Self::made`] says of its Merks and where the values are that
+    /// a load put into the value log ([`Again`]): for applying it again by
+    /// key.
     pub(crate) fn with_batch<R>(
         &self,
         op: usize,
-        apply: impl FnOnce(&Batch<'_>, &[bool]) -> R,
+        apply: impl FnOnce(&Batch<'_>, Again<'_>) -> R,
     ) -> R {
         let hosted = self.hosted_lists(op);
         let batch = self.batch(op, &hosted);
@@ -1013,7 +1064,33 @@ impl WriteSet {
             merks: &merks,
             subtrees: &subtrees,
         };
-        apply(&batch, &self.made(op))
+        let (made, stored) = (self.made(op), self.stored(op));
+        apply(
+            &batch,
+            Again {
+                made: &made,
+                stored: &stored,
+            },
+        )
+    }
+
+    /// The values of the operation `op` that a load put into the value
+    /// log, each by the place of its node among the entries of the
+    /// operation's change sets ([`Again::stored`]).
+    fn stored(&self, op: usize) -> Vec<(u32, StoredValue)> {
+        let (from, to, ..) = self.op_bounds(op);
+        let entries = self.entries[from..to].iter();
+        let entries = entries.skip_while(|entry| !entry.kind.leaves().is_empty());
+        let stored = entries
+            .enumerate()
+            .filter_map(|(place, entry)| match entry.kind {
+                Kind::Node(NodeEntry {
+                    value: ValueEntry::Stored(span),
+                    ..
+                }) => Some((place as u32, StoredValue::decode(self.arena.get(span)))),
+                _ => None,
+            });
+        stored.collect()
     }
 
     /// The subtrees below the one it drops or clears that the operation
@@ -1053,9 +1130,9 @@ impl WriteSet {
             // one that had none, and every other root is stated as it was
             // kept: both come out as they went in.
             let start = kept.entries.len();
-            self.with_batch(op, |batch, made| {
+            self.with_batch(op, |batch, again| {
                 let (cut, left) = (self.op_cut(op), self.op_left(op));
-                kept.add(batch, was.first_write, made, &cut, &left);
+                kept.add(batch, was.first_write, again.made, &cut, &left, again.stored);
             });
             let added = kept.ops.last_mut().expect("it was added");
             (added.serial, added.scope, added.laid) = (was.serial, was.scope, was.laid);
@@ -1184,6 +1261,9 @@ impl WriteSet {
                         ValueEntry::Keep => ValuePut::Keep,
                         ValueEntry::Value(span) => ValuePut::Value(self.arena.get(span)),
                         ValueEntry::Kept(span) => ValuePut::Value(self.kept.get(span)),
+                        // The bytes are in the value log, and whoever
+                        // applies the batch is told where ([`Again`]).
+                        ValueEntry::Stored(_) => ValuePut::Value(&[]),
                     },
                     stale: node.stale,
                     at: None,
@@ -1869,7 +1949,10 @@ impl WriteSet {
     /// one. `None` says that it is the committed value and that no copy was
     /// taken, which is the case only while the transaction's frames hold
     /// it.
-    pub(crate) fn node_value(&self, id: EntryId) -> Option<&[u8]> {
+    ///
+    /// A value that a load put into the value log is told by where it is:
+    /// the write set does not hold its bytes.
+    pub(crate) fn node_value(&self, id: EntryId) -> Option<NodeValue<'_>> {
         let mut id = id;
         loop {
             let entry = self.entry(id);
@@ -1877,8 +1960,12 @@ impl WriteSet {
                 return None;
             };
             match node.value {
-                ValueEntry::Value(span) => return Some(self.arena.get(span)),
-                ValueEntry::Kept(span) => return Some(self.kept.get(span)),
+                ValueEntry::Value(span) => return Some(NodeValue::Bytes(self.arena.get(span))),
+                ValueEntry::Kept(span) => return Some(NodeValue::Bytes(self.kept.get(span))),
+                ValueEntry::Stored(span) => {
+                    let stored = StoredValue::decode(self.arena.get(span));
+                    return Some(NodeValue::Stored(stored));
+                }
                 ValueEntry::Keep => id = self.prior(id)?,
             }
         }
@@ -1897,7 +1984,7 @@ impl WriteSet {
                 return false;
             };
             match (node.value, self.prior(id)) {
-                (ValueEntry::Value(_), _) => return true,
+                (ValueEntry::Value(_) | ValueEntry::Stored(_), _) => return true,
                 (_, Some(prev)) => id = prev,
                 (_, None) => return false,
             }
@@ -2237,7 +2324,7 @@ mod tests {
                             merks: &[],
                             ..Batch::default()
                         };
-                        set.add(&batch, version(latest), &[], &[], &[]);
+                        set.add(&batch, version(latest), &[], &[], &[], &[]);
                         model.push((write, latest, false));
                     }
                     6 => marks.push((set.mark(), model.len())),
@@ -2391,7 +2478,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(1), &[], &[], &[]);
+            set.add(&batch, version(1), &[], &[], &[], &[]);
         };
         let empty = set.mark();
         add(&mut set, &[b"a"]);
@@ -2448,7 +2535,7 @@ mod tests {
                 merks: &[],
                 ..Batch::default()
             };
-            set.add(&batch, version(3), &[], &[], &[]);
+            set.add(&batch, version(3), &[], &[], &[], &[]);
         }
         let mut dropped = KeySet::new();
         dropped.subtree(unit(1).subtree);

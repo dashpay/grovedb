@@ -4,10 +4,13 @@ use std::collections::HashSet;
 
 use lignin_format::value_log::MAX_VALUE_LEN;
 
+use lignin_tree::hash::Stale;
+
 use super::{
-    error::BatchError,
+    error::{BatchError, WholeFault},
     key::{Column, Subtree, Unit},
-    write::{Batch, Entering, Hosted, RecordWrite, RootPut, SubtreeWrite, ValuePut},
+    load::load_order,
+    write::{Batch, Entering, Hosted, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut},
 };
 
 /// The longest key of a Merk node: a cell has one byte for its length
@@ -25,7 +28,9 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// a node and none that it deletes, writes no flat record among the nodes of
 /// a Merk, holds no key or value that is too long, enters no subtree
 /// twice, by either kind of enter, drops or clears none twice, and states
-/// none anew twice or beside its enter, its drop or its clear.
+/// none anew twice or beside its enter, its drop or its clear. A change set
+/// that says it is the whole Merk is one the bulk loader can lay out
+/// ([`whole`]).
 ///
 /// Of its moves: that no prefix is named twice as one a subtree is taken
 /// from, and none twice as one a subtree is brought to; that the batch
@@ -179,6 +184,12 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
             }
         }
     }
+    if batch.merks.iter().any(|merk| merk.whole) {
+        for merk in batch.merks.iter().filter(|merk| merk.whole) {
+            whole(merk)?;
+        }
+        load_order(batch)?;
+    }
     for record in batch.records {
         let unit = record.unit();
         if unit.column == Column::Data && merks.contains(&unit.subtree) {
@@ -197,6 +208,47 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         }
     }
     Ok(())
+}
+
+/// Checks that `merk`, which says it is the whole Merk, is one tree handed
+/// over a child before its parent, with every value stated and every hash
+/// made, and that its root is the root of that tree
+/// ([`MerkWrite::whole`]). A change set with no node loads nothing and is
+/// taken as any other.
+fn whole(merk: &MerkWrite<'_>) -> Result<(), BatchError> {
+    let subtree = merk.subtree;
+    let refused = |fault| Err(BatchError::NotWhole { subtree, fault });
+    if !merk.removed.is_empty() {
+        return refused(WholeFault::Removes);
+    }
+    if merk.nodes.is_empty() {
+        return Ok(());
+    }
+    let RootPut::Set(Some(root)) = merk.root else {
+        return refused(WholeFault::NoRoot);
+    };
+    // The nodes that no node names as its child yet: a link takes its
+    // child out, so a child stands before its parent and has one parent.
+    let mut free: HashSet<&[u8]> = HashSet::with_capacity(merk.nodes.len());
+    for node in merk.nodes {
+        if node.value == ValuePut::Keep {
+            return refused(WholeFault::KeepsValue);
+        }
+        if node.stale != Stale::NONE {
+            return refused(WholeFault::StaleHash);
+        }
+        for link in [&node.left, &node.right].into_iter().flatten() {
+            if !free.remove(link.key) {
+                return refused(WholeFault::ChildLater);
+            }
+        }
+        free.insert(node.key);
+    }
+    match (free.contains(root), free.len()) {
+        (false, _) => refused(WholeFault::NoRoot),
+        (true, 1) => Ok(()),
+        (true, _) => refused(WholeFault::NotBelowRoot),
+    }
 }
 
 /// Adds the record key `key` of `unit` to `keys`, which holds the keys the

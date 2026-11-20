@@ -114,7 +114,7 @@ impl Model {
             records: &records,
             ..Batch::default()
         };
-        self.set.add(&batch, version(), &[], &[], &[]);
+        self.set.add(&batch, version(), &[], &[], &[], &[]);
         self.set.tag_last(scope, laid);
     }
 
@@ -181,13 +181,14 @@ impl Model {
                             removed: &[],
                             root: RootPut::Set(Some(key)),
                             anchored: false,
+                            whole: false,
                         }];
                         let batch = Batch {
                             merks: &merks,
                             ..Batch::default()
                         };
                         let empty = self.set.rooted(&subtree) != Some(true);
-                        self.set.add(&batch, version(), &[empty], &[], &[]);
+                        self.set.add(&batch, version(), &[empty], &[], &[], &[]);
                         self.set.tag_last(id, self.scopes.laid(id));
                         None
                     }
