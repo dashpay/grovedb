@@ -113,14 +113,14 @@ pub enum OpenError {
     /// and no database is made in it, whatever else it holds. The name
     /// alone is what the open goes by: it does not read the entry.
     ///
-    /// `lignindb::checkpoint::delete` removes the directory if it finds a
-    /// manifest of this engine in it under either name. So it finishes a
-    /// removal that was cut short, and it also removes a database whose
-    /// `MANIFEST` is whole beside an entry of that name that something
-    /// else made. Whoever wants to keep a database that is beside such an
-    /// entry removes the entry and nothing else. Where neither name holds
-    /// a manifest, that call refuses the directory, and whoever made the
-    /// entry removes it.
+    /// `lignindb::checkpoint::delete` goes by what the files hold and not
+    /// by the name (its documentation says what it takes for a database).
+    /// It finishes a removal that was cut short. **It also removes a
+    /// database whose `MANIFEST` is whole beside a file of that name that
+    /// something else made**: whoever wants to keep such a database
+    /// removes the entry and nothing else. Where no file of either name
+    /// holds a manifest, that call refuses the directory, and whoever
+    /// made the entry removes it.
     Deleting {
         /// The directory.
         dir: PathBuf,

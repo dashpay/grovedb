@@ -174,16 +174,18 @@
 //! **Where a database is made** ([`Options::create_if_missing`]): in a
 //! directory that is not there, and in one that holds none of these: an
 //! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
-//! `MANIFEST`, and a directory of a store's files (`seg`, `val`, `wal`,
-//! `table`). So an empty directory is such a place, one that holds only
-//! entries that are not the engine's is, and so is what an open that
-//! failed leaves: a `LOCK`, a `MANIFEST.tmp`, or both.
+//! `MANIFEST`, and an entry with the name of a directory of a store's
+//! files (`seg`, `val`, `wal`, `table`). So an empty directory is such a
+//! place, one that holds only entries that are not the engine's is, and
+//! so is what an open leaves that failed before it made its first
+//! manifest: a `LOCK`, a `MANIFEST.tmp`, or both.
 //!
 //! A directory that holds the mark of a removal gets no database while
 //! the mark is there ([`OpenError::Deleting`] says what
 //! `lignindb::checkpoint::delete` does with it). Once the mark is gone
-//! the directory is a place like any other, also where the removal was
-//! cut short before the directory itself went. What a creation of a
+//! the directory is looked at as any other, by the table above: what a
+//! removal leaves that was cut short after its mark went and before the
+//! directory itself did is a place. What a creation of a
 //! checkpoint left with a directory of a store's files in it gets no
 //! database either ([`OpenError::NoManifest`]). What such a creation left
 //! empty, or with its lock file alone, the open cannot tell from a place
@@ -942,9 +944,9 @@ impl Db {
     /// is as every reader of it found it. A round that is due waits and
     /// goes on when the check has ended, and so does a call of
     /// [`Self::reclaim`]: for as long as a check takes, the pages and
-    /// values of dropped subtrees are given back later, and nothing else
-    /// waits. No commit, no reader, and neither write-back nor the cleaner
-    /// is held back.
+    /// values of dropped subtrees are given back later. A second check on
+    /// demand waits for the first. No commit, no reader, and neither
+    /// write-back nor the cleaner is held back.
     ///
     /// What a store keeps beside its pages (the page ids, the counts of
     /// live values, the page table against its segments) can be compared

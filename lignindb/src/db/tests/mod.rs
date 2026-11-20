@@ -756,14 +756,18 @@ impl Writes {
             // The handle the commit hands on is the directory of the
             // version that was published: it leaves out what one that is
             // loaded from the pages of that version leaves out.
+            // The version is read under a guard while it is the latest:
+            // beside another committer the comparison is left out.
             let store = &*db.shared.store;
             let guard = db.shared.versions.guard();
-            let pages = store.committed(&guard, published.version);
-            let fresh = store.catalog().load_directory(&pages);
-            let fresh = fresh.expect("the directory of the version");
-            let mut entries = fresh.entries();
-            while let Some((_, entry)) = entries.next(&pages).expect("an entry") {
-                assert_eq!(published.directory.is_live(&entry), fresh.is_live(&entry));
+            if guard.latest() == published.version {
+                let pages = store.committed(&guard, published.version);
+                let fresh = store.catalog().load_directory(&pages);
+                let fresh = fresh.expect("the directory of the version");
+                let mut entries = fresh.entries();
+                while let Some((_, entry)) = entries.next(&pages).expect("an entry") {
+                    assert_eq!(published.directory.is_live(&entry), fresh.is_live(&entry));
+                }
             }
         }
         published

@@ -38,7 +38,7 @@ fn store() -> (std::sync::Arc<Db>, Versions) {
 #[test]
 fn a_store_that_is_left_as_it_was_is_recovered_the_same() {
     let (db, versions) = store();
-    let same = Db::into_recovered(db, versions);
+    let same = Db::into_recovered(db, versions, true);
     assert!(
         matches!(same, Ok(RecoveredAsLeft::Same { live }) if live > 3),
         "{same:?}"
@@ -61,7 +61,7 @@ fn a_store_whose_log_lost_its_end_is_not_recovered_as_it_was_left() {
     let cut = held(newest) * 2 / 3;
     file.expect("the file").set_len(cut).expect("it is cut");
 
-    let differs = Db::into_recovered(db, versions);
+    let differs = Db::into_recovered(db, versions, true);
     let differs = differs.expect_err("the log lost commits of the session");
     println!("{differs}");
 }
@@ -98,7 +98,7 @@ fn a_page_that_is_not_what_the_log_makes_of_it_is_found_by_its_image() {
         );
     }
 
-    let differs = Db::into_recovered(db, versions);
+    let differs = Db::into_recovered(db, versions, false);
     let differs = differs.expect_err("a page of the session is not the log's");
     assert!(
         differs.contains(&format!("page {id} at ")) && differs.contains("is not the page"),

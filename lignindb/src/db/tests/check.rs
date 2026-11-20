@@ -168,6 +168,16 @@ fn the_physical_checker_reads_an_open_database() {
     assert!(report.is_sound(), "{report}");
     assert_eq!(report.census.merks, 2);
 
+    // The same of the database that the next open recovers: as a reader
+    // sees it, and still, once that session is closed.
+    let db = Db::open(dir.path(), &options()).expect("the database again");
+    let report = db.verify(None);
+    assert!(report.is_sound(), "{report}");
+    assert_eq!(report.census.merks, 2);
+    let report = db.close_and_verify(None).expect("a close");
+    assert!(report.is_sound(), "{report}");
+    assert_eq!(report.census.merks, 2);
+
     // What a store must not hold is found: a subtree whose entry names a
     // host that is no node of the Merk it is said to be in.
     let db = Db::open(dir.path(), &options()).expect("the database again");
@@ -189,8 +199,10 @@ fn the_physical_checker_reads_an_open_database() {
     assert!(report.is_sound(), "{report}");
 }
 
-/// A check on demand holds the reclaiming back from before it pins its
-/// version until it has ended (D-183). A Merk that hosts another is
+/// A check on demand holds the reclaiming back while it reads (D-183): a
+/// reclaiming that comes due once the check has pinned its version waits
+/// for the end of the check. That the check takes hold before it pins is
+/// in the code and not in this test. A Merk that hosts another is
 /// dropped, and once the check has pinned that version a commit writes
 /// the leaf of the column that holds a record of the hosted Merk. A
 /// reclaiming from then on takes that record out of the leaf's newest

@@ -1143,12 +1143,7 @@ impl Drop for Db {
         if self.keyspaces.get().is_none() || self.directory.get().is_none() {
             return;
         }
-        let at = self.commits.newest();
-        let report = self.verify_by_own_rules(at, Scope::Still);
-        assert!(
-            self.unsound(&report).is_empty() && report.more_findings == 0,
-            "the store of a test is left unsound at version {at}:\n{report}"
-        );
+        let at = self.left_sound();
         if let Err(differs) = self.recovered_as_left() {
             panic!(
                 "the store of a test is not recovered as it was left at version {at}: {differs}"
@@ -1173,8 +1168,22 @@ pub enum RecoveredAsLeft {
 }
 
 impl Db {
-    /// Ends the life of a store with the comparison that its drop makes,
-    /// and returns what the comparison found. It takes the store and its
+    /// The physical check that the drop of a store makes, at the latest
+    /// version, which is returned: a finding is a panic with the report.
+    fn left_sound(&self) -> CommitVersion {
+        let at = self.commits.newest();
+        let report = self.verify_by_own_rules(at, Scope::Still);
+        assert!(
+            self.unsound(&report).is_empty() && report.more_findings == 0,
+            "the store of a test is left unsound at version {at}:\n{report}"
+        );
+        at
+    }
+
+    /// Ends the life of a store with what its drop does: the physical
+    /// check, which `sound` leaves out for a store whose test changed a
+    /// page behind the log's back, and the comparison, whose finding is
+    /// returned. It takes the store and its
     /// versions: a recovery writes to the directory, so nothing may commit
     /// beside it or after it, and nothing holds the store any more. The
     /// drop that follows makes no check of the files the recovery wrote.
@@ -1182,9 +1191,13 @@ impl Db {
     pub(crate) fn into_recovered(
         db: Arc<Self>,
         versions: Versions,
+        sound: bool,
     ) -> Result<RecoveredAsLeft, String> {
         drop(versions);
         let db = Arc::try_unwrap(db).unwrap_or_else(|_| panic!("the store has another holder"));
+        if sound {
+            db.left_sound();
+        }
         let compared = db.recovered_as_left();
         db.unchecked.store(true, Ordering::Relaxed);
         compared

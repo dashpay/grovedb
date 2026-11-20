@@ -159,7 +159,7 @@
 //!   was just opened, a checkpoint, and a store at the end of a test are
 //!   still. Under [`Scope::Reader`] the run can go beside commits,
 //!   write-back and the cleaner, and asks one thing more of the store
-//!   than a reader does: the reclaimer's rest, which is the next point.
+//!   than a reader does: the reclaimer's rest, which is the fourth point.
 //! - **The rules that make a hash answer for every node.** A value hash
 //!   that no rule can make from the pages, as a reference's is, is the
 //!   rules' to return as it is stored. A rule that refuses is a finding
@@ -183,8 +183,9 @@
 //!   [`Scope::Reader`]: what a run reads of one cell, it reads from one
 //!   frame, and a value that the cleaner moved is read whole under the
 //!   pointer that the frame holds, the old one or the new: the file that
-//!   the old one leads into stays while a version that can read it is
-//!   pinned.
+//!   the old one leads into is not deleted before every operation that
+//!   was running when it emptied has ended, and the run is one operation
+//!   under its guard.
 //! - **The pool has room for a few pages beside what is pinned.** The run
 //!   holds the pages of the step it is in, and a few of the steps before.
 //!
