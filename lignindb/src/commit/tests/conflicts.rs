@@ -873,6 +873,7 @@ fn rewrite<'s>(world: &World<'s>, tx: &Tx<'s>, tree: u8, key: &[u8]) -> OwnedMer
         hosted: BTreeMap::new(),
         stale: BTreeMap::new(),
         anchored: false,
+        hints: BTreeMap::new(),
     }
 }
 

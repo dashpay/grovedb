@@ -236,6 +236,106 @@
 //! lease is not followed, and the node is found by its key. No address is
 //! handed out that is not inside a handle.
 //!
+//! # A kept value and the read it is of
+//!
+//! A node that is written with its value kept ([`ValuePut::Keep`]) states
+//! hashes that its writer made for the value it read. From the write on
+//! the node is a write of its key, and a commit that writes the key
+//! afterwards meets it (CF2). This section is the rule for the time before
+//! the write (CF2a; D-097, D-098 item 7, D-100): **a kept value of the
+//! committed state is dated at its read.** If a commit outside the
+//! transaction wrote the node's key after the writer read the node, the
+//! write is met where it is made, and the transaction's commit is a
+//! conflict, as it is when the commit lands after the write. So no node is
+//! published under hashes that were made for a value another commit has
+//! replaced.
+//!
+//! - **The write names the read** by the node's handle ([`NodePut::at`]):
+//!   the one the node was shown with when the writer read the value it
+//!   made its hashes for ([`NodeView::handle`]). The handle a write
+//!   reports for a node it wrote ([`Applied::nodes`]) can be named too,
+//!   by a later keep of a writer that holds the node as that write left
+//!   it: the node is the transaction's own from that write on, and the
+//!   handle is dated at it. The handle of a cell a
+//!   write moved without writing its key ([`Applied::carried`]) is a
+//!   place and no read. Neither is a later read of the node the read the
+//!   hashes were made for: a caller that keeps the newest place of a node
+//!   keeps it apart from the handle of the read it made its hashes from.
+//! - **The transaction dates its leases.** A handle carries the lease it
+//!   was read under and no version. So the transaction remembers, for
+//!   every lease it has shown a node under, the version the node was shown
+//!   at, and keeps the key sets of the commits it takes in afterwards
+//!   (`reads`).
+//! - **A keep by a handle of the lease of its own operation** costs that
+//!   one comparison: no commit was taken in since the read.
+//! - **A keep by a handle of a lease that has ended** is compared, at the
+//!   write, with the key sets of the commits after the lease's version, up
+//!   to the write's ([`KeySet::meets_key`]): a key, a range that holds it,
+//!   a subtree that was dropped or cleared, every key (CF5). If one of them
+//!   wrote the key, the entry of the write is marked as met. No stored
+//!   value is read for it.
+//! - **A read the transaction cannot date is taken to be met**: a
+//!   conflict that may be false, and never a wrong node. That is so for:
+//!   - a handle of a lease it has shown no node under since it last ended:
+//!     another transaction's handle, a snapshot's, one from before its own
+//!     last commit or rollback;
+//!   - a read that is more commits before the write than the transaction
+//!     keeps key sets of (64, `reads::KEPT_COMMITS`);
+//!   - a handle of the frames on which a write was made that was itself
+//!     met in this way. The handles that write reported are of the
+//!     write's version and name bytes the writer never read. They would
+//!     pass for reads once a rollback has taken the write out. So the
+//!     lease of those frames is forgotten, and with it the reads that
+//!     were made through them.
+//! - **A keep that names no read** of a node the transaction has not
+//!   written, whose value is the committed state's, is refused
+//!   ([`BatchError::NoRead`]). No page and no entry of the write set is
+//!   changed by it. What the scope of the write claimed for the batch
+//!   stays claimed, as for any batch that is refused.
+//! - **A value the transaction stated itself is its own to keep.** No read
+//!   has to be named for it, a handle that is named decides nothing, and CF2
+//!   decides alone, from the transaction's first write of the key.
+//! - **A node the transaction wrote before with its value kept has the
+//!   committed value still**, however often it wrote it. A later keep by a
+//!   handle is dated at that handle's read, as the first was: the read
+//!   that is named may be an earlier one. A later keep that names no
+//!   handle is of the transaction's own record of the node, which has
+//!   none: that record is there only since the write that CF2 looks from.
+//! - **A node that is not there has no value to keep**, whatever read the
+//!   write names: also where a commit outside took the node away after the
+//!   read ([`BatchError::NoValue`]). Where its subtree was dropped, a
+//!   write to the frames says [`BatchError::NotEntered`], and one that is
+//!   taken by key says `NoValue`. Where a node is under the key again, a
+//!   commit wrote the key, and the keep is met.
+//!
+//! The mark is the entry's own. It stays while the entry is in the write
+//! set: when the frames are made again, through a rollback to a savepoint
+//! that was set after the write, when another scope is rolled back, and
+//! when the scope that made the write is laid out later. It goes with the
+//! entry (CF4). A write that is met has the transaction serve its records
+//! by key (WT7b). It shows the node with the hashes its writer stated and
+//! with its copy of the node's value. The copy is the one an earlier
+//! write of the node took, where there is one, and otherwise the value
+//! that was committed when this write was made. Either can be the bytes
+//! that another commit gave the node after the writer's read: the hashes
+//! may then not be theirs, until the transaction writes the node again
+//! or its commit fails.
+//!
+//! The rule is about the commits of others. What the transaction did
+//! itself between a read and the keep is its writer's to know: a rollback
+//! to a savepoint that takes its own write of the node out leaves the
+//! committed value there, and a keep by a handle from before that rollback
+//! keeps it.
+//!
+//! **On one thread no key set is compared.** A writer that reads a node
+//! and writes it with no commit of another taken in between writes at the
+//! version it read at. Its keep is one of the lease of its operation,
+//! which costs the one comparison, or of a lease of the same version,
+//! which costs one lookup of the lease: the node was read before the
+//! transaction's first write made its frames. No commit can land in
+//! between where one thread reads and writes a Merk within one operation,
+//! so no keep is met or taken to be met there.
+//!
 //! # Scopes and threads
 //!
 //! A transaction is `Send` and `Sync`. Its writes go through a [`Scope`],
@@ -280,8 +380,45 @@
 //!   spilled to a file (WT4 allows it, and does not ask for it).
 //! - **Page ids** of the pages it made, until its commit publishes them or
 //!   its frames are given up (ID1).
-//! - **A watch on the key sets of commits** while it has a write
-//!   ([`Commits`]).
+//! - **A watch on the key sets of commits** ([`Commits`]), from its first
+//!   write, from the first read that shows it a node, or from the first
+//!   cursor it opens over a Merk, whichever comes first. A cursor watches
+//!   from when it is opened, and its lease is dated then, before it has
+//!   shown a node. The watch stands before the version of the read is
+//!   taken, so the key set of every commit after a read reaches the
+//!   transaction. A read that shows no node (a key with no node, a handle
+//!   that is no longer good, a read that the claim of another scope
+//!   refuses) dates nothing, and gives the watch up again unless the
+//!   transaction has a write or remembers a lease. A read that fails
+//!   after it was claimed, on the store's files, leaves the watch as it
+//!   is. The watch is given up when the transaction ends, by a rollback or
+//!   by a commit, also one that commits nothing, and before that when a
+//!   rollback takes its last write out while it remembers no lease. A
+//!   cursor that is open does not hold the watch by itself: its lease is
+//!   forgotten like any other, at the transaction's end or when the key
+//!   sets no longer reach back to it. It dates its lease again, at the
+//!   version it reads, whenever it shows a node of that version, and the
+//!   watch starts anew then. A keep by a handle of that lease is answered
+//!   for where the key sets the transaction holds reach back to that
+//!   version, and is taken to be met otherwise. A read of the cursor that
+//!   shows no node gives the watch up as any other does. A transaction
+//!   that reads flat records only never watches. While a transaction
+//!   watches and runs no operation, [`Commits`] keeps the key set of
+//!   every commit that is published: that was so for a transaction with a
+//!   write, and is now so for one that has only been shown a node.
+//! - **The version of each lease it has shown a node under, and the key
+//!   sets of the newest 64 commits it took in** while it remembers such a
+//!   lease (`reads`; "A kept value and the read it is of"). The leases are
+//!   its own for each version it read at, one for each version it read a
+//!   committed node at ([`WriteTxn::committed_node`]), that of each making
+//!   of its frames and of each write of theirs that drops or clears a
+//!   Merk, and that of each cursor it opened over a Merk. A lease is one
+//!   small record. It is forgotten when the transaction ends, and when
+//!   the key sets no longer reach back to its version, which is at the
+//!   65th commit after it: with no commit taken in, the records of a
+//!   transaction that opens cursor after cursor stay until it ends, also
+//!   those of cursors that are gone. A key set is shared with every
+//!   transaction that keeps it.
 //! - **A place among the open write transactions of the store's counts**
 //!   ([`WritePath::stats`]), from its first write until its write set is
 //!   empty again: by its commit, a rollback, a rollback to a savepoint
@@ -313,7 +450,10 @@
 //!    trees are kept is TXN-07's.
 //! 5. **A Merk's nodes are written by key, with handles as hints.** A node
 //!    of a batch is found by descending from the root of its Merk unless
-//!    the caller passes a handle that is still good.
+//!    the caller passes a handle that is still good. A node that keeps a
+//!    committed value names its handle whether it is still good or not:
+//!    it says when the value was read ("A kept value and the read it is
+//!    of").
 //! 6. **A node is shown to a function**, not returned: the view borrows a
 //!    latched frame or the write set, and no latch is held when a call
 //!    returns (LT3).
@@ -369,6 +509,7 @@ mod key;
 mod opened;
 mod pages;
 mod path;
+pub(crate) mod reads;
 #[allow(clippy::module_inception)]
 mod txn;
 mod view;

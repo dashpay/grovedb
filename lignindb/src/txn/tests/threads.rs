@@ -171,7 +171,9 @@ fn transactions_on_several_threads_commit_past_each_other() {
                                 ..OwnedBatch::default()
                             },
                         );
-                        first.with(|batch| scope.apply(batch)).expect("a write");
+                        (first.through(&scope))
+                            .with(|batch| scope.apply(batch))
+                            .expect("a write");
                         thread::yield_now();
                         // It reads its own counter as committed, and the
                         // others' as they are committed now.

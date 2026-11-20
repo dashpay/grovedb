@@ -12,13 +12,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use lignin_format::tree_page::{Hash, HashField, Side};
-use lignin_tree::hash::Stale;
+use lignin_tree::{hash::Stale, node::NodeHandle};
 
 pub use super::store::hash_of;
 use super::store::{mix, Rng};
 use crate::txn::{
     Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite, RootPut,
-    Subtree, SubtreeWrite, Unit, ValuePut,
+    Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
 };
 
 pub fn subtree(name: u8) -> Subtree {
@@ -380,6 +380,17 @@ impl TxnModel {
         self.writes.iter().filter(|(.., met)| *met).count()
     }
 
+    /// The transaction's newest write of the node under `key` keeps a
+    /// value that a commit wrote after the writer read it, or may have:
+    /// the write is met where it is made (CF2a).
+    pub fn meet_kept(&mut self, unit: Unit, key: &[u8]) {
+        let newest = (self.writes.iter_mut().rev())
+            .find(|(write, ..)| write.covers(unit, key))
+            .expect("a write of the key");
+        assert!(matches!(newest.0, Write::Put(_, _, Val::Node(_))));
+        newest.2 = true;
+    }
+
     /// A commit of `version` outside the transaction wrote `writes`.
     pub fn foreign(&mut self, version: u64, writes: &[Write]) {
         for (own, first_write, met) in &mut self.writes {
@@ -453,6 +464,10 @@ pub struct OwnedMerk {
     pub stale: BTreeMap<Vec<u8>, Stale>,
     /// Whether the Merk has a host that the batch does not write.
     pub anchored: bool,
+    /// The handles of the nodes that keep their values, by key: each names
+    /// the read its value is kept from ([`OwnedBatch::reading`]). A node
+    /// that the transaction wrote itself needs none.
+    pub hints: BTreeMap<Vec<u8>, NodeHandle>,
 }
 
 impl OwnedMerk {
@@ -488,6 +503,7 @@ impl OwnedMerk {
             hosted: BTreeMap::new(),
             stale: BTreeMap::new(),
             anchored: false,
+            hints: BTreeMap::new(),
         }
     }
 
@@ -533,6 +549,39 @@ impl OwnedBatch {
             .collect()
     }
 
+    /// The same batch, in which every node that keeps its value names the
+    /// read the value is kept from: `read` is asked for the node's handle,
+    /// which a writer has from its read of the node, through the
+    /// transaction or the scope that the batch is then applied to. A write
+    /// that keeps a committed value and names no read is refused
+    /// (`BatchError::NoRead`).
+    ///
+    /// The model decides from its own records which values are kept, so
+    /// its read is made here, in the place of the one a writer makes
+    /// before it changes a node.
+    pub fn reading(&self, mut read: impl FnMut(Subtree, &[u8]) -> Option<NodeHandle>) -> Self {
+        let mut batch = self.clone();
+        for merk in &mut batch.merks {
+            let kept = merk.nodes.iter().filter(|(.., stated)| !stated);
+            merk.hints = kept
+                .filter_map(|(key, ..)| Some((key.clone(), read(merk.subtree, key)?)))
+                .collect();
+        }
+        batch
+    }
+
+    /// [`Self::reading`], with each node read through `scope`, which the
+    /// batch is then applied to. A read that is refused because another
+    /// scope holds the unit names no handle: the write is refused for the
+    /// same reason.
+    pub fn through(&self, scope: &Scope<'_, '_>) -> Self {
+        self.reading(|subtree, key| match scope.node(subtree, key, handle_of) {
+            Ok(handle) => handle,
+            Err(TxnError::ScopeOverlap { .. }) => None,
+            Err(error) => panic!("the node {key:?} is read before it is written: {error}"),
+        })
+    }
+
     /// Calls `run` with the batch.
     pub fn with<R>(&self, run: impl FnOnce(&Batch<'_>) -> R) -> R {
         fn link(link: &Option<LinkRec>) -> Option<LinkPut<'_>> {
@@ -567,7 +616,7 @@ impl OwnedBatch {
                     true => ValuePut::Value(&node.value),
                 },
                 stale,
-                at: None,
+                at: merk.hints.get(key).copied(),
             }
         }
         let nodes: Vec<Vec<NodePut<'_>>> = (self.merks.iter())
@@ -626,6 +675,12 @@ impl OwnedBatch {
             subtrees: &subtrees,
         })
     }
+}
+
+/// The handle of a node that is shown, to keep: what a writer has from its
+/// read of a node.
+pub fn handle_of(view: Option<NodeView<'_>>) -> Option<NodeHandle> {
+    view.and_then(|view| view.handle())
 }
 
 /// A value of `len` bytes drawn from `rng`.

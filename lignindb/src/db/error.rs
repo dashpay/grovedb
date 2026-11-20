@@ -385,9 +385,13 @@ pub enum WriteError {
 }
 
 impl WriteError {
-    /// Whether a commit outside the transaction wrote a key after the
-    /// transaction first wrote it (CF2): the one outcome for which the
-    /// caller makes its writes again.
+    /// Whether the commit failed with a conflict: a commit outside the
+    /// transaction wrote a key after the transaction first wrote it
+    /// (CF2), or the transaction kept the committed value of a Merk node
+    /// and a commit outside wrote the node after the transaction read it,
+    /// or the engine cannot tell whether one did ([`crate::txn`], "A kept
+    /// value and the read it is of"). It is the one outcome for which the
+    /// caller makes its reads and its writes again.
     pub const fn is_conflict(&self) -> bool {
         matches!(self, Self::Commit(CommitError::Conflict))
     }

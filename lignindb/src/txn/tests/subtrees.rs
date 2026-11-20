@@ -2011,16 +2011,18 @@ fn random_run(seed: u64) -> (usize, usize) {
             }
         }
         if !batch.merks.is_empty() || !batch.subtrees.is_empty() {
+            // A node that keeps its value is read through the scope that
+            // writes it, and the write names that read.
             for tx in [&framed, &by_key] {
                 let scope = tx.txn.scope().expect("a scope");
-                let applied = batch.with(|batch| scope.apply(batch));
+                let applied = batch.through(&scope).with(|batch| scope.apply(batch));
                 scope.merge();
                 if let Err(error) = applied {
                     panic!("{at}: {error}, {batch:?}");
                 }
             }
             let (_, writer) = scopes.as_ref().expect("the scopes");
-            if let Err(error) = batch.with(|batch| writer.apply(batch)) {
+            if let Err(error) = batch.through(writer).with(|batch| writer.apply(batch)) {
                 panic!("{at}, beside: {error}, {batch:?}");
             }
         }

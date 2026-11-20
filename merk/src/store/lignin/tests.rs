@@ -17,6 +17,7 @@ use lignin_tree::{
     node::NodeRef,
 };
 use lignindb::{
+    commit::{CommitError, Committed},
     snapshot::Versions,
     txn::{
         testing::{Db, Outcome},
@@ -1541,4 +1542,417 @@ fn a_commit_that_changes_nothing_writes_what_merk_writes() {
     let applied = commit(&writer, &ROOT, &mut root, &[]);
     assert_eq!(transaction.stats().writes - before, 1);
     assert_eq!((applied.values_written, applied.values_kept), (0, 0));
+}
+
+/// The node under `n`, loaded through `store`.
+fn node_of(store: &LigninNodeStore<'_>, n: u64) -> TreeNode {
+    let node = store.get_node(&be(n), NO_VALUE_DEFINED_COST, version());
+    node.unwrap().unwrap().expect("the node is stored")
+}
+
+/// Applies `batch` to the root Merk in a transaction of its own, and
+/// commits it.
+fn commit_outside(lignin: &Lignin, root: &mut Option<Vec<u8>>, batch: &[(Vec<u8>, Op)]) {
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    commit(&writer, &ROOT, root, batch);
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+}
+
+/// A store whose root Merk holds the nodes 1 to 7, committed: 4 is the
+/// root, 2 and 6 are under it, and the others are leaves.
+fn seven_nodes() -> (Lignin, Option<Vec<u8>>) {
+    let lignin = Lignin::new();
+    let mut root = None;
+    let nodes: Vec<_> = (1..=7).map(|n| basic(n, &[n as u8; 8])).collect();
+    commit_outside(&lignin, &mut root, &nodes);
+    assert_eq!(root, Some(be(4)));
+    (lignin, root)
+}
+
+/// Gives the node under `n` the value `value` in a transaction of its own,
+/// and commits it.
+fn rewrite_outside(lignin: &Lignin, root: &Option<Vec<u8>>, n: u64, value: &[u8]) {
+    commit_outside(lignin, &mut root.clone(), &[basic(n, value)]);
+}
+
+/// Writes `node` outside a commit through a handle that has loaded
+/// nothing, and applies the batch the write is staged in.
+fn write_staged(
+    writer: &LigninWriter<'_, '_>,
+    node: &TreeNode,
+    change: NodeChange,
+) -> LigninApplied {
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(writer, ROOT, Some(&staged));
+    (store.write_node(node, change).unwrap()).expect("the write is staged");
+    drop(store);
+    (staged.apply(writer).unwrap()).expect("the batch is applied")
+}
+
+/// The node under `n` as it is committed.
+fn committed_node(lignin: &Lignin, n: u64) -> TreeNode {
+    let path = lignin.path();
+    let transaction = path.begin();
+    node_of(&LigninNodeStore::read_only(&transaction, ROOT), n)
+}
+
+/// A node that keeps its value names the read the value is kept from, and
+/// that is the handle's first load of the node: the caller may hold the
+/// node as that load showed it. A later place of the node is no such read,
+/// whether the read of its parent says it, a second load of the node, as a
+/// read past Merk's own tree makes, or the report of a write of the node
+/// as it is now, which a handle that writes into a batch takes in from the
+/// batch. A handle loads a leaf, another transaction commits another value
+/// for the leaf, the handle does one of these, and then writes the leaf as
+/// it first loaded it, with its value kept. The transaction's commit is a
+/// conflict, and the leaf stays as the other commit wrote it.
+#[test]
+fn a_kept_value_names_the_first_load_of_its_node() {
+    let cases = [
+        "its parent",
+        "the leaf",
+        "the leaf, written as it is now",
+        "the leaf, written as it is now through a batch",
+    ];
+    for later in cases {
+        let (lignin, root) = seven_nodes();
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let staged = LigninBatch::new();
+        let store = match later.ends_with("batch") {
+            true => LigninNodeStore::deferred(&writer, ROOT, Some(&staged)),
+            false => LigninNodeStore::immediate(&writer, ROOT),
+        };
+        // Applies what the handle staged, and has it take the places in.
+        let applied = || {
+            if later.ends_with("batch") {
+                let applied = (staged.apply(&writer).unwrap()).expect("the batch is applied");
+                store.take_locations(&applied);
+            }
+        };
+
+        let leaf = node_of(&store, 1);
+        assert_eq!(leaf.value_as_slice(), [1; 8]);
+        rewrite_outside(&lignin, &root, 1, &[9; 8]);
+        let theirs = committed_node(&lignin, 1);
+        assert_eq!(theirs.value_as_slice(), [9; 8]);
+        assert_ne!(theirs.value_hash(), leaf.value_hash());
+
+        // What is loaded after the other commit shows the leaf as it is
+        // now: its parent says where it is, and the leaf has its value.
+        let shown = node_of(&store, if later == "its parent" { 2 } else { 1 });
+        match later {
+            "its parent" => assert_eq!(shown.link(true).map(Link::key), Some(&be(1)[..])),
+            _ => assert_eq!(shown.encode(), theirs.encode()),
+        }
+        if later.starts_with("the leaf, written") {
+            // The store finds the stated bytes held and keeps them by the
+            // read that compared them. Where the write put the leaf is no
+            // read of the leaf as it was first loaded.
+            let written = store.write_node(&shown, NodeChange::ValueWritten);
+            written.unwrap().expect("the write is taken");
+            applied();
+            assert_eq!(transaction.stats().overlapped, 0, "{later}");
+        }
+        (store.write_node(&leaf, NodeChange::HashOnly).unwrap()).expect("the write is taken");
+        applied();
+
+        drop(store);
+        writer.into_scope().merge();
+        assert_eq!(lignin.commit(&transaction), Outcome::Conflict, "{later}");
+        assert_eq!(committed_node(&lignin, 1).encode(), theirs.encode());
+    }
+}
+
+/// Where the store finds the stated bytes held, it keeps them, and the
+/// keep names the read that compared them: it is a read of exactly the
+/// bytes that are kept. Another transaction commits a value for a node,
+/// and a handle that has not loaded the node then puts the node with that
+/// same value. Nothing is written for the value, nothing is refused, and
+/// the commit is made.
+#[test]
+fn a_value_that_is_kept_by_comparison_names_the_comparing_read() {
+    let (lignin, root) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    // The transaction has read the node before the other commit, through
+    // another handle: that is no read of the handle that writes.
+    drop(node_of(&LigninNodeStore::deferred(&writer, ROOT, None), 1));
+
+    rewrite_outside(&lignin, &root, 1, &[9; 8]);
+    let theirs = committed_node(&lignin, 1);
+
+    let applied = write_staged(&writer, &theirs, NodeChange::ValueWritten);
+    assert_eq!((applied.values_written, applied.values_kept), (0, 1));
+
+    writer.into_scope().merge();
+    assert!(matches!(lignin.commit(&transaction), Outcome::Committed(_)));
+    assert_eq!(committed_node(&lignin, 1).encode(), theirs.encode());
+}
+
+/// A node that is written outside a commit through a handle that has not
+/// loaded it has no read to name. So its value is stated, whatever kind of
+/// change the caller says it is: it is kept where the same bytes are held,
+/// by the read that compared them, and written where they are not. No
+/// commit has met either write.
+///
+/// A node that is written alone leaves the node above it with the hash of
+/// what was there, so the writes are made in a scope that is rolled back.
+#[test]
+fn a_node_the_handle_has_not_loaded_is_written_with_its_value_stated() {
+    let (lignin, _) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let other = LigninNodeStore::deferred(&writer, ROOT, None);
+
+    // The same bytes under another value hash, as the element of a tree
+    // has when the Merk below it changes: the value hash is of the hash
+    // part, and a node that keeps its value may state another.
+    let held = node_of(&other, 2);
+    let value = held.value_as_slice().to_vec();
+    let mut corrected =
+        TreeNode::new_with_combined_value_hash(be(2), value, [7; 32], held.feature_type()).unwrap();
+    corrected.set_link(true, held.link(true).cloned());
+    corrected.set_link(false, held.link(false).cloned());
+    assert_ne!(corrected.value_hash(), held.value_hash());
+    let applied = write_staged(&writer, &corrected, NodeChange::HashOnly);
+    assert_eq!((applied.values_written, applied.values_kept), (0, 1));
+    assert_eq!(node_of(&other, 2).encode(), corrected.encode());
+
+    // Other bytes than are held: the caller says the value is unchanged,
+    // the handle cannot know, and the node is written as it is handed
+    // over.
+    let held = node_of(&other, 6);
+    let mut replaced = TreeNode::new(be(6), vec![0xee; 8], None, held.feature_type()).unwrap();
+    replaced.set_link(true, held.link(true).cloned());
+    replaced.set_link(false, held.link(false).cloned());
+    let applied = write_staged(&writer, &replaced, NodeChange::HashOnly);
+    assert_eq!((applied.values_written, applied.values_kept), (1, 0));
+    assert_eq!(node_of(&other, 6).encode(), replaced.encode());
+    assert_eq!(transaction.stats().overlapped, 0);
+
+    drop(other);
+    writer.into_scope().rollback();
+}
+
+/// A node the handle has loaded as the transaction's own record has no
+/// handle to name and needs none: a write of it that keeps its value is
+/// taken as it is, and no value is compared for it. A scope beside
+/// another keeps its writes by key, so the node it wrote is shown as its
+/// record.
+///
+/// The leaf is written alone, which leaves the node above it with the
+/// hash of what was there, so its scope is rolled back.
+#[test]
+fn a_node_that_was_loaded_as_the_transactions_record_keeps_its_value_uncompared() {
+    let (lignin, _) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let first = transaction.scope().unwrap();
+    let second = transaction.scope().unwrap();
+    assert!(!second.is_laid_out());
+    let writer = LigninWriter::new(second);
+
+    let held = committed_node(&lignin, 1);
+    let own = TreeNode::new(be(1), vec![0xee; 8], None, held.feature_type()).unwrap();
+    let applied = write_staged(&writer, &own, NodeChange::ValueWritten);
+    assert_eq!((applied.values_written, applied.values_kept), (1, 0));
+
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, ROOT, Some(&staged));
+    let loaded = node_of(&store, 1);
+    assert_eq!(loaded.value_as_slice(), [0xee; 8]);
+    // The write that keeps the value states another value hash for it, so
+    // that it is seen to be made.
+    let value = loaded.value_as_slice().to_vec();
+    let rehashed =
+        TreeNode::new_with_combined_value_hash(be(1), value, [7; 32], loaded.feature_type());
+    let rehashed = rehashed.unwrap();
+    assert_ne!(rehashed.encode(), loaded.encode());
+    let reads = || {
+        let stats = transaction.stats();
+        stats.handles_followed + stats.keyed_reads
+    };
+    let before = reads();
+    (store.write_node(&rehashed, NodeChange::HashOnly).unwrap()).expect("the write is staged");
+    drop(store);
+    let applied = (staged.apply(&writer).unwrap()).expect("the batch is applied");
+    assert_eq!((applied.values_written, applied.values_kept), (0, 0));
+    assert_eq!(reads(), before, "no node is read to compare its value");
+    let written = node_of(&LigninNodeStore::deferred(&writer, ROOT, None), 1);
+    assert_eq!(written.encode(), rehashed.encode());
+    assert_eq!(transaction.stats().overlapped, 0);
+
+    writer.into_scope().rollback();
+    first.merge();
+}
+
+/// The first load of a node stays the read of it, also where a later load
+/// shows the same value: the node may have other links by then. A handle
+/// loads a node, another transaction commits a change below
+/// it, which rewrites the node with the value it had, the handle loads the
+/// node again, and then writes the node as it first loaded it. The
+/// transaction's commit is a conflict, and the node stays as the other
+/// commit wrote it.
+#[test]
+fn a_later_load_that_shows_the_same_value_does_not_replace_the_first() {
+    let (lignin, root) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let store = LigninNodeStore::immediate(&writer, ROOT);
+
+    let parent = node_of(&store, 2);
+    rewrite_outside(&lignin, &root, 1, &[9; 8]);
+    let theirs = committed_node(&lignin, 2);
+    assert_eq!(theirs.value_hash(), parent.value_hash());
+    assert_ne!(theirs.encode(), parent.encode());
+    assert_eq!(node_of(&store, 2).encode(), theirs.encode());
+    (store.write_node(&parent, NodeChange::HashOnly).unwrap()).expect("the write is taken");
+
+    drop(store);
+    writer.into_scope().merge();
+    assert_eq!(lignin.commit(&transaction), Outcome::Conflict);
+    assert_eq!(committed_node(&lignin, 2).encode(), theirs.encode());
+}
+
+/// A node that keeps its value while a link of it is modified is read
+/// again when the write is applied, for the bytes the link holds for the
+/// hash that is not made yet. That read is no read the value is kept from,
+/// and neither is a later load: the keep names the handle's first load of
+/// the node. A handle loads the root, another transaction commits another
+/// value for the root, and the handle writes a child of the root and the
+/// root as it first loaded it, with the link to that child modified and
+/// its value kept. The transaction's commit is a conflict, and the root
+/// stays as the other commit wrote it. With no commit between, the commit
+/// is made.
+#[test]
+fn a_kept_value_beside_a_modified_link_names_the_first_load_of_its_node() {
+    let cases = [
+        "no commit between",
+        "a commit between",
+        "a commit between, and the root loaded again",
+    ];
+    for between in cases {
+        let (lignin, root) = seven_nodes();
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let store = LigninNodeStore::immediate(&writer, ROOT);
+
+        let loaded = node_of(&store, 4);
+        let held = node_of(&store, 2);
+        if between != "no commit between" {
+            rewrite_outside(&lignin, &root, 4, &[9; 8]);
+        }
+        let theirs = committed_node(&lignin, 4);
+        if between.ends_with("again") {
+            assert_eq!(node_of(&store, 4).encode(), theirs.encode());
+        }
+
+        // The child with another value, under a link of the root that no
+        // commit of Merk has hashed.
+        let mut child = TreeNode::new(be(2), vec![0xee; 8], None, held.feature_type()).unwrap();
+        child.set_link(true, held.link(true).cloned());
+        child.set_link(false, held.link(false).cloned());
+        let mut parent = loaded.clone();
+        parent.inner.left = None;
+        let parent = parent.attach(true, Some(child)).unwrap();
+        assert!(matches!(parent.link(true), Some(Link::Modified { .. })));
+
+        let mut change_set = store.change_set();
+        change_set.state_root(Some(parent.key()));
+        let child = parent.child(true).expect("the child is attached");
+        let written = [
+            (child, NodeChange::ValueWritten),
+            (&parent, NodeChange::StructureChanged),
+        ];
+        for (node, change) in written {
+            let prepared = change_set.prepare_node(node, change);
+            change_set.put_node(node.key(), prepared, None).unwrap();
+        }
+        (store.commit(change_set).unwrap()).expect("the write is taken");
+        assert_eq!(transaction.stats().stale_nodes, 1, "{between}");
+
+        drop(store);
+        writer.into_scope().merge();
+        // The commit makes the hash that the root's link was left without
+        // by Merk's rules, which the check of the store recomputes it by.
+        let committer = lignin.db.committer(&lignin.versions);
+        let outcome = committer.commit(&transaction, &mut MerkHashRules::new(version()));
+        match between {
+            "no commit between" => {
+                let published = match outcome {
+                    Ok(Committed::Published(published)) => published,
+                    other => panic!("the commit is made: {other:?}"),
+                };
+                assert_eq!(published.evaluated, 1);
+                let committed = committed_node(&lignin, 4);
+                assert_eq!(committed.value_as_slice(), loaded.value_as_slice());
+                assert_eq!(committed_node(&lignin, 2).value_as_slice(), [0xee; 8]);
+            }
+            _ => {
+                assert!(
+                    matches!(outcome, Err(CommitError::Conflict)),
+                    "{between}: {outcome:?}"
+                );
+                assert_eq!(committed_node(&lignin, 4).encode(), theirs.encode());
+            }
+        }
+    }
+}
+
+/// A record that the handle's cursor shows is no load of its node. The
+/// cursor shows the committed nodes of the moment it was opened, which a
+/// load made since may no longer show, and it gives the handle no place.
+/// A handle opens a cursor, another transaction commits another value for
+/// a leaf, and the cursor still shows the leaf as it was. The handle has
+/// not loaded the leaf, so it has no read of it to name: a write of the
+/// leaf as the cursor showed it, with its value kept, states the value.
+/// The leaf is written as it is handed over, with the hashes that are of
+/// its value, and the other commit has not met the write: for a value
+/// that is stated the rule looks from the write on (`transactions.md`
+/// CF2).
+///
+/// The leaf is written alone, which leaves the nodes above it with the
+/// hash of what the other commit wrote, so its scope is rolled back.
+#[test]
+fn a_record_of_the_cursor_is_no_load_of_its_node() {
+    let (lignin, root) = seven_nodes();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let store = LigninNodeStore::deferred(&writer, ROOT, Some(&staged));
+
+    let mut cursor = store.cursor();
+    cursor.seek(be(1)).unwrap();
+    rewrite_outside(&lignin, &root, 1, &[9; 8]);
+    let theirs = committed_node(&lignin, 1);
+    assert_eq!(theirs.value_as_slice(), [9; 8]);
+
+    let record = cursor.value().unwrap().map(<[u8]>::to_vec);
+    let record = record.expect("the cursor stands on the leaf");
+    cursor.status().expect("the cursor read the record");
+    drop(cursor);
+    assert!(store.hint(&be(1)).is_none(), "a record gives no place");
+    let leaf = TreeNode::decode_raw(&record, be(1), NO_VALUE_DEFINED_COST, version()).unwrap();
+    assert_eq!(leaf.value_as_slice(), [1; 8]);
+    assert_ne!(leaf.value_hash(), theirs.value_hash());
+
+    (store.write_node(&leaf, NodeChange::HashOnly).unwrap()).expect("the write is staged");
+    drop(store);
+    let applied = (staged.apply(&writer).unwrap()).expect("the batch is applied");
+    assert_eq!((applied.values_written, applied.values_kept), (1, 0));
+    assert_eq!(transaction.stats().overlapped, 0);
+    let written = node_of(&LigninNodeStore::deferred(&writer, ROOT, None), 1);
+    assert_eq!(written.encode(), leaf.encode());
+
+    writer.into_scope().rollback();
 }

@@ -65,6 +65,16 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
+    /// A node keeps a value of the committed state, and its write does not
+    /// say which read the value is kept from: it names no handle
+    /// ([`NodePut::at`](super::NodePut::at)). The transaction could not
+    /// say whether a commit wrote the node's key since (`crate::txn`, "A
+    /// kept value and the read it is of"). A node the transaction has
+    /// written itself is kept with no handle.
+    NoRead {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
     /// The transaction made the first node of a Merk that was empty, and a
     /// commit outside it has made one since, with no key in common. The
     /// two roots cannot both stand, and the conflict rule did not see it:
@@ -159,6 +169,13 @@ impl fmt::Display for BatchError {
                 write!(
                     f,
                     "a node of the Merk {subtree} keeps a value it does not have"
+                )
+            }
+            Self::NoRead { subtree } => {
+                write!(
+                    f,
+                    "a node of the Merk {subtree} keeps a committed value and names no handle of \
+                     the read it kept it from"
                 )
             }
             Self::RootTaken { subtree } => {

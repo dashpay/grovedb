@@ -89,6 +89,18 @@ pub enum ValuePut<'a> {
     /// The value the node has in the transaction's view when the write is
     /// applied: the write changes a hash or a link and leaves the value
     /// (`node-store.md`, the kinds `StructureChanged` and `HashOnly`).
+    ///
+    /// The hashes that are stated beside it were made for the value as the
+    /// writer read it. Where that is a value of the committed state, the
+    /// write says which read it was, by the node's handle
+    /// ([`NodePut::at`]): a commit outside the transaction that wrote the
+    /// node's key since that read meets the write, and a keep that names
+    /// no read is refused
+    /// ([`BatchError::NoRead`](super::BatchError::NoRead)). A value the
+    /// transaction stated itself is kept with no handle. A node the
+    /// transaction has only written with its value kept has the committed
+    /// value still, and a keep of it by a handle is dated as any other
+    /// (`crate::txn`, "A kept value and the read it is of").
     Keep,
     /// The value. Its length alone says whether it is stored in the node's
     /// cell or out of line: that is the store's rule
@@ -157,6 +169,17 @@ pub struct NodePut<'a> {
     /// which Merk it is in. So the handle is one that was read for this
     /// Merk: a good handle of another Merk whose node has the same key
     /// would be followed.
+    ///
+    /// For a node that keeps its value ([`ValuePut::Keep`]) the handle is
+    /// more than a hint: it names the read the value is kept from, good or
+    /// not. It is the handle this transaction showed the node with when
+    /// the writer read the value it made its hashes for, or the one a
+    /// write of this node reported since ([`Applied::nodes`]), and not a
+    /// later place of the node's cell that is no read of it, such as a
+    /// write reports for a cell it moved ([`Applied::carried`]).
+    /// Where the value is the committed state's, a handle the transaction
+    /// cannot date, such as one of another transaction, has the write
+    /// taken to be met by a commit, and its commit fail.
     pub at: Option<NodeHandle>,
 }
 
@@ -325,8 +348,14 @@ impl Batch<'_> {
 /// (`tree-layout.md` P5, `engine.md` "The batch across subtrees").
 ///
 /// A holder of node handles that takes this in never has to find a node of
-/// its own transaction by key (S6). The report is empty while the
-/// transaction serves its records by key (WT7b): they have no cells then.
+/// its own transaction by key (S6). The handles say where a node is: one
+/// the write wrote, or one whose cell it moved without writing its key.
+/// The second kind is no read of the node: a write that keeps the
+/// committed value of a node names the handle the node was read with
+/// ([`NodePut::at`]). The first kind is the transaction's own node as the
+/// write left it, and a later keep of that node can name it. The report
+/// is empty while the transaction serves its records by key (WT7b): they
+/// have no cells then.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Applied {
     /// The handles of the written nodes, in the order of the batch: the

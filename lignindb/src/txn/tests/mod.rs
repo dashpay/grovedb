@@ -113,11 +113,40 @@ impl<'s> World<'s> {
     /// Applies `batch` through a scope of `tx` that merges, and to the
     /// model.
     pub(crate) fn apply(&self, tx: &Tx<'s>, batch: &OwnedBatch) -> Result<Applied, TxnError> {
-        let first_write = self.latest().get();
         let scope = tx.txn.scope()?;
-        let applied = batch.with(|batch| scope.apply(batch));
+        // The model keeps a value where its records say the node has it:
+        // the node is read here, as a writer reads it before it keeps its
+        // value, and the write names that read.
+        let applied = self.apply_in(tx, &scope, &batch.through(&scope));
         scope.merge();
-        let applied = applied?;
+        applied
+    }
+
+    /// Applies `batch` as it is through a scope of `tx` that merges, and
+    /// to the model. The batch names the reads of the values it keeps
+    /// itself ([`OwnedBatch::reading`]): the test made them when it meant
+    /// to, and other commits may have been made since.
+    pub(crate) fn apply_as_read(
+        &self,
+        tx: &Tx<'s>,
+        batch: &OwnedBatch,
+    ) -> Result<Applied, TxnError> {
+        let scope = tx.txn.scope()?;
+        let applied = self.apply_in(tx, &scope, batch);
+        scope.merge();
+        applied
+    }
+
+    /// Applies `batch` as it is through `scope`, a scope of `tx` that
+    /// stays open, and to the model.
+    pub(crate) fn apply_in(
+        &self,
+        tx: &Tx<'s>,
+        scope: &Scope<'_, 's>,
+        batch: &OwnedBatch,
+    ) -> Result<Applied, TxnError> {
+        let first_write = self.latest().get();
+        let applied = batch.with(|batch| scope.apply(batch))?;
         self.note(tx, batch, first_write);
         Ok(applied)
     }

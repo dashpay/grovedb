@@ -45,7 +45,7 @@ use std::{
 use lignin_format::tree_page::Hash;
 use lignin_io::{DirEntry, OpenMode, StdVfs, Vfs, VfsFile, VfsLock};
 use lignin_store::{flush::FlushConfig, segment::read_manifest, wal::LogOptions};
-use lignin_tree::hash::Stale;
+use lignin_tree::{hash::Stale, node::NodeHandle};
 
 use super::{checkpointer, checkpoints_in, root_hash, store_files, ROOT};
 use crate::{
@@ -227,11 +227,14 @@ impl Merk {
     }
 
     /// The nodes that changed since the last batch, each as Merk hands it
-    /// to storage: whole, and with its value where that was written.
-    fn puts(&self) -> Vec<NodePut<'_>> {
+    /// to storage: whole, and with its value where that was written. A
+    /// node that keeps its value is read with `read` first, as Merk loads
+    /// a node before it changes it, and names that read.
+    fn puts(&self, mut read: impl FnMut(&[u8]) -> Option<NodeHandle>) -> Vec<NodePut<'_>> {
         (self.changed.iter())
             .map(|&at| {
                 let node = &self.nodes[at as usize];
+                let value = self.values.get(&at);
                 NodePut {
                     key: &node.key,
                     feature: &node.feature,
@@ -240,12 +243,15 @@ impl Merk {
                     left: self.link(node.left),
                     right: self.link(node.right),
                     hosted: Hosted::Keep,
-                    value: match self.values.get(&at) {
+                    value: match value {
                         Some(value) => ValuePut::Value(value),
                         None => ValuePut::Keep,
                     },
                     stale: Stale::NONE,
-                    at: None,
+                    at: match value {
+                        Some(_) => None,
+                        None => read(&node.key),
+                    },
                 }
             })
             .collect()
@@ -331,8 +337,12 @@ impl Grove {
     /// operation of `txn`.
     fn apply(&mut self, txn: &crate::txn::WriteTxn<'_>) {
         let state = self.transitions.to_be_bytes();
+        let scope = txn.scope().expect("a scope");
         let merks = [&self.documents, &self.references, &self.root];
-        let nodes = merks.map(Merk::puts);
+        let nodes = merks.map(|merk| {
+            let read = |key: &[u8]| scope.node(merk.subtree, key, model::handle_of);
+            merk.puts(|key| read(key).expect("a read"))
+        });
         let writes = [0, 1, 2].map(|at| merks[at].write(&nodes[at]));
         let records = [RecordWrite::put(
             Column::Aux,
@@ -340,7 +350,6 @@ impl Grove {
             b"state",
             &state,
         )];
-        let scope = txn.scope().expect("a scope");
         (scope.apply(&Batch {
             records: &records,
             merks: &writes,

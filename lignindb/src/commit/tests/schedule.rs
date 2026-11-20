@@ -70,6 +70,10 @@ struct Tally {
     conflicts: usize,
     empty: usize,
     outside: usize,
+    /// Of those, the writes that went through the commit path's own write
+    /// with no transaction (RD7): the others keep a value or cover a
+    /// range, and are a transaction that is committed at once.
+    direct: usize,
     /// Commits whose key set had a range beside the keys they wrote (CF5).
     covering: usize,
     rollbacks: usize,
@@ -90,6 +94,7 @@ impl Tally {
         self.conflicts += other.conflicts;
         self.empty += other.empty;
         self.outside += other.outside;
+        self.direct += other.direct;
         self.covering += other.covering;
         self.rollbacks += other.rollbacks;
         self.to_savepoint += other.to_savepoint;
@@ -195,18 +200,32 @@ fn run(seed: u64, steps: usize, keys: usize) -> Tally {
                     Write::Range(unit, start.clone().min(end.clone()), Some(start.max(end)))
                 });
                 let before = versions.latest();
-                let committed = match &covered {
-                    None => batch.with(|batch| db.write_as(&committer, batch)),
-                    Some(Write::Range(unit, start, end)) => {
-                        let tx = world.path.begin();
-                        let scope = tx.scope().expect("a scope");
-                        (batch.with(|batch| scope.apply(batch))).expect("a write");
-                        scope.merge();
-                        let mut also = KeySet::new();
-                        also.range(*unit, start, end.as_deref());
-                        db.commit_as(&committer, &tx, Some(&also))
-                    }
-                    Some(_) => unreachable!("a range"),
+                let also = covered.as_ref().map(|covered| {
+                    let Write::Range(unit, start, end) = covered else {
+                        unreachable!("a range");
+                    };
+                    let mut also = KeySet::new();
+                    also.range(*unit, start, end.as_deref());
+                    also
+                });
+                let keeps =
+                    (batch.merks.iter()).any(|merk| merk.nodes.iter().any(|(.., stated)| !stated));
+                let committed = if also.is_none() && !keeps {
+                    tally.direct += 1;
+                    batch.with(|batch| db.write_as(&committer, batch))
+                } else {
+                    // A node that keeps its value names the read the value
+                    // is kept from (`BatchError::NoRead`), and a write with
+                    // no transaction has made none. So the writer takes a
+                    // transaction of its own, reads through it and commits
+                    // it at once, which is what such a write is (RD7).
+                    let tx = world.path.begin();
+                    let scope = tx.scope().expect("a scope");
+                    (batch.through(&scope))
+                        .with(|batch| scope.apply(batch))
+                        .expect("a write");
+                    scope.merge();
+                    db.commit_as(&committer, &tx, also.as_ref())
                 };
                 let made = committed
                     .unwrap_or_else(|error| panic!("{}", at(&error.to_string(), step)))
@@ -324,6 +343,7 @@ fn run(seed: u64, steps: usize, keys: usize) -> Tally {
 
 fn check(total: &Tally) {
     assert!(total.committed > 40 && total.outside > 40, "{total:?}");
+    assert!(total.direct > 10, "{total:?}");
     assert!(total.conflicts > 10, "no conflict to miss: {total:?}");
     assert!(total.beside > 10, "no conflict to make up: {total:?}");
     assert!(

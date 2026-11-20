@@ -53,6 +53,29 @@
 //! transaction no value. The charge for such a put is that of the whole
 //! record, as on RocksDB.
 //!
+//! A node that keeps its value names the read the value is kept from, so
+//! that the transaction can say whether a commit wrote the node since
+//! (`lignindb::txn`, "A kept value and the read it is of"). Where Merk
+//! says the value is unchanged, that is the handle's first load of the
+//! node: no later place of the node says which value a node that is
+//! handed over was made from. A first load that showed the transaction's
+//! own record has no handle, and the keep names none. Where the store
+//! kept a stated value, it is
+//! the read that compared the bytes. A node that is written outside a
+//! commit through a handle that has not loaded it has its value stated,
+//! whatever change the caller names ([`NodeStore::write_node`]).
+//!
+//! A handle dates a node by its own loads, so a node that is handed to it
+//! with its value kept has to be one it loaded, as a Merk loads what it
+//! changes through the handle it writes with. Of a node that another
+//! handle loaded, this one knows no read: its own first load of the key
+//! may be a later one, and a commit between the two is not seen. The
+//! value hash does not tell the two apart, because a node that keeps its
+//! value may state another value hash for it ([`NodeChange`]). A record
+//! of the handle's cursor is no load either: the cursor shows the
+//! committed nodes of the moment it was opened, which a load made since
+//! may no longer show, and it gives the handle no place.
+//!
 //! A Merk whose subtree the same batch enters has no node before the
 //! write, whatever the transaction holds under its prefix until then: a
 //! drop is applied before any change set. Every value stated for it is
@@ -204,6 +227,14 @@ pub struct LigninNodeStore<'db> {
     mode: Mode<'db>,
     /// Where the cells of this subtree's nodes were last seen, by key.
     hints: RefCell<HashMap<Vec<u8>, Location>>,
+    /// The handle each node's value was first read with, by key: that of
+    /// the handle's first load of the node, and none where that load
+    /// showed the transaction's own record. A node that is written with
+    /// its value kept names it. A later place of the node is in `hints`
+    /// and not here, whether the read of its parent said it, a second load
+    /// of the node or the report of a write: the caller may still hold the
+    /// node as it was first loaded.
+    reads: RefCell<HashMap<Vec<u8>, Option<Location>>>,
 }
 
 impl fmt::Debug for LigninNodeStore<'_> {
@@ -266,6 +297,7 @@ impl<'db> LigninNodeStore<'db> {
             subtree,
             mode,
             hints: RefCell::new(HashMap::new()),
+            reads: RefCell::new(HashMap::new()),
         }
     }
 
@@ -356,6 +388,8 @@ impl<'db> LigninNodeStore<'db> {
                 Some(location) => hints.insert(key.to_vec(), location),
                 None => hints.remove(key),
             };
+            let mut reads = self.reads.borrow_mut();
+            reads.entry(key.to_vec()).or_insert(node.location);
             return Ok(Some(node));
         }
         Err(refused("a node changed under every read of it"))
@@ -408,7 +442,7 @@ impl<'db> LigninNodeStore<'db> {
         what: &str,
         is_commit: bool,
     ) -> CostResult<(), Error> {
-        change_set.hint(&self.hints.borrow());
+        change_set.hint(&self.hints.borrow(), &self.reads.borrow());
         match self.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
@@ -500,6 +534,13 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
     }
 
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), Error> {
+        // A value is kept by the read it was kept from. Of a node this
+        // handle has not loaded there is none to name, so its value is
+        // stated: it is written only where other bytes are held.
+        let change = match self.reads.borrow().contains_key(node.key()) {
+            true => change,
+            false => NodeChange::ValueWritten,
+        };
         match LigninChangeSet::of_node(self.subtree.clone(), node, change) {
             Ok(change_set) => self.submit(change_set, "a write", false),
             Err(error) => Err(error).wrap_with_cost(MODEL.refused_write()),

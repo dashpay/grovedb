@@ -865,6 +865,7 @@ fn every_error_says_what_it_is() {
         BatchError::NoChild { subtree },
         BatchError::NoRoot { subtree },
         BatchError::NoValue { subtree },
+        BatchError::NoRead { subtree },
         BatchError::RootTaken { subtree },
         BatchError::RootAlone { subtree },
         BatchError::NotFlat { unit },
