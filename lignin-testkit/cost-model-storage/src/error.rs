@@ -1,5 +1,9 @@
 //! The errors of the storage layer: the enum of `storage/src/error.rs`,
 //! with the model's stand-in where that one holds a RocksDB error.
+//!
+//! GroveDB matches on these enums, so each has the variants of the real
+//! one. `lignin-testkit/tests/cost_model.rs` compares the two files in the
+//! tests of the real workspace.
 
 /// Storage and underlying errors
 #[derive(Debug, thiserror::Error)]
@@ -24,6 +28,11 @@ pub enum Error {
     /// A write scope could not do what was asked of it.
     #[error("write scope error: {0}")]
     WriteScope(WriteScopeError),
+    /// The engine does not do what was asked of it: an operation it has
+    /// not, or a limit of it that the operation met. Nothing was changed,
+    /// and the stored data is not at fault.
+    #[error("not supported: {0}")]
+    NotSupported(String),
 }
 
 /// How a commit ended when it did not end in plain success, in terms that

@@ -14,6 +14,41 @@
 
 use std::process::Command;
 
+/// The names of the variants of the enum `name` in the Rust source `file`.
+fn variants(file: &str, name: &str) -> Vec<String> {
+    let opening = format!("pub enum {name} {{");
+    let body = file.split_once(&opening).map(|(_, rest)| rest);
+    let body = body.and_then(|rest| rest.split_once("\n}"));
+    let (body, _) = body.unwrap_or_else(|| panic!("no enum {name}"));
+    let named = |line: &str| {
+        let line = line.trim_start();
+        let name: String = line
+            .chars()
+            .take_while(char::is_ascii_alphanumeric)
+            .collect();
+        line.starts_with(char::is_uppercase).then_some(name)
+    };
+    body.lines().filter_map(named).collect()
+}
+
+/// GroveDB is built against the model's storage crate as it is against the
+/// real one, and matches on the errors of both: an enum of the stand-in
+/// that lacks a variant fails that build far from its cause.
+#[test]
+fn the_errors_of_the_stand_in_have_the_variants_of_the_storage_crate() {
+    let real = include_str!("../../storage/src/error.rs");
+    let stand_in = include_str!("../cost-model-storage/src/error.rs");
+    for name in ["Error", "CommitError", "WriteScopeError"] {
+        let expected = variants(real, name);
+        assert!(!expected.is_empty(), "no variant of {name} was read");
+        assert_eq!(
+            variants(stand_in, name),
+            expected,
+            "`{name}` of lignin-testkit/cost-model-storage/src/error.rs against storage/src/error.rs"
+        );
+    }
+}
+
 #[test]
 #[ignore = "builds the workspace a second time; run it on request"]
 fn the_cost_model_predicts_every_cost_of_the_corpus() {
