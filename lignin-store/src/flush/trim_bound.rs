@@ -10,7 +10,7 @@ use crate::alloc::{Epoch, Pins};
 /// How many answers about the oldest pinned version wait for their
 /// operations at once. An answer that has no room is not kept: a later
 /// call asks again.
-pub(crate) const MAX_BOUNDS: usize = 8;
+pub(super) const MAX_BOUNDS: usize = 8;
 
 /// The version at which chains may be trimmed: one that no version pin
 /// and no running operation reads below.
