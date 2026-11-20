@@ -44,7 +44,7 @@
 //! | Part | What it is |
 //! | --- | --- |
 //! | [`store::Session`] | An open store, and what `lignin-store` asks of its callers: the committer of `transactions.md` CM3, in the order of the engine's (`lignindb::commit`), with the sync of a commit before its version is published; the keeper of the pins, a writer's on the version it was begun at among them; the owners of values for the value log's cleaner; the regrouping of a page's values; and the page steps that take cells out of a page or free one. |
-//! | [`workload`] | The operations of a session, drawn from the seed: commits to tree pages and flat leaves with values in and out of line, write transactions that hold copies, reclaiming steps, passes, turns, table checkpoints, syncs and rolls of the log, cleaning of the value log, pins, kills and closes. |
+//! | [`workload`] | The operations of a session, drawn from the seed: commits to tree pages and flat leaves with values in and out of line, write transactions that hold copies, reclaiming steps, passes, turns, table checkpoints, syncs and rolls of the log, passes of the cleaner over the segments and over the value log, pins, kills and closes. |
 //! | [`model`] | What the pages say after each item of the log that changes them. It knows no frame, block or file. |
 //! | [`observe::Observer`] | The file layer of a run: it takes a crash image after every operation that changed what a crash can leave. |
 //! | [`check`] | One state a crash left, recovered and held to the model. |
@@ -260,10 +260,15 @@
 //!
 //! # What is not in it
 //!
-//! - **The segment cleaner** (STORE-08) is not merged. Its step is one
-//!   more operation of [`workload::Op`]; it changes no page, so the model
-//!   needs nothing. Until then the campaign trims the chains of freed
-//!   pages itself, as the cleaner will ([`store::Session::trim_freed`]).
+//! - **The owners of values that the tree layer has.** The cleaner
+//!   (`lignin_store::cleaner`) is run, over the segments and over the
+//!   value log, as operations of the workload
+//!   ([`store::Session::clean_segments`],
+//!   [`store::Session::clean_values`]). Its pass over the value log asks
+//!   the owners of values for each value it moves: here those are the
+//!   session's own, which know the cells and entries the workload wrote.
+//!   The owners of `lignin-tree`, which find a value's cell through a
+//!   tree, are the engine's campaign's (VER-04).
 //! - **Threads.** A run is one thread, so that a seed gives one run. The
 //!   workload interleaves commits with passes, turns and checkpoints of
 //!   write-back, never inside one. What write-back does beside a committer

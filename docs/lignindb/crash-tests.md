@@ -28,7 +28,7 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 
 | | |
 | --- | --- |
-| The store | `lignin-store` through its public API, with pages of 8 KiB, log files of 1.5 kB, segments of 24 KiB, value-log files of 6 kB, chains of zero to five runs and a table checkpoint that is due every 5 kB of log, so that every kind of file is turned many times in sixty operations. |
+| The store | `lignin-store` through its public API, with pages of 8 KiB, log files of 1.5 kB, segments of 24 KiB, value-log files of 6 kB, chains of zero to five runs, a table checkpoint that is due every 5 kB of log, and a cleaner that has a file closed at 1 KiB, moves 16 KiB in a pass and leaves none, a tenth or four tenths of the blocks dead, so that every kind of file is turned many times in sixty operations. |
 | A lineage | One file system, and sixty operations of a workload on the store in it, over as many sessions as the workload's kills and closes make. |
 | A run | Up to five lineages: the first begins with an empty directory, and each of the others with a state that a crash of an earlier one left, up to two crashes deep. |
 | The faults of a run | By its seed: none for two seeds in four, failing syncs for one, and for one every kind of failure, torn appends, a write that fails when the workload says so and a device that is full for a while. |
@@ -64,6 +64,6 @@ The lineage says how many stores of the run came before this one, the operation 
 ## What the campaign leaves to others
 
 - The engine above the store, with transactions, savepoints, database checkpoints and GroveDB's root hashes: VER-04, which builds on this campaign.
-- The segment cleaner (STORE-08): one more operation of the workload when it merges. Until then the campaign trims the chains of freed pages itself.
+- The owners of values that the tree layer has. The cleaner of `lignin-store` is run as two operations of the workload, a pass over the segments and a pass over the value log, and the pass over the value log is given the session's own owners of values, which know the cells and entries the workload wrote. The owners of `lignin-tree`, which find the cell of a value through a tree, are in the engine's campaign (VER-04).
 - Write-back on a thread beside a committer: a run is one thread, so that a seed gives one run. The stress tests and loom models of VER-05 are for what two threads do to each other.
 - One rule of replay is reached only where a table checkpoint covers less than the log holds of a page that was freed and trimmed away (`page-table.md` K11). A single thread reaches it only after an injected fault has kept a page from being written; the campaign counts how often ("changes dropped for a lost page"), and the scripted tests of `lignin-store`'s recovery hold the rule by hand.

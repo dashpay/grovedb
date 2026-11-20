@@ -32,7 +32,7 @@ use lignin_io::{
     },
     Vfs,
 };
-use lignin_store::flush::FlushConfig;
+use lignin_store::{cleaner::CleanerConfig, flush::FlushConfig};
 
 use super::{
     check::{
@@ -299,9 +299,9 @@ fn first_of(mut plans: Vec<CrashPlan>, first: CrashPlan) -> Vec<CrashPlan> {
 }
 
 /// The tuning of a store, by turns: the pages a replay keeps, the window a
-/// recovery reads the log through, the pool, and the runs a chain may
-/// have, so that one session finds chains that another's thresholds
-/// allowed.
+/// recovery reads the log through, the pool, the runs a chain may have,
+/// so that one session finds chains that another's thresholds allowed, and
+/// the dead space the cleaner leaves.
 fn tuning_of(turn: u64) -> Tuning {
     let small = Tuning::small();
     let max_chain_deltas = [2, 0, 5][((turn / 12) % 3) as usize];
@@ -312,6 +312,11 @@ fn tuning_of(turn: u64) -> Tuning {
         flush: FlushConfig {
             max_chain_deltas,
             ..small.flush
+        },
+        cleaner: CleanerConfig {
+            target_dead_percent: [10, 0, 40][((turn / 5) % 3) as usize],
+            value_dead_percent: [20, 0][((turn / 7) % 2) as usize],
+            ..small.cleaner
         },
         ..small
     }
@@ -903,21 +908,31 @@ impl Run {
                     .count("long chains consolidated", done.unwrap_or(0) as u64);
             }
             Op::Clean => {
-                let moved = self.tolerate(lineage, "cleaning a value-log file", session.clean(20));
-                if let Some(Some(moved)) = moved {
-                    self.tally.count("value-log files cleaned", 1);
-                    self.tally.count("values moved by the cleaner", moved);
+                let cleaned = session.clean_values();
+                let cleaned =
+                    self.tolerate(lineage, "a pass of the cleaner over the value log", cleaned);
+                if let Some(pass) = cleaned {
+                    let tally = &mut self.tally;
+                    if let Some((_, cleaned)) = pass.cleaned {
+                        tally.count("value-log files cleaned", 1);
+                        tally.count("values moved by the cleaner", cleaned.moved);
+                    }
+                    tally.count("value-log files dropped", pass.dropped.len() as u64);
                 }
             }
-            Op::DropValueFiles => {
-                let dropped = session.drop_empty_value_files();
-                let dropped = self.tolerate(lineage, "dropping value-log files", dropped);
-                self.tally
-                    .count("value-log files dropped", dropped.unwrap_or(0) as u64);
-            }
-            Op::TrimFreed => {
-                let trimmed = session.trim_freed() as u64;
-                self.tally.count("chains of freed pages trimmed", trimmed);
+            Op::CleanSegments => {
+                let cleaned = session.clean_segments();
+                let cleaned =
+                    self.tolerate(lineage, "a pass of the cleaner over the segments", cleaned);
+                if let Some(pass) = cleaned {
+                    let tally = &mut self.tally;
+                    tally.count("links trimmed by the cleaner", pass.links_trimmed);
+                    tally.count("blocks moved by the cleaner", pass.blocks_moved);
+                    tally.count("segments sealed for the cleaner", pass.sealed.len() as u64);
+                    tally.count("segments emptied by the cleaner", pass.retired as u64);
+                    tally.count("segments deleted by the cleaner", pass.dropped as u64);
+                    tally.count("table checkpoints the cleaner asked for", pass.checkpoints);
+                }
             }
             Op::Pin => lineage.pinned |= session.pin(),
             Op::Unpin => {

@@ -40,6 +40,7 @@ use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
     alloc::{Epoch, PageAllocator, PageState, Pins},
     cache::{BufferPool, OwnerId, PageRef, PageStep, PrivateRef},
+    cleaner::{Cleaner, CleanerConfig, CleanerState, Pass, ValuePass},
     flush::{
         Checkpointed, FlushConfig, FlushError, FlushState, FlushStats, PageValues, Published,
         RegroupError, Stores, WriteBack,
@@ -98,6 +99,8 @@ pub struct Tuning {
     pub value_file_len: u64,
     /// The thresholds of write-back.
     pub flush: FlushConfig,
+    /// The settings of the cleaner.
+    pub cleaner: CleanerConfig,
     /// Whether write-back is handed what regroups the values of a page.
     pub regroup: bool,
 }
@@ -105,7 +108,8 @@ pub struct Tuning {
 impl Tuning {
     /// A store that turns its files often: log files of a kilobyte or two,
     /// segments and value-log files of a few pages, chains of two runs,
-    /// and a table checkpoint that is due after a few commits.
+    /// a table checkpoint that is due after a few commits, and a cleaner
+    /// that has a file closed at a kilobyte and moves two pages in a pass.
     pub fn small() -> Self {
         Self {
             pool_capacity: 512 << 10,
@@ -121,6 +125,17 @@ impl Tuning {
                 max_log_held: 12 << 10,
                 checkpoint_log_bytes: 5 << 10,
                 ..FlushConfig::new(PAGE_SIZE)
+            },
+            cleaner: CleanerConfig {
+                target_dead_percent: 10,
+                checkpoint_dead_percent: 30,
+                seal_dead_percent: 5,
+                max_segment_percent: 40,
+                min_segment_len: 1 << 10,
+                max_pass_bytes: 16 << 10,
+                segment_len: 24 << 10,
+                value_dead_percent: 20,
+                ..CleanerConfig::new()
             },
             regroup: true,
         }
@@ -367,7 +382,7 @@ pub struct Session {
     regroup: bool,
     owners: AtomicU64,
     held: Mutex<Option<Held>>,
-    cleaner: Mutex<Option<ValueWriter>>,
+    cleaning: CleanerState,
     buffers: Mutex<LoadBuffers>,
     complaints: Mutex<Vec<String>>,
     _lock: Box<dyn VfsLock>,
@@ -443,7 +458,7 @@ impl Session {
             regroup: tuning.regroup,
             owners: AtomicU64::new(0),
             held: Mutex::new(None),
-            cleaner: Mutex::new(None),
+            cleaning: CleanerState::new(tuning.cleaner),
             buffers: Mutex::default(),
             complaints: Mutex::default(),
             _lock: locked,
@@ -1722,76 +1737,37 @@ impl Session {
         Ok(Stepped::Yes { end: appended.end })
     }
 
-    /// Cleans one value-log file that has at least `min_dead_percent` of
-    /// dead bytes, as the value log's cleaner does: its live values are
-    /// copied to the cleaner's own file, and each owner is given the new
-    /// pointer in a page step. Returns how many values were moved, or
-    /// `None` if no file is worth a pass.
-    pub fn clean(&self, min_dead_percent: u8) -> Result<Option<u64>, String> {
-        let Some(file) = (self.values.cleanable(min_dead_percent).first()).map(|file| file.file)
-        else {
-            return Ok(None);
-        };
-        let mut cleaner = lock(&self.cleaner);
-        if let Some(full) = cleaner.take_if(|writer| writer.is_full()) {
-            full.finish().map_err(text)?;
-        }
-        if cleaner.is_none() {
-            let writer = self.values.create().map_err(text)?;
-            self.values
-                .commit(&mut lock(&self.manifest))
-                .map_err(text)?;
-            *cleaner = Some(writer);
-        }
-        let writer = cleaner.as_mut().expect("just made");
+    fn cleaner(&self) -> Cleaner<'_> {
+        Cleaner::new(self.wb(), &self.cleaning)
+    }
+
+    /// One pass of the cleaner over the segments
+    /// (`lignin_store::cleaner`): the chains that hold links no reader
+    /// needs are trimmed, live blocks are moved out of the segments that
+    /// are mostly dead, and the segments that nothing points into are
+    /// deleted once no table checkpoint in force names them.
+    pub fn clean_segments(&self) -> Result<Pass, String> {
+        self.cleaner().pass().map_err(text)
+    }
+
+    /// One pass of the cleaner over the value log: the files that are
+    /// empty for every reader are dropped, the closed file with the
+    /// largest share of dead bytes is cleaned if the dead space is above
+    /// its target, with each owner given the pointer to the copy of its
+    /// value in a page step, and the log is made durable before the value
+    /// log is asked which files are empty from then on.
+    pub fn clean_values(&self) -> Result<ValuePass, String> {
         let owners = Owners {
             session: self,
             log_failed: Mutex::new(None),
         };
-        let cleaned = {
-            let mut manifest = lock(&self.manifest);
-            let cleaned = self.values.clean(file, writer, &mut manifest, &owners);
-            // The pass replaces the manifest and deletes nothing.
-            if manifest.manifest().is_ok() {
-                let _ = self.values.manifest_replaced(&manifest);
-            }
-            cleaned
-        };
+        let passed = self.cleaner().pass_values(&owners);
         // A record that the log took back is settled before anything
         // relies on its being gone, with every lock given back.
         if let Some(error) = lock(&owners.log_failed).take() {
             let _ = self.settle_after(error);
         }
-        cleaned.map(|cleaned| Some(cleaned.moved)).map_err(text)
-    }
-
-    /// Takes out of the value log the files that hold no live value and
-    /// that no reader can reach, and has a manifest stop naming them.
-    /// Returns how many went.
-    pub fn drop_empty_value_files(&self) -> Result<usize, String> {
-        let retired = self.values.retire(self.versions.oldest_pin());
-        let dropped = self.values.drop_empty(retired).map_err(text)?;
-        if !dropped.is_empty() {
-            self.values
-                .commit(&mut lock(&self.manifest))
-                .map_err(text)?;
-        }
-        Ok(dropped.len())
-    }
-
-    /// Trims away the chains of the pages that were freed at or before the
-    /// oldest version a reader can ask for (`page-table.md` T11), as
-    /// whoever cleans segments does. Returns how many chains went.
-    pub fn trim_freed(&self) -> usize {
-        let oldest = self.versions.oldest_pin();
-        let newest = self.newest_links();
-        let freed = |link: &Link| link.kind == LinkKind::Free && link.version <= oldest;
-        let mut removed = Vec::new();
-        newest
-            .iter()
-            .filter(|(_, link)| freed(link))
-            .filter(|(page, _)| self.table.trim(**page, oldest, &mut removed))
-            .count()
+        passed.map_err(text)
     }
 }
 
@@ -1964,6 +1940,9 @@ impl Session {
     /// version its last table checkpoint covers, or `None` if that was put
     /// off.
     pub fn finish(&self) -> Result<Option<u64>, String> {
+        // The files that took the cleaner's copies are closed first, so
+        // that the session's last manifest names them as they are.
+        self.cleaner().finish().map_err(text)?;
         self.wb().finish().map(covered).map_err(text)
     }
 
@@ -2525,8 +2504,9 @@ mod tests {
         // The chains of the freed pages are trimmed away, and a killed
         // store recovers the steps from their records.
         session.checkpoint().expect("a checkpoint");
-        assert_eq!(session.trim_freed(), 2);
-        assert_eq!(session.trim_freed(), 0);
+        let trimmed = |session: &Session| session.clean_segments().expect("a pass").links_trimmed;
+        assert!(trimmed(&session) >= 2);
+        assert_eq!(trimmed(&session), 0);
         drop(session);
         let session = open(&vfs);
         assert_eq!(session.latest().get(), 2);
@@ -2540,6 +2520,10 @@ mod tests {
         let tuning = Tuning {
             value_file_len: 1500,
             regroup: false,
+            cleaner: CleanerConfig {
+                value_dead_percent: 0,
+                ..Tuning::small().cleaner
+            },
             ..Tuning::small()
         };
         let session = Session::open(vfs.clone(), dir(), &tuning).expect("the store opens");
@@ -2558,7 +2542,8 @@ mod tests {
         );
         let (tree, flat) = (made[0], made[1]);
         session.pass().expect("a pass");
-        assert_eq!(session.clean(30).expect("looked"), None);
+        let moved = |pass: &ValuePass| pass.cleaned.map_or(0, |(_, cleaned)| cleaned.moved);
+        assert_eq!(moved(&session.clean_values().expect("a pass")), 0);
         // Two of the three values of the first file die: the file is
         // closed, and has a live value and dead bytes.
         commit(
@@ -2576,19 +2561,21 @@ mod tests {
         );
         let before = read(&session);
         // A page that a transaction holds a copy of keeps its pointer: the
-        // copy of the value is dead space, and the pass is made again.
+        // copy of the value is dead space.
         assert!(session.hold(&[tree, flat]).expect("copied"));
-        assert_eq!(session.clean(30).expect("a pass of the cleaner"), Some(0));
+        assert_eq!(moved(&session.clean_values().expect("a pass")), 0);
         assert_eq!(read(&session), before);
         assert!(session.release());
-        assert_eq!(session.clean(30).expect("a pass of the cleaner"), Some(1));
-        assert_eq!(session.clean(30).expect("looked"), None);
-        assert_eq!(read(&session), before);
-        // What the counts say is durable before a file goes.
-        assert_eq!(session.drop_empty_value_files().expect("looked"), 0);
-        session.sync_log().expect("synced");
-        assert!(session.drop_empty_value_files().expect("dropped") >= 1);
-        assert_eq!(read(&session), before);
+        // The file is set aside for a while, cleaned by a later pass, and
+        // dropped once the log has made the rewrite durable.
+        let (mut all, mut dropped) = (0, 0);
+        for _ in 0..24 {
+            let pass = session.clean_values().expect("a pass");
+            all += moved(&pass);
+            dropped += pass.dropped.len();
+            assert_eq!(read(&session), before);
+        }
+        assert!(all >= 1 && dropped >= 1, "{all} moved, {dropped} dropped");
         drop(session);
         let session = open(&vfs);
         assert_eq!(read(&session), before);
@@ -2673,12 +2660,13 @@ mod tests {
         commit(&session, &[Change::Free { page: tree }]);
         // The pinned version can still reach the page: its chain stays,
         // and its id is not handed out.
-        assert_eq!(session.trim_freed(), 0);
+        let trimmed = |session: &Session| session.clean_segments().expect("a pass").links_trimmed;
+        assert_eq!(trimmed(&session), 0);
         let made = commit(&session, &[Change::NewFlat { entries: vec![] }]);
         assert_eq!(made, [page(3)]);
         assert!(session.unpin());
         assert!(!session.unpin());
-        assert_eq!(session.trim_freed(), 1);
+        assert!(trimmed(&session) >= 1);
         session.reclaim();
         let made = commit(&session, &[Change::NewFlat { entries: vec![] }]);
         assert_eq!(made, [tree]);

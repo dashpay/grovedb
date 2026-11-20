@@ -17,9 +17,8 @@ use crate::workload::rng::Rng;
 
 /// One thing a session does.
 ///
-/// A step of the segment cleaner (STORE-08) is one more operation here and
-/// one more call in the campaign's `Run::make_with`: it changes no page, so
-/// the model has nothing to learn of it.
+/// The passes of write-back and of the cleaner change no page, so the
+/// model has nothing to learn of them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     /// A write transaction makes these changes and commits. With
@@ -56,12 +55,10 @@ pub enum Op {
     RollLog,
     /// Long chains are consolidated.
     Consolidate,
-    /// The value log's cleaner cleans a file.
+    /// One pass of the cleaner over the value log.
     Clean,
-    /// The value-log files with no live value are dropped.
-    DropValueFiles,
-    /// The chains of freed pages are trimmed away.
-    TrimFreed,
+    /// One pass of the cleaner over the segments.
+    CleanSegments,
     /// A snapshot pins the latest version.
     Pin,
     /// The snapshot is dropped.
@@ -96,8 +93,7 @@ impl Op {
             Self::RollLog => "roll log",
             Self::Consolidate => "consolidate",
             Self::Clean => "clean values",
-            Self::DropValueFiles => "drop value files",
-            Self::TrimFreed => "trim freed",
+            Self::CleanSegments => "clean segments",
             Self::Pin => "pin",
             Self::Unpin => "unpin",
             Self::Kill => "kill",
@@ -420,8 +416,7 @@ impl Workload {
             RollLog,
             Consolidate,
             Clean,
-            DropValueFiles,
-            TrimFreed,
+            CleanSegments,
             Pin,
             Unpin,
             Kill,
@@ -456,9 +451,8 @@ impl Workload {
             (5, Kind::SyncLog),
             (2, Kind::RollLog),
             (1, Kind::Consolidate),
-            (4, Kind::Clean),
-            (2, Kind::DropValueFiles),
-            (3, Kind::TrimFreed),
+            (5, Kind::Clean),
+            (6, Kind::CleanSegments),
             (2 * u64::from(!pinned), Kind::Pin),
             (4 * u64::from(pinned), Kind::Unpin),
             (2, Kind::Kill),
@@ -507,8 +501,7 @@ impl Workload {
             Kind::RollLog => Op::RollLog,
             Kind::Consolidate => Op::Consolidate,
             Kind::Clean => Op::Clean,
-            Kind::DropValueFiles => Op::DropValueFiles,
-            Kind::TrimFreed => Op::TrimFreed,
+            Kind::CleanSegments => Op::CleanSegments,
             Kind::Pin => Op::Pin,
             Kind::Unpin => Op::Unpin,
             Kind::Kill => Op::Kill,
@@ -684,8 +677,7 @@ mod tests {
             "roll log",
             "consolidate",
             "clean values",
-            "drop value files",
-            "trim freed",
+            "clean segments",
             "pin",
             "unpin",
             "kill",
