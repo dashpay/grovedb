@@ -304,6 +304,8 @@ struct Counts {
     accounts: BTreeMap<FileId, Counted>,
     applied: u64,
     durable: u64,
+    /// The highest commit version that a change was applied with.
+    latest: CommitVersion,
 }
 
 impl Counts {
@@ -323,6 +325,15 @@ impl Counts {
         let (released, acquired) = net(change);
         self.applied += 1;
         let applied = self.applied;
+        // A file does not become empty at a version before one that a
+        // change was counted at. A commit counts what it releases before
+        // its version is published, and a page step that comes between
+        // the two reads a latest version that is one behind: were the file
+        // that the step empties held to be empty at that version, a
+        // snapshot of it, which still reads the cell that the commit
+        // changed, would lose the file (`value-log-format.md` O8).
+        self.latest = self.latest.max(latest);
+        let latest = self.latest;
         let mut first = Ok(());
         for pointer in released {
             let Some(counted) = self.accounts.get_mut(&pointer.file()) else {
@@ -557,6 +568,7 @@ impl ValueStore {
                 accounts,
                 applied,
                 durable: 0,
+                latest: CommitVersion::EMPTY,
             }),
         }
     }
@@ -970,7 +982,12 @@ impl ValueStore {
     /// - that change had been applied when `retired` was made
     /// - it became empty at a version no later than the oldest version that
     ///   was pinned when `retired` was made, so no pin was on a version in
-    ///   which a cell still pointed into it
+    ///   which a cell still pointed into it. That version is the highest
+    ///   one that a change had been counted at when the file became empty:
+    ///   a page step that empties a file after a commit has counted what
+    ///   it releases, and before that commit is published, reads a latest
+    ///   version that is one behind, and the file is empty from the
+    ///   commit's version on, not from the one before it
     ///
     /// Fails with [`ValueStoreError::WrongStore`] for what another store, or
     /// an earlier session, retired.
