@@ -24,7 +24,7 @@ use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
 
 use super::{recover::the_store_recovers_the_same, *};
 use crate::{
-    segment::{FileNames, SegmentStoreError},
+    segment::{tests::sim::failed_ops, FileNames, SegmentStoreError},
     wal::LogError,
 };
 
@@ -391,9 +391,10 @@ fn a_close_names_the_files_of_every_store_after_a_settling_that_ended_with_an_er
 }
 
 /// The next session opens to the same state whatever a close could name.
-/// Here the value store's and the log's replacements fail before they
-/// write anything, so the manifest names the value-log file as one that
-/// is still written and the log short of its end, as a session that is
+/// Here the value store's and the log's replacements are both attempted,
+/// behind the segment store's answer, and fail before they write
+/// anything, so the manifest names the value-log file as one that is
+/// still written and the log short of its end, as a session that is
 /// killed leaves them. The store's recovery lands on the last commit,
 /// with every page as the commits left it and every count of live values
 /// right.
@@ -412,6 +413,10 @@ fn the_next_session_recovers_from_a_close_that_named_neither_the_values_nor_the_
             .forever(),
     );
     close_with_the_segment_stuck(&db);
+    let refused = (failed_ops(&fs).iter())
+        .filter(|op| op.kind == OpKind::Open && op.path == temporary.to_string_lossy())
+        .count();
+    assert_eq!(refused, 2, "one replacement each of the values and the log");
     assert!(!in_doubt(&db));
     let values = named(&db, FileKind::ValueLog);
     assert!(
