@@ -56,8 +56,8 @@ fn prepare(node: &TreeNode, change: NodeChange) -> Result<(NodeWrite, usize), Er
     use ed::Encode;
 
     let stale = stale_hashes(node);
-    // The length comes first: a node that Merk could encode and that has
-    // no record length is not taken apart.
+    // A node with no modified link is measured first, so one that has no
+    // record length is not taken apart.
     let encoded_len = match stale.is_empty() {
         true => Some(cost_model::node_record_len(MODEL, node)?),
         false => None,
