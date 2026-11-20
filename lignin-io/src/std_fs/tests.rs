@@ -21,6 +21,9 @@ mod conformance {
     crate::conformance::conformance_tests!(setup(), host_files);
 }
 
+mod device_probe;
+mod together;
+
 fn append_file(path: &Path) -> StdFile {
     StdFile::open(path, OpenMode::Append(Create::New)).unwrap()
 }
@@ -304,15 +307,11 @@ fn append_to_a_full_device_is_storage_full() {
 #[cfg_attr(miri, ignore = "needs a second filesystem")]
 fn hard_link_to_another_filesystem_crosses_devices() {
     let (vfs, root, _dir) = setup();
-    let Ok(other) = tempfile::tempdir_in("/dev/shm") else {
-        eprintln!("skipped: /dev/shm is not usable");
+    let Some(other) = second_filesystem(&root) else {
         return;
     };
-    if fs::metadata(&root).unwrap().dev() == fs::metadata(other.path()).unwrap().dev() {
-        eprintln!("skipped: /dev/shm is on the filesystem of the temporary directory");
-        return;
-    }
     fs::write(root.join("file"), b"content").unwrap();
+    fs::create_dir(root.join("dir")).unwrap();
 
     let error = vfs
         .hard_link(&root.join("file"), &other.path().join("link"))
@@ -322,7 +321,27 @@ fn hard_link_to_another_filesystem_crosses_devices() {
         .rename(&root.join("file"), &other.path().join("moved"))
         .unwrap_err();
     assert_eq!(error.kind(), ErrorKind::CrossesDevices);
+    let error = vfs
+        .rename(&root.join("dir"), &other.path().join("moved dir"))
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::CrossesDevices);
     assert_eq!(fs::read(root.join("file")).unwrap(), b"content");
+    assert!(fs::metadata(root.join("dir")).unwrap().is_dir());
+}
+
+/// A directory on another file system than `root`, or none where the
+/// machine has no second one for a test.
+#[cfg(target_os = "linux")]
+fn second_filesystem(root: &Path) -> Option<TempDir> {
+    let Ok(other) = tempfile::tempdir_in("/dev/shm") else {
+        eprintln!("skipped: /dev/shm is not usable");
+        return None;
+    };
+    if fs::metadata(root).unwrap().dev() == fs::metadata(other.path()).unwrap().dev() {
+        eprintln!("skipped: /dev/shm is on the filesystem of the temporary directory");
+        return None;
+    }
+    Some(other)
 }
 
 const ROLE: &str = "LIGNIN_IO_TEST_ROLE";

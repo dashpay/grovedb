@@ -10,5 +10,8 @@ publish = false
 
 [dependencies]
 
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
 [dev-dependencies]
 tempfile = { workspace = true }

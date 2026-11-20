@@ -66,12 +66,23 @@ fn wrong_place(
     in_dir.map(|error| error.kind()).or(there)
 }
 
+/// What is wrong with `path` as the first path of an operation: it names
+/// nothing, or a directory where that is wrong.
+fn not_there(fs: &SimVfs, path: &Path, dir_there: Option<ErrorKind>) -> Option<ErrorKind> {
+    match fs.open(path, OpenMode::Read) {
+        Ok(_) => None,
+        Err(error) if error.kind() == ErrorKind::IsADirectory => dir_there,
+        Err(error) => Some(error.kind()),
+    }
+}
+
 fn pick<'a>(rng: &mut SimRng, from: &[&'a str]) -> &'a str {
     from[rng.below(from.len() as u64) as usize]
 }
 
 #[test]
 fn random_operations_end_as_they_do_on_the_operating_system() {
+    let mut renamed_dirs = 0;
     for seed in 0..40 {
         let dir = tempfile::tempdir().unwrap();
         let (real, real_root) = (StdVfs, dir.path());
@@ -84,7 +95,7 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
         for step in 0..400 {
             let what = format!("seed {seed}, step {step}");
             let on = |path: &str| (sim_root.join(path), real_root.join(path));
-            match rng.below(26) {
+            match rng.below(29) {
                 0..=4 => {
                     let (sim_path, real_path) = on(pick(&mut rng, &anything));
                     let create = [Create::Never, Create::IfMissing, Create::New];
@@ -101,22 +112,43 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                     );
                     handles.extend(opened);
                 }
-                5 | 6 => {
-                    let (from, to) = (pick(&mut rng, &FILES), pick(&mut rng, &anything));
-                    if from.starts_with(&format!("{to}/")) {
+                5 | 6 | 26..=28 => {
+                    let (from, to) = (pick(&mut rng, &anything), pick(&mut rng, &anything));
+                    let ((sim_from, real_from), (sim_to, real_to)) = (on(from), on(to));
+                    let is_dir = fs.read_dir(&sim_from).is_ok();
+                    if !is_dir && from.starts_with(&format!("{to}/")) {
                         // A file renamed onto a directory above it: each
                         // system has its own error for it.
                         continue;
                     }
-                    let ((sim_from, real_from), (sim_to, real_to)) = (on(from), on(to));
+                    if is_dir && to.starts_with(&format!("{from}/")) {
+                        // A directory renamed into itself, where something
+                        // may be in the way as well: each system has its
+                        // own order of the errors.
+                        let either = [
+                            ErrorKind::InvalidInput,
+                            ErrorKind::NotADirectory,
+                            ErrorKind::DirectoryNotEmpty,
+                            ErrorKind::NotFound,
+                        ];
+                        let sim = fs.rename(&sim_from, &sim_to).unwrap_err();
+                        let real = real.rename(&real_from, &real_to).unwrap_err();
+                        assert!(either.contains(&sim.kind()), "{what}: {sim}");
+                        assert!(either.contains(&real.kind()), "{what}: {real}");
+                        continue;
+                    }
+                    let (file_there, dir_there) = match is_dir {
+                        true => (Some(ErrorKind::NotADirectory), None),
+                        false => (None, Some(ErrorKind::IsADirectory)),
+                    };
                     let wrong = [
-                        fs.open(&sim_from, OpenMode::Read)
-                            .err()
-                            .map(|error| error.kind()),
-                        wrong_place(&fs, &sim_to, None, Some(ErrorKind::IsADirectory)),
+                        not_there(&fs, &sim_from, None),
+                        wrong_place(&fs, &sim_to, file_there, dir_there),
                     ];
+                    let renamed = fs.rename(&sim_from, &sim_to);
+                    renamed_dirs += u32::from(is_dir && renamed.is_ok() && from != to);
                     same_for_two_paths(
-                        fs.rename(&sim_from, &sim_to),
+                        renamed,
                         real.rename(&real_from, &real_to),
                         wrong,
                         &format!("{what}: rename {from} {to}"),
@@ -127,9 +159,7 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                     let ((sim_from, real_from), (sim_to, real_to)) = (on(original), on(link));
                     let taken = Some(ErrorKind::AlreadyExists);
                     let wrong = [
-                        fs.open(&sim_from, OpenMode::Read)
-                            .err()
-                            .map(|error| error.kind()),
+                        not_there(&fs, &sim_from, Some(ErrorKind::PermissionDenied)),
                         wrong_place(&fs, &sim_to, taken, taken),
                     ];
                     same_for_two_paths(
@@ -142,6 +172,17 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
                 8 => {
                     let path = pick(&mut rng, &FILES);
                     let (sim_path, real_path) = on(path);
+                    if fs.read_dir(&sim_path).is_ok() {
+                        // A directory where a file is removed: the contract
+                        // leaves the error to the system, and Linux and
+                        // macOS give different ones.
+                        let either = [ErrorKind::IsADirectory, ErrorKind::PermissionDenied];
+                        let sim = fs.remove_file(&sim_path).unwrap_err();
+                        let real = real.remove_file(&real_path).unwrap_err();
+                        assert!(either.contains(&sim.kind()), "{what}: {sim}");
+                        assert!(either.contains(&real.kind()), "{what}: {real}");
+                        continue;
+                    }
                     same(
                         fs.remove_file(&sim_path),
                         real.remove_file(&real_path),
@@ -254,4 +295,5 @@ fn random_operations_end_as_they_do_on_the_operating_system() {
         }
         assert_eq!(fs.stats().faults, 0);
     }
+    assert!(renamed_dirs > 100, "{renamed_dirs} directories renamed");
 }

@@ -45,18 +45,19 @@
 //! | A process that exits loses nothing. | Dropping every handle and lock changes nothing in the file system: open it again and all of it is there. |
 //! | A lock is not durable. | No crash state has a guard: every lock file of a [`CrashImage::recover`]ed file system is free. Locking a file that is there records no change, with [`Vfs::lock`] or with [`Vfs::lock_existing`], and [`Vfs::lock`] records one [`NameChange`] when it makes the file. [`VfsLock::is_at`] is no operation: it is not counted, no fault falls on it, and with the power off it fails as every call does. |
 //! | Synced content is durable. | A sync that returns `Ok` moves the file's unsynced changes into its durable version. No crash plan can take them out. |
-//! | Any subset of the unsynced changes of a file survives. | Every `write_at`, `append` and `set_len` is one [`FileChange`], and a [`CrashPlan`] keeps any of them. |
+//! | Any subset of the unsynced changes of a file survives. | Each change that a `write_at`, an `append` or a `set_len` makes is a [`FileChange`], and a [`CrashPlan`] keeps any of them. |
 //! | In any order. | A plan lists the surviving changes in the order they are applied, which is free. |
 //! | A write survives possibly in part. | A surviving write can carry a [`Tear`]: any of the sectors it touches survive, each whole. The sector size is [`SimConfig::sector_size`], 512 bytes unless set; with a sector size of 1 a write tears at any byte. |
 //! | Each change lands where it was made. | A change is recorded with its offset. An append is recorded as a write at the offset it returned. |
 //! | A length can survive without the bytes below it, which then read as zeros. | A [`Tear`] keeps the length a write gave the file apart from its bytes. |
 //! | Nothing else is damaged. | A crash state is built from the durable bytes and the surviving sectors of the surviving writes, and nothing else. |
-//! | A change of names is durable once its directory is synced. | Creating, linking, removing and renaming a file, and creating and removing a directory, is one [`NameChange`]. `sync_dir` makes the changes of its directory durable, and a plan keeps any of the others, each with the changes it builds on (see below). They are always applied in the order they were made. |
+//! | A change of names is durable once its directory is synced. | Creating, linking, removing and renaming a file, and creating, renaming and removing a directory, is one [`NameChange`]. `sync_dir` makes the changes of its directory durable, and a plan keeps any of the others, each with the changes it builds on (see below). They are always applied in the order they were made. |
 //! | A removed or renamed name can come back. | A plan that loses a removal or a rename leaves the old name in place, with the file's durable content. |
 //! | A crash keeps a change of names only with the earlier changes it builds on. | A plan keeps the changes its own build on, listed or not: [`CrashImage::names_kept`] says which. A sync makes them durable together with the change that builds on them. |
 //! | Syncing a file does not sync its name, nor the other way round. | Names and content are kept or lost separately. A file whose name is lost is gone with all its content, and a name can survive for a file that is empty or stale. A directory whose own name is lost is gone with everything in it, synced or not. |
-//! | A rename is atomic, synced or not. | A rename is a single [`NameChange`]: a plan keeps it or loses it, and no state has half of it. It is durable once the directories of both names are synced. |
-//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. |
+//! | A rename is atomic, synced or not. | A rename is a single [`NameChange`], of a file and of a directory: a plan keeps it or loses it, and no state has half of it. It is durable once the directories of both names are synced. A directory that is renamed takes what is in it along as it is: its names and the content of its files stay as durable or as unsynced as they were. |
+//! | A set synced together is the syncs of its list, and a crash may find any of them made. | [`Vfs::sync_together`] is the method the trait provides: `sync_data`, `sync_all` and `sync_dir`, one after another in the order of the list, each an operation with its own number. A crash point can fall after each and a fault on each. A crash image taken between two of them has the first ones made and the others not, and so have its plans and the file systems they give. [`SimVfs::fingerprint`] is of what operations see, which no sync changes: to tell the points of a list apart, take the fingerprints of the file systems a crash at each of them leaves. The states in which a later one was made without an earlier one are the plans of the image before the first. |
+//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. A `set_len` to the length a file has records no change, so nothing of it is there for a sync to cover. |
 //!
 //! ## Changes of names that build on each other
 //!
@@ -69,9 +70,16 @@
 //! contract says it builds on:
 //!
 //! - the earlier unsynced changes of the names it touches,
-//! - for the removal of a directory, the changes that emptied it,
-//! - for a rename, the creation of the directories its two names are in and
-//!   of every directory above them.
+//! - for the removal of a directory, and for a rename that replaces an empty
+//!   one, the changes that emptied it,
+//! - for a rename, what gave the directories its two names are in, and every
+//!   directory above them, the names they had when it was made: the creation
+//!   of each, or its last rename.
+//!
+//! The last keeps a directory from being lost to its own renames. Move `a`
+//! into `b`, move it out again, then move `b` into `a`: a crash that kept the
+//! first and the third rename and lost the second would leave each directory
+//! inside the other, and neither under the root.
 //!
 //! [`CrashImage::names_kept`] gives what a plan keeps in all. A sync follows
 //! the same rule: a change that becomes durable makes the changes it builds
@@ -160,6 +168,7 @@
 //! | `append` | Some sectors were written and taken back: the file has the length it had, and a crash can still bring the bytes back. Or, with the chance [`FaultOdds::torn_append`], they stay and the handle appends no more. |
 //! | `sync_data`, `sync_all` | The file's unsynced changes are unknown from then on, and the handle syncs no more. |
 //! | `sync_dir` | Nothing became durable. A later `sync_dir` can still make it so. |
+//! | `sync_together` | What the fault leaves of the sync it fell on, as in the two rows above. The syncs before it in the list were made, the ones after it were not, and the call returns the error. |
 //! | Every other one | Nothing changed. |
 //!
 //! # The same seed, the same schedule
@@ -203,10 +212,11 @@
 //! Exclusion between writers and the lock work within one [`SimVfs`]: there
 //! is no second process. Paths are taken from the root of the simulated file
 //! system, with or without a leading `/`, and must not contain `..`. There
-//! are no symbolic links, and a directory cannot be renamed. The trace and
-//! the fault rules know a path as text, so two names that differ only in
-//! bytes that are not UTF-8 look the same to them. The space on the device is
-//! not counted: it is full when a rule says so.
+//! are no symbolic links. The trace and the fault rules know a path as text,
+//! so two names that differ only in bytes that are not UTF-8 look the same
+//! to them, and they know a handle by the path it was opened by, also after
+//! a directory above the file was renamed. The space on the device is not
+//! counted: it is full when a rule says so.
 
 mod crash;
 mod fault;

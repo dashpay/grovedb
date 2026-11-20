@@ -9,15 +9,17 @@ use std::{
 };
 
 use super::*;
-use crate::vfs::{Create, EntryKind, OpenMode, Vfs, VfsFile};
+use crate::vfs::{Create, EntryKind, OpenMode, SyncItem, Vfs, VfsFile};
 
 mod crash_points;
 mod differential;
+mod directories;
 mod durability;
 mod faults;
 mod oracle;
 mod rng;
 mod schedule;
+mod together;
 mod trace;
 
 type Tree = BTreeMap<String, Option<Vec<u8>>>;
