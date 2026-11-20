@@ -860,7 +860,7 @@ named.
 | Task | What it does for a checkpoint |
 | --- | --- |
 | STORE-01 Write-ahead log | Says where the log ends: the place after its last record, which never goes back, and is after the record of every change that has reached a block. Says how far the log is durable after a sync, as the version of the last group and as a place. Keeps the log file that `CheckpointInfo::log_kept_from` names, and every file after it, for each checkpoint K14 lists: also a file that ends with the mark and holds only covered commits. Keeps the log from the group of *C* + 1 as well (K1). |
-| STORE-06 Delta write-back | 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Has written back the commits up to *C* when it begins step 3 (K1). Writes back every page that a page step changed before that place, before the chain of that page is copied; all such pages before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
+| STORE-06 Delta write-back | Before all of it, turns the log to its next file where it can (section 6, item 31); nothing below rests on that. 1. Takes the sample under the counts lock and appends its mark there; the end of the mark is the place (LG29), and it is not before the place of the sample before it (K15). 2. Has written back the commits up to *C* when it begins step 3 (K1). Writes back every page that a page step changed before that place, before the chain of that page is copied; all such pages before step 3 is the simple way (K1). 3. Calls `write(&table, C, &sample, log_end)`, where `log_end` reads the end of the log from STORE-01 each time it is called: `SampleAhead` if the log had not reached the place of the sample. 4. Syncs the log, after `write` has returned, through `log_needed` and up to `log_place_needed`. 5. Calls `install` with what that sync made durable: `LogBehind`, `LogBehindCopy`. 6. Tells STORE-01 the place the log is kept from, when a checkpoint is written and when one is in force or discarded (K14, 3). It writes back nothing older than a free link (T18). |
 | STORE-07 Recovery | Loads the checkpoint the manifest names. Reads the log file of `log_kept_from` from its start, and the item that ends at the place must be a mark that covers what the checkpoint covers (LG29). From the place on: every count change, and every background change for its page by LG28. Before the place: the background changes of a page the checkpoint has lost, for the page alone (K11, K13). From the group of *C* + 1 on: the commits, with K3 and K11. Deletes no log file from the file of the place on while that checkpoint is in force. With no checkpoint named: the whole log, from empty counts. |
 
 ## 5. Sizes
@@ -1082,6 +1082,19 @@ STORE-10 build on it.
     checkpoint owes nothing new, because K14, 2 already makes the records
     durable. Had a checkpoint to cover the free link of every page it lost,
     replay would meet none of this; item 17 says why that was not taken.
+31. **The log is turned where a checkpoint begins** (4.6; the owner's
+    decision D-128 item 4). A recovery reads the log file of
+    `log_kept_from` from its start, and that file held up to a whole file
+    of commits that the checkpoint covers. A recovery cannot begin at the
+    place of the sample: commits after *C* can lie before it (K1 lets a
+    checkpoint cover less than the log holds), and no file says where the
+    group of *C* + 1 begins. So write-back turns the log before the pass a
+    checkpoint starts with, where the file the log ends in holds a
+    commit, once for each checkpoint. The files before the turn can then
+    be dropped with the checkpoint, where it covers their commits and
+    nothing else holds them, and the place of the sample is at or near
+    the start of its file (P18 allows the first place there is). The
+    table is given places as before and checks what it checked.
 
 ## 7. Code and tests
 

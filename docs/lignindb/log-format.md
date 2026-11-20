@@ -1169,6 +1169,25 @@ owner can overrule one while version 1 is still open (U10).
     the log. Before this change it asked for the reader's length of every
     file, and so refused a checkpoint that was opened while the live
     database appended to the log file the two share.
+30. **A recovery reads its first log file from the first item, and the
+    log is turned where a table checkpoint begins** (LG29, LG32; the
+    owner's decision D-128 item 4). Up to one whole file of commits that
+    the checkpoint covers lay in front of the place of its sample, and a
+    recovery read them all. It cannot begin at the place instead. The
+    commits after *C* that a checkpoint taken under load does not cover
+    lie before its mark, no file says where the group of *C* + 1 begins,
+    and a reader that began behind that group would find a version
+    missing only if a later group followed. So the reader is as it was,
+    and the writer keeps the file short: `lignin-store` turns the log
+    before the pass of write-back that a checkpoint starts with, where the
+    file the log ends in holds a commit (`LogStore::rotate_early`), and
+    makes a file for the turn where the log has none. The mark is then at
+    or near the start of its file, the place can be offset 62
+    (`FIRST_SAMPLE_OFFSET`), and the files before the turn can go when the
+    checkpoint is installed, where it covers their commits and nothing
+    else holds them. No record and no rule of reading changed, and nothing
+    rests on the turn: a checkpoint that is taken without it, because the
+    file for it could not be made, is read as before.
 
 ## 13. Code and tests
 
