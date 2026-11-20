@@ -235,6 +235,12 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
             }
         }
     }
+    println!(
+        "{files:?}: a creation of {ops} operations, cut after each; of the states that the \
+         engine's open was given, {} had the checkpoint at the target and {} nothing there, and \
+         {} had something under the name it was built under",
+        seen.whole, seen.none, seen.built
+    );
     assert!(
         seen.whole > 0 && seen.none > 0 && seen.built > 0,
         "{files:?}: {seen:?}"

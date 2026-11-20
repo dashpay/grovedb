@@ -269,6 +269,7 @@ fn the_power_is_cut_at_every_operation(files: Files) {
         );
         made.check_crash(created.is_ok(), &format!("cut {cut} of {ops}"), &mut left);
     }
+    println!("{files:?}: a creation of {ops} operations, cut after each: {left:?}");
     assert!(
         left.whole > 0 && left.none > 0 && left.built > 0,
         "{left:?}"
@@ -631,6 +632,10 @@ fn what_a_failed_creation_left_is_not_emptied_before_its_name_is_durable() {
                 }
             }
         }
+        println!(
+            "{what:?} of {ops} operations after a creation that failed, cut after each: the \
+             target was the whole checkpoint in {at_the_target} states and not there in {nothing}"
+        );
         assert!(
             at_the_target > 0 && nothing > 0,
             "{what:?}: {at_the_target}, {nothing}"
@@ -750,6 +755,10 @@ fn a_directory_that_another_creation_renames_its_checkpoint_onto_is_taken_over()
             at_the_target += 1;
         }
     }
+    println!(
+        "two creations of {ops} operations, cut after each: the target was a whole checkpoint in \
+         {at_the_target} states and not there in {nothing}"
+    );
     assert!(
         at_the_target > 0 && nothing > 0,
         "{at_the_target}, {nothing}"
