@@ -103,6 +103,17 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
+    /// Someone changed the directory while it was being opened: it was
+    /// looked at and found to be one this open takes, and under the lock
+    /// it is one that is refused. The lock file was made in it between the
+    /// two, so it is not as it was ([`Self::left_untouched`] is false).
+    /// Nothing else was written.
+    Changed {
+        /// The directory.
+        dir: PathBuf,
+        /// What the directory is refused for now.
+        found: Box<OpenError>,
+    },
 }
 
 impl OpenError {
@@ -138,7 +149,10 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest, or its pages are of another size.
+    /// lost its manifest, or its pages are of another size. Each of these
+    /// was found before the lock file was made. A directory that someone
+    /// made into one of these while it was being opened is
+    /// [`Self::Changed`], and has a lock file it did not have.
     pub const fn left_untouched(&self) -> bool {
         matches!(
             self,
@@ -200,6 +214,12 @@ impl fmt::Display for OpenError {
                 None => write!(f, "the record of the keyspaces: {what}"),
             },
             Self::Thread(source) => write!(f, "cannot start the background work: {source}"),
+            Self::Changed { dir, found } => write!(
+                f,
+                "{} was changed while it was being opened, after the lock file was made in it: \
+                 {found}",
+                dir.display()
+            ),
         }
     }
 }
@@ -212,6 +232,7 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
+            Self::Changed { found, .. } => Some(&**found),
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }
@@ -241,8 +262,8 @@ pub enum Reopen {
     /// durable any more in this session (`lignin_store::wal`), so a write
     /// that was taken now could be lost with no error to say so.
     NotDurable {
-        /// The latest version when the sync failed. It is published, and
-        /// not known to be durable.
+        /// The latest version when the failed sync was recorded. It is
+        /// published, and not known to be durable.
         version: CommitVersion,
         /// What the sync said.
         reason: String,
@@ -390,8 +411,9 @@ pub enum DbError {
     /// what it held is as a crash would leave it: the next open recovers.
     Panicked(&'static str),
     /// The directory was removed while the database was open, or holds
-    /// another database now. The close wrote nothing and made nothing
-    /// durable (P-18).
+    /// another database now, or the close could not find out that it is
+    /// this database's still. The close finished nothing in it and made
+    /// nothing durable (P-18).
     Removed {
         /// The directory the database was opened in.
         dir: PathBuf,
@@ -405,8 +427,8 @@ impl fmt::Display for DbError {
             Self::Panicked(thread) => write!(f, "the {thread} thread panicked"),
             Self::Removed { dir } => write!(
                 f,
-                "{} holds this database no more: it was removed or replaced while the database \
-                 was open, and nothing was written at the close",
+                "{} was not found to hold this database any more: it was removed or replaced \
+                 while the database was open, and the close finished nothing in it",
                 dir.display()
             ),
         }

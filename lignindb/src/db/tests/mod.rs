@@ -41,7 +41,7 @@ use crate::{
 };
 
 /// What a [`Watched`] file layer saw.
-#[derive(Debug, Default)]
+#[derive(Default)]
 pub(super) struct Counts {
     syncs: AtomicU64,
     sync_nanos: AtomicU64,
@@ -59,6 +59,17 @@ pub(super) struct Counts {
     holding: Mutex<Option<u64>>,
     released: Condvar,
     held: AtomicU64,
+    /// What is run, once, when a lock is asked for, before it is taken.
+    at_lock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+}
+
+impl fmt::Debug for Counts {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Counts")
+            .field("changes", &self.changes)
+            .field("root", &self.root)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The file layer of the operating system, with a count of what is asked
@@ -130,6 +141,13 @@ impl Watched {
     pub(super) fn release(&self) {
         *self.0.holding.lock().expect("the gate") = None;
         self.0.released.notify_all();
+    }
+
+    /// Has `change` run when the next lock is asked for, before it is
+    /// taken: a directory is changed between an open's look at it and its
+    /// lock.
+    pub(super) fn at_the_next_lock(&self, change: impl FnOnce() + Send + 'static) {
+        *self.0.at_lock.lock().expect("the hook") = Some(Box::new(change));
     }
 
     /// How many appends have waited so far.
@@ -264,6 +282,10 @@ impl Vfs for Watched {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        let change = self.0.at_lock.lock().expect("the hook").take();
+        if let Some(change) = change {
+            change();
+        }
         StdVfs.lock(&self.at(path))
     }
 }

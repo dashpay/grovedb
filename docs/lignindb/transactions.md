@@ -1726,9 +1726,19 @@ No lock is needed for this. A commit appends its whole log group before it is
 published (CM3 steps 6 and 8), so when *F* is read every group up to *F* is
 already in the log, and `flush()` only has to fsync the log files that hold
 them. It holds an operation guard on those files (PN5), so none is deleted
-under it, and it makes no reader, writer or committer wait. A checkpoint
-running at the same time fsyncs for itself (CK4); the two do not need an
-order.
+under it. It takes the commit lock only to record a failure, and no other
+lock of LT7 but the one on the counts (4a), for a moment before the fsync
+and after it, where it reads how far the counts are durable (DU5). So no
+reader and no write transaction waits for it, and no commit does under a
+policy that does not sync at the commit. The fsync itself is the log's,
+which makes one at a time (STORE-01): a commit whose policy syncs it (CM7)
+waits for the fsync of a `flush()` as it waits for that of another commit,
+and holds the commit lock while it does. A checkpoint running at the same
+time fsyncs for itself (CK4); the two do not need an order.
+
+If the fsync fails, the engine records under the commit lock that the
+session takes no write any more (D-098), so that every commit is published
+before that record or refused.
 
 **DU2. After a crash the state is one committed version.** Recovery lands on
 *S(Lr)* for a single *Lr*, with *Ld* ≤ *Lr* ≤ *Lc*, where *Ld* is the newest
@@ -1878,7 +1888,7 @@ thread and are covered by the rules of that thread's row:
 | scope merge and scope rollback | SC6 |
 | rebase | WT7 |
 | a commit that fails | CM5, CM9 |
-| `flush()` | DU1a; it is an fsync and takes no lock that a reader, a writer or the committer needs |
+| `flush()` | DU1a; it is an fsync of the log, which makes one at a time, and it takes no lock of LT7 but the one on the counts, for a moment |
 | wipe | CV3, CF5; it is a commit, so a snapshot taken before it keeps reading its own version (RD1) |
 | subtree drop, and a clear that keeps the host | CV9, CF5; reclaiming what it leaves is the cleaner's (CL6) |
 | a committed read | RD10; it is a read, and takes what a read takes |

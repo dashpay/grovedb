@@ -411,8 +411,8 @@ impl Shared {
     /// The thread that reclaims: a round whenever it is woken, by a commit
     /// that dropped something or by a reader that gave up a pin on an older
     /// version (`Reclaim::wake`), and one every `idle` while nothing wakes
-    /// it. When the session ends it goes on for as long as a reclaiming
-    /// holds cells and moves.
+    /// it. When the session ends, whoever closes it goes on with the
+    /// reclaimings that hold cells ([`Self::finish_reclaiming`]).
     pub(super) fn reclaim_loop(&self, idle: std::time::Duration) {
         let store = &*self.store;
         store.signal.attach(thread::current());
@@ -429,9 +429,6 @@ impl Shared {
                 thread::park_timeout(idle);
             }
         }
-        if !store.signal.abandoned() {
-            self.finish_reclaiming();
-        }
     }
 
     /// What is done for the reclaiming when a session ends: every
@@ -439,7 +436,7 @@ impl Shared {
     /// because what it has left is known to nothing on disk. One that is
     /// held back does not end the others: the rounds go on while one of
     /// them moves.
-    fn finish_reclaiming(&self) {
+    pub(super) fn finish_reclaiming(&self) {
         loop {
             let round = self.reclaim_round(true);
             if !round.holds_cells || !round.more {

@@ -18,7 +18,7 @@ use lignin_store::{
     flush::{FlushError, FlushState, Stores, WriteBack},
     load::PageLoader,
     recovery::RecoveryReport,
-    segment::{read_manifest, ManifestStore, SegmentStore, SegmentStoreError},
+    segment::{read_manifest, ManifestStore, SegmentStore},
     stats::Stats,
     table::{PageTable, TableCheckpoints},
     values::{OwnersError, ValueStore},
@@ -74,9 +74,6 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
-    /// Whether the thread ends without the work it does for the next
-    /// session: the directory is the database's no more.
-    abandon: AtomicBool,
 }
 
 impl Signal {
@@ -100,15 +97,6 @@ impl Signal {
 
     pub(super) fn stopping(&self) -> bool {
         self.stop.load(Ordering::Acquire)
-    }
-
-    /// Tells the thread to end with nothing more written.
-    pub(super) fn abandon(&self) {
-        self.abandon.store(true, Ordering::Release);
-    }
-
-    pub(super) fn abandoned(&self) -> bool {
-        self.abandon.load(Ordering::Acquire)
     }
 }
 
@@ -207,22 +195,32 @@ impl Store {
         Committed::new(self.loader(), &self.values, guard, at)
     }
 
-    /// Whether the directory holds this database no more: it is gone, the
-    /// lock file is not in it, or the manifest in it is not the one this
-    /// session wrote last. Someone removed the directory while the handle
-    /// was open, or put another in its place (P-18). An error of the file
-    /// layer that says none of these leaves the answer at no.
-    pub(super) fn gone(&self) -> bool {
-        match self.vfs.read_dir(&self.dir) {
-            Err(error) => return error.kind() == ErrorKind::NotFound,
-            Ok(entries) if !entries.iter().any(|entry| entry.name == LOCK_FILE) => return true,
-            Ok(_) => {}
+    /// Whether the directory is found to hold this database still, by all
+    /// three of these: the lock file is in it, a second guard on that
+    /// file is refused, which is what the file layer answers while the
+    /// guard of this handle is on it, and the manifest in it is the one
+    /// this session wrote last. Someone may have removed the directory
+    /// while the handle was open, or put another in its place (P-18): a
+    /// lock file that is another file is not held by this handle, and a
+    /// database that another handle has opened there has a manifest of
+    /// that session.
+    ///
+    /// Whatever cannot be found out counts as no: a caller that is about
+    /// to write does not, then.
+    pub(super) fn ours(&self) -> bool {
+        let listed = self.vfs.read_dir(&self.dir);
+        if !listed.is_ok_and(|entries| entries.iter().any(|entry| entry.name == LOCK_FILE)) {
+            return false;
+        }
+        // A guard that is given is dropped here, and the file was there.
+        let second = self.vfs.lock(&self.dir.join(LOCK_FILE));
+        if !matches!(second, Err(error) if error.kind() == ErrorKind::WouldBlock) {
+            return false;
         }
         // Under the lock no manifest is installed between the two.
         let ours = lock(&self.manifest);
         match (read_manifest(&*self.vfs, &self.dir), ours.manifest()) {
-            (Ok(stored), Ok(ours)) => stored != *ours,
-            (Err(SegmentStoreError::NoManifest { .. }), _) => true,
+            (Ok(stored), Ok(ours)) => stored == *ours,
             _ => false,
         }
     }

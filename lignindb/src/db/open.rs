@@ -206,18 +206,27 @@ pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenErro
         },
         _ => OpenError::io("lock", &lock_path)(error),
     })?;
-    // Under the lock nothing else makes or replaces a manifest here.
-    let (manifest, created) = match look(&**vfs, dir)? {
+    // Under the lock nothing else makes or replaces a manifest here. What
+    // is refused now was not so before the lock file was made: someone
+    // changed the directory in between, and it has that file now.
+    let changed = |error: OpenError| match error.left_untouched() {
+        true => OpenError::Changed {
+            dir: dir.to_path_buf(),
+            found: Box::new(error),
+        },
+        false => error,
+    };
+    let (manifest, created) = match look(&**vfs, dir).map_err(changed)? {
         Found::Database(manifest) => {
-            page_size(&manifest)?;
+            page_size(&manifest).map_err(changed)?;
             let store = ManifestStore::open(vfs.clone(), dir).map_err(OpenError::Manifest)?;
             (store, false)
         }
         // The database that was seen before the lock was held is gone.
         Found::Nothing { .. } if !options.create_if_missing => {
-            return Err(OpenError::NoDatabase {
+            return Err(changed(OpenError::NoDatabase {
                 dir: dir.to_path_buf(),
-            });
+            }));
         }
         Found::Nothing { .. } => {
             let size = options.page_size.unwrap_or(PageSize::DEFAULT);

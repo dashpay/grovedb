@@ -146,7 +146,10 @@
 //!   base when they are made, so again after a commit of another landed
 //!   and after every rollback; the committed records beside them one of
 //!   the committed version of that read; and a cursor one of its own
-//!   version. A handle that was loaded late, after a later commit landed
+//!   version. Two of these ask for a version long after the transaction
+//!   pinned it: a cursor at its first step, and a read that follows a
+//!   commit of another, which takes the values the transaction kept from
+//!   the version of its base. A handle that was loaded late, after a later commit landed
 //!   and what a drop left was reclaimed, would take a subtree that was
 //!   below the dropped one for a subtree in use.
 //! - **A drop is one write** (`transactions.md` CV9, CF5): one entry of

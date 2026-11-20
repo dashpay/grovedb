@@ -130,7 +130,11 @@
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //!
 //! Each of these is found by reading alone, before the lock file is
-//! made ([`OpenError::left_untouched`]). A `MANIFEST` that is too short
+//! made ([`OpenError::left_untouched`]). The directory is looked at once
+//! more under the lock, and one that someone made into one of these in
+//! between is refused as [`OpenError::Changed`]: it has the lock file by
+//! then, which is not taken away again, because another opener may hold
+//! it. A `MANIFEST` that is too short
 //! to have a header is reported as a manifest that cannot be read
 //! ([`OpenError::Manifest`]), and nothing is written for it either.
 //!
@@ -202,14 +206,28 @@
 //! a step failed. What a close leaves of it then, and what a process
 //! that is killed leaves, is space and no state.
 //!
-//! **A directory that was removed is written to no more** (P-18). Platform
-//! removes the directory of a checkpoint while its handle is open. A
-//! close then ends the threads and does nothing else: no reclaiming is
-//! finished, no checkpoint is taken, no file is written through a
-//! descriptor that is still open, and nothing is made at the path
-//! ([`DbError::Removed`], which a drop of the handle keeps to itself).
-//! The same holds when the path has another database by then: the lock
-//! file or the manifest in it is not this session's.
+//! **A close writes only into a directory that is this database's
+//! still** (P-18). Platform removes the directory of a checkpoint while
+//! its handle is open. A close ends the two threads first and then looks:
+//! the lock file has to be in the directory, a second guard on it has to
+//! be refused, as it is while this handle's guard is on that file, and
+//! the manifest has to be the one this session wrote last. Where one of
+//! the three fails, or cannot be found out, the close does nothing more:
+//! no reclaiming is finished, no checkpoint is taken, no file is written
+//! and nothing is made at the path ([`DbError::Removed`], which a drop of
+//! the handle keeps to itself). So a directory that was removed, and one
+//! that holds another database by then, a copy of this one among them,
+//! are left as they are.
+//!
+//! This is about the close, and not about a session that goes on. Until
+//! the handle is closed its commits and its background work write as
+//! before: to the files they have open, which nobody sees any more once
+//! the directory is removed, and to the path, where a manifest that is
+//! installed or a file that is begun fails with the directory gone and
+//! lands in a directory that was put in its place. So whoever puts
+//! another directory at the path closes the handle first. A checkpoint
+//! that is deleted while its handle is open is TXN-06's to test in full
+//! (`platform-requirements.md`, item 3).
 //!
 //! # Wipe
 //!
@@ -592,28 +610,27 @@ impl Db {
             return Ok(());
         };
         let shared = &*self.shared;
-        // A directory that was removed under the handle, or that holds
-        // another database now, is written to no more (P-18): the threads
-        // end where they are, and nothing is finished.
-        let gone = shared.store.gone();
-        if gone {
-            shared.store.signal.abandon();
-        }
-        // The reclaimer first: what it has to end, it ends through
-        // write-back's log.
+        // Both threads end after the turn they are in, which is still
+        // made as any turn of the session was.
         shared.store.signal.stop();
-        let reclaimed = threads.reclaim.join();
         shared.write_back().stop();
+        let reclaimed = threads.reclaim.join();
         let written = threads.write_back.join();
-        let finished = match gone {
-            true => Err(DbError::Removed {
+        // What a close does for the next session, it does only in a
+        // directory that is found to be this database's still. One that
+        // was removed under the handle, or that holds another database
+        // now, is written to no more (P-18).
+        let finished = match shared.store.ours() {
+            false => Err(DbError::Removed {
                 dir: shared.store.dir.clone(),
             }),
-            false => shared
-                .write_back()
-                .finish()
-                .map(drop)
-                .map_err(DbError::from),
+            true => {
+                // The reclaimings that hold cells first: their steps go
+                // to the log that the finish makes durable.
+                shared.finish_reclaiming();
+                let finished = shared.write_back().finish();
+                finished.map(drop).map_err(DbError::from)
+            }
         };
         reclaimed.map_err(|_| DbError::Panicked("reclaim"))?;
         written.map_err(|_| DbError::Panicked("write-back"))?;

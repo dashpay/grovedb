@@ -229,6 +229,22 @@ fn the_reopen_of_a_store_of_the_reference_size() {
         opens[0].open_ms,
         opens[opens.len() - 1].open_ms,
     );
+    // What the recovery's time is made of, as far as an option says: the
+    // same reopen with a sixteenth of the buffer pool.
+    let small = Options {
+        cache_size: options.cache_size / 16,
+        ..options.clone()
+    };
+    let mut with_small: Vec<f64> = (0..5)
+        .map(|_| reopen(&dir, &small, &vfs, check).open_ms)
+        .collect();
+    with_small.sort_by(f64::total_cmp);
+    println!(
+        "with a pool of {} MiB and not {}: median {:.2} ms",
+        small.cache_size >> 20,
+        options.cache_size >> 20,
+        with_small[2]
+    );
     // The row: a reopen within 60 ms, all of it. About a dozen syncs are
     // in every reopen, so on a disk whose sync takes several milliseconds
     // this measures the disk: the parts above say which it is.

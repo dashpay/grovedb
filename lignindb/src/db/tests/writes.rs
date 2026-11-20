@@ -397,26 +397,34 @@ fn a_writer_that_waits_for_the_commit_lock_is_refused_after_a_failed_sync() {
     scope.merge();
 
     // The first commit's sync has failed and its version is not published
-    // yet when the hook runs, with the commit lock held: the session
-    // refuses nothing yet. The second writer begins its commit then, and
-    // the first one goes on a moment later.
-    let (locked, calling) = (
-        Arc::new(AtomicBool::new(false)),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let refusing = Arc::new(AtomicBool::new(true));
+    // yet when its hook runs, with the commit lock held: the session
+    // refuses nothing yet. The second writer begins its commit then. It
+    // says when it is about to take the commit lock, with every check that
+    // is made without the lock passed, and only then does the first one go
+    // on. So what refuses the second writer is the look under the lock.
+    let flag = || Arc::new(AtomicBool::new(false));
+    let (locked, at_the_lock, refusing) = (flag(), flag(), flag());
+    refusing.store(true, Ordering::Release);
+    let committing = &db.shared.store.committing;
     let (shared, told) = (
         db.shared.clone(),
-        (locked.clone(), calling.clone(), refusing.clone()),
+        (locked.clone(), at_the_lock.clone(), refusing.clone()),
     );
-    (db.shared.store.committing).run_before_publication(move |_| {
-        let (locked, calling, refusing) = &told;
+    committing.run_before_publication(move |_| {
+        let (locked, at_the_lock, refusing) = &told;
         refusing.store(shared.store.refusal().is_some(), Ordering::Release);
         locked.store(true, Ordering::Release);
-        wait_for("the second writer begins its commit", || {
-            calling.load(Ordering::Acquire)
+        wait_for("the second writer is at the commit lock", || {
+            at_the_lock.load(Ordering::Acquire)
         });
-        std::thread::sleep(Duration::from_millis(100));
+    });
+    let told = (locked.clone(), at_the_lock.clone());
+    committing.run_before_lock(move || {
+        // The first writer comes by here too, before it has the lock.
+        let (locked, at_the_lock) = &told;
+        if locked.load(Ordering::Acquire) {
+            at_the_lock.store(true, Ordering::Release);
+        }
     });
     fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS).forever());
     let (first, second) = std::thread::scope(|threads| {
@@ -424,7 +432,6 @@ fn a_writer_that_waits_for_the_commit_lock_is_refused_after_a_failed_sync() {
             wait_for("the first commit holds the commit lock", || {
                 locked.load(Ordering::Acquire)
             });
-            calling.store(true, Ordering::Release);
             db.commit(&waiting, &mut NoStaleHashes)
         });
         let writes = Writes {
@@ -434,12 +441,14 @@ fn a_writer_that_waits_for_the_commit_lock_is_refused_after_a_failed_sync() {
         let first = writes.with(|batch| db.write(batch, &mut NoStaleHashes));
         (first, second.join().expect("the second writer ends"))
     });
+    committing.run_before_lock(|| {});
     (db.shared.store.committing).run_before_publication(|_| {});
     fs.clear_rules();
     assert!(
         !refusing.load(Ordering::Acquire),
         "the session refused before the first commit was published"
     );
+    assert!(at_the_lock.load(Ordering::Acquire));
 
     let first = first.expect_err("the sync failed");
     let version = first.published().expect("the commit is published").version;

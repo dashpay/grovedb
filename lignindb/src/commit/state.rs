@@ -87,6 +87,10 @@ pub struct CommitState {
     /// the publication, with the commit lock held.
     #[cfg(test)]
     before_publication: Mutex<Option<Hook>>,
+    /// What a test runs when a commit is about to take the commit lock:
+    /// every check it makes without the lock is behind it.
+    #[cfg(test)]
+    before_lock: Mutex<Option<Box<dyn Fn() + Send + Sync>>>,
 }
 
 /// What a test runs before a version is published.
@@ -202,6 +206,21 @@ impl CommitState {
         hook: impl Fn(CommitVersion) + Send + Sync + 'static,
     ) {
         *lock(&self.before_publication) = Some(Box::new(hook));
+    }
+
+    /// Has `hook` run by every commit when it is about to take the commit
+    /// lock, on its own thread, after the last check it makes without the
+    /// lock.
+    #[cfg(test)]
+    pub(crate) fn run_before_lock(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *lock(&self.before_lock) = Some(Box::new(hook));
+    }
+
+    #[cfg(test)]
+    pub(super) fn before_lock(&self) {
+        if let Some(hook) = &*lock(&self.before_lock) {
+            hook();
+        }
     }
 
     #[cfg(test)]

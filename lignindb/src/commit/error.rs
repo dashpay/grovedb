@@ -129,8 +129,10 @@ pub enum Stopped {
         /// What failed.
         reason: String,
     },
-    /// A sync of the log failed with this version the latest: the version
-    /// is published, and is not known to be durable. The log makes
+    /// A sync of the log failed, and this version was the latest when
+    /// that was recorded: it is published, and is not known to be durable.
+    /// (A commit can be published between a flush's sync that fails and
+    /// the record of it; the version is then that commit's.) The log makes
     /// nothing durable any more in this session (`lignin_store::wal`), so
     /// a commit that was taken now could be lost with no error to say so.
     ///
@@ -139,7 +141,7 @@ pub enum Stopped {
     ///
     /// [`CommitState::ending_at_a_failed_sync`]: super::CommitState::ending_at_a_failed_sync
     NotDurable {
-        /// The latest version when the sync failed.
+        /// The latest version when the failed sync was recorded.
         version: CommitVersion,
         /// What the sync said.
         reason: String,

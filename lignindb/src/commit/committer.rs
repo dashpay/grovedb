@@ -279,6 +279,8 @@ impl<'s> Committer<'s> {
         write: impl FnOnce(&WriteTxn<'t>) -> Result<(), TxnError>,
         untold: &mut Option<FlushError>,
     ) -> Result<Committed, CommitError> {
+        #[cfg(test)]
+        self.state.before_lock();
         let lock = self.state.lock();
         if let Some(stopped) = self.state.stopped() {
             return Err(CommitError::Stopped(stopped));

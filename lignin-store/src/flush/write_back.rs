@@ -477,7 +477,8 @@ impl<'s> WriteBack<'s> {
     ///
     /// One pass runs at a time, and a second call waits for the first. A
     /// pass waits for no commit, and holds a page's step lock only to look
-    /// at the page and to place one value.
+    /// at the page, to place one value, and to push the link of a block
+    /// while the pool still owes its version (`page-table.md` T18).
     ///
     /// An error that is about one page does not end the pass: the other
     /// pages are written, and the pass returns the first such error when
