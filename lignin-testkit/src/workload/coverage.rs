@@ -16,7 +16,7 @@
 //! coverage test fails when the suite stops producing one of them.
 //! [`super::surface`] names the public GroveDB method behind each.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb::{
     element::reference_path::ReferencePathType, AggregateKind, AxisQuery, AxisTraversal, Element,
@@ -25,6 +25,7 @@ use grovedb::{
 use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, proofs::query::IndexAxis};
 
 use super::{
+    build::child,
     flags::{Histories, Update},
     op::{
         AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Path, Prove, Read, TransactionOp,
@@ -366,6 +367,21 @@ operations! {
              of a page.";
     "trees a batch creates and fills":
         FilledTreeBatch = "A batch that inserts a tree and writes into it.";
+    "conversions to a 128-bit sum":
+        ConvertSumTree = "`GroveDb::convert_to_big_sum_tree` of a `SumTree`.",
+        ConvertCountSumTree = "The conversion of a `CountSumTree`.",
+        ConvertProvableSumTree = "The conversion of a `ProvableSumTree`.",
+        ConvertProvableCountSumTree =
+            "The conversion of a `ProvableCountSumTree`, whose sum enters its node hashes.",
+        ConvertProvableCountProvableSumTree =
+            "The conversion of a `ProvableCountProvableSumTree`.",
+        ConvertProvableSumIndexedTree =
+            "The conversion of a `ProvableSumIndexedTree`, whose rows move to the big sum axis.",
+        ConvertProvableCountProvableSumIndexedTree =
+            "The conversion of a `ProvableCountProvableSumIndexedTree`.",
+        ConvertInBlock = "A conversion in the transaction of the block, among its writes.",
+        ConvertInOwnTransaction =
+            "A conversion given no transaction, which GroveDB runs in one of its own.";
 }
 
 impl Features {
@@ -386,6 +402,15 @@ impl Features {
             | Operation::IndexedInsertCountBigSum
             | Operation::IndexedDeleteBigSum
             | Operation::IndexedDeleteCountBigSum => self.big_sum_tree_twins,
+            Operation::ConvertSumTree
+            | Operation::ConvertCountSumTree
+            | Operation::ConvertProvableSumTree
+            | Operation::ConvertProvableCountSumTree
+            | Operation::ConvertProvableCountProvableSumTree
+            | Operation::ConvertProvableSumIndexedTree
+            | Operation::ConvertProvableCountProvableSumIndexedTree
+            | Operation::ConvertInBlock
+            | Operation::ConvertInOwnTransaction => self.convert_to_big_sum_tree,
             Operation::BigSumAxisRankedPage
             | Operation::BigSumAxisBounded
             | Operation::BigSumAxisRankOfKey
@@ -545,6 +570,9 @@ pub struct Coverage {
     written: BTreeSet<Path>,
     /// The trees the open transaction created.
     created: BTreeSet<Path>,
+    /// The trees written as one of the seven types that convert to a tree
+    /// with a 128-bit sum, by their paths, each with that type.
+    narrow: BTreeMap<Path, TreeType>,
 }
 
 impl Coverage {
@@ -572,6 +600,7 @@ impl Coverage {
     pub fn record(&mut self, op: &Op) {
         self.record_flags(op);
         self.record_tree_deletes(op);
+        self.record_conversions(op);
         for element in op.elements() {
             self.elements.insert(element_variant(element));
             if let Some(tree_type) = element.tree_type() {
@@ -696,8 +725,41 @@ impl Coverage {
         }
     }
 
+    /// Counts a conversion under the type of the tree it converts: the
+    /// type the tree was last written as. A conversion, a rollback and a
+    /// delete are not followed, and a stream converts a tree a second time
+    /// only where the first conversion was rolled back.
+    fn record_conversions(&mut self, op: &Op) {
+        match op {
+            Op::Write(Write::IndexedInsert {
+                path, key, element, ..
+            }) => self.follow_narrow(path, key, element),
+            Op::Write(Write::ConvertToBigSumTree { path, key, .. }) => {
+                let converted = self.narrow.get(&child(path, key)).copied();
+                if let Some(operation) = converted.and_then(conversion_of) {
+                    self.produced(operation);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Notes whether the element stored at `key` in the subtree at `path`
+    /// is a tree a conversion applies to.
+    fn follow_narrow(&mut self, path: &Path, key: &[u8], element: &Element) {
+        let tree = child(path, key);
+        match element
+            .tree_type()
+            .filter(|tree_type| tree_type.big_sum_counterpart().is_some())
+        {
+            Some(tree_type) => self.narrow.insert(tree, tree_type),
+            None => self.narrow.remove(&tree),
+        };
+    }
+
     /// An element stored at `key` in the subtree at `path`.
     fn put(&mut self, path: &Path, key: &[u8], element: &Element) {
+        self.follow_narrow(path, key, element);
         self.filled.insert(path.clone());
         self.written.insert(path.clone());
         if element.is_any_tree() {
@@ -885,6 +947,23 @@ fn missing(all: &[&'static str], seen: &BTreeSet<&'static str>) -> Vec<&'static 
         .collect()
 }
 
+/// The conversion of a tree of `tree_type`, for the seven types that
+/// convert.
+fn conversion_of(tree_type: TreeType) -> Option<Operation> {
+    Some(match tree_type {
+        TreeType::SumTree => Operation::ConvertSumTree,
+        TreeType::CountSumTree => Operation::ConvertCountSumTree,
+        TreeType::ProvableSumTree => Operation::ConvertProvableSumTree,
+        TreeType::ProvableCountSumTree => Operation::ConvertProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree => Operation::ConvertProvableCountProvableSumTree,
+        TreeType::ProvableSumIndexedTree => Operation::ConvertProvableSumIndexedTree,
+        TreeType::ProvableCountProvableSumIndexedTree => {
+            Operation::ConvertProvableCountProvableSumIndexedTree
+        }
+        _ => return None,
+    })
+}
+
 /// The operation a direct write is.
 fn write_operation(write: &Write) -> Operation {
     match write {
@@ -935,6 +1014,15 @@ fn write_operation(write: &Write) -> Operation {
             IndexedTree::CountBigSum => Operation::IndexedDeleteCountBigSum,
         },
         Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
+        Write::ConvertToBigSumTree {
+            own_transaction, ..
+        } => {
+            if *own_transaction {
+                Operation::ConvertInOwnTransaction
+            } else {
+                Operation::ConvertInBlock
+            }
+        }
         Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
         Write::SectionalDelete { .. } => Operation::SectionalDelete,
         Write::SectionalDeleteUpTree { .. } => Operation::SectionalDeleteUpTree,

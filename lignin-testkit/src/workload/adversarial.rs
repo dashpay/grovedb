@@ -12,6 +12,7 @@
 
 mod capped_layers;
 mod chunks;
+mod conversions;
 mod drops;
 mod epochs;
 mod indexed;
@@ -29,6 +30,7 @@ use std::collections::BTreeSet;
 pub use self::{
     capped_layers::{CappedLayers, MAX_CAPPED_KEYS, MAX_CAPPED_ROUNDS, MIN_CAPPED_KEYS},
     chunks::{ChunkProofs, MIN_CHUNKED_ROWS},
+    conversions::{Conversions, MAX_CONVERSION_ROUNDS},
     drops::FlatDrops,
     epochs::{FlagEpochs, MAX_LADDER_RUNGS},
     indexed::{IndexedWrites, MAX_INDEXED_ROUNDS},
@@ -55,12 +57,17 @@ use super::{
 /// A sum close to the largest an `i64` holds, negative one time in four:
 /// two of them that are credits add up to more than an `i64` holds.
 fn wide_sum(rng: &mut Rng) -> i64 {
-    let sum = i64::MAX - rng.below(1 << 40) as i64;
+    let sum = near_max(rng);
     if rng.chance(1, 4) {
         -sum
     } else {
         sum
     }
+}
+
+/// A sum within 2^40 of the largest an `i64` holds.
+fn near_max(rng: &mut Rng) -> i64 {
+    i64::MAX - rng.below(1 << 40) as i64
 }
 
 /// The longest key GroveDB accepts.
@@ -91,6 +98,7 @@ const DOMAIN_TREE_DELETES: u64 = 0xAD0F;
 const DOMAIN_WIDE_SUMS: u64 = 0xAD10;
 const DOMAIN_WIDE_RANKS: u64 = 0xAD11;
 const DOMAIN_CAPPED_LAYERS: u64 = 0xAD12;
+const DOMAIN_CONVERSIONS: u64 = 0xAD13;
 
 /// Chains of trees nested `depth` levels deep.
 ///

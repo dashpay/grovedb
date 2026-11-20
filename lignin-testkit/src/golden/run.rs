@@ -88,7 +88,7 @@ impl<'db, #[cfg(grovedb_engine_seam)] E: StreamEngine> Runner<'db, E> {
         // end of a block and adds the cost of the commit, drops an
         // abandoned transaction, and holds the snapshot a stream opens.
         let CostContext { value, cost } = self.transactions.apply(op, self.grove_version);
-        if op.ends_transaction() {
+        if op.ends_transaction() || op.commits_by_itself() {
             self.committed_root = root_hash(self.db, None, self.grove_version)?;
         }
         let outcome = match value {

@@ -365,7 +365,8 @@ fn write_path(write: &Write) -> Option<&Path> {
         | Write::ReconcileIndexed { path }
         | Write::CommitmentInsert { path, .. }
         | Write::SectionalDelete { path, .. }
-        | Write::SectionalDeleteUpTree { path, .. } => Some(path),
+        | Write::SectionalDeleteUpTree { path, .. }
+        | Write::ConvertToBigSumTree { path, .. } => Some(path),
         Write::PutAux { .. } | Write::DeleteAux { .. } => None,
     }
 }
@@ -584,20 +585,20 @@ mod tests {
             (
                 1u64,
                 1u32,
-                380usize,
-                "aadd48e8087324b04a8badeb1ef7800174f8766f03e12ab8b6d0037dd4c5e059",
+                1855usize,
+                "a56907dc731bf1c8b8cb70ebb76ff9e7b3af3b15aac0b37f5fe52d2d9753d5e9",
             ),
             (
                 0x4c49_474e_494e,
                 3,
-                690,
-                "6d398daf70da6f482e2e5aa172c8b84bf512d1100777530e5fb0a72eb3aa13e5",
+                380,
+                "2126dd306b5141c9f2f0022c1904b200f9fcd81d41743fb355c00f4d05a99068",
             ),
             (
-                3,
+                0x16,
                 1,
-                902,
-                "75941756fee765d52d7fa57c05dd080efab97c6e1b13aca0ca79b189bffa2837",
+                1400,
+                "acb4184c2d0558c605b2d0f37370677ba9069b6deeb4445bf1a123cd43ec9eb2",
             ),
         ];
         for (seed, grove_version, ops, digest) in pinned {
@@ -607,17 +608,17 @@ mod tests {
             assert_eq!(case.ops.len(), ops);
             assert_eq!(case.digest(), digest);
         }
-        let mutated = Case::generate(3, &shape);
+        let mutated = Case::generate(0x16, &shape);
         assert_eq!(mutated.sources.len(), 3);
         assert_eq!(mutated.arrangement, Arrangement::Interleaved);
         assert_eq!(
             mutated.mutations,
             [
-                Mutation::Swapped(233),
-                Mutation::Dropped(718),
-                Mutation::Retargeted(158, "the snapshot"),
-                Mutation::Repeated(644, 656),
-                Mutation::Dropped(53),
+                Mutation::Batch(1326, "its operations reversed"),
+                Mutation::Swapped(244),
+                Mutation::Batch(807, "an operation dropped"),
+                Mutation::Dropped(1080),
+                Mutation::Retargeted(290, "the snapshot"),
             ]
         );
     }

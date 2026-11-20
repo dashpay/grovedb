@@ -543,7 +543,9 @@ impl Places {
             | Write::PutAux { .. }
             | Write::DeleteAux { .. }
             | Write::ReconcileIndexed { .. }
-            | Write::CommitmentInsert { .. } => {}
+            | Write::CommitmentInsert { .. }
+            // A converted tree keeps its flags, and so does what it holds.
+            | Write::ConvertToBigSumTree { .. } => {}
         }
     }
 

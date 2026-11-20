@@ -273,10 +273,17 @@ pub const PUBLIC_OPERATIONS: &[(&str, Status)] = &[
     ),
     (
         "convert_to_big_sum_tree",
-        Status::LeftOut(
-            "no workload converts a tree yet: `develop` added the operation in #1063, after \
-             the streams were pinned; a unit of BASE-01 produces it and removes this entry",
-        ),
+        produced(&[
+            Operation::ConvertSumTree,
+            Operation::ConvertCountSumTree,
+            Operation::ConvertProvableSumTree,
+            Operation::ConvertProvableCountSumTree,
+            Operation::ConvertProvableCountProvableSumTree,
+            Operation::ConvertProvableSumIndexedTree,
+            Operation::ConvertProvableCountProvableSumIndexedTree,
+            Operation::ConvertInBlock,
+            Operation::ConvertInOwnTransaction,
+        ]),
     ),
     ("create_checkpoint", CHECKPOINT),
     (

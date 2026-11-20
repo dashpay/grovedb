@@ -44,7 +44,10 @@ use grovedb_costs::{
 };
 use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_merk::{
-    element::costs::ElementCostExtensions, merk::NodeType, proofs::query::ReadMode, tree::kv::KV,
+    element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
+    merk::NodeType,
+    proofs::query::ReadMode,
+    tree::kv::KV,
 };
 use grovedb_storage::{rocksdb_storage::RocksDbStorage, Storage, StorageContext};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
@@ -52,8 +55,8 @@ use lignin_testkit::{
     cost_model::rules,
     workload::{
         adversarial::{
-            CappedLayers, ChunkProofs, DeepNesting, DeleteHeavy, FlagEpochs, FlatDrops,
-            IndexedWrites, LargeValues, LongKeys, Moves, Pagination, PartialBatches,
+            CappedLayers, ChunkProofs, Conversions, DeepNesting, DeleteHeavy, FlagEpochs,
+            FlatDrops, IndexedWrites, LargeValues, LongKeys, Moves, Pagination, PartialBatches,
             ReferenceChains, TinySubtrees, TreeDeletes, TypedReads, WideRanks, WideSums,
             MAX_CAPPED_ROUNDS, MAX_LADDER_RUNGS, MAX_NESTING_DEPTH, MIN_CAPPED_KEYS,
             MIN_CHUNKED_ROWS, MIN_TREE_DELETE_ITEMS, MIN_WIDE_RANK_ENTRIES, MIN_WIDE_SUM_ENTRIES,
@@ -101,12 +104,13 @@ const TREE_DELETES_GROUP: &str = "deletes of filled trees";
 /// form of batch any workload may hold.
 const FILLED_TREES_GROUP: &str = "trees a batch creates and fills";
 
-/// The groups of the operations the fifth unit added, whose kinds and
-/// forms `tests/upstream.rs` pins.
-const LATER_GROUPS: [&str; 3] = [
+/// The groups of the operations the fifth and sixth units added, whose
+/// kinds and forms `tests/upstream.rs` pins.
+const LATER_GROUPS: [&str; 4] = [
     "indexed trees with a 128-bit sum",
     "limits over subqueries",
     FILLED_TREES_GROUP,
+    "conversions to a 128-bit sum",
 ];
 
 const SEED: u64 = 1;
@@ -224,9 +228,12 @@ fn run(
         }
         let expected = expected_outcome(db, &op, transactions.block(), grove_version);
         let replaced = match &op {
+            // A conversion that follows a commit is read through the
+            // block's transaction too, which then holds no write.
             Op::Write(
                 Write::InsertIfNotExists { path, key, .. }
-                | Write::InsertIfChanged { path, key, .. },
+                | Write::InsertIfChanged { path, key, .. }
+                | Write::ConvertToBigSumTree { path, key, .. },
             ) => stored(db, path, key, Some(transactions.block()), grove_version),
             _ => None,
         };
@@ -252,7 +259,7 @@ fn run(
         if let Some(expected) = expected {
             assert_eq!(format!("{outcome:?}"), expected, "{context}");
         }
-        if matches!(op, Op::Commit) {
+        if matches!(op, Op::Commit) || op.commits_by_itself() {
             committed_root = root_hash(None);
         }
         if op.ends_transaction() {
@@ -261,7 +268,7 @@ fn run(
         } else if !op.keeps_transaction() {
             committed = false;
         }
-        if !op.keeps_transaction() {
+        if !op.keeps_transaction() || op.commits_by_itself() {
             trunks.clear();
         }
         let block = transactions.block();
@@ -1016,6 +1023,53 @@ fn check_write(
                 assert_eq!(stored, *element, "{context}\nstored another element");
             }
         }
+        (
+            Write::ConvertToBigSumTree {
+                path,
+                key,
+                own_transaction,
+            },
+            _,
+        ) => {
+            let narrow = replaced.expect("a conversion converts a stored tree");
+            let expected = narrow
+                .big_sum_counterpart()
+                .unwrap_or_else(|| panic!("{context}\nconverted {narrow:?}"));
+            let wide = stored(path, key).expect("a converted tree is stored");
+            if expected
+                .tree_type()
+                .is_some_and(|tree| tree.is_indexed_primary())
+            {
+                // The rankings of an indexed tree are written again, and
+                // its element names their root keys.
+                assert_eq!(
+                    (
+                        wide.tree_type(),
+                        wide.underlying().count_value_or_default(),
+                        wide.underlying().big_sum_value_or_default(),
+                        wide.get_flags(),
+                    ),
+                    (
+                        expected.tree_type(),
+                        narrow.underlying().count_value_or_default(),
+                        i128::from(narrow.underlying().sum_value_or_default()),
+                        narrow.get_flags(),
+                    ),
+                    "{context}\nchanged more than the width of the sum"
+                );
+            } else {
+                assert_eq!(wide, expected, "{context}\nchanged more than the width");
+            }
+            if *own_transaction {
+                assert_eq!(
+                    db.get_raw_optional(path.as_slice().into(), key, None, grove_version)
+                        .unwrap()
+                        .expect("a raw read"),
+                    Some(wide),
+                    "{context}\nwas not committed by itself"
+                );
+            }
+        }
         (Write::CommitmentInsert { path, .. }, Outcome::Appended { position, .. }) => {
             let (key, parent) = path.split_last().expect("the path of a tree");
             let count = db
@@ -1144,14 +1198,19 @@ fn check_answer(
                 .map(|(_, _, element)| match element {
                     Element::Item(value, _) => QueryItemOrSumReturnType::ItemData(value),
                     Element::SumItem(sum, _) => QueryItemOrSumReturnType::SumValue(sum),
-                    Element::ProvableSumTree(_, sum, _) => QueryItemOrSumReturnType::SumValue(sum),
-                    Element::CountSumTree(_, count, sum, _) => {
+                    Element::SumTree(_, sum, _) | Element::ProvableSumTree(_, sum, _) => {
+                        QueryItemOrSumReturnType::SumValue(sum)
+                    }
+                    Element::CountSumTree(_, count, sum, _)
+                    | Element::ProvableCountSumTree(_, count, sum, _)
+                    | Element::ProvableCountProvableSumTree(_, count, sum, _) => {
                         QueryItemOrSumReturnType::CountSumValue(count, sum)
                     }
-                    Element::ProvableBigSumTree(_, sum, _) => {
+                    Element::BigSumTree(_, sum, _) | Element::ProvableBigSumTree(_, sum, _) => {
                         QueryItemOrSumReturnType::BigSumValue(sum)
                     }
-                    Element::CountBigSumTree(_, count, sum, _) => {
+                    Element::CountBigSumTree(_, count, sum, _)
+                    | Element::ProvableCountProvableBigSumTree(_, count, sum, _) => {
                         QueryItemOrSumReturnType::CountBigSumValue(count, sum)
                     }
                     Element::ProvableSumIndexedTree(_, _, sum, _) => {
@@ -2155,6 +2214,14 @@ fn the_smallest_workloads_apply() {
             rounds: 6,
             features,
         }),
+        Workload::Conversions(Conversions {
+            rounds: 0,
+            features,
+        }),
+        Workload::Conversions(Conversions {
+            rounds: 1,
+            features,
+        }),
     ];
     let grove_version = GroveVersion::latest();
     for workload in workloads {
@@ -2337,7 +2404,7 @@ fn the_operation_workloads_apply_for_many_seeds() {
     on_every_grove_version(|grove_version| {
         let features = Features::for_grove_version(grove_version);
         let workloads = operation_workloads(features);
-        assert_eq!(workloads.len(), 21);
+        assert_eq!(workloads.len(), 22);
         for workload in workloads {
             for seed in 2..2 + seeds {
                 let (_dir, db) = open();
@@ -2430,7 +2497,7 @@ fn coverage_reports_what_a_stream_lacks() {
         .map(|operation| operation.group())
         .collect();
     assert_eq!(groups, OPERATION_GROUPS.iter().copied().collect());
-    assert_eq!(OPERATION_GROUPS.len(), 21);
+    assert_eq!(OPERATION_GROUPS.len(), 22);
     let names: BTreeSet<&str> = Operation::ALL
         .iter()
         .map(|operation| operation.name())
@@ -2524,6 +2591,8 @@ const PINNED_STREAMS: &[(&str, u64, u64, &str)] = &[
     ("wide-ranks", 0x4c49474e494e, 195, "f83e7dd1a1a9aaa91f536e0ad1d643d13ec064bbfc2d23861a59793cf20a917a"),
     ("capped-layers", 0x1, 151, "f411b3ffbaa4bf1259444b8d22749f1aeb58e8330d124c6d2c9815f5b816be4d"),
     ("capped-layers", 0x4c49474e494e, 158, "cb1d18540bcf71f884e9628ed1daf7b893b7dceb3cb97ea1dfeb36e5099970b3"),
+    ("conversions", 0x1, 1119, "cda68383af12412e74bc2676aa35e9b2d86e52bbf94ae013b791ef202fe3b87c"),
+    ("conversions", 0x4c49474e494e, 1112, "190fb6b01a7aaf231c92d43929ae3a794011ccb94c54efcf1330d976a44c0d77"),
 ];
 
 #[test]
@@ -2556,11 +2625,11 @@ fn streams_are_pinned() {
 /// features, seed [`SEED`]: protocol version, operations, digest.
 #[rustfmt::skip]
 const PINNED_SUITES: &[(u32, u64, &str)] = &[
-    (1, 22263, "0905aaa730389079f162bd5fd79a1f502d66e71554ab2e96034c312db6cb9f4b"),
-    (2, 22263, "0905aaa730389079f162bd5fd79a1f502d66e71554ab2e96034c312db6cb9f4b"),
-    (3, 22287, "e8bc7dd16cbb6ea40a0ece9bbb8cb64c351e04124cd1245ef718409d0b142b51"),
-    (4, 22832, "7febce58a738c15901c554605f97878364f8d881b9802688a302c0bb654f6148"),
-    (5, 23062, "0f9f2bc5669681de8a60361923cfb1a95d4a63221feff8b5d4eec4cb262c99cd"),
+    (1, 22584, "3d7456099af086cfe8d40b1e746902ba0b9bd898cb247f8b01a46ad57580228a"),
+    (2, 22584, "3d7456099af086cfe8d40b1e746902ba0b9bd898cb247f8b01a46ad57580228a"),
+    (3, 22608, "4f19e079e5eecf7be31434834a2ed42e8101bbde94a9ca01cb0e45a89809991a"),
+    (4, 23219, "143a5586ab7b9e4f5cb40c9fe289e8311fe8da83f8349dbe0d91c36d1f4be68e"),
+    (5, 24181, "f3683ac821255766ceb8066970bf115f69bec63d98088281913d98450d1f9360"),
 ];
 
 #[test]
@@ -2856,6 +2925,25 @@ fn the_new_kinds_have_a_pinned_encoding() {
     assert!(ops
         .iter()
         .all(|op| op.follows_a_commit() == matches!(op, Op::Read(_) | Op::FlushPendingDrops)));
+    let convert = |own_transaction| {
+        Op::Write(Write::ConvertToBigSumTree {
+            path: vec![b"a".to_vec()],
+            key: b"tree".to_vec(),
+            own_transaction,
+        })
+    };
+    for own_transaction in [false, true] {
+        let op = convert(own_transaction);
+        assert_eq!(
+            (
+                op.commits_by_itself(),
+                op.follows_a_commit(),
+                op.ends_transaction(),
+                op.keeps_transaction()
+            ),
+            (own_transaction, own_transaction, false, own_transaction)
+        );
+    }
 }
 
 /// Reads are compared as they are encoded: the order of a query's
