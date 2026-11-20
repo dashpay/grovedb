@@ -167,8 +167,9 @@
 //! value below. By CF2, two transactions whose
 //! keys do not meet both commit. The rule is decided from the key sets of
 //! the commits, which the write path keeps until every open write
-//! transaction has taken them in ([`Commits`](crate::txn::Commits), CF3),
-//! so it is exact however much was committed in between.
+//! transaction that has a write has taken them in
+//! ([`Commits`](crate::txn::Commits), CF3), so it is exact however much
+//! was committed in between.
 //!
 //! The key set of a commit is the keys of its writes. A commit that stands
 //! for more than it writes says so ([`Committer::commit_covering`], CF5): a
@@ -196,6 +197,13 @@
 //! with since it last ended, or any handle of the frames on which a write
 //! was made that was itself met in this way. None of them happens where
 //! one thread reads and writes a Merk with no commit in between.
+//!
+//! For a kept value the write path keeps the key sets of the newest 64
+//! commits, and a transaction that has no write holds back no more than
+//! those. A write that keeps a value where no node is left under the key
+//! is refused where it is made, and that refusal is a conflict to its
+//! caller where the transaction can tell that commits outside are the
+//! cause ([`BatchError::ValueTaken`](crate::txn::BatchError::ValueTaken)).
 //!
 //! # Rollback
 //!

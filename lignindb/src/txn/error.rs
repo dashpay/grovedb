@@ -75,6 +75,27 @@ pub enum BatchError {
         /// The Merk's subtree.
         subtree: Subtree,
     },
+    /// A node keeps a value of the committed state, and a commit outside
+    /// the transaction took the node away after the read the write names
+    /// ([`NodePut::at`](super::NodePut::at)): it deleted the node, or
+    /// dropped or cleared its Merk, and the committed state has no node
+    /// under the key. It is what [`Self::NoValue`] or [`Self::NotEntered`]
+    /// would say, where the transaction can tell that such commits are the
+    /// one cause: for every node of the Merk that the batch has no value
+    /// to keep of, the read is one the transaction can date, the key set
+    /// of a commit since holds the node's key, and nothing the transaction
+    /// wrote itself took the node away (`crate::txn`, "A kept value and
+    /// the read it is of"). The handle a keep names is taken to be of the
+    /// node it is named for.
+    ///
+    /// **It is a conflict** ([`Self::is_conflict`]), and not something the
+    /// batch got wrong. The batch has changed nothing and the transaction
+    /// is as it was (WT10), so a caller that takes it as a conflict rolls
+    /// the transaction back and makes its reads and its writes again.
+    ValueTaken {
+        /// The Merk's subtree.
+        subtree: Subtree,
+    },
     /// The transaction made the first node of a Merk that was empty, and a
     /// commit outside it has made one since, with no key in common. The
     /// two roots cannot both stand, and the conflict rule did not see it:
@@ -178,6 +199,13 @@ impl fmt::Display for BatchError {
                      the read it kept it from"
                 )
             }
+            Self::ValueTaken { subtree } => {
+                write!(
+                    f,
+                    "a node of the Merk {subtree} keeps a value that a commit outside the \
+                     transaction took away after the node was read"
+                )
+            }
             Self::RootTaken { subtree } => {
                 write!(
                     f,
@@ -214,6 +242,14 @@ impl fmt::Display for BatchError {
 }
 
 impl Error for BatchError {}
+
+impl BatchError {
+    /// Whether the refusal is [`Self::ValueTaken`]: the one that a caller
+    /// answers as it answers a commit that fails with a conflict.
+    pub const fn is_conflict(&self) -> bool {
+        matches!(self, Self::ValueTaken { .. })
+    }
+}
 
 /// Why an operation of a write transaction failed. The transaction's write
 /// set is what it was before the call (`transactions.md` WT10).
@@ -350,6 +386,13 @@ from! {
 }
 
 impl TxnError {
+    /// Whether the operation refused a batch with
+    /// [`BatchError::ValueTaken`] ([`BatchError::is_conflict`]). The
+    /// transaction is as it was, and still open.
+    pub const fn is_conflict(&self) -> bool {
+        matches!(self, Self::Batch(refused) if refused.is_conflict())
+    }
+
     /// The error as the tree layer takes one from the pages of a write
     /// (`FragmentError::Pages`).
     pub(crate) fn into_pages(self) -> FragmentError {

@@ -45,16 +45,17 @@ use lignin_tree::node::NodeHandle;
 use super::{groups, pending_held, records};
 use crate::{
     commit::{CommitError, Committer},
+    db::WriteError,
     snapshot::Versions,
     txn::{
         reads::KEPT_COMMITS,
         tests::{
             model::{self, handle_of, hash_of, OwnedBatch, OwnedMerk, OwnedSubtree, Val},
             put,
-            store::{Db, Outcome, Rng},
+            store::{Db, Outcome, Rng, ENTERED},
             value_of, Tx, World,
         },
-        BatchError, Column, KeySet, NodeView, Scope, TxnError, Unit, WritePath, WriteTxn,
+        Applied, BatchError, Column, KeySet, NodeView, Scope, TxnError, Unit, WritePath, WriteTxn,
     },
     verify::{Place, Rule},
 };
@@ -240,6 +241,17 @@ impl<'s> Bed<'s> {
             items.insert(vec![b'e', next], vec![next; 9]);
         };
         let made = self.world.edit_outside(OTHER, edit, open);
+        assert!(matches!(made, Outcome::Committed(_)), "{made:?}");
+    }
+
+    /// A commit outside every open transaction that writes one flat
+    /// record of another subtree.
+    fn put_elsewhere(&mut self, open: &[&Tx<'s>]) {
+        let other = self.world.begin();
+        let next = self.world.latest().get().to_be_bytes();
+        let writes = vec![put(aux(OTHER), &next, b"elsewhere")];
+        self.world.write(&other, writes);
+        let made = self.world.commit(other, open);
         assert!(matches!(made, Outcome::Committed(_)), "{made:?}");
     }
 
@@ -1047,60 +1059,429 @@ fn a_kept_value_is_met_by_a_range_a_clear_and_a_drop_since_its_read() {
     }
 }
 
+/// The batch that takes the node `leaf` of the Merk away: what a commit
+/// outside the transaction of these tests does between a read and a keep.
+fn taking(bed: &Bed<'_>, takes: Takes, leaf: &[u8]) -> OwnedBatch {
+    let subtree = model::subtree(MERK);
+    match takes {
+        Takes::Delete => {
+            let other = bed.world.begin();
+            let merk = bed.world.merk(&other, MERK, |items| {
+                items.remove(leaf);
+            });
+            OwnedBatch {
+                merks: vec![merk],
+                ..OwnedBatch::default()
+            }
+        }
+        Takes::Clear => OwnedBatch {
+            subtrees: vec![OwnedSubtree::Clear(subtree)],
+            ..OwnedBatch::default()
+        },
+        Takes::Drop => OwnedBatch {
+            subtrees: vec![OwnedSubtree::Drop(subtree)],
+            ..OwnedBatch::default()
+        },
+    }
+}
+
+/// Applies `batch` through a scope of `tx` that is opened beside another,
+/// so the write is taken by key, and rolls both scopes back.
+fn apply_beside<'s>(
+    world: &World<'s>,
+    tx: &Tx<'s>,
+    batch: &OwnedBatch,
+) -> Result<Applied, TxnError> {
+    let first = tx.txn.scope().expect("a scope");
+    let second = tx.txn.scope().expect("a scope beside it");
+    assert!(!second.is_laid_out());
+    let applied = world.apply_in(tx, &second, batch);
+    second.rollback();
+    first.rollback();
+    applied
+}
+
+/// How a commit takes a node away.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Takes {
+    Delete,
+    Clear,
+    Drop,
+}
+
 /// A commit outside that leaves no node under the key leaves no value to
-/// keep: the write is refused for what is not there, as it is with no
-/// commit in between, and whatever read it names. That is a delete of the
-/// node, a clear of its Merk, and a drop of its subtree.
+/// keep, and the write is refused: no keep with nothing to keep enters the
+/// write set. That is a delete of the node, a clear of its Merk, and a drop
+/// of its subtree.
+///
+/// Where the keep names a read the transaction can date, the refusal says
+/// that the commit is its cause ([`BatchError::ValueTaken`]), which is a
+/// conflict to the caller: on the frames, and where the write is taken by
+/// key. Where the transaction cannot tell, the refusal is of what is not
+/// there, as it is with no commit in between: the keep names a read the
+/// transaction cannot date, or none.
 #[test]
 fn a_kept_value_whose_node_a_commit_outside_took_away_is_refused() {
+    /// What the write says of its read, and where it goes.
     #[derive(Debug, Clone, Copy, PartialEq)]
-    enum Takes {
-        Delete,
-        Clear,
-        Drop,
+    enum Read {
+        /// It names a read the transaction can date.
+        Dated,
+        /// The same, in a scope that was opened beside another: the write
+        /// is taken by key.
+        DatedByKey,
+        /// It names a handle from before a rollback of the transaction.
+        Undatable,
+        /// It names none.
+        Unnamed,
     }
     for takes in [Takes::Delete, Takes::Clear, Takes::Drop] {
+        for read in [
+            Read::Dated,
+            Read::DatedByKey,
+            Read::Undatable,
+            Read::Unnamed,
+        ] {
+            bed(Stored::InCell, |bed| {
+                let at = format!("{takes:?}, {read:?}");
+                let subtree = model::subtree(MERK);
+                let tx = bed.world.begin();
+                let (leaf, batch) = rehash(&bed.items, MERK);
+                let batch = match read {
+                    Read::Unnamed => batch,
+                    _ => read_now(&tx, &batch),
+                };
+                assert_eq!(
+                    batch.merks[0].hints.len(),
+                    usize::from(read != Read::Unnamed)
+                );
+                if read == Read::Undatable {
+                    bed.committer.rollback(&tx.txn).expect("no scope is open");
+                }
+
+                let outside = taking(bed, takes, &leaf);
+                let made = bed.world.write_outside(&outside, &[&tx]);
+                assert!(matches!(made, Outcome::Committed(_)), "{at}: {made:?}");
+
+                let refused = match read {
+                    Read::DatedByKey => apply_beside(&bed.world, &tx, &batch),
+                    _ => bed.world.apply_as_read(&tx, &batch),
+                };
+                let refused = refused.expect_err("there is no value to keep");
+                let told = matches!(read, Read::Dated | Read::DatedByKey);
+                let expected = match (told, takes) {
+                    (true, _) => BatchError::ValueTaken { subtree },
+                    (false, Takes::Drop) => BatchError::NotEntered { subtree },
+                    (false, _) => BatchError::NoValue { subtree },
+                };
+                assert!(
+                    matches!(&refused, TxnError::Batch(error) if *error == expected),
+                    "{at}: {refused:?}"
+                );
+                // The caller is told a conflict where the transaction can
+                // tell one, by the write and by a commit that hands the
+                // refusal on. The transaction is open either way.
+                assert_eq!(refused.is_conflict(), told, "{at}");
+                let handed_on = WriteError::Commit(CommitError::Refused(refused));
+                assert_eq!(handed_on.is_conflict(), told, "{at}");
+                assert!(handed_on.leaves_transaction_open(), "{at}");
+                assert_eq!(tx.txn.stats().writes, 0, "{at}");
+                assert_eq!(bed.end(tx), Outcome::Empty, "{at}");
+            });
+        }
+    }
+}
+
+/// A refusal that is the transaction's own doing says nothing of a commit
+/// outside, also where one took the node away after the read the keep
+/// names: the transaction cleared the Merk itself, in an earlier write or
+/// in the batch that keeps the value. What it cleared has no value.
+#[test]
+fn a_keep_of_what_the_transaction_cleared_itself_is_refused_as_that() {
+    for in_the_batch in [false, true] {
         bed(Stored::InCell, |bed| {
             let subtree = model::subtree(MERK);
             let tx = bed.world.begin();
             let (leaf, batch) = rehash(&bed.items, MERK);
             let batch = read_now(&tx, &batch);
-            assert_eq!(batch.merks[0].hints.len(), 1);
-
-            let outside = match takes {
-                Takes::Delete => {
-                    let other = bed.world.begin();
-                    let merk = bed.world.merk(&other, MERK, |items| {
-                        items.remove(&leaf);
-                    });
-                    OwnedBatch {
-                        merks: vec![merk],
-                        ..OwnedBatch::default()
-                    }
-                }
-                Takes::Clear => OwnedBatch {
-                    subtrees: vec![OwnedSubtree::Clear(subtree)],
-                    ..OwnedBatch::default()
-                },
-                Takes::Drop => OwnedBatch {
-                    subtrees: vec![OwnedSubtree::Drop(subtree)],
-                    ..OwnedBatch::default()
-                },
-            };
+            let outside = taking(bed, Takes::Delete, &leaf);
             let made = bed.world.write_outside(&outside, &[&tx]);
-            assert!(matches!(made, Outcome::Committed(_)), "{takes:?}: {made:?}");
+            assert!(matches!(made, Outcome::Committed(_)), "{made:?}");
 
-            let refused = bed.world.apply_as_read(&tx, &batch);
-            let expected = match takes {
-                Takes::Delete | Takes::Clear => BatchError::NoValue { subtree },
-                Takes::Drop => BatchError::NotEntered { subtree },
+            let clear = OwnedBatch {
+                subtrees: vec![OwnedSubtree::Clear(subtree)],
+                ..OwnedBatch::default()
             };
+            let batch = match in_the_batch {
+                // The node is the root of the Merk the batch has cleared.
+                true => OwnedBatch {
+                    merks: vec![OwnedMerk {
+                        root: Some(Some(leaf.clone())),
+                        ..batch.merks[0].clone()
+                    }],
+                    subtrees: clear.subtrees.clone(),
+                    ..OwnedBatch::default()
+                },
+                false => {
+                    (bed.world.apply(&tx, &clear)).expect("the Merk is cleared");
+                    batch
+                }
+            };
+            let writes = tx.txn.stats().writes;
+            let refused = bed.world.apply_as_read(&tx, &batch);
+            let no_value = BatchError::NoValue { subtree };
             assert!(
-                matches!(&refused, Err(TxnError::Batch(error)) if *error == expected),
-                "{takes:?}: {refused:?}"
+                matches!(&refused, Err(TxnError::Batch(error)) if *error == no_value),
+                "{in_the_batch}: {refused:?}"
             );
-            assert_eq!(tx.txn.stats().writes, 0);
-            assert_eq!(bed.end(tx), Outcome::Empty);
+            assert!(!refused.expect_err("refused").is_conflict());
+            assert_eq!(tx.txn.stats().writes, writes, "{in_the_batch}");
+            let ended = bed.end(tx);
+            match in_the_batch {
+                true => assert_eq!(ended, Outcome::Empty),
+                false => assert!(matches!(ended, Outcome::Committed(_)), "{ended:?}"),
+            }
+        });
+    }
+}
+
+/// What the transaction dropped or cleared itself hides the Merks below
+/// it, and a keep in one of them is refused for that, on the frames and
+/// where the write is taken by key: also where a commit outside took the
+/// node away after the read the keep names.
+#[test]
+fn a_keep_below_what_the_transaction_took_away_itself_is_refused_as_that() {
+    const OUTER: u8 = ENTERED + 1;
+    const INNER: u8 = ENTERED + 2;
+
+    /// A change of the Merk `INNER`, with the node of `OUTER` that hosts
+    /// it written again, as one batch. With `enter` the batch enters both
+    /// subtrees first.
+    fn nested<'s>(
+        world: &World<'s>,
+        tx: &Tx<'s>,
+        enter: bool,
+        edit: impl FnOnce(&mut Items),
+    ) -> OwnedBatch {
+        let below = world.merk(tx, INNER, edit);
+        let stamp = below.nodes.len() as u8;
+        let mut above = world.merk(tx, OUTER, |items| {
+            let mut value = items.get(&b"host"[..]).cloned().unwrap_or_default();
+            value.push(stamp);
+            items.insert(b"host".to_vec(), value);
+        });
+        (above.hosted).insert(b"host".to_vec(), vec![model::subtree(INNER)]);
+        let host = (model::subtree(OUTER), b"host".to_vec(), 0);
+        let subtrees = match enter {
+            true => vec![
+                OwnedSubtree::Enter(model::subtree(OUTER), None),
+                OwnedSubtree::Enter(model::subtree(INNER), Some(host)),
+            ],
+            false => Vec::new(),
+        };
+        OwnedBatch {
+            merks: vec![below, above],
+            subtrees,
+            ..OwnedBatch::default()
+        }
+    }
+
+    for (drops, by_key) in [(false, false), (false, true), (true, false), (true, true)] {
+        let at = format!("drops: {drops}, by key: {by_key}");
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        let (outer, inner) = (model::subtree(OUTER), model::subtree(INNER));
+        let items: Items = (0..6).map(|index| (key(index), vec![index; 20])).collect();
+        let first = world.begin();
+        let made = nested(&world, &first, true, |merk| merk.clone_from(&items));
+        (world.apply(&first, &made)).expect("the two Merks are made");
+        let made = world.commit(first, &[]);
+        assert!(matches!(made, Outcome::Committed(_)), "{at}: {made:?}");
+
+        // The transaction reads a node of the Merk below, and a commit
+        // outside deletes that node.
+        let tx = world.begin();
+        let (leaf, batch) = rehash(&items, INNER);
+        let batch = read_now(&tx, &batch);
+        assert_eq!(batch.merks[0].hints.len(), 1, "{at}");
+        let other = world.begin();
+        let deleted = nested(&world, &other, false, |merk| {
+            merk.remove(&leaf);
+        });
+        (world.apply(&other, &deleted)).expect("the node is deleted");
+        let made = world.commit(other, &[&tx]);
+        assert!(matches!(made, Outcome::Committed(_)), "{at}: {made:?}");
+
+        // It takes the Merk above away itself, and then keeps the value
+        // of the node it read.
+        let leave = match drops {
+            true => OwnedSubtree::Drop(outer),
+            false => OwnedSubtree::Clear(outer),
+        };
+        let leave = OwnedBatch {
+            subtrees: vec![leave],
+            ..OwnedBatch::default()
+        };
+        (world.apply(&tx, &leave)).expect("the Merk above goes");
+        let writes = tx.txn.stats().writes;
+        let refused = match by_key {
+            true => apply_beside(&world, &tx, &batch),
+            false => world.apply_as_read(&tx, &batch),
+        };
+        let refused = refused.expect_err("the Merk is not there for it");
+        let expected = match by_key {
+            true => BatchError::NoValue { subtree: inner },
+            false => BatchError::NotEntered { subtree: inner },
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == expected),
+            "{at}: {refused:?}"
+        );
+        assert!(!refused.is_conflict(), "{at}");
+        assert_eq!(tx.txn.stats().writes, writes, "{at}");
+        let made = world.commit(tx, &[]);
+        assert!(matches!(made, Outcome::Committed(_)), "{at}: {made:?}");
+        world.check_committed();
+    }
+}
+
+/// A refusal says that a commit outside is its cause only for a node which
+/// such a commit took away. A batch keeps the value of the root, which a
+/// commit outside rewrote after it was read and which is there still, and
+/// the value of a node that was never there. It is refused for the second,
+/// as a batch that got something wrong.
+#[test]
+fn a_refusal_for_a_node_that_was_never_there_says_nothing_of_a_commit_outside() {
+    bed(Stored::InCell, |bed| {
+        let subtree = model::subtree(MERK);
+        let tx = bed.world.begin();
+        let (batch, kept) = adding(&bed.world, &tx, bed.len);
+        assert!(kept.contains(&bed.node));
+        let mut batch = read_now(&tx, &batch);
+        bed.rewrite_outside(&[&tx]);
+
+        // A node with no child under a key the Merk does not hold, its
+        // value kept, by the handle of a read of now.
+        let (leaf, rehashed) = rehash(&bed.items, MERK);
+        let never = b"never there".to_vec();
+        let now = (tx.txn.node(subtree, &leaf, handle_of)).expect("a read");
+        let merk = &mut batch.merks[0];
+        merk.nodes.insert(
+            0,
+            (never.clone(), rehashed.merks[0].nodes[0].1.clone(), false),
+        );
+        merk.hints.insert(never, now.expect("the leaf is there"));
+
+        let refused = bed.world.apply_as_read(&tx, &batch);
+        let no_value = BatchError::NoValue { subtree };
+        assert!(
+            matches!(&refused, Err(TxnError::Batch(error)) if *error == no_value),
+            "{refused:?}"
+        );
+        assert_eq!(tx.txn.stats().writes, 0);
+        assert_eq!(bed.end(tx), Outcome::Empty);
+    });
+}
+
+/// A refusal says that commits outside are its cause only where that
+/// holds for every node the batch has no value to keep of. A batch keeps
+/// the value of a node that a commit outside deleted after it was read,
+/// and after that node the value of one that was never there. It is
+/// refused as a batch that got something wrong, on the frames and where
+/// the write is taken by key.
+#[test]
+fn a_refusal_for_a_taken_node_and_one_that_was_never_there_is_plain() {
+    for by_key in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let subtree = model::subtree(MERK);
+            let tx = bed.world.begin();
+            let (leaf, batch) = rehash(&bed.items, MERK);
+            let mut batch = read_now(&tx, &batch);
+            assert_eq!(batch.merks[0].hints.len(), 1, "{by_key}");
+            let outside = taking(bed, Takes::Delete, &leaf);
+            let made = bed.world.write_outside(&outside, &[&tx]);
+            assert!(matches!(made, Outcome::Committed(_)), "{by_key}: {made:?}");
+
+            // After it in the batch, a node under a key the Merk does not
+            // hold, its value kept, by the handle of a read of now.
+            let never = [&leaf[..], b"+"].concat();
+            assert!(!bed.items.contains_key(&never));
+            let now = (tx.txn.node(subtree, &bed.node, handle_of)).expect("a read");
+            let merk = &mut batch.merks[0];
+            let node = merk.nodes[0].1.clone();
+            merk.nodes.push((never.clone(), node, false));
+            merk.hints.insert(never, now.expect("the root is there"));
+            assert_eq!(merk.nodes[0].0, leaf, "the node that was taken is first");
+
+            let refused = match by_key {
+                true => apply_beside(&bed.world, &tx, &batch),
+                false => bed.world.apply_as_read(&tx, &batch),
+            };
+            let no_value = BatchError::NoValue { subtree };
+            assert!(
+                matches!(&refused, Err(TxnError::Batch(error)) if *error == no_value),
+                "{by_key}: {refused:?}"
+            );
+            assert_eq!(tx.txn.stats().writes, 0, "{by_key}");
+            assert_eq!(bed.end(tx), Outcome::Empty, "{by_key}");
+        });
+    }
+}
+
+/// A node whose value the batch keeps and that is there says nothing of
+/// the refusal, which is of the nodes that are not there. A batch keeps
+/// the value of a node that a commit outside deleted after it was read,
+/// and of another node that no commit wrote since. It is refused as a
+/// conflict, on the frames and where the write is taken by key.
+#[test]
+fn a_refusal_for_a_taken_node_is_a_conflict_beside_a_kept_node_that_is_there() {
+    for by_key in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let subtree = model::subtree(MERK);
+            let tx = bed.world.begin();
+            // Two nodes with no child, each written with another hash and
+            // its value kept, and read now.
+            let mut leaves = (model::records(&bed.items).1.into_iter())
+                .filter(|(_, node)| node.left.is_none() && node.right.is_none());
+            let taken = leaves.next().expect("a leaf");
+            let there = leaves.next().expect("another leaf");
+            let nodes = [taken.clone(), there.clone()].map(|(key, mut node)| {
+                node.kv_hash = [0x5a; 32];
+                (key, node, false)
+            });
+            let merk = OwnedMerk {
+                nodes: nodes.into(),
+                ..OwnedMerk::change(subtree, &BTreeMap::new(), &Items::new())
+            };
+            let batch = OwnedBatch {
+                merks: vec![merk],
+                ..OwnedBatch::default()
+            };
+            let batch = read_now(&tx, &batch);
+            assert_eq!(batch.merks[0].hints.len(), 2, "{by_key}");
+
+            // A commit outside deletes the first, and writes the nodes
+            // above it: the second is no node of those.
+            let outside = taking(bed, Takes::Delete, &taken.0);
+            assert!(outside.merks[0].removed.contains(&taken.0), "{by_key}");
+            assert!(
+                (outside.merks[0].nodes.iter()).all(|(key, ..)| *key != there.0),
+                "{by_key}"
+            );
+            let made = bed.world.write_outside(&outside, &[&tx]);
+            assert!(matches!(made, Outcome::Committed(_)), "{by_key}: {made:?}");
+
+            let refused = match by_key {
+                true => apply_beside(&bed.world, &tx, &batch),
+                false => bed.world.apply_as_read(&tx, &batch),
+            };
+            let value_taken = BatchError::ValueTaken { subtree };
+            assert!(
+                matches!(&refused, Err(TxnError::Batch(error)) if *error == value_taken),
+                "{by_key}: {refused:?}"
+            );
+            assert_eq!(tx.txn.stats().writes, 0, "{by_key}");
+            assert_eq!(bed.end(tx), Outcome::Empty, "{by_key}");
         });
     }
 }
@@ -1257,6 +1638,71 @@ fn a_read_is_answered_for_after_a_rollback_took_every_write_out() {
         assert!(matches!(bed.end(tx), Outcome::Committed(_)));
         assert_eq!(committed(&bed.world, &node), (old, stated));
     });
+}
+
+/// D-155 item 6. A transaction that has been shown a node and has no
+/// write dates its reads with the newest key sets, and holds no more of
+/// them back, however many commits land beside it while it runs no
+/// operation. A keep by the handle of a read that lies further back is
+/// met then, as a read the transaction cannot date. A transaction whose
+/// writes were all taken back is such a transaction again.
+///
+/// A transaction with a write holds every key set since, and the conflict
+/// rule decides exactly (CF3): a commit beside a thousand others that
+/// wrote its key is a conflict, and with none that did its commit is made.
+#[test]
+fn a_transaction_with_no_write_holds_the_newest_key_sets_and_one_with_a_write_all() {
+    const BESIDE: usize = 1000;
+    let mine = || put(aux(MERK), b"mine", b"written first");
+
+    for wrote_before in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let tx = bed.world.begin();
+            let (batch, kept) = adding(&bed.world, &tx, bed.len);
+            let batch = read_now(&tx, &batch);
+            if wrote_before {
+                // A write, which a rollback to a savepoint takes out.
+                tx.txn.set_savepoint().expect("no scope is open");
+                bed.world.write(&tx, vec![mine()]);
+                bed.put_elsewhere(&[&tx]);
+                tx.txn.rollback_to_savepoint().expect("a savepoint is set");
+                tx.forget();
+            }
+            assert_eq!(tx.txn.stats().writes, 0);
+            assert!(tx.txn.watches());
+            for _ in 0..BESIDE {
+                bed.put_elsewhere(&[&tx]);
+                assert!(bed.db.commits.kept() <= KEPT_COMMITS, "{wrote_before}");
+            }
+            assert_eq!(bed.db.commits.kept(), KEPT_COMMITS, "{wrote_before}");
+            // No commit wrote a node of the Merk, and every keep is met.
+            bed.keep(&tx, &batch, &kept);
+            assert_eq!(bed.end(tx), Outcome::Conflict, "{wrote_before}");
+        });
+    }
+
+    for theirs in [false, true] {
+        bed(Stored::InCell, |bed| {
+            let tx = bed.world.begin();
+            bed.world.write(&tx, vec![mine()]);
+            if theirs {
+                // The first of the commits beside it writes its key.
+                let other = bed.world.begin();
+                bed.world
+                    .write(&other, vec![put(aux(MERK), b"mine", b"theirs")]);
+                let made = bed.world.commit(other, &[&tx]);
+                assert!(matches!(made, Outcome::Committed(_)), "{made:?}");
+            }
+            for _ in 0..BESIDE {
+                bed.put_elsewhere(&[&tx]);
+            }
+            assert_eq!(bed.db.commits.kept(), BESIDE + usize::from(theirs));
+            match theirs {
+                true => assert_eq!(bed.end(tx), Outcome::Conflict),
+                false => assert!(matches!(bed.end(tx), Outcome::Committed(_))),
+            }
+        });
+    }
 }
 
 /// The mark is on the entry of the node that is met, wherever that entry

@@ -96,7 +96,11 @@ pub enum ValuePut<'a> {
     /// ([`NodePut::at`]): a commit outside the transaction that wrote the
     /// node's key since that read meets the write, and a keep that names
     /// no read is refused
-    /// ([`BatchError::NoRead`](super::BatchError::NoRead)). A value the
+    /// ([`BatchError::NoRead`](super::BatchError::NoRead)). Where no node
+    /// is under the key, the batch is refused: as a conflict where the
+    /// transaction can tell that commits outside are the cause
+    /// ([`BatchError::ValueTaken`](super::BatchError::ValueTaken)).
+    /// A value the
     /// transaction stated itself is kept with no handle. A node the
     /// transaction has only written with its value kept has the committed
     /// value still, and a keep of it by a handle is dated as any other

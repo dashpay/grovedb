@@ -302,11 +302,26 @@
 //!   handle is of the transaction's own record of the node, which has
 //!   none: that record is there only since the write that CF2 looks from.
 //! - **A node that is not there has no value to keep**, whatever read the
-//!   write names: also where a commit outside took the node away after the
-//!   read ([`BatchError::NoValue`]). Where its subtree was dropped, a
-//!   write to the frames says [`BatchError::NotEntered`], and one that is
-//!   taken by key says `NoValue`. Where a node is under the key again, a
-//!   commit wrote the key, and the keep is met.
+//!   write names, and the batch is refused: no keep with nothing to keep
+//!   enters the write set ([`BatchError::NoValue`]). Where its subtree
+//!   was dropped, a write to the frames says [`BatchError::NotEntered`],
+//!   and one that is taken by key says `NoValue`. Where a node is under
+//!   the key again, a commit wrote the key, and the keep is met.
+//! - **Where a commit outside took the node away after the read, the
+//!   refusal says so** ([`BatchError::ValueTaken`]), and is a conflict to
+//!   the caller ([`TxnError::is_conflict`]). A commit took a node away
+//!   where the keep names a read the transaction can date, the key set of
+//!   a commit since that read holds the node's key (a delete of the node,
+//!   a drop or a clear of its Merk), and the committed version the
+//!   operation reads has no node under it. The refusal says so where that
+//!   holds for every node of the Merk that the batch has no value to keep
+//!   of. Only a refusal asks, so no write that is taken pays for it.
+//!   Everywhere else the refusal is the plain one: for a keep that names
+//!   no read, for a read the transaction cannot date, for a node the
+//!   transaction deleted itself, for a Merk it dropped or cleared itself
+//!   or that is below one it did, and for a drop of a Merk above the
+//!   node's by a commit outside, whose key set does not name the Merk
+//!   below.
 //!
 //! The mark is the entry's own. It stays while the entry is in the write
 //! set: when the frames are made again, through a rollback to a savepoint
@@ -403,9 +418,14 @@
 //!   version, and is taken to be met otherwise. A read of the cursor that
 //!   shows no node gives the watch up as any other does. A transaction
 //!   that reads flat records only never watches. While a transaction
-//!   watches and runs no operation, [`Commits`] keeps the key set of
-//!   every commit that is published: that was so for a transaction with a
-//!   write, and is now so for one that has only been shown a node.
+//!   with a write runs no operation, [`Commits`] keeps the key set of
+//!   every commit that is published, which is what the conflict rule
+//!   compares its writes with (CF3). One that watches with no write holds
+//!   back the newest 64 and no more: it dates its reads with them, and
+//!   keeps no more of them itself. It holds all from before the version
+//!   its first write is dated with. Once its last write is taken out
+//!   again, it holds the newest where it remembers a read still, and
+//!   gives the watch up where it remembers none.
 //! - **The version of each lease it has shown a node under, and the key
 //!   sets of the newest 64 commits it took in** while it remembers such a
 //!   lease (`reads`; "A kept value and the read it is of"). The leases are
@@ -437,7 +457,9 @@
 //!    writes has taken them** ([`Commits`]). The other way, marking the
 //!    met writes at the commit, makes the committer take each
 //!    transaction's lock. The commit keeps CF3 this way
-//!    ([`crate::commit`], "The conflict rule").
+//!    ([`crate::commit`], "The conflict rule"). A transaction with no
+//!    write that has been shown a node holds back the newest 64 only
+//!    (D-155).
 //! 3. **The subtree directory is written through the transaction's own
 //!    flat pages**, in the operation that changes it, so its records
 //!    commit, roll back and are made again with the frames. A batch is

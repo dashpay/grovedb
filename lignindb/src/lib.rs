@@ -147,7 +147,13 @@
 //!   or when the engine cannot tell ([`txn`], "A kept value and the read
 //!   it is of").
 //!   [`WriteError::is_conflict`](db::WriteError::is_conflict) is true for
-//!   these and for nothing else.
+//!   these. A write of such a node is refused where no node is left to
+//!   keep the value of, and that refusal is a conflict too where the
+//!   transaction can tell that commits outside are its cause
+//!   ([`BatchError::ValueTaken`](txn::BatchError::ValueTaken)): the scope
+//!   that writes is told ([`TxnError::is_conflict`](txn::TxnError::is_conflict)),
+//!   and the transaction stays open. The two answer true for nothing
+//!   else.
 //! - **A commit ends its transaction** unless the error says otherwise
 //!   ([`WriteError::leaves_transaction_open`](db::WriteError::leaves_transaction_open)).
 //! - **Published is not durable** (DU1). With the default sync policy a

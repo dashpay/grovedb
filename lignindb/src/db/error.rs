@@ -390,10 +390,23 @@ impl WriteError {
     /// (CF2), or the transaction kept the committed value of a Merk node
     /// and a commit outside wrote the node after the transaction read it,
     /// or the engine cannot tell whether one did ([`crate::txn`], "A kept
-    /// value and the read it is of"). It is the one outcome for which the
-    /// caller makes its reads and its writes again.
+    /// value and the read it is of").
+    ///
+    /// It is true as well for the refusal of a write that says commits
+    /// outside took away a node whose value the write keeps
+    /// ([`BatchError::ValueTaken`](crate::txn::BatchError::ValueTaken)).
+    /// A scope's write answers that itself, as a
+    /// [`TxnError`](crate::txn::TxnError), which says the same of it
+    /// ([`TxnError::is_conflict`](crate::txn::TxnError::is_conflict)).
+    ///
+    /// These are the outcomes for which the caller makes its reads and its
+    /// writes again.
     pub const fn is_conflict(&self) -> bool {
-        matches!(self, Self::Commit(CommitError::Conflict))
+        match self {
+            Self::Commit(CommitError::Conflict) => true,
+            Self::Commit(CommitError::Refused(refused)) => refused.is_conflict(),
+            _ => false,
+        }
     }
 
     /// The commit, if it was published although an error is reported
