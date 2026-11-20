@@ -84,12 +84,12 @@
 //! - **What the device holds afterwards.** The experiment of
 //!   `std_fs/tests/device_probe.rs` makes changes of every kind the contract
 //!   has on a disk image, syncs them, and mounts a copy of the image file
-//!   that is taken as the sync returns. On an APFS image on macOS 27.0.1 the
-//!   copy has every one of the changes after `fsync` of each item and one
-//!   `F_FULLFSYNC` on the last, in each of the three orders of the list it
-//!   tries: the last item a directory that was not changed, a file that was
-//!   appended to, and a file that was only read. After the `fsync` calls
-//!   alone the copy has none of the changes.
+//!   that is taken right after the sync returned. On an APFS image on macOS
+//!   27.0.1 the copy has every one of the changes after `fsync` of each item
+//!   and one `F_FULLFSYNC` on the last, in each of the three orders of the
+//!   list it tries: the last item a directory that was not changed, a file
+//!   that was appended to, and a file that was only read. After the `fsync`
+//!   calls alone the copy has none of the changes.
 //!
 //! HFS+ is why the flush is shared on APFS only, and not wherever
 //! `F_FULLFSYNC` works. In the HFS+ source, a write past the end of a file,
@@ -128,9 +128,9 @@
 //! on an image of 64 MiB that is one device, with lists on one volume: other
 //! versions, a container on several devices and far larger transactions are
 //! taken to behave the same on Apple's word, not on a run. And it shows what
-//! had reached the image file when a set's calls returned, not that a device
-//! keeps it through a power cut: that the flush makes it so is Apple's
-//! statement, and no test of this crate cuts the power.
+//! had reached the image file shortly after a set's calls returned, not that
+//! a device keeps it through a power cut: that the flush makes it so is
+//! Apple's statement, and no test of this crate cuts the power.
 
 use std::{
     any::Any,
@@ -292,15 +292,6 @@ impl StdFile {
         let mut failure = guard(&self.sync_failure)?;
         still_syncing(&failure)?;
         sync(&self.file).inspect_err(|error| *failure = Some(failed_sync(error)))
-    }
-
-    /// Stops the handle's syncs after a flush failed that its bytes were
-    /// waiting for. A handle that an earlier operation panicked on is
-    /// stopped already.
-    fn flush_failed(&self, error: &io::Error) {
-        if let Ok(mut failure) = self.sync_failure.lock() {
-            failure.get_or_insert_with(|| failed_sync(error));
-        }
     }
 
     fn append_using(
@@ -628,6 +619,7 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
             }
             continue;
         };
+        still_syncing(&*guard(&handle.sync_failure)?)?;
         match set.shared_on(&handle.file)? {
             Some((file_system, shared)) => {
                 handle.sync_using(shared.hand_over)?;
@@ -641,19 +633,37 @@ fn sync_together_using(items: &[SyncItem<'_>], set: &SetSync<'_>) -> io::Result<
         return Ok(());
     };
     for group in &waiting {
-        if let Err(error) = (shared.flush)(group.last.file()) {
-            for handle in &group.handles {
-                handle.flush_failed(&error);
-            }
-            return Err(error);
-        }
-        // A sync of one of them may have failed on another thread since it
-        // was handed over, and then this flush does not vouch for it.
-        for handle in &group.handles {
-            still_syncing(&*guard(&handle.sync_failure)?)?;
-        }
+        flush_for(group, shared.flush)?;
     }
     Ok(())
+}
+
+/// Makes the flush that the items of `group` wait for.
+///
+/// Every handle among them is held for it, from before the flush until its
+/// failure is on record. So no sync of one of them, alone or in another set,
+/// runs in between and returns `Ok` for bytes that the failed flush left
+/// unknown, and a handle whose own sync failed since it was handed over
+/// fails the set before the flush. The handles are taken in the order of
+/// their addresses, each once: two sets with the same handles in another
+/// order do not wait for each other, nor a handle that is in a list twice
+/// for itself.
+fn flush_for(group: &Waiting<'_>, flush: FileCall<'_>) -> io::Result<()> {
+    let address = |handle: &&StdFile| std::ptr::from_ref::<StdFile>(handle).addr();
+    let mut handles = group.handles.clone();
+    handles.sort_by_key(address);
+    handles.dedup_by_key(|handle| address(handle));
+    let mut failures = Vec::with_capacity(handles.len());
+    for handle in handles {
+        let failure = guard(&handle.sync_failure)?;
+        still_syncing(&failure)?;
+        failures.push(failure);
+    }
+    flush(group.last.file()).inspect_err(|error| {
+        for failure in &mut failures {
+            **failure = Some(failed_sync(error));
+        }
+    })
 }
 
 #[derive(Debug)]

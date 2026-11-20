@@ -192,27 +192,113 @@ fn a_failed_flush_of_a_set_stops_every_handle_that_waited_for_it() {
         .unwrap();
 }
 
-/// A handle of the set is synced by another thread while the set waits for
-/// its flush, and that sync fails: the flush, which succeeds, does not vouch
-/// for the handle.
+/// A handle of the set is synced by another thread after it was handed over
+/// and before the flush, and that sync fails: the set fails, and makes no
+/// flush that would seem to vouch for the handle.
 #[test]
 fn a_sync_that_fails_while_its_handle_waits_for_the_flush_fails_the_set() {
     let (_, root, _dir) = setup();
     let files = ["a", "b"].map(|name| written(&root.join(name)));
-    let flushes = Cell::new(0);
-    let fails_meanwhile = |_: &File| {
-        flushes.set(flushes.get() + 1);
-        files[0].sync_using(|_| Err(full())).unwrap_err();
+    let (handed_over, flushes) = (Cell::new(0), Cell::new(0));
+    let the_first_fails_meanwhile = |_: &File| {
+        handed_over.set(handed_over.get() + 1);
+        if handed_over.get() == 2 {
+            files[0].sync_using(|_| Err(full())).unwrap_err();
+        }
         Ok(())
     };
-    let set = sharing(&|_| Ok(()), &fails_meanwhile);
+    let flush = |_: &File| {
+        flushes.set(flushes.get() + 1);
+        Ok(())
+    };
+    let set = sharing(&the_first_fails_meanwhile, &flush);
     let items = [SyncItem::Data(&files[0]), SyncItem::Data(&files[1])];
 
     let error = sync_together_using(&items, &set).unwrap_err();
     assert_eq!(error.kind(), ErrorKind::Other);
     assert!(error.to_string().contains("an earlier sync"), "{error}");
-    assert_eq!(flushes.get(), 1);
+    assert_eq!((handed_over.get(), flushes.get()), (2, 0));
     assert!(is_stopped(&files[0]) && !is_stopped(&files[1]));
+}
+
+/// While the flush is made, and until its failure is on record, every handle
+/// that waits for it is held: a sync of one of them on another thread waits,
+/// and cannot return `Ok` in between. A handle that is in the list twice,
+/// and lists in two orders, are held without waiting for themselves.
+#[test]
+fn the_handles_of_a_set_are_held_from_the_flush_to_the_record_of_its_failure() {
+    let (_, root, _dir) = setup();
+    let files = ["a", "b", "c"].map(|name| written(&root.join(name)));
+    let outside = written(&root.join("outside"));
+    let held = |file: &StdFile| {
+        let tried = file.sync_failure.try_lock();
+        matches!(tried, Err(std::sync::TryLockError::WouldBlock))
+    };
+    let fails = Cell::new(false);
+    let flush = |_: &File| {
+        assert!(files.iter().all(held));
+        assert!(!held(&outside));
+        match fails.get() {
+            true => Err(full()),
+            false => Ok(()),
+        }
+    };
+    let set = sharing(&|_| Ok(()), &flush);
+    let in_one_order = [
+        SyncItem::Data(&files[0]),
+        SyncItem::Data(&files[1]),
+        SyncItem::All(&files[2]),
+        SyncItem::Data(&files[0]),
+    ];
+    let in_another = [
+        SyncItem::Data(&files[2]),
+        SyncItem::Data(&files[1]),
+        SyncItem::Data(&files[0]),
+    ];
+
+    sync_together_using(&in_one_order, &set).unwrap();
+    sync_together_using(&in_another, &set).unwrap();
+    assert!(!files.iter().any(held));
+
+    fails.set(true);
+    let error = sync_together_using(&in_one_order, &set).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::StorageFull);
+    assert!(!files.iter().any(held));
+    assert!(files.iter().all(is_stopped));
+    assert!(!is_stopped(&outside));
+}
+
+/// A handle whose syncs were stopped fails a set with what it remembers,
+/// before its file system is asked about. A handle that syncs, on a file
+/// system that cannot be told, fails the set with that error and is not
+/// stopped by it: no sync of it was tried.
+#[test]
+fn a_stopped_handle_fails_a_set_before_its_file_system_is_asked() {
+    let (_, root, _dir) = setup();
+    let (fine, failed) = (written(&root.join("fine")), written(&root.join("failed")));
+    failed.sync_using(|_| Err(full())).unwrap_err();
+    let asked = Cell::new(0);
+    let cannot_tell = |_: &File| {
+        asked.set(asked.get() + 1);
+        Err(ErrorKind::PermissionDenied.into())
+    };
+    let set = SetSync {
+        alone: &|_, _| panic!("no item is synced"),
+        shared: Some(SharedFlush {
+            file_system: &cannot_tell,
+            hand_over: &|_| panic!("no item is handed over"),
+            flush: &|_| panic!("no flush is made"),
+        }),
+    };
+
+    let error = sync_together_using(&[SyncItem::Data(&failed)], &set).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Other);
+    assert_eq!(asked.get(), 0);
+
+    let error = sync_together_using(&[SyncItem::Data(&fine)], &set).unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    assert_eq!(asked.get(), 1);
+    assert!(!is_stopped(&fine));
 }
 
 #[test]

@@ -202,6 +202,32 @@ fn a_rename_into_a_directory_is_kept_with_the_rename_that_moved_the_directory() 
     check(&fs);
 }
 
+/// A name that was given and not synced is no more durable for a rename
+/// over it: a crash that loses the rename can lose the name with it.
+#[test]
+fn a_name_that_was_not_durable_can_be_gone_after_a_rename_over_it() {
+    let fs = sim(47);
+    fs.create_dir(p("/src")).unwrap();
+    drop(create_durable(&fs, "/src/file", b"F"));
+    fs.sync_dir(p("/")).unwrap();
+
+    fs.create_dir(p("/dst")).unwrap();
+    fs.rename(p("/src"), p("/dst")).unwrap();
+
+    let image = fs.crash_image();
+    assert_eq!(image.names_kept(&names_only(vec![1])), [0, 1]);
+    let (dir, file) = (None, Some("F"));
+    assert_eq!(
+        states(&fs),
+        BTreeSet::from([
+            tree_of(&[("src", dir), ("src/file", file)]),
+            tree_of(&[("dst", dir), ("src", dir), ("src/file", file)]),
+            tree_of(&[("dst", dir), ("dst/file", file)]),
+        ])
+    );
+    check(&fs);
+}
+
 /// A directory is made under another name, synced with what is in it, and
 /// renamed into place. Whenever the power goes and whatever the crash keeps,
 /// the place has the whole directory or nothing. Leave one sync out, and
@@ -247,7 +273,7 @@ fn a_directory_built_under_another_name_appears_whole_or_not_at_all() {
             let built = build(&fs, careless);
             assert_eq!(built.is_ok(), crash_after == ops);
             let image = fs.crash_image();
-            let sampled = (0..20).map(|draw| image.sample(draw));
+            let sampled = (0..if cfg!(miri) { 2 } else { 20 }).map(|draw| image.sample(draw));
             let plans = image.prefixes().chain(image.holes()).chain(sampled);
             for plan in plans {
                 let made: Tree = tree(&recover(&image, &plan))

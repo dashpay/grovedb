@@ -14,6 +14,12 @@
 //! Paths are passed to the backend as they are. Build them by joining file
 //! names onto a root directory.
 //!
+//! A name is its bytes, and two names are one when their bytes are the same.
+//! Some file systems take two spellings for one name: APFS, as macOS formats
+//! it unless told otherwise, does not tell upper case from lower. What an
+//! operation does with two such spellings is not specified here. Give each
+//! name one spelling.
+//!
 //! # Writers
 //!
 //! A file is open for writing either through one [`OpenMode::Append`] handle
@@ -87,14 +93,15 @@
 //! - **Rename is atomic, synced or not.** A crash keeps a rename whole or not
 //!   at all, of a file and of a directory with everything in it: of the two
 //!   things a rename does, taking the old name away and giving the new one,
-//!   no crash keeps one without the other. The destination name then refers
-//!   to what it referred to before the rename or to what was renamed: never
-//!   to a mix of the two, and never to nothing if it named something before.
-//!   Which of the two is settled only by [`Vfs::sync_dir`]. This assumes a
-//!   filesystem that journals its directories. A rename makes nothing else
-//!   durable. Sync a file before renaming it, or the name may survive without
-//!   the content, and sync what is in a directory, its files and its names,
-//!   before renaming the directory to a name under which it has to be whole.
+//!   no crash keeps one without the other. The destination name is then as
+//!   the rename left it, or as a crash just before the rename would have
+//!   left it: never a mix of the two, and never nothing if what it named
+//!   before was durable under that name. Which of the two is settled only by
+//!   [`Vfs::sync_dir`]. This assumes a filesystem that journals its
+//!   directories. A rename makes nothing else durable. Sync a file before
+//!   renaming it, or the name may survive without the content, and sync what
+//!   is in a directory, its files and its names, before renaming the
+//!   directory to a name under which it has to be whole.
 //! - **Syncing together.** [`Vfs::sync_together`] takes a list of syncs, each
 //!   of a file or of a directory, and returns `Ok` when every one of them has
 //!   been made. Each file and each directory of the list is then durable as
@@ -269,11 +276,13 @@ pub trait Vfs: fmt::Debug + Send + Sync {
     /// removes the name `from`. A directory moves with everything in it, and
     /// the handles of the files in it keep working.
     ///
-    /// What `to` named is replaced atomically: at every moment, and after a
-    /// crash, `to` names what it named before or what was renamed. A file
+    /// What `to` named is replaced atomically: at every moment `to` names
+    /// what it named before or what was renamed. After a crash it names what
+    /// was renamed, or it is as a crash just before the rename would have
+    /// left it, which is what it named before if that was durable. A file
     /// replaces a file. A directory replaces a directory that has no entries,
-    /// and no other. If `from` and `to` already name the same file, or are
-    /// the same directory, nothing changes and both names stay.
+    /// and no other. If `from` and `to` are the same name, or two names of
+    /// one file, nothing changes and both names stay.
     ///
     /// Fails with
     /// [`IsADirectory`](io::ErrorKind::IsADirectory) if `from` is a file and

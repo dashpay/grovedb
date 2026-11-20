@@ -9,14 +9,18 @@
 //! [`WAYS`], after which the image file is copied at once and while it is
 //! still mounted, and at last in the mounted copy, to say what is there.
 //!
-//! The copy holds what had reached the image file when the sync returned.
-//! The experiment takes that for what the file system had written to its
-//! device, and mounting the copy for a mount after a crash of the system at
-//! that moment. This assumes that a disk image passes writes on as a device
-//! takes them and keeps none back. A power cut can lose more than a crash of
-//! the system: what the device itself had not written out. The copy does not
-//! show that part, which is the flush's, so the experiment shows what a
-//! set's calls put on the device, and not that the device kept it.
+//! The copy holds what had reached the image file right after the sync
+//! returned: a process is started for the copy, so some time passes in
+//! between, in which a file system could write more of its own accord. The
+//! way of syncing that leaves out the full flush says how much that is: with
+//! it the copy has none of the changes. The experiment takes the copy for
+//! what the file system had written to its device, and mounting it for a
+//! mount after a crash of the system at that moment. This assumes that a
+//! disk image passes writes on as a device takes them and keeps none back.
+//! A power cut can lose more than a crash of the system: what the device
+//! itself had not written out. The copy does not show that part, which is
+//! the flush's, so the experiment shows what a set's calls put on the device,
+//! and not that the device kept it.
 //!
 //! ```text
 //! lignin-io/src/std_fs/tests/device_probe.sh APFS together
@@ -235,12 +239,21 @@ fn check(root: &Path) -> (usize, usize) {
         println!("probe: {path} ({what}): {found}");
     }
     for (path, what) in gone {
-        let there = fs::symlink_metadata(base.join(path)).is_ok();
-        wrong += usize::from(there);
-        let found = if there { "still there" } else { "gone" };
+        let found = match fs::symlink_metadata(base.join(path)) {
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(format!("cannot be looked at ({error})")),
+            Ok(_) => Err("still there".to_owned()),
+        };
+        wrong += usize::from(found.is_err());
+        let found = found.map_or_else(|wrong| wrong, |()| "gone".to_owned());
         println!("probe: {path} ({what}): {found}");
     }
-    (wrong, checked)
+    let inode = |path: &str| fs::metadata(base.join(path)).map(|file| file.ino()).ok();
+    let one_file = inode("log").is_some() && inode("log") == inode("new/link");
+    wrong += usize::from(!one_file);
+    let found = if one_file { "one file" } else { "not one file" };
+    println!("probe: log and new/link (two names of one file): {found}");
+    (wrong, checked + 1)
 }
 
 /// One step of the experiment: `LIGNIN_IO_PROBE` says which, in the

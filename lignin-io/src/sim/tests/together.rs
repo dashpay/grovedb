@@ -122,6 +122,8 @@ fn a_crash_inside_a_set_finds_the_first_syncs_made_and_the_others_not() {
 #[test]
 fn before_the_first_sync_of_a_set_a_crash_may_keep_a_later_one_without_an_earlier() {
     let set = Unsynced::new(53);
+    set.fs.power_off();
+    assert!(SimError::is_power_loss(&set.sync().unwrap_err()));
     let image = set.fs.crash_image();
     let (names, changes) = (image.names(), image.changes());
     assert_eq!((names.len(), changes.len()), (3, 2));
