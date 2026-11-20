@@ -1178,6 +1178,7 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         value: Some(Vec::new()),
         left: None,
         right: None,
+        stale: lignin_tree::hash::Stale::NONE,
         location: None,
     };
     let keys = &mut lignindb::txn::ChildKeys::new();
