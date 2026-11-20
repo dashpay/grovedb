@@ -12,7 +12,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 | --- | --- | --- | --- |
 | Test Ubuntu (1/3 to 3/3) | Linux x86_64 | the workspace but the two imported crates `grovedb-bincode` and `grovedb-bincode-derive` (the job Bincode tests them when they change), with every feature, in three shards, with coverage (`cargo llvm-cov nextest`): every suite on its first engine, the LigninDB crates' tests among them, the golden corpus replayed (`lignin-testkit --test golden`) and the differential fuzzer's acceptance test (`--test diff`) | `cargo test --workspace --exclude grovedb-bincode --exclude grovedb-bincode-derive --all-features`, which runs the doc tests too |
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
-| LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests | `.github/scripts/lignin-ci.sh test` |
+| LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests, then the tests of Merk's node store on LigninDB | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
 | LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), at the bounds the models set | `lignin-ci.sh loom` |
 | LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` under Stacked Borrows, the buffer pool under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
@@ -35,6 +35,8 @@ A pull request that changes either engine runs the suites of both. Detect Change
 | Linux x86_64 | the three test shards |
 | Linux aarch64 | LigninDB on Linux aarch64 |
 | macOS aarch64 | LigninDB on macOS aarch64 |
+
+The LigninDB code outside those crates is Merk's node store on LigninDB (`merk/src/store/lignin`, in `grovedb-merk` behind the feature `lignin_storage`). The shards build with every feature and run its tests on Linux x86_64. On the two aarch64 platforms, `lignin-ci.sh test` runs them after the crates' tests, as a command of their own: `cargo test -p grovedb-merk --features lignin_storage --lib store::lignin`. It runs whether or not the crates' tests passed, and fails when the filter matches no test.
 
 The two aarch64 runners take the paths that x86_64 never does: `crc32c` uses the CRC instructions of aarch64 there, and on macOS `lignin-io` runs on its own system calls (the conformance suite of IO-01 had been run on macOS by hand only). The checksum's table-driven path, which neither platform takes, runs under Miri on a big-endian target.
 
