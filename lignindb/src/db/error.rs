@@ -107,6 +107,17 @@ pub enum OpenError {
     },
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
+    /// The directory holds `MANIFEST.deleting`: the removal of a database
+    /// or of a checkpoint was begun there and cut short
+    /// (`lignindb::checkpoint::delete`). Nothing opens what is left and no
+    /// database is made in it, also where a `MANIFEST` is beside the
+    /// mark. The same call finishes the removal, and the path is a place
+    /// for a new database then. Whoever wants a database that is beside
+    /// the mark removes the mark.
+    Deleting {
+        /// The directory.
+        dir: PathBuf,
+    },
     /// A look of this open found a database of this engine in the
     /// directory, and there was no lock file to lock, before that look
     /// and after it. A database has its `LOCK` from the open that made
@@ -200,7 +211,8 @@ impl OpenError {
     /// Whether the directory is not one this build opens, and was left
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
-    /// lost its manifest or its lock file, its pages are of another size,
+    /// lost its manifest or its lock file, its removal was begun, its
+    /// pages are of another size,
     /// or it was removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
@@ -219,6 +231,7 @@ impl OpenError {
                 | Self::FormatVersion { .. }
                 | Self::NoManifest { .. }
                 | Self::NoLockFile { .. }
+                | Self::Deleting { .. }
                 | Self::Replaced { .. }
                 | Self::PageSize { .. }
         )
@@ -252,6 +265,12 @@ impl fmt::Display for OpenError {
                 "{} was changed while it was being opened: the database that was seen there \
                  is gone, or the lock file that was taken is not the one at the path any \
                  more. No database is opened or made there",
+                dir.display()
+            ),
+            Self::Deleting { dir } => write!(
+                f,
+                "{} holds MANIFEST.deleting: the removal of a database was begun there and not \
+                 finished, and no database is opened or made in what is left",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
@@ -305,7 +324,10 @@ impl Error for OpenError {
             Self::Recovery(source) => Some(&**source),
             Self::Create { source, .. } => Some(&**source),
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
-            Self::NoLockFile { .. } | Self::Replaced { .. } | Self::Changed { .. } => None,
+            Self::NoLockFile { .. }
+            | Self::Deleting { .. }
+            | Self::Replaced { .. }
+            | Self::Changed { .. } => None,
             Self::NoDatabase { .. }
             | Self::OtherEngine { .. }
             | Self::FormatVersion { .. }

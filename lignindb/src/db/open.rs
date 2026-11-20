@@ -30,6 +30,7 @@ use super::{
     store::{Catalog, Shared},
 };
 use crate::{
+    checkpoint::DELETING_FILE_NAME,
     options::Options,
     txn::{KeySet, Keyspaces, WritePath},
 };
@@ -79,8 +80,9 @@ fn is_own_dir(name: &OsStr) -> bool {
 /// Looks at the directory `dir` and says what it holds, reading only.
 ///
 /// A directory of another engine, a database of a format version this
-/// build does not read and files of a database with no manifest are each
-/// refused here, before anything is written (P-02).
+/// build does not read, files of a database with no manifest and what a
+/// removal that was cut short left are each refused here, before
+/// anything is written (P-02).
 fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     let entries = match vfs.read_dir(dir) {
         Ok(entries) => entries,
@@ -96,6 +98,14 @@ fn look(vfs: &dyn Vfs, dir: &Path) -> Result<Found, OpenError> {
     };
     if let Some(entry) = entries.iter().find(|entry| is_rocksdb(&entry.name)) {
         return Err(foreign("RocksDB", &entry.name));
+    }
+    // A database whose removal was begun is none any more, and none is
+    // made in what is left of it, with a manifest beside the mark or
+    // without (`crate::checkpoint`, D-128 B).
+    if (entries.iter()).any(|entry| entry.name == DELETING_FILE_NAME) {
+        return Err(OpenError::Deleting {
+            dir: dir.to_path_buf(),
+        });
     }
     match read_manifest(vfs, dir) {
         Ok(manifest) => Ok(Found::Database(Box::new(manifest))),

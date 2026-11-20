@@ -129,6 +129,7 @@
 //! | has the engine's directories and no manifest | [`OpenError::NoManifest`] |
 //! | has pages of another size than [`Options::page_size`] names | [`OpenError::PageSize`] |
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
+//! | has `MANIFEST.deleting`, with a manifest beside it or without | [`OpenError::Deleting`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
@@ -169,6 +170,22 @@
 //! open, and by the session after it. So nobody puts another directory at
 //! the path of a database that is being opened or is open, as with the
 //! close below.
+//!
+//! **Where a database is made** ([`Options::create_if_missing`]): in a
+//! directory that is not there, in an empty one, in one that holds only
+//! entries that are not the engine's, and in one that holds a `LOCK` and
+//! nothing else of the engine, which an open that failed leaves. It is
+//! made in no directory that one of the rows above refuses. So what a
+//! removal that was cut short left gets no database
+//! (`lignindb::checkpoint::delete` finishes it, and the path is a place
+//! again), and neither does what a creation of a checkpoint left with a
+//! directory of the store in it. What such a creation left empty, or with
+//! its lock file alone, the open cannot tell from a place and makes a
+//! database in: a checkpoint is to be built under another name and
+//! renamed into place, so that a cut creation leaves nothing under the
+//! name it was for (D-128 B). Until it is, whoever makes checkpoints
+//! removes a target that a failed or cut creation left before anything
+//! opens it.
 //!
 //! # A new database
 //!
