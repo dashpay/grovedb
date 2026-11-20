@@ -1,22 +1,33 @@
-//! The chunks of the corpus's Merks, and their restore, on both engines
-//! (MERK-07).
+//! Chunk production and restore from chunks on both engines, over Merks
+//! of the corpus (MERK-07).
 //!
-//! When a trace has been replayed, Merks of the grove it leaves are copied
-//! by their chunks, on RocksDB and on LigninDB: each live Merk that has a
-//! root and is the Merk of no axis, and whose host, where it has one, is
-//! an element that opens a Merk.
+//! `compare` is given the grove a replayed trace leaves. It takes each
+//! Merk of that grove that is live, has a root and is the Merk of no axis
+//! through these steps:
 //!
-//! - **The chunks.** Every chunk of the Merk is produced from the Merk on
-//!   RocksDB, as the trace's transaction reads it, and from the Merk on the
-//!   LigninDB store, which the replay has handed every write. The two are
-//!   the same bytes.
-//! - **The restore.** A Merk is restored from those chunks on each engine,
-//!   in a store that holds no node but those of the Merks restored from
-//!   that grove: on RocksDB chunk by chunk, and on LigninDB staged and
-//!   handed over whole. The values are finalized as elements
-//!   (`finalize_with_grovedb_elements`). Each chunk and the end of the
-//!   restore answer the same on both, and a restore that finishes leaves
-//!   the same root hash and the same record for every node.
+//! 1. `proofs::tree_type` gives the tree type the Merk is opened under. A
+//!    Merk for which it gives none is counted as skipped and goes no
+//!    further.
+//! 2. The Merk is opened on RocksDB, in the trace's transaction, and on
+//!    the LigninDB store the replay wrote. The two root hashes are equal.
+//! 3. On RocksDB a chunk producer is made and asked for the chunk at the
+//!    root. If either is refused, the same two calls on the store end in
+//!    an error with the same `Debug` text, and the Merk is counted as
+//!    giving no chunk and goes no further.
+//! 4. `chunks_of` asks each engine for its chunks. The two maps of chunk id
+//!    to chunk are equal.
+//! 5. `restore` restores a Merk from that map on each engine, with no
+//!    `parent_key_value_hash`, and ends with
+//!    `finalize_with_grovedb_elements`. Each chunk id given, with what the
+//!    chunk answered, and whether `finalize` succeeded, with its error
+//!    where it did not, are the same on the two engines, compared as
+//!    their `Debug` text. Where `finalize` succeeded, so is what
+//!    `root_hash_key_and_aggregate_data` answers for the restored Merk,
+//!    and the key and the record of every node reached from its root.
+//!
+//! The restores of one call go into one new RocksDB storage and one new
+//! LigninDB store, each under the prefix the Merk has in the grove. What a
+//! restore that does not finish wrote stays there.
 //!
 //! A restore that GroveDB drives, with the Merks of a grove entered under
 //! their elements, is GROVE-07's.
@@ -42,26 +53,25 @@ use lignindb::txn::{testing::Db, WriteTxn};
 
 use super::{proofs::tree_type, records, NO_VALUE_DEFINED_COST};
 
-/// What the restores of a replay came to.
+/// The tally of `compare`, by the steps of the module documentation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Restored {
-    /// The Merks whose chunks were produced on both engines, their chunks
-    /// and the bytes of those.
+    /// The Merks that passed step 4, the chunks in their maps, and the
+    /// encoded bytes of those chunks.
     pub merks: u64,
     pub chunks: u64,
     pub bytes: u64,
-    /// The Merks of more than one chunk.
+    /// Those of them whose map has more than one chunk.
     pub of_several_chunks: u64,
-    /// The Merks that a restore finished on both engines, and their nodes.
+    /// Those of them whose `finalize` succeeded in step 5, and the nodes
+    /// of their trees.
     pub finished: u64,
     pub nodes: u64,
-    /// The Merks whose restore both engines refused alike.
+    /// Those of them whose `finalize` did not succeed in step 5.
     pub refused: u64,
-    /// The Merks that give no chunk at their root on RocksDB, and none on
-    /// the store, with the same error.
+    /// The Merks that went no further than step 3.
     pub no_chunks: u64,
-    /// The Merks that were left out: their host is no element that opens a
-    /// Merk.
+    /// The Merks that went no further than step 1.
     pub skipped: u64,
 }
 
@@ -96,10 +106,9 @@ fn open<'db, S: NodeStore<'db>>(
     .expect("the Merk opens")
 }
 
-/// The chunks of `merk`, by chunk id. The producer numbers the chunks a
-/// tree of the Merk's height has when every node of it is there, so a
-/// number can name a place where this tree has no node: such a chunk is
-/// refused, and no restore asks for it.
+/// The chunks of `merk` by chunk id: the chunk of every number its
+/// producer counts, but for a number that is refused as a bad traversal
+/// instruction. Any other refusal fails the test.
 fn chunks_of<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     grove_version: &GroveVersion,
@@ -120,9 +129,13 @@ fn chunks_of<'db, S: NodeStore<'db>>(
     chunks
 }
 
-/// Restores a Merk from `chunks` into `store`, in the order the restore
-/// asks for them, and returns what each chunk and the end of the restore
-/// answered, with every node the restored tree holds as its record.
+/// Restores a Merk from `chunks` into `store`: it gives the restore the
+/// chunk at the root, and then every chunk whose id an answer names.
+/// Returns, as text, each chunk id given with what the chunk answered,
+/// and then the error of `finalize` or, where it succeeded, what
+/// `root_hash_key_and_aggregate_data` answered and the key and the record
+/// of every node reached from the root. Where `finalize` succeeded it
+/// also returns how many nodes those are.
 fn restore<'db, S: NodeStore<'db>>(
     store: S,
     tree_type: TreeType,
@@ -159,8 +172,9 @@ fn restore<'db, S: NodeStore<'db>>(
     }
 }
 
-/// Produces the chunks of the Merks of `grove` that are copied on both
-/// engines, and restores each Merk from them on both.
+/// Compares chunk production and restore from chunks on the two engines
+/// over the Merks of `grove` that the module documentation names, in its
+/// steps.
 pub fn compare(
     db: &GroveDb,
     transaction: &Transaction,
@@ -169,9 +183,8 @@ pub fn compare(
     grove_version: &GroveVersion,
 ) -> Restored {
     let mut restored = Restored::default();
-    // The stores the Merks are restored into, which hold no other node. The
-    // LigninDB transaction is not committed: a Merk that is restored alone
-    // has elements whose Merks are not there.
+    // The two stores every restore of this call goes into. Neither
+    // transaction is committed.
     let rocks = TempStorage::new();
     let rocks_transaction = rocks.start_transaction();
     let (lignin, versions) = Db::new(1024);
@@ -203,8 +216,7 @@ pub fn compare(
         let root_hash = expected.root_hash().unwrap();
         assert_eq!(source.root_hash().unwrap(), root_hash, "the Merk {at:?}");
 
-        // A Merk that gives no chunk at its root on RocksDB gives none on
-        // the store, with the same error.
+        // Step 3.
         let produced = (ChunkProducer::new(&expected))
             .and_then(|mut producer| producer.chunk(&[], grove_version).map(|_| ()));
         if let Err(refused) = produced {
@@ -240,8 +252,7 @@ pub fn compare(
         let (expected, expected_nodes) =
             restore(context, tree_type, root_hash, &chunks, grove_version);
         let store = LigninNodeStore::immediate(&writer, LigninSubtree::alone(model.prefix));
-        // A store of the tests is made with some subtrees entered, that of
-        // the root Merk among them.
+        // The subtree is entered unless the directory has an entry for it.
         if store.entry().expect("the directory is read").is_none() {
             store.enter(tree_type).expect("the subtree is entered");
         }

@@ -14,9 +14,11 @@
 //!   an aggregate over a range is also proven as that aggregate.
 //! - For a trunk and for a branch chunk: the trunk or the branch proof of
 //!   the Merk at the path.
-//! - For chunks of a Merk by their ids (MERK-07): the chunk under each id
-//!   the step names, or the chunk at the root where it names none, from
-//!   one producer.
+//! - For chunks of a Merk by their ids (MERK-07): one producer is given
+//!   each id the step names, in their order, or the id of the chunk at the
+//!   root where the step names none. The call answers with every chunk
+//!   and the id the producer gives as next after each, or with the first
+//!   refusal.
 //!
 //! Every answer is compared as its encoded bytes, or as its error, and
 //! every call must cost on LigninDB what it costs on RocksDB, the open of
@@ -83,7 +85,7 @@ enum Call {
     CountAndSum(QueryItem),
     Trunk(u8, Option<u8>),
     Branch(Vec<u8>, u8),
-    /// The chunks of a restore under these chunk ids.
+    /// The chunks one producer of the Merk gives for these chunk ids.
     Chunks(Vec<Vec<u8>>),
 }
 
@@ -210,7 +212,7 @@ fn answer<'db, S: NodeStore<'db>>(
                 (encoded(&branch.proof), root)
             })
             .map_err(refused),
-        // A producer charges nothing for a chunk.
+        // A producer reports no cost for a chunk.
         Call::Chunks(ids) => merk
             .chunks()
             .and_then(|mut producer| {
