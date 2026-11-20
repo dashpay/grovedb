@@ -111,6 +111,23 @@ impl Piece {
     }
 }
 
+/// Commits `batch` through a transaction of its own, in which a scope
+/// first reads every node whose value the batch keeps, as a writer does
+/// before it changes a node: a kept value names the read it is kept from
+/// (CF2a), and a write with no transaction has no read to name.
+pub(in crate::db::tests) fn write(
+    db: &Db,
+    batch: &OwnedBatch,
+) -> Result<crate::commit::Committed, crate::db::WriteError> {
+    let txn = db.begin();
+    let scope = txn.scope().expect("a scope");
+    let read = batch.through(&scope);
+    let applied = read.with(|batch| scope.apply(batch));
+    applied.unwrap_or_else(|error| panic!("a batch of a transaction of its own: {error}"));
+    scope.merge();
+    db.commit(&txn, &mut crate::commit::NoStaleHashes)
+}
+
 /// The batch that makes every write of `pieces` in one operation: the
 /// drops first, as a batch states them.
 pub(in crate::db::tests) fn joined(pieces: &[Piece]) -> OwnedBatch {

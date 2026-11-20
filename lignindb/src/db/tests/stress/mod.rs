@@ -315,7 +315,8 @@ fn in_scope(
     let mut made = Vec::new();
     for piece in pieces {
         let before = run.version();
-        let applied = piece.batch.with(|batch| scope.apply(batch));
+        let read = piece.batch.through(&scope);
+        let applied = read.with(|batch| scope.apply(batch));
         applied.unwrap_or_else(|error| panic!("a batch of a scope: {error}"));
         let after = run.version();
         made.extend(piece.writes.iter().cloned().map(|write| Made {
@@ -326,7 +327,8 @@ fn in_scope(
     }
     if let Some(piece) = refused {
         let second = txn.scope().expect("a second scope");
-        match piece.batch.with(|batch| second.apply(batch)) {
+        let read = piece.batch.through(&second);
+        match read.with(|batch| second.apply(batch)) {
             Err(TxnError::ScopeOverlap { .. }) => add(&run.tally.overlaps, 1),
             other => panic!("a write of a Merk that another open scope holds: {other:?}"),
         }
@@ -523,9 +525,9 @@ fn outside(run: &Run<'_>, writer: &mut Writer, dir: &Path, options: &Options) {
         }
         let batch = joined(&pieces);
         let before = run.version();
-        let outcome = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
-        // When its transaction first wrote is not seen from here: it was
-        // not before the call.
+        let outcome = work::write(db, &batch);
+        // When its transaction first read and wrote is not looked at: it
+        // was not before the call.
         let made: Vec<Made> = (pieces.iter())
             .flat_map(|piece| piece.writes.iter().cloned())
             .map(|write| Made {
@@ -578,9 +580,21 @@ fn checkpoint(run: &Run<'_>, target: &Path, options: &Options) {
             files.sort();
             files
         };
+        let log_end = manifest.as_ref().ok().map(|manifest| {
+            lignin_store::wal::LogReader::new(options.vfs.clone(), target, manifest).into_end()
+        });
+        if let Ok(kept) = std::env::var("LIGNIN_STRESS_KEEP") {
+            // The directory goes with the test: a copy for whoever asked.
+            let copied = std::process::Command::new("cp")
+                .args(["-r", "--"])
+                .arg(target)
+                .arg(&kept)
+                .status();
+            eprintln!("the checkpoint is copied to {kept}: {copied:?}");
+        }
         panic!(
-            "the checkpoint is opened: {error}\n{created:?}\nits log files: {:?}\nits manifest: \
-             {manifest:#?}",
+            "the checkpoint is opened: {error}\n{created:?}\nits log files: {:?}\nwhat a reader \
+             of its log finds: {log_end:#?}\nits manifest: {manifest:#?}",
             files("wal")
         )
     });

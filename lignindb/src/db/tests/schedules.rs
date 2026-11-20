@@ -97,13 +97,13 @@ use super::{
         compare_all,
         history::History,
         stress_options, verify,
-        work::{joined, shared, Expected, Piece, Read, Writer},
+        work::{joined, shared, write, Expected, Piece, Read, Writer},
     },
     *,
 };
 use crate::{
     checkpoint::{self, Checkpointer},
-    db::store::{lock, Steps},
+    db::store::{lock, Shared, Steps},
     snapshot::{LatestLease, Snapshot, Versions},
     txn::{
         tests::model::{OwnedBatch, OwnedSubtree, Val, Write},
@@ -133,7 +133,31 @@ struct Gate {
     landed: AtomicBool,
     /// How long the step waits for the burst at its point.
     patience: Duration,
+    /// The database, for what the gate asks it at its point.
+    asks: Database,
+    /// Whether a commit could come in at the point: nobody held the commit
+    /// lock or the lock on the counts of values there. `None` before the
+    /// point, and for a schedule with none.
+    open: Mutex<Option<bool>>,
+    /// Whether a commit of the burst was published before the step went
+    /// on from its point, and whether one that could come in did not.
+    committed: AtomicBool,
+    stuck: AtomicBool,
 }
+
+/// The database a gate asks, while a schedule has one open.
+#[derive(Default)]
+struct Database(Mutex<Option<Arc<Shared>>>);
+
+impl std::fmt::Debug for Database {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the database of the schedule")
+    }
+}
+
+/// How long a commit that nothing keeps out is waited for at a point
+/// before the schedule is given up as one the harness has wrong.
+const COMMIT_LANDS_WITHIN: Duration = Duration::from_secs(10);
 
 impl Gate {
     /// A gate, with what the thread of the burst waits on and answers by.
@@ -151,6 +175,10 @@ impl Gate {
             finished: AtomicBool::new(false),
             landed: AtomicBool::new(false),
             patience,
+            asks: Database::default(),
+            open: Mutex::new(None),
+            committed: AtomicBool::new(false),
+            stuck: AtomicBool::new(false),
         };
         (Arc::new(gate), gone, finished)
     }
@@ -174,8 +202,52 @@ impl Gate {
         }
         let passed = self.passed.fetch_add(1, Ordering::Relaxed) + 1;
         lock(&self.kinds).push(kind);
-        if passed == self.at && self.let_in(Some(self.patience)) {
+        if passed != self.at {
+            return;
+        }
+        self.await_a_commit();
+        if self.let_in(Some(self.patience)) {
             self.landed.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Lets the burst in at the point and, where a commit can come in,
+    /// waits until one of the burst is published, for as long as that
+    /// takes. Whether one can is asked of the two locks that every commit
+    /// takes, with no wait: the paced thread, which asks, holds them here
+    /// or nobody does. So a commit lands at every such point however slow
+    /// the machine is, and at no other.
+    fn await_a_commit(&self) {
+        let Some(shared) = lock(&self.asks.0).clone() else {
+            return;
+        };
+        let store = &shared.store;
+        let counts = store.values.try_step().expect("the value log");
+        let open = counts.is_some() && store.committing.try_lock().is_some();
+        drop(counts);
+        *lock(&self.open) = Some(open);
+        if !open {
+            return;
+        }
+        let before = shared.versions.latest();
+        if let Some(go) = lock(&self.go).take() {
+            let _ = go.send(());
+        }
+        let began = Instant::now();
+        while shared.versions.latest() == before {
+            match lock(&self.made).try_recv() {
+                Ok(()) => self.finished.store(true, Ordering::Relaxed),
+                Err(mpsc::TryRecvError::Empty) if began.elapsed() < COMMIT_LANDS_WITHIN => {
+                    thread::sleep(Duration::from_micros(200));
+                    continue;
+                }
+                Err(_) => {}
+            }
+            break;
+        }
+        match shared.versions.latest() == before {
+            true => self.stuck.store(true, Ordering::Relaxed),
+            false => self.committed.store(true, Ordering::Relaxed),
         }
     }
 
@@ -437,11 +509,11 @@ struct World {
     writers: [Writer; 2],
 }
 
-/// Commits `pieces` of `writer` in one batch with no transaction, and tells
-/// the model.
+/// Commits `pieces` of `writer` in one batch, through a transaction of its
+/// own, and tells the model.
 fn commit(db: &Db, history: &History, writer: &mut Writer, pieces: Vec<Piece>) -> (usize, usize) {
     let batch = joined(&pieces);
-    let committed = batch.with(|batch| db.write(batch, &mut NoStaleHashes));
+    let committed = write(db, &batch);
     let Ok(Committed::Published(published)) = committed else {
         panic!("a commit of a schedule: {committed:?}");
     };
@@ -618,6 +690,12 @@ struct Outcome {
     kinds: Vec<&'static str>,
     /// Whether the burst was made before the step went on from its point.
     landed: bool,
+    /// Whether a commit could come in at the point, whether one of the
+    /// burst was published there, and whether one that could come in was
+    /// not seen to.
+    open: Option<bool>,
+    committed: bool,
+    stuck: bool,
     /// What the step did, in its own words.
     did: String,
     /// How long the burst took, and the pages its first commit made and
@@ -875,6 +953,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     let options = options(vfs.clone());
     let db = Db::open("/db", &options).expect("the state is opened");
     halt_background(&db);
+    *lock(&gate.asks.0) = Some(db.shared.clone());
     let history = base.world.history.copy();
     let mut writers = base.world.writers.clone();
     assert_eq!(db.version().get(), history.version());
@@ -957,6 +1036,7 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
         (did, beside.join().expect("the burst is made"))
     });
     errors.extend(burst_errors.into_inner().expect("the errors"));
+    drop(lock(&gate.asks.0).take());
 
     // To rest. The reclaimings of the step are taken to their end, with
     // commits between the tries: a page that the latest commit wrote is
@@ -1011,6 +1091,9 @@ fn run(base: &Base, step: Step, burst: Burst, at: u64, patience: Duration) -> Ou
     Outcome {
         kinds,
         landed: gate.landed.load(Ordering::Relaxed),
+        open: *lock(&gate.open),
+        committed: gate.committed.load(Ordering::Relaxed),
+        stuck: gate.stuck.load(Ordering::Relaxed),
         did,
         burst: took,
         pages,
@@ -1048,6 +1131,7 @@ fn sweep(step: Step, burst: Burst) {
     assert!(points > 0, "the step has no point: {}", calm.did);
     let patience = (calm.burst * 4).max(Duration::from_millis(200));
     let (mut failures, mut landed, mut tried) = (Vec::new(), 0u64, 0u64);
+    let (mut open, mut committed) = (0u64, 0u64);
     for at in chosen(points) {
         let kind = calm.kinds[at as usize - 1];
         let schedule = format!("the burst at point {at} of {points} ({kind})");
@@ -1056,6 +1140,15 @@ fn sweep(step: Step, burst: Burst) {
         match outcome {
             Ok(outcome) => {
                 landed += u64::from(outcome.landed);
+                open += u64::from(outcome.open == Some(true));
+                committed += u64::from(outcome.committed);
+                if outcome.stuck {
+                    failures.push(format!(
+                        "{schedule}: no commit of the burst was published within \
+                         {COMMIT_LANDS_WITHIN:?}, where neither the commit lock nor the lock on \
+                         the counts of values was held"
+                    ));
+                }
                 if !outcome.errors.is_empty() {
                     failures.push(format!("{schedule}: {:?}", outcome.errors));
                 }
@@ -1072,9 +1165,10 @@ fn sweep(step: Step, burst: Burst) {
         *kinds.entry(*kind).or_insert(0u64) += 1;
     }
     println!(
-        "{step:?} against {burst:?}: {points} points {kinds:?}; {tried} schedules, the burst \
-         landed inside the step in {landed}; {} failed. The burst took {:?}, and its commit made \
-         {} pages and freed {}. The step alone: {}",
+        "{step:?} against {burst:?}: {points} points {kinds:?}; {tried} schedules, a commit \
+         could come in at the point of {open} and was published there in {committed}, and the \
+         whole burst landed inside the step in {landed}; {} failed. The burst took {:?}, and its \
+         commit made {} pages and freed {}. The step alone: {}",
         failures.len(),
         calm.burst,
         calm.pages.0,
@@ -1085,10 +1179,10 @@ fn sweep(step: Step, burst: Burst) {
         failures.is_empty(),
         "{step:?} against {burst:?}: {failures:#?}"
     );
-    assert!(
-        landed > 0,
-        "the burst landed inside the step in no schedule"
-    );
+    // By construction, and not by how fast the machine is: a commit is
+    // waited for wherever one can come in.
+    assert!(open > 0, "a commit could come in at no point of the step");
+    assert_eq!(committed, open, "a commit that could come in did not");
 }
 
 /// **A checkpoint that is sampled right after the log turned to a new file
