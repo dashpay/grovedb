@@ -38,7 +38,7 @@ use std::{
     thread,
 };
 
-use lignin_format::tree_page::{Hash, Side};
+use lignin_format::tree_page::{Hash, HashField, Side};
 use lignin_store::flush::WriteBack;
 use lignin_tree::node::NodeHandle;
 
@@ -56,6 +56,7 @@ use crate::{
         },
         BatchError, Column, KeySet, NodeView, Scope, TxnError, Unit, WritePath, WriteTxn,
     },
+    verify::{Place, Rule},
 };
 
 /// The keys and values of one Merk.
@@ -1809,6 +1810,73 @@ fn wait_for_a_commit(versions: &Versions) {
     }
 }
 
+/// Makes the two Merks of a schedule, each with a value from `value` under
+/// every key, and returns what the Merk [`MERK`] holds.
+fn make_merks(
+    db: &Db,
+    versions: &Versions,
+    path: WritePath<'_>,
+    mut value: impl FnMut() -> Vec<u8>,
+) -> Items {
+    let mut made = Vec::new();
+    for name in [MERK, OTHER] {
+        let txn = path.begin();
+        let items: Items = (0..KEYS).map(|at| (key(at), value())).collect();
+        let merk = OwnedMerk::change(model::subtree(name), &BTreeMap::new(), &items);
+        let records = World::root_record(&merk).into_iter().collect();
+        let batch = OwnedBatch {
+            merks: vec![merk],
+            records,
+            ..OwnedBatch::default()
+        };
+        let scope = txn.scope().expect("its own transaction");
+        (batch.with(|batch| scope.apply(batch))).expect("the Merk is made");
+        scope.merge();
+        let committed = db.commit(versions, &txn).expect("a commit");
+        assert!(matches!(committed, Outcome::Committed(_)));
+        made.push(items);
+    }
+    made.swap_remove(0)
+}
+
+/// The place of the key `node` among the schedule's keys.
+fn place(node: &[u8]) -> u8 {
+    (0..KEYS).find(|at| key(*at) == node).expect("a key")
+}
+
+/// Writes the node in the place `at` of the Merk `name` with the value
+/// `value` through `txn`, as a writer does whose view of the Merk is
+/// `seen`, and commits. Returns whether the commit was made, with the keys
+/// of the nodes it wrote and of those among them that kept their values.
+fn write_as_seen(
+    db: &Db,
+    versions: &Versions,
+    txn: &WriteTxn<'_>,
+    seen: &Seen,
+    (name, at, value): (u8, u8, Vec<u8>),
+) -> (bool, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let (batch, kept) = change(seen, name, &key(at), value);
+    let scope = txn.scope().expect("its own transaction");
+    (batch.with(|batch| scope.apply(batch))).expect("the write is taken");
+    scope.merge();
+    let wrote = (batch.merks[0].nodes.iter())
+        .map(|(key, ..)| key.clone())
+        .collect();
+    let made = match db.commit(versions, txn).expect("a commit") {
+        Outcome::Committed(_) => true,
+        Outcome::Conflict => false,
+        Outcome::Empty => panic!("the transaction wrote"),
+    };
+    (made, wrote, kept)
+}
+
+/// The cell of the node `node` of the Merk [`MERK`], as it is committed.
+fn cell_of(path: WritePath<'_>, node: &[u8]) -> Place {
+    let read = |view: Option<NodeView<'_>>| view.expect("the node is there").handle();
+    let handle = (path.begin().node(model::subtree(MERK), node, read)).expect("a read");
+    Place::Cell(handle.expect("a committed node").address())
+}
+
 /// One transaction of the schedule: it reads the Merk `name`, lets
 /// `between` happen, writes the node `key` with a new value and commits.
 /// Returns whether the commit was made, with the keys of the nodes it
@@ -1817,29 +1885,84 @@ fn rewrite(
     db: &Db,
     versions: &Versions,
     path: WritePath<'_>,
-    (name, at, value): (u8, u8, Vec<u8>),
+    write: (u8, u8, Vec<u8>),
     between: impl FnOnce(),
 ) -> (bool, Vec<Vec<u8>>, Vec<Vec<u8>>) {
     let txn = path.begin();
-    let seen = see(&txn, name);
+    let seen = see(&txn, write.0);
     between();
-    let (batch, kept) = change(&seen, name, &key(at), value);
-    let scope = txn.scope().expect("its own transaction");
-    (batch.with(|batch| scope.apply(batch))).expect("the write is taken");
-    scope.merge();
-    let wrote = (batch.merks[0].nodes.iter())
-        .map(|(key, ..)| key.clone())
-        .collect();
-    let made = match db.commit(versions, &txn).expect("a commit") {
-        Outcome::Committed(_) => true,
-        Outcome::Conflict => false,
-        Outcome::Empty => panic!("the transaction wrote"),
-    };
+    let done = write_as_seen(db, versions, &txn, &seen, write);
     // Whatever is published has the hash of its value under every key.
     for name in [MERK, OTHER] {
         see(&path.begin(), name);
     }
-    (made, wrote, kept)
+    done
+}
+
+/// What the rule of kept values does not date, pinned (D-155 item 3;
+/// `transactions.md` case A2, for a Merk node). A node that is written with
+/// its value stated is written whole, its links with it, and names no
+/// read: the conflict rule looks from the write (CF2). So a writer that
+/// reads the root, and states a new value for it after the commit of
+/// another transaction changed a child, is in no conflict, and the root it
+/// publishes has the hash of the child as the writer read it. A
+/// whole-record put of RocksDB does the same.
+///
+/// The physical checker reports that link and nothing else. The next
+/// commit to the Merk by a writer that reads it then writes the hash of
+/// the child that is stored.
+#[test]
+fn a_stated_value_is_published_with_the_link_hashes_of_its_read() {
+    let (db, versions) = Db::new(96);
+    let path = db.path(&versions);
+    let mut rng = Rng::new(0x1157_a7ed);
+    let items = make_merks(&db, &versions, path, || model::value(&mut rng, 24));
+    let (root, records) = model::records(&items);
+    let root = root.expect("a root");
+    let (side, child) = ([Side::Left, Side::Right].into_iter())
+        .find_map(|side| Some((side, records[&root].link(side)?.key.clone())))
+        .expect("the root has a child");
+
+    // The writer reads the Merk. Another transaction changes the child,
+    // which writes the root again with the child's new hash.
+    let txn = path.begin();
+    let seen = see(&txn, MERK);
+    let theirs = (MERK, place(&child), model::value(&mut rng, 24));
+    let (made, wrote, kept) = rewrite(&db, &versions, path, theirs, || ());
+    assert!(made);
+    assert_eq!(wrote.len(), 2, "the child and the root");
+    assert_eq!(kept, std::slice::from_ref(&root));
+
+    // The writer states a new value for the root. It keeps no value, and
+    // its first write of the root is after the other commit: no conflict.
+    let ours = (MERK, place(&root), model::value(&mut rng, 24));
+    let (made, wrote, kept) = write_as_seen(&db, &versions, &txn, &seen, ours);
+    assert!(made, "the commit is taken");
+    assert_eq!(wrote, std::slice::from_ref(&root));
+    assert!(kept.is_empty());
+
+    // The root is published with the hash of the child as the writer read
+    // it, which is not the child's.
+    let report = db.verify_still();
+    let found = db.unsound(&report);
+    assert_eq!((found.len(), report.more_findings), (1, 0), "{report}");
+    assert_eq!(
+        found[0].rule,
+        Rule::Hash(HashField::Child(side)),
+        "{report}"
+    );
+    assert_eq!(found[0].place, cell_of(path, &root), "{report}");
+
+    // A writer that reads the Merk now writes the root with the hashes of
+    // the children that are stored.
+    let next = (MERK, place(&child), model::value(&mut rng, 24));
+    let (made, ..) = rewrite(&db, &versions, path, next, || ());
+    assert!(made);
+    let report = db.verify_still();
+    assert!(
+        db.unsound(&report).is_empty() && report.more_findings == 0,
+        "{report}"
+    );
 }
 
 /// A writer on one thread reads the nodes of a Merk and later writes them
@@ -1884,22 +2007,7 @@ fn kept_values_on_two_threads_are_never_published_under_a_hash_of_another_value(
         model::value(rng, len)
     };
     // The two Merks, with every key.
-    for name in [MERK, OTHER] {
-        let txn = path.begin();
-        let items: Items = (0..KEYS).map(|at| (key(at), value(&mut rng))).collect();
-        let merk = OwnedMerk::change(model::subtree(name), &BTreeMap::new(), &items);
-        let records = World::root_record(&merk).into_iter().collect();
-        let batch = OwnedBatch {
-            merks: vec![merk],
-            records,
-            ..OwnedBatch::default()
-        };
-        let scope = txn.scope().expect("its own transaction");
-        (batch.with(|batch| scope.apply(batch))).expect("the Merk is made");
-        scope.merge();
-        let made = db.commit(&versions, &txn).expect("a commit");
-        assert!(matches!(made, Outcome::Committed(_)));
-    }
+    make_merks(&db, &versions, path, || value(&mut rng));
 
     let (asks, asked) = mpsc::channel::<Ask>();
     let (answers, answered) = mpsc::channel::<Vec<Vec<u8>>>();
