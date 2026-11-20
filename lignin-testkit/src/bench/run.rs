@@ -316,6 +316,14 @@ fn count_row(id: &str, phase: &str, unit: &str, total: f64, per: u64, source: &s
     row
 }
 
+/// A [`RowKind::Measured`] row: `total` over `per`.
+fn measured_row(id: &str, phase: &str, unit: &str, total: f64, per: u64, source: &str) -> Row {
+    Row {
+        kind: RowKind::Measured,
+        ..count_row(id, phase, unit, total, per, source)
+    }
+}
+
 /// A count row whose value is the median of `samples`.
 fn sampled_count_row(id: &str, phase: &str, unit: &str, samples: Vec<f64>, source: &str) -> Row {
     let median = Summary::of(&samples).map_or(0.0, |summary| summary.median);
@@ -544,7 +552,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{log_source}, key and value bytes of every record"),
         ),
-        count_row(
+        measured_row(
             "bytes_logged_per_transition",
             phase,
             "B",
@@ -552,7 +560,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{log_source}, bytes appended, framing included"),
         ),
-        count_row(
+        measured_row(
             "physical_bytes_per_transition",
             phase,
             "B",
@@ -560,7 +568,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{engine} engine counters: log, flush and compaction bytes"),
         ),
-        count_row(
+        measured_row(
             "flush_bytes_per_transition",
             phase,
             "B",
@@ -568,7 +576,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{engine} engine counters: flush bytes"),
         ),
-        count_row(
+        measured_row(
             "compaction_bytes_per_transition",
             phase,
             "B",
@@ -658,7 +666,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         }
     }
     if let Some(written) = totals.process_write_bytes {
-        rows.push(count_row(
+        rows.push(measured_row(
             "process_write_bytes_per_transition",
             phase,
             "B",
@@ -1040,7 +1048,7 @@ fn measure<E: Engine>(
 
     let root_hash_after_load = engine.root_hash(grove_version)?;
     let disk_after_load = disk_usage(dir)?;
-    rows.push(count_row(
+    rows.push(measured_row(
         "size_on_disk",
         "at-size",
         "B",
@@ -1129,7 +1137,7 @@ fn measure<E: Engine>(
     engine.flush()?;
     engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
-    rows.push(count_row(
+    rows.push(measured_row(
         "size_on_disk",
         "flushed",
         "B",

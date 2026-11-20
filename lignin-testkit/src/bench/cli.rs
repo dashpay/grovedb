@@ -215,18 +215,22 @@ pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> Result<Str
         );
     }
     let agreements = compare(first, second);
-    let mut within = [0usize; 3];
-    let mut total = [0usize; 3];
+    let mut within = [0usize; 4];
+    let mut total = [0usize; 4];
     let verdict = |agrees: bool| if agrees { "ok" } else { "APART" };
     for agreement in &agreements {
-        let slot = usize::from(agreement.kind == RowKind::Time);
+        let slot = match agreement.kind {
+            RowKind::Count => 0,
+            RowKind::Measured => 1,
+            RowKind::Time => 2,
+        };
         total[slot] += 1;
         let agrees = agreement.within(tolerance);
         within[slot] += usize::from(agrees);
         let instructions = agreement.instructions_within(tolerance);
         if let Some(agrees) = instructions {
-            total[2] += 1;
-            within[2] += usize::from(agrees);
+            total[3] += 1;
+            within[3] += usize::from(agrees);
         }
         let _ = writeln!(
             out,
@@ -245,14 +249,17 @@ pub fn comparison(first: &Report, second: &Report, tolerance: f64) -> Result<Str
     }
     let _ = writeln!(
         out,
-        "within {}: {} of {} count rows, {} of {} time rows, {} of {} time rows by instructions",
+        "within {}: {} of {} count rows, {} of {} measured rows, {} of {} time rows, \
+         {} of {} time rows by instructions",
         percent(ratio(tolerance, 1.0)),
         within[0],
         total[0],
         within[1],
         total[1],
         within[2],
-        total[2]
+        total[2],
+        within[3],
+        total[3]
     );
     Ok(out)
 }

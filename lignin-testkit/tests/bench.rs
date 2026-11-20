@@ -167,15 +167,28 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     );
     assert_eq!(load.counters.log_groups, 100, "one write batch per block");
 
+    for row in &engine.rows {
+        let follows_the_schedule = [
+            "bytes_logged",
+            "physical_bytes",
+            "flush_bytes",
+            "compaction_bytes",
+            "process_write_bytes",
+            "size_on_disk",
+        ]
+        .iter()
+        .any(|prefix| row.id.starts_with(prefix));
+        if follows_the_schedule {
+            assert_eq!(row.kind, RowKind::Measured, "{} in {}", row.id, row.phase);
+        }
+    }
+
     let agreements = compare(&first, &second);
-    for agreement in agreements.iter().filter(|agreement| {
-        agreement.kind == RowKind::Count
-            && !agreement.id.contains("physical")
-            && !agreement.id.contains("flush")
-            && !agreement.id.contains("compaction")
-            && !agreement.id.contains("process_write")
-            && !agreement.id.starts_with("size_on_disk")
-    }) {
+    let counts: Vec<_> = agreements
+        .iter()
+        .filter(|agreement| agreement.kind == RowKind::Count)
+        .collect();
+    for agreement in &counts {
         assert!(
             agreement.within(0.0),
             "{} in {} changed between runs: {} then {}",
@@ -199,12 +212,16 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         path("first.json"),
         path("second.json"),
         "--tolerance".to_string(),
-        "1000".to_string(),
+        "0".to_string(),
     ])
     .unwrap();
-    assert!(comparison.contains("within +100000.0%"));
+    let n = counts.len();
+    assert!(
+        comparison.contains(&format!("within +0.0%: {n} of {n} count rows, ")),
+        "{comparison}"
+    );
+    assert!(comparison.contains("measured rows"));
     assert!(comparison.contains("time rows by instructions"));
-    assert!(!comparison.contains("APART"));
 }
 
 #[test]

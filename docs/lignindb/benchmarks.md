@@ -185,7 +185,10 @@ Per engine, the report holds:
 
 A row holds:
 
-- its id, phase, unit and kind (count or time);
+- its id, phase, unit and kind: count (equal in every run of one commit),
+  measured (bytes and sizes that follow when background work ran or what
+  the rest of the process wrote: bytes logged, physical, flush, compaction
+  and process write bytes, size on disk), or time;
 - its value, its samples and their summary (median, mean, minimum, p10, p90,
   maximum);
 - instructions per sample and thread CPU time per sample, where measured;
@@ -196,7 +199,8 @@ A row holds:
 
 `lignin-bench compare` refuses two runs of different workloads, GroveVersions
 or row units. It reports each row's change, and for time rows the change in
-instructions per sample.
+instructions per sample. It counts count, measured and time rows apart;
+count rows are the ones two runs of one commit agree on exactly.
 
 ## RocksDB baseline and the plan's recorded values
 

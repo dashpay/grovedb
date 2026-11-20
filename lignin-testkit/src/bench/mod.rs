@@ -11,7 +11,14 @@
 //!
 //! # Rows
 //!
-//! Count rows are the same on any machine; time rows are not. Each row
+//! Count rows are equal in every run of one commit, on any machine.
+//! Measured rows ([`RowKind::Measured`]) are bytes and sizes that are not:
+//! `bytes_logged_per_transition`, `physical_bytes_per_transition`,
+//! `flush_bytes_per_transition`, `compaction_bytes_per_transition`,
+//! `process_write_bytes_per_transition` and `size_on_disk`. Where a log file
+//! starts, what a flush or compaction writes and in which phase it is seen,
+//! which obsolete files are gone, and what the rest of the process wrote
+//! all follow the schedule. Time rows depend on the machine. Each row
 //! carries a `source` saying where its number comes from.
 //!
 //! | Row | Phase | Unit | From |

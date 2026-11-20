@@ -167,14 +167,36 @@ pub struct DiskUsage {
     pub by_extension: std::collections::BTreeMap<String, u64>,
 }
 
-/// Whether a row's value depends on the machine.
+/// Whether a row's value depends on the machine or on the schedule.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum RowKind {
-    /// Bytes, counts and sizes: the same on any machine.
+    /// Bytes and counts the workload fixes: equal in every run of one
+    /// commit, on any machine.
     Count,
+    /// Bytes and sizes that also depend on when the engine's background
+    /// work ran, or on what the rest of the process wrote: reported, not
+    /// expected to repeat.
+    Measured,
     /// Wall time.
     Time,
+}
+
+impl RowKind {
+    /// Whether a row of kind `self` in one run and `other` in another is
+    /// the same quantity: a row reclassified from `Count` to `Measured` is.
+    fn same_family(self, other: RowKind) -> bool {
+        (self == RowKind::Time) == (other == RowKind::Time)
+    }
+
+    /// Of two runs' kinds for one row, the one the comparison holds it to.
+    fn looser(self, other: RowKind) -> RowKind {
+        if other == RowKind::Measured {
+            other
+        } else {
+            self
+        }
+    }
 }
 
 /// One measured row.
@@ -519,7 +541,7 @@ pub fn comparable(first: &Report, second: &Report) -> Result<(), BenchError> {
         };
         for row in &engine.rows {
             if let Some(other) = peer.row(&row.id, &row.phase)
-                && (other.unit != row.unit || other.kind != row.kind)
+                && (other.unit != row.unit || !other.kind.same_family(row.kind))
             {
                 return Err(BenchError::Check(format!(
                     "{} {} in {} is {:?} in {} in one run and {:?} in {} in the other",
@@ -575,7 +597,7 @@ pub fn compare(first: &Report, second: &Report) -> Vec<Agreement> {
                     engine: engine.engine.clone(),
                     id: row.id.clone(),
                     phase: row.phase.clone(),
-                    kind: row.kind,
+                    kind: row.kind.looser(other_row.kind),
                     unit: row.unit.clone(),
                     first: row.value,
                     second: other_row.value,
@@ -815,6 +837,8 @@ mod tests {
         let mut other_kind = second.clone();
         other_kind.engines[0].rows[0].kind = RowKind::Count;
         assert!(comparable(&first, &other_kind).is_err());
+        other_kind.engines[0].rows[0].kind = RowKind::Measured;
+        assert!(comparable(&first, &other_kind).is_err());
 
         second.grove_protocol_version = 4;
         assert_eq!(
@@ -826,6 +850,32 @@ mod tests {
             .unwrap_err()
             .to_string()
             .starts_with("the runs applied different workloads"));
+    }
+
+    #[test]
+    fn a_row_reclassified_as_measured_compares_as_measured() {
+        let of_kind = |kind| {
+            let mut row = row("size_on_disk", "flushed", 100.0);
+            row.unit = "B".to_string();
+            row.kind = kind;
+            report(vec![engine("rocksdb", vec![row])])
+        };
+        let older = of_kind(RowKind::Count);
+        let newer = of_kind(RowKind::Measured);
+        assert!(comparable(&older, &newer).is_ok());
+        assert_eq!(compare(&older, &newer)[0].kind, RowKind::Measured);
+        assert_eq!(compare(&newer, &older)[0].kind, RowKind::Measured);
+        assert_eq!(compare(&older, &older)[0].kind, RowKind::Count);
+        assert_eq!(
+            comparable(&newer, &of_kind(RowKind::Time))
+                .unwrap_err()
+                .to_string(),
+            "rocksdb size_on_disk in flushed is Measured in B in one run and Time in B in the other"
+        );
+        assert_eq!(
+            serde_json::to_string(&RowKind::Measured).unwrap(),
+            "\"measured\""
+        );
     }
 
     #[test]
