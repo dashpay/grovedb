@@ -16,7 +16,10 @@
 
 use std::collections::BTreeSet;
 
-use lignin_format::{manifest::LiveFile, FileId, FileKind};
+use lignin_format::{
+    manifest::{FileState, LiveFile},
+    FileId, FileKind,
+};
 use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
 
 use super::{recover::the_store_recovers_the_same, *};
@@ -351,22 +354,78 @@ fn a_close_names_the_files_of_every_store_though_a_segment_was_not_deleted() {
     );
 }
 
-/// The next session opens to the same state whatever such a close named:
-/// the store's recovery lands on the last commit, with every page as the
-/// commits left it and every count of live values right, also from a
-/// manifest that names the value-log file as still written and the log
-/// short of its end, as a close that stopped at the segment store's
-/// error left it and as a session that is killed leaves it.
+/// **A close has every store name its files, also after a settling that a
+/// store answered with an error.** The checkpoint of the close leaves the
+/// manifest in doubt at its installation. The close settles it, the
+/// segment store answers the settling with
+/// [`SegmentStoreError::NotDeleted`], and every store has heard of the
+/// manifest all the same: the three replacements are made from it.
 #[test]
-fn the_next_session_recovers_from_a_close_that_could_not_delete_a_segment() {
+fn a_close_names_the_files_of_every_store_after_a_settling_that_ended_with_an_error() {
+    let (fs, db) = store(ONE_LOG_FILE);
+    a_session_to_close(&fs, &db);
+    // The installation is the first replacement of the close.
+    leave_a_replacement_in_doubt(&fs, &db, 0);
+    let finished = db.wb().finish();
+    assert!(
+        matches!(finished, Err(FlushError::Table(_))),
+        "the installation's error comes first: {finished:?}"
+    );
+    assert!(!in_doubt(&db));
+
+    let values = db.values.files_named().expect("the value-log files");
+    assert!(!values.is_empty());
+    assert_eq!(
+        named(&db, FileKind::ValueLog),
+        values,
+        "the value store did not name its files at the close"
+    );
+    let log = db.log.files_named().expect("the log's files");
+    assert_eq!(
+        named(&db, FileKind::Wal),
+        log,
+        "the log did not name its files at the close"
+    );
+    let segments = db.segments.segments_named().expect("the segments");
+    assert_eq!(named(&db, FileKind::Segment), segments);
+}
+
+/// The next session opens to the same state whatever a close could name.
+/// Here the value store's and the log's replacements fail before they
+/// write anything, so the manifest names the value-log file as one that
+/// is still written and the log short of its end, as a session that is
+/// killed leaves them. The store's recovery lands on the last commit,
+/// with every page as the commits left it and every count of live values
+/// right.
+#[test]
+fn the_next_session_recovers_from_a_close_that_named_neither_the_values_nor_the_log() {
     let (fs, db) = store(ONE_LOG_FILE);
     let ids = a_session_to_close(&fs, &db);
+    // The installation and the segment store's replacement are made, and
+    // no manifest is written after them.
+    let temporary = db.path.join(ManifestStore::TEMP_FILE_NAME);
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::Open)
+            .at(&temporary)
+            .skip(2)
+            .forever(),
+    );
     close_with_the_segment_stuck(&db);
+    assert!(!in_doubt(&db));
+    let values = named(&db, FileKind::ValueLog);
+    assert!(
+        values.iter().any(|file| file.state() == FileState::Open),
+        "the value-log file is named as still written: {values:?}"
+    );
+    assert_ne!(values, db.values.files_named().expect("the files"));
+    let log = db.log.files_named().expect("the log's files");
+    assert_ne!(named(&db, FileKind::Wal), log, "the log is named short");
+
     let latest = db.latest();
     let model = db.model.lock().expect("the model").clone();
     let (vfs, path) = (db.vfs.clone(), db.path.clone());
     drop(db);
-
     fs.clear_rules();
     let found = recover::recover(vfs.clone(), &path, &ids);
     assert_eq!(found.landed, latest);
@@ -397,19 +456,17 @@ fn table_files(db: &Db) -> usize {
     db.vfs.read_dir(&dir).expect("a listing").len()
 }
 
-/// **A checkpoint that is given up because the log could not be made
-/// durable ends with that error**, also when the manifest cannot be had
-/// to delete the checkpoint that was written: here a replacement left it
-/// in doubt, and the settling ends with the segment store's
-/// [`SegmentStoreError::NotDeleted`]. The checkpoint's file stays then,
-/// named by no manifest, and the next session removes it.
-#[test]
-fn a_checkpoint_given_up_for_the_log_ends_with_the_logs_error_whatever_the_manifest_says() {
-    let (fs, db) = store(ONE_LOG_FILE);
-    let ids = [page(1)];
-    a_segment_that_cannot_be_deleted(&fs, &db);
+/// A store with a checkpoint in force, a commit behind it that is
+/// written back, a manifest that a replacement left in doubt, and a log
+/// whose syncs fail: the next checkpoint is written and then given up.
+/// Returns the checkpoint in force and how many files `table/` holds.
+fn a_checkpoint_to_give_up(
+    fs: &SimVfs,
+    db: &Db,
+) -> (Option<(CommitVersion, Option<LogPlace>)>, usize) {
+    a_segment_that_cannot_be_deleted(fs, db);
     installed(db.wb().checkpoint().expect("a checkpoint"));
-    let (in_force, before) = (db.state.in_force(), table_files(&db));
+    let (in_force, before) = (db.state.in_force(), table_files(db));
     db.commit(&[hash((1, 1), 2)]);
     db.wb().pass().expect("a pass");
 
@@ -419,18 +476,57 @@ fn a_checkpoint_given_up_for_the_log_ends_with_the_logs_error_whatever_the_manif
     // something to name.
     let filled = db.chain(page(1))[0].location().expect("a block").file;
     assert!(db.wb().seal_segment(filled).expect("the segment is sealed"));
-    leave_a_replacement_in_doubt(&fs, &db, 0);
+    leave_a_replacement_in_doubt(fs, db, 0);
     (db.segments)
         .commit(&mut db.wb().manifest().expect("the manifest"))
         .expect_err("the replacement fails");
-    assert!(in_doubt(&db));
-    fail_the_syncs_of_the_log(&fs, &db);
+    assert!(in_doubt(db));
+    fail_the_syncs_of_the_log(fs, db);
+    (in_force, before)
+}
+
+/// **A checkpoint that is given up because the log could not be made
+/// durable ends with that error, and its file is deleted**, also when the
+/// settling of a manifest in doubt ends with an error of a store: here
+/// the segment store answers [`SegmentStoreError::NotDeleted`], and the
+/// manifest is settled all the same.
+#[test]
+fn a_checkpoint_given_up_for_the_log_ends_with_the_logs_error_and_is_deleted() {
+    let (fs, db) = store(ONE_LOG_FILE);
+    let (in_force, before) = a_checkpoint_to_give_up(&fs, &db);
 
     let error = db.wb().checkpoint().expect_err("the log is not durable");
     assert!(
         matches!(error, FlushError::Log(LogError::SyncFailed { .. })),
         "{error}"
     );
+    assert!(!in_doubt(&db));
+    assert_eq!(db.state.in_force(), in_force);
+    assert_eq!(table_files(&db), before, "the checkpoint's file is deleted");
+}
+
+/// Where the manifest cannot be opened again, the checkpoint that is
+/// given up ends with the log's error too, and its file stays, named by
+/// no manifest: the next session removes it.
+#[test]
+fn a_checkpoint_given_up_under_a_manifest_in_doubt_stays_until_the_next_session() {
+    let (fs, db) = store(ONE_LOG_FILE);
+    let ids = [page(1)];
+    let (in_force, before) = a_checkpoint_to_give_up(&fs, &db);
+    let manifest = db.path.join(ManifestStore::FILE_NAME);
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(OpKind::Open)
+            .at(&manifest)
+            .forever(),
+    );
+
+    let error = db.wb().checkpoint().expect_err("the log is not durable");
+    assert!(
+        matches!(error, FlushError::Log(LogError::SyncFailed { .. })),
+        "{error}"
+    );
+    assert!(in_doubt(&db));
     assert_eq!(db.state.in_force(), in_force);
     assert_eq!(table_files(&db), before + 1, "the checkpoint's file stays");
 

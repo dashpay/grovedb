@@ -106,9 +106,10 @@ impl<'s> WriteBack<'s> {
 
         // What was appended is covered whatever ended the walk, and what
         // ended the walk is returned whatever becomes of the cover.
-        let covered = match fresh.is_empty() {
-            true => Ok(()),
-            false => self.cover(files, fresh),
+        let covered = if fresh.is_empty() {
+            Ok(())
+        } else {
+            self.cover(files, fresh)
         };
         ended.and(covered)
     }

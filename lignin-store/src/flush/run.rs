@@ -252,7 +252,9 @@ impl WriteBack<'_> {
     /// is made whatever became of the one before it**, and the first error
     /// is returned: each of the three stores replaces the manifest with one
     /// that names its files as they are, also when the store before it
-    /// could not delete a file.
+    /// could not delete a file, and also when a manifest in doubt was
+    /// settled with such an answer. Only a manifest that is still in doubt,
+    /// because it could not be opened again, is replaced by none of them.
     ///
     /// A manifest that a close could not write, or a session that was
     /// killed, leaves the value log's file named as one that is still
@@ -278,21 +280,25 @@ impl WriteBack<'_> {
         };
         drop(files);
         let synced = self.sync_log().map(drop);
-        let named = self.manifest().and_then(|mut manifest| {
+        // A manifest in doubt is settled first. A store that answers the
+        // settling with an error has heard of the manifest all the same,
+        // so the stores name their files in the manifest as it is: a
+        // replacement refuses one that is still in doubt, and writes
+        // nothing.
+        let settled = self.manifest().map(drop);
+        let named = {
+            let mut manifest = lock(self.stores.manifest);
             let Stores {
                 segments,
                 values,
                 log,
                 ..
             } = self.stores;
-            let segments = segments.commit(&mut manifest);
-            let values = values.commit(&mut manifest);
-            let log = log.commit(&mut manifest);
-            segments?;
-            values?;
-            log?;
-            Ok(())
-        });
-        sealed.and(finished).and(synced).and(named)
+            let segments = segments.commit(&mut manifest).map_err(FlushError::from);
+            let values = values.commit(&mut manifest).map_err(FlushError::from);
+            let log = log.commit(&mut manifest).map_err(FlushError::from);
+            segments.and(values).and(log)
+        };
+        sealed.and(finished).and(synced).and(settled).and(named)
     }
 }
