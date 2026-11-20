@@ -137,7 +137,7 @@ fn chain_length_never_exceeds_the_threshold() {
     db.commit(&[hash((2, 1), 1)]);
     db.wb().pass().expect("a pass");
     assert_eq!(db.shape(page(1)), "Bdd");
-    let dead: u64 = db.state.dead_space().values().map(|dead| dead.blocks).sum();
+    let dead = db.dead_blocks();
     assert!(dead >= 8, "{dead} blocks were reported dead");
     db.check_cold();
 }

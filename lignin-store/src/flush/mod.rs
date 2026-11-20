@@ -239,6 +239,53 @@
 //! counts their blocks as dead space of their segments
 //! ([`FlushState::dead_space`]), for whoever cleans segments (STORE-08).
 //!
+//! **No reader means no version pin and no running operation.** The table
+//! asks for the oldest version a reader can ask for, and the oldest pin
+//! alone is not it. An operation that holds no pin reads the latest
+//! version of its beginning under its guard, and a link it has not looked
+//! up yet is no location it has read (`transactions.md` RD4, PN5): were
+//! the chain trimmed at once under a commit that superseded the page
+//! meanwhile, the operation would find no version of the page at the
+//! version it reads. So a pass puts the three questions as the cleaner
+//! does for its own trims (PN6, [`crate::cleaner`]): the oldest pin, then
+//! an epoch, and it trims at that version once every operation guard of
+//! before that epoch is released. Until then the page waits in a list
+//! that write-back keeps from pass to pass, and a later pass trims it:
+//! the first one after every operation that was running when the answer
+//! was given has ended, if that answer has reached the image.
+//!
+//! - When no operation is running, the image's commit is published and
+//!   no pin is below it, that is the pass that wrote the image, or the
+//!   next one if as many answers waited as write-back keeps.
+//! - When each operation ends before the pass after the one it was
+//!   running at, it is the next pass, however closely the operations
+//!   follow one another. An operation that goes on through more passes
+//!   holds the trim back through all of them.
+//! - A pin below the image holds it back until the pin is gone.
+//!
+//! While a page waits, its chain is trimmed at each version that chains
+//! may be trimmed at, once. So a page that gets an image in every pass,
+//! as a flat page that every commit changes does, keeps the images from
+//! the one that a reader at that version sees and no older ones.
+//!
+//! **What bounds the wait is what bounds a guard.** A guard is held for
+//! one operation, and for as long as a node view that the operation
+//! handed out lives (PN5). A guard that is never released stalls these
+//! trims as a pin that is never released does, and as it stalls the
+//! cleaner's trims and the reuse of page ids: the links stay, and their
+//! blocks are not dead space yet, so no segment is cleaned of them.
+//! Nothing else waits for a trim. The page is written, no log is held
+//! for a link that waits, and [backpressure](#backpressure) counts none
+//! of it: a committer never waits for a trim, as it never waits for a
+//! pin. What write-back keeps meanwhile is one entry for each page that
+//! waits and at most eight answers that wait for their operations.
+//!
+//! The later pass needs no commit: the background loop makes a turn
+//! whenever its idle time has passed ([`WriteBack::run`]), and every turn
+//! is a pass. What still waits when the session ends is trimmed by the
+//! cleaner of a later one, as every chain is that an earlier session left
+//! with links under a newer base image.
+//!
 //! # Pending values
 //!
 //! A value that is too long for its cell travels in the log group of its
