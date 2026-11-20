@@ -412,7 +412,8 @@ change to the counts of live values (DU5, O7): every pointer a cell stopped
 holding, and every pointer a cell started to hold. A commit that writes new
 values acquires nothing: its values have no pointer yet (FL7). The acquired
 entries are for a commit that stores pointers to values which are already
-in the value log, under a manifest that covers them, as a bulk load can.
+in the value log, under a manifest that covers them: the commit of a load
+(`transactions.md` LD5).
 
 **LG17. A group may have no entry.** A commit that takes a version and
 changes no page (ST5) is one part with no entry, 26 bytes. A part with no
@@ -1092,7 +1093,8 @@ owner can overrule one while version 1 is still open (U10).
    entries fixed (B8).
 9. **The entries are in a fixed order** (LG14): pages ascending and once.
    The writer sorts the pages it changed.
-10. **A group can acquire pointers** (LG16), though no commit does today.
+10. **A group can acquire pointers** (LG16). The commit of a load does
+    (`transactions.md` LD5), and no other commit.
 11. **Flat pages are logged as runs of their own records, by page** (LG19).
     The owner's note asked for logical puts, deletes and range deletes and
     not page images. They are logical within a page, and they name the

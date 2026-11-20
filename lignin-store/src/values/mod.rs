@@ -132,6 +132,9 @@
 //! A commit appends nothing to the value log: its new values travel in its
 //! log group (FL7). So the change of a commit only releases. A new value is
 //! acquired in the page step of write-back that gives its cell the pointer.
+//! The one commit that acquires is that of a bulk load, whose values were
+//! appended here, under a hold, before it, and which has a manifest cover
+//! them before its group names them (`transactions.md` LD2, LD5).
 //!
 //! **The order of the log is the order of the counts.** A change point
 //! takes the store's lock on the counts ([`ValueStore::step`]), writes its
