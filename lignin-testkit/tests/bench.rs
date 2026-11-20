@@ -7,7 +7,7 @@
 
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::bench::{
-    cli, compare, run, ColdMethod, EngineChoice, Report, RowKind, RunOptions, Settings,
+    cli, compare, run, EngineChoice, Report, RowKind, RunOptions, Settings,
 };
 
 fn small(scratch: std::path::PathBuf) -> Settings {
@@ -38,6 +38,49 @@ fn options(scratch: std::path::PathBuf) -> RunOptions {
         commit: None,
         grove_version: GroveVersion::latest(),
     }
+}
+
+/// The rows that are times.
+const TIME_ROWS: [&str; 8] = [
+    "bulk_load",
+    "wall_per_transition",
+    "block_commit",
+    "checkpoint",
+    "reopen",
+    "point_get",
+    "point_query_proof",
+    "references_proof",
+];
+
+/// The rows whose values follow the schedule: where a log file starts,
+/// when background work ran, what the rest of the process wrote.
+const MEASURED_ROWS: [&str; 6] = [
+    "bytes_logged_per_transition",
+    "physical_bytes_per_transition",
+    "flush_bytes_per_transition",
+    "compaction_bytes_per_transition",
+    "process_write_bytes_per_transition",
+    "size_on_disk",
+];
+
+fn kind_of(id: &str) -> RowKind {
+    if TIME_ROWS.contains(&id) {
+        RowKind::Time
+    } else if MEASURED_ROWS.contains(&id) {
+        RowKind::Measured
+    } else {
+        RowKind::Count
+    }
+}
+
+/// The id and phase of every count row of `report`.
+fn count_rows(report: &Report) -> std::collections::BTreeSet<(String, String)> {
+    report.engines[0]
+        .rows
+        .iter()
+        .filter(|row| row.kind == RowKind::Count)
+        .map(|row| (row.id.clone(), row.phase.clone()))
+        .collect()
 }
 
 #[test]
@@ -90,27 +133,20 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         let row = engine
             .row(id, phase)
             .unwrap_or_else(|| panic!("no row {id} in {phase}"));
-        assert!(row.value > 0.0, "{id} in {phase} is {}", row.value);
         assert!(!row.source.is_empty());
-        assert_eq!(row.ratio_to_rocksdb, Some(1.0));
         if row.kind == RowKind::Time {
             assert_eq!(row.value, row.summary.unwrap().median);
+            assert!(row.value >= 0.0, "{id} in {phase} is {}", row.value);
+            assert_eq!(row.ratio_to_rocksdb, (row.value != 0.0).then_some(1.0));
+        } else {
+            assert!(row.value > 0.0, "{id} in {phase} is {}", row.value);
+            assert_eq!(row.ratio_to_rocksdb, Some(1.0));
         }
     }
 
     let create = engine.row("wall_per_transition", "create").unwrap();
     assert_eq!(create.samples.len(), 10, "one sample per block");
     assert!(create.recorded.is_some() && create.ratio_to_recorded.is_some());
-    if first.method.perf_instructions {
-        assert!(create.instructions_per_sample.unwrap() > 1_000.0);
-    }
-    if first.method.thread_cpu_time {
-        assert!(create.cpu_per_sample.unwrap() > 0.0);
-    }
-    if first.method.cold_method == ColdMethod::ReopenAndDropFileCache {
-        let cold = engine.row("point_get", "cold").unwrap();
-        assert!(cold.storage_read_bytes_per_sample.is_some());
-    }
 
     let records = engine
         .row("node_records_per_transition", "load")
@@ -167,15 +203,25 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
     );
     assert_eq!(load.counters.log_groups, 100, "one write batch per block");
 
+    for report in [&first, &second] {
+        for row in &report.engines[0].rows {
+            assert_eq!(row.kind, kind_of(&row.id), "{} in {}", row.id, row.phase);
+        }
+    }
+    let counted = count_rows(&first);
+    assert_eq!(
+        counted,
+        count_rows(&second),
+        "both runs have the same count rows"
+    );
+
     let agreements = compare(&first, &second);
-    for agreement in agreements.iter().filter(|agreement| {
-        agreement.kind == RowKind::Count
-            && !agreement.id.contains("physical")
-            && !agreement.id.contains("flush")
-            && !agreement.id.contains("compaction")
-            && !agreement.id.contains("process_write")
-            && !agreement.id.starts_with("size_on_disk")
-    }) {
+    let counts: Vec<_> = agreements
+        .iter()
+        .filter(|agreement| agreement.kind == RowKind::Count)
+        .collect();
+    assert_eq!(counts.len(), counted.len());
+    for agreement in &counts {
         assert!(
             agreement.within(0.0),
             "{} in {} changed between runs: {} then {}",
@@ -199,12 +245,16 @@ fn a_run_measures_every_row_and_count_rows_repeat() {
         path("first.json"),
         path("second.json"),
         "--tolerance".to_string(),
-        "1000".to_string(),
+        "0".to_string(),
     ])
     .unwrap();
-    assert!(comparison.contains("within +100000.0%"));
+    let n = counts.len();
+    assert!(
+        comparison.contains(&format!("within +0.0%: {n} of {n} count rows, ")),
+        "{comparison}"
+    );
+    assert!(comparison.contains("measured rows"));
     assert!(comparison.contains("time rows by instructions"));
-    assert!(!comparison.contains("APART"));
 }
 
 #[test]

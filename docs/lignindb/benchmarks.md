@@ -42,7 +42,8 @@ per owner.
 
 1. **`load`.** The contract set-up block is applied untimed. The million
    creates follow, through `workload::apply`, one write transaction per
-   block. Bulk load, and every count row averaged over the load.
+   block. Bulk load, and every count and measured row averaged over the
+   load.
 2. **`at-size`.** The size on disk right after the load.
 3. **`warm`.** Untimed warm-up reads, then the timed reads:
    - point gets of random documents;
@@ -131,8 +132,10 @@ RocksDB engine reads what RocksDB leaves in its directory:
 - **Not available:** page reads and cache hits.
 
 On Linux, `/proc/self/io` `write_bytes` is reported beside the physical-bytes
-row as a cross-check. It agrees with the log, flush and compaction sum to
-within 1%.
+row as a cross-check. In the reference runs on disk it agreed with the log,
+flush and compaction sum to within 1%. It counts the whole process and the
+children it has waited for, so beside other work, or on a file system that
+does not count writes (tmpfs), it can differ.
 
 ### What LigninDB has to implement
 
@@ -185,7 +188,11 @@ Per engine, the report holds:
 
 A row holds:
 
-- its id, phase, unit and kind (count or time);
+- its id, phase, unit and kind: count (equal in every run of one commit
+  with the same settings),
+  measured (bytes and sizes that follow when background work ran or what
+  the rest of the process wrote: bytes logged, physical, flush, compaction
+  and process write bytes, size on disk), or time;
 - its value, its samples and their summary (median, mean, minimum, p10, p90,
   maximum);
 - instructions per sample and thread CPU time per sample, where measured;
@@ -194,17 +201,24 @@ A row holds:
 - the ratio to RocksDB in the same run;
 - its source.
 
-`lignin-bench compare` refuses two runs of different workloads, GroveVersions
-or row units. It reports each row's change, and for time rows the change in
-instructions per sample.
+`lignin-bench compare` refuses two runs of different workloads, GroveVersions,
+row units, or a row that is a time row in one run and not in the other. It
+reports each row's change, and for time rows the change in instructions per
+sample. It counts count, measured and time rows apart; count rows are the
+ones two runs of one commit with the same settings agree on exactly. A report from before the
+measured kind still reads back, and against a newer report its rows are
+compared as the newer one classes them; a binary from before it cannot read
+a newer report.
 
 ## RocksDB baseline and the plan's recorded values
 
-These are the count rows of the reference run, on `feat/LigninDB` at
-564bb7bf with this harness. Every run on both machines gives the same
-values, except the background-write rows and the size, which follow
-compaction timing. Values are per state transition, averaged over the load
-of one million documents.
+These are the count and measured rows of the reference run, on
+`feat/LigninDB` at 564bb7bf with this harness. Every run on both machines
+gives the same count rows. The measured rows (bytes logged, physical bytes,
+size on disk) differ between runs, bytes logged only below the precision
+shown. The write rows are per state transition, averaged over the load of
+one million documents; proof sizes are medians, and the size is the whole
+database after a flush.
 
 | Row | Measured | Plan | Difference |
 | --- | --- | --- | --- |

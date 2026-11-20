@@ -3,16 +3,18 @@
 //! The run applies [`Documents`] in this order and measures as it goes:
 //!
 //! 1. **Load** (`load`): the contract set-up block, untimed, then
-//!    `documents` creates, 20 per block. Bulk load, and every count row
-//!    averaged over the whole load.
+//!    `documents` creates, 20 per block. Bulk load, and every count and
+//!    measured row averaged over the whole load.
 //! 2. **At size** (`at-size`, `warm`, `cold`): the size on disk, warm point
 //!    gets and proofs, checkpoints, a flush, reopens, then cold reads.
 //! 3. **Writes at size** (`create`, `update`, `delete`): `measured_creates`
 //!    more creates, then `updates` replacements and `deletes` deletions,
 //!    with per-block samples.
 //!
-//! Every count row comes from the engine's [`Counters`](super::Counters) or
-//! GroveDB's `OperationCost`; every time row from `Instant` around the
+//! Every count and measured row comes from the engine's
+//! [`Counters`](super::Counters), GroveDB's `OperationCost`, the serialized
+//! sizes of what is written, proof lengths, file lengths or `/proc`; every
+//! time row from `Instant` around the
 //! engine call alone, with the engine's bookkeeping (`settle`, `counters`)
 //! outside.
 //!
@@ -316,6 +318,14 @@ fn count_row(id: &str, phase: &str, unit: &str, total: f64, per: u64, source: &s
     row
 }
 
+/// A [`RowKind::Measured`] row: `total` over `per`.
+fn measured_row(id: &str, phase: &str, unit: &str, total: f64, per: u64, source: &str) -> Row {
+    Row {
+        kind: RowKind::Measured,
+        ..count_row(id, phase, unit, total, per, source)
+    }
+}
+
 /// A count row whose value is the median of `samples`.
 fn sampled_count_row(id: &str, phase: &str, unit: &str, samples: Vec<f64>, source: &str) -> Row {
     let median = Summary::of(&samples).map_or(0.0, |summary| summary.median);
@@ -504,7 +514,7 @@ fn write_phase<E: Engine>(
 
 const COST_SOURCE: &str = "GroveDB's OperationCost of every operation, summed";
 
-/// The count rows of a write phase, per state transition.
+/// The count and measured rows of a write phase, per state transition.
 fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
     let totals = &run.totals;
     let phase = totals.phase.as_str();
@@ -544,7 +554,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{log_source}, key and value bytes of every record"),
         ),
-        count_row(
+        measured_row(
             "bytes_logged_per_transition",
             phase,
             "B",
@@ -552,7 +562,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{log_source}, bytes appended, framing included"),
         ),
-        count_row(
+        measured_row(
             "physical_bytes_per_transition",
             phase,
             "B",
@@ -560,7 +570,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{engine} engine counters: log, flush and compaction bytes"),
         ),
-        count_row(
+        measured_row(
             "flush_bytes_per_transition",
             phase,
             "B",
@@ -568,7 +578,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
             n,
             &format!("{engine} engine counters: flush bytes"),
         ),
-        count_row(
+        measured_row(
             "compaction_bytes_per_transition",
             phase,
             "B",
@@ -658,7 +668,7 @@ fn count_rows(run: &PhaseRun, engine: &str) -> Vec<Row> {
         }
     }
     if let Some(written) = totals.process_write_bytes {
-        rows.push(count_row(
+        rows.push(measured_row(
             "process_write_bytes_per_transition",
             phase,
             "B",
@@ -1040,7 +1050,7 @@ fn measure<E: Engine>(
 
     let root_hash_after_load = engine.root_hash(grove_version)?;
     let disk_after_load = disk_usage(dir)?;
-    rows.push(count_row(
+    rows.push(measured_row(
         "size_on_disk",
         "at-size",
         "B",
@@ -1129,7 +1139,7 @@ fn measure<E: Engine>(
     engine.flush()?;
     engine.wait_for_background()?;
     let disk_after_flush = disk_usage(dir)?;
-    rows.push(count_row(
+    rows.push(measured_row(
         "size_on_disk",
         "flushed",
         "B",
