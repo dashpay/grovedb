@@ -24,12 +24,25 @@
 //!   for the subtree, and `Merk::open_from_directory` refuses it as it
 //!   refuses any other bytes.
 //!
-//! An element that hosts more than one Merk, an indexed tree, is refused
-//! with `Error::NotSupported`: its Merks are named together, by its
-//! element (GROVE-04). It is refused where a group writes into a subtree
-//! whose element the group states as one, and where a subtree is entered
-//! under one. A batch that enters a subtree itself has said its host and
-//! its tree type, and neither is looked at here.
+//! An element that hosts more than one Merk is an indexed tree: the Merk
+//! of its own path, the primary, and after it one secondary Merk for each
+//! of its axes, in the order the element has them. A handle knows one
+//! subtree, so what such an element hosts is said here, for the group,
+//! from the element as the group leaves it ([`Owed::hosts`]):
+//!
+//! - **The Merks of an indexed tree are entered together**, by the first
+//!   batch that writes into one of them, each at its position under the
+//!   element: the primary as a tree of the element's type, a secondary as
+//!   a tree of the type its axis keeps.
+//! - **The element's node names all of them** in every batch of the group
+//!   that puts it, whichever of them the batch writes.
+//! - **A secondary is written through a handle that names its element**
+//!   ([`Engine::subtree_beside`](crate::Engine::subtree_beside)). A write
+//!   through such a handle under an element that hosts no such subtree
+//!   once the group is applied is refused with `Error::NotSupported`.
+//!
+//! A batch that enters a subtree itself has said its host and its tree
+//! type, and neither is looked at here.
 //!
 //! What this does not do:
 //!
@@ -52,38 +65,44 @@ use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     store::{
         lignin::{
-            tree_type_bytes, LigninHost, LigninNodeStore, LigninOutcome, LigninSettled,
-            LigninSubtree, LigninView,
+            tree_type_bytes, LigninEntry, LigninHost, LigninNodeStore, LigninOutcome,
+            LigninSettled, LigninSubtree, LigninView,
         },
         NodeStore,
     },
     tree::kv::ValueDefinedCostType,
     TreeType,
 };
-use grovedb_storage::Error;
+use grovedb_storage::{prefix::secondary_prefix_for, Error};
 use grovedb_version::version::GroveVersion;
 
 use super::{
     error::{merk_error, not_supported},
     ROOT,
 };
-use crate::Element;
+use crate::{
+    operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag, indexed_element_axes},
+    Element,
+};
 
-/// The tree type of the element that `value` is the bytes of, if it is a
-/// tree. The bytes of an element are the same on every grove version.
-fn tree_of(value: &[u8]) -> Option<TreeType> {
-    let element = Element::deserialize(value, GroveVersion::latest()).ok()?;
-    element.tree_type()
+/// The element that `value` is the bytes of, or `None` for bytes of no
+/// element. The bytes of an element are the same on every grove version.
+fn element_of(value: &[u8]) -> Option<Element> {
+    Element::deserialize(value, GroveVersion::latest()).ok()
 }
 
-/// The element `host` as the transaction has it: `None` if there is no
-/// such node, and otherwise its tree type, if it is a tree.
-fn tree_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option<TreeType>>, Error> {
+/// The node `host` as the transaction has it: `None` if there is no such
+/// node, and otherwise the element it holds, if its bytes are one's.
+fn element_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option<Element>>, Error> {
     let parent = LigninNodeStore::read_only(view, LigninSubtree::alone(host.subtree));
     let no_cost = None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>;
     let node = parent.get_node(&host.key, no_cost, GroveVersion::latest());
     let node = node.unwrap().map_err(merk_error)?;
-    Ok(node.as_ref().map(|node| tree_of(node.value_as_slice())))
+    Ok(node.as_ref().map(|node| element_of(node.value_as_slice())))
+}
+
+fn beside_nothing() -> Error {
+    not_supported("a write into a subtree beside one that its element does not host")
 }
 
 /// What the parts make of an element.
@@ -110,22 +129,92 @@ fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
     Host::Stored
 }
 
-fn one_merk(tree_type: Option<TreeType>) -> Result<Option<TreeType>, Error> {
-    match tree_type {
-        Some(tree_type) if tree_type.is_indexed_primary() => Err(not_supported(
-            "a tree that keeps more than one Merk under its element",
-        )),
-        tree_type => Ok(tree_type),
+/// What the group makes of the element that `host` names, and what that
+/// element hosts.
+enum Hosting {
+    /// No element: the group removes it, or there never was one.
+    Nothing,
+    /// An element that hosts the subtree of its own path and no other,
+    /// with its tree type if it is a tree.
+    One(Option<TreeType>),
+    /// An indexed tree: its Merks by position, each with its tree type.
+    Many(Vec<([u8; 32], TreeType)>),
+}
+
+/// The Merks that `element` hosts, where `own` is the subtree of its own
+/// path: for an indexed tree the primary and then the secondary of each
+/// axis, in the element's order.
+fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error> {
+    let Some(tree_type) = element.tree_type() else {
+        return Ok(Hosting::One(None));
+    };
+    if !tree_type.is_indexed_primary() {
+        return Ok(Hosting::One(Some(tree_type)));
+    }
+    let axes = indexed_element_axes(element)
+        .map_err(|error| Error::StorageError(format!("lignindb: an indexed tree: {error}")))?;
+    let secondaries = axes.into_iter().map(|(axis, _)| {
+        let prefix = secondary_prefix_for(&own, axis_storage_tag(axis)).value;
+        (prefix, axis_secondary_tree_type(axis))
+    });
+    Ok(Hosting::Many(
+        std::iter::once((own, tree_type))
+            .chain(secondaries)
+            .collect(),
+    ))
+}
+
+fn entered(view: LigninView<'_>, prefix: [u8; 32]) -> Result<Option<LigninEntry>, Error> {
+    let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
+    handle.entry().map_err(merk_error)
+}
+
+/// What the group makes of the element `host`. The element is read from
+/// the transaction only where no part states it, and where the subtree of
+/// its own path is not entered as a tree that hosts no other.
+fn hosting_of(
+    view: LigninView<'_>,
+    parts: &[LigninSettled],
+    host: &LigninHost,
+    own: [u8; 32],
+) -> Result<Hosting, Error> {
+    match host_of(parts, host) {
+        Host::Stated(value) => match element_of(value) {
+            Some(element) => hosting(&element, own),
+            None => Ok(Hosting::One(None)),
+        },
+        Host::Removed => Ok(Hosting::Nothing),
+        Host::Stored => {
+            let known = entered(view, own)?.and_then(|entry| entry.tree_type().ok());
+            match known {
+                Some(tree_type) if !tree_type.is_indexed_primary() => {
+                    Ok(Hosting::One(Some(tree_type)))
+                }
+                _ => match element_read(view, host)? {
+                    Some(Some(element)) => hosting(&element, own),
+                    Some(None) => Ok(Hosting::One(None)),
+                    None => Ok(Hosting::Nothing),
+                },
+            }
+        }
     }
 }
 
-/// The subtrees that are entered with `parts`: those a part writes into
-/// that neither a part nor the transaction has entered, each with the
-/// bytes of its tree type, and a subtree after the one its host is in.
-pub(super) fn owed(
-    view: LigninView<'_>,
-    parts: &[LigninSettled],
-) -> Result<Vec<(LigninSubtree, Vec<u8>)>, Error> {
+/// What a group owes the subtree directory when it is applied.
+#[derive(Debug, Default)]
+pub(super) struct Owed {
+    /// The subtrees that are entered with the group: those a part writes
+    /// into that neither a part nor the transaction has entered, and with
+    /// one Merk of an indexed tree the others, each with the bytes of its
+    /// tree type, and a subtree after the one its host is in.
+    pub(super) enters: Vec<(LigninSubtree, Vec<u8>)>,
+    /// Each indexed tree that the group writes a Merk of, with every Merk
+    /// it hosts, by position.
+    pub(super) hosts: Vec<LigninHost>,
+}
+
+/// What `parts` owe the subtree directory.
+pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed, Error> {
     // Each subtree once: of the parts that write into it, as the first
     // names it whose handle named a host.
     let mut written: BTreeMap<_, &LigninSubtree> = BTreeMap::new();
@@ -137,54 +226,92 @@ pub(super) fn owed(
             }
         }
     }
-    let mut owed: Vec<(LigninSubtree, Vec<u8>)> = Vec::new();
+    let enters_itself = |prefix: &[u8; 32]| parts.iter().any(|part| part.enters(prefix));
+    // A subtree is entered under an element that is there once the group
+    // is applied: the directory names no host that is no node.
+    let no_element = || not_supported("a write into a subtree under a key that holds no element");
+    let mut owed = Owed::default();
     for subtree in written.into_values() {
         let prefix = subtree.prefix;
-        if parts.iter().any(|part| part.enters(&prefix)) {
+        if enters_itself(&prefix) {
             continue;
         }
-        let host = subtree.host.as_ref();
-        let host = host.map(|host| (host, host_of(parts, host)));
-        let stated_tree = match host {
-            Some((_, Host::Stated(value))) => one_merk(tree_of(value))?,
-            _ => None,
+        let Some(host) = &subtree.host else {
+            if entered(view, prefix)?.is_none() {
+                let tree_type = (prefix == ROOT).then_some(TreeType::NormalTree);
+                let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
+                owed.enters.push((subtree.clone(), bytes));
+            }
+            continue;
         };
-        let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
-        if handle.entry().map_err(merk_error)?.is_some() {
+        // The subtree of the element's own path: the one a handle by path
+        // is of, and the one a handle beside it names.
+        let own = host.hosted.first().copied().unwrap_or(prefix);
+        if owed
+            .hosts
+            .iter()
+            .any(|known| known.hosted.contains(&prefix))
+        {
             continue;
         }
-        // A subtree is entered under an element that is there once the
-        // group is applied: the directory names no host that is no node.
-        let no_element =
-            || not_supported("a write into a subtree under a key that holds no element");
-        let tree_type = match host {
-            None if prefix == ROOT => Some(TreeType::NormalTree),
-            None => None,
-            Some((_, Host::Stated(_))) => stated_tree,
-            Some((_, Host::Removed)) => return Err(no_element()),
-            Some((host, Host::Stored)) => one_merk(tree_read(view, host)?.ok_or_else(no_element)?)?,
-        };
-        let named = subtree.clone();
-        owed.push((named, tree_type.map(tree_type_bytes).unwrap_or_default()));
+        match hosting_of(view, parts, host, own)? {
+            Hosting::Many(hosted) => {
+                let named = LigninHost {
+                    subtree: host.subtree,
+                    key: host.key.clone(),
+                    hosted: hosted.iter().map(|(prefix, _)| *prefix).collect(),
+                };
+                if !named.hosted.contains(&prefix) {
+                    return Err(beside_nothing());
+                }
+                for (prefix, tree_type) in hosted {
+                    if enters_itself(&prefix) || entered(view, prefix)?.is_some() {
+                        continue;
+                    }
+                    let subtree = LigninSubtree {
+                        prefix,
+                        host: Some(named.clone()),
+                    };
+                    owed.enters.push((subtree, tree_type_bytes(tree_type)));
+                }
+                owed.hosts.push(named);
+            }
+            Hosting::One(_) | Hosting::Nothing if prefix != own => return Err(beside_nothing()),
+            Hosting::One(tree_type) => {
+                if entered(view, prefix)?.is_none() {
+                    let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
+                    owed.enters.push((subtree.clone(), bytes));
+                }
+            }
+            Hosting::Nothing => {
+                if entered(view, prefix)?.is_none() {
+                    return Err(no_element());
+                }
+            }
+        }
     }
     // A subtree whose host is in a subtree that is entered here too comes
     // after it: by how many of its hosts' subtrees are entered here.
     let depth = |subtree: &LigninSubtree| {
         let host = |subtree: &&LigninSubtree| {
             let host = subtree.host.as_ref()?.subtree;
-            owed.iter()
+            (owed.enters.iter())
                 .map(|(owed, _)| owed)
                 .find(|owed| owed.prefix == host)
         };
         let hosts = std::iter::successors(Some(subtree), host);
-        hosts.take(owed.len()).count()
+        hosts.take(owed.enters.len()).count()
     };
-    let mut ordered: Vec<_> = (owed.iter())
+    let mut ordered: Vec<_> = (owed.enters.iter())
         .map(|(subtree, tree_type)| (depth(subtree), subtree, tree_type))
         .collect();
     ordered.sort_by_key(|(depth, ..)| *depth);
-    Ok(ordered
+    let enters = ordered
         .into_iter()
         .map(|(_, subtree, tree_type)| (subtree.clone(), tree_type.clone()))
-        .collect())
+        .collect();
+    Ok(Owed {
+        enters,
+        hosts: owed.hosts,
+    })
 }

@@ -12,7 +12,9 @@
 //! again and have the physical checker of the engine read every page of
 //! it, with every hash of every Merk node made again by Merk's rules.
 
+mod append_only;
 mod cases;
+mod indexed;
 mod nested;
 mod restore;
 
@@ -1067,39 +1069,9 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     assert_eq!(format!("{moving:?}"), "LigninSubtreeMove");
     drop((batch, tx));
 
-    // An indexed tree keeps more than one Merk under its element: the
-    // write that would enter its Merks is refused, and nothing of it is
-    // kept.
-    let db = GroveDb::from_engine(engine);
-    let v = version();
-    let indexed = Element::empty_provable_count_indexed_tree();
-    (db.insert(ROOT, b"indexed", indexed, None, None, v))
-        .unwrap()
-        .expect("the element alone is a value of the root Merk");
-    let root_before = db.root_hash(None, v).unwrap().expect("a root");
-    let below = db
-        .insert_into_count_indexed_tree(
-            [b"indexed".as_slice()].as_ref(),
-            b"k",
-            Element::empty_provable_count_tree(),
-            None,
-            v,
-        )
-        .unwrap();
-    let error = below.expect_err("an indexed tree was written into");
-    not_supported(&error, matches!(error, Error::NotSupported(_)));
-    assert_eq!(db.root_hash(None, v).unwrap().expect("a root"), root_before);
-    let tx = db.engine().start_read_transaction();
-    let primary = db.engine().subtree(path![b"indexed"].into(), None, &tx);
-    assert_eq!(
-        primary.unwrap().entry().expect("the directory answers"),
-        None
-    );
-    drop(tx);
-
     // No checkpoint is opened either, so none is deleted: the directory
     // of a database is not taken for one.
-    drop(db);
+    drop(engine);
     let error = LigninEngine::open_checkpoint(dir.path()).expect_err("a checkpoint");
     not_supported(&error, matches!(error, StorageError::NotSupported(_)));
     let deleted = Lignin::delete_checkpoint_with_engine(dir.path());
@@ -1592,15 +1564,11 @@ fn the_element_of_a_subtree_is_the_one_its_group_states_last() {
         group_of(Element::empty_sum_tree()).expect("a group"),
         TreeType::SumTree
     );
-    // An indexed tree is refused where the group states it, although the
-    // transaction holds a tree of one Merk under the key.
-    let refused = group_of(Element::empty_provable_count_indexed_tree());
-    let refused = refused.expect_err("an indexed tree");
-    assert!(
-        matches!(refused, StorageError::NotSupported(_)),
-        "{refused}"
+    // An indexed tree is what the group states, although the transaction
+    // holds a tree of one Merk under the key: the subtree is entered as
+    // its primary.
+    assert_eq!(
+        group_of(Element::empty_provable_count_indexed_tree()).expect("a group"),
+        TreeType::ProvableCountIndexedTree
     );
-    let tx = engine.start_read_transaction();
-    let below = engine.subtree(path![b"t"].into(), None, &tx).unwrap();
-    assert_eq!(below.entry().expect("the directory answers"), None);
 }
