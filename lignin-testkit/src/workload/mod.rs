@@ -148,10 +148,11 @@ pub struct Features {
     /// The read of an indexed tree in the order of its 128-bit sums.
     pub big_sum_axis: bool,
     /// A batch that writes entries of an indexed tree leaves the secondary
-    /// trees in step with them. On grove versions 1 to 4 the batch reads
-    /// an entry from storage while its own writes are pending, so the row
-    /// of an entry it deletes can stay and the row of one it inserts can
-    /// be missing, and the rankings then differ from the entries.
+    /// trees in step with them. On grove versions 1 to 4 a removal reads
+    /// the entry back from storage while the writes of its operation are
+    /// pending, so the row of a removed entry can stay, and the rankings
+    /// then hold a row more than the tree has entries: a read of the
+    /// entries fails on it, or ranks what follows it one place late.
     pub indexed_batches_in_step: bool,
     /// `GroveDb::convert_to_big_sum_tree`.
     pub convert_to_big_sum_tree: bool,
