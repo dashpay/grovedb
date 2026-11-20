@@ -813,6 +813,88 @@ fn a_frame_can_be_read_before_anything_is_written_to_it() {
     }
 }
 
+/// Whether this build maps the frames of a large pool: the systems whose
+/// call for a mapping `frame.rs` declares.
+const MAPS: bool = cfg!(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    target_os = "macos",
+));
+
+/// A pool with a megabyte of frames or more does not write them when it is
+/// made: they are a mapping of the pool's own, which the system gives
+/// zeroed. They are aligned and zeroed as the frames of a small pool are,
+/// they lie side by side in one block, the first and the last of them can
+/// be written from end to end, and the pool counts them as its memory from
+/// the start. Miri fails this test if a frame is not zeroed or lies outside
+/// the block, and if the block is used after the pool gave it back.
+#[test]
+fn the_frames_of_a_large_pool_are_mapped_zeroed_and_side_by_side() {
+    let page_size = PageSize::MIN;
+    let config = PoolConfig {
+        page_size,
+        capacity: 130 * (page_size.get() + 512),
+    };
+    let pool = BufferPool::new(config).expect("holds frames");
+    let (frames, len) = (pool.frames(), pool.frame_len());
+    assert!(frames * len >= 1 << 20, "{frames} frames");
+    assert_eq!(pool.mapped_memory(), if MAPS { frames * len } else { 0 });
+    assert!(pool.fixed_memory() > frames * len);
+    assert!(pool.fixed_memory() <= pool.capacity());
+    assert_eq!(pool.memory(), pool.fixed_memory());
+
+    let mut blanks: Vec<Blank<'_>> = (0..frames).map(|_| pool.blank()).collect();
+    assert_eq!(pool.overflow_frames(), 0);
+    blanks.sort_by_key(|blank| blank.as_ptr().addr());
+    let first = blanks[0].as_ptr().addr();
+    for (index, blank) in blanks.iter().enumerate() {
+        assert_eq!(blank.len(), len);
+        assert_eq!(blank.as_ptr().addr(), first + index * len);
+        assert_eq!(blank.as_ptr().addr() % 4096, 0, "a frame is page-aligned");
+    }
+    // Under Miri every byte that is read is a step, so it reads the two
+    // frames at the ends of the block and one inside it.
+    let read: Vec<usize> = if cfg!(miri) {
+        vec![0, frames / 2, frames - 1]
+    } else {
+        (0..frames).collect()
+    };
+    for &index in &read {
+        assert!(
+            blanks[index].iter().all(|&byte| byte == 0),
+            "a new frame is zeroed"
+        );
+    }
+    for index in [0, frames - 1] {
+        blanks[index].fill(0xA5);
+        assert!(blanks[index].iter().all(|&byte| byte == 0xA5));
+    }
+    drop(blanks);
+    check(&pool, 0);
+}
+
+/// The frames are a mapping from a megabyte of them on, and the
+/// allocator's below that: a small pool is zeroed when it is made, which
+/// costs next to nothing, and has no mapping to itself.
+#[test]
+fn a_pool_maps_its_frames_from_a_megabyte_of_them() {
+    let len = PageSize::MIN.get();
+    let most_allocated = (1 << 20) / len - 1;
+    for (frames, mapped) in [(most_allocated, false), (most_allocated + 1, MAPS)] {
+        let capacity = frames * (len + 512);
+        let pool = BufferPool::with_frames(frames, len, 256, capacity).expect("a pool");
+        assert_eq!(pool.frames(), frames);
+        assert_eq!(pool.mapped_memory(), if mapped { frames * len } else { 0 });
+        let mut blank = pool.blank();
+        assert_eq!(blank.as_ptr().addr() % 4096, 0);
+        assert!(blank.iter().all(|&byte| byte == 0));
+        blank.fill(1);
+    }
+    assert_eq!(pool(4).mapped_memory(), 0);
+}
+
 /// A pool is shared by every thread of a store, and what it hands out goes
 /// where the work goes: a page that was read to another thread, a latch to
 /// the threads that read under it. The compiler lets them only because the

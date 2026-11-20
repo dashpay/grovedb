@@ -259,9 +259,10 @@ impl BufferPool {
 
     /// A pool of as many frames as `config.capacity` bytes hold.
     ///
-    /// All of that memory is allocated here. The pool allocates more only
-    /// for a frame that it needs while no frame can be evicted, and gives
-    /// that back as soon as the frame could be.
+    /// All of that memory is taken here: allocated, or, for a megabyte of
+    /// frames or more, mapped ([`Self::mapped_memory`]). The pool allocates
+    /// more only for a frame that it needs while no frame can be evicted,
+    /// and gives that back as soon as the frame could be.
     pub fn new(config: PoolConfig) -> Result<Self, CacheError> {
         let frame_len = config.page_size.get();
         let fits = |count: usize| {
@@ -359,6 +360,19 @@ impl BufferPool {
         self.fixed_memory()
             + self.turnover.overflow.get() * self.overflow_cost()
             + self.turnover.attached.get()
+    }
+
+    /// The bytes of the fixed part that are a mapping of the pool's own and
+    /// not the allocator's: all of its frames, or none.
+    ///
+    /// On Linux (x86-64 and AArch64) and on macOS, the frames of a pool
+    /// that has a megabyte of them or more are such a mapping. The system
+    /// gives it zeroed and backs it with memory as each of its own pages is
+    /// first used, so making the pool writes none of its frames. These
+    /// bytes are part of [`Self::fixed_memory`] from the start, whether or
+    /// not they were used yet.
+    pub fn mapped_memory(&self) -> usize {
+        self.arena.mapped()
     }
 
     /// The bytes one frame beside the fixed part takes.

@@ -255,10 +255,23 @@
 //!
 //! # Memory
 //!
-//! The configured size is allocated when the pool is made: the frames,
-//! their headers, the table and the lanes ([`BufferPool::fixed_memory`]).
+//! The configured size is taken when the pool is made: the frames, their
+//! headers, the table and the lanes ([`BufferPool::fixed_memory`]).
 //! On Linux and on Apple's systems no lock of the pool adds to it: none is
 //! allocated when it is first taken.
+//!
+//! The headers, the table and the lanes are allocated and written then,
+//! and so are the frames of a pool that has less than a megabyte of them.
+//! On Linux (x86-64 and AArch64) and on macOS a megabyte of frames or more
+//! is not written when the pool is made: it is a mapping of the pool's own
+//! ([`BufferPool::mapped_memory`]), which the system gives zeroed and backs
+//! with memory as each of its pages is first used. Making the pool then
+//! costs by its headers and its table, and the first use of a frame takes
+//! the system's page faults. On any other system, and where the system
+//! refuses a mapping, those frames are the allocator's and are zeroed when
+//! the pool is made. Either way they are counted in the fixed memory from
+//! the start, used or not.
+//!
 //! Beside its page a frame takes less than 512 bytes of it. A page that
 //! is needed while every frame is in use gets the frame of a written page
 //! version that has no pin, chosen by a clock that passes over a frame once
@@ -335,7 +348,8 @@
 //! # Unsafe code
 //!
 //! The pool's unsafe code is in `cache/frame.rs` and nowhere else: the
-//! allocation of the frames, the walk of a reader that holds no lock, and
+//! allocation and the mapping of the frames, the walk of a reader that
+//! holds no lock, and
 //! the access to a frame's bytes through a pin, a latch or an owner. The
 //! rules that make it sound are at the top of that file, and what they rest
 //! on is kept inside it and in `cache/lanes.rs`, which has no unsafe code:

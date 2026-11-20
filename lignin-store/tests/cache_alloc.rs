@@ -4,6 +4,11 @@
 //!
 //! The test binary runs under an allocator that counts, for the calling
 //! thread, every allocation and the bytes that are allocated now.
+//!
+//! The frames of a pool that has a megabyte of them or more are not the
+//! allocator's on Linux and macOS: they are a mapping of the pool's own.
+//! For such a pool the allocator's count is of everything else, and the
+//! pool says how long its mapping is.
 
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -239,4 +244,98 @@ fn the_pool_allocates_its_configured_size_and_the_frames_that_are_pinned() {
 
     drop(pool);
     assert_eq!(allocated(), before, "the pool gave everything back");
+}
+
+/// Whether this build maps the frames of a large pool.
+const MAPS: bool = cfg!(any(
+    all(
+        target_os = "linux",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    ),
+    target_os = "macos",
+));
+
+/// The address space the process has mapped, in bytes, where the system
+/// tells it without code of this crate's: Linux in a file, macOS through
+/// `ps`. Miri has neither.
+fn address_space() -> Option<u64> {
+    if cfg!(miri) || !MAPS {
+        return None;
+    }
+    let kib = if cfg!(target_os = "linux") {
+        let status = std::fs::read_to_string("/proc/self/status").ok()?;
+        let line = status
+            .lines()
+            .find_map(|line| line.strip_prefix("VmSize:"))?;
+        line.trim().strip_suffix("kB")?.trim().parse::<u64>().ok()?
+    } else {
+        let asked = std::process::Command::new("ps")
+            .args(["-o", "vsz=", "-p", &std::process::id().to_string()])
+            .output()
+            .ok()?;
+        String::from_utf8(asked.stdout).ok()?.trim().parse().ok()?
+    };
+    Some(kib * 1024)
+}
+
+/// A pool with a megabyte of frames or more: on Linux and macOS its frames
+/// are a mapping, and the allocator gives the rest.
+///
+/// What is measured: the bytes the allocator gave, counted at the
+/// allocator, and the length the pool says it mapped are together
+/// `fixed_memory()`, exactly, and stay so while pages go through every
+/// frame. The mapping is all of the frames or none of them. That it is
+/// there while the pool lives and gone when the pool is dropped is read
+/// from the size of the process's address space, which the other tests of
+/// this file change by far less than this pool's frames.
+#[test]
+fn a_large_pool_allocates_its_fixed_memory_less_the_frames_it_maps() {
+    let capacity = if cfg!(miri) { 2 << 20 } else { 256 << 20 };
+    let before = allocated();
+    let space_before = address_space();
+    let pool = BufferPool::new(PoolConfig {
+        page_size: PageSize::new(PAGE_SIZE).expect("a page size"),
+        capacity,
+    })
+    .expect("holds frames");
+    let used = |_: &BufferPool| (allocated() - before) as usize;
+    let frames = pool.frames() * PAGE_SIZE;
+    assert!(frames >= 1 << 20, "{frames} bytes of frames");
+    let mapped = pool.mapped_memory();
+    assert_eq!(mapped, if MAPS { frames } else { 0 });
+
+    assert_eq!(used(&pool) + mapped, pool.fixed_memory());
+    assert!(pool.fixed_memory() <= pool.capacity());
+    assert_eq!(pool.memory(), pool.fixed_memory());
+    let space_with = address_space();
+
+    // Pages go through the pool, more of them than it has frames where
+    // that is not too slow, and it takes nothing more.
+    let pages = if cfg!(miri) {
+        16
+    } else {
+        pool.frames() as u32 + 16
+    };
+    for raw in 1..=pages {
+        let found = fetch(&pool, raw);
+        assert_eq!((found[0], found[PAGE_SIZE - 1]), (raw as u8, raw as u8));
+        drop(found);
+        assert_eq!(used(&pool) + mapped, pool.fixed_memory());
+    }
+    assert_eq!(pool.overflow_frames(), 0);
+    assert_eq!(pool.mapped_memory(), mapped);
+
+    drop(pool);
+    assert_eq!(allocated(), before, "the pool gave everything back");
+    if let (Some(before), Some(with), Some(after)) = (space_before, space_with, address_space()) {
+        let (mapped, spare) = (mapped as u64, mapped as u64 / 4);
+        assert!(
+            with >= before + mapped - spare,
+            "the frames are mapped: {before} bytes, then {with}"
+        );
+        assert!(
+            after <= with - mapped + spare,
+            "and unmapped with the pool: {with} bytes, then {after}"
+        );
+    }
 }
