@@ -33,16 +33,21 @@ struct Reopened {
     close_ms: f64,
     /// The parts of the open, as the engine timed them.
     opening: crate::db::Opening,
+    /// The syncs of the open, in order, by what was synced and its path
+    /// in the database directory.
+    synced: Vec<String>,
 }
 
 /// Opens the database in `dir`, checks `check` on it, closes it, and says
 /// what the open took.
 fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> Reopened {
     vfs.take();
+    vfs.take_synced();
     let began = Instant::now();
     let db = Db::open(dir, options).expect("the database is opened again");
     let open_ms = began.elapsed().as_secs_f64() * 1e3;
     let (syncs, sync_ms, reads, read_bytes, files) = vfs.take();
+    let synced = vfs.take_synced();
     assert!(!db.created());
     let opening = db.stats().opening;
     let recovery = db.stats().recovery;
@@ -74,6 +79,13 @@ fn reopen(dir: &Path, options: &Options, vfs: &Watched, check: impl Fn(&Db)) -> 
         directory_ms,
         close_ms: began.elapsed().as_secs_f64() * 1e3,
         opening,
+        synced: synced
+            .iter()
+            .map(|(what, path)| {
+                let path = path.strip_prefix(dir).unwrap_or(path);
+                format!("{what:?} {}", path.display())
+            })
+            .collect(),
     }
 }
 
@@ -102,6 +114,7 @@ fn a_database_that_was_closed_is_reopened_without_a_replay() {
         });
         println!("{reopened:?}");
         assert!(reopened.syncs > 0 && reopened.files > 0);
+        assert_eq!(reopened.synced.len() as u64, reopened.syncs);
     }
 }
 
@@ -229,6 +242,10 @@ fn the_reopen_of_a_store_of_the_reference_size() {
         opens[0].open_ms,
         opens[opens.len() - 1].open_ms,
     );
+    println!("the syncs of the median reopen, in order:");
+    for sync in &median.synced {
+        println!("  {sync}");
+    }
     // What the recovery's time is made of, as far as an option says: the
     // same reopen with a sixteenth of the buffer pool.
     let small = Options {

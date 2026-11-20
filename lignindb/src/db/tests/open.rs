@@ -478,9 +478,10 @@ fn a_handle_whose_directory_holds_another_database_closes_and_writes_nothing() {
 /// A directory that holds this database's files and is another directory:
 /// the one the handle has open was removed, and a copy of it, made while
 /// the session was at rest, is in its place. The manifest in it is the
-/// session's own, byte for byte, and the lock file is another file. The
-/// close finds that its guard is not on that file, and writes nothing,
-/// though it has a reclaiming to go on with and a checkpoint to take.
+/// session's own, and another opener holds the lock of the copy, as one
+/// does between taking the lock and its recovery. The close finds that
+/// the lock file there is not the file its guard is on, and writes
+/// nothing, though it has a checkpoint to take.
 ///
 /// The session makes no commit between the two. One that goes on writing
 /// after its directory was replaced installs its manifests at the path,
@@ -498,57 +499,85 @@ fn a_handle_whose_directory_is_a_copy_of_it_closes_and_writes_nothing() {
             }
         }
     }
-    let dir = temp();
-    let (path, aside) = (dir.path().join("db"), dir.path().join("aside"));
-    let watched = Watched::default();
-    let options = Options {
-        vfs: Arc::new(watched.clone()),
-        ..options()
-    };
-    let db = Db::open(&path, &options).expect("a new database");
-    plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
-    plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
-    db.flush().expect("the log is synced");
-    at_rest(&watched);
-    copy(&path, &aside);
-    fs::remove_dir_all(&path).expect("the directory is removed");
-    fs::rename(&aside, &path).expect("the copy takes its place");
+    for locked_by_another in [true, false] {
+        let dir = temp();
+        let (path, aside) = (dir.path().join("db"), dir.path().join("aside"));
+        let watched = Watched::default();
+        let options = Options {
+            vfs: Arc::new(watched.clone()),
+            ..options()
+        };
+        let db = Db::open(&path, &options).expect("a new database");
+        plant(&db, subtree(1), Merk::sized(b'k', 100, 300));
+        plant(&db, subtree(2), Merk::sized(b'k', 100, 300));
+        db.flush().expect("the log is synced");
+        at_rest(&watched);
+        copy(&path, &aside);
+        fs::remove_dir_all(&path).expect("the directory is removed");
+        fs::rename(&aside, &path).expect("the copy takes its place");
+        let other = locked_by_another.then(|| {
+            let lock = StdVfs.lock_existing(&path.join("LOCK"));
+            lock.expect("the lock of the copy is free")
+        });
+        // What the close goes by: the manifest at the path is the
+        // session's own, so only the lock file tells the two apart.
+        {
+            let store = &*db.shared.store;
+            let ours = crate::db::store::lock(&store.manifest);
+            let stored = lignin_store::segment::read_manifest(&StdVfs, &path);
+            assert_eq!(&stored.expect("a manifest"), ours.manifest().expect("one"));
+        }
 
-    let (before, changes) = (image(&path), watched.changes());
-    let error = db
-        .close()
-        .expect_err("the directory is not the one it opened");
-    assert!(matches!(error, DbError::Removed { .. }));
-    assert_eq!(watched.changes(), changes, "the close wrote");
-    assert_eq!(image(&path), before, "the copy was touched");
-    // The copy is the database as it was when it was copied.
-    let copied = Db::open(&path, &options).expect("the copy opens");
-    let snapshot = copied.snapshot();
-    for name in [1, 2] {
-        assert_eq!(
-            seen(&snapshot.operation(), subtree(name), b"k"),
-            Some((100, vec![]))
-        );
+        let (before, changes) = (image(&path), watched.changes());
+        let error = db
+            .close()
+            .expect_err("the directory is not the one it opened");
+        assert!(matches!(error, DbError::Removed { .. }));
+        assert_eq!(watched.changes(), changes, "the close wrote");
+        assert_eq!(image(&path), before, "the copy was touched");
+        // The copy is the database as it was when it was copied.
+        drop(other);
+        let copied = Db::open(&path, &options).expect("the copy opens");
+        let snapshot = copied.snapshot();
+        for name in [1, 2] {
+            assert_eq!(
+                seen(&snapshot.operation(), subtree(name), b"k"),
+                Some((100, vec![]))
+            );
+        }
     }
 }
 
-/// A directory that is changed between an open's look at it and its lock
-/// is refused for what it is under the lock, and the error says that the
-/// lock file was made in it: it is not as it was, and nothing else of it
-/// is changed.
+/// A database is opened, and between the open's look at the directory and
+/// its lock someone puts another directory in its place. Whatever that
+/// one is refused for, it is left byte for byte as it was put there: its
+/// lock file with its content if it has one, and without one if it has
+/// none. The lock of a database that is there is taken with no file made.
 #[test]
-fn a_directory_that_is_changed_while_it_is_opened_is_refused_with_the_lock_file_made() {
+fn a_directory_that_is_put_in_the_place_of_a_database_is_refused_and_left_as_it_is() {
     type Change = fn(&Path);
-    let emptied: Change = |path| {
+    type Check = fn(&OpenError) -> bool;
+    let replace = |path: &Path| {
         fs::remove_dir_all(path).expect("the directory is removed");
-        fs::create_dir(path).expect("an empty one in its place");
+        fs::create_dir(path).expect("another in its place");
     };
-    let another_engine: Change = |path| {
-        fs::remove_dir_all(path).expect("the directory is removed");
-        fs::create_dir(path).expect("a directory");
+    let empty: Change = |_| {};
+    let another_engine_with_its_lock: Change = |path| {
         rocksdb_directory(path);
+        fs::write(path.join("LOCK"), b"theirs").expect("a lock file with content");
     };
-    for (change, refused_for) in [(emptied, "holds no database"), (another_engine, "RocksDB")] {
+    let another_engine_without_one: Change = |path| {
+        rocksdb_directory(path);
+        fs::remove_file(path.join("LOCK")).expect("no lock file");
+    };
+    let none: Check = |error| matches!(error, OpenError::NoDatabase { .. });
+    let other: Check = |error| matches!(error, OpenError::OtherEngine { .. });
+    let cases = [
+        (empty, none),
+        (another_engine_with_its_lock, other),
+        (another_engine_without_one, other),
+    ];
+    for (case, (change, refused)) in cases.into_iter().enumerate() {
         let dir = temp();
         let path = dir.path().join("db");
         let db = Db::open(&path, &options()).expect("a new database");
@@ -560,30 +589,59 @@ fn a_directory_that_is_changed_while_it_is_opened_is_refused_with_the_lock_file_
             vfs: Arc::new(watched.clone()),
             ..options()
         };
-        let (at, changes) = (path.clone(), watched.clone());
-        let after = Arc::new(Mutex::new(None));
-        let told = after.clone();
+        let at = path.clone();
+        let put = Arc::new(Mutex::new(None));
+        let told = put.clone();
         watched.at_the_next_lock(move || {
+            replace(&at);
             change(&at);
-            *told.lock().expect("the image") = Some((image(&at), changes.changes()));
+            *told.lock().expect("the image") = Some(image(&at));
         });
         let error = Db::open(&path, &reopening).expect_err("the directory was changed");
-        let OpenError::Changed { dir: named, found } = &error else {
-            panic!("{error:?}");
-        };
-        assert_eq!(named, &path);
-        assert!(found.left_untouched() && !error.left_untouched());
-        assert!(
-            error.to_string().contains("the lock file was made"),
-            "{error}"
-        );
-        assert!(error.to_string().contains(refused_for), "{error}");
-        assert!(error.source().is_some());
-        // The lock file is all that the open added.
-        let (mut expected, _) = (after.lock().expect("the image").take()).expect("the hook ran");
-        expected.insert(PathBuf::from("LOCK"), Some(Vec::new()));
-        assert_eq!(image(&path), expected);
+        assert!(refused(&error), "case {case}: {error:?}");
+        assert!(error.left_untouched(), "case {case}");
+        let put = (put.lock().expect("the image").take()).expect("the hook ran");
+        assert_eq!(image(&path), put, "case {case}");
+        assert_eq!(watched.changes(), 0, "case {case}: the open wrote");
     }
+}
+
+/// The one way an open can leave a file in a directory it refuses: no
+/// lock file was there, the directory was looked at again and seen fit for
+/// a new database, and someone put another engine's directory in its
+/// place before the lock file was made. The error says so, and that file
+/// is all the open added.
+#[test]
+fn a_directory_that_is_changed_while_its_lock_file_is_made_is_refused_as_changed() {
+    let dir = temp();
+    let path = dir.path().join("db");
+    fs::create_dir(&path).expect("an empty directory");
+    let watched = Watched::default();
+    let options = Options {
+        vfs: Arc::new(watched.clone()),
+        ..options()
+    };
+    let at = path.clone();
+    let put = Arc::new(Mutex::new(None));
+    let told = put.clone();
+    watched.at_the_next_lock_that_makes(move || {
+        rocksdb_directory(&at);
+        fs::remove_file(at.join("LOCK")).expect("no lock file");
+        *told.lock().expect("the image") = Some(image(&at));
+    });
+    let error = Db::open(&path, &options).expect_err("the directory was changed");
+    let OpenError::Changed { dir: named, found } = &error else {
+        panic!("{error:?}");
+    };
+    assert_eq!(named, &path);
+    assert!(matches!(**found, OpenError::OtherEngine { .. }));
+    assert!(!error.left_untouched());
+    let text = error.to_string();
+    assert!(text.contains("a lock file may have been made") && text.contains("RocksDB"));
+    assert!(error.source().is_some());
+    let mut expected = (put.lock().expect("the image").take()).expect("the hook ran");
+    expected.insert(PathBuf::from("LOCK"), Some(Vec::new()));
+    assert_eq!(image(&path), expected);
 }
 
 /// A path with no root is made below the directory the process is in,

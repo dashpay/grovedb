@@ -131,10 +131,14 @@
 //!
 //! Each of these is found by reading alone, before the lock file is
 //! made ([`OpenError::left_untouched`]). The directory is looked at once
-//! more under the lock, and one that someone made into one of these in
-//! between is refused as [`OpenError::Changed`]: it has the lock file by
-//! then, which is not taken away again, because another opener may hold
-//! it. A `MANIFEST` that is too short
+//! more under the lock, because someone can have put another in its place
+//! in between. The lock of a lock file that is there is taken with no
+//! file made, so a directory that turns out to be another engine's then is
+//! refused as it is. Only where no lock file was there, and the open
+//! asked for one in a directory it had just seen fit, can such a
+//! directory have a `LOCK` it did not have: that is
+//! [`OpenError::Changed`], and the file is not taken away again, because
+//! another opener may hold it. A `MANIFEST` that is too short
 //! to have a header is reported as a manifest that cannot be read
 //! ([`OpenError::Manifest`]), and nothing is written for it either.
 //!
@@ -209,15 +213,15 @@
 //! **A close writes only into a directory that is this database's
 //! still** (P-18). Platform removes the directory of a checkpoint while
 //! its handle is open. A close ends the two threads first and then looks:
-//! the lock file has to be in the directory, a second guard on it has to
-//! be refused, as it is while this handle's guard is on that file, and
-//! the manifest has to be the one this session wrote last. Where one of
-//! the three fails, or cannot be found out, the close does nothing more:
+//! the lock file in the directory has to be the file this handle's guard
+//! is on (`VfsLock::is_at`), and the manifest has to be the one this
+//! session wrote last. Where one of the two fails, or cannot be found
+//! out, the close does nothing more:
 //! no reclaiming is finished, no checkpoint is taken, no file is written
 //! and nothing is made at the path ([`DbError::Removed`], which a drop of
 //! the handle keeps to itself). So a directory that was removed, and one
-//! that holds another database by then, a copy of this one among them,
-//! are left as they are.
+//! that holds another database by then, are left as they are: also a copy
+//! of this one, whoever holds its lock.
 //!
 //! This is about the close, and not about a session that goes on. Until
 //! the handle is closed its commits and its background work write as
@@ -487,7 +491,7 @@ pub struct Db {
     opening: Opening,
     /// The lock of the directory. It is the last field, so that it is
     /// released when everything else of the handle is gone.
-    _lock: Box<dyn VfsLock>,
+    guard: Box<dyn VfsLock>,
 }
 
 const _: fn() = || {
@@ -587,7 +591,7 @@ impl Db {
             })),
             created: opened.created,
             opening,
-            _lock: opened.lock,
+            guard: opened.lock,
         })
     }
 
@@ -620,7 +624,7 @@ impl Db {
         // directory that is found to be this database's still. One that
         // was removed under the handle, or that holds another database
         // now, is written to no more (P-18).
-        let finished = match shared.store.ours() {
+        let finished = match shared.store.ours(&*self.guard) {
             false => Err(DbError::Removed {
                 dir: shared.store.dir.clone(),
             }),

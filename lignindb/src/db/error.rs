@@ -104,10 +104,14 @@ pub enum OpenError {
     /// A thread of the database's background work could not be started.
     Thread(io::Error),
     /// Someone changed the directory while it was being opened: it was
-    /// looked at and found to be one this open takes, and under the lock
-    /// it is one that is refused. The lock file was made in it between the
-    /// two, so it is not as it was ([`Self::left_untouched`] is false).
+    /// looked at and found to be one this open takes, with no lock file in
+    /// it, and under the lock it is one that is refused. This open asked
+    /// for the lock file to be made between the two, so the directory may
+    /// have a `LOCK` it did not have ([`Self::left_untouched`] is false).
     /// Nothing else was written.
+    ///
+    /// A directory that had its lock file is locked with none made, and
+    /// what it is refused for is reported as itself.
     Changed {
         /// The directory.
         dir: PathBuf,
@@ -150,9 +154,10 @@ impl OpenError {
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
     /// lost its manifest, or its pages are of another size. Each of these
-    /// was found before the lock file was made. A directory that someone
-    /// made into one of these while it was being opened is
-    /// [`Self::Changed`], and has a lock file it did not have.
+    /// was found with no file made: before the lock, or under the lock of
+    /// a lock file that was there. A directory that someone made into one
+    /// of these while a lock file was being made in it is
+    /// [`Self::Changed`].
     pub const fn left_untouched(&self) -> bool {
         matches!(
             self,
@@ -216,8 +221,8 @@ impl fmt::Display for OpenError {
             Self::Thread(source) => write!(f, "cannot start the background work: {source}"),
             Self::Changed { dir, found } => write!(
                 f,
-                "{} was changed while it was being opened, after the lock file was made in it: \
-                 {found}",
+                "{} was changed while it was being opened, and a lock file may have been made \
+                 in it: {found}",
                 dir.display()
             ),
         }

@@ -40,6 +40,9 @@ use crate::{
     Db, Options,
 };
 
+/// What a test does to a directory at a moment it chose.
+type Change = Box<dyn FnOnce() + Send>;
+
 /// What a [`Watched`] file layer saw.
 #[derive(Default)]
 pub(super) struct Counts {
@@ -50,8 +53,9 @@ pub(super) struct Counts {
     opens: AtomicU64,
     /// Calls that change a file or a directory, or make one durable.
     changes: AtomicU64,
-    /// The directories that were synced, as the caller named them.
-    synced_dirs: Mutex<Vec<PathBuf>>,
+    /// Every sync, in order: what was synced, and the path as the caller
+    /// named it, of the directory or of the file when it was opened.
+    synced: Mutex<Vec<(Synced, PathBuf)>>,
     /// The directory that paths with no root are in, if there is one.
     root: Option<PathBuf>,
     /// How many appends to a segment go through before one waits, if one
@@ -59,8 +63,9 @@ pub(super) struct Counts {
     holding: Mutex<Option<u64>>,
     released: Condvar,
     held: AtomicU64,
-    /// What is run, once, when a lock is asked for, before it is taken.
-    at_lock: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    /// What is run, once, when a lock is asked for, before it is taken,
+    /// and whether only a lock that makes its file counts.
+    at_lock: Mutex<Option<(bool, Change)>>,
 }
 
 impl fmt::Debug for Counts {
@@ -99,7 +104,15 @@ impl Watched {
         self.0.changes.fetch_add(1, Ordering::Relaxed);
     }
 
-    fn sync<T>(&self, sync: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
+    fn sync<T>(
+        &self,
+        what: Synced,
+        path: &Path,
+        sync: impl FnOnce() -> io::Result<T>,
+    ) -> io::Result<T> {
+        let mut synced = self.0.synced.lock().expect("the list");
+        synced.push((what, path.to_path_buf()));
+        drop(synced);
         self.changed();
         let began = Instant::now();
         let synced = sync();
@@ -143,16 +156,33 @@ impl Watched {
         self.0.released.notify_all();
     }
 
-    /// Has `change` run when the next lock is asked for, before it is
-    /// taken: a directory is changed between an open's look at it and its
-    /// lock.
+    /// Has `change` run when the next lock is asked for, with a file made
+    /// or with none, before it is taken: a directory is changed between
+    /// an open's look at it and its lock.
     pub(super) fn at_the_next_lock(&self, change: impl FnOnce() + Send + 'static) {
-        *self.0.at_lock.lock().expect("the hook") = Some(Box::new(change));
+        *self.0.at_lock.lock().expect("the hook") = Some((false, Box::new(change)));
+    }
+
+    /// The same, at the next lock that makes its file if it is missing.
+    pub(super) fn at_the_next_lock_that_makes(&self, change: impl FnOnce() + Send + 'static) {
+        *self.0.at_lock.lock().expect("the hook") = Some((true, Box::new(change)));
     }
 
     /// How many appends have waited so far.
     pub(super) fn held(&self) -> u64 {
         self.0.held.load(Ordering::Acquire)
+    }
+
+    fn change_at_the_lock(&self, makes: bool) {
+        let mut hook = self.0.at_lock.lock().expect("the hook");
+        let change = match &*hook {
+            Some((only_one_that_makes, _)) if makes || !only_one_that_makes => hook.take(),
+            _ => None,
+        };
+        drop(hook);
+        if let Some((_, change)) = change {
+            change();
+        }
     }
 
     fn wait_at_the_gate(&self) {
@@ -173,13 +203,33 @@ impl Watched {
 
     /// The directories that were synced so far, as the caller named them.
     pub(super) fn synced_dirs(&self) -> Vec<PathBuf> {
-        self.0.synced_dirs.lock().expect("the list").clone()
+        let synced = self.0.synced.lock().expect("the list");
+        let dirs = synced.iter().filter(|(what, _)| *what == Synced::Dir);
+        dirs.map(|(_, path)| path.clone()).collect()
     }
+
+    /// Every sync since the last call, in order.
+    pub(super) fn take_synced(&self) -> Vec<(Synced, PathBuf)> {
+        std::mem::take(&mut *self.0.synced.lock().expect("the list"))
+    }
+}
+
+/// What a sync was of.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Synced {
+    /// The content of a file.
+    Data,
+    /// A file with its length and the rest of what the system keeps of it.
+    All,
+    /// The names in a directory.
+    Dir,
 }
 
 struct WatchedFile {
     file: Box<dyn VfsFile>,
     watched: Watched,
+    /// The path the file was opened by, as the caller named it.
+    path: PathBuf,
     /// Whether the file is in the directory of the segments.
     segment: bool,
 }
@@ -213,11 +263,11 @@ impl VfsFile for WatchedFile {
     }
 
     fn sync_data(&self) -> io::Result<()> {
-        self.watched.sync(|| self.file.sync_data())
+        (self.watched).sync(Synced::Data, &self.path, || self.file.sync_data())
     }
 
     fn sync_all(&self) -> io::Result<()> {
-        self.watched.sync(|| self.file.sync_all())
+        (self.watched).sync(Synced::All, &self.path, || self.file.sync_all())
     }
 
     fn len(&self) -> io::Result<u64> {
@@ -227,6 +277,17 @@ impl VfsFile for WatchedFile {
     fn set_len(&self, len: u64) -> io::Result<()> {
         self.watched.changed();
         self.file.set_len(len)
+    }
+}
+
+/// A guard of the file layer below, which is asked about a path as that
+/// layer has it.
+#[derive(Debug)]
+struct WatchedLock(Box<dyn VfsLock>, Watched);
+
+impl VfsLock for WatchedLock {
+    fn is_at(&self, path: &Path) -> io::Result<bool> {
+        self.0.is_at(&self.1.at(path))
     }
 }
 
@@ -241,6 +302,7 @@ impl Vfs for Watched {
         Ok(Box::new(WatchedFile {
             file,
             watched: self.clone(),
+            path: path.to_path_buf(),
             segment,
         }))
     }
@@ -275,18 +337,20 @@ impl Vfs for Watched {
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        let mut synced = self.0.synced_dirs.lock().expect("the list");
-        synced.push(path.to_path_buf());
-        drop(synced);
-        self.sync(|| StdVfs.sync_dir(&self.at(path)))
+        self.sync(Synced::Dir, path, || StdVfs.sync_dir(&self.at(path)))
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
-        let change = self.0.at_lock.lock().expect("the hook").take();
-        if let Some(change) = change {
-            change();
-        }
-        StdVfs.lock(&self.at(path))
+        self.changed();
+        self.change_at_the_lock(true);
+        let lock = StdVfs.lock(&self.at(path))?;
+        Ok(Box::new(WatchedLock(lock, self.clone())))
+    }
+
+    fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.change_at_the_lock(false);
+        let lock = StdVfs.lock_existing(&self.at(path))?;
+        Ok(Box::new(WatchedLock(lock, self.clone())))
     }
 }
 

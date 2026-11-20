@@ -964,7 +964,9 @@ replaces the manifest, and it is made before the next commit, not by one.
 another open write transaction or for the creation of a checkpoint beyond
 its sampling step. The flusher and the cleaner can make it wait only
 through the counts lock: for one hold of it, which covers at most one
-append to the log and no fsync.
+append to the log and no fsync. A commit whose sync policy has it fsync
+the log (CM7) waits there for an fsync of the log that someone else is
+making, a `flush()` or a checkpoint: the log makes one at a time (DU1a).
 
 **CM9. The log decides whether a commit happened, and the engine must agree
 with it.** Recovery takes a commit exactly when it finds its group in the
@@ -1729,12 +1731,19 @@ them. It holds an operation guard on those files (PN5), so none is deleted
 under it. It takes the commit lock only to record a failure, and no other
 lock of LT7 but the one on the counts (4a), for a moment before the fsync
 and after it, where it reads how far the counts are durable (DU5). So no
-reader and no write transaction waits for it, and no commit does under a
-policy that does not sync at the commit. The fsync itself is the log's,
-which makes one at a time (STORE-01): a commit whose policy syncs it (CM7)
-waits for the fsync of a `flush()` as it waits for that of another commit,
-and holds the commit lock while it does. A checkpoint running at the same
-time fsyncs for itself (CK4); the two do not need an order.
+reader and no write transaction waits for it. A commit can wait for it in
+two places, and in no other:
+
+- at the counts lock, for one of those two moments, as it waits there for
+  any other holder (CM8);
+- at the fsync, if its sync policy has it sync at the commit (CM7). The
+  fsync is the log's, which makes one at a time (STORE-01), so such a
+  commit waits for the fsync of a `flush()` as it waits for that of another
+  commit, and holds the commit lock while it does. A commit whose policy
+  does not sync does not join the fsync.
+
+A checkpoint running at the same time fsyncs for itself (CK4); the two do
+not need an order.
 
 If the fsync fails, the engine records under the commit lock that the
 session takes no write any more (D-098), so that every commit is published
@@ -1888,7 +1897,7 @@ thread and are covered by the rules of that thread's row:
 | scope merge and scope rollback | SC6 |
 | rebase | WT7 |
 | a commit that fails | CM5, CM9 |
-| `flush()` | DU1a; it is an fsync of the log, which makes one at a time, and it takes no lock of LT7 but the one on the counts, for a moment |
+| `flush()` | DU1a; it is an fsync of the log, which makes one at a time. Of the locks of LT7 it takes the one on the counts for a moment before and after the fsync, and the commit lock only after an fsync that failed, to record that the session ends |
 | wipe | CV3, CF5; it is a commit, so a snapshot taken before it keeps reading its own version (RD1) |
 | subtree drop, and a clear that keeps the host | CV9, CF5; reclaiming what it leaves is the cleaner's (CL6) |
 | a committed read | RD10; it is a read, and takes what a read takes |

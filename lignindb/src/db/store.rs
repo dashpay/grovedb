@@ -1,7 +1,6 @@
 //! Every part of one open database, and the views that are made of them.
 
 use std::{
-    io::ErrorKind,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -11,7 +10,7 @@ use std::{
 };
 
 use lignin_format::{CommitVersion, PageId, PageSize};
-use lignin_io::Vfs;
+use lignin_io::{Vfs, VfsLock};
 use lignin_store::{
     alloc::PageAllocator,
     cache::BufferPool,
@@ -195,26 +194,19 @@ impl Store {
         Committed::new(self.loader(), &self.values, guard, at)
     }
 
-    /// Whether the directory is found to hold this database still, by all
-    /// three of these: the lock file is in it, a second guard on that
-    /// file is refused, which is what the file layer answers while the
-    /// guard of this handle is on it, and the manifest in it is the one
-    /// this session wrote last. Someone may have removed the directory
-    /// while the handle was open, or put another in its place (P-18): a
-    /// lock file that is another file is not held by this handle, and a
-    /// database that another handle has opened there has a manifest of
-    /// that session.
+    /// Whether the directory is found to be this database's still, by
+    /// both of these: the lock file in it is the file that `guard`, the
+    /// guard of this handle, is on, and the manifest in it is the one this
+    /// session wrote last. Someone may have removed the directory while
+    /// the handle was open, or put another in its place, a copy of this
+    /// one even, which another opener may hold the lock of (P-18): the
+    /// lock file there is another file than the one this handle locked.
     ///
-    /// Whatever cannot be found out counts as no: a caller that is about
-    /// to write does not, then.
-    pub(super) fn ours(&self) -> bool {
-        let listed = self.vfs.read_dir(&self.dir);
-        if !listed.is_ok_and(|entries| entries.iter().any(|entry| entry.name == LOCK_FILE)) {
-            return false;
-        }
-        // A guard that is given is dropped here, and the file was there.
-        let second = self.vfs.lock(&self.dir.join(LOCK_FILE));
-        if !matches!(second, Err(error) if error.kind() == ErrorKind::WouldBlock) {
+    /// Nothing is made or locked to find this out. Whatever cannot be
+    /// found out counts as no: a caller that is about to write does not,
+    /// then.
+    pub(super) fn ours(&self, guard: &dyn VfsLock) -> bool {
+        if !guard.is_at(&self.dir.join(LOCK_FILE)).unwrap_or(false) {
             return false;
         }
         // Under the lock no manifest is installed between the two.
