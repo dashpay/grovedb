@@ -4,7 +4,7 @@
 use std::{io::Write, time::Duration};
 
 use super::{
-    campaign::{campaign, Faults, Planted, Report, RunShape, Settings},
+    campaign::{campaign, Faults, Planted, Report, RunShape, Settings, ACTED},
     observe::Sabotage,
 };
 
@@ -45,9 +45,11 @@ options:
   --quiet             print no line for a run
 
 A run is a function of its seed and of --faults, --ops, --lineages, --depth
-and --again, so `seed` takes them as the campaign had them. run and seed exit
-with 0 when nothing was found and with 1 when a violation was. planted exits
-with 0 when every defect was found and with 1 when one was not.
+and --again, so `seed` takes them as the campaign had them: a campaign that
+found a violation prints the command. run and seed exit with 0 when nothing
+was found and with 1 when a violation was. planted exits with 0 when every
+defect was found and with 1 when one was not: a violation of a run in which
+the defect did nothing is not its finding.
 ";
 
 /// The defects `planted` knows, by name.
@@ -191,7 +193,28 @@ fn progress<'o>(
     }
 }
 
-fn report(out: &mut dyn Write, report: &Report) {
+/// The command that makes the run of `seed` again as a campaign of
+/// `shape` made it.
+fn again(seed: u64, shape: &RunShape) -> String {
+    let usual = RunShape::default();
+    let mut line = format!("lignin-crash seed --seed {seed}");
+    if let Some(faults) = shape.faults {
+        line += &format!(" --faults {}", faults.name());
+    }
+    for (option, value, usual) in [
+        ("--ops", shape.ops as u64, usual.ops as u64),
+        ("--lineages", shape.lineages as u64, usual.lineages as u64),
+        ("--depth", shape.depth as u64, usual.depth as u64),
+        ("--again", shape.again_one_in, usual.again_one_in),
+    ] {
+        if value != usual {
+            line += &format!(" {option} {value}");
+        }
+    }
+    line
+}
+
+fn report(out: &mut dyn Write, report: &Report, shape: &RunShape) {
     let _ = writeln!(out, "{report}");
     let seconds = report.elapsed.as_secs_f64().max(1e-9);
     let _ = writeln!(
@@ -199,6 +222,35 @@ fn report(out: &mut dyn Write, report: &Report) {
         "{:.0} distinct crash states a second",
         report.points as f64 / seconds
     );
+    if let Some(found) = report.violations.first() {
+        let _ = writeln!(out, "to make that run again: {}", again(found.seed, shape));
+    }
+}
+
+/// What `planted` says of the defect `name`, and whether it was found:
+/// `done` is its campaign, and `acted` how often the defect did what it is
+/// planted to do in the run that found something.
+fn verdict(name: &str, done: &Report, acted: u64) -> (bool, String) {
+    match done.violations.first() {
+        Some(found) if acted > 0 => {
+            let said = format!(
+                "{name}: found in run {}, after {:.1} s: {}",
+                done.runs,
+                done.elapsed.as_secs_f64(),
+                found.violation
+            );
+            (true, said)
+        }
+        Some(found) => {
+            let said = format!(
+                "{name}: NOT FOUND: run {} has a violation, and the defect did nothing in it: \
+                 {found}",
+                done.runs
+            );
+            (false, said)
+        }
+        None => (false, format!("{name}: NOT FOUND in {} runs", done.runs)),
+    }
 }
 
 /// The most runs a planted defect may take to be found, unless `--runs`
@@ -224,7 +276,7 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
     match command {
         Command::Run | Command::Seed => {
             let done = campaign(&settings, &mut progress(out, quiet));
-            report(out, &done);
+            report(out, &done, &settings.shape);
             u8::from(!done.clean())
         }
         Command::Planted => {
@@ -239,23 +291,15 @@ pub fn run_command(arguments: &[String], out: &mut dyn Write) -> u8 {
                 // nothing else: every error is then the defect's.
                 settings.shape.faults = Some(Faults::None);
                 settings.shape.planted = Some(planted);
-                let done = campaign(&settings, &mut |_, _| {});
-                match done.violations.first() {
-                    Some(found) => {
-                        let _ = writeln!(
-                            out,
-                            "{name}: found in run {} of {}, after {:.1} s: {}",
-                            done.runs,
-                            settings.runs.unwrap_or(0),
-                            done.elapsed.as_secs_f64(),
-                            found.violation
-                        );
+                let mut acted = 0;
+                let done = campaign(&settings, &mut |run, _| {
+                    if !run.violations.is_empty() {
+                        acted = run.tally.get(ACTED);
                     }
-                    None => {
-                        missed += 1;
-                        let _ = writeln!(out, "{name}: NOT FOUND in {} runs", done.runs);
-                    }
-                }
+                });
+                let (found, said) = verdict(name, &done, acted);
+                let _ = writeln!(out, "{said}");
+                missed += u32::from(!found);
             }
             u8::from(missed > 0)
         }
@@ -356,6 +400,69 @@ mod tests {
         };
         assert_eq!(digest(&text), digest(&quiet));
         assert!(digest(&text).is_some());
+    }
+
+    #[test]
+    fn a_violation_comes_with_the_command_that_makes_its_run_again() {
+        use crate::crash::{
+            campaign::Found,
+            check::{Kind, Violation},
+        };
+
+        let shape = RunShape {
+            faults: Some(Faults::Syncs),
+            ops: 9,
+            again_one_in: 0,
+            ..RunShape::default()
+        };
+        let line = again(7, &shape);
+        assert_eq!(
+            line,
+            "lignin-crash seed --seed 7 --faults syncs --ops 9 --again 0"
+        );
+        let command = line.strip_prefix("lignin-crash ").expect("the command");
+        let parsed = parse(&arguments(command)).expect("parsed");
+        assert_eq!((parsed.settings.seed, parsed.settings.shape), (7, shape));
+        assert_eq!(again(3, &RunShape::default()), "lignin-crash seed --seed 3");
+
+        let found = Found {
+            seed: 7,
+            lineage: 1,
+            op: 4,
+            boundary: Some(90),
+            plan: Some("a plan".to_string()),
+            violation: Violation::new(Kind::NotCommitted, "below the floor"),
+            trail: vec!["commit (new)".to_string()],
+        };
+        let mut done = Report {
+            first_seed: 5,
+            runs: 3,
+            violations: vec![found],
+            ..Report::default()
+        };
+        let mut out = Vec::new();
+        report(&mut out, &done, &shape);
+        let text = String::from_utf8(out).expect("text");
+        assert!(text.contains("VIOLATION: seed 7, lineage 1"), "{text}");
+        assert!(
+            text.ends_with(&format!("to make that run again: {line}\n")),
+            "{text}"
+        );
+
+        // A planted defect is found by a run in which it acted.
+        let (found, said) = verdict("log-sync", &done, 2);
+        assert!(
+            found && said.starts_with("log-sync: found in run 3, "),
+            "{said}"
+        );
+        let (found, said) = verdict("log-sync", &done, 0);
+        assert!(
+            !found && said.contains("the defect did nothing in it"),
+            "{said}"
+        );
+        done.violations.clear();
+        let (found, said) = verdict("log-sync", &done, 0);
+        assert!(!found && said == "log-sync: NOT FOUND in 3 runs", "{said}");
     }
 
     #[test]

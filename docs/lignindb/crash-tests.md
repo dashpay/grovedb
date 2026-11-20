@@ -16,11 +16,11 @@ cargo run --release -p lignin-testkit --bin lignin-crash -- planted
 | --- | --- | --- |
 | `run` | The runs of the seeds from `--seed` on, until `--runs`, `--points` or `--duration` is reached, or a violation is found. | 0 when nothing was found, 1 when a violation was |
 | `seed` | The run of one seed again. | the same |
-| `planted` | Plants each of eight defects and requires the campaign to find it: the campaign's own acceptance test. | 0 when every defect was found |
+| `planted` | Plants each of eight defects and requires the campaign to find it, in a run in which the defect acted: the campaign's own acceptance test. | 0 when every defect was found |
 
 `lignin-ci.sh crash ARGS` is `planted` and then `run ARGS`, and is the nightly job ([`ci.md`](ci.md)). `lignin-crash` with no arguments prints every option.
 
-A run is a function of its seed and of the options that shape it (`--faults`, `--ops`, `--lineages`, `--depth`, `--again`), on every machine: the workload, the faults, the crash states and the order they are recovered in. A campaign is a function of its options but for `--duration`. Runs are taken in in the order of their seeds whatever number of them is made at once (`--jobs`), and a campaign that is given `--points` ends with the first run that reaches them. The last line of a report is a digest of what was done, which two campaigns that did the same have in common.
+A run is a function of its seed and of the options that shape it (`--faults`, `--ops`, `--lineages`, `--depth`, `--again`), on every machine: the workload, the faults, the crash states and the order they are recovered in. A campaign that found a violation prints the `seed` command that makes its run again. A campaign is a function of its options but for `--duration`. Runs are taken in in the order of their seeds whatever number of them is made at once (`--jobs`), and a campaign that is given `--points` ends with the first run that reaches them. A report has a digest of what was done, which two campaigns that did the same have in common.
 
 The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no disk and no scratch directory. A campaign of *n* crash states holds 8 *n* bytes for their fingerprints, and each run a few megabytes.
 
@@ -37,7 +37,8 @@ The file layer is the simulated one of `lignin_io::sim`, so a campaign needs no 
 | A crash image | The file system after one operation that changed what a crash can leave. A lineage has some six hundred. |
 | A crash state | What one crash plan leaves of an image: every plan where there are at most 48, and otherwise the two ends, the plans of a file system that writes in order with every tear of the first lost write, each change lost alone, each change applied late, and three drawn from the seed. |
 | A recovery | `lignin_store::recovery::recover` on the state, with the buffer pool, the window of the log reader and the number of pages a replay keeps by turns. Then every page, value, page id and count is read and held to the model, and the engine's physical invariant checker (`lignindb::verify`) is run over the store. |
-| Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is first recovered with the faults injected into the recovery. |
+| Again | One state in eight is recovered a second time with another tuning, goes on until a table checkpoint covers everything, is closed and opened again. In the runs with faults, one state in four is first recovered with the faults injected into the recovery, and what that recovery left is what is then recovered with no fault. |
+| The floor | No state is before the last commit the log had reported durable, nor before the point that the durable part of the same or an earlier image recovered to. |
 
 ## What it costs
 
@@ -46,12 +47,18 @@ On the project's Linux machine (28 threads, shared with other work, at a load of
 ## Reading a violation
 
 ```text
-VIOLATION: seed 4711, lineage 2, after operation 17, a crash at write boundary 212: the recovered state is no committed version: landed on version 9, below version 11, which was reported durable
+VIOLATION: seed 4711, lineage 2, after operation 17, a crash at write boundary 212: the recovered state is no committed version: landed on version 9, below version 11, which was durable
   the crash kept: CrashPlan { names: [], changes: [Survivor { change: 0, tear: None }] }
   the last operations: commit (3 new), checkpoint, hold [page#3], pass, kill, sync log
 ```
 
-The seed makes the run again. The lineage says how many stores of the run came before this one, the operation and the write boundary where in its life the crash came, and the plan which of the unsynced changes the crash kept, as `lignin_io::sim` names them. A violation with no boundary was found in a store that was not crashed.
+The seed makes the run again, and the report ends with the command for it:
+
+```text
+to make that run again: lignin-crash seed --seed 4711
+```
+
+The lineage says how many stores of the run came before this one, the operation and the write boundary where in its life the crash came, and the plan which of the unsynced changes the crash kept, as `lignin_io::sim` names them. A violation with no boundary was found in a store that was not crashed. A panic of the store is a violation of its own kind: one over a crash state is reported with its boundary and plan, and one anywhere else in a lineage with the lineage and its last operations. The panic's own message and place are on standard error.
 
 ## What the campaign leaves to others
 

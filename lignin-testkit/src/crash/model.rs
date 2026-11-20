@@ -398,7 +398,7 @@ pub struct Expect {
     /// is then no state of this store.
     pub created: bool,
     /// The first point a recovery may land on: every item up to it was
-    /// reported durable.
+    /// durable.
     pub floor: usize,
     /// The last point whose item is in the log.
     pub latest: usize,
@@ -460,7 +460,8 @@ impl Landing {
 /// Why a recovered store is at no point it may be at.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Mismatch {
-    /// It landed on a version below one that was reported durable.
+    /// It landed on a version below one that was durable: the log had
+    /// reported it, or the durable part of the files had recovered to it.
     BelowFloor {
         /// The version it landed on.
         landed: u64,
@@ -488,7 +489,7 @@ impl fmt::Display for Mismatch {
         match self {
             Self::BelowFloor { landed, floor } => write!(
                 f,
-                "landed on version {landed}, below version {floor}, which was reported durable"
+                "landed on version {landed}, below version {floor}, which was durable"
             ),
             Self::AboveLatest { landed, latest } => write!(
                 f,

@@ -8,7 +8,7 @@ use std::collections::BTreeSet;
 
 use lignin_io::sim::UnknownFate;
 use lignin_testkit::crash::{
-    campaign::{campaign, run, unknown_of_seed, Faults, RunShape, Settings},
+    campaign::{campaign, run, unknown_of_seed, Faults, RunShape, Settings, ACTED},
     check::Kind,
     cli::DEFECTS,
 };
@@ -76,7 +76,7 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
         ("sessions", 24),
         ("faults injected", 8),
         ("errors after a fault", 4),
-        ("states above the durable floor", 1_500),
+        ("states above the durable floor", 500),
         ("states that lost commits", 500),
         ("states that replayed commits", 5_000),
         ("states from a table checkpoint", 1_000),
@@ -91,6 +91,7 @@ fn every_crash_state_of_a_short_campaign_recovers_to_a_committed_version() {
         ("pending values recovered", 10_000),
         ("recoveries with faults that returned a store", 300),
         ("recoveries with faults that failed", 100),
+        ("floors raised by a durable state", 1),
     ] {
         assert!(tally.get(name) >= least, "{name}: {}", tally.get(name));
     }
@@ -168,10 +169,17 @@ fn every_planted_defect_is_found() {
             planted: Some(planted),
             ..short()
         };
-        let report = campaign(&settings(1, 6, shape), &mut |_, _| {});
+        let mut acted = 0;
+        let report = campaign(&settings(1, 6, shape), &mut |run, _| {
+            if !run.violations.is_empty() {
+                acted = run.tally.get(ACTED);
+            }
+        });
         let first = report.violations.first();
         let found = first.unwrap_or_else(|| panic!("{name} was not found: {report}"));
         println!("{name}: {found}");
+        // The run that found it is one in which the defect did something.
+        assert!(acted > 0, "{name}: {report}");
         // A violation says where in its run it was found.
         let said = found.to_string();
         assert!(

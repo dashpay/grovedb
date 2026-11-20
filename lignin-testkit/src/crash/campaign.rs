@@ -16,6 +16,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
+    panic::{catch_unwind, AssertUnwindSafe},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, PoisonError,
@@ -34,7 +35,10 @@ use lignin_io::{
 use lignin_store::flush::FlushConfig;
 
 use super::{
-    check::{check_again, check_state, db_dir, expected_ids, Kind, Recovered, Violation},
+    check::{
+        check_again, check_state, db_dir, expected_ids, no_panic, panic_text, Kind, Recovered,
+        Violation,
+    },
     model::{self, apply, Change, Expect, History, Landing, Misfit, Pages, Point},
     observe::{Observer, Sabotage, Taken},
     store::{Committed, OpenError, Reclaim, Session, Stepped, Tuning},
@@ -270,16 +274,27 @@ struct Kept {
     depth: usize,
 }
 
-/// The states one crash can leave, as the campaign picks them.
+/// The states one crash can leave, as the campaign picks them. The first
+/// is the one with no unsynced change.
 fn plans_of(image: &CrashImage, shape: &RunShape) -> Vec<CrashPlan> {
+    let durable = image.lose_all();
     if let Some(plans) = image.every_plan(shape.every_plan_limit) {
-        return plans;
+        return first_of(plans, durable);
     }
-    let mut plans = vec![image.lose_all(), image.keep_all()];
+    let mut plans = vec![durable, image.keep_all()];
     plans.extend(image.prefixes());
     plans.extend(image.holes());
     plans.extend(image.reorders());
     plans.extend((0..shape.samples).map(|draw| image.sample(draw)));
+    plans
+}
+
+/// `plans` with `first` before the others, which keep their order.
+fn first_of(mut plans: Vec<CrashPlan>, first: CrashPlan) -> Vec<CrashPlan> {
+    match plans.iter().position(|plan| *plan == first) {
+        Some(at) => plans[..=at].rotate_right(1),
+        None => plans.insert(0, first),
+    }
     plans
 }
 
@@ -346,6 +361,12 @@ struct Lineage {
     /// own.
     sessions: u64,
     session: Option<Session>,
+    /// How many faults had been injected into the file system when the
+    /// session was opened.
+    faults_before: u64,
+    /// The point that the durable part of an image of this file system
+    /// last recovered to: no state of a later crash is before it.
+    durable: usize,
     held: Option<BTreeSet<PageId>>,
     pinned: bool,
     full: bool,
@@ -362,9 +383,19 @@ struct Lineage {
 }
 
 impl Lineage {
-    /// Whether a fault was injected into this file system.
+    /// Whether a fault was injected into this file system since its
+    /// session was opened: a store that a recovery returned owes nothing
+    /// to the faults of the session before.
     fn faulted(&self) -> bool {
-        self.observer.fs().stats().faults > 0
+        self.observer.fs().stats().faults > self.faults_before
+    }
+
+    /// What the session knows to be durable is the floor from here on,
+    /// whatever becomes of the session.
+    fn floor_of(&self, session: &Session) {
+        let floor = self.history.floor(session.durable());
+        self.observer
+            .expecting(|expect| expect.floor = expect.floor.max(floor));
     }
 
     /// The item `attempt` is in the log, and `point` is what it made: the
@@ -379,6 +410,11 @@ impl Lineage {
         });
     }
 }
+
+/// The count of how often the planted defect of a run did what it is
+/// planted to do: a violation of a run where it never did is not its
+/// finding.
+pub const ACTED: &str = "times the planted defect acted";
 
 /// The most violations a run reports: one defect shows in many states.
 const MAX_VIOLATIONS: usize = 4;
@@ -441,6 +477,7 @@ impl Run {
         let index = self.lineages;
         self.lineages += 1;
         self.tally.count("lineages", 1);
+        let durable = expect.floor;
         let observer = match self.shape.planted {
             Some(Planted::File(sabotage)) => Observer::sabotaged(fs, expect, sabotage),
             _ => Observer::new(fs, expect),
@@ -454,6 +491,8 @@ impl Run {
             chance: Rng::derive(self.seed, 0x6b65_7074, index),
             sessions: 0,
             session: None,
+            faults_before: 0,
+            durable,
             held: None,
             pinned: false,
             full: false,
@@ -500,19 +539,25 @@ impl Run {
     /// none, opened, and put through the operations of its workload.
     fn live(&mut self, mut lineage: Lineage) {
         let fs = lineage.observer.fs().clone();
-        if !lineage.observer.expect().created {
-            // The store is made with no fault injected: a session that
-            // cannot make its store has nothing to crash.
-            fs.set_faults(FaultOdds::NONE);
-            if let Err(error) = Session::create(lineage.observer.vfs(), db_dir()) {
-                self.session_fault(&lineage, format!("no store was made: {error}"));
-                return;
-            }
-            lineage.observer.expecting(|expect| expect.created = true);
-            self.check_images(&mut lineage);
+        let lived = catch_unwind(AssertUnwindSafe(|| self.go_through(&mut lineage)));
+        if let Err(panic) = lived {
+            // What the panic left of the session is asked nothing more.
+            lineage.session = None;
+            let said = format!("the lineage panicked: {}", panic_text(&*panic));
+            self.found(&lineage, Violation::new(Kind::Panicked, said), None);
         }
-        fs.set_faults(self.faults.odds());
-        if !self.open(&mut lineage, "open") {
+        self.end_session(&mut lineage);
+        self.tally.count(ACTED, lineage.observer.lies());
+        self.tally.count("faults injected", fs.stats().faults);
+        self.digest.u64(fs.trace_digest());
+        if lineage.depth < self.shape.depth {
+            self.waiting.append(&mut lineage.kept);
+        }
+    }
+
+    /// The operations of a lineage, from the making of its store on.
+    fn go_through(&mut self, lineage: &mut Lineage) {
+        if !self.begin(lineage) {
             return;
         }
         while lineage.ops < self.shape.ops && !self.done() {
@@ -526,16 +571,29 @@ impl Run {
             let op = lineage.workload.next(&pages, situation);
             lineage.ops += 1;
             self.tally.count("operations", 1);
-            if !self.step(&mut lineage, op) {
+            if !self.step(lineage, op) {
                 break;
             }
         }
-        self.end_session(&mut lineage);
-        self.tally.count("faults injected", fs.stats().faults);
-        self.digest.u64(fs.trace_digest());
-        if lineage.depth < self.shape.depth {
-            self.waiting.append(&mut lineage.kept);
+    }
+
+    /// Makes the store of a lineage if its directory has none, and opens
+    /// it. Returns whether the lineage goes on.
+    fn begin(&mut self, lineage: &mut Lineage) -> bool {
+        let fs = lineage.observer.fs().clone();
+        if !lineage.observer.expect().created {
+            // The store is made with no fault injected: a session that
+            // cannot make its store has nothing to crash.
+            fs.set_faults(FaultOdds::NONE);
+            if let Err(error) = Session::create(lineage.observer.vfs(), db_dir()) {
+                self.session_fault(lineage, format!("no store was made: {error}"));
+                return false;
+            }
+            lineage.observer.expecting(|expect| expect.created = true);
+            self.check_images(lineage);
         }
+        fs.set_faults(self.faults.odds());
+        self.open(lineage, "open")
     }
 
     /// A violation of a store that was not crashed.
@@ -610,8 +668,9 @@ impl Run {
             .wrapping_add(lineage.sessions * 13);
         let tuning = tuning_of(turn);
         lineage.sessions += 1;
+        let before = fs.stats().faults;
         let mut opened = Session::open(vfs.clone(), db_dir(), &tuning);
-        if opened.is_err() && lineage.faulted() {
+        if opened.is_err() && fs.stats().faults > before {
             // A recovery that a fault failed is made again
             // (`lignin_store::recovery`, "Twice").
             self.tally.count("recoveries failed by a fault", 1);
@@ -665,15 +724,13 @@ impl Run {
         let report = session.report();
         self.tally
             .count("commits replayed at an open", report.commits);
-        let (latest, floor) = (
-            lineage.history.latest(),
-            lineage.history.floor(session.durable()),
-        );
+        let latest = lineage.history.latest();
         lineage.observer.expecting(|expect| {
             expect.attempt = None;
             expect.latest = latest;
-            expect.floor = expect.floor.max(floor);
         });
+        lineage.floor_of(&session);
+        lineage.faults_before = fs.stats().faults;
         lineage.session = Some(session);
         self.check_images(lineage);
         true
@@ -688,11 +745,6 @@ impl Run {
         }
         self.tally.count(op.name(), 1);
         let reopen = self.make(lineage, &op);
-        if let Some(session) = &lineage.session {
-            for complaint in session.complaints() {
-                self.tolerate_error(lineage, "write-back", complaint);
-            }
-        }
         let stopped = (lineage.session.as_ref()).is_some_and(|session| session.stopped());
         if let Some(why) = reopen.or(stopped.then_some("the log takes nothing more")) {
             if !self.open(lineage, why) {
@@ -710,11 +762,6 @@ impl Run {
             return;
         };
         let fs = lineage.observer.fs().clone();
-        let floor = lineage.history.floor(session.durable());
-        lineage
-            .observer
-            .expecting(|expect| expect.floor = expect.floor.max(floor));
-
         let expected = lineage.history.last().pages.clone();
         let ids: BTreeSet<PageId> = expected.keys().copied().collect();
         // The checker's scope asks for a store that is still: no write
@@ -742,7 +789,7 @@ impl Run {
         // state with no unsynced change is held to the floor as it is now.
         let now = lineage.observer.now();
         let plan = now.image.lose_all();
-        self.check_plan(lineage, &now, plan);
+        self.check_image(lineage, now, vec![plan]);
     }
 
     /// Makes `op`. Returns why the store has to be opened again, if it
@@ -750,6 +797,13 @@ impl Run {
     fn make(&mut self, lineage: &mut Lineage, op: &Op) -> Option<&'static str> {
         let session = lineage.session.take()?;
         let reopen = self.make_with(lineage, &session, op);
+        for complaint in session.complaints() {
+            self.tolerate_error(lineage, "write-back", complaint);
+        }
+        lineage.floor_of(&session);
+        if !session.holds() {
+            lineage.held = None;
+        }
         lineage.session = Some(session);
         if reopen.is_some() {
             self.end_session(lineage);
@@ -772,20 +826,14 @@ impl Run {
                 }
                 return reopen;
             }
-            Op::CommitHeld(changes) => {
-                lineage.held = None;
-                return self.commit(lineage, session, changes, true).1;
-            }
+            Op::CommitHeld(changes) => return self.commit(lineage, session, changes, true).1,
             Op::Hold(pages) => {
                 let held = self.tolerate(lineage, "copying pages", session.hold(pages));
                 if held == Some(true) {
                     lineage.held = Some(pages.iter().copied().collect());
                 }
             }
-            Op::Release => {
-                session.release();
-                lineage.held = None;
-            }
+            Op::Release => drop(session.release()),
             Op::Reclaim { page, what } => return self.reclaim(lineage, session, *page, what),
             Op::Pass => drop(self.tolerate(lineage, "a pass", session.pass())),
             Op::Tick => drop(self.tolerate(lineage, "a turn of write-back", session.tick())),
@@ -864,18 +912,20 @@ impl Run {
         let before = lineage.history.last().clone();
         let observer = lineage.observer.clone();
         let forgets = self.shape.planted == Some(Planted::ForgottenHash);
-        let mut attempt = None;
+        let (mut attempt, mut forgotten) = (None, 0);
         let committed = session.commit(changes, held, &mut |made| {
             let mut known: Vec<Change> = changes.to_vec();
             if forgets {
                 let hash = |change: &Change| matches!(change, Change::Hash { kv: true, .. });
                 if let Some(at) = known.iter().position(hash) {
                     known.remove(at);
+                    forgotten += 1;
                 }
             }
             let pages = apply(&before.pages, &known, made);
             attempt = Some(attempting(&observer, before.version + 1, pages));
         });
+        self.tally.count(ACTED, forgotten);
         let attempt = match attempt.transpose() {
             Ok(attempt) => attempt,
             Err(misfit) => {
@@ -976,17 +1026,42 @@ impl Run {
     fn check_images(&mut self, lineage: &mut Lineage) {
         for taken in lineage.observer.drain() {
             self.tally.count("write boundaries", 1);
-            for plan in plans_of(&taken.image, &self.shape) {
-                if self.done() {
-                    return;
-                }
-                self.check_plan(lineage, &taken, plan);
+            let plans = plans_of(&taken.image, &self.shape);
+            self.check_image(lineage, taken, plans);
+        }
+    }
+
+    /// The states that `plans` leave of the crash `taken`. The first plan
+    /// is the one with no unsynced change. The point it recovers to is one
+    /// that the durable part of the file system holds, so no state of this
+    /// crash or of a later one is before it, whatever the log has
+    /// reported.
+    fn check_image(&mut self, lineage: &mut Lineage, mut taken: Taken, plans: Vec<CrashPlan>) {
+        taken.expect.floor = taken.expect.floor.max(lineage.durable);
+        for (turn, plan) in plans.into_iter().enumerate() {
+            if self.done() {
+                return;
+            }
+            let landing = self.check_plan(lineage, &taken, plan);
+            if let (0, Some(Landing::Point(at))) = (turn, landing) {
+                self.tally.count(
+                    "floors raised by a durable state",
+                    u64::from(at > taken.expect.floor),
+                );
+                lineage.durable = at;
+                taken.expect.floor = at;
             }
         }
     }
 
-    /// One state: the one `plan` leaves of the crash `taken`.
-    fn check_plan(&mut self, lineage: &mut Lineage, taken: &Taken, plan: CrashPlan) {
+    /// One state: the one `plan` leaves of the crash `taken`. Returns
+    /// where it landed, if that is where it may be.
+    fn check_plan(
+        &mut self,
+        lineage: &mut Lineage,
+        taken: &Taken,
+        plan: CrashPlan,
+    ) -> Option<Landing> {
         self.tally.count("crash plans", 1);
         let state = (taken.image.recover(&plan)).expect("a plan of the image fits it");
         let fingerprint = state.fingerprint();
@@ -1013,8 +1088,9 @@ impl Run {
                 );
                 let violation = Violation::new(Kind::NotCommitted, said);
                 self.found(lineage, violation, Some((taken.boundary, &plan)));
+                return None;
             }
-            return;
+            return Some(landing);
         }
         if self.fingerprints.insert(fingerprint) {
             self.order.push(fingerprint);
@@ -1027,12 +1103,15 @@ impl Run {
         if self.faults != Faults::None && (fingerprint >> 19) % 4 == 0 {
             self.recover_with_faults(lineage, taken, &plan, &state, &tuning);
         }
-        let recovered = match check_state(&state, &lineage.history, &taken.expect, &tuning) {
+        let checked = no_panic("the recovery of a crash state", || {
+            check_state(&state, &lineage.history, &taken.expect, &tuning)
+        });
+        let recovered = match checked {
             Ok(recovered) => recovered,
             Err(violation) => {
                 self.digest.u64(u64::MAX);
                 self.found(lineage, violation, Some((taken.boundary, &plan)));
-                return;
+                return None;
             }
         };
         self.record(lineage, taken, &recovered);
@@ -1048,18 +1127,25 @@ impl Run {
         if let Some(landed) = landed.filter(|_| again > 0 && (fingerprint >> 11) % again == 0) {
             self.tally.count("states recovered again", 1);
             let other = tuning_of((fingerprint >> 7) + 1);
-            if let Err(violation) = check_again(&state, &other, landed, &pages) {
+            let again = no_panic("the second recovery of a crash state", || {
+                check_again(&state, &other, landed, &pages)
+            });
+            if let Err(violation) = again {
                 self.found(lineage, violation, Some((taken.boundary, &plan)));
             }
         }
         self.keep(lineage, taken, plan, &landing);
+        Some(landing)
     }
 
     /// A recovery of `state` that the run's faults are injected into. If
-    /// it returns a store, the store is at a point it may be at. If it
-    /// fails, it says that the file layer failed and not that the store
-    /// is damaged, and it leaves what the next recovery starts from: the
-    /// caller recovers `state` again with no fault.
+    /// it returns a store, the store is at a point it may be at, at one
+    /// with itself and sound to the checker. If it fails, it says that the
+    /// file layer failed and not that the store is damaged.
+    ///
+    /// Either way it leaves `state` as a recovery that met faults leaves a
+    /// file system: the caller recovers that again with no fault, and what
+    /// it lands on then is what the state is held to.
     fn recover_with_faults(
         &mut self,
         lineage: &Lineage,
@@ -1068,35 +1154,37 @@ impl Run {
         state: &SimVfs,
         tuning: &Tuning,
     ) {
-        state.set_faults(self.faults.odds());
-        let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
-        let opened = Session::open(vfs, db_dir(), tuning);
-        state.set_faults(FaultOdds::NONE);
-        let violation = match opened {
-            Ok(session) => {
-                self.tally
-                    .count("recoveries with faults that returned a store", 1);
-                let ids = expected_ids(&lineage.history, &taken.expect);
-                let landed = session.latest().get();
-                match session.read(&ids) {
-                    Ok(pages) => (lineage.history.find(&taken.expect, landed, &pages))
-                        .err()
-                        .map(|mismatch| Violation::new(Kind::NotCommitted, mismatch.to_string())),
-                    Err(error) => Some(Violation::new(Kind::Inconsistent, error)),
+        let odds = self.faults.odds();
+        let recovered = no_panic("a recovery with faults injected", || {
+            state.set_faults(odds);
+            let vfs: Arc<dyn Vfs> = Arc::new(state.clone());
+            let opened = Session::open(vfs, db_dir(), tuning);
+            state.set_faults(FaultOdds::NONE);
+            let session = match opened {
+                Ok(session) => session,
+                Err(OpenError::NoStore) => return Ok(None),
+                Err(OpenError::Failed { damage: false, .. }) => {
+                    return Ok(Some("recoveries with faults that failed"));
                 }
-            }
-            Err(OpenError::NoStore) => None,
-            Err(OpenError::Failed { damage: false, .. }) => {
-                self.tally.count("recoveries with faults that failed", 1);
-                None
-            }
-            Err(error @ OpenError::Failed { damage: true, .. }) => {
-                let said = format!("a recovery that only faults were injected into: {error}");
-                Some(Violation::new(Kind::NotRecovered, said))
-            }
-        };
-        if let Some(violation) = violation {
-            self.found(lineage, violation, Some((taken.boundary, plan)));
+                Err(error @ OpenError::Failed { damage: true, .. }) => {
+                    let said = format!("a recovery that only faults were injected into: {error}");
+                    return Err(Violation::new(Kind::NotRecovered, said));
+                }
+            };
+            let not_sound = |error| Violation::new(Kind::Inconsistent, error);
+            let ids = expected_ids(&lineage.history, &taken.expect);
+            let pages = session.read(&ids).map_err(not_sound)?;
+            (lineage.history)
+                .find(&taken.expect, session.latest().get(), &pages)
+                .map_err(|mismatch| Violation::new(Kind::NotCommitted, mismatch.to_string()))?;
+            session.verify().map_err(not_sound)?;
+            Ok(Some("recoveries with faults that returned a store"))
+        });
+        state.set_faults(FaultOdds::NONE);
+        match recovered {
+            Ok(Some(counted)) => self.tally.count(counted, 1),
+            Ok(None) => {}
+            Err(violation) => self.found(lineage, violation, Some((taken.boundary, plan))),
         }
     }
 
@@ -1209,7 +1297,43 @@ fn describe(op: &Op) -> String {
 
 /// Runs the run of `seed`.
 pub fn run(seed: u64, shape: RunShape) -> RunReport {
-    Run::new(seed, shape).run()
+    caught(seed, || Run::new(seed, shape).run())
+}
+
+/// What `work` came to, or a report of the panic that ended it: a run that
+/// panicked has found something, and it is reported with its seed like any
+/// other violation.
+fn caught(seed: u64, work: impl FnOnce() -> RunReport) -> RunReport {
+    catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+        let said = format!("the run panicked: {}", panic_text(&*panic));
+        let mut tally = Tally::default();
+        tally.count("runs", 1);
+        tally.count("violations", 1);
+        RunReport {
+            seed,
+            tally,
+            violations: vec![Found {
+                seed,
+                lineage: 0,
+                op: 0,
+                boundary: None,
+                plan: None,
+                violation: Violation::new(Kind::Panicked, said),
+                trail: Vec::new(),
+            }],
+            ..RunReport::default()
+        }
+    })
+}
+
+/// Tells the runs that are under way to be the last, when it goes: so a
+/// campaign that a panic ends does not wait for runs with no end.
+struct StopAtEnd<'s>(&'s AtomicBool);
+
+impl Drop for StopAtEnd<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::SeqCst);
+    }
 }
 
 /// How a campaign is run.
@@ -1319,30 +1443,30 @@ pub fn campaign(settings: &Settings, progress: &mut dyn FnMut(&RunReport, u64)) 
             .is_some_and(|limit| began.elapsed() >= limit)
     };
 
-    let working = AtomicU64::new(settings.jobs.max(1) as u64);
     std::thread::scope(|scope| {
-        for _ in 0..settings.jobs.max(1) {
-            scope.spawn(|| {
-                while !stop.load(Ordering::SeqCst) && !over(&began) {
-                    let index = next.fetch_add(1, Ordering::SeqCst);
-                    if settings.runs.is_some_and(|runs| index >= runs) {
-                        break;
-                    }
-                    let done = run(settings.seed.wrapping_add(index), settings.shape);
-                    finished
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .insert(index, done);
+        let work = || {
+            while !stop.load(Ordering::SeqCst) && !over(&began) {
+                let index = next.fetch_add(1, Ordering::SeqCst);
+                if settings.runs.is_some_and(|runs| index >= runs) {
+                    break;
                 }
-                working.fetch_sub(1, Ordering::SeqCst);
-            });
-        }
+                let done = run(settings.seed.wrapping_add(index), settings.shape);
+                finished
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .insert(index, done);
+            }
+        };
+        let _stop = StopAtEnd(&stop);
+        let workers: Vec<_> = (0..settings.jobs.max(1))
+            .map(|_| scope.spawn(work))
+            .collect();
         // Runs are taken in in the order of their seeds. A run that ended
         // after the campaign did, or whose seed comes after a seed that
         // was never begun, is not part of it.
         let mut wanted = 0;
         loop {
-            let idle = working.load(Ordering::SeqCst) == 0;
+            let idle = workers.iter().all(|worker| worker.is_finished());
             let done = finished
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -1374,4 +1498,240 @@ pub fn campaign(settings: &Settings, progress: &mut dyn FnMut(&RunReport, u64)) 
     report.digest = digest.0;
     report.elapsed = began.elapsed();
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn quiet() -> RunShape {
+        RunShape {
+            faults: Some(Faults::None),
+            ..RunShape::default()
+        }
+    }
+
+    /// A run with its first lineage, the store made and opened.
+    fn begun() -> (Run, Lineage) {
+        let mut run = Run::new(1, quiet());
+        let mut lineage = run.first();
+        assert!(run.begin(&mut lineage));
+        (run, lineage)
+    }
+
+    /// The next commit of the lineage's workload.
+    fn commit(lineage: &mut Lineage, durable: bool) -> Op {
+        let pages = lineage.history.last().pages.clone();
+        loop {
+            let situation = Situation {
+                held: None,
+                pinned: false,
+                faulty: false,
+                full: false,
+            };
+            if let Op::Commit { changes, .. } = lineage.workload.next(&pages, situation) {
+                return Op::Commit { changes, durable };
+            }
+        }
+    }
+
+    #[test]
+    fn a_run_that_panics_is_reported_with_its_seed() {
+        let report = caught(7, || panic!("the store gave up"));
+        let found = report.violations.first().expect("a violation");
+        assert_eq!(
+            (report.seed, found.seed, found.violation.kind),
+            (7, 7, Kind::Panicked)
+        );
+        assert_eq!(
+            found.violation.detail,
+            "the run panicked: the store gave up"
+        );
+        assert_eq!(report.tally.get("violations"), 1);
+        let clean = caught(7, || RunReport::default());
+        assert!(clean.violations.is_empty());
+    }
+
+    #[test]
+    fn a_lineage_that_panics_is_reported_with_its_place() {
+        let mut run = Run::new(1, quiet());
+        let mut lineage = run.first();
+        Session::create(lineage.observer.vfs(), db_dir()).expect("a store");
+        // The store is expected at a point that the model does not have:
+        // the campaign's own mistake, which ends in a panic.
+        lineage
+            .observer
+            .expecting(|expect| *expect = Expect::exactly(5));
+        lineage.trail.push("pass".to_string());
+        run.live(lineage);
+        let found = run.violations.first().expect("a violation");
+        assert_eq!(found.violation.kind, Kind::Panicked);
+        assert!(
+            found.violation.detail.starts_with("the lineage panicked: "),
+            "{found}"
+        );
+        assert_eq!((found.lineage, found.trail.len()), (0, 1));
+        // The run goes on to its end: what was counted is kept.
+        assert_eq!(run.tally.get("lineages"), 1);
+        assert_eq!(run.tally.get("violations"), 1);
+    }
+
+    #[test]
+    fn a_campaign_that_a_panic_ends_does_not_wait_for_its_runs() {
+        // No end is named that the runs reach: only the panic ends them.
+        let settings = Settings {
+            runs: None,
+            points: Some(u64::MAX),
+            jobs: 2,
+            shape: RunShape {
+                ops: 4,
+                lineages: 1,
+                again_one_in: 0,
+                ..quiet()
+            },
+            ..Settings::default()
+        };
+        let (ended, wait) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let outcome = catch_unwind(AssertUnwindSafe(|| {
+                campaign(&settings, &mut |_, _| panic!("nobody listens"))
+            }));
+            let _ = ended.send(outcome.is_err());
+        });
+        let panicked = wait
+            .recv_timeout(Duration::from_secs(600))
+            .expect("the campaign ended");
+        assert!(panicked);
+    }
+
+    #[test]
+    fn the_durable_plan_is_put_before_the_others_which_keep_their_order() {
+        let plan = |name: usize| CrashPlan {
+            names: vec![name],
+            changes: Vec::new(),
+        };
+        let durable = CrashPlan::default();
+        let (one, two) = (plan(1), plan(2));
+        let first = |plans: &[&CrashPlan]| {
+            let plans = plans.iter().map(|plan| (*plan).clone()).collect();
+            first_of(plans, durable.clone())
+        };
+        let expected = vec![durable.clone(), one.clone(), two.clone()];
+        assert_eq!(first(&[&one, &two, &durable]), expected);
+        assert_eq!(first(&[&one, &durable, &two]), expected);
+        assert_eq!(first(&[&durable, &one, &two]), expected);
+        assert_eq!(first(&[&one, &two]), expected);
+        assert_eq!(first(&[]), vec![durable.clone()]);
+    }
+
+    #[test]
+    fn the_first_plan_of_an_image_is_the_one_with_no_unsynced_change() {
+        let (mut run, mut lineage) = begun();
+        let mut images = Vec::new();
+        for durable in [false, true, false, true] {
+            let op = commit(&mut lineage, durable);
+            assert_eq!(run.make(&mut lineage, &op), None);
+            images.append(&mut lineage.observer.drain());
+        }
+        assert!(images.len() > 4);
+        let mut every_plan = 0;
+        for taken in &images {
+            let durable = taken.image.lose_all();
+            let listed = RunShape {
+                every_plan_limit: 0,
+                ..quiet()
+            };
+            let mut all = vec![plans_of(&taken.image, &listed)];
+            if let Some(every) = taken.image.every_plan(quiet().every_plan_limit) {
+                let plans = plans_of(&taken.image, &quiet());
+                assert_eq!(plans.len(), every.len());
+                assert!(every.iter().all(|plan| plans.contains(plan)));
+                every_plan += usize::from(every.len() > 1);
+                all.push(plans);
+            }
+            for plans in all {
+                assert_eq!(plans[0], durable, "boundary {}", taken.boundary);
+            }
+        }
+        assert!(every_plan > 0);
+    }
+
+    #[test]
+    fn no_state_is_before_the_point_a_durable_state_recovered_to() {
+        let (mut run, mut lineage) = begun();
+        let early = lineage.observer.now();
+        let op = commit(&mut lineage, true);
+        assert!(run.step(&mut lineage, op));
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        // The commit was synced, and the state with no unsynced change
+        // recovered to it.
+        assert_eq!((lineage.history.latest(), lineage.durable), (1, 1));
+
+        // The state from before the commit, as a later crash would leave
+        // it if the store took back what was durable. The log is taken to
+        // have reported nothing: the floor of the image is the first
+        // point.
+        let later = || Taken {
+            image: early.image.clone(),
+            expect: Expect {
+                latest: 1,
+                ..early.expect.clone()
+            },
+            boundary: early.boundary,
+        };
+        assert_eq!(early.expect.floor, 0);
+        let plan = early.image.lose_all();
+        lineage.durable = 0;
+        run.check_image(&mut lineage, later(), vec![plan.clone()]);
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        lineage.durable = 1;
+        run.check_image(&mut lineage, later(), vec![plan]);
+        let found = run.violations.first().expect("a violation");
+        assert_eq!(found.violation.kind, Kind::NotCommitted);
+        assert_eq!(found.boundary, Some(early.boundary));
+        assert!(
+            found.violation.detail.contains("point 0") && found.violation.detail.contains("1 to 1"),
+            "{found}"
+        );
+
+        // The same of a state that is recovered for the first time.
+        lineage.seen.clear();
+        let plan = early.image.lose_all();
+        run.check_image(&mut lineage, later(), vec![plan]);
+        assert_eq!(run.violations.len(), 2);
+        let found = &run.violations[1];
+        assert_eq!(found.violation.kind, Kind::NotCommitted);
+        assert!(
+            found.violation.detail.contains("which was durable"),
+            "{found}"
+        );
+    }
+
+    #[test]
+    fn an_error_is_forgiven_for_a_fault_of_its_own_session_only() {
+        let (mut run, mut lineage) = begun();
+        let fs = lineage.observer.fs().clone();
+        assert!(!lineage.faulted());
+        fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::WRITES));
+        let op = commit(&mut lineage, false);
+        assert!(run.step(&mut lineage, op));
+        assert!(run.violations.is_empty(), "{:?}", run.violations);
+        assert_eq!(fs.stats().faults, 1);
+        assert_eq!(run.tally.get("commits made"), 0);
+        if lineage.session.as_ref().is_some_and(|_| lineage.faulted()) {
+            // The session went on: its errors are the fault's until the
+            // store is opened again.
+            assert!(run.tally.get("errors after a fault") > 0);
+            assert!(run.step(&mut lineage, Op::Kill));
+        }
+        assert!(!lineage.faulted());
+        // An error of the session that the recovery began is a violation.
+        run.tolerate_error(&lineage, "a call", "it failed".to_string());
+        let found = run.violations.first().expect("a violation");
+        assert_eq!(found.violation.kind, Kind::Session);
+        assert_eq!(
+            found.violation.detail,
+            "a call failed with no fault injected: it failed"
+        );
+    }
 }

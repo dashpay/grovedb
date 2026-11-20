@@ -1,6 +1,13 @@
 //! One state that a crash left: recovered, and held to the model.
 
-use std::{collections::BTreeSet, fmt, path::Path, sync::Arc};
+use std::{
+    any::Any,
+    collections::BTreeSet,
+    fmt,
+    panic::{catch_unwind, AssertUnwindSafe},
+    path::Path,
+    sync::Arc,
+};
 
 use lignin_format::PageId;
 use lignin_io::{
@@ -31,7 +38,7 @@ pub enum Kind {
     /// page, a value that is not read, a count that is not the pointers.
     Inconsistent,
     /// The store recovered to a state that is no committed version, or to
-    /// one before a commit that was reported durable.
+    /// one before a commit that was durable.
     NotCommitted,
     /// A second recovery, or the session that went on and was closed, gave
     /// another state than the first.
@@ -39,6 +46,8 @@ pub enum Kind {
     /// A store that was not crashed says other than the model, or a call
     /// failed with no fault injected.
     Session,
+    /// The store panicked, or the campaign did.
+    Panicked,
 }
 
 impl fmt::Display for Kind {
@@ -49,6 +58,7 @@ impl fmt::Display for Kind {
             Self::NotCommitted => "the recovered state is no committed version",
             Self::NotTheSame => "recovering again gave another state",
             Self::Session => "a session went wrong with no crash",
+            Self::Panicked => "a panic",
         })
     }
 }
@@ -70,6 +80,26 @@ impl Violation {
             detail: detail.into(),
         }
     }
+}
+
+/// What a panic said.
+pub fn panic_text(panic: &(dyn Any + Send)) -> &str {
+    let text = panic.downcast_ref::<&str>().copied();
+    text.or(panic.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("a panic that is no text")
+}
+
+/// Does `work`, and makes a violation of a panic in it: a store that
+/// panics over what a crash left has not recovered, and the campaign says
+/// where.
+pub fn no_panic<T>(
+    what: &str,
+    work: impl FnOnce() -> Result<T, Violation>,
+) -> Result<T, Violation> {
+    catch_unwind(AssertUnwindSafe(work)).unwrap_or_else(|panic| {
+        let said = format!("{what} panicked: {}", panic_text(&*panic));
+        Err(Violation::new(Kind::Panicked, said))
+    })
 }
 
 impl fmt::Display for Violation {
@@ -214,4 +244,33 @@ pub fn check_again(
         return Err(Violation::new(Kind::NotTheSame, said));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panic_is_a_violation_that_says_what_the_panic_said() {
+        let fine = no_panic("a recovery", || Ok(3));
+        assert_eq!(fine, Ok(3));
+        let refused = no_panic("a recovery", || {
+            Err::<u8, _>(Violation::new(Kind::NotRecovered, "no"))
+        });
+        assert_eq!(refused, Err(Violation::new(Kind::NotRecovered, "no")));
+
+        for (said, work) in [
+            ("out of range", (|| panic!("out of range")) as fn() -> u8),
+            ("index 9", || panic!("index {}", 9)),
+            ("a panic that is no text", || std::panic::panic_any(9u8)),
+        ] {
+            let violation = no_panic("a recovery", || Ok(work())).expect_err("a panic");
+            assert_eq!(violation.kind, Kind::Panicked);
+            assert_eq!(violation.detail, format!("a recovery panicked: {said}"));
+        }
+        assert_eq!(
+            Violation::new(Kind::Panicked, "x").to_string(),
+            "a panic: x"
+        );
+    }
 }

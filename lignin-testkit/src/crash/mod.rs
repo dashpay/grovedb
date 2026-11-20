@@ -126,11 +126,18 @@
 //! says ([`model::History::find`]). Which points a state may be is bounded
 //! on both sides ([`model::Expect`]):
 //!
-//! - **Not before the floor.** The floor is the last point whose item ends
-//!   at or before the place the log reported durable
-//!   (`LogStore::durable`) when the call that the image was taken in
-//!   began. After every operation the state with no unsynced change is
-//!   held to the floor as that operation left it.
+//! - **Not before the floor.** The floor is the later of two points.
+//!   One is what the log reported: the last point whose item ends at or
+//!   before the place the log had reported durable (`LogStore::durable`)
+//!   when the call that the image was taken in began, and after every
+//!   operation the state with no unsynced change is held to the floor as
+//!   that operation left it. The other is what the file system holds: the
+//!   point that the state with no unsynced change recovered to, of the
+//!   same image or of an earlier one of the same file system
+//!   (`Run::check_image`). What the durable part of the files recovers to
+//!   is lost by no crash from then on, whatever the log has reported: a
+//!   store that takes back a point that was durable is found even where
+//!   it had not said the point was.
 //! - **Not after the last point**, but for one case: an item whose append
 //!   has begun and has not been reported as in the log or as out of it for
 //!   good. The model is told what that item makes of the pages before it
@@ -143,8 +150,8 @@
 //! | The append returned | The item |
 //! | --- | --- |
 //! | `Ok` | is a point. |
-//! | `NotAppended`, or any error that is not one of the two below | is no point, and no state may be at it. |
-//! | `TakenBack`, and `LogStore::settle` then returned `Ok` | the same. A state taken before the settling returned may still be at it. |
+//! | `NotAppended`, or any error that is not one of the two below | is no point. A state of a crash before the call returned may be at it: the model does not know then how the append ends. No state of a later crash may. |
+//! | `TakenBack`, and `LogStore::settle` then returned `Ok` | the same, with the settling as part of the call. |
 //! | `TakenBack` with a settling that failed, or `Unsettled` | may be in the log or not. The session publishes nothing more and the store is opened again, with no crash: it is then at the last point or at the item, and the model takes whichever the store has. A crash before that may leave either. |
 //!
 //! **When a sync fails**, nothing that was not durable becomes durable in
@@ -169,7 +176,8 @@
 //! | `Inconsistent` | It opened, and is not at one with itself: an id without a page, a value that is not read, counts that are not the pointers, or a finding of the engine's invariant checker. |
 //! | `NotCommitted` | It is at no point it may be at: below the floor, above the last, or with pages of no point. |
 //! | `NotTheSame` | One state in a few is recovered a second time with another tuning, goes on until everything is written back and a table checkpoint covers it, is closed and is opened again. Each time it is at the same point. |
-//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, or a call failed where no fault had been injected. |
+//! | `Session` | A store that was not crashed says other than the model or is not sound to the checker, or a call failed where no fault had been injected since the store was opened. |
+//! | `Panicked` | The store panicked over a state a crash left, or the run did: it is reported with its seed like the others. |
 //!
 //! # Faults
 //!
@@ -179,8 +187,18 @@
 //! ([`campaign::Faults`]). In those an error is counted and the session
 //! goes on, as the callers of the store do: a commit that failed is not a
 //! point, write-back is asked again, and a log that cannot say what it
-//! holds ends the session. The states a crash leaves of them are recovered
-//! with no fault and held to the same rule.
+//! holds ends the session. An error is the fault's only in the session
+//! the fault was injected into: the store that a recovery returns owes
+//! nothing to the faults before it, and a call of it that fails with no
+//! new fault is a violation.
+//!
+//! The states a crash leaves of those runs are recovered with no fault and
+//! held to the same rule. One in four is recovered with the faults first:
+//! a recovery that returns a store returns one at a point it may be at,
+//! at one with itself and sound to the checker, and one that fails says
+//! that the file layer failed, not that the store is damaged. What that
+//! recovery left is then what is recovered with no fault, so such a state
+//! is held to the rule as a recovery that met faults left it.
 //!
 //! # The campaign's own acceptance test
 //!
@@ -188,7 +206,8 @@
 //! ([`cli::DEFECTS`]): a file layer that reports a sync it did not make,
 //! of the log, of a segment, of a value-log file, of a table checkpoint,
 //! of the manifest and of a directory, and a model that is wrong by one
-//! hash.
+//! hash. A defect counts as found by a run in which it did what it is
+//! planted to do ([`campaign::ACTED`]).
 //!
 //! # What is not in it
 //!
