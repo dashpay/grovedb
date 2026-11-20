@@ -67,12 +67,19 @@ impl<'s, L: StepLog> TreeOwners<'s, L> {
         }
     }
 
-    /// The current version of `page`, if the page exists.
+    /// The current version of `page`, if the page exists: the newest one
+    /// that is installed, which a page step changes (`transactions.md`
+    /// PV7).
+    ///
+    /// That is not always the page as the latest published version has
+    /// it. A commit installs its pages before its version is published,
+    /// and write-back can place a value in one of them meanwhile. The
+    /// count of the value's file says so at once, and an owner that is
+    /// looked for in the published version is not found there.
     fn current(&self, page: PageId) -> Result<Option<PageRef<'s>>, LoadError> {
-        let latest = self.log.latest();
         match self
             .loader
-            .get(page, latest, &mut self.buffers.borrow_mut())
+            .get(page, CommitVersion::MAX, &mut self.buffers.borrow_mut())
         {
             Ok(frame) => Ok(Some(frame)),
             Err(LoadError::NoPage { .. }) => Ok(None),
