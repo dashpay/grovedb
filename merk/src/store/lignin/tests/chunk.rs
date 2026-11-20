@@ -669,6 +669,104 @@ fn a_restored_merk_is_the_merk_a_restore_on_rocksdb_leaves() {
     );
 }
 
+/// A copy of `chunk` that hashes to what the original does and that the
+/// restore of a tree with no aggregates refuses at a node: the last node
+/// it puts says that it is a node of a sum tree. The restore comes to that
+/// node after the hash of a chunk below.
+fn foreign(chunk: &[ProofOp]) -> Vec<ProofOp> {
+    let mut foreign = chunk.to_vec();
+    let at = (foreign.iter())
+        .rposition(|op| emitted_key(op).is_some())
+        .expect("a chunk puts a node");
+    let below = |op: &ProofOp| matches!(op, ProofOp::Push(Node::Hash(_)));
+    assert!(foreign[..at].iter().any(below));
+    let sum = crate::TreeFeatureType::SummedMerkNode(0);
+    foreign[at] = match &foreign[at] {
+        ProofOp::Push(Node::KV(key, value)) => {
+            let hash = crate::tree::value_hash(value).unwrap();
+            ProofOp::Push(Node::KVValueHashFeatureType(
+                key.clone(),
+                value.clone(),
+                hash,
+                sum,
+            ))
+        }
+        ProofOp::Push(
+            Node::KVValueHash(key, value, hash) | Node::KVValueHashFeatureType(key, value, hash, _),
+        ) => ProofOp::Push(Node::KVValueHashFeatureType(
+            key.clone(),
+            value.clone(),
+            *hash,
+            sum,
+        )),
+        other => panic!("{other:?} is no node of a tree with no aggregates"),
+    };
+    foreign
+}
+
+/// What a restore of `chunks` into `store` answers, and the records it
+/// leaves, when three chunks that have chunks below them are each given
+/// first as their [`foreign`] copy, which is refused at a node, and then
+/// as they are.
+fn refused_at_a_node<'db, S: NodeStore<'db>>(
+    store: S,
+    root_hash: CryptoHash,
+    chunks: &BTreeMap<Vec<u8>, Vec<ProofOp>>,
+) -> Vec<String> {
+    let mut restorer = Restorer::new(open(store, TreeType::NormalTree), root_hash, None);
+    let mut said = Vec::new();
+    let mut pending = vec![vec![]];
+    let mut refused = 0;
+    while let Some(chunk_id) = pending.pop() {
+        let chunk = &chunks[&chunk_id];
+        let below = |op: &&ProofOp| matches!(op, ProofOp::Push(Node::Hash(_)));
+        if refused < 3 && chunk.iter().filter(below).count() > 1 {
+            let answered = restorer.process_chunk(&chunk_id, foreign(chunk), version());
+            assert!(
+                matches!(
+                    &answered,
+                    Err(Error::ChunkRestoringError(ChunkError::InvalidChunkProof(what)))
+                        if what.contains("does not belong to the tree type")
+                ),
+                "{answered:?}"
+            );
+            said.push(format!("foreign {chunk_id:?}: {answered:?}"));
+            refused += 1;
+        }
+        let answered = restorer.process_chunk(&chunk_id, chunk.clone(), version());
+        said.push(format!("chunk {chunk_id:?}: {answered:?}"));
+        pending.extend(answered.expect("the chunk is taken"));
+    }
+    assert_eq!(refused, 3);
+    let merk = restorer.finalize(version()).expect("the restore finishes");
+    let root = merk.root_hash_key_and_aggregate_data().unwrap();
+    said.push(format!("finalized: {root:?}"));
+    let nodes = records(&merk.storage, merk.root_key());
+    let record = |(key, record): &(Vec<u8>, Vec<u8>)| {
+        format!("{} {}", hex::encode(key), hex::encode(record))
+    };
+    said.extend(nodes.iter().map(record));
+    said
+}
+
+/// A chunk can hash to what a restore expects and still be refused at one
+/// of its nodes, after the restore has come by the hash of a chunk below
+/// it. The chunk as it is is taken afterwards, and the restore finishes
+/// with the answers and the records it has on RocksDB.
+#[test]
+fn a_chunk_that_is_refused_at_a_node_is_taken_as_it_is_afterwards() {
+    let tree_type = TreeType::NormalTree;
+    let nodes = raw_nodes(tree_type, 330);
+    with_engines(tree_type, |both, transaction| {
+        let (root_hash, chunks) = source(both, &nodes);
+        const TARGET: u8 = 41;
+        let expected = refused_at_a_node(rocks_at(both, TARGET), root_hash, &chunks);
+        let found = refused_at_a_node(lignin_at(both, TARGET), root_hash, &chunks);
+        assert_eq!(found, expected);
+        assert_eq!(held_at(both, transaction, TARGET).0, nodes.len());
+    });
+}
+
 /// The nodes and the root of the Merk at `place`, as the store's own
 /// records have them, and how many writes the transaction holds.
 fn held_at(
