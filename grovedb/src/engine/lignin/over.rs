@@ -38,6 +38,24 @@
 //! group, and its element is written as one that hosts nothing, or with
 //! the subtree that is entered again.
 //!
+//! **The look can be stale when the group is applied**, as the look for
+//! what a group enters can ([`super::enter`]): a commit of another
+//! transaction can be published between the reads here and the
+//! application. A group that this states a drop for writes the directory
+//! itself and is applied once: a refusal is the caller's answer, and the
+//! engine does not look again.
+//!
+//! - Where the look found the subtree and such a commit dropped it since,
+//!   the transaction refuses the group (`BatchError::NotEntered`) and
+//!   takes nothing of it.
+//! - Where the look found no subtree and such a commit entered it since,
+//!   by a first write into the tree, nothing is dropped: the element is
+//!   written as the group states it and the entry outlives it, as the
+//!   entry of a deleted tree does (GROVE-05). That commit wrote the
+//!   element's node too. Its transaction and this one do not meet as a
+//!   conflict where this one had not written the node before, on either
+//!   engine, and RocksDB keeps that commit's records under the prefix.
+//!
 //! What this does not do:
 //!
 //! - It keeps nothing of a dropped tree. RocksDB keeps the tree's
