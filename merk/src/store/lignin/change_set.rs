@@ -14,7 +14,9 @@ use grovedb_storage::Error as StorageError;
 use lignin_format::tree_page::{HashField, Side};
 use lignindb::{
     batch::{Resolved, StagedBatch, Written as Staged},
-    txn::{Batch, Column, Hosted, MerkWrite, NodePut, Subtree, TxnError, Unit, ValuePut},
+    txn::{
+        Batch, Column, Hosted, MerkWrite, NodePut, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
+    },
 };
 
 use super::{
@@ -145,6 +147,9 @@ pub struct LigninChangeSet {
     /// The charge of an immediate handle's change set, to which each change
     /// is added as it is made.
     immediate: Option<ImmediateBatchCharge>,
+    /// The keys of the written nodes that take the place of the element
+    /// of a tree ([`Self::note_trees`]).
+    over_trees: Vec<Vec<u8>>,
 }
 
 impl fmt::Debug for LigninChangeSet {
@@ -174,6 +179,7 @@ impl LigninChangeSet {
             whole: false,
             records: Vec::new(),
             immediate: immediate.then(|| MODEL.immediate_batch()),
+            over_trees: Vec::new(),
         }
     }
 
@@ -238,6 +244,18 @@ impl LigninChangeSet {
             node.hint = hints.get(&node.key).copied();
             node.read = reads.get(&node.key).copied().flatten();
         }
+    }
+
+    /// Notes which of the written nodes take the place of the element of a
+    /// tree: those whose value the change set states, of the keys in
+    /// `trees`, which are the nodes that the handle loaded with such an
+    /// element as their value. What such a node hosted until now is the
+    /// engine's to look at ([`LigninSettled::over_trees`]).
+    pub(super) fn note_trees(&mut self, trees: &HashSet<Vec<u8>>) {
+        let stated = |node: &NodeWrite| matches!(node.value, ValueWrite::Stated(_));
+        let over = self.nodes.iter().map(|(node, _)| node);
+        let over = over.filter(|node| stated(node) && trees.contains(&node.key));
+        self.over_trees = over.map(|node| node.key.clone()).collect();
     }
 
     /// Refuses a change set that leaves the hash of a child to the engine
@@ -603,6 +621,16 @@ struct Marks {
     /// The subtrees that are moved, each with the prefix it goes to, in
     /// the order they were said ([`LigninBatch::move_subtree`]).
     moves: Vec<(Prefix, Prefix)>,
+    /// The nodes that a handle put, with a stated value, in the place of
+    /// the element of a tree ([`LigninChangeSet::note_trees`]).
+    over_trees: BTreeSet<(Prefix, Vec<u8>)>,
+    /// The Merks that a handle wrote nodes of which had loaded none: its
+    /// writer began with a Merk that has no node.
+    anew: BTreeSet<Prefix>,
+    /// The path that a handle which staged a write was opened by, for the
+    /// subtrees whose handle was told one
+    /// ([`LigninNodeStore::at_path`](super::LigninNodeStore::at_path)).
+    paths: BTreeMap<Prefix, Vec<Vec<u8>>>,
 }
 
 impl Marks {
@@ -643,6 +671,9 @@ impl Marks {
         }
         self.generation += 1;
         self.moves.extend(other.moves);
+        self.over_trees.extend(other.over_trees);
+        self.anew.extend(other.anew);
+        self.paths.extend(other.paths);
     }
 }
 
@@ -805,7 +836,15 @@ impl LigninBatch {
         self.staged.drop_subtree(Subtree::new(subtree.prefix));
     }
 
-    pub(super) fn stage(&self, change_set: LigninChangeSet) -> Result<(), Error> {
+    /// Stages `change_set`. `began_empty` says that the handle which
+    /// hands it over has loaded no node of its Merk, and `path` is the
+    /// path that handle was opened by, if it was told one.
+    pub(super) fn stage(
+        &self,
+        change_set: LigninChangeSet,
+        began_empty: bool,
+        path: Option<&[Vec<u8>]>,
+    ) -> Result<(), Error> {
         // A batch keeps one outcome for each key and not the change set, so
         // nothing would tell the transaction that the Merk is whole.
         if change_set.whole {
@@ -824,12 +863,21 @@ impl LigninBatch {
             removed,
             root,
             records,
+            over_trees,
             ..
         } = change_set;
         let subtree = Subtree::new(named.prefix);
         let mut marks = self.marks();
         if writes_nodes {
             self.host(&named);
+            if began_empty {
+                marks.anew.insert(named.prefix);
+            }
+            let over = over_trees.into_iter().map(|key| (named.prefix, key));
+            marks.over_trees.extend(over);
+        }
+        if let Some(path) = path {
+            (marks.paths.entry(named.prefix)).or_insert_with(|| path.to_vec());
         }
         for (node, sizes) in nodes {
             let charge = Charge::Put {
@@ -934,6 +982,15 @@ pub struct LigninSettled {
     /// was settled ([`Self::host`]): the element's subtree and key, and
     /// the Merks it hosts.
     hosts: Vec<(Subtree, Vec<u8>, Vec<Subtree>)>,
+    /// The nodes that handles put in the place of the element of a tree.
+    over_trees: BTreeSet<(Prefix, Vec<u8>)>,
+    /// The Merks whose writer began with no node.
+    anew: BTreeSet<Prefix>,
+    /// The paths the handles of written subtrees were opened by.
+    paths: BTreeMap<Prefix, Vec<Vec<u8>>>,
+    /// The subtrees that whoever applies the batch dropped with it
+    /// ([`Self::drop_subtree`]).
+    drops: Vec<Subtree>,
 }
 
 /// A settled batch is handed to the transaction as it was resolved, with
@@ -944,10 +1001,17 @@ impl BatchPart for LigninSettled {
         &self,
         run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
     ) -> Result<Written, Error> {
-        if self.hosts.is_empty() {
+        if self.hosts.is_empty() && self.drops.is_empty() {
             return self.resolved.with_batch(run);
         }
         self.resolved.with_batch(|batch| {
+            // What is dropped with the batch leaves before anything is
+            // entered or written, wherever it stands among the subtrees.
+            let drops = self.drops.iter();
+            let subtrees: Vec<SubtreeWrite<'_>> = drops
+                .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
+                .chain(batch.subtrees.iter().copied())
+                .collect();
             let hosted = |subtree: Subtree, key: &[u8]| {
                 (self.hosts.iter())
                     .find(|(of, at, _)| *of == subtree && at == key)
@@ -986,6 +1050,7 @@ impl BatchPart for LigninSettled {
                 .collect();
             run(&Batch {
                 merks: &merks,
+                subtrees: &subtrees,
                 ..*batch
             })
         })
@@ -1010,6 +1075,9 @@ impl LigninSettled {
             .collect();
         let mut written = marks.written;
         written.retain(|prefix, _| live.contains(prefix));
+        let (mut anew, mut paths) = (marks.anew, marks.paths);
+        anew.retain(|prefix| live.contains(prefix));
+        paths.retain(|prefix, _| live.contains(prefix));
         Self {
             resolved,
             written,
@@ -1017,6 +1085,58 @@ impl LigninSettled {
             pending,
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
+            over_trees: marks.over_trees,
+            anew,
+            paths,
+            drops: Vec::new(),
+        }
+    }
+
+    /// The nodes that the batch puts, with a stated value, where the handle
+    /// that put them had loaded the node with the element of a tree as its
+    /// value: each by its subtree and its key. What such an element hosted
+    /// is not the new element's, unless that is the same tree written
+    /// again, and the store does not know which: whoever applies the batch
+    /// looks at what the node hosts and drops what the new element does
+    /// not host ([`Self::drop_subtree`]).
+    pub fn over_trees(&self) -> impl Iterator<Item = (&[u8; 32], &[u8])> {
+        let stated = |(subtree, key): &(&[u8; 32], &[u8])| {
+            matches!(self.node(subtree, key), Some(LigninOutcome::Put(Some(_))))
+        };
+        let nodes = self.over_trees.iter();
+        nodes
+            .map(|(subtree, key)| (subtree, key.as_slice()))
+            .filter(stated)
+    }
+
+    /// Whether the handle that wrote the nodes of the Merk `prefix` into
+    /// the batch had loaded no node of it: its writer began with a Merk
+    /// that has no node, as the writer of a tree that the same batch makes
+    /// does. Where the transaction holds nodes under the prefix, they are
+    /// not that Merk's.
+    pub fn began_empty(&self, prefix: &[u8; 32]) -> bool {
+        self.anew.contains(prefix)
+    }
+
+    /// The path that the handle which wrote into the subtree `prefix` was
+    /// opened by, if it was told one
+    /// ([`LigninNodeStore::at_path`](super::LigninNodeStore::at_path)).
+    pub fn path(&self, prefix: &[u8; 32]) -> Option<&[Vec<u8>]> {
+        self.paths.get(prefix).map(Vec::as_slice)
+    }
+
+    /// Drops the subtree `prefix` with every subtree below it, with this
+    /// batch and before its other writes, as
+    /// [`LigninBatch::drop_subtree`] does for a batch that is not settled
+    /// yet. The batch writes the element that hosted the subtree without
+    /// it, which is said of that element ([`Self::host`]), or removes it;
+    /// a subtree that the batch also writes is entered again with it
+    /// ([`Self::apply`]). The nodes of a dropped subtree are charged
+    /// nothing.
+    pub fn drop_subtree(&mut self, prefix: &[u8; 32]) {
+        let subtree = Subtree::new(*prefix);
+        if !self.drops.contains(&subtree) {
+            self.drops.push(subtree);
         }
     }
 
@@ -1198,18 +1318,20 @@ pub struct LigninRefused {
 
 /// Feeds `charge` one charge of a moved record: a put or a delete of a
 /// data record, with the writer's cost.
-fn charge_moved(
-    charge: &mut BatchCharge,
-    key: &[u8],
-    attached: Charge,
-) -> Result<(), Error> {
+fn charge_moved(charge: &mut BatchCharge, key: &[u8], attached: Charge) -> Result<(), Error> {
     match attached {
         Charge::Put {
             record_len,
             children,
             cost,
         } => charge
-            .put(Keyspace::Data, stored_key_len(key), record_len, children, cost)
+            .put(
+                Keyspace::Data,
+                stored_key_len(key),
+                record_len,
+                children,
+                cost,
+            )
             .map_err(cost_refused),
         Charge::Delete(Some(cost)) => {
             charge.delete(cost);

@@ -158,9 +158,14 @@ mod open_tests;
 mod tests;
 mod view;
 
-use std::{cell::RefCell, collections::HashMap, fmt};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    fmt,
+};
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_element::ElementType;
 use grovedb_storage::Error as StorageError;
 use grovedb_version::version::GroveVersion;
 
@@ -260,6 +265,14 @@ pub struct LigninNodeStore<'db> {
     /// of the node or the report of a write: the caller may still hold the
     /// node as it was first loaded.
     reads: RefCell<HashMap<Vec<u8>, Option<Location>>>,
+    /// The keys of the nodes that the handle loaded with the element of a
+    /// tree as their value. A write that states another value for one of
+    /// them is told to the batch that takes it
+    /// ([`LigninSettled::over_trees`]).
+    trees: RefCell<HashSet<Vec<u8>>>,
+    /// The path the handle was opened by, if it was told one
+    /// ([`Self::at_path`]).
+    path: Option<Vec<Vec<u8>>>,
 }
 
 impl fmt::Debug for LigninNodeStore<'_> {
@@ -335,7 +348,19 @@ impl<'db> LigninNodeStore<'db> {
             mode,
             hints: RefCell::new(HashMap::new()),
             reads: RefCell::new(HashMap::new()),
+            trees: RefCell::new(HashSet::new()),
+            path: None,
         }
+    }
+
+    /// The handle, told the path that it was opened by: the segments that
+    /// its prefix was derived from. The store reads nothing by it. A batch
+    /// that takes a write of the handle keeps it for whoever applies the
+    /// batch ([`LigninSettled::path`]), who derives from it the prefix of
+    /// the subtree under a key of this one.
+    pub fn at_path(mut self, path: Vec<Vec<u8>>) -> Self {
+        self.path = Some(path);
+        self
     }
 
     /// A deferred handle of `subtree`: its writes are staged in `batch`
@@ -428,9 +453,19 @@ impl<'db> LigninNodeStore<'db> {
             };
             let mut reads = self.reads.borrow_mut();
             reads.entry(key.to_vec()).or_insert(node.location);
+            self.note_tree(key, node.value.as_deref());
             return Ok(Some(node));
         }
         Err(refused("a node changed under every read of it"))
+    }
+
+    /// Keeps the key of a node that was loaded with the element of a tree
+    /// as its value.
+    fn note_tree(&self, key: &[u8], value: Option<&[u8]>) {
+        let element = value.and_then(|value| ElementType::from_serialized_value(value).ok());
+        if element.is_some_and(|element| element.is_tree()) {
+            self.trees.borrow_mut().insert(key.to_vec());
+        }
     }
 
     /// Charges a read: the record length of what it found, and a read that
@@ -470,6 +505,7 @@ impl<'db> LigninNodeStore<'db> {
         let value = stored
             .value
             .ok_or(Error::CorruptedState("a node was read with no value"))?;
+        self.note_tree(node.key(), Some(&value));
         node.put_read_value(value);
         Ok(())
     }
@@ -506,6 +542,7 @@ impl<'db> LigninNodeStore<'db> {
         is_commit: bool,
     ) -> CostResult<(), Error> {
         change_set.hint(&self.hints.borrow(), &self.reads.borrow());
+        change_set.note_trees(&self.trees.borrow());
         match self.mode {
             Mode::ReadOnly | Mode::Deferred(None) => {
                 Err(refused(&format!("{what} through a handle that only reads")))
@@ -513,7 +550,9 @@ impl<'db> LigninNodeStore<'db> {
             }
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
-                let staged = staged.and_then(|()| batch.stage(change_set));
+                let began_empty = self.hints.borrow().is_empty() && self.reads.borrow().is_empty();
+                let staged = staged
+                    .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
                 staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {

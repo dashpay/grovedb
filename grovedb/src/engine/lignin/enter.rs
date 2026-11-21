@@ -75,7 +75,8 @@
 //!   read from the transaction, as a node of the Merk that holds the
 //!   element.
 //! - **The directory has all of them where the element names them, or
-//!   none.** A subtree is not dropped when its element goes (GROVE-05),
+//!   none.** A subtree is not dropped when its element is deleted
+//!   (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
 //!   (MERK-09). So an indexed tree can find, under its key, subtrees that
 //!   are entered already. A group that holds a named write for one of its
@@ -86,9 +87,9 @@
 //!
 //! What this does not do:
 //!
-//! - A subtree is not dropped when its element goes (GROVE-05), and its
-//!   entry keeps the tree type and the host it was entered with when its
-//!   element is written again as a tree of another type.
+//! - A subtree is not dropped when its element is deleted (GROVE-05).
+//!   What a group drops when it writes another element over a tree's,
+//!   and enters again, is worked out beside this ([`super::over`]).
 //!
 //! A subtree is entered **if it is absent**
 //! (`lignindb::txn::SubtreeWrite::EnterIfAbsent`): the look here says
@@ -186,7 +187,7 @@ use crate::{
 
 /// The element that `value` is the bytes of, or `None` for bytes of no
 /// element. The bytes of an element are the same on every grove version.
-fn element_of(value: &[u8]) -> Option<Element> {
+pub(super) fn element_of(value: &[u8]) -> Option<Element> {
     Element::deserialize(value, GroveVersion::latest()).ok()
 }
 
@@ -238,7 +239,7 @@ fn named_twice() -> Error {
 }
 
 /// What the parts make of an element.
-enum Host<'a> {
+pub(super) enum Host<'a> {
     /// The last part that states a value for it states this one.
     Stated(&'a [u8]),
     /// The last part that writes it removes it.
@@ -248,7 +249,7 @@ enum Host<'a> {
     Stored,
 }
 
-fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
+pub(super) fn host_of<'a>(parts: &'a [LigninSettled], host: &LigninHost) -> Host<'a> {
     for part in parts.iter().rev() {
         match part.node(&host.subtree, &host.key) {
             Some(LigninOutcome::Put(Some(value))) => return Host::Stated(value),
@@ -296,7 +297,10 @@ pub(super) fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error
     ))
 }
 
-fn entered(view: LigninView<'_>, prefix: [u8; 32]) -> Result<Option<LigninEntry>, Error> {
+pub(super) fn entered(
+    view: LigninView<'_>,
+    prefix: [u8; 32],
+) -> Result<Option<LigninEntry>, Error> {
     let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
     handle.entry().map_err(merk_error)
 }

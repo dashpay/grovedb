@@ -59,6 +59,7 @@
 
 mod enter;
 mod error;
+mod over;
 mod restore;
 #[cfg(test)]
 mod tests;
@@ -758,8 +759,16 @@ impl Engine for LigninEngine {
     where
         B: AsRef<[u8]> + 'b,
     {
-        named(path, batch.is_some())
-            .map(|subtree| LigninNodeStore::deferred(transaction.view(), subtree, batch))
+        // A handle that writes is told its path: what a batch drops is
+        // found by it ([`over`]).
+        let segments = batch.map(|_| path.to_vec());
+        named(path, batch.is_some()).map(|subtree| {
+            let handle = LigninNodeStore::deferred(transaction.view(), subtree, batch);
+            match segments {
+                Some(segments) => handle.at_path(segments),
+                None => handle,
+            }
+        })
     }
 
     fn subtree_by_prefix<'a>(
@@ -859,21 +868,38 @@ impl Engine for LigninEngine {
             // A commit that is published from here on is one the look may
             // not have read.
             let before = self.db.version();
-            let owed = match enter::owed(view, &parts) {
-                Ok(owed) => owed,
+            let looked =
+                enter::owed(view, &parts).and_then(|owed| Ok((owed, over::left(view, &parts)?)));
+            let (owed, left) = match looked {
+                Ok(looked) => looked,
                 Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
             };
             #[cfg(test)]
             happen(&AFTER_A_LOOK, transaction);
             // What an indexed tree hosts is said of its element in
-            // every batch of the group, as this look read the element.
+            // every batch of the group, as this look read the element,
+            // and so is that an element hosts nothing whose subtree is
+            // dropped.
             for part in &mut parts {
                 part.forget_hosts();
-                for host in &owed.hosts {
+                for host in owed.hosts.iter().chain(&left.hosts) {
                     part.host(host);
                 }
             }
-            let applied = LigninSettled::apply_kept(&mut parts, view, &owed.enters);
+            // What is dropped leaves with the first batch, which is the
+            // one that enters again what the group still writes. A group
+            // that drops a subtree is one that writes the directory
+            // itself, and is applied once.
+            let drops = !left.drops.is_empty();
+            if let Some(first) = parts.first_mut() {
+                for dropped in &left.drops {
+                    first.drop_subtree(dropped);
+                }
+            }
+            let enters: Vec<_> = (left.enters.iter().chain(&owed.enters))
+                .cloned()
+                .collect();
+            let applied = LigninSettled::apply_kept(&mut parts, view, &enters);
             let Err(refused) = &applied.value else {
                 return applied.map_err(|refused| merk_error(refused.error));
             };
@@ -885,11 +911,11 @@ impl Engine for LigninEngine {
             // The group is looked for and applied again where the
             // transaction found the entry of a subtree otherwise than
             // the look had, no batch of the group enters, drops or
-            // clears a subtree itself, and a commit was published since
-            // before the look. Every other refusal is the caller's
-            // answer.
+            // clears a subtree itself, nothing is dropped with the
+            // group, and a commit was published since before the look.
+            // Every other refusal is the caller's answer.
             let stale = (refused.entry).is_some_and(|entry| owed.found_otherwise(entry));
-            if !stale || own || self.db.version() == before {
+            if !stale || own || drops || self.db.version() == before {
                 return applied.map_err(|refused| merk_error(refused.error));
             }
         }
