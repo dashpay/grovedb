@@ -151,6 +151,10 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for NodeStoreOnly<S> {
         self.store.load_node_value(node)
     }
 
+    fn takes_links_to_absent_nodes(&self) -> bool {
+        self.store.takes_links_to_absent_nodes()
+    }
+
     fn write_node(&self, node: &TreeNode, change: NodeChange) -> CostResult<(), crate::Error> {
         self.store.write_node(node, change)
     }

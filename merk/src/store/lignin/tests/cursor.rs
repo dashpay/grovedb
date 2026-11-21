@@ -15,7 +15,7 @@ use super::{
 };
 use crate::merk::KVIterator;
 
-type RocksTransaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
+pub(super) type RocksTransaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
 
 /// One call on a Merk, or on a cursor of its store.
 #[derive(Clone, Debug)]
@@ -229,7 +229,7 @@ pub(super) fn act<'db, S: NodeStore<'db>>(
 
 /// What a Merk that is opened on a handle answered to `acts`, call by call,
 /// with the cost of each.
-fn acts<'db, S: NodeStore<'db>>(
+pub(super) fn acts<'db, S: NodeStore<'db>>(
     store: S,
     tree_type: TreeType,
     acts: &[Act],
@@ -250,8 +250,8 @@ fn acts<'db, S: NodeStore<'db>>(
 /// The same Merk on RocksDB and on LigninDB, each inside a transaction.
 pub(super) struct Both<'a, 't, 's> {
     pub(super) tree_type: TreeType,
-    rocks: &'a TempStorage,
-    rocks_transaction: &'a RocksTransaction<'a>,
+    pub(super) rocks: &'a TempStorage,
+    pub(super) rocks_transaction: &'a RocksTransaction<'a>,
     pub(super) writer: &'a LigninWriter<'t, 's>,
 }
 

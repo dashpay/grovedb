@@ -13,19 +13,19 @@ use lignindb::{
 
 use super::{super::LigninSnapshot, *};
 
-struct Facade {
+pub(super) struct Facade {
     _dir: tempfile::TempDir,
-    db: Database,
+    pub(super) db: Database,
 }
 
 impl Facade {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         let dir = tempfile::tempdir().expect("a directory");
         let db = Database::open(dir.path(), &Options::default()).expect("a database");
         Self { _dir: dir, db }
     }
 
-    fn commit(&self, transaction: &WriteTxn<'_>) {
+    pub(super) fn commit(&self, transaction: &WriteTxn<'_>) {
         let committed = self.db.commit(transaction, &mut NoStaleHashes);
         assert!(
             matches!(committed, Ok(Committed::Published(_))),
@@ -35,7 +35,7 @@ impl Facade {
 
     /// The physical checker finds the database sound, with every hash
     /// made again: a value hash as the hash of the value's bytes.
-    fn sound(&self) {
+    pub(super) fn sound(&self) {
         let mut rules = RawValues {
             rules: MerkHashRules::for_check(version()),
             stated: false,

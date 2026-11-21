@@ -6,7 +6,10 @@ use std::collections::BTreeMap;
 
 use grovedb_version::version::GroveVersion;
 
-use super::{mem::MemNodeStore, NodeChange, NodeCursor, NodeStore};
+use super::{
+    mem::{MemNodeStore, Stated},
+    NodeChange, NodeCursor, NodeStore,
+};
 #[cfg(merk_test_engine)]
 use crate::test_utils::TempMerk;
 use crate::{
@@ -629,6 +632,191 @@ fn chunk_restore_writes_through_the_node_store() {
     ] {
         assert!(kinds.contains(&Some(kind)), "restore writes {kind:?}");
     }
+}
+
+/// Restores `source` into a Merk on `store`, chunk by chunk from the root
+/// down, and tells `seen` after each chunk.
+fn restore_into(
+    source: &Merk<MemNodeStore>,
+    store: &MemNodeStore,
+    mut seen: impl FnMut(&MemNodeStore),
+) -> Restorer<MemNodeStore> {
+    let grove_version = GroveVersion::latest();
+    let mut producer = ChunkProducer::new(source).expect("the source produces chunks");
+    let mut restorer = Restorer::new(
+        open(store, source.tree_type),
+        source.root_hash().unwrap(),
+        None,
+    );
+    let mut next = Some(vec![]);
+    while let Some(chunk_id) = next {
+        let (chunk, following) = producer.chunk(&chunk_id, grove_version).unwrap();
+        restorer
+            .process_chunk(&chunk_id, chunk, grove_version)
+            .expect("the chunk restores");
+        seen(store);
+        next = following;
+    }
+    restorer
+}
+
+/// A Merk of `tree_type` with `nodes` nodes, in a store of its own.
+fn source_of(tree_type: TreeType, nodes: u64) -> Merk<MemNodeStore> {
+    let mut source = open(&MemNodeStore::new(), tree_type);
+    let batch: Vec<_> = (0..nodes).map(|n| put(tree_type, n, n)).collect();
+    apply(&mut source, &batch);
+    source
+}
+
+const RESTORED_TREE_TYPES: [TreeType; 4] = [
+    TreeType::NormalTree,
+    TreeType::SumTree,
+    TreeType::CountSumTree,
+    TreeType::ProvableCountTree,
+];
+
+#[test]
+fn a_store_that_takes_no_link_to_an_absent_node_is_handed_the_restored_merk_whole() {
+    let grove_version = GroveVersion::latest();
+    for tree_type in RESTORED_TREE_TYPES {
+        let source = source_of(tree_type, 1000);
+        let root_key = source.root_key().expect("the source has a root");
+
+        // A store that takes the chunks as they arrive.
+        let plain = MemNodeStore::new();
+        let mut chunks = 0;
+        let restorer = restore_into(&source, &plain, |store| {
+            chunks += 1;
+            assert!(!store.records().is_empty(), "{tree_type:?}");
+        });
+        assert!(chunks > 30, "{tree_type:?}: {chunks} chunks");
+        restorer.finalize(grove_version).expect("restore finalizes");
+        assert!(plain.take_statements().iter().all(|stated| !stated.whole));
+
+        // A store that takes no link to a node it does not hold: nothing
+        // reaches it before the Merk is whole.
+        let linked = MemNodeStore::linked();
+        let restorer = restore_into(&source, &linked, |store| {
+            assert_eq!(store.records(), vec![], "{tree_type:?}");
+            assert_eq!(store.root_key().unwrap().unwrap(), None);
+        });
+        assert_eq!(linked.take_log(), vec![]);
+        let restored = restorer.finalize(grove_version).expect("restore finalizes");
+
+        // It holds the nodes the other store holds, and the root key.
+        assert_eq!(restored.root_hash().unwrap(), source.root_hash().unwrap());
+        assert_eq!(restored.root_key(), Some(root_key.clone()));
+        assert_eq!(linked.records(), plain.records(), "{tree_type:?}");
+        assert_eq!(linked.root_key().unwrap().unwrap(), Some(root_key.clone()));
+
+        // They came in one change set, which stated the root and that it
+        // is the whole Merk, and put every node once with its value. A
+        // child came before its parent: the store panics at a commit that
+        // puts a node before a node its link names.
+        let whole = Stated {
+            root: Some(Some(root_key)),
+            whole: true,
+            nodes: 1000,
+        };
+        assert_eq!(linked.take_statements(), vec![whole], "{tree_type:?}");
+        let log = linked.take_log();
+        assert_eq!(log.len(), 1000);
+        let written: BTreeMap<_, _> = log.into_iter().collect();
+        assert_eq!(written.len(), 1000, "{tree_type:?}: a key was put twice");
+        assert!(written
+            .values()
+            .all(|change| *change == Some(NodeChange::ValueWritten)));
+    }
+}
+
+#[test]
+fn a_restore_that_is_not_finished_leaves_a_store_that_is_handed_a_merk_whole_as_it_was() {
+    let grove_version = GroveVersion::latest();
+    let source = source_of(TreeType::NormalTree, 300);
+
+    // Given up after every chunk has arrived.
+    let linked = MemNodeStore::linked();
+    drop(restore_into(&source, &linked, |_| ()));
+    assert_eq!(linked.records(), vec![]);
+    assert_eq!(linked.root_key().unwrap().unwrap(), None);
+    assert_eq!(linked.take_statements(), vec![]);
+
+    // Finalized before the last chunk has arrived.
+    let mut producer = ChunkProducer::new(&source).unwrap();
+    let mut restorer = Restorer::new(
+        open(&linked, TreeType::NormalTree),
+        source.root_hash().unwrap(),
+        None,
+    );
+    let (chunk, _) = producer.chunk(&[], grove_version).unwrap();
+    restorer.process_chunk(&[], chunk, grove_version).unwrap();
+    let refused = restorer.finalize(grove_version).map(|_| ());
+    assert!(
+        matches!(
+            refused,
+            Err(crate::Error::ChunkRestoringError(
+                crate::proofs::chunk::error::ChunkError::RestorationNotComplete
+            ))
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(linked.records(), vec![]);
+    assert_eq!(linked.take_statements(), vec![]);
+
+    // A restore whose finished tree is refused hands nothing over either.
+    // The values of this tree are no elements, and a restore that is told
+    // they are cannot make the aggregates of a sum tree from them.
+    let sums = source_of(TreeType::SumTree, 300);
+    let linked = MemNodeStore::linked();
+    let restorer = restore_into(&sums, &linked, |_| ());
+    let refused = restorer
+        .finalize_with_grovedb_elements(grove_version)
+        .map(|_| ());
+    assert!(
+        matches!(refused, Err(crate::Error::CorruptedState(_))),
+        "{refused:?}"
+    );
+    assert_eq!(linked.records(), vec![]);
+    assert_eq!(linked.root_key().unwrap().unwrap(), None);
+    assert_eq!(linked.take_statements(), vec![]);
+}
+
+#[test]
+fn a_store_that_is_handed_a_merk_whole_takes_no_restore_over_nodes_it_holds() {
+    let grove_version = GroveVersion::latest();
+    let tree_type = TreeType::NormalTree;
+    let source = source_of(tree_type, 100);
+
+    let linked = MemNodeStore::linked();
+    let mut held = open(&linked, tree_type);
+    apply(&mut held, &[put(tree_type, 5000, 1)]);
+    let before = linked.records();
+    linked.take_statements();
+
+    let restorer = restore_into(&source, &linked, |_| ());
+    let refused = restorer.finalize(grove_version).map(|_| ());
+    assert!(
+        matches!(&refused, Err(crate::Error::NotSupported(what)) if what.contains("holds nodes")),
+        "{refused:?}"
+    );
+    assert_eq!(linked.records(), before);
+    assert_eq!(linked.take_statements(), vec![]);
+}
+
+#[test]
+fn a_store_whose_cursor_fails_is_not_taken_for_one_that_holds_no_node() {
+    let grove_version = GroveVersion::latest();
+    let source = source_of(TreeType::NormalTree, 100);
+    let linked = MemNodeStore::linked();
+    let restorer = restore_into(&source, &linked, |_| ());
+    linked.fail_cursors();
+    let refused = restorer.finalize(grove_version).map(|_| ());
+    assert!(
+        matches!(&refused, Err(crate::Error::StorageError(_))),
+        "{refused:?}"
+    );
+    assert_eq!(linked.take_statements(), vec![]);
+    assert_eq!(linked.root_key().unwrap().unwrap(), None);
 }
 
 #[test]

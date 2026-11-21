@@ -139,6 +139,19 @@ pub trait NodeChangeSet {
     /// is [`Self::put_root_key`].
     fn state_root(&mut self, _root_key: Option<&[u8]>) {}
 
+    /// States that this change set is the whole Merk: the Merk has no node
+    /// before it, every node of the Merk is put in it once, a child before
+    /// its parent, each with its value written, and [`Self::state_root`]
+    /// names the root. A restore states it of the change set that hands a
+    /// staged Merk to its store ([`NodeStore::takes_links_to_absent_nodes`]),
+    /// and no other code of Merk outside its tests does.
+    ///
+    /// It is not a write and is charged nothing. A store may lay such a
+    /// change set out in one pass, and need read no node of the Merk to
+    /// apply it. The default does nothing: a store that keeps one record
+    /// per node puts each as it puts any other.
+    fn state_whole_merk(&mut self) {}
+
     /// Records `root_key` as the key of the subtree's root node.
     fn put_root_key(
         &mut self,
@@ -265,6 +278,25 @@ pub trait NodeStore<'db> {
             )),
         }
         .wrap_with_cost(Default::default())
+    }
+
+    /// Whether a node may be written here with a link that names a node
+    /// the store does not hold.
+    ///
+    /// The RocksDB adapter writes a link as the bytes of its child's key,
+    /// whatever is under that key: it answers `true`, which is the
+    /// default. A store that keeps a link as the place of the child has
+    /// nothing to write for a child that is not there, and answers
+    /// `false`: every link of a node it is handed names a node it holds,
+    /// or a node of the same change set.
+    ///
+    /// Chunk restore asks. The chunks of a Merk arrive from the root down,
+    /// and the links of a chunk to the chunks below it name no node until
+    /// those are written. On a store that answers `false` the restore
+    /// keeps the nodes in memory until the Merk is whole, and writes it in
+    /// one change set ([`NodeChangeSet::state_whole_merk`]).
+    fn takes_links_to_absent_nodes(&self) -> bool {
+        true
     }
 
     /// Writes one node at once, outside a change set, uncharged. The default

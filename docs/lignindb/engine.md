@@ -399,7 +399,7 @@ What this leaves to later tasks:
 
 ### How the LigninDB engine is checked
 
-`grovedb/src/engine/lignin/tests` runs with `cargo test -p grovedb --features lignin_storage --lib engine::lignin`, on LigninDB, and where the RocksDB engine is compiled in also on RocksDB, by the same code. Five tests close the database they leave, open it again and have the physical checker read it, with every hash of every Merk node made again by Merk's rules: the first below, and the tests of the lazy enter, the wipe, the delete of a tree and the two first writers.
+`grovedb/src/engine/lignin/tests` runs with `cargo test -p grovedb --features lignin_storage --lib engine::lignin`, on LigninDB, and where the RocksDB engine is compiled in also on RocksDB, by the same code. Six tests close the database they leave, open it again and have the physical checker read it with Merk's rules for a check (`MerkHashRules::for_check`): the first below, and the tests of the lazy enter, the wipe, the delete of a tree, the two first writers and the restore of a root Merk.
 
 | Test | What it holds |
 | --- | --- |
@@ -415,6 +415,7 @@ What this leaves to later tasks:
 | `the_element_of_a_subtree_is_the_one_its_group_states_last` | A group of two batches: the first states an element as a tree of another type, the second writes its node with the value it has and writes into its subtree. The subtree is entered with the type the first states, and the group is refused where that is an indexed tree. |
 | `a_tree_that_holds_elements_is_not_deleted_yet_and_stays_whole` | The delete of a tree whose Merk holds an item is refused and leaves the root hash and the item. A tree nothing was written into is deleted: it is gone, and the root hash is the one RocksDB has after the same calls. |
 | `two_transactions_that_both_write_first_into_one_subtree` | Two inserts into a tree nothing was written into: the second commit is a conflict. Two records with different keys in a keyspace nothing has entered: the second commit is refused, is no conflict and leaves nothing, and made again it is committed. Two records in the namespace of the pending-drop records: both commit. |
+| `a_root_merk_is_restored_from_chunks_through_the_engine` | MERK-07. The root Merk of a grove of 300 items is restored from chunks, which a deferred handle on a first grove gives, through an immediate handle of a second in a transaction that is committed: the second grove gives the root hash and every item of the first, and the checker finds it sound. Where the RocksDB engine is compiled in, each chunk and the end of the restore answer what they answer there. |
 | `what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing`, `pending_drop_records_are_read_and_removed_outside_any_transaction`, `the_errors_of_lignindb_are_named_by_what_the_seam_knows` | What is refused and how it is named: a checkpoint made, opened or deleted, a range delete, a move, and an insert into an indexed tree, which leaves the root hash and enters nothing. |
 
 ## What later tasks get

@@ -96,6 +96,8 @@
 mod hashes;
 #[path = "merk_store/proofs.rs"]
 mod proofs;
+#[path = "merk_store/restore.rs"]
+mod restore;
 
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
@@ -269,6 +271,8 @@ struct Tally {
     hashed: hashes::Made,
     /// The proofs that Merk made on both engines where a trace proves.
     proved: proofs::Proved,
+    /// The tally of `restore::compare`.
+    restored: restore::Restored,
 }
 
 impl Tally {
@@ -296,6 +300,7 @@ impl Tally {
         self.hashed.with_axes += other.hashed.with_axes;
         self.hashed.reloaded += other.hashed.reloaded;
         self.proved.add(other.proved);
+        self.restored.add(other.restored);
     }
 }
 
@@ -1218,6 +1223,15 @@ fn replay(planned: &Planned, kinds: Kinds) -> Tally {
         });
     }
 
+    // In the replay with the narrowest kinds only: the grove of a trace
+    // that is replayed with both kinds is given to `restore::compare` once.
+    if kinds == Kinds::Narrowest {
+        let reader = path.begin();
+        let (block, grove) = (transactions.block(), observer.grove());
+        let restored = restore::compare(&db, block, &reader, grove, spec.grove_version);
+        replay.tally.restored.add(restored);
+    }
+
     // The store as the replay leaves it is run through the physical
     // invariant checker (`lignindb::verify`): the pages, the trees, the
     // directory against the cells, the values, the page ids and the page
@@ -1387,6 +1401,19 @@ fn the_corpus_gives_the_same_trees_on_the_lignindb_node_store() {
         );
         assert!(
             proved.proofs > 50_000 && proved.bytes > 10_000_000,
+            "{tally:?}"
+        );
+        assert!(
+            proved.chunk_calls > 500 && proved.chunk_bytes > 100_000,
+            "{tally:?}"
+        );
+        let restored = tally.restored;
+        assert!(
+            restored.merks > 30_000 && restored.of_several_chunks > 2_000,
+            "{tally:?}"
+        );
+        assert!(
+            restored.finished > 30_000 && restored.nodes > 100_000,
             "{tally:?}"
         );
     }

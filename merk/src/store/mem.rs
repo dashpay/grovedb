@@ -2,6 +2,11 @@
 //! memory, and a commit stores of each node only the parts its
 //! [`NodeChange`] names. It then checks that the stored node equals the node
 //! Merk wrote, so a kind that claims too little fails the commit.
+//!
+//! [`MemNodeStore::linked`] is such a store that takes no link to a node it
+//! does not hold, as a store that keeps a link as the place of the child
+//! does: a commit panics on a node whose link names a node the store does
+//! not hold.
 
 use std::{
     collections::BTreeMap,
@@ -127,6 +132,23 @@ struct State {
     aux: BTreeMap<Vec<u8>, Vec<u8>>,
     meta: BTreeMap<Vec<u8>, Vec<u8>>,
     log: Vec<(Vec<u8>, Option<NodeChange>)>,
+    /// Whether every link of a written node has to name a node the store
+    /// holds when the node is put.
+    linked: bool,
+    /// Whether the cursors of the store fail.
+    cursors_fail: bool,
+    statements: Vec<Stated>,
+}
+
+/// What a committed change set stated beside its changes, and how many
+/// nodes it put.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Stated {
+    /// The root, where the change set stated one.
+    pub(crate) root: Option<Option<Vec<u8>>>,
+    /// Whether the change set said that it is the whole Merk.
+    pub(crate) whole: bool,
+    pub(crate) nodes: usize,
 }
 
 /// A handle of the in-memory store. Its clones share one subtree.
@@ -138,6 +160,25 @@ pub(crate) struct MemNodeStore {
 impl MemNodeStore {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    /// A store that takes no link to a node it does not hold.
+    pub(crate) fn linked() -> Self {
+        let store = Self::default();
+        store.state.lock().unwrap().linked = true;
+        store
+    }
+
+    /// Has every cursor that is opened from now on stand on no node and
+    /// report an error.
+    pub(crate) fn fail_cursors(&self) {
+        self.state.lock().unwrap().cursors_fail = true;
+    }
+
+    /// What each change set that put a node stated, in commit order, since
+    /// the last call.
+    pub(crate) fn take_statements(&self) -> Vec<Stated> {
+        std::mem::take(&mut self.state.lock().unwrap().statements)
     }
 
     /// Every node as `(key, record)`, in key order.
@@ -169,6 +210,7 @@ enum MemOp {
 #[derive(Default)]
 pub(crate) struct MemChangeSet {
     ops: Vec<MemOp>,
+    stated: Stated,
 }
 
 impl NodeChangeSet for MemChangeSet {
@@ -186,7 +228,16 @@ impl NodeChangeSet for MemChangeSet {
     ) -> Result<(), Error> {
         self.ops
             .push(MemOp::PutNode(key.to_vec(), Box::new(node), change));
+        self.stated.nodes += 1;
         Ok(())
+    }
+
+    fn state_root(&mut self, root_key: Option<&[u8]>) {
+        self.stated.root = Some(root_key.map(<[u8]>::to_vec));
+    }
+
+    fn state_whole_merk(&mut self) {
+        self.stated.whole = true;
     }
 
     fn delete_node(&mut self, key: &[u8], _cost: Option<KeyValueStorageCost>) {
@@ -258,15 +309,24 @@ impl<'db> NodeStore<'db> for MemNodeStore {
         Ok(self.state.lock().unwrap().root_key.clone()).wrap_with_cost(Default::default())
     }
 
+    fn takes_links_to_absent_nodes(&self) -> bool {
+        !self.state.lock().unwrap().linked
+    }
+
     fn set_root_key(&self, root_key: Option<&[u8]>) -> CostResult<(), Error> {
         self.state.lock().unwrap().root_key = root_key.map(<[u8]>::to_vec);
         Ok(()).wrap_with_cost(Default::default())
     }
 
     fn cursor(&self) -> MemCursor {
+        let failed = self.state.lock().unwrap().cursors_fail;
         MemCursor {
-            records: self.records(),
+            records: match failed {
+                true => Vec::new(),
+                false => self.records(),
+            },
             position: None,
+            failed,
         }
     }
 
@@ -276,9 +336,22 @@ impl<'db> NodeStore<'db> for MemNodeStore {
 
     fn commit(&self, change_set: MemChangeSet) -> CostResult<(), Error> {
         let mut state = self.state.lock().unwrap();
+        if change_set.stated.nodes > 0 {
+            state.statements.push(change_set.stated);
+        }
         for op in change_set.ops {
             match op {
                 MemOp::PutNode(key, written, change) => {
+                    if state.linked {
+                        for link in written.children.iter().flatten() {
+                            assert!(
+                                state.nodes.contains_key(&link.key),
+                                "a link of the node {key:?} names {:?}, which the store does not \
+                                 hold",
+                                link.key
+                            );
+                        }
+                    }
                     let stored = match change {
                         NodeChange::ValueWritten => {
                             state.nodes.entry(key.clone()).or_insert((*written).clone())
@@ -336,6 +409,7 @@ impl<'db> NodeStore<'db> for MemNodeStore {
 pub(crate) struct MemCursor {
     records: Vec<(Vec<u8>, Vec<u8>)>,
     position: Option<usize>,
+    failed: bool,
 }
 
 impl MemCursor {
@@ -397,5 +471,14 @@ impl NodeCursor for MemCursor {
 
     fn valid(&self) -> CostContext<bool> {
         self.record().is_some().wrap_with_cost(Default::default())
+    }
+
+    fn status(&self) -> Result<(), grovedb_storage::Error> {
+        match self.failed {
+            true => Err(grovedb_storage::Error::StorageError(
+                "the cursor was refused".to_owned(),
+            )),
+            false => Ok(()),
+        }
     }
 }

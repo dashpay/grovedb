@@ -29,6 +29,8 @@
 //! Provides `Restorer`, which can create a replica of a Merk instance by
 //! receiving chunk proofs.
 
+mod staging;
+
 use std::collections::BTreeMap;
 
 use grovedb_version::version::GroveVersion;
@@ -48,18 +50,48 @@ use crate::{
         tree::{execute, Child, Tree as ProofTree},
         Node, Op,
     },
-    store::{NodeChange, NodeChangeSet, NodeStore},
+    store::{NodeChange, NodeChangeSet, NodeCursor, NodeStore},
     tree::{
         combine_hash, hash::NULL_HASH, kv::ValueDefinedCostType, value_hash, AggregateData,
         RefWalker, TreeNode,
     },
     tree_type::TreeType,
-    CryptoHash, Error, Link, Merk, TreeFeatureType,
+    CryptoHash, Error, Link, Merk, MerkType, TreeFeatureType,
 };
+
+use self::staging::Staging;
+
+/// A restore at work on `$merk`: the Merk of `$restorer`, or the one its
+/// chunks are staged in.
+macro_rules! restoring {
+    ($restorer:ident, $merk:expr) => {
+        Restoring {
+            merk: $merk,
+            expected_root_hash: $restorer.expected_root_hash,
+            chunk_id_to_root_hash: &mut $restorer.chunk_id_to_root_hash,
+            parent_key_value_hash: $restorer.parent_key_value_hash,
+            parent_keys: &mut $restorer.parent_keys,
+        }
+    };
+}
 
 /// Restorer handles verification of chunks and replication of Merk trees.
 /// Chunks can be processed randomly as long as their parent has been processed
 /// already.
+///
+/// # Where the chunks are written
+///
+/// A chunk arrives before the chunks below it, and links at its lower edge
+/// to their roots, which are not there yet. The RocksDB adapter, which
+/// writes a link as bytes of the node's record, takes such a node, and each
+/// chunk is written to the Merk's store as it arrives. A store that does not
+/// ([`NodeStore::takes_links_to_absent_nodes`]) is written once: the chunks
+/// go to a store in memory, on which the restore makes the same calls and
+/// which no one else reads, and [`Restorer::finalize`] hands the finished
+/// Merk to its own store as one change set, every node once and a child
+/// before its parent ([`NodeChangeSet::state_whole_merk`]). Until then the
+/// Merk's own store holds nothing of the restore, so a restore that is
+/// given up before it is finalized leaves that store as it found it.
 ///
 /// # Height safety during restoration (audit finding #15, 2026-03-09)
 ///
@@ -97,6 +129,10 @@ use crate::{
 ///    `Restorer`.
 pub struct Restorer<S> {
     merk: Merk<S>,
+    /// The Merk the chunks are written to until every chunk has arrived,
+    /// for a store that takes no link to a node it does not hold. It is
+    /// boxed so that a `Restorer` is no larger for it.
+    staged: Option<Box<Merk<Staging>>>,
     expected_root_hash: CryptoHash,
     chunk_id_to_root_hash: BTreeMap<Vec<u8>, CryptoHash>,
     parent_key_value_hash: Option<CryptoHash>,
@@ -114,8 +150,19 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
     ) -> Self {
         let mut chunk_id_to_root_hash = BTreeMap::new();
         chunk_id_to_root_hash.insert(traversal_instruction_as_vec_bytes(&[]), expected_root_hash);
+        // The staged Merk keeps its own root key, whatever kind of Merk the
+        // restore is of: a restore records and reads the root key of every
+        // Merk in the Merk's store.
+        let staged = (!merk.storage.takes_links_to_absent_nodes()).then(|| {
+            Box::new(Merk::open_empty(
+                Staging::new(),
+                MerkType::BaseMerk,
+                merk.tree_type,
+            ))
+        });
         Self {
             merk,
+            staged,
             expected_root_hash,
             chunk_id_to_root_hash,
             parent_key_value_hash,
@@ -126,6 +173,10 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
     /// Consumes the `Restorer` and returns the underlying `Merk` without
     /// finalizing. Useful for inspecting the merk state (e.g., checking its
     /// root hash) when no chunks have been processed.
+    ///
+    /// On a store that is handed a restored Merk whole, this is the Merk as
+    /// it was before the restore, whatever chunks were processed: they are
+    /// dropped with the `Restorer`.
     pub fn into_merk(self) -> Merk<S> {
         self.merk
     }
@@ -183,7 +234,7 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         }
         let chunk_tree = Self::verify_chunk(chunk, expected_root_hash, &parent_key_value_hash)?;
 
-        let mut root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
+        let root_traversal_instruction = vec_bytes_as_traversal_instruction(chunk_id)?;
 
         // The parent-link rewrite (and the root-key set) mutate committed
         // restorer state, so they run only AFTER the chunk write — whose
@@ -215,31 +266,17 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         let root_key = chunk_tree.key().map(|k| k.to_vec());
 
         // next up, we need to write the chunk and build the map again
-        let chunk_write_result =
-            self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
-        if chunk_write_result.is_ok() {
-            match updated_parent_link {
-                None => {
-                    self.merk.set_base_root_key(root_key).value?;
-                }
-                Some((updated_key, updated_aggregate)) => {
-                    // every non root chunk has some associated parent with a
-                    // placeholder link; update it to represent the true data
-                    self.rewrite_parent_link(
-                        chunk_id,
-                        &root_traversal_instruction,
-                        &updated_key,
-                        updated_aggregate,
-                        grove_version,
-                    )?;
-                }
-            }
-            // if we were able to successfully write the chunk, we can remove
-            // the chunk expected root hash from our chunk id map
-            self.chunk_id_to_root_hash.remove(chunk_id);
+        let chunk = VerifiedChunk {
+            chunk_id,
+            chunk_tree,
+            root_traversal_instruction,
+            updated_parent_link,
+            root_key,
+        };
+        match self.staged.as_deref_mut() {
+            Some(staged) => restoring!(self, staged).write(chunk, grove_version),
+            None => restoring!(self, &mut self.merk).write(chunk, grove_version),
         }
-
-        chunk_write_result
     }
 
     /// Process multi chunks (space optimized chunk proofs that can contain
@@ -358,6 +395,215 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         };
 
         Ok(tree)
+    }
+
+    /// Rebuild restoration state from partial storage state
+    #[allow(dead_code)]
+    fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
+        // TODO: think about the return type some more
+        let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
+        if !bad_link_map.is_empty() {
+            self.chunk_id_to_root_hash = bad_link_map;
+            self.parent_keys = parent_keys;
+        }
+
+        Ok(())
+    }
+
+    /// Consumes the `Restorer` and returns a newly created, fully populated
+    /// Merk instance. This method will return an error if called before
+    /// processing all chunks.
+    ///
+    /// This is the only way to obtain the restored `Merk`. It guarantees
+    /// that all height metadata is correct before returning, regardless of
+    /// any placeholder heights stored during intermediate chunk processing.
+    /// See the struct-level doc comment on [`Restorer`] for the full safety
+    /// argument.
+    /// Values remain opaque; their encoding never changes feature semantics.
+    pub fn finalize(self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
+        self.finalize_inner(grove_version, false)
+    }
+
+    /// Finalizes a GroveDB subtree whose values are serialized `Element`s.
+    /// Own contributions are derived from those elements, including sums
+    /// that are not authenticated by the host's node hashes. Raw Merk callers
+    /// must use [`Self::finalize`] to preserve their independent features.
+    pub fn finalize_with_grovedb_elements(
+        self,
+        grove_version: &GroveVersion,
+    ) -> Result<Merk<S>, Error> {
+        self.finalize_inner(grove_version, true)
+    }
+
+    fn finalize_inner(
+        mut self,
+        grove_version: &GroveVersion,
+        grove_db_elements: bool,
+    ) -> Result<Merk<S>, Error> {
+        // ensure all chunks have been processed
+        if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
+            return Err(Error::ChunkRestoringError(
+                ChunkError::RestorationNotComplete,
+            ));
+        }
+
+        match self.staged.take() {
+            None => restoring!(self, &mut self.merk).finish(grove_version, grove_db_elements)?,
+            Some(mut staged) => {
+                // The staged Merk is finished and checked as a Merk in its
+                // own store is, so the tree that is handed over has passed
+                // every check of a restore.
+                restoring!(self, &mut *staged).finish(grove_version, grove_db_elements)?;
+                self.hand_over(*staged, grove_version)?;
+            }
+        }
+
+        Ok(self.merk)
+    }
+
+    /// Hands the Merk that was restored in `staged` to its own store, as
+    /// one change set: it states the root, says that it is the whole Merk,
+    /// puts every node once, a child before its parent and each with its
+    /// value written, and records the root key, which a restore records
+    /// for every Merk. Then the root is loaded from the store and checked
+    /// against the expected hash.
+    fn hand_over(
+        &mut self,
+        staged: Merk<Staging>,
+        grove_version: &GroveVersion,
+    ) -> Result<(), Error> {
+        let root_key = staged
+            .root_key()
+            .ok_or(Error::ChunkRestoringError(InternalError(
+                "a restore that finished has no root",
+            )))?;
+        let staging = staged.storage;
+
+        // The change set says that the Merk had no node before it, and a
+        // store that is told so reads no node of the Merk to apply it. The
+        // moves of a cursor return a cost and no result: a cursor that
+        // failed says so by its status.
+        let mut cursor = self.merk.storage.cursor();
+        cursor.seek_to_first().unwrap();
+        let holds_a_node = cursor.valid().unwrap();
+        cursor.status().map_err(Error::StorageError)?;
+        drop(cursor);
+        if holds_a_node {
+            return Err(Error::NotSupported(
+                "a restore into a Merk that holds nodes, on a store that is handed a Merk whole"
+                    .to_string(),
+            ));
+        }
+
+        let mut change_set = self.merk.storage.change_set();
+        change_set.state_root(Some(&root_key));
+        change_set.state_whole_merk();
+        put_staged(&staging, &root_key, &mut change_set, grove_version)?;
+        if staging.len() != 0 {
+            return Err(Error::ChunkRestoringError(InternalError(
+                "the restored tree does not link every node that was written",
+            )));
+        }
+        change_set.put_root_key(&root_key, None)?;
+        // costs intentionally discarded — restorer does not track them
+        self.merk.storage.commit(change_set).value?;
+
+        self.merk
+            .load_base_root(
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .value?;
+        restoring!(self, &mut self.merk).check_root_hash()
+    }
+}
+
+/// Takes the node under `key` out of `staging`, with every node below it,
+/// and puts each into `change_set` after its children.
+fn put_staged<C: NodeChangeSet>(
+    staging: &Staging,
+    key: &[u8],
+    change_set: &mut C,
+    grove_version: &GroveVersion,
+) -> Result<(), Error> {
+    let node = staging
+        .take_node(key, grove_version)?
+        .ok_or(Error::ChunkRestoringError(InternalError(
+            "a link of the restored tree names no node, or one that another link names",
+        )))?;
+    for side in [LEFT, RIGHT] {
+        if let Some(link) = node.link(side) {
+            put_staged(staging, link.key(), change_set, grove_version)?;
+        }
+    }
+    let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
+    change_set.put_node(node.key(), prepared, None)
+}
+
+/// A chunk that was verified against the hash its restore expects, with
+/// what writing it needs.
+struct VerifiedChunk<'c> {
+    chunk_id: &'c [u8],
+    chunk_tree: ProofTree,
+    root_traversal_instruction: Vec<bool>,
+    /// The key and the aggregate of the chunk's root, for the link of its
+    /// parent: `None` for the chunk at the root of the Merk.
+    updated_parent_link: Option<(Vec<u8>, AggregateData)>,
+    root_key: Option<Vec<u8>>,
+}
+
+/// A restore at work on the Merk its chunks are written to: the Merk of
+/// its [`Restorer`], or the one they are staged in. Writing a chunk and
+/// finishing the Merk are its functions, so they are the same on both.
+struct Restoring<'a, W> {
+    merk: &'a mut Merk<W>,
+    expected_root_hash: CryptoHash,
+    chunk_id_to_root_hash: &'a mut BTreeMap<Vec<u8>, CryptoHash>,
+    parent_key_value_hash: Option<CryptoHash>,
+    parent_keys: &'a mut BTreeMap<Vec<u8>, Vec<u8>>,
+}
+
+impl<'db, W: NodeStore<'db>> Restoring<'_, W> {
+    /// Writes a verified chunk, and then what its arrival settles: the root
+    /// key after the chunk at the root of the Merk, and after any other the
+    /// link of its parent.
+    fn write(
+        &mut self,
+        chunk: VerifiedChunk<'_>,
+        grove_version: &GroveVersion,
+    ) -> Result<Vec<Vec<u8>>, Error> {
+        let VerifiedChunk {
+            chunk_id,
+            chunk_tree,
+            mut root_traversal_instruction,
+            updated_parent_link,
+            root_key,
+        } = chunk;
+        let chunk_write_result =
+            self.write_chunk(chunk_tree, &mut root_traversal_instruction, grove_version);
+        if chunk_write_result.is_ok() {
+            match updated_parent_link {
+                None => {
+                    self.merk.set_base_root_key(root_key).value?;
+                }
+                Some((updated_key, updated_aggregate)) => {
+                    // every non root chunk has some associated parent with a
+                    // placeholder link; update it to represent the true data
+                    self.rewrite_parent_link(
+                        chunk_id,
+                        &root_traversal_instruction,
+                        &updated_key,
+                        updated_aggregate,
+                        grove_version,
+                    )?;
+                }
+            }
+            // if we were able to successfully write the chunk, we can remove
+            // the chunk expected root hash from our chunk id map
+            self.chunk_id_to_root_hash.remove(chunk_id);
+        }
+
+        chunk_write_result
     }
 
     /// Write the verified chunk to storage.
@@ -977,56 +1223,14 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
         self.merk.storage.commit(change_set).value
     }
 
-    /// Rebuild restoration state from partial storage state
-    #[allow(dead_code)]
-    fn attempt_state_recovery(&mut self, grove_version: &GroveVersion) -> Result<(), Error> {
-        // TODO: think about the return type some more
-        let (bad_link_map, parent_keys) = self.merk.verify(false, grove_version);
-        if !bad_link_map.is_empty() {
-            self.chunk_id_to_root_hash = bad_link_map;
-            self.parent_keys = parent_keys;
-        }
-
-        Ok(())
-    }
-
-    /// Consumes the `Restorer` and returns a newly created, fully populated
-    /// Merk instance. This method will return an error if called before
-    /// processing all chunks.
-    ///
-    /// This is the only way to obtain the restored `Merk`. It guarantees
-    /// that all height metadata is correct before returning, regardless of
-    /// any placeholder heights stored during intermediate chunk processing.
-    /// See the struct-level doc comment on [`Restorer`] for the full safety
-    /// argument.
-    /// Values remain opaque; their encoding never changes feature semantics.
-    pub fn finalize(self, grove_version: &GroveVersion) -> Result<Merk<S>, Error> {
-        self.finalize_inner(grove_version, false)
-    }
-
-    /// Finalizes a GroveDB subtree whose values are serialized `Element`s.
-    /// Own contributions are derived from those elements, including sums
-    /// that are not authenticated by the host's node hashes. Raw Merk callers
-    /// must use [`Self::finalize`] to preserve their independent features.
-    pub fn finalize_with_grovedb_elements(
-        self,
-        grove_version: &GroveVersion,
-    ) -> Result<Merk<S>, Error> {
-        self.finalize_inner(grove_version, true)
-    }
-
-    fn finalize_inner(
-        mut self,
+    /// Finishes a Merk whose chunks have all been written: corrects the
+    /// heights and the aggregates the chunks could not give, verifies the
+    /// tree, and checks its root against the expected hash.
+    fn finish(
+        &mut self,
         grove_version: &GroveVersion,
         grove_db_elements: bool,
-    ) -> Result<Merk<S>, Error> {
-        // ensure all chunks have been processed
-        if !self.chunk_id_to_root_hash.is_empty() || !self.parent_keys.is_empty() {
-            return Err(Error::ChunkRestoringError(
-                ChunkError::RestorationNotComplete,
-            ));
-        }
-
+    ) -> Result<(), Error> {
         // get the latest version of the root node
         self.merk
             .load_base_root(
@@ -1096,6 +1300,13 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
 
         // verify() checks links, but the root has no incoming link. A
         // feature rewrite can change its hash even when every link is valid.
+        self.check_root_hash()
+    }
+
+    /// Checks the root of the Merk against the hash the restore expects:
+    /// the root hash, or its combination with the value hash of the parent
+    /// element.
+    fn check_root_hash(&self) -> Result<(), Error> {
         let root_hash = self.merk.root_hash().unwrap();
         let restored_hash = match self.parent_key_value_hash {
             Some(value_hash) => combine_hash(&value_hash, &root_hash).unwrap(),
@@ -1106,8 +1317,7 @@ impl<'db, S: NodeStore<'db>> Restorer<S> {
                 "restored root does not match expected root hash",
             )));
         }
-
-        Ok(self.merk)
+        Ok(())
     }
 
     /// Verify that the child heights of the merk tree links correctly represent
@@ -2411,12 +2621,149 @@ mod tests {
         // recover state
         let recovery_attempt = restorer.attempt_state_recovery(grove_version);
         assert!(recovery_attempt.is_ok());
+        if restorer.staged.is_some() {
+            // A store that is handed a Merk whole held nothing of the
+            // chunk, so there is nothing to recover from it: the restore
+            // starts again with the chunk at the root.
+            assert_eq!(restorer.chunk_id_to_root_hash.len(), 1);
+            assert_eq!(restorer.parent_keys.len(), 0);
+            assert!(restorer.merk.is_empty_tree().unwrap());
+            return;
+        }
         assert_eq!(restorer.chunk_id_to_root_hash.len(), 4);
         assert_eq!(restorer.parent_keys.len(), 4);
 
         // assert equality to old state
         assert_eq!(old_chunk_id_to_root_hash, restorer.chunk_id_to_root_hash);
         assert_eq!(old_parent_keys, restorer.parent_keys);
+    }
+
+    /// Restores a Merk of forty nodes into a store that is handed a Merk
+    /// whole, up to its `finalize`.
+    fn staged_restorer(
+        target: &crate::store::mem::MemNodeStore,
+    ) -> Restorer<crate::store::mem::MemNodeStore> {
+        let grove_version = GroveVersion::latest();
+        let open = |store: crate::store::mem::MemNodeStore| {
+            Merk::open_base(
+                store,
+                TreeType::NormalTree,
+                None::<&fn(&[u8], &GroveVersion) -> Option<ValueDefinedCostType>>,
+                grove_version,
+            )
+            .unwrap()
+            .unwrap()
+        };
+        let mut source = open(crate::store::mem::MemNodeStore::new());
+        source
+            .apply::<_, Vec<_>>(&make_batch_seq(0..40), &[], None, grove_version)
+            .unwrap()
+            .expect("apply failed");
+        let mut chunk_producer = ChunkProducer::new(&source).unwrap();
+        let mut restorer = Restorer::new(open(target.clone()), source.root_hash().unwrap(), None);
+        let mut chunk_id_opt = Some(vec![]);
+        while let Some(chunk_id) = chunk_id_opt {
+            let (chunk, next_chunk_id) = chunk_producer.chunk(&chunk_id, grove_version).unwrap();
+            restorer
+                .process_chunk(&chunk_id, chunk, grove_version)
+                .expect("should process chunk successfully");
+            chunk_id_opt = next_chunk_id;
+        }
+        restorer
+    }
+
+    /// A node with no child, under `key`.
+    fn lone_node(key: &[u8]) -> TreeNode {
+        TreeNode::new(
+            key.to_vec(),
+            vec![7; 5],
+            None,
+            TreeFeatureType::BasicMerkNode,
+        )
+        .unwrap()
+    }
+
+    /// The hand-over takes the tree a restore finished: every staged node
+    /// is linked from the root, and by one link.
+    #[test]
+    fn the_hand_over_refuses_what_is_no_tree() {
+        use crate::store::mem::MemNodeStore;
+        let grove_version = GroveVersion::latest();
+
+        // A staged node that no link of the tree leads to.
+        let target = MemNodeStore::linked();
+        let restorer = staged_restorer(&target);
+        let staged = restorer.staged.as_ref().expect("the restore is staged");
+        staged
+            .storage
+            .write_node(&lone_node(b"stray"), NodeChange::ValueWritten)
+            .unwrap()
+            .unwrap();
+        let refused = restorer.finalize(grove_version).map(|_| ());
+        assert!(
+            matches!(
+                refused,
+                Err(ChunkRestoringError(InternalError(what))) if what.contains("does not link")
+            ),
+            "{refused:?}"
+        );
+        assert!(target.records().is_empty());
+        assert_eq!(target.take_statements(), vec![]);
+
+        // A node that two links name, and a link that names no node.
+        let staging = Staging::new();
+        let child = lone_node(b"b");
+        let to_child = Link::Reference {
+            hash: child.hash().unwrap(),
+            child_heights: (0, 0),
+            key: b"b".to_vec(),
+            aggregate_data: AggregateData::NoAggregateData,
+        };
+        let mut parent = lone_node(b"c");
+        parent.set_link(LEFT, Some(to_child.clone()));
+        parent.set_link(RIGHT, Some(to_child));
+        for node in [&child, &parent] {
+            staging
+                .write_node(node, NodeChange::ValueWritten)
+                .unwrap()
+                .unwrap();
+        }
+        // The first walk takes the child for the left link and finds none
+        // for the right one. The second finds no node under the root's key.
+        for _ in 0..2 {
+            let mut change_set = MemNodeStore::new().change_set();
+            let refused = put_staged(&staging, b"c", &mut change_set, grove_version);
+            assert!(
+                matches!(
+                    refused,
+                    Err(ChunkRestoringError(InternalError(what))) if what.contains("names no node")
+                ),
+                "{refused:?}"
+            );
+            assert_eq!(staging.len(), 0);
+        }
+    }
+
+    /// A restore that finished has a root. A staged Merk with none is
+    /// refused, and nothing is handed over.
+    #[test]
+    fn the_hand_over_refuses_a_staged_merk_with_no_root() {
+        use crate::store::mem::MemNodeStore;
+        let grove_version = GroveVersion::latest();
+        let target = MemNodeStore::linked();
+        let mut restorer = staged_restorer(&target);
+        let empty = Merk::open_empty(Staging::new(), MerkType::BaseMerk, TreeType::NormalTree);
+        let refused = restorer.hand_over(empty, grove_version);
+        assert!(
+            matches!(
+                refused,
+                Err(ChunkRestoringError(InternalError(what))) if what.contains("has no root")
+            ),
+            "{refused:?}"
+        );
+        assert!(target.records().is_empty());
+        assert_eq!(target.take_statements(), vec![]);
+        assert_eq!(target.root_key().unwrap().unwrap(), None);
     }
 
     // ---------- write_chunk node dispatch coverage ----------

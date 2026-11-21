@@ -1254,4 +1254,196 @@ mod tests {
         store.delete_meta_record(b"meta").unwrap().unwrap();
         assert_eq!(store.get_meta_record(b"meta").unwrap().unwrap(), None);
     }
+
+    /// Every storage call that a chunk restore makes on RocksDB, and every
+    /// call that producing its chunks makes, with its arguments and in
+    /// order, for each tree type, for values that are no elements and for
+    /// elements, finalized either way. Each restore is also given three
+    /// chunks it refuses: one before the chunk above it, one that does not
+    /// hash to what is expected, and one that was written already. The
+    /// calls and the answers are reduced to one digest.
+    ///
+    /// `RECORDED` is the digest of a restore that writes every chunk to the
+    /// store as it arrives: the code of this test gives it on the commit
+    /// `5c83bdc8`, which has no other restore. The test prints the digest
+    /// of each case (`--nocapture`), so that two builds can be compared
+    /// case by case.
+    #[test]
+    fn a_chunk_restore_and_its_chunks_make_the_recorded_storage_calls() {
+        const RECORDED: &str = "0b91646abc75e1792a069d06b29c5490f59a10f273f0974b089f2274c5e80749";
+
+        use grovedb_element::Element;
+
+        use crate::{
+            element::tree_type::ElementTreeTypeExtensions,
+            proofs::{Node, Op as ProofOp},
+        };
+
+        fn feature(tree_type: TreeType, n: u64) -> TreeFeatureType {
+            use TreeFeatureType::*;
+            let sum = (n % 4_001) as i64 - 2_000;
+            let big = i128::from(sum) << 70;
+            match tree_type {
+                TreeType::NormalTree => BasicMerkNode,
+                TreeType::SumTree => SummedMerkNode(sum),
+                TreeType::BigSumTree => BigSummedMerkNode(big),
+                TreeType::CountTree => CountedMerkNode(1),
+                TreeType::CountSumTree => CountedSummedMerkNode(1, sum),
+                TreeType::ProvableCountTree => ProvableCountedMerkNode(1),
+                TreeType::ProvableCountSumTree => ProvableCountedSummedMerkNode(1, sum),
+                TreeType::ProvableSumTree => ProvableSummedMerkNode(sum),
+                TreeType::ProvableCountProvableSumTree => {
+                    ProvableCountedAndProvableSummedMerkNode(1, sum)
+                }
+                TreeType::ProvableCountProvableBigSumTree => {
+                    ProvableCountedAndProvableBigSummedMerkNode(1, big)
+                }
+                TreeType::CountBigSumTree => CountedBigSummedMerkNode(1, big),
+                TreeType::ProvableBigSumTree => ProvableBigSummedMerkNode(big),
+                other => panic!("no feature chosen for {other:?}"),
+            }
+        }
+        let grove_version = GroveVersion::latest();
+        let tree_types = [
+            TreeType::NormalTree,
+            TreeType::SumTree,
+            TreeType::BigSumTree,
+            TreeType::CountTree,
+            TreeType::CountSumTree,
+            TreeType::ProvableCountTree,
+            TreeType::ProvableCountSumTree,
+            TreeType::ProvableSumTree,
+            TreeType::ProvableCountProvableSumTree,
+            TreeType::ProvableCountProvableBigSumTree,
+            TreeType::CountBigSumTree,
+            TreeType::ProvableBigSumTree,
+        ];
+        let key = |n: u64| n.wrapping_mul(0x9e37_79b9_7f4a_7c15).to_be_bytes().to_vec();
+        let digest = |calls: &[Call]| {
+            let mut hasher = blake3::Hasher::new();
+            for call in calls {
+                hasher.update(format!("{call:?}\n").as_bytes());
+            }
+            hasher.finalize().to_hex().to_string()
+        };
+        let mut cases = Vec::new();
+        for tree_type in tree_types {
+            for of_elements in [false, true] {
+                let mut nodes: Vec<(Vec<u8>, Op)> = (0..300u64)
+                    .map(|n| match of_elements {
+                        false => {
+                            let mut value = vec![0xf7];
+                            value.resize(1 + (n % 90) as usize, n as u8);
+                            let feature = feature(tree_type, n.wrapping_mul(977));
+                            (key(n), Op::Put(value, feature))
+                        }
+                        true => {
+                            let sum = (n as i64 % 301) - 150;
+                            let element = match n % 3 {
+                                0 => Element::new_item(vec![n as u8; 1 + (n % 90) as usize]),
+                                1 => Element::new_sum_item(sum),
+                                _ => Element::new_item_with_sum_item(vec![n as u8; 9], sum),
+                            };
+                            let feature = element.get_feature_type(tree_type).unwrap();
+                            let value = element.serialize(grove_version).unwrap();
+                            (key(n), Op::Put(value, feature))
+                        }
+                    })
+                    .collect();
+                nodes.sort_by(|a, b| a.0.cmp(&b.0));
+                for elements in [false, true] {
+                    let storage = TempStorage::new();
+                    let tx = storage.start_transaction();
+                    let open = |path: &[u8]| {
+                        storage
+                            .get_immediate_storage_context([path].as_ref().into(), &tx)
+                            .unwrap()
+                    };
+                    let (produced, restored) = (Tape::default(), Tape::default());
+                    let mut source = Merk::open_base(
+                        produced.recording(open(b"source")),
+                        tree_type,
+                        NO_VALUE_DEFINED_COST,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    source
+                        .apply::<_, Vec<u8>>(&nodes, &[], None, grove_version)
+                        .unwrap()
+                        .unwrap();
+                    produced.take();
+                    let target = Merk::open_base(
+                        restored.recording(open(b"target")),
+                        tree_type,
+                        NO_VALUE_DEFINED_COST,
+                        grove_version,
+                    )
+                    .unwrap()
+                    .unwrap();
+                    let mut producer = ChunkProducer::new(&source).unwrap();
+                    let mut restorer = Restorer::new(target, source.root_hash().unwrap(), None);
+                    let (at_root, _) = producer.chunk(&[], grove_version).unwrap();
+                    let (below_root, _) = producer.chunk(&[1, 1, 1], grove_version).unwrap();
+                    let mut forged = at_root.clone();
+                    let key = forged.iter_mut().find_map(|op| match op {
+                        ProofOp::Push(
+                            Node::KV(key, ..)
+                            | Node::KVValueHash(key, ..)
+                            | Node::KVValueHashFeatureType(key, ..)
+                            | Node::KVCount(key, ..)
+                            | Node::KVSum(key, ..)
+                            | Node::KVBigSum(key, ..)
+                            | Node::KVCountSum(key, ..)
+                            | Node::KVCountBigSum(key, ..),
+                        ) => Some(key),
+                        _ => None,
+                    });
+                    key.expect("a chunk puts a node").push(0x5a);
+                    let mut refused = vec![
+                        restorer.process_chunk(&[1, 1, 1], below_root, grove_version),
+                        restorer.process_chunk(&[], forged, grove_version),
+                    ];
+                    let mut pending = vec![vec![]];
+                    while let Some(chunk_id) = pending.pop() {
+                        let (chunk, _) = producer.chunk(&chunk_id, grove_version).unwrap();
+                        let below = restorer.process_chunk(&chunk_id, chunk, grove_version);
+                        pending.extend(below.unwrap());
+                    }
+                    refused.push(restorer.process_chunk(&[], at_root, grove_version));
+                    assert!(refused.iter().all(Result::is_err), "{refused:?}");
+                    let finalized = match elements {
+                        true => restorer.finalize_with_grovedb_elements(grove_version),
+                        false => restorer.finalize(grove_version),
+                    };
+                    let outcome = match &finalized {
+                        Ok(merk) => format!("ok {}", hex::encode(merk.root_hash().unwrap())),
+                        Err(error) => format!("refused {error:?}"),
+                    };
+                    let (restore, produce) = (restored.take(), produced.take());
+                    cases.push(format!(
+                        "RESTORE-CALLS {tree_type:?} of_elements={of_elements} \
+                         elements={elements}: restore {} calls {} cost {:?}; chunks {} calls {}; \
+                         {outcome}; refused {refused:?}",
+                        restore.len(),
+                        digest(&restore),
+                        restored.take_cost(),
+                        produce.len(),
+                        digest(&produce),
+                    ));
+                }
+            }
+        }
+        let cases = cases.join("\n");
+        println!("{cases}");
+        let all = blake3::hash(cases.as_bytes()).to_hex().to_string();
+        println!("RESTORE-CALLS-ALL {all}");
+        // Restores finished, and restores were refused: both are in the
+        // digest.
+        assert!(cases.contains("; ok ") && cases.contains("; refused "));
+        assert_eq!(
+            all, RECORDED,
+            "the storage calls of a case changed:\n{cases}"
+        );
+    }
 }

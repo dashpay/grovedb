@@ -14,6 +14,13 @@
 //!   an aggregate over a range is also proven as that aggregate.
 //! - For a trunk and for a branch chunk: the trunk or the branch proof of
 //!   the Merk at the path.
+//! - For chunks of a Merk by their ids (MERK-07): the replay tries to make
+//!   one producer and, if one is made, gives it the ids the step names, in
+//!   their order and up to the first that is refused, or the id of the
+//!   chunk at the root where the step names none. The call answers with
+//!   the encoded chunks and what the producer gives as the next id after
+//!   each, which is none after the producer's last chunk, or with the
+//!   first error alone. A producer reports no cost for a chunk.
 //!
 //! Every answer is compared as its encoded bytes, or as its error, and
 //! every call must cost on LigninDB what it costs on RocksDB, the open of
@@ -35,7 +42,7 @@ use grovedb_storage::Storage;
 use grovedb_version::version::GroveVersion;
 use lignin_testkit::{
     layout_sim::{tree::Merk as MerkModel, Grove},
-    workload::op::{Op, Prove, Read},
+    workload::op::{ChunkIds, Op, Prove, Read},
 };
 
 use super::NO_VALUE_DEFINED_COST;
@@ -54,6 +61,9 @@ pub struct Proved {
     /// Those that gave a proof, and the bytes of the proofs.
     pub proofs: u64,
     pub bytes: u64,
+    /// Those among them that gave chunks of a Merk, and their bytes.
+    pub chunk_calls: u64,
+    pub chunk_bytes: u64,
 }
 
 impl Proved {
@@ -63,6 +73,8 @@ impl Proved {
         self.skipped += other.skipped;
         self.proofs += other.proofs;
         self.bytes += other.bytes;
+        self.chunk_calls += other.chunk_calls;
+        self.chunk_bytes += other.chunk_bytes;
     }
 }
 
@@ -75,6 +87,8 @@ enum Call {
     CountAndSum(QueryItem),
     Trunk(u8, Option<u8>),
     Branch(Vec<u8>, u8),
+    /// The chunks one producer of the Merk gives for these chunk ids.
+    Chunks(Vec<Vec<u8>>),
 }
 
 /// What a path query asks of the Merks on its way and of the Merk at its
@@ -131,6 +145,17 @@ fn calls(op: &Op) -> Vec<(Vec<Vec<u8>>, Call)> {
         }) => calls.push((path.clone(), Call::Trunk(*max_depth, *min_depth))),
         Read::Prove(Prove::BranchChunk { path, key, depth }) => {
             calls.push((path.clone(), Call::Branch(key.clone(), *depth)))
+        }
+        Read::Prove(Prove::Chunk {
+            path,
+            ids: ChunkIds::Merk(ids),
+        }) => {
+            // No id at all asks for the chunk at the root.
+            let ids = match ids.is_empty() {
+                true => vec![Vec::new()],
+                false => ids.clone(),
+            };
+            calls.push((path.clone(), Call::Chunks(ids)))
         }
         _ => {}
     }
@@ -189,6 +214,19 @@ fn answer<'db, S: NodeStore<'db>>(
                 (encoded(&branch.proof), root)
             })
             .map_err(refused),
+        // A producer reports no cost for a chunk.
+        Call::Chunks(ids) => merk
+            .chunks()
+            .and_then(|mut producer| {
+                let (mut bytes, mut following) = (Vec::new(), Vec::new());
+                for id in ids {
+                    let (chunk, next) = producer.chunk(id, grove_version)?;
+                    bytes.extend(encoded(&chunk));
+                    following.push(next);
+                }
+                Ok((bytes, format!("{following:?}")))
+            })
+            .map_err(refused),
     };
     (answer, cost)
 }
@@ -217,7 +255,7 @@ fn open<'db, S: NodeStore<'db>>(
 /// The tree type of the Merk `model`: that of the element that hosts it,
 /// read from RocksDB. `None` for a Merk whose host is no tree with a Merk
 /// of that type to open.
-fn tree_type(
+pub fn tree_type(
     db: &GroveDb,
     transaction: &Transaction,
     grove: &Grove,
@@ -306,6 +344,10 @@ pub fn compare(
         if let Ok((proof, _)) = &found {
             proved.proofs += 1;
             proved.bytes += proof.len() as u64;
+            if matches!(call, Call::Chunks(_)) {
+                proved.chunk_calls += 1;
+                proved.chunk_bytes += proof.len() as u64;
+            }
         }
     }
     proved
