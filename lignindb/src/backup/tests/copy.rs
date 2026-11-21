@@ -1,8 +1,8 @@
 use std::{error::Error, path::Path, sync::Arc, time::Duration};
 
-use lignin_format::{manifest::FileState, PageSize};
+use lignin_format::{manifest::FileState, FileKind, PageSize};
 use lignin_io::{
-    sim::{CrashPoint, Fault, FaultRule, OpKind, OpSet, SimConfig, SimVfs},
+    sim::{CrashPoint, Event, Fault, FaultRule, OpKind, OpSet, Outcome, SimConfig, SimVfs},
     Create, OpenMode, Vfs,
 };
 use lignin_store::segment::{read_manifest, FileNames, ManifestStore};
@@ -273,12 +273,13 @@ fn a_source_with_a_file_missing_or_short_is_refused_before_anything_is_made() {
             lignin_format::FileKind::Segment => FileNames::SEGMENT,
             _ => FileNames::VALUE_LOG,
         };
-        let mut tried = 0;
+        let mut tried = Vec::new();
         for file in manifest.files() {
-            if file.valid_len() < 64 {
+            // A file of no byte cannot be made shorter.
+            if file.valid_len() == 0 {
                 continue;
             }
-            tried += 1;
+            tried.push(file.kind());
             let path = names(file.kind()).path(Path::new(SOURCE), file.id());
             // Short by one byte, in a copy of the file system.
             let image = fs.crash_image();
@@ -315,7 +316,18 @@ fn a_source_with_a_file_missing_or_short_is_refused_before_anything_is_made() {
             assert!(error.to_string().contains("is not there") && error.source().is_none());
             assert_eq!(to.fingerprint(), untouched, "nothing was made");
         }
-        assert!(tried >= 3, "seed {seed}: {tried} files were tried");
+        // A file of each kind that a manifest names was tried. That a
+        // close leaves a log file, a segment and, with the values these
+        // seeds draw, a value-log file, is what a close does. How many
+        // of each it leaves, and how long they are, is the store's
+        // layout and the schedule of the source's background work: a
+        // log file can hold its header and nothing else.
+        for kind in [FileKind::Wal, FileKind::Segment, FileKind::ValueLog] {
+            assert!(
+                tried.contains(&kind),
+                "seed {seed}: no file of the kind {kind:?} was tried: {tried:?}"
+            );
+        }
     }
 }
 
@@ -592,7 +604,9 @@ fn a_copy_of_a_database_that_was_being_made_opens_as_the_source_does() {
 fn a_full_disk_under_the_target_fails_the_copy_and_leaves_no_database() {
     let (fs, state) = source(51, 14, true);
     let source_was = fs.fingerprint();
-    let mut sites = 0;
+    // What was refused first in each run: whether for good, the kind of
+    // the operation, and what it was on.
+    let mut refused: Vec<(bool, OpKind, &str)> = Vec::new();
     for forever in [false, true] {
         for skip in 0.. {
             let to = target_fs(51);
@@ -607,7 +621,16 @@ fn a_full_disk_under_the_target_fails_the_copy_and_leaves_no_database() {
                 copied.expect("no fault, and no copy");
                 break;
             }
-            sites += 1;
+            let first = to.trace().into_iter().find_map(|event| match event {
+                Event::Op(op) if matches!(op.outcome, Outcome::Injected { .. }) => {
+                    Some((forever, op.kind, place(&op.path)))
+                }
+                _ => None,
+            });
+            let first = first.expect("an operation was refused");
+            if !refused.contains(&first) {
+                refused.push(first);
+            }
             let context =
                 format!("space gone at operation {skip} of those that need it, forever {forever}");
             let Err(error) = copied else {
@@ -655,7 +678,48 @@ fn a_full_disk_under_the_target_fails_the_copy_and_leaves_no_database() {
             }
         }
     }
-    assert!(sites > 60, "{sites} operations were failed");
+    // The sweep refused each kind of operation by which a copy needs
+    // room, on each kind of file that a copy makes, once and for good.
+    // How many operations that is in all follows from how many files
+    // the source has, which is the store's layout.
+    let mut needed = vec![
+        (OpKind::CreateDir, "a directory"),
+        (OpKind::SyncDir, "a directory"),
+        (OpKind::Lock, "the lock file"),
+        (OpKind::Open, "the manifest"),
+        (OpKind::Write, "the manifest"),
+        (OpKind::SyncAll, "the manifest"),
+        (OpKind::Rename, "the manifest"),
+    ];
+    for file in [
+        "a log file",
+        "a segment",
+        "a value-log file",
+        "a table checkpoint",
+    ] {
+        needed.extend([OpKind::Open, OpKind::Append, OpKind::SyncAll].map(|kind| (kind, file)));
+    }
+    for forever in [false, true] {
+        for (kind, on) in &needed {
+            assert!(
+                refused.contains(&(forever, *kind, *on)),
+                "no run was refused {kind} of {on}, forever {forever}: {refused:?}"
+            );
+        }
+    }
+}
+
+/// What a copy makes at `path` of a target.
+fn place(path: &str) -> &'static str {
+    match path {
+        _ if path.ends_with("LOCK") => "the lock file",
+        _ if path.contains("MANIFEST") => "the manifest",
+        _ if path.contains("/wal/") => "a log file",
+        _ if path.contains("/seg/") => "a segment",
+        _ if path.contains("/val/") => "a value-log file",
+        _ if path.contains("/table/") => "a table checkpoint",
+        _ => "a directory",
+    }
 }
 
 /// Removes `path` with everything in it, as an operator removes what a

@@ -208,6 +208,14 @@ ended, make no operation on a file, and settle nothing.
   not to every commit of that moment. A commit that found the doubt
   waits for the manifest's lock to have it settled, behind whoever holds
   it then.
+- A table checkpoint that turns the log replaces the manifest for the
+  log's files before it replaces it to install itself. Where such an
+  earlier replacement is refused once, in its rename or in the sync of
+  the directory after it, write-back needs the manifest again in the same
+  call and has it settled there: the checkpoint is installed, and returns
+  with the manifest in no doubt. Where the replacement that installs is
+  refused, the checkpoint fails and the manifest is in doubt when it
+  returns, which is the state the other points here are about.
 - Until a commit, a close or write-back has come by, the creation of a
   checkpoint of the database fails with `CheckpointError::Manifest`: it
   reads the manifest itself. It leaves nothing, and is made again. (A
@@ -281,6 +289,16 @@ in full.
 
 The engine does steps 3 to 5 by itself. Steps 2 and 6 are whoever opens
 the database's until the reserve is wired into `Db` (section 8, item 3).
+
+**A known defect in step 4 (D-209).** Where the device filled while
+write-back was appending to the value-log file it fills, the dead bytes of
+that file do not come back in the same session. Write-back gives the file
+up, the file stays open with no writer, and the cleaner cleans no file
+that is open. The session takes commits again (step 5), and the room that
+came back can be too little to fill the reserve again (step 6). A close
+and an open give the file to the cleaner. `STORE-06-F3` removes this; the
+two tests of `db::tests::room` are ignored until it does, and the
+measurement of section 5.3 is from before it was found.
 
 ### 5.3 How much room is a little
 
@@ -746,8 +764,8 @@ At each of the 3,269 operations:
 | Test | What it shows |
 | --- | --- |
 | `db::tests::full` (6 tests, 9 sweeps) | the above, at every operation |
-| `db::tests::ended` | each of the two states of DF8, met by a step that is no commit and no flush, ends the session; a `flush()` still makes durable what was published; the look waits for no commit, makes no operation on a file and settles nothing; a session gives the first reason it had, also where the commit path stops it while the store's reason is being kept; a manifest in doubt is settled by a commit and by a close, and ends no session; a commit that cannot have it settled is refused and can be made again; a commit beside a holder of the manifest is made (DF8a) |
-| `db::tests::room` | DF10 and DF11 on a device with a capacity in bytes: nothing comes back while nothing is released, and with the reserve released write-back and the cleaner give back what is dead, the session takes the next commit, and the reserve is filled again; the least reserve that is enough (section 5.3) |
+| `db::tests::ended` | each of the two states of DF8, met by a step that is no commit and no flush, ends the session; a `flush()` still makes durable what was published; the look waits for no commit, makes no operation on a file and settles nothing; a session gives the first reason it had, also where the commit path stops it while the store's reason is being kept; a manifest in doubt is settled by a commit and by a close, and ends no session; a table checkpoint is installed though the replacement for its turn of the log was refused; a commit that cannot have it settled is refused and can be made again; a commit beside a holder of the manifest is made (DF8a) |
+| `db::tests::room` (ignored until `STORE-06-F3`, D-209) | DF10 and DF11 on a device with a capacity in bytes: nothing comes back while nothing is released, and with the reserve released write-back and the cleaner give back what is dead, the session takes the next commit, and the reserve is filled again; the least reserve that is enough (section 5.3) |
 | `db::tests::filling` | random fills under a database whose background threads run, with the same model: 12 seeds of 40 rounds, in which the device fills in each of the four ways and has room again |
 | `db::tests::backup` | a backup from a checkpoint of a database that is written meanwhile is the database at the checkpoint's version (BK2): the copy waits, with every file measured and none copied, until 5 commits were made beside it; a restore of it takes writes |
 | `backup::tests::copy` | BK1 to BK11: closed and killed sources, refusals (a target inside the source among them), the valid lengths, carried files, a target that cannot be listed, a database that was being made, cut at each operation of its creation, a full device and a power cut under the target at every operation |

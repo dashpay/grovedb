@@ -24,7 +24,7 @@ use lignin_io::{
     Vfs,
 };
 use lignin_store::{
-    flush::FlushError,
+    flush::{Checkpointed, FlushError},
     segment::SegmentStoreError,
     wal::{LogError, SyncPolicy},
 };
@@ -322,17 +322,50 @@ fn a_reason_that_was_given_stays_when_the_store_has_one_too() {
     );
 }
 
-/// The rule that refuses the replacement of the manifest that the next
-/// table checkpoint makes: its rename, or the sync of the directory after
-/// it.
-fn refuse_the_manifest(session: &Session, kind: OpKind) {
+/// The rule that refuses one replacement of the manifest of those that
+/// the next table checkpoint makes, the one that `earlier` of them come
+/// before: its rename, or the sync of the directory after it.
+fn refuse_a_replacement(session: &Session, kind: OpKind, earlier: u64) {
     let rule = FaultRule::new(Fault::Enospc).on(kind);
     session.fs.add_rule(match kind {
-        OpKind::Rename => rule,
+        OpKind::Rename => rule.skip(earlier),
         // The directory is synced for the files a table checkpoint makes
-        // as well: the sync after the manifest's rename is the one.
-        _ => rule.at("/db").skip(sync_dirs_before_the_rename()),
+        // as well: the sync after the rename of that replacement is the
+        // one.
+        _ => rule.at("/db").skip(sync_dirs_before_the_rename(earlier)),
     });
+}
+
+/// How many times a table checkpoint replaces the manifest before the
+/// replacement that installs it, in a session like those of these tests:
+/// found in sessions that are made for it, as the first replacement whose
+/// refusal the checkpoint answers with an error.
+///
+/// It is not the first one. A checkpoint that finds a commit in the file
+/// the log ends in turns the log where it begins, and replaces the
+/// manifest for the file it turns to (`lignin_store::flush`). A refusal
+/// there fails no checkpoint of such a session, and the checkpoint
+/// returns with the manifest in no doubt: both are asserted here.
+fn replacements_before_the_installation() -> u64 {
+    for earlier in 0..4 {
+        let probe = session(34, SyncPolicy::Never);
+        let db = probe.db.as_ref().expect("the session");
+        let rule = FaultRule::new(Fault::Enospc).on(OpKind::Rename);
+        probe.fs.add_rule(rule.skip(earlier));
+        let checkpointed = db.shared.write_back().checkpoint();
+        assert_eq!(
+            probe.fs.stats().faults,
+            1,
+            "a table checkpoint replaces the manifest {earlier} times, and fails for none"
+        );
+        if let Err(error) = checkpointed {
+            assert!(out_of_space(&error), "replacement {earlier}: {error}");
+            return earlier;
+        }
+        let manifest = db.shared.store.manifest.lock().expect("the manifest");
+        assert!(manifest.manifest().is_ok(), "replacement {earlier}");
+    }
+    panic!("a table checkpoint replaces the manifest more than four times before it is installed");
 }
 
 /// A session of [`session`] whose manifest a table checkpoint has just
@@ -340,12 +373,62 @@ fn refuse_the_manifest(session: &Session, kind: OpKind) {
 fn in_doubt(seed: u64, kind: OpKind) -> Session {
     let session = session(seed, SyncPolicy::Never);
     let db = session.db.as_ref().expect("the session");
-    refuse_the_manifest(&session, kind);
+    // The replacement by which the checkpoint is installed.
+    refuse_a_replacement(&session, kind, replacements_before_the_installation());
     let write_back = db.shared.write_back();
     let error = (write_back.checkpoint()).expect_err("the manifest is not replaced");
     assert!(out_of_space(&error), "{kind}: {error}");
+    let manifest = db.shared.store.manifest.lock().expect("the manifest");
+    assert!(
+        manifest.manifest().is_err(),
+        "{kind}: the manifest is in no doubt"
+    );
+    drop(manifest);
     session.fs.clear_rules();
     session
+}
+
+/// A table checkpoint that turns the log replaces the manifest for the
+/// file it turns to before it replaces it to install itself. Where that
+/// earlier replacement is refused, in its rename or in the sync of the
+/// directory after it, the checkpoint is installed all the same, the
+/// manifest is in no doubt when the checkpoint returns, and the session
+/// goes on (DF8a).
+#[test]
+fn a_table_checkpoint_is_installed_though_its_earlier_replacement_was_refused() {
+    let installing = replacements_before_the_installation();
+    assert!(
+        installing > 0,
+        "a table checkpoint of these sessions replaces the manifest once"
+    );
+    for kind in [OpKind::Rename, OpKind::SyncDir] {
+        for earlier in 0..installing {
+            let mut session = session(40, SyncPolicy::Never);
+            let db = session.db.as_ref().expect("the session");
+            refuse_a_replacement(&session, kind, earlier);
+            let checkpointed = db.shared.write_back().checkpoint();
+            assert_eq!(session.fs.stats().faults, 1, "{kind}, {earlier}");
+            session.fs.clear_rules();
+            assert!(
+                matches!(checkpointed, Ok(Checkpointed::Installed { .. })),
+                "{kind}, {earlier}: {checkpointed:?}"
+            );
+            let manifest = db.shared.store.manifest.lock().expect("the manifest");
+            assert!(manifest.manifest().is_ok(), "{kind}, {earlier}");
+            drop(manifest);
+            assert_eq!(db.reopen(), None, "{kind}, {earlier}");
+
+            let published = session.told.latest;
+            session.write("taken", next, false);
+            assert_eq!(session.told.latest, published + 1, "{kind}, {earlier}");
+            assert!(!session.ticks("t"));
+            session.flush();
+            assert_eq!(session.told.durable, session.told.latest);
+            session.check("after the checkpoint");
+            session.check_cut("after the checkpoint");
+            assert!(session.close(), "{kind}, {earlier}");
+        }
+    }
 }
 
 /// The replacement of the manifest is refused when write-back installs a
@@ -544,9 +627,10 @@ fn a_close_settles_a_manifest_in_doubt_first() {
 }
 
 /// How many syncs of the database directory a table checkpoint makes
-/// before it renames the manifest, in a session like those of these
-/// tests: counted in one that is made for it.
-fn sync_dirs_before_the_rename() -> u64 {
+/// before the rename of the replacement of the manifest that `earlier`
+/// replacements come before, in a session like those of these tests:
+/// counted in one that is made for it.
+fn sync_dirs_before_the_rename(earlier: u64) -> u64 {
     let probe = session(34, SyncPolicy::Never);
     let db = probe.db.as_ref().expect("the session");
     let before = probe.fs.trace().len();
@@ -554,16 +638,17 @@ fn sync_dirs_before_the_rename() -> u64 {
     write_back
         .checkpoint()
         .expect("a table checkpoint with room");
-    let mut syncs = 0;
+    let (mut syncs, mut renames) = (0, 0);
     for event in probe.fs.trace().into_iter().skip(before) {
         let Event::Op(op) = event else { continue };
         match op.kind {
-            OpKind::Rename => return syncs,
+            OpKind::Rename if renames == earlier => return syncs,
+            OpKind::Rename => renames += 1,
             OpKind::SyncDir if op.path == "/db" => syncs += 1,
             _ => {}
         }
     }
-    panic!("the table checkpoint replaced no manifest");
+    panic!("the table checkpoint replaced the manifest {renames} times");
 }
 
 /// The look waits for no commit. Asked by a thread that holds the commit
