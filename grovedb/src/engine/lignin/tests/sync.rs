@@ -22,10 +22,7 @@ use std::{
 
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
-    element::{
-        costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions,
-        tree_type::ElementTreeTypeExtensions,
-    },
+    element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
     proofs::{Node, Op, Query},
     store::NodeStore,
     tree::value_hash,
@@ -47,14 +44,11 @@ use super::{
 };
 use crate::{
     engine::Engine,
-    operations::indexed_tree::axis_storage_tag,
+    operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag},
     query_result_type::QueryResultType,
     reference_path::ReferencePathType,
     replication::{
-        utils::{
-            decode_global_chunk_id, decode_vec_ops, encode_vec_ops, pack_nested_bytes,
-            unpack_nested_bytes,
-        },
+        utils::{decode_vec_ops, encode_vec_ops, pack_nested_bytes, unpack_nested_bytes},
         MultiStateSyncSession, RestoreCommitMode, CURRENT_STATE_SYNC_VERSION,
     },
     Element, Error, GroveDb, PathQuery,
@@ -62,9 +56,10 @@ use crate::{
 
 const VERSION: u16 = CURRENT_STATE_SYNC_VERSION;
 
-/// How many subtrees a session of these tests has in flight at once: fewer
-/// than a tree of the grove holds trees, so that discovered subtrees wait
-/// for a later round.
+/// The `subtrees_batch_size` of a session of these tests: how many subtrees
+/// a session finishes before the subtrees it has discovered since wait for
+/// those in flight to drain. Fewer than a tree of the grove holds trees, so
+/// that discovered subtrees do wait.
 const IN_FLIGHT: usize = 4;
 
 /// How many rows a tree of each kind holds: enough for its Merk to be
@@ -499,12 +494,28 @@ fn index_more<'db, I: Indexed, E: Engine>(h: &mut History<'db, E>, shape: &Shape
 }
 
 /// Writes into every subtree of the grove, with what each costs and the
-/// root hash after it: a row more in every Merk, appends to every
-/// append-only tree, children of every indexed tree, and a row replaced
-/// and one deleted.
+/// root hash after it: an indexed tree in the place of the tree that
+/// nothing was written into, a row more in every other Merk, appends to
+/// every append-only tree, children of every indexed tree, and a row
+/// replaced and one deleted.
 fn writes<E: Engine>(db: &GroveDb<E>, shape: &Shape, v: &GroveVersion) -> Vec<Answer> {
     let mut h = History::new(db, v);
-    for (at, sums) in &shape.merks {
+
+    // The tree that nothing was written into is deleted, an indexed tree
+    // is made under its key, and children are written into it: the first
+    // write into the primary and the secondaries of a tree whose key held
+    // another tree before.
+    let untouched = path(&[UNTOUCHED_AT]);
+    let deleted = db.delete(super::ROOT, UNTOUCHED_AT, None, None, v);
+    h.write("the tree nothing was written into goes", deleted);
+    let made = db.insert(super::ROOT, UNTOUCHED_AT, Count::empty(), None, None, v);
+    h.write("an indexed tree under its key", made);
+    for n in 0..3 {
+        let child = Count::insert(db, &[UNTOUCHED_AT], &row(n), Count::leaf(n), None, v);
+        h.write("a child of the indexed tree under its key", child);
+    }
+
+    for (at, sums) in shape.merks.iter().filter(|(at, _)| *at != untouched) {
         let element = number(*sums, 77);
         let inserted = db.insert(segments(at).as_slice(), b"added", element, None, None, v);
         h.write(format!("a row more in {at:?}"), inserted);
@@ -539,14 +550,21 @@ type Served = (Vec<u8>, Vec<u8>);
 
 type Session<'db, T> = Pin<Box<MultiStateSyncSession<'db, T>>>;
 
-/// The subtree prefix each part of `request` names.
+/// The subtree prefix each chunk id of `request` names, read from the
+/// bytes of the id and not by the decoder a node reads it with: the first
+/// 32 bytes of the id. The first request of a session is no such id: it is
+/// the root hash of the grove, alone, and names the root Merk, whose
+/// prefix is that of no path.
 fn named(root: &[u8; 32], request: &[u8]) -> Vec<[u8; 32]> {
-    let parts = match request == root {
-        true => vec![request.to_vec()],
-        false => unpack_nested_bytes(request).expect("a packed request"),
+    if request == root {
+        return vec![[0; 32]];
+    }
+    let ids = unpack_nested_bytes(request).expect("a packed request");
+    let prefix = |id: &Vec<u8>| {
+        assert!(id.len() > 32, "a chunk id holds more than a prefix");
+        <[u8; 32]>::try_from(&id[..32]).expect("32 bytes")
     };
-    let prefix = |part: &Vec<u8>| decode_global_chunk_id(part, root).expect("a chunk id").0;
-    parts.iter().map(prefix).collect()
+    ids.iter().map(prefix).collect()
 }
 
 /// `payload` with the part of each subtree as `change` leaves it.
@@ -645,9 +663,35 @@ fn whole<S: Engine, T: Engine>(
 #[derive(Debug, PartialEq)]
 struct Round {
     served: Vec<Served>,
+    /// How many times the session committed before its end.
+    commits: usize,
+    /// How many proofs the grove version of the grove does not make.
+    unproven: usize,
     records: Vec<String>,
     reads: Vec<Answer>,
     writes: Vec<Answer>,
+}
+
+/// Every call of a history was answered, but for the proofs that a grove
+/// version below 3 does not make: those that need the proof version these
+/// grove versions do not have, and are refused as not supported with the
+/// name of that proof version. Returns how many those are.
+/// A history is compared with the same history on another grove, and
+/// calls that every grove refuses alike would compare as equal.
+fn assert_answered(answers: &[Answer]) -> usize {
+    let mut unproven = 0;
+    for (call, _, answer) in answers {
+        if answer.starts_with("Ok(") {
+            continue;
+        }
+        let old_version = answer.starts_with("Err(NotSupported(") && answer.contains("V1 proof");
+        assert!(
+            call.starts_with("proof of ") && old_version,
+            "{call}: {answer}"
+        );
+        unproven += 1;
+    }
+    unproven
 }
 
 /// Syncs a new database on `T` from `source`: it ends on the root hash of
@@ -657,24 +701,28 @@ struct Round {
 fn round<S: Side, T: Side>(source: &Made<S>, mode: RestoreCommitMode, v: &GroveVersion) -> Round {
     let dir = tempfile::tempdir().expect("a directory");
     let target = open::<T>(dir.path());
-    let (served, _) = whole(&source.db, &target, mode, v);
+    let (served, commits) = whole(&source.db, &target, mode, v);
     let root = target.root_hash(None, v).unwrap().expect("a root hash");
     assert_eq!(root, source.root, "{} from {}", T::NAME, S::NAME);
     let issues = target.verify_grovedb(None, true, false, v);
     assert!(issues.expect("a verification").is_empty());
     let records = records(&target, &source.shape);
     let reads = reads(&target, &source.shape, v);
+    let unproven = assert_answered(&reads);
     target.flush().expect("a flush");
     drop(target);
     T::check(dir.path(), v);
 
     let target = open::<T>(dir.path());
     let writes = writes(&target, &source.shape, v);
+    assert_eq!(assert_answered(&writes), 0);
     target.flush().expect("a flush");
     drop(target);
     T::check(dir.path(), v);
     Round {
         served,
+        commits,
+        unproven,
         records,
         reads,
         writes,
@@ -710,6 +758,81 @@ fn a_grove_syncs_into_a_database_behind_the_fault_seam() {
     assert_eq!(synced.records, records(&source.db, &source.shape));
 }
 
+/// A synced grove on LigninDB has an entry in the subtree directory for
+/// each subtree the restore wrote into, and for no other: for a Merk that
+/// has a node, for an append-only tree that has an entry, and for every
+/// Merk of an indexed tree of which one has a node. That is what the grove
+/// it was synced from has, but for the tree that was written into and
+/// emptied, whose entry stays in the grove it was made in.
+#[test]
+fn a_synced_grove_has_an_entry_for_each_subtree_the_restore_wrote_into() {
+    let v = GroveVersion::latest();
+    let source = Made::<LigninEngine>::new(v);
+    let shape = &source.shape;
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<LigninEngine>(dir.path());
+    whole(&source.db, &target, RestoreCommitMode::Atomic, v);
+
+    // Each subtree with whether it holds a record, and the subtrees of an
+    // indexed tree with whether one of them does.
+    let engine = target.engine();
+    let transaction = engine.start_read_transaction();
+    let prefix_of = |at: &Vec<Vec<u8>>| build_prefix(segments(at).as_slice().into()).value;
+    let mut subtrees: Vec<(String, [u8; 32], bool)> = Vec::new();
+    for (at, _) in shape.merks.iter().filter(|(at, _)| !at.is_empty()) {
+        let handle = engine.subtree(segments(at).as_slice().into(), None, &transaction);
+        let mut nodes = Vec::new();
+        walked(NodeStore::cursor(&handle.unwrap()), "", &mut nodes);
+        subtrees.push((format!("{at:?}"), prefix_of(at), !nodes.is_empty()));
+    }
+    for at in &shape.flats {
+        let handle = engine.subtree(segments(at).as_slice().into(), None, &transaction);
+        let mut flat = Vec::new();
+        walked(FlatStore::cursor(&handle.unwrap()), "", &mut flat);
+        subtrees.push((format!("{at:?}"), prefix_of(at), !flat.is_empty()));
+    }
+    for (at, axes) in &shape.indexed {
+        let primary = prefix_of(at);
+        let mut prefixes = vec![primary];
+        let secondary = |axis: &IndexAxis| secondary_prefix_for(&primary, axis_storage_tag(*axis));
+        prefixes.extend(axes.iter().map(|axis| secondary(axis).value));
+        let mut nodes = Vec::new();
+        for prefix in &prefixes {
+            let handle = engine.subtree_by_prefix(*prefix, None, &transaction);
+            walked(NodeStore::cursor(&handle.unwrap()), "", &mut nodes);
+        }
+        let named = prefixes.iter().enumerate();
+        subtrees
+            .extend(named.map(|(n, prefix)| (format!("{at:?} {n}"), *prefix, !nodes.is_empty())));
+    }
+    drop(transaction);
+
+    let emptied = format!("{:?}", path(&[EMPTIED_AT]));
+    let (mut with, mut without) = (0, 0);
+    for (name, prefix, holds) in subtrees {
+        let synced = entry(&target, prefix).is_some();
+        assert_eq!(synced, holds, "{name}");
+        let made = entry(&source.db, prefix).is_some();
+        assert_eq!(made, holds || name == emptied, "{name}");
+        match holds {
+            true => with += 1,
+            false => without += 1,
+        }
+    }
+    // Without: the emptied tree and the two trees nothing was written
+    // into, one append-only tree of each kind, and every Merk of one
+    // indexed tree of each kind.
+    let nothing = |at: &Vec<Vec<u8>>| at.last().is_some_and(|key| key.ends_with(b" with nothing"));
+    let of_indexed = shape.indexed.iter().filter(|(at, _)| nothing(at));
+    let of_indexed: usize = of_indexed.map(|(_, axes)| 1 + axes.len()).sum();
+    assert!(
+        of_indexed >= 2 * 6,
+        "{of_indexed} Merks of empty indexed trees"
+    );
+    assert_eq!(without, 3 + shape.flats.len() / 2 + of_indexed);
+    assert!(with > without, "{with} subtrees hold data");
+}
+
 /// On every grove version a grove is made on each engine and synced in
 /// the four directions. Every sync ends on the root hash of its source
 /// and passes `verify_grovedb` (`round`). The four sessions make the same
@@ -742,6 +865,9 @@ fn a_grove_syncs_between_the_engines_in_all_four_directions() {
         for (direction, other) in others.iter().enumerate() {
             let told = format!("direction {direction} on grove version {number}");
             assert_eq!(first.served, other.served, "{told}");
+            assert_eq!(first.commits, 0, "{told}");
+            assert_eq!(other.commits, 0, "{told}");
+            assert_eq!(first.unproven, other.unproven, "{told}");
             assert_eq!(first.records, other.records, "{told}");
             assert_eq!(first.reads, other.reads, "{told}");
             assert_eq!(first.writes, other.writes, "{told}");
@@ -765,7 +891,17 @@ fn a_grove_syncs_between_the_engines_in_all_four_directions() {
             assert_eq!(first.writes, written, "grove version {number}");
         }
 
-        // A chunk id names its subtree by the 32 bytes of its prefix.
+        // Grove versions 1 and 2 make no proof that needs the later proof
+        // version; every other read is answered on every version.
+        assert_eq!(first.unproven > 0, number < 3, "grove version {number}");
+
+        // A chunk id names its subtree by the 32 bytes of its prefix, and
+        // the first request is the root hash of the grove.
+        assert_eq!(first.served[0].0, rocks.root.to_vec());
+        let later = first.served[1..].iter();
+        assert!(later
+            .clone()
+            .all(|(request, _)| *request != rocks.root.to_vec()));
         let asked: BTreeSet<[u8; 32]> = (first.served.iter())
             .flat_map(|(request, _)| named(&rocks.root, request))
             .collect();
@@ -959,9 +1095,10 @@ fn a_refused_chunk_and_an_abandoned_session_leave_nothing_between_the_engines() 
     sessions::<LigninEngine, Rocks>(v);
 }
 
-/// A session that commits what it has restored whenever no subtree is in
-/// flight: it commits before its end, ends on the root hash of its source
-/// with the records of its source, and passes the checks of [`round`].
+/// A session that may commit what it has restored before its end, with a
+/// budget of one byte and one subtree in flight: it commits more than
+/// three times before its end, ends on the root hash of its source with
+/// the records of its source, and passes the checks of [`round`].
 /// One that is dropped after such a commit leaves a database that says it
 /// holds an incomplete restore and refuses the next session, and in which
 /// every Merk that a commit of the session holds is entered and named by
@@ -975,6 +1112,11 @@ fn in_parts<S: Side, T: Side>(v: &GroveVersion) {
     };
 
     let synced = round::<S, T>(&source, parts, v);
+    assert!(
+        synced.commits > 3,
+        "{} commits before the end",
+        synced.commits
+    );
     assert_eq!(synced.records, records(&source.db, shape));
 
     let dir = tempfile::tempdir().expect("a directory");
@@ -1001,18 +1143,7 @@ fn in_parts<S: Side, T: Side>(v: &GroveVersion) {
 
 #[test]
 fn a_session_that_commits_in_parts_leaves_a_sound_database_on_lignindb() {
-    let v = GroveVersion::latest();
-    let source = Made::<LigninEngine>::new(v);
-    let parts = RestoreCommitMode::Incremental {
-        budget_bytes: 1,
-        max_subtrees_in_flight: 1,
-    };
-    let dir = tempfile::tempdir().expect("a directory");
-    let target = open::<LigninEngine>(dir.path());
-    let (_, commits) = whole(&source.db, &target, parts, v);
-    assert!(commits > 3, "{commits} commits before the end");
-    drop(target);
-    in_parts::<LigninEngine, LigninEngine>(v);
+    in_parts::<LigninEngine, LigninEngine>(GroveVersion::latest());
 }
 
 #[cfg(feature = "rocksdb_storage")]
@@ -1281,11 +1412,19 @@ fn the_subtrees_of_an_element_are_entered_for_a_restore() {
             ([0; 32], &b"tree"[..], 0)
         );
 
+        let types = [SumAndAverage::empty().tree_type().expect("a tree")]
+            .into_iter()
+            .chain(
+                SumAndAverage::axes()
+                    .into_iter()
+                    .map(axis_secondary_tree_type),
+            );
         let all = [primary].into_iter().chain(secondaries.iter().copied());
-        for (position, prefix) in all.enumerate() {
+        for (position, (prefix, tree_type)) in all.zip(types).enumerate() {
             let of_it = entered(&transaction, prefix).expect("a Merk of the indexed tree");
+            assert_eq!(of_it.tree_type().expect("a tree type"), tree_type);
             let host = of_it.host.expect("under its element");
-            assert_eq!(host.key, b"indexed");
+            assert_eq!((host.subtree, &host.key[..]), ([0; 32], &b"indexed"[..]));
             assert_eq!(usize::from(host.position), position);
             assert_eq!(of_it.root_key, None);
         }
@@ -1361,9 +1500,10 @@ fn the_subtrees_of_an_element_are_entered_for_a_restore() {
 /// A read that the transaction refuses is the error of the call, and is
 /// not taken for a subtree that is not entered. While a write scope of the
 /// transaction has written the Merk the element is in, the read of the
-/// element is refused; while one has written the Merk of the element's
-/// subtree, the read of that subtree's entry is. Each time the call fails
-/// with the scope's refusal and enters nothing.
+/// element is refused; while one holds a subtree of the element, the read
+/// of that subtree's entry is. Each time the call fails with the scope's
+/// refusal and enters nothing, also not the subtrees whose entries it had
+/// read as absent by then.
 #[test]
 fn a_refused_read_fails_the_call_and_enters_nothing() {
     let v = GroveVersion::latest();
@@ -1403,25 +1543,34 @@ fn a_refused_read_fails_the_call_and_enters_nothing() {
     adopted.expect("the read is answered once the scope is closed");
     let of_tree = entered(&transaction, prefix_of(at_tree)).expect("the tree is entered");
 
-    // The read of the entry is refused, and the read of the element is
-    // not: a scope has written the Merk of the tree, which is entered,
-    // and not the Merk its element is in. The call fails with the scope's
-    // refusal, and does not enter the subtree a second time.
+    // The read of an entry is refused, and the read of the element is not.
+    // A scope has entered the second secondary of the indexed tree, alone:
+    // it holds that subtree, and not the Merk the element is in. The call
+    // reads no entry for the primary and for the first secondary, is
+    // refused the entry of the second, and fails with the scope's refusal
+    // before it enters anything: a refused read that was taken for a
+    // subtree that is not entered would leave the first two entered.
+    let at_indexed: &[&[u8]] = &[b"indexed"];
+    let primary = prefix_of(at_indexed);
+    let secondaries: Vec<[u8; 32]> = (SumAndAverage::axes().into_iter())
+        .map(|axis| secondary_prefix_for(&primary, axis_storage_tag(axis)).value)
+        .collect();
     {
+        use grovedb_merk::store::lignin::{LigninHost, LigninNodeStore, LigninSubtree};
         let scope = engine.open_write_scope(&transaction).expect("a scope");
         let through = LigninEngine::scope_transaction(&scope);
-        let store = engine.immediate_subtree(at_tree.into(), through).unwrap();
-        let cost = Some(&Element::value_defined_cost_for_serialized_value);
-        let merk = Merk::open_layered_with_root_key(store, None, TreeType::SumTree, cost, v);
-        let mut merk = merk.unwrap().expect("the Merk of the tree");
-        let sum_item = Element::new_sum_item(5);
-        let inserted = sum_item.insert(&mut merk, b"through the scope", None, v);
-        inserted
-            .unwrap()
-            .expect("a write of the tree's Merk through the scope");
-        drop(merk);
+        let second = LigninSubtree {
+            prefix: secondaries[1],
+            host: Some(LigninHost {
+                subtree: [0; 32],
+                key: b"indexed".to_vec(),
+                hosted: vec![primary, secondaries[0], secondaries[1]],
+            }),
+        };
+        let handle = LigninNodeStore::immediate(through.view(), second);
+        (handle.enter(TreeType::SumTree)).expect("an enter through the scope");
 
-        let refused = engine.adopt_restored_subtrees(at_tree.into(), &transaction);
+        let refused = engine.adopt_restored_subtrees(at_indexed.into(), &transaction);
         let overlap = StorageError::WriteScope(WriteScopeError::Overlap);
         assert_eq!(
             refused.expect_err("the read is refused").to_string(),
@@ -1430,6 +1579,9 @@ fn a_refused_read_fails_the_call_and_enters_nothing() {
         engine
             .rollback_write_scope(scope)
             .expect("the scope is rolled back");
+    }
+    for prefix in [primary].iter().chain(&secondaries) {
+        assert_eq!(entered(&transaction, *prefix), None);
     }
     assert_eq!(entered(&transaction, prefix_of(at_tree)), Some(of_tree));
 }
@@ -1600,6 +1752,7 @@ fn memory_of_a_sync<E: Side>() {
         set.unwrap_or(default)
     };
     let nodes = number("GROVE07_NODES", 20_000);
+    assert!(nodes > 0, "a Merk of no node has no memory for a node");
     let value = number("GROVE07_VALUE", 32);
     let v = GroveVersion::latest();
 
