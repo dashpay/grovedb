@@ -1804,7 +1804,7 @@ fn reads_and_proofs_on_grove_v5() {
             let ran = log.answers.iter().filter(|answer| answer.0 == run);
             let ran: Vec<bool> = ran.map(|answer| answer.2.starts_with("Ok")).collect();
             assert_eq!(ran, [true], "{run}");
-            let mut groups = counting_groups(&GROVE_VERSIONS[4]);
+            let mut groups = [5, 6, 8, 9];
             let rows = match left_to_right {
                 true => [0, 1],
                 false => {
