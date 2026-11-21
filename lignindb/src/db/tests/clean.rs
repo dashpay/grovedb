@@ -39,13 +39,13 @@ fn the_policy_of_the_cleaner_comes_from_the_options() {
 }
 
 /// A session begins with three Merks that an earlier session wrote
-/// before it was closed: their pages are in a segment that is sealed,
-/// and the values of the two that have values out of line are in a file
-/// of the value log that is closed. The one with no value out of line is
-/// dropped first, and one of the other two by the first of the commits
-/// that follow: blocks of that segment and values of that file are dead
-/// whatever the threads of this session do next. The commits enter a
-/// Merk with values out of line and
+/// before it was closed: their pages are in segments that are sealed,
+/// and the values of the two that have values out of line are in files
+/// of the value log that are closed. The one with no value out of line
+/// is dropped first, and one of the other two by the first of the
+/// commits that follow: blocks of sealed segments and values of closed
+/// files are dead whatever the threads of this session do next. The
+/// commits enter a Merk with values out of line and
 /// drop the one before, again and again. What the drops leave is
 /// reclaimed, and the cleaner of the session, on its thread, gives files
 /// back: segments, and files of the value log. Whether it moved something

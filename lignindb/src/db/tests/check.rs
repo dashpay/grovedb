@@ -201,10 +201,10 @@ fn the_physical_checker_reads_an_open_database() {
 
 /// A check on demand pins its version under the commit lock with the
 /// reclaiming held back (D-193), and holds the reclaiming back until the
-/// checker has returned (D-183). Three looks at the check show it: at the
-/// pin neither lock is free; before the first read the reclaiming is
-/// held; and when the checker has returned it is held still, with
-/// nothing reclaimed. The reclaiming that came due is asked for after
+/// checker has returned (D-183). Four looks at the check show it: with
+/// both locks held no version is pinned yet; then one is, and neither
+/// lock is free; before the first read the reclaiming is held; and when
+/// the checker has returned it is held still, with nothing reclaimed. The reclaiming that came due is asked for after
 /// the last look, and is made when the check has returned.
 ///
 /// A Merk that hosts another is dropped, and once the check has pinned
@@ -275,8 +275,8 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
         let asked = db.shared.store.reclaiming.try_lock();
         matches!(asked, Err(TryLockError::WouldBlock))
     }
-    // What each look found: the commit lock and the reclaiming at the
-    // pin; the reclaiming before the first read; the reclaiming, and how
+    // What each look found: the commit lock, the reclaiming and the
+    // pins that are held, before the pin and after it; the reclaiming before the first read; the reclaiming, and how
     // many Merks were reclaimed, when the checker had returned.
     let looks = Rc::new(RefCell::new(Vec::new()));
     let due = Rc::new(Cell::new(None));
@@ -290,9 +290,14 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
         *hook.borrow_mut() = Some(Box::new(move |stage| {
             let held = held_back(&store);
             let found = match stage {
-                VerifyStage::Pinned => {
+                VerifyStage::Locked | VerifyStage::Pinned => {
                     let committing = store.shared.store.committing.try_lock().is_none();
-                    format!("pinned: commit lock {committing}, reclaiming {held}")
+                    let pins = store.shared.versions.pins_held();
+                    let stage = match stage {
+                        VerifyStage::Locked => "locked",
+                        _ => "pinned",
+                    };
+                    format!("{stage}: commit lock {committing}, reclaiming {held}, {pins} pins")
                 }
                 VerifyStage::Reading => {
                     Writes {
@@ -333,7 +338,8 @@ fn a_check_on_demand_holds_the_reclaiming_back_until_it_has_ended() {
     assert_eq!(
         *looks.borrow(),
         [
-            "pinned: commit lock true, reclaiming true",
+            "locked: commit lock true, reclaiming true, 0 pins",
+            "pinned: commit lock true, reclaiming true, 1 pins",
             "reading: reclaiming true",
             "checked: reclaiming true, 0 reclaimed",
         ]

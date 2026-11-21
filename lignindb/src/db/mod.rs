@@ -186,10 +186,11 @@
 //! the directory is looked at as any other, by the table above: what a
 //! removal leaves that was cut short after its mark went and before the
 //! directory itself did is a place. What a creation of a
-//! checkpoint left with a directory of a store's files in it gets no
-//! database either, where it has no manifest
-//! ([`OpenError::NoManifest`]); with its manifest it is a database, and
-//! is opened. What such a creation left
+//! checkpoint left with a directory of a store's files in it is looked
+//! at by the same table, its rows in their order: where no row before
+//! refuses it, it gets no database while it has no manifest
+//! ([`OpenError::NoManifest`]), and with its manifest it is a database,
+//! and is opened. What such a creation left
 //! empty, or with its lock file alone, the open cannot tell from a place
 //! and makes a database in: a checkpoint is to be built under another
 //! name and renamed into place, so that a cut creation leaves nothing
@@ -943,10 +944,14 @@ impl Db {
     /// the pages of which it is the newest version and not on the
     /// others, so a check of a sound store beside a reclaiming can find a
     /// flat record whose entry is gone, which is also what damage looks
-    /// like. Under the commit lock no commit is between its installs and
-    /// its publication, so every step that was made is in the pinned
-    /// version. None is made during the run, so the version is checked
-    /// as every reader of it found it.
+    /// like. Under the commit lock no commit is on its way from its
+    /// installs to its publication, so every step that was made is in
+    /// the pinned version. (A commit that stopped between the two ended
+    /// the session, and its pages are of no version: no step is made on
+    /// a page it installed, and a step on another page is in the pinned
+    /// version, which is the newest of that page.) No step is made
+    /// during the run, so what this check reads of the version is what
+    /// the version holds from the pin to the end of the check.
     ///
     /// Before it pins, the check waits for a round of the reclaiming that
     /// is running, and for whoever holds the commit lock: a commit that
@@ -962,9 +967,8 @@ impl Db {
     /// demand.
     ///
     /// `rules` are called with the reclaiming held back, so they call
-    /// neither this function nor [`Self::reclaim`] on this handle. The
-    /// rules of a commit ([`Self::commit`]) run under the commit lock,
-    /// and do not call this function either.
+    /// neither this function nor [`Self::reclaim`] on this handle. What
+    /// the rules of a commit must not call is said at [`Self::commit`].
     ///
     /// In a session that has ended ([`Self::reopen`]) it checks what the
     /// readers of that session read on: the latest version that was
@@ -979,14 +983,18 @@ impl Db {
         // taken before the pin and given back after the check, so no step
         // is made from the pin to the end of the check.
         let _held_back = lock(&shared.store.reclaiming);
-        // The pin is taken under the commit lock: no commit is between
-        // its installs and its publication, so every step the reclaimer
-        // has made is in the version. The order is the one a round of the
+        // The pin is taken under the commit lock: no commit is on its
+        // way from its installs to its publication, so every step the
+        // reclaimer has made is in the version (also after a commit that
+        // stopped between the two: see the documentation above). The
+        // order is the one a round of the
         // reclaiming has when it loads the directory again: its lock,
         // then the commit lock. The other order would wait for such a
         // round for ever.
         let pin = {
             let _commit = shared.store.committing.lock();
+            #[cfg(test)]
+            store::at_verify(store::VerifyStage::Locked);
             let pin = shared.versions.pin();
             #[cfg(test)]
             store::at_verify(store::VerifyStage::Pinned);
@@ -1185,6 +1193,14 @@ impl Db {
     ///
     /// A session that takes no write any more refuses with
     /// [`WriteError::Reopen`] and leaves the transaction as it was.
+    ///
+    /// `rules` are called under the commit lock. They call nothing of
+    /// this database that waits for a commit or for the reclaiming, on
+    /// their own thread or by waiting for another: no commit and no
+    /// write, and neither [`Self::verify`] nor [`Self::reclaim`]. A check
+    /// on demand that holds the reclaiming back waits for this commit,
+    /// and a rule that waited for the reclaiming would wait for that
+    /// check for ever.
     pub fn commit<R: HashRules>(
         &self,
         txn: &WriteTxn<'_>,
@@ -1217,6 +1233,9 @@ impl Db {
     /// keep a committed value: with no handle named the batch is refused
     /// ([`BatchError::NoRead`](crate::txn::BatchError::NoRead)), and with
     /// a handle of another transaction the write fails with a conflict.
+    ///
+    /// `rules` are called under the commit lock, as those of
+    /// [`Self::commit`] are, and what is said of them there holds here.
     pub fn write<R: HashRules>(
         &self,
         batch: &Batch<'_>,

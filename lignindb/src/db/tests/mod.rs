@@ -760,8 +760,9 @@ impl Writes {
             // of the latest version, so the comparison is made with the
             // reclaiming held, and left out where a round is running or
             // the caller is inside one. It is left out as well where a
-            // commit came since: the version is read while it is the
-            // latest.
+            // commit came before the version was sampled: it was the
+            // latest then, and the guard keeps its pages for the
+            // comparison.
             let store = &*db.shared.store;
             let held = store.reclaiming.try_lock();
             let guard = db.shared.versions.guard();

@@ -175,13 +175,18 @@
 //!   and a step on another page is. Such a version can hold a flat record
 //!   whose entry is gone ([`Rule::FlatRecordWithoutEntry`]), with every
 //!   read of it right and no byte wrong. **A version is sound to check
-//!   when no step of the reclaimer was made since a later commit first
-//!   installed a page**, and [`Scope::Reader`] counts on the caller
-//!   for that as [`Scope::Still`] does. A caller has it by pinning the
-//!   latest version under the commit lock, where no commit is between
-//!   its installs and its publication, with the reclaimer held back from
-//!   before that until the run has ended: the engine's check on demand
-//!   does (`Db::verify`). Write-back and the cleaner may run under
+//!   when every step of the reclaimer that was made is in it, and none
+//!   is made during the run**, and [`Scope::Reader`] counts on the
+//!   caller for that as [`Scope::Still`] does. It is so when no step was
+//!   made since a later commit first installed a page. A caller has it
+//!   by pinning the latest version under the commit lock, with the
+//!   reclaimer held back from before that until the run has ended: the
+//!   engine's check on demand does (`Db::verify`). No commit is on its
+//!   way from its installs to its publication there. One that stopped
+//!   between the two has ended its session with pages installed that
+//!   are of no version: a step is refused on such a page, whose newest
+//!   frame is not the latest version's, and a step on any other page is
+//!   in the latest version, which is the newest of that page. Write-back and the cleaner may run under
 //!   [`Scope::Reader`]: what a run reads of one cell, it reads from one
 //!   frame, and a value that the cleaner moved is read whole under the
 //!   pointer that the frame holds, the old one or the new: the file that

@@ -568,6 +568,8 @@ thread_local! {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum VerifyStage {
+    /// It holds what it pins its version under, and has not pinned it.
+    Locked,
     /// It has just pinned its version and still holds what it pinned it
     /// under.
     Pinned,
