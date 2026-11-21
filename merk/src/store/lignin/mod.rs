@@ -164,6 +164,7 @@ mod flat;
 pub mod hash;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod open_tests;
+mod place;
 #[cfg(all(test, feature = "rocksdb_storage"))]
 mod tests;
 mod view;

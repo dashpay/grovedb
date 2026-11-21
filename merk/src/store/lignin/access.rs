@@ -249,6 +249,14 @@ pub(super) trait Walk: Send {
     /// stands on, and the answer is whether it stands on one.
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error>;
 
+    /// How many records the data of the subtrees after the cursor's own
+    /// holds, in the order of their prefixes, or with `back` the data of
+    /// those before it: nodes and flat records, as a cursor of each
+    /// subtree shows them, counted from the nearest subtree on and up to
+    /// `limit`. A step from no key asks this, and no other move
+    /// ([`Place`](super::place::Place)).
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error>;
+
     /// The node under the key the cursor stands on, with its value and
     /// with the key of each child in its link. `None` if the transaction
     /// has deleted the node since the cursor came to its key.
@@ -547,6 +555,10 @@ impl Walk for TxnWalk<'_, '_> {
         go(&mut self.0, to, key)
     }
 
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.0.beside(back, limit).map_err(fault)
+    }
+
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
         node_under(&mut self.0)
     }
@@ -580,6 +592,10 @@ impl<'s> ScopeWalk<'_, '_, 's> {
 impl Walk for ScopeWalk<'_, '_, '_> {
     fn go(&mut self, to: Seek<'_>, key: &mut Vec<u8>) -> Result<bool, Error> {
         self.resumed(|cursor| go_resumed(cursor, to, key))
+    }
+
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        self.resumed(|cursor| cursor.beside(back, limit).map_err(fault))
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {

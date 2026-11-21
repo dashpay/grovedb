@@ -15,7 +15,7 @@ use std::{
 use grovedb_storage::Error as StorageError;
 use lignindb::{
     snapshot::{Kept, NodeWalk, Opened, Operation, ReadError, RecordWalk, Snapshot},
-    txn::{ChildKeys, Subtree, WriteTxn},
+    txn::{ChildKeys, Column, Subtree, Unit, WriteTxn},
 };
 
 use super::{
@@ -181,6 +181,7 @@ macro_rules! walk_to {
 /// subtree is not entered at the snapshot's version, and has no node.
 struct SnapshotNodes<'a, 's> {
     snapshot: &'a LigninSnapshot<'s>,
+    subtree: Subtree,
     walk: Option<NodeWalk>,
 }
 
@@ -194,6 +195,12 @@ impl Walk for SnapshotNodes<'_, '_> {
         walk_to!(walk, &operation, to)?;
         key.extend_from_slice(walk.key().unwrap_or_default());
         Ok(walk.key().is_some())
+    }
+
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        let operation = self.snapshot.snapshot.operation();
+        let beside = operation.beside(Column::Data, self.subtree, back, limit);
+        beside.map_err(unread)
     }
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
@@ -214,6 +221,7 @@ impl Walk for SnapshotNodes<'_, '_> {
     fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
         self.walk =
             (self.snapshot).reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
+        self.subtree = Subtree::new(*subtree);
         Ok(())
     }
 }
@@ -222,6 +230,7 @@ impl Walk for SnapshotNodes<'_, '_> {
 /// subtree.
 struct SnapshotRecords<'a, 's> {
     snapshot: &'a Snapshot<'s>,
+    unit: Unit,
     walk: Option<RecordWalk>,
 }
 
@@ -235,6 +244,12 @@ impl FlatWalk for SnapshotRecords<'_, '_> {
         walk_to!(walk, &operation, to)?;
         key.extend_from_slice(walk.key().unwrap_or_default());
         Ok(walk.key().is_some())
+    }
+
+    fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
+        let (operation, unit) = (self.snapshot.operation(), self.unit);
+        let beside = operation.beside(unit.column, unit.subtree, back, limit);
+        beside.map_err(unread)
     }
 
     fn value(&mut self, out: &mut Vec<u8>) -> Result<bool, Error> {
@@ -257,6 +272,7 @@ impl FlatAccess for LigninSnapshot<'_> {
         })?;
         Ok(Box::new(SnapshotRecords {
             snapshot: &self.snapshot,
+            unit: Unit::new(column(keyspace), Subtree::new(*subtree)),
             walk,
         }))
     }
@@ -267,6 +283,7 @@ impl Access for LigninSnapshot<'_> {
         let walk = self.reading(subtree, |opened| opened.walk().map(Some).map_err(unread))?;
         Ok(Box::new(SnapshotNodes {
             snapshot: self,
+            subtree: Subtree::new(*subtree),
             walk,
         }))
     }
