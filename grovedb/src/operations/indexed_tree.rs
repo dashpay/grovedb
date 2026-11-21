@@ -485,7 +485,7 @@ impl<E: Engine> GroveDb<E> {
             .unwrap_add_cost(&mut cost);
         let storage = self
             .db
-            .subtree_beside(path, primary_prefix, secondary_prefix, batch, tx)
+            .subtree_beside(path, secondary_prefix, batch, tx)
             .unwrap_add_cost(&mut cost);
         let tree_type = axis_secondary_tree_type(axis);
         if secondary_root_key.is_some() {

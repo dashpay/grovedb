@@ -30,25 +30,28 @@
 //! subtree, so what such an element hosts is said here, for the group,
 //! from the element as the group leaves it ([`Owed::hosts`]):
 //!
-//! - **The Merks of an indexed tree are entered together**, by the first
-//!   batch that writes into one of them, each at its position under the
-//!   element: the primary as a tree of the element's type, a secondary as
-//!   a tree of the type its axis keeps.
-//! - **The element's node names all of them** in every batch of the group
-//!   that puts it, whichever of them the batch writes.
+//! - **The Merks of an indexed tree are entered together**, by a group
+//!   that holds a write for one of them while none is entered, each at its
+//!   position under the element: the primary as a tree of the element's
+//!   type, a secondary as a tree of the type its axis keeps. The batch of
+//!   the group they are entered with is the one the rule above gives a
+//!   subtree under that element.
+//! - **The element's node names all of them** in every batch of such a
+//!   group that puts it, whichever of them the batch writes.
 //! - **A secondary is written through a handle that names its element**
 //!   ([`Engine::subtree_beside`](crate::Engine::subtree_beside)). A write
-//!   through such a handle under an element that hosts no such subtree
-//!   once the group is applied is refused with `Error::NotSupported`.
+//!   through such a handle under an element that hosts no subtree with
+//!   the handle's prefix once the group is applied is refused with
+//!   `Error::NotSupported`, and so are writes through handles that name
+//!   two elements for one subtree.
 //! - **The directory has all of them where the element names them, or
 //!   none.** A subtree is not dropped when its element goes (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
 //!   (MERK-09). So an indexed tree can find, under its key, subtrees that
-//!   an earlier element left entered: a tree of one Merk, or an indexed
-//!   tree with other axes or with its axes in another order. A write into
-//!   it is refused with `Error::NotSupported` where a subtree it hosts is
-//!   entered at another position or under another element, and where one
-//!   is entered and another is not.
+//!   are entered already. A group that holds a write for one of its Merks
+//!   is refused with `Error::NotSupported` where a subtree the element
+//!   hosts is entered at another position or under another element, and
+//!   where one of them is entered and another is not.
 //!
 //! A batch that enters a subtree itself has said its host and its tree
 //! type, and neither is looked at here.
@@ -57,11 +60,7 @@
 //!
 //! - A subtree is not dropped when its element goes (GROVE-05), and its
 //!   entry keeps the tree type and the host it was entered with when its
-//!   element is written again as a tree of another type. Where no part of
-//!   a group states the element, what it hosts is read from that entry
-//!   for a tree of one Merk: a secondary of an indexed tree that took the
-//!   place of such a tree is then refused as a subtree its element does
-//!   not host.
+//!   element is written again as a tree of another type.
 //! - Two transactions that each write first into one subtree both enter
 //!   it, unless one commits before the other looks, and the directory
 //!   takes the enter of the first to commit. The second is refused where
@@ -114,12 +113,28 @@ fn element_read(view: LigninView<'_>, host: &LigninHost) -> Result<Option<Option
     Ok(node.as_ref().map(|node| element_of(node.value_as_slice())))
 }
 
-fn entered_elsewhere() -> Error {
-    not_supported("a write into an indexed tree whose subtrees are entered at other places")
+fn key_of(host: &LigninHost) -> String {
+    host.key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-fn beside_nothing() -> Error {
-    not_supported("a write into a subtree beside one that its element does not host")
+fn entered_elsewhere(host: &LigninHost) -> Error {
+    let key = key_of(host);
+    not_supported(&format!(
+        "a write into the indexed tree under the key {key}, whose subtrees are not all entered \
+         where it names them: some are entered at other places, or not entered"
+    ))
+}
+
+fn beside_nothing(host: &LigninHost) -> Error {
+    let key = key_of(host);
+    not_supported(&format!(
+        "a write into a subtree beside the one of the key {key}, whose element hosts no such \
+         subtree"
+    ))
+}
+
+fn named_twice() -> Error {
+    not_supported("writes into one subtree through handles that name two elements for it")
 }
 
 /// What the parts make of an element.
@@ -186,9 +201,10 @@ fn entered(view: LigninView<'_>, prefix: [u8; 32]) -> Result<Option<LigninEntry>
     handle.entry().map_err(merk_error)
 }
 
-/// What the group makes of the element `host`. The element is read from
-/// the transaction only where no part states it, and where the subtree of
-/// its own path is not entered as a tree that hosts no other.
+/// What the group makes of the element `host`: the element as the last
+/// part to state its value states it, and as the transaction has it where
+/// no part does. What the directory holds of its subtrees says nothing of
+/// the element, which another may have taken the place of.
 fn hosting_of(
     view: LigninView<'_>,
     parts: &[LigninSettled],
@@ -201,19 +217,11 @@ fn hosting_of(
             None => Ok(Hosting::One(None)),
         },
         Host::Removed => Ok(Hosting::Nothing),
-        Host::Stored => {
-            let known = entered(view, own)?.and_then(|entry| entry.tree_type().ok());
-            match known {
-                Some(tree_type) if !tree_type.is_indexed_primary() => {
-                    Ok(Hosting::One(Some(tree_type)))
-                }
-                _ => match element_read(view, host)? {
-                    Some(Some(element)) => hosting(&element, own),
-                    Some(None) => Ok(Hosting::One(None)),
-                    None => Ok(Hosting::Nothing),
-                },
-            }
-        }
+        Host::Stored => match element_read(view, host)? {
+            Some(Some(element)) => hosting(&element, own),
+            Some(None) => Ok(Hosting::One(None)),
+            None => Ok(Hosting::Nothing),
+        },
     }
 }
 
@@ -234,9 +242,19 @@ pub(super) struct Owed {
 pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed, Error> {
     // Each subtree once: of the parts that write into it, as the first
     // names it whose handle named a host.
+    // A subtree hangs on one element: handles that name two for it are
+    // refused, in one part or in two.
+    if parts.iter().any(LigninSettled::names_two_hosts) {
+        return Err(named_twice());
+    }
     let mut written: BTreeMap<_, &LigninSubtree> = BTreeMap::new();
     for subtree in parts.iter().flat_map(LigninSettled::written) {
         match written.get(&subtree.prefix) {
+            Some(known) if known.host.is_some() && subtree.host.is_some() => {
+                if known.host != subtree.host {
+                    return Err(named_twice());
+                }
+            }
             Some(known) if known.host.is_some() || subtree.host.is_none() => {}
             _ => {
                 written.insert(subtree.prefix, subtree);
@@ -279,7 +297,7 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                     hosted: hosted.iter().map(|(prefix, _)| *prefix).collect(),
                 };
                 if !named.hosted.contains(&prefix) {
-                    return Err(beside_nothing());
+                    return Err(beside_nothing(host));
                 }
                 // The Merks of the element are entered together, so the
                 // directory has all of them where the element names
@@ -302,17 +320,19 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                             == (named.subtree, &named.key, position)
                     });
                     if !hangs {
-                        return Err(entered_elsewhere());
+                        return Err(entered_elsewhere(host));
                     }
                     found += 1;
                 }
                 if found > 0 && !absent.is_empty() {
-                    return Err(entered_elsewhere());
+                    return Err(entered_elsewhere(host));
                 }
                 owed.enters.extend(absent);
                 owed.hosts.push(named);
             }
-            Hosting::One(_) | Hosting::Nothing if prefix != own => return Err(beside_nothing()),
+            Hosting::One(_) | Hosting::Nothing if prefix != own => {
+                return Err(beside_nothing(host));
+            }
             Hosting::One(tree_type) => {
                 if entered(view, prefix)?.is_none() {
                     let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();

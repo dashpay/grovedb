@@ -23,8 +23,11 @@ use lignindb::{verify::Scope, Db, Options};
 
 use super::Lignin;
 use crate::{
-    batch::QualifiedGroveDbOp, engine::Engine, operations::delete::DeleteOptions,
-    query_result_type::QueryResultType, Element, Error, GroveDb, PathQuery, TransactionArg,
+    batch::QualifiedGroveDbOp,
+    engine::Engine,
+    operations::delete::DeleteOptions,
+    query_result_type::{QueryResultElements, QueryResultType},
+    Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
 /// One call of a history, with what it answered: its cost, and what it
@@ -59,6 +62,33 @@ impl<'db, E: Engine> History<'db, E> {
         value.ok()
     }
 
+    /// Takes in a read of an element, with the bytes of the element: the
+    /// text of an element leaves out what two elements can differ in.
+    pub(super) fn element(&mut self, name: impl Into<String>, answer: CostResult<Element, Error>) {
+        let v = self.v;
+        self.read(name, answer.map_ok(|element| lossless(element, v)));
+    }
+
+    /// Takes in a read of elements by a query, each with its key and its
+    /// bytes.
+    pub(super) fn elements(
+        &mut self,
+        name: impl Into<String>,
+        answer: CostResult<(QueryResultElements, u16), Error>,
+    ) {
+        let v = self.v;
+        self.read(
+            name,
+            answer.map_ok(|(elements, skipped)| {
+                let pairs = elements.to_key_elements().into_iter();
+                let read: Vec<_> = pairs
+                    .map(|(key, element)| (key, lossless(element, v)))
+                    .collect();
+                (read, skipped)
+            }),
+        );
+    }
+
     /// Takes in a call that has no cost.
     pub(super) fn plain<T: Debug>(&mut self, name: impl Into<String>, answer: Result<T, Error>) {
         let name = name.into();
@@ -89,6 +119,12 @@ impl<'db, E: Engine> History<'db, E> {
     ) -> Option<T> {
         self.write_in(name, answer, None)
     }
+}
+
+/// An element with the bytes it is stored as.
+fn lossless(element: Element, v: &GroveVersion) -> (Element, Vec<u8>) {
+    let bytes = element.serialize(v).expect("the bytes of an element");
+    (element, bytes)
 }
 
 /// How many of `answers` are of a call named `call` that succeeded.
@@ -171,6 +207,9 @@ trait Appended {
     /// boundary of its own (a full chunk, a new peak).
     const DIRECT: usize;
 
+    /// The calls that [`Self::reads`] records, by the name of each.
+    const READS: &'static [&'static str];
+
     /// The element of an empty tree.
     fn empty(flags: Option<Vec<u8>>) -> Element;
 
@@ -214,6 +253,7 @@ struct Mmr;
 impl Appended for Mmr {
     const DIRECT: usize = 19;
     const NAME: &'static str = "mmr";
+    const READS: &'static [&'static str] = &["root hash", "count", "value"];
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_mmr_tree_with_flags(flags)
@@ -265,6 +305,8 @@ const CHUNK_POWER: u8 = 2;
 impl Appended for Bulk {
     const DIRECT: usize = 14;
     const NAME: &'static str = "bulk";
+    const READS: &'static [&'static str] =
+        &["count", "chunks", "buffer", "value", "chunk", "range"];
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_bulk_append_tree_with_flags(CHUNK_POWER, flags).expect("a chunk power")
@@ -322,6 +364,7 @@ const DENSE_HEIGHT: u8 = 5;
 impl Appended for Dense {
     const DIRECT: usize = 9;
     const NAME: &'static str = "dense";
+    const READS: &'static [&'static str] = &["root hash", "count", "value"];
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_dense_tree_with_flags(DENSE_HEIGHT, flags)
@@ -392,6 +435,7 @@ fn ciphertext(n: usize) -> TransmittedNoteCiphertext<DashMemo> {
 impl Appended for Commitment {
     const DIRECT: usize = 11;
     const NAME: &'static str = "commitment";
+    const READS: &'static [&'static str] = &["anchor", "count", "value", "range"];
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_commitment_tree_with_flags(CHUNK_POWER, flags).expect("a chunk power")
@@ -461,6 +505,7 @@ const ENTRY_SIZE: u32 = 16;
 impl Appended for Private {
     const DIRECT: usize = 11;
     const NAME: &'static str = "private";
+    const READS: &'static [&'static str] = &["count", "value", "range"];
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_private_document_store_with_flags(ENTRY_SIZE, CHUNK_POWER, flags)
@@ -535,7 +580,7 @@ fn proofs<T: Appended, E: Engine>(
     h.read("element proof", db.prove_query(&query, None, v));
     let elements = QueryResultType::QueryKeyElementPairResultType;
     let read = db.query_raw(&query, true, true, true, elements, None, v);
-    h.read("query", read);
+    h.elements("query", read);
 }
 
 /// What the grove's own check finds wrong: the paths it names, in order.
@@ -596,8 +641,8 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
         "made",
         db.insert(counted, tree, T::empty(None), None, None, v),
     );
-    h.read("element", db.get(ROOT, tree, None, v));
-    h.read("raw element", db.get_raw(deep.into(), tree, None, v));
+    h.element("element", db.get(ROOT, tree, None, v));
+    h.element("raw element", db.get_raw(deep.into(), tree, None, v));
     h.read("empty", db.is_empty_tree(at_tree, None, v));
     T::reads(&mut h, ROOT, tree, 0, None);
 
@@ -606,7 +651,7 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
         h.write("append", T::append(db, ROOT, tree, n, None, v));
         if n % 3 == 0 || n + 1 == T::DIRECT {
             T::reads(&mut h, ROOT, tree, n as u64, None);
-            h.read("element", db.get(ROOT, tree, None, v));
+            h.element("element", db.get(ROOT, tree, None, v));
         }
     }
     for n in 0..5 {
@@ -614,8 +659,8 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
         h.write("append", T::append(db, counted, tree, 200 + n, None, v));
     }
     T::reads(&mut h, deep, tree, 4, None);
-    h.read("element", db.get(deep, tree, None, v));
-    h.read("element", db.get(ROOT, b"counted", None, v));
+    h.element("element", db.get(deep, tree, None, v));
+    h.element("element", db.get(ROOT, b"counted", None, v));
     h.read("empty", db.is_empty_tree(at_tree, None, v));
     proofs::<T, E>(&mut h, ROOT, tree, 0, T::DIRECT as u64 + 3);
     proofs::<T, E>(&mut h, ROOT, tree, 2, 5);
@@ -732,7 +777,7 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
     h.plain("cleared", db.clear_subtree(in_counted, None, None, v));
     h.read("root", db.root_hash(None, v));
     T::reads(&mut h, counted, tree, 3, None);
-    h.read("element", db.get(counted, tree, None, v));
+    h.element("element", db.get(counted, tree, None, v));
     h.write("append", T::append(db, counted, tree, 500, None, v));
     T::reads(&mut h, counted, tree, 1, None);
 
@@ -757,7 +802,7 @@ fn history<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Ans
         db.insert(ROOT, b"unused", T::empty(None), None, None, v),
     );
     h.write("delete", db.delete(ROOT, b"unused", None, None, v));
-    h.read("element", db.get(ROOT, b"unused", None, v));
+    h.element("element", db.get(ROOT, b"unused", None, v));
     proofs::<T, E>(&mut h, ROOT, tree, 0, 40);
     proofs::<T, E>(&mut h, deep, tree, 0, 1);
     proofs::<T, E>(&mut h, ROOT, b"unused", 0, 1);
@@ -801,6 +846,31 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
             .filter(|(call, ..)| call == "verified")
             .map(|(.., found)| found == "Ok([])")
             .collect();
+        // On the latest version, which has every read of every kind: a
+        // history reads a tree at many stages, three of them under a key
+        // that holds no such tree. Every other read of the tree's file is
+        // answered, and among the answers are a value that is there, a
+        // position past the end, and for a kind with pages a page of
+        // values.
+        if number == GROVE_VERSIONS.len() {
+            let all = |call: &str| answers.iter().filter(|(named, ..)| named == call).count();
+            let answered = |call: &str, start: &str| {
+                let is = |(named, _, answer): &&Answer| named == call && answer.contains(start);
+                answers.iter().filter(is).count()
+            };
+            let stages = all("count");
+            for call in T::READS {
+                let each = all(call) / stages;
+                assert_eq!(all(call), each * stages, "{} reads {call}", T::NAME);
+                assert_eq!(count(call), each * (stages - 3), "{} reads {call}", T::NAME);
+            }
+            assert!(answered("value", "Ok(Some([") > stages, "{}", T::NAME);
+            assert!(answered("value", "Ok(None)") > 3, "{}", T::NAME);
+            if T::READS.contains(&"range") {
+                assert!(answered("range", "entries: [(") > stages, "{}", T::NAME);
+                assert!(answered("range", "entries: []") > 3, "{}", T::NAME);
+            }
+        }
         let stale = has_tree(number) && number <= 3;
         assert_eq!(checks, [true, !stale], "{} on version {number}", T::NAME);
         let read = [count("element proof"), count("query"), count("verified")];

@@ -567,6 +567,8 @@ pub struct LigninBatch {
 #[derive(Default)]
 struct Marks {
     written: BTreeMap<Prefix, LigninSubtree>,
+    /// The subtrees that two handles named different hosts for.
+    two_hosts: BTreeSet<Prefix>,
 }
 
 impl Marks {
@@ -576,7 +578,12 @@ impl Marks {
     fn write(&mut self, named: LigninSubtree) {
         match self.written.get_mut(&named.prefix) {
             Some(known) if known.host.is_some() && named.host.is_none() => {}
-            Some(known) => *known = named,
+            Some(known) => {
+                if known.host.is_some() && known.host != named.host {
+                    self.two_hosts.insert(named.prefix);
+                }
+                *known = named;
+            }
             None => {
                 self.written.insert(named.prefix, named);
             }
@@ -584,6 +591,7 @@ impl Marks {
     }
 
     fn take_in(&mut self, other: Self) {
+        self.two_hosts.extend(other.two_hosts);
         for named in other.written.into_values() {
             self.write(named);
         }
@@ -804,6 +812,9 @@ pub struct LigninSettled {
     resolved: Resolved<Charge>,
     written: BTreeMap<Prefix, LigninSubtree>,
     pending: OperationCost,
+    /// Whether two handles named different hosts for a subtree the batch
+    /// holds a write for.
+    two_hosts: bool,
     /// What whoever applies the batch said of an element after the batch
     /// was settled ([`Self::host`]): the element's subtree and key, and
     /// the Merks it hosts.
@@ -888,8 +899,17 @@ impl LigninSettled {
             resolved,
             written,
             pending,
+            two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
         }
+    }
+
+    /// Whether handles that staged into the batch named two different
+    /// elements as the host of one subtree the batch holds a write for.
+    /// [`Self::written`] has the later of the two; the store does not
+    /// choose between them, and whoever applies the batch may refuse it.
+    pub fn names_two_hosts(&self) -> bool {
+        self.two_hosts
     }
 
     /// Says which Merks the element `host` hosts once the batch is

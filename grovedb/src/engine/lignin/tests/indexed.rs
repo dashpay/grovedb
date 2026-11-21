@@ -11,7 +11,7 @@
 use grovedb_costs::{CostResult, OperationCost};
 use grovedb_element::indexed::IndexAxis;
 use grovedb_merk::{
-    proofs::query::AggregateFold,
+    proofs::{query::AggregateFold, Query},
     store::lignin::{LigninEntry, LigninNodeStore, LigninSubtree},
     TreeType,
 };
@@ -347,32 +347,47 @@ fn owned(path: &[&[u8]]) -> Vec<Vec<u8>> {
 /// a ranking and of a rank.
 fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
     let (db, v) = (h.db, h.v);
-    let mut run = |name: &str, query: PathQuery| {
+    let mut run = |name: &str, axis: IndexAxis, query: PathQuery| {
         let pairs = QueryResultType::QueryKeyElementPairResultType;
         let answer = db.run_path_query(&query, true, true, true, pairs, None, v);
-        h.read(name, answer);
+        h.read(format!("{name} {axis:?}"), answer);
     };
     for axis in T::axes() {
         let at = || owned(path);
-        run("top", PathQuery::new_axis_top_k(at(), axis, 5, 0, true));
-        run("top", PathQuery::new_axis_top_k(at(), axis, 3, 2, false));
-        run("top", PathQuery::new_axis_top_k(at(), axis, 4, 40, true));
         run(
-            "band",
-            PathQuery::new_axis_bounded(at(), axis, -30, 30, 6, false),
+            "top",
+            axis,
+            PathQuery::new_axis_top_k(at(), axis, 5, 0, true),
         );
         run(
-            "band",
-            PathQuery::new_axis_bounded(at(), axis, 0, i128::from(i64::MAX), 3, false),
+            "top",
+            axis,
+            PathQuery::new_axis_top_k(at(), axis, 3, 2, false),
         );
+        run(
+            "top",
+            axis,
+            PathQuery::new_axis_top_k(at(), axis, 4, 40, true),
+        );
+        let band = |lo, hi, limit| PathQuery::new_axis_bounded(at(), axis, lo, hi, limit, false);
+        run("band", axis, band(-30, 30, 6));
+        run("band", axis, band(0, i128::from(i64::MAX), 3));
         let rank = |key: &[u8]| PathQuery::new_axis_rank_of_key(at(), axis, key.to_vec(), true);
-        run("rank", rank(b"leaf02"));
-        run("rank", rank(b"missing"));
+        run("rank", axis, rank(b"leaf02"));
+        run("rank", axis, rank(b"missing"));
         for fold in [AggregateFold::Population, AggregateFold::Total] {
             let query = PathQuery::new_axis_aggregate_over_value_range(at(), axis, -20, 60, fold);
-            run("fold", query);
+            run(&format!("fold {fold:?}"), axis, query);
         }
     }
+    // Every child of the primary with its bytes: what an axis read gives
+    // of an element is its text.
+    let children = PathQuery::new_unsized(owned(path), Query::new_range_full());
+    let pairs = QueryResultType::QueryKeyElementPairResultType;
+    h.elements(
+        "children",
+        db.query_raw(&children, true, true, true, pairs, None, v),
+    );
     for axis in T::axes() {
         let ranking = PathQuery::new_axis_top_k(owned(path), axis, 4, 1, true);
         h.read("proof", db.prove_query(&ranking, None, v));
@@ -409,7 +424,7 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
         db.insert(ROOT, b"docs", Element::empty_tree(), None, None, v),
     );
     h.write("made", db.insert(docs, b"idx", T::empty(), None, None, v));
-    h.read("element", db.get(ROOT, b"idx", None, v));
+    h.element("element", db.get(ROOT, b"idx", None, v));
     h.read("empty", db.is_empty_tree(top, None, v));
     axis_reads::<T, E>(&mut h, top);
 
@@ -418,8 +433,8 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
         let inserted = T::insert(db, top, &leaf_key(n), T::leaf(n), None, v);
         h.write("insert", inserted);
         if n % 4 == 0 {
-            h.read("element", db.get(ROOT, b"idx", None, v));
-            h.read("child", db.get(top, &leaf_key(n), None, v));
+            h.element("element", db.get(ROOT, b"idx", None, v));
+            h.element("child", db.get(top, &leaf_key(n), None, v));
         }
     }
     axis_reads::<T, E>(&mut h, top);
@@ -440,8 +455,8 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
             );
         }
     }
-    h.read("element", db.get(ROOT, b"idx", None, v));
-    h.read("child", db.get(top, b"b1", None, v));
+    h.element("element", db.get(ROOT, b"idx", None, v));
+    h.element("child", db.get(top, b"b1", None, v));
     axis_reads::<T, E>(&mut h, top);
 
     // A child replaced, and children deleted at the primary and below it.
@@ -490,8 +505,8 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
     h.write_in("batch", applied, Some(&tx));
     let inserted = T::insert(db, top, b"in tx", T::leaf(47), Some(&tx), v);
     h.write_in("insert", inserted, Some(&tx));
-    h.read("element", db.get(ROOT, b"idx", Some(&tx), v));
-    h.read("element", db.get(ROOT, b"idx", None, v));
+    h.element("element", db.get(ROOT, b"idx", Some(&tx), v));
+    h.element("element", db.get(ROOT, b"idx", None, v));
     h.write("commit", db.commit_transaction(tx));
     axis_reads::<T, E>(&mut h, top);
 
@@ -509,7 +524,7 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
         put(nowhere, b"key", Element::new_item(vec![1])),
     ];
     h.write("failing batch", db.apply_batch(failing, None, None, v));
-    h.read("child", db.get(top, b"never", None, v));
+    h.element("child", db.get(top, b"never", None, v));
 
     // A tree that one batch makes and fills.
     let fresh: &[&[u8]] = &[b"fresh"];
@@ -519,7 +534,7 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
         put(fresh, b"two", T::leaf(51)),
     ];
     h.write("fresh batch", db.apply_batch(batch, None, None, v));
-    h.read("element", db.get(ROOT, b"fresh", None, v));
+    h.element("element", db.get(ROOT, b"fresh", None, v));
     axis_reads::<T, E>(&mut h, fresh);
     h.write(
         "insert",
@@ -540,7 +555,7 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
         db.insert(ROOT, b"unused", T::empty(), None, None, v),
     );
     h.write("delete", db.delete(ROOT, b"unused", None, None, v));
-    h.read("element", db.get(ROOT, b"unused", None, v));
+    h.element("element", db.get(ROOT, b"unused", None, v));
     verified(&mut h);
     h.answers
 }
@@ -551,7 +566,7 @@ fn history<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answ
 /// each batch is applied. The grove's own check finds nothing wrong, and
 /// every axis is proven where the grove version proves one.
 fn told<T: Indexed>(has_kind: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usize) {
-    let (name, axes) = (T::NAME, T::axes().len());
+    let (name, axes) = (T::NAME, T::axes());
     move |answers, number| {
         let count = |call: &str| taken(answers, call);
         let seen = [
@@ -563,9 +578,54 @@ fn told<T: Indexed>(has_kind: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usiz
             count("repair"),
         ];
         assert!(sound(answers), "{name} on version {number}");
+        // The reads of an axis are of grove version 4. A history reads
+        // every axis at ten stages. Each read of a ranking and of a band
+        // is answered, 17 of the 30 rankings and 18 of the 20 bands with
+        // rows; the rank of a key is answered at the seven stages that
+        // have the key; the population of a band is answered for every
+        // axis but the average, and its total for the axes with a 64-bit
+        // value. The folds of the other axes are refused before a read.
+        if has_kind(number) && number >= 4 {
+            let rows = |call: &str| {
+                let with = |(named, _, answer): &&Answer| {
+                    named == call && answer.starts_with("Ok(") && answer.contains("primary_key")
+                };
+                answers.iter().filter(with).count()
+            };
+            for axis in &axes {
+                let of = |call: &str| format!("{call} {axis:?}");
+                let (average, wide) = (*axis == IndexAxis::Avg, *axis == IndexAxis::BigSum);
+                let seen = [
+                    count(&of("top")),
+                    rows(&of("top")),
+                    count(&of("band")),
+                    rows(&of("band")),
+                    count(&of("rank")),
+                    count(&of("fold Population")),
+                    count(&of("fold Total")),
+                ];
+                // A band of raw values holds no average, which is a
+                // fixed-point number.
+                let expected = [
+                    30,
+                    17,
+                    20,
+                    if average { 0 } else { 18 },
+                    7,
+                    if average { 0 } else { 10 },
+                    if average || wide { 0 } else { 10 },
+                ];
+                assert_eq!(seen, expected, "{name}, {axis:?}, on version {number}");
+            }
+            assert_eq!(count("children"), 10, "{name} on version {number}");
+        }
         // The proofs of an axis are of grove version 4.
         if has_kind(number) && number >= 4 {
-            assert_eq!(count("proof"), 16 * axes, "{name} on version {number}");
+            assert_eq!(
+                count("proof"),
+                16 * axes.len(),
+                "{name} on version {number}"
+            );
         }
         match has_kind(number) {
             true => assert_eq!(seen, [3, 19, 8, 3, 1, 1], "{name} on version {number}"),
@@ -626,8 +686,8 @@ fn nested<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answe
         T::insert(db, top, &leaf_key(0), T::leaf(9), None, v),
     );
     h.write("delete", T::delete(db, inner, &leaf_key(1), None, v));
-    h.read("element", db.get(ROOT, b"idx", None, v));
-    h.read("child", db.get(top, b"inner", None, v));
+    h.element("element", db.get(ROOT, b"idx", None, v));
+    h.element("child", db.get(top, b"inner", None, v));
     axis_reads::<T, E>(&mut h, top);
     axis_reads::<T, E>(&mut h, inner);
     verified(&mut h);
@@ -744,7 +804,7 @@ fn a_write_beside_the_subtree_of_an_element_that_hosts_no_other_is_refused() {
         let beside = secondary_prefix_for(&own, IndexAxis::Count.tag()).value;
         let tx = engine.start_transaction();
         let batch = <LigninEngine as Engine>::Batch::default();
-        let opened = engine.subtree_beside(path.into(), own, beside, Some(&batch), &tx);
+        let opened = engine.subtree_beside(path.into(), beside, Some(&batch), &tx);
         assert_eq!(opened.cost, OperationCost::default());
         let handle = opened.unwrap();
         let host = handle.subtree().host.clone().expect("the element");
@@ -768,14 +828,14 @@ fn a_write_beside_the_subtree_of_an_element_that_hosts_no_other_is_refused() {
         (engine.commit_transaction(tx).unwrap()).expect("a commit of nothing");
 
         let tx = engine.start_read_transaction();
-        let read_only = engine.subtree_beside(path.into(), own, beside, None, &tx);
+        let read_only = engine.subtree_beside(path.into(), beside, None, &tx);
         assert_eq!(read_only.unwrap().subtree(), &LigninSubtree::alone(beside));
     }
     assert_eq!(db.root_hash(None, v).unwrap().expect("a root"), root_before);
 
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    let at_root = engine.subtree_beside(ROOT.into(), [0; 32], [9; 32], Some(&batch), &tx);
+    let at_root = engine.subtree_beside(ROOT.into(), [9; 32], Some(&batch), &tx);
     assert_eq!(at_root.unwrap().subtree(), &LigninSubtree::alone([9; 32]));
 }
 
@@ -791,7 +851,7 @@ fn on_rocksdb_a_handle_beside_a_subtree_is_the_handle_of_its_prefix() {
     let beside = secondary_prefix_for(&own, IndexAxis::Sum.tag()).value;
     let tx = engine.start_transaction();
     let batch = <crate::RocksDbEngine as Engine>::Batch::default();
-    let opened = engine.subtree_beside(tree.into(), own, beside, Some(&batch), &tx);
+    let opened = engine.subtree_beside(tree.into(), beside, Some(&batch), &tx);
     assert_eq!(opened.cost, OperationCost::default());
     let handle = opened.unwrap();
     (handle.put(b"k", b"v", None).unwrap()).expect("staging");
@@ -836,7 +896,7 @@ fn a_secondary_that_is_written_without_its_element_is_one_of_those_the_element_h
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
     let handle = engine
-        .subtree_beside(top.into(), own, beside, Some(&batch), &tx)
+        .subtree_beside(top.into(), beside, Some(&batch), &tx)
         .unwrap();
     (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
     let mut merk = Merk::open_layered_with_root_key(
@@ -919,6 +979,11 @@ fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refus
 
     let (written, _) = replaced(b"same", with_axes(&all), with_axes(&all));
     written.expect("the subtrees hang where the element names them");
+    // The axes it keeps are the first of those the earlier tree kept:
+    // each hangs where the new element names it.
+    let leading = [IndexAxis::Count, IndexAxis::Sum];
+    let (written, _) = replaced(b"leading", with_axes(&all), with_axes(&leading));
+    written.expect("the subtrees it hosts hang where the element names them");
 
     let refusals = [
         replaced(b"fewer", with_axes(&all), with_axes(&two)),
@@ -938,4 +1003,85 @@ fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refus
         );
         assert!(unchanged, "a refused write changed the root hash");
     }
+
+    // A write into the primary alone, by a batch that states no element,
+    // is held to the same: the entry of the primary is the earlier
+    // tree's, and says nothing of the element that is there now.
+    let engine = db.engine();
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let plain: &[&[u8]] = &[b"plain"];
+    let primary = engine.subtree(plain.into(), Some(&batch), &tx).unwrap();
+    (primary.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+    drop(primary);
+    let refused = engine.apply_batch(batch, &tx).unwrap();
+    let refused = refused.expect_err("a primary whose secondaries are not entered");
+    assert!(
+        matches!(&refused, StorageError::NotSupported(words) if words.contains("other places")),
+        "{refused}"
+    );
+}
+
+/// A subtree hangs on one element. Handles that name two elements for one
+/// subtree are refused with their group, whether they staged into one
+/// batch or into two.
+#[test]
+fn handles_that_name_two_elements_for_one_subtree_are_refused() {
+    let v = GroveVersion::latest();
+    let (_dir, engine) = super::engine();
+    let db = GroveDb::from_engine(engine);
+    let (idx, tree): (&[&[u8]], &[&[u8]]) = (&[b"idx"], &[b"tree"]);
+    db.insert(ROOT, b"idx", Sum::empty(), None, None, v)
+        .unwrap()
+        .expect("an indexed tree");
+    Sum::insert(&db, idx, b"one", Sum::leaf(1), None, v)
+        .unwrap()
+        .expect("a child");
+    db.insert(ROOT, b"tree", Element::empty_tree(), None, None, v)
+        .unwrap()
+        .expect("a tree");
+    let engine = db.engine();
+    let own = build_prefix(idx.into()).value;
+    let secondary = secondary_prefix_for(&own, IndexAxis::Sum.tag()).value;
+    let tx = engine.start_transaction();
+    // A record of the secondary, staged through a handle beside the tree
+    // at `path`.
+    let stage = |batch: &<LigninEngine as Engine>::Batch, path: &[&[u8]], key: &[u8]| {
+        let handle = engine.subtree_beside(path.into(), secondary, Some(batch), &tx);
+        (handle.unwrap().aux().put(key, b"v", None).unwrap()).expect("staging");
+    };
+    let two_elements = |refused: StorageError| {
+        assert!(
+            matches!(&refused, StorageError::NotSupported(words) if words.contains("two elements")),
+            "{refused}"
+        );
+    };
+
+    let batch = <LigninEngine as Engine>::Batch::default();
+    stage(&batch, idx, b"x");
+    stage(&batch, tree, b"y");
+    two_elements((engine.apply_batch(batch, &tx).unwrap()).expect_err("one batch"));
+
+    for wrong_first in [false, true] {
+        let mut group = <LigninEngine as Engine>::WriteGroup::default();
+        for part in [wrong_first, !wrong_first] {
+            let batch = <LigninEngine as Engine>::Batch::default();
+            match part {
+                true => stage(&batch, tree, b"y"),
+                false => stage(&batch, idx, b"x"),
+            }
+            (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
+        }
+        let applied = engine.apply_write_group(group, &tx).unwrap();
+        two_elements(applied.map(|_| ()).expect_err("two batches"));
+    }
+    let read = engine.subtree_by_prefix(secondary, None, &tx).unwrap();
+    for key in [b"x", b"y"] {
+        assert_eq!(read.aux().get(key).unwrap().expect("a read"), None);
+    }
+
+    // The right handle alone writes.
+    let batch = <LigninEngine as Engine>::Batch::default();
+    stage(&batch, idx, b"x");
+    (engine.apply_batch(batch, &tx).unwrap()).expect("a record of the secondary");
 }

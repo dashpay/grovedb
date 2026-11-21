@@ -981,6 +981,104 @@ fn a_node_written_outside_a_commit_leaves_the_root_where_it_is() {
     assert_eq!(lignin.root_in_directory(ROOT.prefix), root);
 }
 
+/// What a settled batch hands the transaction once it is told what an
+/// element hosts ([`LigninSettled::host`]): the node of the element names
+/// every Merk of the list where the batch puts it, and a Merk of the list
+/// is anchored exactly where the batch does not. Handles that name two
+/// elements for one subtree are told apart from handles that agree.
+#[test]
+fn a_settled_batch_is_told_what_an_element_hosts() {
+    use lignindb::txn::Hosted;
+
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let parent = LigninSubtree::alone([1; 32]);
+    let (first, second) = ([221; 32], [222; 32]);
+    let host = |key: u64, hosted: &[Prefix]| LigninHost {
+        subtree: parent.prefix,
+        key: be(key),
+        hosted: hosted.to_vec(),
+    };
+    // A handle names the first Merk of its element alone.
+    let named = |prefix: Prefix, key: u64| LigninSubtree {
+        prefix,
+        host: Some(host(key, &[first])),
+    };
+    // A batch that writes a node of the second Merk, with `element` the
+    // node of its host, and with `other` the second Merk again through a
+    // handle that names the element under that key.
+    let settled = |element: bool, other: Option<u64>| {
+        let staged = LigninBatch::new();
+        if element {
+            let upper = LigninNodeStore::deferred(&writer, parent.clone(), Some(&staged));
+            apply(&mut open_layered(upper, None), &[basic(50, b"element")]);
+        }
+        let lower = LigninNodeStore::deferred(&writer, named(second, 50), Some(&staged));
+        apply(&mut open_layered(lower, None), &[basic(1, b"below")]);
+        if let Some(key) = other {
+            let again = LigninNodeStore::deferred(&writer, named(second, key), Some(&staged));
+            (again.put_meta_record(b"k", b"v").unwrap()).expect("a staged record");
+        }
+        staged.settle(&writer).unwrap().expect("a settled batch")
+    };
+    // What the transaction is handed: the Merks the node of the element
+    // names, if the batch puts it, and whether the second Merk is anchored.
+    let handed = |settled: &LigninSettled| {
+        let mut seen = None;
+        let run = &mut |batch: &lignindb::txn::Batch<'_>| {
+            let of = |prefix: Prefix| {
+                let mut merks = batch.merks.iter();
+                merks.find(|merk| merk.subtree == Subtree::new(prefix))
+            };
+            let element = of(parent.prefix)
+                .and_then(|merk| merk.nodes.iter().find(|node| node.key == be(50)));
+            let names = element.map(|node| match node.hosted {
+                Hosted::Set(hosted) => Some(hosted.to_vec()),
+                Hosted::Keep => None,
+            });
+            seen = Some((names, of(second).expect("the second Merk").anchored));
+            Ok(Written::default())
+        };
+        BatchPart::with_batch(settled, run).expect("the batch is shown");
+        seen.expect("the batch was shown")
+    };
+    let both = Some(vec![Subtree::new(first), Subtree::new(second)]);
+
+    // As the handles named it, the element hosts the first Merk alone.
+    let mut with_element = settled(true, None);
+    assert!(!with_element.names_two_hosts());
+    assert_eq!(
+        handed(&with_element),
+        (Some(Some(vec![Subtree::new(first)])), false)
+    );
+    // Told the whole list, its node names both, and the second Merk hangs
+    // on a node the batch puts.
+    with_element.host(&host(50, &[first, second]));
+    assert_eq!(handed(&with_element), (Some(both.clone()), false));
+    // The later statement of one element stands.
+    with_element.host(&host(50, &[second, first]));
+    let turned = Some(vec![Subtree::new(second), Subtree::new(first)]);
+    assert_eq!(handed(&with_element), (Some(turned), false));
+
+    // A batch that does not put the element's node writes the Merk
+    // anchored once it is told whose it is.
+    let mut alone = settled(false, None);
+    assert_eq!(handed(&alone), (None, false));
+    alone.host(&host(50, &[first, second]));
+    assert_eq!(handed(&alone), (None, true));
+    // What is said of another element changes nothing of this Merk.
+    let mut elsewhere = settled(false, None);
+    elsewhere.host(&host(60, &[[7; 32], [8; 32]]));
+    assert_eq!(handed(&elsewhere), (None, false));
+
+    // Two handles of one subtree that name one element agree, and two
+    // that name different elements do not.
+    assert!(!settled(true, Some(50)).names_two_hosts());
+    assert!(settled(true, Some(60)).names_two_hosts());
+}
+
 #[test]
 fn a_host_names_the_merk_it_hosts_when_one_batch_writes_both() {
     let lignin = Lignin::new();

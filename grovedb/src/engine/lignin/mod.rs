@@ -34,12 +34,12 @@
 //! and reads as the empty tree it is.
 //!
 //! An indexed tree hosts more than one Merk: its primary, at the path of
-//! its element, and a secondary for each of its axes. A handle of a
-//! secondary is opened beside the primary and names the element
-//! ([`Engine::subtree_beside`]). The engine reads what the element hosts
-//! where a batch is applied, enters all of its Merks with the first write
-//! into one of them, and says to the store which Merks the element's node
-//! names ([`enter`]).
+//! its element, and a secondary for each of its axes. The handle that
+//! writes a secondary is opened beside the primary and names the element
+//! ([`Engine::subtree_beside`]). Where a group of batches is applied that
+//! holds a write for one of these Merks, the engine reads what the
+//! element hosts, enters all of its Merks if none is entered, and says to
+//! the store which Merks the element's node names ([`enter`]).
 //!
 //! # What it does not do yet
 //!
@@ -383,15 +383,14 @@ fn named<'b, B: AsRef<[u8]> + 'b>(
 }
 
 /// The subtree `prefix` as a handle names it that was opened beside the
-/// subtree `own` of the element at `path`. With `hosted` it names that
-/// element, and of what the element hosts the subtree of its own path:
-/// the place of `prefix` among them is the element's to say, and the
-/// engine reads it there when the handle's batch is applied ([`enter`]).
-/// Neither prefix is derived here but the one of the element's Merk, which
-/// is not charged.
+/// subtree of the element at `path`. With `hosted` it names that element,
+/// and of what the element hosts the subtree of its own path: the place
+/// of `prefix` among them is the element's to say, and the engine reads
+/// it there when the handle's batch is applied ([`enter`]). The prefixes
+/// of the path and of the Merk that holds the element are derived for it
+/// and not charged.
 fn beside<'b, B: AsRef<[u8]> + 'b>(
     path: SubtreePath<'b, B>,
-    own: SubtreePrefix,
     prefix: SubtreePrefix,
     hosted: bool,
 ) -> LigninSubtree {
@@ -399,7 +398,7 @@ fn beside<'b, B: AsRef<[u8]> + 'b>(
         Some((parent, key)) if hosted => Some(LigninHost {
             subtree: build_prefix(parent).value,
             key: key.to_vec(),
-            hosted: vec![own],
+            hosted: vec![build_prefix(path).value],
         }),
         _ => None,
     };
@@ -598,7 +597,6 @@ impl Engine for LigninEngine {
     fn subtree_beside<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,
-        own: SubtreePrefix,
         prefix: SubtreePrefix,
         batch: Option<&'a LigninBatch>,
         transaction: &'a LigninTransaction<'_>,
@@ -606,7 +604,7 @@ impl Engine for LigninEngine {
     where
         B: AsRef<[u8]> + 'b,
     {
-        let subtree = beside(path, own, prefix, batch.is_some());
+        let subtree = beside(path, prefix, batch.is_some());
         LigninNodeStore::deferred(transaction.view(), subtree, batch)
             .wrap_with_cost(OperationCost::default())
     }
