@@ -704,6 +704,31 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         Ok(ops)
     });
     calls.get(documents, b"added");
+    // A first segment that stops below the element of a tree whose Merk
+    // it writes: the first nodes of a tree, and then nodes that move its
+    // root, at every height below which the tree is.
+    let second: &[&[u8]] = &[b"documents", b"contract", b"second type"];
+    for height in [3u8, 2, 1] {
+        let options = BatchApplyOptions {
+            batch_pause_height: Some(height),
+            ..BatchApplyOptions::default()
+        };
+        let in_a_row = |n: u8| {
+            insert(
+                second,
+                &[b's', height * 8 + n],
+                Element::new_item(vec![n; 30]),
+            )
+        };
+        let ops = (0..3).map(in_a_row).collect();
+        calls.partial(
+            &format!("three in a row, paused at {height}"),
+            ops,
+            Some(options),
+            pay,
+        );
+    }
+    calls.get(second, &[b's', 25]);
 
     // A caller that fails, an addition that the batch refuses, and a batch
     // that is refused before the caller is asked.

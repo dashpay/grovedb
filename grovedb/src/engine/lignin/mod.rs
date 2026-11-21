@@ -877,12 +877,13 @@ impl Engine for LigninEngine {
             #[cfg(test)]
             happen(&AFTER_A_LOOK, transaction);
             // What an indexed tree hosts is said of its element in
-            // every batch of the group, as this look read the element,
-            // and so is that an element hosts nothing whose subtree is
-            // dropped.
+            // every batch of the group, as this look read the element.
+            // So is the Merk of a tree that one batch of several writes
+            // while another writes its element, and that an element
+            // hosts nothing whose subtree is dropped.
             for part in &mut parts {
                 part.forget_hosts();
-                for host in owed.hosts.iter().chain(&left.hosts) {
+                for host in (owed.hosts.iter().chain(&owed.apart)).chain(&left.hosts) {
                     part.host(host);
                 }
             }

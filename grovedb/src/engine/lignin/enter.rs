@@ -340,6 +340,14 @@ pub(super) struct Owed {
     /// Each indexed tree that the group writes a Merk of, with every Merk
     /// it hosts, by position.
     pub(super) hosts: Vec<LigninHost>,
+    /// In a group of more than one batch, each tree with one Merk that
+    /// the group has a named write for, with that Merk. One batch can
+    /// write the nodes of the Merk and a later one the node of its
+    /// element, as the two segments of a partial batch do: the first
+    /// leaves the root of the Merk for the element's node to name
+    /// (`tree-layout.md` T3), and the batch that writes that node has to
+    /// name it.
+    pub(super) apart: Vec<LigninHost>,
     /// The subtrees whose entry the look read and, at its last read of
     /// each, found entered: nothing is stated for them.
     pub(super) found: BTreeSet<[u8; 32]>,
@@ -506,6 +514,9 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                 if entered(prefix)?.is_none() {
                     let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
                     owed.enters.push((subtree.clone(), bytes));
+                }
+                if tree_type.is_some() && parts.len() > 1 {
+                    owed.apart.push(host.clone());
                 }
             }
             Hosting::Nothing => {
