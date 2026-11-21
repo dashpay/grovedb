@@ -17,11 +17,15 @@ mod differential;
 mod directories;
 mod durability;
 mod faults;
+mod many_changes;
+mod names_campaign;
 mod oracle;
 mod rng;
 mod schedule;
+mod sync_handles;
 mod together;
 mod trace;
+mod write_back;
 
 type Tree = BTreeMap<String, Option<Vec<u8>>>;
 
@@ -111,6 +115,21 @@ fn exists(vfs: &dyn Vfs, path: &str) -> bool {
             false
         }
     }
+}
+
+/// The operations a fault was injected into, with what each left.
+fn injected(fs: &SimVfs) -> Vec<(OpKind, Fault, Effect)> {
+    fs.trace()
+        .into_iter()
+        .filter_map(|event| match event {
+            Event::Op(OpRecord {
+                kind,
+                outcome: Outcome::Injected { fault, effect },
+                ..
+            }) => Some((kind, fault, effect)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn tree_under(vfs: &dyn Vfs, root: &Path) -> Tree {

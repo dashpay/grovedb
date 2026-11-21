@@ -285,10 +285,12 @@ impl fmt::Display for InvalidPlan {
 
 impl Error for InvalidPlan {}
 
+/// An unsynced change of a file. `handle` is the handle that made it.
 #[derive(Clone, Debug)]
 pub(super) struct Change {
     pub(super) op: u64,
     pub(super) path: Arc<str>,
+    pub(super) handle: u64,
     pub(super) kind: FileChangeKind,
     pub(super) data: Arc<[u8]>,
 }
@@ -769,10 +771,12 @@ impl CrashImage {
     /// [`names_kept`](Self::names_kept).
     ///
     /// The new file system has the configuration of the one that crashed,
-    /// fault odds included, and a seed derived from that one's seed and its
-    /// number of operations. It counts its operations from 1 again. Its
-    /// trace starts with the [`CrashRecord`] of `plan`. Fault rules and a
-    /// crash point are not carried over.
+    /// the odds of faults and of write-backs included, and a seed derived
+    /// from that one's seed and its number of operations. It counts its
+    /// operations from 1 again. Its trace starts with the [`CrashRecord`] of
+    /// `plan`. Rules and a crash point are not carried over, and no handle
+    /// of the new file system is told of a write-back that failed in the
+    /// old one.
     pub fn recover(&self, plan: &CrashPlan) -> Result<SimVfs, InvalidPlan> {
         self.check(plan)?;
         let kept: BTreeSet<u64> = self

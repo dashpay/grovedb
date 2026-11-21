@@ -335,16 +335,207 @@ impl FaultRule {
     }
 }
 
+/// Which handles a write-back that fails marks. The next sync through a
+/// marked handle is told of the failure. A handle on which a sync has
+/// failed is never marked: it syncs no more.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Told {
+    /// As the error sequence of Linux tells them. Every handle of the file
+    /// that is open when the write-back fails, and on which no sync has
+    /// failed, is marked. So is a handle that is opened later, unless a
+    /// sync was told of the failure before, a later failure of this kind
+    /// took its place, or the file had no open handle at some moment since:
+    /// the record is gone with the file's last handle, which Linux allows
+    /// and does not always do.
+    OpenHandles,
+    /// The least the contract promises: the open handles that made one of
+    /// the changes the write-back was to write, and on which no sync has
+    /// failed. No other handle is marked, whenever it is opened.
+    Writers,
+}
+
+/// A write-back that fails at a chosen moment: the system's own write of a
+/// file's unsynced changes, which no call reports. The
+/// [module documentation](super#a-write-back-that-fails) says what it
+/// leaves.
+///
+/// A rule looks at the operations that are in [`ops`](Self::ops), are
+/// numbered [`from_op`](Self::from_op) or later, are on
+/// [`path`](Self::path) if one is set, and leave their file with unsynced
+/// changes. It lets the first [`skip`](Self::skip) of them through. After
+/// each of the next [`times`](Self::times) the write-back of the file fails,
+/// and the rule is then spent. The operation itself returns what it would
+/// have.
+///
+/// Only an operation on an open file is looked at: one that is made through
+/// a handle, whether it succeeds or not, or an `open` that succeeds. A rule
+/// counts operations, not changes: a `write_at` that is refused, and a
+/// `set_len` to the length the file has, are looked at like any other while
+/// the file has unsynced changes. The write-back that fails is the file's:
+/// of every unsynced change of it, through whichever handle it was made.
+///
+/// ```
+/// use lignin_io::sim::{Fault, OpKind, Told, WriteBackRule};
+///
+/// // The write-back of a file fails after the third `write_at`, `append`
+/// // or `set_len` that leaves it with unsynced changes, through a handle
+/// // that was opened by this path. The changes are forgotten at once.
+/// WriteBackRule::new(Fault::Eio)
+///     .at("/segments/00000007.seg")
+///     .skip(2)
+///     .forgotten(true);
+/// // After the next `len` of any file with unsynced changes, and it marks
+/// // as `Told::Writers` says.
+/// WriteBackRule::new(Fault::Enospc)
+///     .on(OpKind::Len)
+///     .told(Told::Writers);
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteBackRule {
+    /// The error a sync fails with that is told of the write-back.
+    pub fault: Fault,
+    /// The operations the rule looks at: unless set, `write_at`, `append`
+    /// and `set_len`.
+    pub ops: OpSet,
+    /// The path the handle of an operation must have been opened by: for an
+    /// `open`, the path it is given.
+    pub path: Option<PathBuf>,
+    /// The number of the first operation the rule looks at.
+    pub from_op: u64,
+    /// How many operations the rule lets through first.
+    pub skip: u64,
+    /// After how many operations the write-back fails.
+    pub times: u64,
+    /// Which handles are marked: unless set, [`Told::OpenHandles`].
+    pub told: Told,
+    /// Whether the system forgets at once what storage does not have of
+    /// the file: the [module documentation](super#a-write-back-that-fails)
+    /// says what operations see then. `None` leaves it to
+    /// [`WriteBackOdds::forgotten`].
+    pub forgotten: Option<bool>,
+}
+
+impl WriteBackRule {
+    /// A rule that fails the write-back after the next `write_at`, `append`
+    /// or `set_len` that leaves its file with unsynced changes. It marks as
+    /// [`Told::OpenHandles`] says, and whether the changes are forgotten is
+    /// left to [`WriteBackOdds::forgotten`]: one time in two unless the
+    /// configuration says otherwise.
+    pub fn new(fault: Fault) -> Self {
+        Self {
+            fault,
+            ops: OpSet::WRITES,
+            path: None,
+            from_op: 0,
+            skip: 0,
+            times: 1,
+            told: Told::OpenHandles,
+            forgotten: None,
+        }
+    }
+
+    /// Sets [`ops`](Self::ops).
+    pub fn on(mut self, ops: impl Into<OpSet>) -> Self {
+        self.ops = ops.into();
+        self
+    }
+
+    /// Sets [`path`](Self::path).
+    pub fn at(mut self, path: impl AsRef<Path>) -> Self {
+        self.path = Some(path.as_ref().to_path_buf());
+        self
+    }
+
+    /// Sets [`from_op`](Self::from_op).
+    pub fn from_op(mut self, number: u64) -> Self {
+        self.from_op = number;
+        self
+    }
+
+    /// Sets [`skip`](Self::skip).
+    pub fn skip(mut self, count: u64) -> Self {
+        self.skip = count;
+        self
+    }
+
+    /// Sets [`times`](Self::times).
+    pub fn times(mut self, count: u64) -> Self {
+        self.times = count;
+        self
+    }
+
+    /// Makes the write-back fail after every operation the rule looks at,
+    /// until the rule is cleared.
+    pub fn forever(self) -> Self {
+        self.times(u64::MAX)
+    }
+
+    /// Sets [`told`](Self::told).
+    pub fn told(mut self, told: Told) -> Self {
+        self.told = told;
+        self
+    }
+
+    /// Sets [`forgotten`](Self::forgotten).
+    pub fn forgotten(mut self, forgotten: bool) -> Self {
+        self.forgotten = Some(forgotten);
+        self
+    }
+}
+
+/// Write-backs that fail by chance.
+///
+/// After operation number `n`, if it is one of [`ops`](Self::ops) on an
+/// open file and leaves that file with unsynced changes, whether the
+/// write-back fails is a function of the seed, `n` and these odds. A
+/// [`WriteBackRule`] whose turn it is after an operation takes their place.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteBackOdds {
+    /// How often the write-back fails after an operation in
+    /// [`ops`](Self::ops) that leaves its file with unsynced changes.
+    pub fail: Chance,
+    /// The operations after which it can fail.
+    pub ops: OpSet,
+    /// The error a sync fails with that is told of it.
+    pub fault: Fault,
+    /// Which handles are marked.
+    pub told: Told,
+    /// How often the system forgets at once what storage does not have of
+    /// the file. This also decides for a [`WriteBackRule`] that leaves
+    /// [`forgotten`](WriteBackRule::forgotten) open.
+    pub forgotten: Chance,
+}
+
+impl WriteBackOdds {
+    /// No write-back fails by chance. Where a [`WriteBackRule`] fails one
+    /// and does not say whether the changes are forgotten, they are one
+    /// time in two.
+    pub const NONE: Self = Self {
+        fail: Chance::NEVER,
+        ops: OpSet::WRITES,
+        fault: Fault::Eio,
+        told: Told::OpenHandles,
+        forgotten: Chance::one_in(2),
+    };
+}
+
+impl Default for WriteBackOdds {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
 /// What an [`io::Error`] made by the simulator carries.
 ///
 /// [`SimError::of`] finds it in an error.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SimError {
-    /// The simulator injected this failure.
+    /// The simulator injected this failure: into the operation, or into a
+    /// write-back that the operation, a sync, is the one to report.
     Injected {
         /// The error that was injected.
         fault: Fault,
-        /// The number of the operation.
+        /// The number of the operation that failed.
         op: u64,
         /// The kind of the operation.
         kind: OpKind,

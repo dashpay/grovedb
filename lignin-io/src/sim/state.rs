@@ -2,7 +2,7 @@
 //! operation runs from start to end.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ffi::{OsStr, OsString},
     io::{self, ErrorKind},
     path::{Component, Path},
@@ -13,9 +13,9 @@ use super::{
     crash::{
         self, Change, CrashImage, FileChange, FileChangeKind, NameChange, NameChangeKind, Survivor,
     },
-    fault::{Fault, FaultRule, OpKind, OpSet, SimError},
+    fault::{Fault, FaultRule, OpKind, OpSet, SimError, Told, WriteBackRule},
     rng::{stream, SimRng},
-    trace::{Effect, Event, Fnv, OpRecord, Outcome},
+    trace::{ChangeFate, Effect, Event, Fnv, OpRecord, Outcome, WriteBackRecord},
     CrashPoint, SimConfig, SimStats, UnknownFate,
 };
 use crate::vfs::{Create, DirEntry, EntryKind, OpenMode};
@@ -46,13 +46,18 @@ pub(super) enum Node {
 pub(super) struct Cell {
     now: Option<Node>,
     pub(super) durable: Option<Node>,
-    pub(super) pending: Vec<(u64, Option<Node>)>,
+    pub(super) pending: VecDeque<(u64, Option<Node>)>,
 }
 
 impl Cell {
     /// The numbers of the unsynced changes of the name, rising.
-    fn unsynced(&self) -> impl Iterator<Item = u64> + '_ {
+    fn unsynced(&self) -> impl DoubleEndedIterator<Item = u64> + '_ {
         self.pending.iter().map(|(seq, _)| *seq)
+    }
+
+    /// The number of the last unsynced change of the name.
+    fn last_unsynced(&self) -> Option<u64> {
+        self.unsynced().next_back()
     }
 
     fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
@@ -73,6 +78,9 @@ pub(super) struct Dir {
 /// `content` is what operations see. A crash sees `durable` with some of the
 /// `pending` changes. The first `unknown` of them were left unknown by a
 /// failed sync, and no later sync makes them durable.
+///
+/// `unreported` is a write-back that failed and that no handle has been told
+/// of: a handle that is opened while it is there is told of it.
 #[derive(Debug)]
 struct File {
     content: Arc<Vec<u8>>,
@@ -81,7 +89,17 @@ struct File {
     unknown: usize,
     appender: bool,
     writers: u32,
+    handles: u32,
     refs: u32,
+    unreported: Option<Report>,
+}
+
+/// What a sync is told of a write-back that failed: its error, and the
+/// number of the operation after which it failed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Report {
+    fault: Fault,
+    after_op: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -98,6 +116,8 @@ struct Handle {
     path: Arc<str>,
     sync_failed: bool,
     append_broken: bool,
+    /// The failed write-back that the handle's next sync reports.
+    owed: Option<Report>,
 }
 
 /// A change of names that is not durable yet. It becomes durable once every
@@ -105,10 +125,11 @@ struct Handle {
 /// it.
 ///
 /// `removed` is the directory the change took away: the one a `remove_dir`
-/// removed, or the empty one a rename replaced. `placed` is for a rename:
-/// the changes, unsynced when it was made, that had put the directories its
-/// two names are in, and every directory above them, under the names they
-/// had then.
+/// removed, or the empty one a rename replaced. `before` is, for each of its
+/// names that had one, the last change of that name that was unsynced when
+/// this one was made. `placed` is for a rename: the changes, unsynced when
+/// it was made, that had put the directories its two names are in, and
+/// every directory above them, under the names they had then.
 #[derive(Clone, Debug)]
 pub(super) struct NameOp {
     kind: NameChangeKind,
@@ -116,6 +137,7 @@ pub(super) struct NameOp {
     to: Option<Arc<str>>,
     file: Option<FileId>,
     removed: Option<DirId>,
+    before: Vec<u64>,
     placed: Vec<u64>,
     waiting: Vec<DirId>,
     cells: Vec<(DirId, OsString)>,
@@ -145,36 +167,62 @@ pub(super) fn with_what_they_build_on(
     ops: &BTreeMap<u64, NameOp>,
     kept: impl IntoIterator<Item = u64>,
 ) -> BTreeSet<u64> {
-    let mut closed = BTreeSet::new();
-    let mut queue: Vec<u64> = kept.into_iter().collect();
-    while let Some(seq) = queue.pop() {
-        if !closed.insert(seq) {
-            continue;
-        }
-        let op = &ops[&seq];
-        for (dir, name) in &op.cells {
-            let unsynced = dirs[dir].cells[name].unsynced();
-            queue.extend(unsynced.take_while(|earlier| *earlier < seq));
-        }
-        if let Some(removed) = op.removed {
-            queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
-        }
-        let unsynced = |placed: &&u64| ops.contains_key(placed);
-        queue.extend(op.placed.iter().filter(unsynced));
-    }
-    closed
+    with_what_they_build_on_counted(dirs, ops, kept).0
 }
 
+/// [`with_what_they_build_on`], and how many changes it looked at: the
+/// ones in `kept`, and for each change that comes out the earlier ones it
+/// names.
+///
+/// Those are the last earlier change of each of its names and what had
+/// placed the directories of a rename, both on record with the change since
+/// it was made, and the last change of each name in a directory it took
+/// away. Each of them builds on the ones before it in turn, so every
+/// earlier change is reached, and none is searched for. A change is put on
+/// the list once, when it is first looked at, so the list is never longer
+/// than the set that comes out.
+pub(super) fn with_what_they_build_on_counted(
+    dirs: &BTreeMap<DirId, Dir>,
+    ops: &BTreeMap<u64, NameOp>,
+    kept: impl IntoIterator<Item = u64>,
+) -> (BTreeSet<u64>, u64) {
+    let mut closed = BTreeSet::new();
+    let mut queue = Vec::new();
+    let mut looked_at = 0;
+    let mut look_at = |seq: u64, closed: &mut BTreeSet<u64>, queue: &mut Vec<u64>| {
+        looked_at += 1;
+        if ops.contains_key(&seq) && closed.insert(seq) {
+            queue.push(seq);
+        }
+    };
+    for seq in kept {
+        look_at(seq, &mut closed, &mut queue);
+    }
+    while let Some(seq) = queue.pop() {
+        let op = &ops[&seq];
+        let emptied = op.removed.iter().flat_map(|removed| {
+            let names = dirs[removed].cells.values();
+            names.filter_map(Cell::last_unsynced)
+        });
+        for earlier in op.before.iter().chain(&op.placed).copied().chain(emptied) {
+            look_at(earlier, &mut closed, &mut queue);
+        }
+    }
+    (closed, looked_at)
+}
+
+/// A rule, the path it is for as the path of an operation is written, and
+/// how many operations it has looked at.
 #[derive(Debug)]
-pub(super) struct ArmedRule {
-    rule: FaultRule,
+pub(super) struct Armed<Rule> {
+    rule: Rule,
     path: Option<Arc<str>>,
     seen: u64,
 }
 
-impl ArmedRule {
-    pub(super) fn new(rule: FaultRule) -> Self {
-        let path = rule.path.as_deref().map(canonical);
+impl<Rule> Armed<Rule> {
+    /// `rule`, which is for the operations on `path` or on any path.
+    pub(super) fn new(rule: Rule, path: Option<Arc<str>>) -> Self {
         Self {
             rule,
             path,
@@ -183,14 +231,24 @@ impl ArmedRule {
     }
 }
 
+/// Counts one more operation that a rule looks at, and says whether it is
+/// the rule's turn: after the first `skip` of them, for `times`.
+fn turn(seen: &mut u64, skip: u64, times: u64) -> bool {
+    *seen += 1;
+    *seen > skip && *seen - skip <= times
+}
+
 /// The path of an operation, and the second path of a rename or a link.
 type Paths = (Arc<str>, Option<Arc<str>>);
 
+/// `file` is the open file the operation is on, if it is on one: the file
+/// whose write-back can fail after it.
 struct Op {
     number: u64,
     kind: OpKind,
     path: Arc<str>,
     to: Option<Arc<str>>,
+    file: Option<FileId>,
     offset: u64,
     len: u64,
     changed: bool,
@@ -220,10 +278,43 @@ struct Injection {
     torn_append: Option<bool>,
 }
 
+/// Settles changes of a file that the system wrote or dropped without
+/// saying which, as the configuration says: puts into `durable` what
+/// storage has of them, and returns what became of each. A fate that is
+/// drawn comes from the generator of `stream` for operation `op`.
+fn settle(
+    config: &SimConfig,
+    (stream, op): (u64, u64),
+    changes: &[Change],
+    durable: &mut Vec<u8>,
+) -> Vec<ChangeFate> {
+    let sector = config.sector_size;
+    let kinds = changes.iter().map(|change| change.kind);
+    let survivors = match config.unknown {
+        UnknownFate::Lost => Vec::new(),
+        UnknownFate::Kept => (0..changes.len()).map(Survivor::whole).collect(),
+        UnknownFate::Drawn(draw) => {
+            let mut at_op = SimRng::derive(config.seed, stream, op);
+            let mut rng = SimRng::derive(at_op.next_u64(), stream::DRAW, draw);
+            crash::sample_changes(&mut rng, kinds, &config.crash, sector)
+        }
+    };
+    for survivor in &survivors {
+        let change = &changes[survivor.change];
+        let tear = survivor.tear.as_ref();
+        crash::apply(durable, change.kind, &change.data, tear, sector);
+    }
+    let described = changes
+        .iter()
+        .map(|change| (change.op, &*change.path, change.kind));
+    crash::fates(described, &survivors)
+}
+
 #[derive(Debug)]
 pub(super) struct State {
     pub(super) config: SimConfig,
-    pub(super) rules: Vec<ArmedRule>,
+    pub(super) rules: Vec<Armed<FaultRule>>,
+    pub(super) write_backs: Vec<Armed<WriteBackRule>>,
     pub(super) stats: SimStats,
     pub(super) powered_off: bool,
     pub(super) crash_point: Option<CrashPoint>,
@@ -293,6 +384,7 @@ impl State {
         Self {
             config,
             rules: Vec::new(),
+            write_backs: Vec::new(),
             stats: SimStats::default(),
             powered_off: false,
             crash_point: None,
@@ -321,7 +413,9 @@ impl State {
             unknown: 0,
             appender: false,
             writers: 0,
+            handles: 0,
             refs: 0,
+            unreported: None,
         };
         self.files.insert(id, file);
         id
@@ -346,7 +440,7 @@ impl State {
         let cell = Cell {
             now: Some(node),
             durable: Some(node),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
         };
         self.dir_mut(dir).cells.insert(name.to_owned(), cell);
     }
@@ -434,7 +528,7 @@ impl State {
             self.retain(node);
         }
         let cell = self.dir_mut(dir).cells.entry(name.to_owned()).or_default();
-        cell.pending.push((seq, node));
+        cell.pending.push_back((seq, node));
         if let Some(old) = std::mem::replace(&mut cell.now, node) {
             self.release(old);
         }
@@ -464,7 +558,7 @@ impl State {
     /// under the names they have now.
     fn placed(&self, dir: DirId, placed: &mut Vec<u64>) {
         for (above, name) in self.above(dir) {
-            placed.extend(self.dirs[above].cells[name].unsynced().last());
+            placed.extend(self.dirs[above].cells[name].last_unsynced());
         }
     }
 
@@ -496,12 +590,17 @@ impl State {
                 self.placed(*dir, &mut placed);
             }
         }
+        let before = |(dir, name): &(DirId, OsString)| {
+            let mut newest_first = self.dirs[dir].cells[name].unsynced().rev();
+            newest_first.find(|made| *made < op.number)
+        };
         let name_op = NameOp {
             kind,
             path: op.path.clone(),
             to: op.to.clone(),
             file,
             removed,
+            before: cells.iter().filter_map(before).collect(),
             placed,
             waiting,
             cells,
@@ -547,7 +646,7 @@ impl State {
         for seq in &settled {
             let op = self.name_ops.remove(seq).expect("the change is on record");
             for (cell_dir, name) in op.cells {
-                self.settle_cell(cell_dir, &name);
+                self.settle_cell(cell_dir, &name, *seq);
             }
         }
         !settled.is_empty()
@@ -559,11 +658,14 @@ impl State {
             .expect("an unsynced change of names is on record")
     }
 
-    /// Makes the oldest unsynced change of a name durable.
-    fn settle_cell(&mut self, dir: DirId, name: &OsStr) {
+    /// Makes change `seq` of a name durable, which is the oldest unsynced
+    /// one: the changes of the name before it were made durable before it.
+    fn settle_cell(&mut self, dir: DirId, name: &OsStr, seq: u64) {
         let cells = &mut self.dir_mut(dir).cells;
         let cell = cells.get_mut(name).expect("a changed name is on record");
-        let (_, node) = cell.pending.remove(0);
+        let oldest = cell.pending.pop_front();
+        let (made, node) = oldest.expect("a change that is settled is unsynced");
+        debug_assert_eq!(made, seq, "the changes of a name are settled in order");
         let old = std::mem::replace(&mut cell.durable, node);
         if cell.now.is_none() && cell.durable.is_none() && cell.pending.is_empty() {
             cells.remove(name);
@@ -592,12 +694,14 @@ impl State {
             kind,
             path,
             to,
+            file: None,
             offset,
             len,
             changed: false,
             injected: None,
         };
         let result = body(self, &mut op);
+        let write_back = op.file.and_then(|file| self.write_back(file, &mut op));
         if op.changed {
             self.stats.changes += 1;
         }
@@ -617,8 +721,109 @@ impl State {
                 outcome,
             }));
         }
+        self.trace.extend(write_back.map(Event::WriteBack));
         self.check_crash_point();
         result
+    }
+
+    /// An operation on the open file `file`.
+    fn run_on<T>(
+        &mut self,
+        file: FileId,
+        kind: OpKind,
+        paths: Paths,
+        extent: (u64, u64),
+        body: impl FnOnce(&mut Self, &mut Op) -> io::Result<T>,
+    ) -> io::Result<T> {
+        self.run(kind, paths, extent, |state, op| {
+            op.file = Some(file);
+            body(state, op)
+        })
+    }
+
+    /// Decides whether the system's own write of the unsynced changes of
+    /// the file that `op` was on fails after it: who is told, with which
+    /// error, and whether the changes are forgotten at once.
+    fn write_back_fails(&mut self, op: &Op) -> Option<(Fault, Told, bool)> {
+        let mut hit = None;
+        for Armed { rule, path, seen } in &mut self.write_backs {
+            if !path.as_ref().is_none_or(|on| *on == op.path)
+                || !rule.ops.contains(op.kind)
+                || op.number < rule.from_op
+            {
+                continue;
+            }
+            if turn(seen, rule.skip, rule.times) && hit.is_none() {
+                hit = Some((rule.fault, rule.told, rule.forgotten));
+            }
+        }
+        let (seed, odds) = (self.config.seed, &self.config.write_back);
+        if hit.is_none() && odds.ops.contains(op.kind) {
+            let mut rng = SimRng::derive(seed, stream::WRITE_BACK, op.number);
+            if rng.chance(odds.fail) {
+                hit = Some((odds.fault, odds.told, None));
+            }
+        }
+        let (fault, told, forgotten) = hit?;
+        let forgotten = forgotten.unwrap_or_else(|| {
+            SimRng::derive(seed, stream::FORGOTTEN, op.number).chance(odds.forgotten)
+        });
+        Some((fault, told, forgotten))
+    }
+
+    /// The system's own write of the unsynced changes of `file`, after the
+    /// operation `op` on it. If a rule or the odds say so it fails, and no
+    /// call reports that.
+    ///
+    /// What storage has of the changes is settled here, as the
+    /// configuration says, and they are no longer unsynced: no sync
+    /// writes them again, and no crash plan chooses. The handles that are
+    /// told have their next sync fail. If the changes are forgotten, reads
+    /// see what storage has, at the length the file had for them: the
+    /// length is not forgotten while the file is open.
+    fn write_back(&mut self, file: FileId, op: &mut Op) -> Option<WriteBackRecord> {
+        if self.files[&file].pending.is_empty() {
+            return None;
+        }
+        let (fault, told, forgotten) = self.write_back_fails(op)?;
+        let after_op = op.number;
+        let report = Report { fault, after_op };
+        let open = self.files.get_mut(&file).expect("a file in use exists");
+        let durable = Arc::make_mut(&mut open.durable);
+        let lost = (stream::LOST, op.number);
+        let changes = settle(&self.config, lost, &open.pending, durable);
+        let writers: BTreeSet<u64> = open.pending.iter().map(|change| change.handle).collect();
+        open.pending.clear();
+        open.unknown = 0;
+        if forgotten {
+            let len = open.content.len();
+            open.content = open.durable.clone();
+            if open.content.len() != len {
+                Arc::make_mut(&mut open.content).resize(len, 0);
+            }
+        }
+        if told == Told::OpenHandles {
+            open.unreported = Some(report);
+        }
+        let mut handles = 0;
+        for (id, handle) in &mut self.handles {
+            let is_told = told == Told::OpenHandles || writers.contains(id);
+            if handle.file == file && !handle.sync_failed && is_told {
+                handle.owed = Some(report);
+                handles += 1;
+            }
+        }
+        self.stats.write_backs += 1;
+        op.changed = true;
+        Some(WriteBackRecord {
+            after_op,
+            path: op.path.to_string(),
+            fault,
+            told,
+            handles,
+            forgotten,
+            changes,
+        })
     }
 
     pub(super) fn check_crash_point(&mut self) {
@@ -663,18 +868,16 @@ impl State {
     /// Decides whether the operation, which would otherwise succeed, fails.
     fn fault(&mut self, op: &mut Op, needs_space: bool) -> Option<Injection> {
         let mut hit = None;
-        for armed in &mut self.rules {
-            let rule = &armed.rule;
-            let named = |path: &Arc<str>| *path == op.path || op.to.as_ref() == Some(path);
-            if !armed.path.as_ref().is_none_or(named)
+        for Armed { rule, path, seen } in &mut self.rules {
+            let named = |on: &Arc<str>| *on == op.path || op.to.as_ref() == Some(on);
+            if !path.as_ref().is_none_or(named)
                 || !rule.ops.contains(op.kind)
                 || op.number < rule.from_op
                 || (rule.fault == Fault::Enospc && !needs_space)
             {
                 continue;
             }
-            armed.seen += 1;
-            if hit.is_none() && armed.seen > rule.skip && armed.seen - rule.skip <= rule.times {
+            if turn(seen, rule.skip, rule.times) && hit.is_none() {
                 hit = Some((rule.fault, rule.torn_append));
             }
         }
@@ -746,9 +949,11 @@ impl State {
                 None => None,
             };
             let file = state.file_or_create(existing, dir, name, op)?;
+            op.file = Some(file);
             let handle = state.id();
             let open = state.file_mut(file);
             open.refs += 1;
+            open.handles += 1;
             match access {
                 Access::Read => {}
                 Access::Write => open.writers += 1,
@@ -760,12 +965,16 @@ impl State {
                 path: op.path.clone(),
                 sync_failed: false,
                 append_broken: false,
+                owed: open.unreported,
             };
             state.handles.insert(handle, handle_state);
             Ok(handle)
         })
     }
 
+    /// Closes a handle. With the last handle of a file the record of a
+    /// write-back that failed is gone: a system need not keep it for a file
+    /// that nothing has open.
     pub(super) fn close(&mut self, handle: u64) {
         let handle = self.handles.remove(&handle).expect("an open handle exists");
         let file = self.file_mut(handle.file);
@@ -773,6 +982,10 @@ impl State {
             Access::Read => {}
             Access::Write => file.writers -= 1,
             Access::Append => file.appender = false,
+        }
+        file.handles -= 1;
+        if file.handles == 0 {
+            file.unreported = None;
         }
         self.release(Node::File(handle.file));
     }
@@ -1018,24 +1231,26 @@ impl State {
         }
     }
 
-    /// Makes a change to a file and puts it on record as unsynced.
-    fn change(&mut self, file: FileId, kind: FileChangeKind, data: &[u8], op: &mut Op) {
+    /// Makes a change to the file of `handle` and puts it on record as
+    /// unsynced.
+    fn change(&mut self, handle: u64, kind: FileChangeKind, data: &[u8], op: &mut Op) {
         let sector = self.config.sector_size;
-        let open = self.file_mut(file);
+        let open = self.file_mut(self.handles[&handle].file);
         crash::apply(Arc::make_mut(&mut open.content), kind, data, None, sector);
         open.pending.push(Change {
             op: op.number,
             path: op.path.clone(),
+            handle,
             kind,
             data: data.into(),
         });
         op.changed = true;
     }
 
-    fn write(&mut self, file: FileId, offset: u64, data: &[u8], op: &mut Op) {
+    fn write(&mut self, handle: u64, offset: u64, data: &[u8], op: &mut Op) {
         if !data.is_empty() {
             let len = data.len() as u64;
-            self.change(file, FileChangeKind::Write { offset, len }, data, op);
+            self.change(handle, FileChangeKind::Write { offset, len }, data, op);
         }
     }
 
@@ -1047,7 +1262,7 @@ impl State {
     ) -> io::Result<usize> {
         let (file, _, paths) = self.handle(handle);
         let extent = (offset, buf.len() as u64);
-        self.run(OpKind::Read, paths, extent, |state, op| {
+        self.run_on(file, OpKind::Read, paths, extent, |state, op| {
             if buf.is_empty() {
                 return Ok(0);
             }
@@ -1066,7 +1281,7 @@ impl State {
     pub(super) fn write_at(&mut self, handle: u64, buf: &[u8], offset: u64) -> io::Result<()> {
         let (file, access, paths) = self.handle(handle);
         let extent = (offset, buf.len() as u64);
-        self.run(OpKind::Write, paths, extent, |state, op| {
+        self.run_on(file, OpKind::Write, paths, extent, |state, op| {
             if access != Access::Write {
                 return Err(refuse(
                     ErrorKind::InvalidInput,
@@ -1079,14 +1294,14 @@ impl State {
             }
             state.check_len(offset, buf.len(), &op.path)?;
             let Some(mut injection) = state.fault(op, true) else {
-                state.write(file, offset, buf, op);
+                state.write(handle, offset, buf, op);
                 return Ok(());
             };
             let sector = state.config.sector_size;
             let mut written = 0;
             for part in crash::failed_write(&mut injection.rng, offset, buf.len() as u64, sector) {
                 let within = (part.start - offset) as usize..(part.end - offset) as usize;
-                state.write(file, part.start, &buf[within], op);
+                state.write(handle, part.start, &buf[within], op);
                 written += part.end - part.start;
             }
             Err(op.failure_with(injection.fault, Effect::Wrote(written)))
@@ -1095,7 +1310,8 @@ impl State {
 
     pub(super) fn append(&mut self, handle: u64, buf: &[u8]) -> io::Result<u64> {
         let (file, access, paths) = self.handle(handle);
-        self.run(OpKind::Append, paths, (0, buf.len() as u64), |state, op| {
+        let extent = (0, buf.len() as u64);
+        self.run_on(file, OpKind::Append, paths, extent, |state, op| {
             if access != Access::Append {
                 return Err(refuse(
                     ErrorKind::InvalidInput,
@@ -1118,7 +1334,7 @@ impl State {
             }
             state.check_len(offset, buf.len(), &op.path)?;
             let Some(mut injection) = state.fault(op, true) else {
-                state.write(file, offset, buf, op);
+                state.write(handle, offset, buf, op);
                 return Ok(offset);
             };
             let sector = state.config.sector_size;
@@ -1127,13 +1343,13 @@ impl State {
                 Some(torn) => torn,
                 None => injection.rng.chance(state.config.faults.torn_append),
             };
-            state.write(file, offset, &buf[..written as usize], op);
+            state.write(handle, offset, &buf[..written as usize], op);
             if torn {
                 state.handle_mut(handle).append_broken = true;
                 return Err(op.failure_with(injection.fault, Effect::AppendTorn(written)));
             }
             if written > 0 {
-                state.change(file, FileChangeKind::SetLen { len: offset }, &[], op);
+                state.change(handle, FileChangeKind::SetLen { len: offset }, &[], op);
             }
             Err(op.failure_with(injection.fault, Effect::AppendUndone(written)))
         })
@@ -1141,7 +1357,7 @@ impl State {
 
     pub(super) fn set_len(&mut self, handle: u64, len: u64) -> io::Result<()> {
         let (file, access, paths) = self.handle(handle);
-        self.run(OpKind::SetLen, paths, (0, len), |state, op| {
+        self.run_on(file, OpKind::SetLen, paths, (0, len), |state, op| {
             if access == Access::Read {
                 return Err(refuse(
                     ErrorKind::InvalidInput,
@@ -1153,7 +1369,7 @@ impl State {
             let current = state.files[&file].content.len() as u64;
             state.fail_point(op, len > current)?;
             if len != current {
-                state.change(file, FileChangeKind::SetLen { len }, &[], op);
+                state.change(handle, FileChangeKind::SetLen { len }, &[], op);
             }
             Ok(())
         })
@@ -1161,7 +1377,7 @@ impl State {
 
     pub(super) fn len(&mut self, handle: u64) -> io::Result<u64> {
         let (file, _, paths) = self.handle(handle);
-        self.run(OpKind::Len, paths, (0, 0), |state, op| {
+        self.run_on(file, OpKind::Len, paths, (0, 0), |state, op| {
             state.fail_point(op, false)?;
             Ok(state.files[&file].content.len() as u64)
         })
@@ -1169,7 +1385,7 @@ impl State {
 
     pub(super) fn sync(&mut self, handle: u64, kind: OpKind) -> io::Result<()> {
         let (file, _, paths) = self.handle(handle);
-        self.run(kind, paths, (0, 0), |state, op| {
+        self.run_on(file, kind, paths, (0, 0), |state, op| {
             if state.handles[&handle].sync_failed {
                 return Err(refuse(
                     ErrorKind::Other,
@@ -1177,16 +1393,37 @@ impl State {
                     "had a sync fail on this handle, which can no longer make it durable",
                 ));
             }
-            if let Some(injection) = state.fault(op, true) {
-                state.handle_mut(handle).sync_failed = true;
+            if let Some(report) = state.handle_mut(handle).owed.take() {
                 let open = state.file_mut(file);
-                open.unknown = open.pending.len();
-                let unknown = open.unknown as u64;
-                return Err(op.failure_with(injection.fault, Effect::SyncFailed(unknown)));
+                if open.unreported == Some(report) {
+                    open.unreported = None;
+                }
+                state.stats.faults += 1;
+                state.trace.push(Event::Reported {
+                    op: op.number,
+                    path: op.path.to_string(),
+                    after_op: report.after_op,
+                });
+                return Err(state.fail_sync(handle, report.fault, op));
+            }
+            if let Some(injection) = state.fault(op, true) {
+                return Err(state.fail_sync(handle, injection.fault, op));
             }
             state.settle_file(file, op);
             Ok(())
         })
+    }
+
+    /// Fails a sync through `handle`: the handle syncs no more, and the
+    /// unsynced changes of its file are unknown from here on.
+    fn fail_sync(&mut self, handle: u64, fault: Fault, op: &mut Op) -> io::Error {
+        let handle = self.handle_mut(handle);
+        handle.sync_failed = true;
+        let file = handle.file;
+        let open = self.file_mut(file);
+        open.unknown = open.pending.len();
+        let unknown = open.unknown as u64;
+        op.failure_with(fault, Effect::SyncFailed(unknown))
     }
 
     /// Makes the file durable. The changes made since the last failed sync
@@ -1202,28 +1439,11 @@ impl State {
         let durable = Arc::make_mut(&mut open.durable);
         let (unknown, covered) = open.pending.split_at(open.unknown);
         if !unknown.is_empty() {
-            let kinds = unknown.iter().map(|change| change.kind);
-            let survivors = match self.config.unknown {
-                UnknownFate::Lost => Vec::new(),
-                UnknownFate::Kept => (0..unknown.len()).map(Survivor::whole).collect(),
-                UnknownFate::Drawn(draw) => {
-                    let mut at_sync = SimRng::derive(self.config.seed, stream::SETTLE, op.number);
-                    let mut rng = SimRng::derive(at_sync.next_u64(), stream::DRAW, draw);
-                    crash::sample_changes(&mut rng, kinds, &self.config.crash, sector)
-                }
-            };
-            for survivor in &survivors {
-                let change = &unknown[survivor.change];
-                let tear = survivor.tear.as_ref();
-                crash::apply(durable, change.kind, &change.data, tear, sector);
-            }
-            let described = unknown
-                .iter()
-                .map(|change| (change.op, &*change.path, change.kind));
+            let at_sync = (stream::SETTLE, op.number);
             self.trace.push(Event::Settled {
                 op: op.number,
                 path: op.path.to_string(),
-                changes: crash::fates(described, &survivors),
+                changes: settle(&self.config, at_sync, unknown, durable),
             });
         }
         for change in covered {
@@ -1358,9 +1578,9 @@ impl State {
                         Node::Dir(dir) => *dir_refs.entry(dir).or_default() += 1,
                     }
                 }
-                let expected = cell.pending.last().map_or(cell.durable, |last| last.1);
+                let expected = cell.pending.back().map_or(cell.durable, |last| last.1);
                 assert_eq!(cell.now, expected, "a name shows its newest change");
-                assert!(cell.pending.is_sorted_by_key(|(seq, _)| *seq));
+                assert!(cell.unsynced().is_sorted());
                 for (seq, _) in &cell.pending {
                     let cells = &self.name_ops[seq].cells;
                     assert!(cells.contains(&(*id, name.clone())));
@@ -1379,6 +1599,8 @@ impl State {
             }
             let kept = with_what_they_build_on(&self.dirs, &self.name_ops, [*seq]);
             assert!(kept.iter().all(|built_on| built_on <= seq));
+            let listed = by_every_earlier_change(&self.dirs, &self.name_ops, [*seq]);
+            assert_eq!(kept, listed, "what change {seq} builds on");
         }
         let mut under_the_root = BTreeSet::new();
         let mut walk = vec![ROOT];
@@ -1403,6 +1625,11 @@ impl State {
             assert_eq!(file.writers as usize, writers.count());
             assert_eq!(usize::from(file.appender), appenders.count());
             assert!(!file.appender || file.writers == 0);
+            assert_eq!(file.handles as usize, handles().count());
+            assert!(
+                file.unreported.is_none() || file.handles > 0,
+                "the record of a failed write-back is gone with the last handle"
+            );
         }
         for (id, dir) in &self.dirs {
             assert_eq!(Some(&dir.refs), dir_refs.get(id), "references of {id:?}");
@@ -1423,6 +1650,36 @@ pub(super) fn check_one_more_fits(open: usize, dirs: &BTreeMap<DirId, Dir>) {
         "the simulator's directories form a cycle: a walk down from the root has all {open} of \
          them open and found one more below them"
     );
+}
+
+/// What [`with_what_they_build_on`] gives, found the long way round: every
+/// earlier change of a name is put on the list for each later one, and every
+/// change that emptied a directory. It is the rule as the contract words
+/// it, and the list grows with the square of the changes of one name.
+#[cfg(test)]
+fn by_every_earlier_change(
+    dirs: &BTreeMap<DirId, Dir>,
+    ops: &BTreeMap<u64, NameOp>,
+    kept: impl IntoIterator<Item = u64>,
+) -> BTreeSet<u64> {
+    let mut closed = BTreeSet::new();
+    let mut queue: Vec<u64> = kept.into_iter().collect();
+    while let Some(seq) = queue.pop() {
+        if !closed.insert(seq) {
+            continue;
+        }
+        let op = &ops[&seq];
+        for (dir, name) in &op.cells {
+            let unsynced = dirs[dir].cells[name].unsynced();
+            queue.extend(unsynced.take_while(|earlier| *earlier < seq));
+        }
+        if let Some(removed) = op.removed {
+            queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
+        }
+        let unsynced = |placed: &&u64| ops.contains_key(placed);
+        queue.extend(op.placed.iter().filter(unsynced));
+    }
+    closed
 }
 
 #[cfg(test)]
