@@ -38,7 +38,7 @@ pub enum CheckpointError {
     },
     /// The target has a name that a creation builds under
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), in whatever case of
-    /// its letters, so no checkpoint is made at it. Nothing was touched.
+    /// its ASCII letters: the target is refused. Nothing was touched.
     ReservedName {
         /// The target.
         target: PathBuf,
@@ -65,14 +65,14 @@ pub enum CheckpointError {
         dir: PathBuf,
     },
     /// A directory that checkpoints are built in
-    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) has no lock file of
-    /// its own to take the lock in. It lists, under the name of its lock
-    /// file, something that is not a file, such as a link or a directory;
-    /// or it lists nothing under that name, and a new lock file could not
-    /// be made there because the file system finds the name taken all the
-    /// same. Its lock is not taken, so a creation does not build in it
-    /// and [`delete`](super::delete) does not remove it. Nothing of it
-    /// was touched.
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) did not list a file
+    /// under the name of its lock file, byte for byte, and the call made
+    /// none there. It lists something under that name that is not a file,
+    /// such as a link or a directory; or it lists nothing under it, and
+    /// the call found that the name leads to something all the same. The
+    /// lock of the directory was not taken, so a creation does not build
+    /// in it and [`delete`](super::delete) does not remove it, and
+    /// nothing in it was removed.
     NotALock {
         /// The path of the lock file.
         path: PathBuf,
@@ -218,8 +218,8 @@ impl fmt::Display for CheckpointError {
             ),
             Self::NotALock { path } => write!(
                 f,
-                "{} is no lock file of its directory's own, and the lock of the directory was \
-                 not taken",
+                "{} is not listed as a file, and none was made there: the lock of its directory \
+                 was not taken",
                 path.display()
             ),
             Self::CarriedName { name } => write!(

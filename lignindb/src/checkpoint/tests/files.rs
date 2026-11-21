@@ -774,8 +774,8 @@ fn a_directory_that_another_creation_builds_in_is_left_to_it() {
 /// is emptied by the next creation at the same target, which builds in it,
 /// and removed by a deletion: of the target, with or without a checkpoint
 /// there, and of the directory itself. Whatever it holds goes. What has
-/// the name and is no directory of its own is not looked into, and no
-/// checkpoint is made at a name of that kind.
+/// the name and is no directory of its own is not looked into, and a
+/// target that is given a name of that kind is refused.
 #[test]
 fn what_a_creation_left_is_emptied_by_the_next_and_removed_by_a_deletion() {
     let (db, versions) = store_with_log(24 << 10, 128);
@@ -902,8 +902,8 @@ fn what_a_creation_left_is_emptied_by_the_next_and_removed_by_a_deletion() {
     std::fs::remove_file(&target).expect("the file is removed");
     checkpoint::delete(&StdVfs, &built).expect("what was left is deleted");
 
-    // No checkpoint is made at a name that creations build under, in
-    // whatever case of its letters.
+    // A target that is given a name that creations build under, in
+    // whatever case of its ASCII letters, is refused.
     let in_capitals = checkpoints.join("1.CREATING");
     for reserved in [&built, &in_capitals, &checkpoints.join("1.Creating")] {
         let refused = checkpointer(&db, &versions).create(reserved);
@@ -1280,15 +1280,14 @@ fn a_directory_that_is_changed_while_a_checkpoint_is_built_in_it_gets_no_name() 
     world.check_committed();
 }
 
-/// What a creation left is looked at again under its lock, by a deletion
-/// and by the next creation. Somebody puts a link in its place between
-/// the first look and the lock. Where the link leads to a directory with
-/// no lock file, no lock is taken and none is made there. Where it leads
-/// to one with a lock file, that lock is taken, and the look under the
-/// lock does not find the directory whose lock it is. Nothing that the
-/// link leads to is removed or made.
+/// What a creation left has listed its lock file, a file, when somebody
+/// puts a link in its place, right before the lock is taken in that file.
+/// Where the link leads to a directory with no lock file, the taking
+/// fails and makes none. Where it leads to one with a lock file, that
+/// lock is taken, and the look under the lock does not find the directory
+/// whose lock it is. Neither changes what the link leads to.
 #[test]
-fn a_link_that_is_put_where_a_creation_left_a_directory_is_not_followed() {
+fn a_link_that_is_put_where_a_creation_left_a_directory_changes_nothing_where_it_leads() {
     let outside = tempfile::tempdir().expect("a directory");
     let theirs = outside.path().join("theirs");
     let swapped = Arc::new(AtomicBool::new(false));
@@ -1504,13 +1503,12 @@ fn a_directory_that_is_put_where_a_lock_was_taken_is_not_emptied() {
 }
 
 /// A directory under the name that a creation builds under is not locked
-/// where it has no lock file of its own. It lists something else than a
-/// file under the name of the lock file; or it lists nothing under that
-/// name, and the file system finds the name taken all the same when a new
-/// lock file is to be made, as one does that does not tell capital
-/// letters from small ones and finds a link there. A creation and a
-/// deletion refuse it and touch nothing, also where the link leads to the
-/// name of the target: nothing is made there.
+/// where it lists something else than a file under the name of its lock
+/// file, and where it lists nothing under that name and the name leads to
+/// a link all the same, as on a file system that does not tell capital
+/// letters from small ones. A creation and a deletion refuse it, and
+/// remove and make nothing, also where the link leads to the name of the
+/// target.
 #[test]
 fn a_lock_file_that_is_no_file_is_not_locked() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1592,8 +1590,8 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
 }
 
 /// What a creation left with no lock file in it gets one, and is taken
-/// over and removed, with what else it holds: a link, a directory, a name
-/// that no file system takes for the lock file's.
+/// over and removed, with what else it holds here: a file, and a link and
+/// a directory under names that no file system takes for the lock file's.
 #[test]
 fn what_a_creation_left_without_a_lock_file_gets_one() {
     let (db, versions) = store_with_log(24 << 10, 128);
@@ -1626,17 +1624,21 @@ fn what_a_creation_left_without_a_lock_file_gets_one() {
     world.check_committed();
 }
 
-/// The lock file that is made in what a creation left can be locked by
-/// somebody else before the call that made it has it: the call then finds
+/// Somebody else makes the lock file in what a creation left, and locks
+/// it, right before the call that found none there does: the call finds
 /// the lock held, as it does where the lock file was there, and removes
 /// nothing.
 #[test]
-fn a_new_lock_file_that_somebody_else_locks_first_is_theirs() {
+fn a_lock_file_that_somebody_else_makes_first_is_theirs() {
     let taken = Locks::default();
-    let (db, versions) = store_on_meddling(|plain, _| Meddling {
-        taken_at_once: Some(taken.clone()),
-        ..Meddling::plain(plain)
-    });
+    let theirs = taken.clone();
+    let came_first = AtomicBool::new(false);
+    let (db, versions) = store_with_locks_met(Box::new(move |lock: &Path| {
+        if !came_first.swap(true, Ordering::SeqCst) {
+            (theirs.lock().expect("the locks")).push(StdVfs.lock(lock)?);
+        }
+        Ok(())
+    }));
     let mut world = World::new(&db, &versions);
     block(&mut world, &mut Rng::new(86), 0, 10);
     let target = checkpoints_in(&db).join("1");
@@ -1667,11 +1669,10 @@ fn a_new_lock_file_that_somebody_else_locks_first_is_theirs() {
     world.check_committed();
 }
 
-/// The name of the lock file is taken when a new one is to be made in
-/// what a creation left, and free once the directory has been listed
-/// again, as where a deletion that had made a lock file there has just
-/// removed it: the making is tried once more, and the directory is taken
-/// over.
+/// The name of the lock file leads to something when what a creation
+/// left is looked at, and to nothing once the directory has been listed
+/// again: the look is made once more, a lock file is made, and the
+/// directory is taken over.
 #[test]
 fn a_lock_file_is_made_at_the_second_try() {
     let listings = Arc::new(AtomicUsize::new(0));
@@ -1703,6 +1704,38 @@ fn a_lock_file_is_made_at_the_second_try() {
     (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
     assert!(listings.load(Ordering::SeqCst) >= 2 && !built.exists());
     assert_eq!(std::fs::read(&their_file).expect("the file"), b"as it was");
+    open(&db, &target).check(&world.model);
+    world.check_committed();
+}
+
+/// The lock file that what a creation left gets is made by the call that
+/// locks it. It is not made first and opened again to be locked: where
+/// new files are made so that they cannot be opened again for writing,
+/// that second open would be refused, and the directory could be neither
+/// removed nor taken over.
+#[test]
+fn a_lock_file_is_made_by_the_call_that_locks_it() {
+    let (db, versions) = store_on_meddling(|plain, _| Meddling {
+        made_read_only: Some(Mutex::default()),
+        ..Meddling::plain(plain)
+    });
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(88), 0, 10);
+    let target = checkpoints_in(&db).join("1");
+    let built = building(&target);
+    let leave = || {
+        std::fs::create_dir(&built).expect("a directory");
+        std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+    };
+
+    for given in [&built, &target] {
+        leave();
+        checkpoint::delete(&*db.vfs, given).expect("what was left is removed");
+        assert!(!built.exists() && !target.exists());
+    }
+    leave();
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    assert!(!built.exists());
     open(&db, &target).check(&world.model);
     world.check_committed();
 }
@@ -2207,7 +2240,7 @@ fn the_errors_say_what_happened() {
             CheckpointError::NotALock {
                 path: PathBuf::from("/c/1.creating/LOCK"),
             },
-            "/c/1.creating/LOCK is no lock file of its directory's own",
+            "/c/1.creating/LOCK is not listed as a file, and none was made there",
             false,
         ),
         (

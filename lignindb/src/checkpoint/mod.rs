@@ -319,12 +319,14 @@
 //! that gets as far as building empties it and builds in it, and
 //! [`delete`] removes it ("Deleting a checkpoint, and removing one that
 //! is open"). A directory of that name is taken for a creation's with
-//! everything in it, so whatever it holds goes then, and no checkpoint is
-//! made at a name that ends so, whatever the case of its letters. Only a
-//! directory that the directory above lists under that name, byte for
-//! byte, with a lock file of its own or none, is taken for one, and of
-//! one whose lock is held nothing is removed: what is looked at for that
-//! comes below.
+//! everything in it, so whatever it holds goes then. A target that is
+//! given a name that ends so, whatever the case of its ASCII letters, is
+//! refused, and the name under which the file system lists a checkpoint
+//! is the caller's to keep outside these names ([`CREATING_SUFFIX`]).
+//! Only a directory that the directory above lists under that name, byte
+//! for byte, with a lock file of its own or none, is taken for one, and
+//! of one whose lock is held nothing is removed: what is looked at for
+//! that comes below.
 //!
 //! **The name of the target is the caller's to keep free.** A target that
 //! is there is refused before anything is done, and again right before
@@ -356,11 +358,13 @@
 //!   finds no directory that a creation left.
 //! - The lock of such a directory is taken in a lock file of its own.
 //!   Where the directory lists one, under that name byte for byte, it
-//!   has to be a file, and none is made. Where it lists none, one is
-//!   made, by the call that makes a new file and fails where the name is
-//!   taken, which follows no link at that name: where that call finds
-//!   the name taken twice, and the directory lists no lock file after
-//!   either, it is not locked ([`CheckpointError::NotALock`]).
+//!   has to be a file, and none is made. Where it lists none, the call
+//!   looks whether the name leads to something all the same, by a rename
+//!   of the name onto itself, which changes nothing and follows no link
+//!   at that name. A lock file is made, by the call that takes the lock,
+//!   only once that look finds nothing. Where the look finds something
+//!   twice, and the directory lists no lock file after either, it is not
+//!   locked ([`CheckpointError::NotALock`]).
 //! - It looks again under the lock, and so does a creation in the
 //!   directory it has just made: the lock file at the path has to be the
 //!   one that was locked, the directory has to list it as a file, and
@@ -387,14 +391,14 @@
 //!   So of what a call removes after its look, some, all or none can be
 //!   removed where a changed directory leads, and a rename renames what
 //!   its path names when it is made.
-//! - **Where a lock file is made.** Taking the lock of a directory that
-//!   the creation has just made makes one where its path leads at that
-//!   moment, through a link at the name of the lock file too, if one was
-//!   put there since the directory was made. So does the lock that a
-//!   deletion takes of a database directory. The making of a new lock
-//!   file in a directory that a creation left, and that lists none,
-//!   follows no link at that name, and is made where the path of the
-//!   directory leads then.
+//! - **Where a lock file is made.** `lignin_io::Vfs::lock` makes the
+//!   lock file where there is none, where its path leads at that moment:
+//!   through a link at the name of the lock file too. A creation calls
+//!   it in the directory it has just made. A creation and a deletion
+//!   call it in a directory that a creation left and that lists no lock
+//!   file, after the look that found nothing under the name: a link that
+//!   is put there between the look and the call is followed. And a
+//!   deletion calls it for a database directory.
 //! - **A file from another file that was put under its name.** Such a
 //!   file gets the name of the target with the rest, and a creation that
 //!   fails removes it with the rest. The lock file is told from another

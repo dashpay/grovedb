@@ -521,17 +521,17 @@ pub(super) struct Meddling {
     /// somebody had renamed what is there to the other spelling then.
     pub(super) respelling: Arc<AtomicBool>,
     /// Under this directory the file system does not tell capital letters
-    /// from small ones, as far as the making of a new file goes: none is
-    /// made where its directory holds a name that differs from its name
-    /// in case alone, and the call fails as for a name that is taken.
+    /// from small ones, as far as a rename of a name onto itself goes: a
+    /// name that its directory does not list, and that differs in case
+    /// alone from one it does list, is found there.
     pub(super) folds: Option<PathBuf>,
+    /// The lock of a path at which [`Vfs::open`] made a new file with
+    /// `Create::New` is refused, as it is where new files are made so that
+    /// they cannot be opened again for writing.
+    pub(super) made_read_only: Option<Mutex<BTreeSet<PathBuf>>>,
     /// What the listing of the directory above it leaves out, though it
     /// is there: a name that the file system finds and does not list so.
     pub(super) unlisted: Option<PathBuf>,
-    /// Somebody else locks each new lock file as soon as it is made: the
-    /// call that made it fails as for a file that is busy, and the locks
-    /// are kept here.
-    pub(super) taken_at_once: Option<Locks>,
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
@@ -550,8 +550,8 @@ impl Meddling {
             respelled: None,
             respelling: Arc::new(AtomicBool::new(true)),
             folds: None,
+            made_read_only: None,
             unlisted: None,
-            taken_at_once: None,
             sets: Mutex::default(),
         }
     }
@@ -565,8 +565,8 @@ impl Meddling {
         }
     }
 
-    /// `inner`, with no new file made under the directory `under` where a
-    /// name is there that differs from its name in case alone.
+    /// `inner`, with a name under the directory `under` found, by a rename
+    /// onto itself, where one is listed that differs from it in case alone.
     pub(super) fn folding(inner: Arc<dyn Vfs>, under: PathBuf) -> Self {
         Self {
             folds: Some(under),
@@ -583,25 +583,35 @@ impl Meddling {
         }
     }
 
-    /// Whether a new file at `path` meets a name that is taken, as a file
-    /// system finds one that takes the spellings of a name for one.
-    fn is_taken(&self, path: &Path, mode: OpenMode) -> io::Result<bool> {
-        let new = matches!(
-            mode,
-            OpenMode::Write(lignin_io::Create::New) | OpenMode::Append(lignin_io::Create::New)
-        );
+    /// `path` as the directory above it lists it, where that differs from
+    /// the name given in the case of its letters alone and the file
+    /// system takes the two for one name.
+    fn folded(&self, path: &Path) -> io::Result<Option<PathBuf>> {
         let (Some(under), Some(dir), Some(name)) = (&self.folds, path.parent(), path.file_name())
         else {
-            return Ok(false);
+            return Ok(None);
         };
-        if !new || !path.starts_with(under) {
-            return Ok(false);
+        if !path.starts_with(under) {
+            return Ok(None);
         }
         let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_lowercase();
         let beside = self.inner.read_dir(dir)?;
-        Ok(beside
-            .iter()
-            .any(|entry| folded(&entry.name) == folded(name)))
+        if beside.iter().any(|entry| entry.name == name) {
+            return Ok(None);
+        }
+        let listed = (beside.iter()).find(|entry| folded(&entry.name) == folded(name));
+        Ok(listed.map(|entry| dir.join(&entry.name)))
+    }
+
+    /// Refuses a file that was made so that it cannot be opened again for
+    /// writing ([`Self::made_read_only`]).
+    fn writable(&self, path: &Path) -> io::Result<()> {
+        match &self.made_read_only {
+            Some(made) if made.lock().expect("the files").contains(path) => {
+                Err(io::ErrorKind::PermissionDenied.into())
+            }
+            _ => Ok(()),
+        }
     }
 
     /// `path` as `inner` is given it.
@@ -697,22 +707,22 @@ impl Meddling {
 
 impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        if self.is_taken(path, mode)? {
-            return Err(io::ErrorKind::AlreadyExists.into());
+        let file = self.inner.open(&self.kept(path), mode)?;
+        let new = matches!(
+            mode,
+            OpenMode::Write(lignin_io::Create::New) | OpenMode::Append(lignin_io::Create::New)
+        );
+        if let (true, Some(made)) = (new, &self.made_read_only) {
+            (made.lock().expect("the files")).insert(path.to_path_buf());
         }
-        let new = matches!(mode, OpenMode::Write(lignin_io::Create::New));
-        match &self.taken_at_once {
-            Some(taken) if new && path.ends_with("LOCK") => {
-                drop(self.inner.open(path, mode)?);
-                (taken.lock().expect("the locks")).push(self.inner.lock(path)?);
-                Err(io::ErrorKind::ResourceBusy.into())
-            }
-            _ => self.inner.open(&self.kept(path), mode),
-        }
+        Ok(file)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.inner.rename(&self.kept(from), &self.kept(to))
+        match self.folded(from)? {
+            Some(listed) if from == to => self.inner.rename(&listed, &listed),
+            _ => self.inner.rename(&self.kept(from), &self.kept(to)),
+        }
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
@@ -784,6 +794,7 @@ impl Vfs for Meddling {
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.writable(path)?;
         if let Some(before) = &self.before_lock {
             before(path)?;
         }
@@ -791,6 +802,7 @@ impl Vfs for Meddling {
     }
 
     fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.writable(path)?;
         if let Some(before) = &self.before_lock {
             before(path)?;
         }

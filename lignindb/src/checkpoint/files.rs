@@ -41,14 +41,20 @@ pub const DELETING_FILE_NAME: &str = "MANIFEST.deleting";
 /// taken for what a creation that was cut short left, a part of a
 /// checkpoint or a whole one that did not get its name: the next creation
 /// that builds under that name empties it and builds in it, and
-/// [`delete`] removes it. One whose lock file is no file of its own is
-/// refused ([`CheckpointError::NotALock`]).
+/// [`delete`] removes it. One that lists something else than a file under
+/// the name of its lock file, or lists nothing under it though a look
+/// finds that the name leads to something, is refused
+/// ([`CheckpointError::NotALock`]).
 ///
-/// No checkpoint is made at a name that ends so, whatever the case of its
-/// letters ([`CheckpointError::ReservedName`]). A file system can take
-/// still other spellings for such a name. A directory that was there
-/// before a creation under one of them is not listed under the name
-/// itself, and is not taken for a creation's.
+/// A target that is given a name that ends so, whatever the case of its
+/// ASCII letters, is refused ([`CheckpointError::ReservedName`]). **The
+/// name under which the file system lists the target has to be outside
+/// these names as well, and that is the caller's to see to.** A file
+/// system can list a name in another spelling than it was given in, and a
+/// creation does not know that spelling before the directory is there. A
+/// checkpoint that the directory above lists under a name that ends in
+/// `.creating`, byte for byte, is taken for a creation's directory, as
+/// above.
 ///
 /// What is looked at for this, and what the looks do not tell, is in the
 /// [module documentation](super) ("Durability, and a creation that
@@ -83,10 +89,10 @@ fn is_building(path: &Path) -> bool {
     (path.file_name()).is_some_and(|name| name.as_encoded_bytes().ends_with(suffix))
 }
 
-/// Whether no checkpoint is made at `path` for its name: one that a
-/// creation builds under, in any case of its letters. A file system that
-/// does not tell capital letters from small ones takes each of them for
-/// that name.
+/// Whether a target that is given as `path` is refused for its name: one
+/// that a creation builds under, in any case of its ASCII letters. A file
+/// system that does not tell capital letters from small ones takes each
+/// of them for that name.
 fn is_reserved(path: &Path) -> bool {
     let suffix = CREATING_SUFFIX.as_bytes();
     (path.file_name()).is_some_and(|name| {
@@ -122,49 +128,43 @@ fn kind_of(
 /// the entry has to be a file ([`CheckpointError::NotALock`] otherwise),
 /// and the lock is taken in the file that is there: none is made.
 ///
-/// Where it lists none, one is made, by the call that makes a new file
-/// and fails where the name is taken: that call follows no link at the
-/// name. If it fails so, or because somebody else has locked the new
-/// file by then, the directory is listed again, and where it still lists
-/// no lock file the making is tried once more. A directory in which the
-/// name is taken both times, and which lists no lock file after either,
-/// is refused ([`CheckpointError::NotALock`]). A file system that takes
-/// several spellings for one name finds the name taken where another
-/// spelling of it is there.
+/// Where it lists none, the call looks whether the name leads to
+/// something all the same, as it can where a file system takes several
+/// spellings for one name: by a rename of the name onto itself, which
+/// changes nothing, follows no link at that name, and fails with
+/// `NotFound` where nothing has the name. Where it fails so, the lock is
+/// taken by `lignin_io::Vfs::lock`, which makes the lock file where there
+/// is none. Where it succeeds, the directory is listed again, and if it
+/// still lists no lock file, the same is done once more. A directory for
+/// which it succeeds both times, and which lists no lock file after
+/// either, is refused ([`CheckpointError::NotALock`]), with no lock file
+/// made. Another error of it is returned.
 fn lock_what_is_there(vfs: &dyn Vfs, building: &Path) -> Result<Box<dyn VfsLock>, CheckpointError> {
     let lock_path = building.join(LOCK_FILE_NAME);
+    let refused = |error: std::io::Error| match error.kind() {
+        ErrorKind::WouldBlock => CheckpointError::Creating {
+            dir: building.to_path_buf(),
+        },
+        _ => CheckpointError::io("lock", &lock_path)(error),
+    };
     let listed = || kind_of(vfs, building, &lock_path);
     let mut kind = listed()?;
     for _ in 0..2 {
         if kind.is_some() {
             break;
         }
-        match vfs.open(&lock_path, OpenMode::Write(Create::New)) {
-            Ok(made) => {
-                drop(made);
-                kind = Some(EntryKind::File);
+        match vfs.rename(&lock_path, &lock_path) {
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                return vfs.lock(&lock_path).map_err(refused);
             }
-            // Taken, or made and already locked by somebody else.
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    ErrorKind::AlreadyExists | ErrorKind::ResourceBusy
-                ) =>
-            {
-                kind = listed()?
-            }
-            Err(error) => return Err(CheckpointError::io("create", &lock_path)(error)),
+            Ok(()) => kind = listed()?,
+            Err(error) => return Err(CheckpointError::io("look for", &lock_path)(error)),
         }
     }
     if kind != Some(EntryKind::File) {
         return Err(CheckpointError::NotALock { path: lock_path });
     }
-    (vfs.lock_existing(&lock_path)).map_err(|error| match error.kind() {
-        ErrorKind::WouldBlock => CheckpointError::Creating {
-            dir: building.to_path_buf(),
-        },
-        _ => CheckpointError::io("lock", &lock_path)(error),
-    })
+    vfs.lock_existing(&lock_path).map_err(refused)
 }
 
 /// The look at the directory at `path` under its lock: whether the
