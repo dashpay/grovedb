@@ -14,6 +14,16 @@
 //!   flags of a replaced element across epochs and split the bytes a
 //!   write frees by owner and epoch. Every call of a callback is
 //!   compared, with what it was given.
+//! - `over_a_tree`: another element written over a tree that holds
+//!   elements (D-133). LigninDB drops the Merk of the tree where RocksDB
+//!   leaves its records under the prefix, and every answer and cost is
+//!   the same but one, which `where_a_tree_was` holds for each engine:
+//!   whether a tree that stands where the old one stood is empty.
+//! - `bidirectional`: batches that write elements which take backward
+//!   references and the references to them, on the grove versions whose
+//!   batches maintain them: chains, a target written again, a reference
+//!   pointed at another target, deletes that cascade, and what a batch is
+//!   refused for, the bound on the depth of a reference among it.
 //!
 //! Each history runs in a database of its own. The LigninDB database is
 //! then closed, opened again and read by the physical checker of the
@@ -26,16 +36,17 @@ use grovedb_epoch_based_storage_flags::StorageFlags;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
-    nested::{
-        assert_same, check, made_by, number, on_both_engines, open, segments, Log, KINDS,
-    },
+    moves::filled,
+    nested::{assert_same, check, made_by, number, on_both_engines, open, segments, Log, KINDS},
     LigninEngine,
 };
 use crate::{
     batch::{BatchApplyOptions, QualifiedGroveDbOp},
+    bidirectional_references::{BidirectionalReference, MAX_BACKWARD_REFERENCES_GROVE_DEPTH},
     engine::Engine,
+    query_result_type::QueryResultType,
     reference_path::ReferencePathType,
-    Element, ElementFlags, Error, GroveDb, TransactionArg,
+    Element, ElementFlags, Error, GroveDb, PathQuery, Query, TransactionArg,
 };
 
 pub(super) type Op = QualifiedGroveDbOp;
@@ -100,6 +111,15 @@ impl Drive {
     }
 }
 
+/// The name of a call at a path.
+fn named(call: &str, at: &[&[u8]]) -> String {
+    at.iter().fold(String::from(call), |mut name, segment| {
+        name.push('/');
+        name.push_str(&String::from_utf8_lossy(segment));
+        name
+    })
+}
+
 /// The calls of a history through one transaction, or through none.
 pub(super) struct Calls<'db, 'a, 'l, E: Engine> {
     pub(super) db: &'db GroveDb<E>,
@@ -133,15 +153,24 @@ impl<'db, 'a, 'l, E: Engine> Calls<'db, 'a, 'l, E> {
         self.batch_with(name, ops, None);
     }
 
-    pub(super) fn batch_with(&mut self, name: &str, ops: Vec<Op>, options: Option<BatchApplyOptions>) {
+    pub(super) fn batch_with(
+        &mut self,
+        name: &str,
+        ops: Vec<Op>,
+        options: Option<BatchApplyOptions>,
+    ) {
         let applied = (self.db).apply_batch(ops, options, self.through, self.version);
         self.log.answer(format!("batch {name}"), applied);
         self.root();
     }
 
     pub(super) fn unbatched(&mut self, name: &str, ops: Vec<Op>) {
+        self.unbatched_with(name, ops, None);
+    }
+
+    fn unbatched_with(&mut self, name: &str, ops: Vec<Op>, options: Option<BatchApplyOptions>) {
         let applied =
-            (self.db).apply_operations_without_batching(ops, None, self.through, self.version);
+            (self.db).apply_operations_without_batching(ops, options, self.through, self.version);
         self.log.answer(format!("unbatched {name}"), applied);
         self.root();
     }
@@ -166,7 +195,9 @@ impl<'db, 'a, 'l, E: Engine> Calls<'db, 'a, 'l, E> {
                     .map(|(level, paths)| (level, paths.len()))
                     .collect();
                 levels.sort_unstable();
-                shown.borrow_mut().push((cost.clone(), format!("{levels:?}")));
+                shown
+                    .borrow_mut()
+                    .push((cost.clone(), format!("{levels:?}")));
                 add_on(cost)
             },
             self.through,
@@ -219,27 +250,83 @@ impl<'db, 'a, 'l, E: Engine> Calls<'db, 'a, 'l, E> {
             self.version,
         );
         drive.into_log(name, self.log);
-        self.log.answer(format!("flags partial batch {name}"), applied);
+        self.log
+            .answer(format!("flags partial batch {name}"), applied);
         self.root();
+    }
+
+    /// One element inserted with no batch.
+    pub(super) fn insert(&mut self, at: &[&[u8]], key: &[u8], element: Element) {
+        let inserted = (self.db).insert(at, key, element, None, self.through, self.version);
+        self.log.answer("insert".to_owned(), inserted);
+        self.root();
+    }
+
+    /// Every element of the tree at `at`, as a query reads the range.
+    pub(super) fn all(&mut self, at: &[&[u8]]) {
+        let mut query = Query::new();
+        query.insert_all();
+        let query = PathQuery::new_unsized(path(at), query);
+        let pairs = QueryResultType::QueryKeyElementPairResultType;
+        let read = (self.db).query_raw(&query, true, true, true, pairs, self.through, self.version);
+        self.log.answer(named("all", at), read);
+    }
+
+    /// The proof of every element of the tree at `at` in the committed
+    /// state, and what a verifier makes of it: the root hash it comes to
+    /// and the elements it is shown.
+    pub(super) fn proven(&mut self, at: &[&[u8]]) {
+        let mut query = Query::new();
+        query.insert_all();
+        let query = PathQuery::new_unsized(path(at), query);
+        let proved = self.db.prove_query(&query, None, self.version);
+        let proof = proved.value.as_ref().ok().cloned().unwrap_or_default();
+        self.log.answer(named("proof", at), proved);
+        let verified = GroveDb::verify_query(&proof, &query, self.version);
+        let answer = (
+            named("verified", at),
+            OperationCost::default(),
+            format!("{verified:?}"),
+        );
+        self.log.answers.push(answer);
+    }
+
+    /// The paths at which the verification of the grove finds an issue,
+    /// references and backward references among what it checks.
+    pub(super) fn verify(&mut self) {
+        let issues = (self.db).verify_grovedb(self.through, true, true, self.version);
+        let issues = issues.map(|issues| {
+            let at = |path: &Vec<Vec<u8>>| named("at", &segments(path));
+            let mut paths: Vec<String> = issues.keys().map(at).collect();
+            paths.sort();
+            paths
+        });
+        let answer = (
+            "verify".to_owned(),
+            OperationCost::default(),
+            format!("{issues:?}"),
+        );
+        self.log.answers.push(answer);
     }
 
     pub(super) fn get(&mut self, at: &[&[u8]], key: &[u8]) {
         let read = self.db.get(at, key, self.through, self.version);
         let at = path(at);
-        let name = segments(&at).iter().chain([&key]).fold(
-            String::from("get"),
-            |mut name, segment| {
-                name.push('/');
-                name.push_str(&String::from_utf8_lossy(segment));
-                name
-            },
-        );
+        let name =
+            segments(&at)
+                .iter()
+                .chain([&key])
+                .fold(String::from("get"), |mut name, segment| {
+                    name.push('/');
+                    name.push_str(&String::from_utf8_lossy(segment));
+                    name
+                });
         self.log.answer(name, read);
     }
 
     pub(super) fn is_empty(&mut self, at: &[&[u8]]) {
         let empty = self.db.is_empty_tree(at, self.through, self.version);
-        self.log.answer("empty".to_owned(), empty);
+        self.log.answer(named("empty", at), empty);
     }
 
     /// A call that may be refused.
@@ -274,8 +361,16 @@ fn make(made: usize) -> Vec<Op> {
         let top = top.as_slice();
         ops.push(insert(&[], top, (outer.make)()));
         ops.push(insert(&[top], b"inner", (inner.make)()));
-        ops.push(insert(&[top], b"item", Element::new_item(vec![kind as u8; 20])));
-        ops.push(insert(&[top], b"number", number(outer.sums, 7 + kind as i64)));
+        ops.push(insert(
+            &[top],
+            b"item",
+            Element::new_item(vec![kind as u8; 20]),
+        ));
+        ops.push(insert(
+            &[top],
+            b"number",
+            number(outer.sums, 7 + kind as i64),
+        ));
         ops.push(insert(
             &[top, b"inner"],
             b"a",
@@ -304,7 +399,11 @@ fn change(made: usize) -> Vec<Op> {
         let (outer, inner) = (&KINDS[kind], &KINDS[(kind + 1) % made]);
         let top = top(kind);
         let top = top.as_slice();
-        ops.push(insert(&[top], b"item", Element::new_item(vec![kind as u8; 90])));
+        ops.push(insert(
+            &[top],
+            b"item",
+            Element::new_item(vec![kind as u8; 90]),
+        ));
         ops.push(Op::replace_op(
             path(&[top]),
             b"number".to_vec(),
@@ -359,7 +458,11 @@ fn plain<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     calls.refused(|calls| {
         calls.batch(
             "a tree that is no tree",
-            vec![insert(&[first, b"item"], b"item", Element::new_item(vec![1]))],
+            vec![insert(
+                &[first, b"item"],
+                b"item",
+                Element::new_item(vec![1]),
+            )],
         );
     });
     calls.refused(|calls| {
@@ -415,7 +518,10 @@ fn plain<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
 
     // The inner tree of the first is emptied by a batch, and one batch
     // then makes it anew under another key and fills it.
-    let ops = vec![delete(&[first, b"inner"], b"b"), delete(&[first, b"inner"], b"c")];
+    let ops = vec![
+        delete(&[first, b"inner"], b"b"),
+        delete(&[first, b"inner"], b"c"),
+    ];
     calls.batch("empty the inner tree", ops);
     calls.is_empty(&[first, b"inner"]);
     calls.get(&[first], b"inner");
@@ -433,7 +539,11 @@ fn plain<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let ops = vec![
         insert(&[second], b"single", Element::new_item(vec![3; 12])),
         insert(&[second], b"new tree", Element::empty_tree()),
-        insert(&[second, b"new tree"], b"item", Element::new_item(vec![4; 7])),
+        insert(
+            &[second, b"new tree"],
+            b"item",
+            Element::new_item(vec![4; 7]),
+        ),
         delete(&[second], b"single"),
     ];
     calls.unbatched("four", ops);
@@ -446,14 +556,22 @@ fn plain<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     // rolled back to it, a batch in its place, and the commit.
     let ops = vec![
         insert(&[], b"in a transaction", Element::empty_tree()),
-        insert(&[b"in a transaction"], b"kept", Element::new_item(vec![6; 50])),
+        insert(
+            &[b"in a transaction"],
+            b"kept",
+            Element::new_item(vec![6; 50]),
+        ),
         insert(&[first], b"kept", Element::new_item(vec![6; 50])),
     ];
     calls.batch("in a transaction", ops);
     db.set_savepoint(&transaction).expect("a savepoint");
     let ops = vec![
         insert(&[b"in a transaction"], b"undone", Element::empty_tree()),
-        insert(&[b"in a transaction", b"undone"], b"item", Element::new_item(vec![7; 9])),
+        insert(
+            &[b"in a transaction", b"undone"],
+            b"item",
+            Element::new_item(vec![7; 9]),
+        ),
         delete(&[b"in a transaction"], b"kept"),
     ];
     calls.batch("to be undone", ops);
@@ -462,7 +580,11 @@ fn plain<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     calls.get(&[b"in a transaction"], b"kept");
     let ops = vec![
         insert(&[b"in a transaction"], b"undone", Element::empty_sum_tree()),
-        insert(&[b"in a transaction", b"undone"], b"item", Element::new_sum_item(9)),
+        insert(
+            &[b"in a transaction", b"undone"],
+            b"item",
+            Element::new_sum_item(9),
+        ),
     ];
     calls.batch("in its place", ops);
     drop(calls);
@@ -528,7 +650,11 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         insert(&[], b"balances", Element::empty_sum_tree()),
         insert(&documents[..1], b"contract", Element::empty_tree()),
         insert(&documents[..2], b"type", Element::empty_tree()),
-        insert(&[b"balances"], b"payer", Element::new_sum_item(1_000_000_000)),
+        insert(
+            &[b"balances"],
+            b"payer",
+            Element::new_sum_item(1_000_000_000),
+        ),
     ];
     calls.batch("trees", ops);
     let document = |n: u8, len: usize| {
@@ -538,9 +664,16 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let pay = |cost: &OperationCost| Ok(vec![insert(&[b"balances"], b"payer", charged(cost))]);
 
     // With nothing added, a partial batch is the batch.
-    calls.partial("nothing added", vec![document(1, 80)], None, |_| Ok(Vec::new()));
+    calls.partial("nothing added", vec![document(1, 80)], None, |_| {
+        Ok(Vec::new())
+    });
     // The payer is charged what the first segment cost.
-    calls.partial("charged", vec![document(2, 200), document(3, 31)], None, pay);
+    calls.partial(
+        "charged",
+        vec![document(2, 200), document(3, 31)],
+        None,
+        pay,
+    );
     calls.get(&[b"balances"], b"payer");
     // The same at every height the first segment can pause at.
     for (n, height) in [(4u8, 0u8), (5, 1), (6, 2), (7, 3)] {
@@ -548,7 +681,10 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
             batch_pause_height: Some(height),
             ..BatchApplyOptions::default()
         };
-        let ops = vec![document(n, 40 + usize::from(n)), delete(documents, &[b'd', n - 3])];
+        let ops = vec![
+            document(n, 40 + usize::from(n)),
+            delete(documents, &[b'd', n - 3]),
+        ];
         calls.partial(&format!("paused at {height}"), ops, Some(options), pay);
         calls.get(&[b"balances"], b"payer");
     }
@@ -572,7 +708,11 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     });
     calls.refused(|calls| {
         calls.partial("added under no tree", vec![document(9, 70)], None, |_| {
-            Ok(vec![insert(&[b"nothing"], b"item", Element::new_item(vec![1]))])
+            Ok(vec![insert(
+                &[b"nothing"],
+                b"item",
+                Element::new_item(vec![1]),
+            )])
         });
     });
     calls.refused(|calls| {
@@ -643,9 +783,21 @@ fn flags<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let mut calls = Calls::new(&db, version, None, &mut log);
     let documents: &[&[u8]] = &[b"documents", b"contract"];
     let ops = vec![
-        insert(&[], b"documents", Element::empty_tree_with_flags(flags_of(0, 1))),
-        insert(&documents[..1], b"contract", Element::empty_tree_with_flags(flags_of(0, 1))),
-        insert(&[], b"balances", Element::empty_sum_tree_with_flags(flags_of(0, 1))),
+        insert(
+            &[],
+            b"documents",
+            Element::empty_tree_with_flags(flags_of(0, 1)),
+        ),
+        insert(
+            &documents[..1],
+            b"contract",
+            Element::empty_tree_with_flags(flags_of(0, 1)),
+        ),
+        insert(
+            &[],
+            b"balances",
+            Element::empty_sum_tree_with_flags(flags_of(0, 1)),
+        ),
     ];
     calls.flags_batch("trees", ops);
 
@@ -684,17 +836,37 @@ fn flags<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
             documents,
             b"reference",
             Element::new_reference_with_flags(
-                ReferencePathType::AbsolutePathReference(path(&[documents[0], documents[1], b"of 2"])),
+                ReferencePathType::AbsolutePathReference(path(&[
+                    documents[0],
+                    documents[1],
+                    b"of 2",
+                ])),
                 flags_of(5, 2),
             ),
         ),
-        insert(documents, b"index", Element::empty_tree_with_flags(flags_of(5, 2))),
-        insert(&[documents[0], documents[1], b"index"], b"entry", flagged(44, 5, 2)),
+        insert(
+            documents,
+            b"index",
+            Element::empty_tree_with_flags(flags_of(5, 2)),
+        ),
+        insert(
+            &[documents[0], documents[1], b"index"],
+            b"entry",
+            flagged(44, 5, 2),
+        ),
     ];
     calls.flags_batch("a reference and a tree", ops);
     let ops = vec![
-        insert(&[documents[0], documents[1], b"index"], b"entry", flagged(144, 6, 2)),
-        insert(&[documents[0], documents[1], b"index"], b"second", flagged(20, 6, 2)),
+        insert(
+            &[documents[0], documents[1], b"index"],
+            b"entry",
+            flagged(144, 6, 2),
+        ),
+        insert(
+            &[documents[0], documents[1], b"index"],
+            b"second",
+            flagged(20, 6, 2),
+        ),
     ];
     calls.flags_batch("the tree grows in epoch 6", ops);
     calls.get(documents, b"index");
@@ -707,26 +879,21 @@ fn flags<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     calls.get(documents, b"of 2");
     calls.refused(|calls| {
         let unread = Element::new_item_with_flags(vec![1; 30], Some(vec![0, 1]));
-        calls.flags_batch("flags the callback cannot read", vec![insert(documents, b"of 1", unread)]);
+        calls.flags_batch(
+            "flags the callback cannot read",
+            vec![insert(documents, b"of 1", unread)],
+        );
     });
     calls.get(documents, b"of 1");
 
     // The partial twin: the payer is charged between the segments.
     let ops = vec![insert(documents, b"of 1", flagged(170, 7, 1))];
     calls.flags_partial("grown in epoch 7", ops, |cost| {
-        Ok(vec![insert(
-            &[b"balances"],
-            b"payer",
-            charged(cost),
-        )])
+        Ok(vec![insert(&[b"balances"], b"payer", charged(cost))])
     });
     let ops = vec![insert(documents, b"of 2", flagged(15, 8, 2))];
     calls.flags_partial("shrunk in epoch 8", ops, |cost| {
-        Ok(vec![insert(
-            &[b"balances"],
-            b"payer",
-            charged(cost),
-        )])
+        Ok(vec![insert(&[b"balances"], b"payer", charged(cost))])
     });
 
     // What is removed is freed to its owner by its epochs, key and value.
@@ -742,12 +909,24 @@ fn flags<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     drop(calls);
     let transaction = db.start_transaction();
     let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
-    calls.flags_batch("made in a transaction", vec![insert(documents, b"late", flagged(64, 9, 1))]);
-    calls.flags_batch("grown in it", vec![insert(documents, b"late", flagged(128, 10, 1))]);
+    calls.flags_batch(
+        "made in a transaction",
+        vec![insert(documents, b"late", flagged(64, 9, 1))],
+    );
+    calls.flags_batch(
+        "grown in it",
+        vec![insert(documents, b"late", flagged(128, 10, 1))],
+    );
     db.set_savepoint(&transaction).expect("a savepoint");
-    calls.flags_batch("to be undone", vec![insert(documents, b"late", flagged(8, 11, 1))]);
+    calls.flags_batch(
+        "to be undone",
+        vec![insert(documents, b"late", flagged(8, 11, 1))],
+    );
     db.rollback_to_savepoint(&transaction).expect("a rollback");
-    calls.flags_batch("shrunk in it", vec![insert(documents, b"late", flagged(70, 12, 1))]);
+    calls.flags_batch(
+        "shrunk in it",
+        vec![insert(documents, b"late", flagged(70, 12, 1))],
+    );
     drop(calls);
     let committed = db.commit_transaction(transaction);
     log.answer("commit".to_owned(), committed);
@@ -801,87 +980,924 @@ fn flag_callbacks_on_grove_v5() {
     flag_callbacks_on(&GROVE_VERSIONS[4]);
 }
 
-/// EXPLORATORY (not for the commit as it is): another element written over
-/// a tree that holds elements, by a batch and by a direct insert.
+/// In how many ways a tree is written over, one for each kind of tree
+/// in turn.
+const WAYS: usize = 7;
+
+/// Another element written over a tree that holds elements, with trees
+/// in it: by a batch, by operations with no batch, by an insert and
+/// inside write transactions. The tree is of every kind, and what takes
+/// its place is an item, a tree of its own kind and a tree of another,
+/// alone or with what is written into it, at once and later.
 fn over_a_tree<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
-    use crate::operations::insert::InsertOptions;
+    let db = open::<E>(dir);
+    let made = made_by(version);
+    let mut log = Log::default();
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let item = |len: usize| Element::new_item(vec![0xab; len]);
+    // What is written into a tree that took the place of a filled one:
+    // keys that the filled one had, and a tree in it under the key of one
+    // that it had.
+    let inside = |top: &[u8], kind: usize| {
+        let nested = [top, b"nested".as_slice()];
+        vec![
+            insert(&[top], b"item", item(12)),
+            insert(&[top], b"nested", (KINDS[kind].make)()),
+            insert(&nested, b"b", item(7)),
+            insert(&nested, b"deeper", Element::empty_tree()),
+            insert(&[top, b"nested", b"deeper"], b"other", item(9)),
+        ]
+    };
+    let fresh = |top: &[u8], kind: usize| {
+        let mut ops = vec![insert(&[], top, (KINDS[kind].make)())];
+        ops.extend(inside(top, kind));
+        ops
+    };
+    // What is read of a tree that was written over: nothing under an
+    // element that is no tree or under a tree nothing was written into,
+    // and of a tree that was written into what was written, by its key
+    // and by a proof of the whole tree. What the other reads give is
+    // `where_a_tree_was`'s.
+    fn held<E: Engine>(calls: &mut Calls<'_, '_, '_, E>, top: &[u8], written: bool) {
+        let own = [top];
+        let nested = [top, b"nested".as_slice()];
+        let deeper = [top, b"nested".as_slice(), b"deeper"];
+        calls.get(&[], top);
+        if !written {
+            calls.refused(|calls| calls.get(&own, b"long"));
+            calls.refused(|calls| calls.get(&own, b"item"));
+            return;
+        }
+        calls.get(&own, b"item");
+        calls.get(&nested, b"b");
+        calls.get(&deeper, b"other");
+        if calls.through.is_none() {
+            calls.proven(&own);
+            calls.proven(&nested);
+            calls.proven(&deeper);
+        }
+    }
+    let allowed = crate::operations::insert::InsertOptions {
+        validate_insertion_does_not_override_tree: false,
+        ..Default::default()
+    };
+
+    for kind in 0..made {
+        calls.batch("filled", filled(&[], &top(kind), kind, made));
+    }
+    for kind in 0..made {
+        let (top, next) = (top(kind), (kind + 1) % made);
+        let top = top.as_slice();
+        match kind % WAYS {
+            // An item, then a tree over the item, then what is in it.
+            0 => {
+                calls.batch("an item over it", vec![insert(&[], top, item(5))]);
+                held(&mut calls, top, false);
+                calls.batch(
+                    "a tree over the item",
+                    vec![insert(&[], top, (KINDS[kind].make)())],
+                );
+                held(&mut calls, top, false);
+                calls.batch("into it", inside(top, kind));
+            }
+            // A tree of another kind with what is in it, in one batch.
+            1 => calls.batch("a tree over it, written", fresh(top, next)),
+            // A tree of its own kind alone, and what is in it later.
+            2 => {
+                calls.batch(
+                    "a tree over it",
+                    vec![insert(&[], top, (KINDS[kind].make)())],
+                );
+                held(&mut calls, top, false);
+                calls.batch("into it", inside(top, kind));
+            }
+            // A tree of another kind alone, and what is in it later.
+            3 => {
+                calls.batch(
+                    "another tree over it",
+                    vec![insert(&[], top, (KINDS[next].make)())],
+                );
+                held(&mut calls, top, false);
+                calls.batch("into it", inside(top, next));
+            }
+            // With no batch: an item by an insert, and a tree over it.
+            4 => {
+                let under_the_root: &[&[u8]] = &[];
+                let inserted = db.insert(
+                    under_the_root,
+                    top,
+                    item(6),
+                    Some(allowed.clone()),
+                    None,
+                    version,
+                );
+                calls
+                    .log
+                    .answer("insert an item over it".to_owned(), inserted);
+                calls.root();
+                held(&mut calls, top, false);
+                calls.insert(&[], top, (KINDS[kind].make)());
+                calls.batch("into it", inside(top, kind));
+            }
+            // By operations that are applied one by one.
+            5 => {
+                let options = Some(BatchApplyOptions::default());
+                let ops = vec![insert(&[], top, item(5))];
+                calls.unbatched_with("an item over it", ops, options.clone());
+                held(&mut calls, top, false);
+                calls.unbatched_with("a tree over the item, written", fresh(top, next), options);
+            }
+            // A tree in the tree: an item over it beside another write,
+            // and a tree over the item with what is in it.
+            _ => {
+                let nested = [top, b"nested".as_slice()];
+                let ops = vec![
+                    insert(&[top], b"nested", item(4)),
+                    insert(&[top], b"long", item(33)),
+                ];
+                calls.batch("an item over the tree in it", ops);
+                calls.get(&[top], b"nested");
+                calls.get(&[top], b"long");
+                calls.refused(|calls| calls.get(&nested, b"b"));
+                calls.batch("a tree over that item, written", inside(top, next));
+                calls.get(&[top], b"long");
+                calls.get(&[top], b"number");
+            }
+        }
+        held(&mut calls, top, true);
+    }
+
+    // Inside a write transaction that is rolled back, and in one that
+    // commits.
+    let (rolled, kept): (&[u8], &[u8]) = (b"rolled back", b"behind a savepoint");
+    calls.batch("filled", filled(&[], rolled, 0, made));
+    calls.batch("filled", filled(&[], kept, 1, made));
+    drop(calls);
+    let transaction = db.start_transaction();
+    let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
+    calls.batch("an item over it", vec![insert(&[], rolled, item(5))]);
+    held(&mut calls, rolled, false);
+    drop(calls);
+    db.rollback_transaction(&transaction).expect("a rollback");
+    drop(transaction);
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    calls.root();
+    calls.get(&[rolled], b"long");
+    calls.get(&[rolled, b"nested"], b"a");
+    calls.get(&[rolled, b"nested", b"deeper"], b"deep");
+    drop(calls);
+
+    let transaction = db.start_transaction();
+    let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
+    calls.batch("a tree over it, written", fresh(rolled, 2));
+    held(&mut calls, rolled, true);
+    // A savepoint, and behind it a tree that is written over: the
+    // rollback brings back what it held.
+    calls.batch("written before", vec![insert(&[kept], b"before", item(3))]);
+    db.set_savepoint(&transaction).expect("a savepoint");
+    calls.batch("a tree over it, written", fresh(kept, 3));
+    held(&mut calls, kept, true);
+    db.rollback_to_savepoint(&transaction).expect("a rollback");
+    calls.root();
+    calls.get(&[kept], b"before");
+    calls.get(&[kept], b"long");
+    calls.get(&[kept, b"nested"], b"a");
+    calls.get(&[kept, b"nested", b"deeper"], b"deep");
+    calls.batch("an item over it", vec![insert(&[], kept, item(5))]);
+    held(&mut calls, kept, false);
+    drop(calls);
+    let committed = db.commit_transaction(transaction);
+    log.answer("commit".to_owned(), committed);
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    calls.root();
+    held(&mut calls, rolled, true);
+    held(&mut calls, kept, false);
+    // Every tree that took the place of another is written into again.
+    let ops = (0..made).map(|kind| insert(&[top(kind).as_slice()], b"after", item(20 + kind)));
+    calls.batch("after it all", ops.collect());
+    db.flush().expect("a flush");
+    log
+}
+
+fn written_over_a_tree_on(version: &'static GroveVersion) {
+    let made = made_by(version);
+    let log = on_both_engines!(over_a_tree, version);
+    // Every way was gone, and the trees behind them were of every kind.
+    assert!(made >= WAYS);
+    let batches = |name: &str| {
+        let named = format!("batch {name}");
+        log.answers
+            .iter()
+            .filter(|(call, ..)| *call == named)
+            .count()
+    };
+    assert_eq!(batches("filled"), made + 2);
+    assert_eq!(batches("after it all"), 1);
+    assert!(log
+        .answers
+        .last()
+        .is_some_and(|(_, _, root)| root.starts_with("Ok")));
+}
+
+#[test]
+fn another_element_over_a_tree_on_grove_v1() {
+    written_over_a_tree_on(&GROVE_VERSIONS[0]);
+}
+
+#[test]
+fn another_element_over_a_tree_on_grove_v2() {
+    written_over_a_tree_on(&GROVE_VERSIONS[1]);
+}
+
+#[test]
+fn another_element_over_a_tree_on_grove_v3() {
+    written_over_a_tree_on(&GROVE_VERSIONS[2]);
+}
+
+#[test]
+fn another_element_over_a_tree_on_grove_v4() {
+    written_over_a_tree_on(&GROVE_VERSIONS[3]);
+}
+
+#[test]
+fn another_element_over_a_tree_on_grove_v5() {
+    written_over_a_tree_on(&GROVE_VERSIONS[4]);
+}
+
+/// What the two engines answer differently once a tree was written over
+/// (D-133). On RocksDB the records of the old tree are still under its
+/// prefix, and so are those of the trees it held under theirs: a tree
+/// made at that path stands on them, and a path that leads through an
+/// element of the old tree still finds it by its key. On LigninDB the old
+/// tree's Merk left with its element, and the Merks below with it.
+///
+/// Gives the log of the calls that both engines answer alike, and apart
+/// from it each of the other reads with what it gave.
+fn where_a_tree_was<E: Engine>(
+    dir: &Path,
+    version: &'static GroveVersion,
+) -> (Log, Vec<(String, String)>) {
+    let db = open::<E>(dir);
+    let made = made_by(version);
+    let (mut log, mut apart) = (Log::default(), Log::default());
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let mut reads = Calls::new(&db, version, None, &mut apart);
+    let item = Element::new_item(vec![0xcd; 8]);
+    for top in [b"one".as_slice(), b"two", b"three", b"four"] {
+        calls.batch("filled", filled(&[], top, 0, made));
+    }
+    // A tree over a tree, alone.
+    calls.batch(
+        "a tree over one",
+        vec![insert(&[], b"one", Element::empty_tree())],
+    );
+    reads.is_empty(&[b"one"]);
+    reads.get(&[b"one", b"nested"], b"b");
+    reads.get(&[b"one", b"nested", b"deeper"], b"deep");
+    // An item over a tree, a tree over the item, and in it a tree under
+    // the key of one that the old tree held.
+    calls.batch("an item over two", vec![insert(&[], b"two", item.clone())]);
+    reads.get(&[b"two", b"nested"], b"b");
+    reads.get(&[b"two", b"nested", b"deeper"], b"deep");
+    let ops = vec![
+        insert(&[], b"two", Element::empty_tree()),
+        insert(&[b"two"], b"nested", Element::empty_tree()),
+    ];
+    calls.batch("a tree over the item", ops);
+    calls.refused(|calls| calls.get(&[b"two", b"nested"], b"b"));
+    calls.proven(&[b"two"]);
+    reads.all(&[b"two"]);
+    reads.is_empty(&[b"two"]);
+    reads.is_empty(&[b"two", b"nested"]);
+    reads.get(&[b"two", b"nested", b"deeper"], b"deep");
+    // A tree over a tree with a tree in it and a tree in that, in one
+    // batch.
+    let ops = vec![
+        insert(&[], b"three", Element::empty_tree()),
+        insert(&[b"three"], b"nested", Element::empty_tree()),
+        insert(&[b"three", b"nested"], b"deeper", Element::empty_tree()),
+    ];
+    calls.batch("a tree over three, written", ops);
+    reads.is_empty(&[b"three", b"nested"]);
+    calls.refused(|calls| calls.get(&[b"three", b"nested"], b"b"));
+    calls.refused(|calls| calls.get(&[b"three", b"nested", b"deeper"], b"deep"));
+    reads.is_empty(&[b"three", b"nested", b"deeper"]);
+    // A tree over a tree with elements in it, under keys the old tree had
+    // and under others: a read by a key that only the old tree had.
+    let ops = vec![
+        insert(&[], b"four", Element::empty_tree()),
+        insert(&[b"four"], b"item", item.clone()),
+        insert(&[b"four"], b"other", item.clone()),
+        insert(&[b"four"], b"nested", Element::empty_tree()),
+        insert(&[b"four", b"nested"], b"b", item.clone()),
+        insert(&[b"four", b"nested"], b"c", item.clone()),
+    ];
+    calls.batch("a tree over four, written", ops);
+    calls.get(&[b"four"], b"item");
+    calls.get(&[b"four", b"nested"], b"b");
+    calls.proven(&[b"four"]);
+    calls.proven(&[b"four", b"nested"]);
+    reads.all(&[b"four"]);
+    reads.all(&[b"four", b"nested"]);
+    for key in [
+        b"long".as_slice(),
+        b"number",
+        b"inside",
+        b"emptied",
+        b"never",
+    ] {
+        reads.get(&[b"four"], key);
+    }
+    reads.get(&[b"four", b"nested"], b"a");
+    reads.get(&[b"four", b"nested", b"deeper"], b"deep");
+    // The delete of a tree asks whether it is empty.
+    let under_the_root: &[&[u8]] = &[];
+    let deleted = db.delete(under_the_root, b"one", None, None, version);
+    reads.log.answer("delete/one".to_owned(), deleted);
+    db.flush().expect("a flush");
+    let gave = |(call, _, answer): &(String, OperationCost, String)| {
+        let found = answer.starts_with("Ok");
+        let gave = match call.split('/').next() {
+            Some("empty") => answer.clone(),
+            Some("all") => answer
+                .matches("KeyElementPairResultItem")
+                .count()
+                .to_string(),
+            Some("delete") => String::from(if found { "made" } else { "refused" }),
+            _ => String::from(if found { "found" } else { "nothing" }),
+        };
+        (call.clone(), gave)
+    };
+    (log, apart.answers.iter().map(gave).collect())
+}
+
+/// The reads of `where_a_tree_was` that the engines answer differently,
+/// each with what it gives on LigninDB and on RocksDB: whether a tree is
+/// empty, how many elements a query finds in a range, whether a key is
+/// read, and whether the delete of a tree is made.
+const READ_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
+    // A tree nothing was written into, over a tree with elements.
+    ("empty/one", "Ok(true)", "Ok(false)"),
+    ("get/one/nested/b", "nothing", "found"),
+    ("get/one/nested/deeper/deep", "nothing", "found"),
+    // An item over a tree: the trees that the old tree held.
+    ("get/two/nested/b", "nothing", "found"),
+    ("get/two/nested/deeper/deep", "nothing", "found"),
+    // A tree over that item with one tree in it.
+    ("all/two", "1", "7"),
+    ("empty/two", "Ok(false)", "Ok(false)"),
+    ("empty/two/nested", "Ok(true)", "Ok(false)"),
+    ("get/two/nested/deeper/deep", "nothing", "found"),
+    // A tree over a tree, with a tree in it and a tree in that.
+    ("empty/three/nested", "Ok(false)", "Ok(false)"),
+    ("empty/three/nested/deeper", "Ok(true)", "Ok(false)"),
+    // A tree over a tree, with three elements and two in a tree in it.
+    ("all/four", "3", "8"),
+    ("all/four/nested", "2", "4"),
+    ("get/four/long", "nothing", "found"),
+    ("get/four/number", "nothing", "found"),
+    ("get/four/inside", "nothing", "found"),
+    ("get/four/emptied", "nothing", "found"),
+    ("get/four/never", "nothing", "found"),
+    ("get/four/nested/a", "nothing", "found"),
+    ("get/four/nested/deeper/deep", "nothing", "found"),
+    // The tree nothing was written into is deleted.
+    ("delete/one", "made", "refused"),
+];
+
+#[test]
+fn what_is_read_where_a_tree_was_written_over_on_each_engine() {
+    let expected = |on_lignindb: bool| -> Vec<(String, String)> {
+        let reads = READ_WHERE_A_TREE_WAS.iter();
+        let gave = |&(read, lignindb, rocksdb): &(&str, &str, &str)| {
+            let gave = if on_lignindb { lignindb } else { rocksdb };
+            (read.to_owned(), gave.to_owned())
+        };
+        reads.map(gave).collect()
+    };
+    // The two that give the same answer are charged differently: RocksDB
+    // comes to a record of the old tree first.
+    let differ = READ_WHERE_A_TREE_WAS.iter().filter(|read| read.1 != read.2);
+    assert_eq!(differ.count(), READ_WHERE_A_TREE_WAS.len() - 2);
+    for version in GROVE_VERSIONS.iter() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (log, read) = where_a_tree_was::<LigninEngine>(dir.path(), version);
+        log.assert_refusals();
+        // Nothing of the old trees is left: each tree holds what was
+        // written into it since, and no path leads to what they held.
+        assert_eq!(read, expected(true));
+        check(dir.path(), version);
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let (on_rocksdb, read) = where_a_tree_was::<crate::RocksDbEngine>(dir.path(), version);
+            assert_same(&log, &on_rocksdb);
+            // Each tree stands on the records of the one that was there.
+            assert_eq!(read, expected(false));
+        }
+    }
+}
+
+/// What a batch meets that keeps the value of a node which a commit
+/// outside its transaction deleted between the batch's read of the node
+/// and its application. The caller of a partial batch is called between
+/// the two, and has the commit made there.
+///
+/// Gives the answer of the batch, that of the batch made again through
+/// the same transaction where the first was refused as a conflict, that
+/// of the commit, and whether the deleted element and the batch's own are
+/// read afterwards.
+fn taken_between<E: Engine>(
+    dir: &Path,
+    version: &'static GroveVersion,
+) -> (
+    Result<(), Error>,
+    Option<Result<(), Error>>,
+    Result<(), Error>,
+    [bool; 2],
+) {
+    let db = open::<E>(dir);
+    let held: &[&[u8]] = &[b"top", b"held"];
+    let numbered = |n: u8| insert(held, &[n], Element::new_item(vec![n; 20]));
+    let mut ops = vec![
+        insert(&[], b"top", Element::empty_tree()),
+        insert(&[b"top"], b"held", Element::empty_tree()),
+    ];
+    ops.extend((1..=7).map(numbered));
+    (db.apply_batch(ops, None, None, version).unwrap()).expect("the tree is made");
+
+    let transaction = db.start_transaction();
+    // The eighth element goes under the seventh: the batch writes the
+    // seventh's node again, with the value it read.
+    let between = |_: &OperationCost, _: &_| {
+        let deleted = db.delete(held, &[7], None, None, version);
+        deleted
+            .unwrap()
+            .expect("the delete outside the transaction");
+        Ok(Vec::new())
+    };
+    let applied = db
+        .apply_partial_batch(
+            vec![numbered(8)],
+            None,
+            between,
+            Some(&transaction),
+            version,
+        )
+        .unwrap();
+    let conflict = applied.as_ref().is_err_and(Error::is_commit_conflict);
+    let again = conflict.then(|| {
+        // The transaction is open and as it was: it reads, and takes the
+        // batch that is made again.
+        let read = db.get(&[b"top".as_slice()], b"held", Some(&transaction), version);
+        read.unwrap().expect("a read through the transaction");
+        (db.apply_batch(vec![numbered(8)], None, Some(&transaction), version)).unwrap()
+    });
+    let committed = db.commit_transaction(transaction).unwrap();
+    let read = [7, 8].map(|n: u8| db.get(held, &[n], None, version).unwrap().is_ok());
+    db.flush().expect("a flush");
+    (applied, again, committed, read)
+}
+
+#[test]
+fn a_commit_that_takes_a_value_a_batch_keeps_is_a_conflict_at_the_batch() {
+    for version in GROVE_VERSIONS.iter() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let (applied, again, committed, read) = taken_between::<LigninEngine>(dir.path(), version);
+        // The batch is refused as a commit that lost is, and the same
+        // batch made again is taken: the delete stands, and the write.
+        let refused = applied.expect_err("the batch is refused");
+        assert!(refused.is_commit_conflict(), "{refused:?}");
+        let conflict = grovedb_storage::error::CommitError::Conflict;
+        assert_eq!(refused.commit_error(), Some(conflict));
+        assert!(matches!(again, Some(Ok(()))), "{again:?}");
+        assert!(committed.is_ok(), "{committed:?}");
+        assert_eq!(read, [false, true]);
+        check(dir.path(), version);
+        // RocksDB takes the batch and the commit: the transaction wrote
+        // its records after the commit outside, which is not a conflict
+        // there, and the deleted element is back.
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let (applied, again, committed, read) =
+                taken_between::<crate::RocksDbEngine>(dir.path(), version);
+            assert!(applied.is_ok() && again.is_none(), "{applied:?}");
+            assert!(committed.is_ok(), "{committed:?}");
+            assert_eq!(read, [true, true]);
+        }
+    }
+}
+
+/// An item that takes backward references.
+fn target(value: &[u8]) -> Element {
+    Element::new_item_allowing_bidirectional_references(value.to_vec())
+}
+
+/// A reference that its target keeps a backward reference to.
+fn bidirectional(to: ReferencePathType, cascade_on_update: bool) -> Element {
+    let reference = BidirectionalReference {
+        forward_reference_path: to,
+        backward_references: Vec::new(),
+        cascade_on_update,
+        max_hop: None,
+    };
+    Element::BidirectionalReference(reference, None)
+}
+
+fn beside(key: &[u8]) -> ReferencePathType {
+    ReferencePathType::SiblingReference(key.to_vec())
+}
+
+fn at(to: &[&[u8]]) -> ReferencePathType {
+    ReferencePathType::AbsolutePathReference(path(to))
+}
+
+fn bidirectional_references<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let db = open::<E>(dir);
     let mut log = Log::default();
     let mut calls = Calls::new(&db, version, None, &mut log);
-    let filled = |top: &[u8]| {
-        vec![
-            insert(&[], top, Element::empty_tree()),
-            insert(&[top], b"a", Element::new_item(vec![1; 30])),
-            insert(&[top], b"b", Element::new_item(vec![2; 30])),
-            insert(&[top], b"nested", Element::empty_tree()),
-            insert(&[top, b"nested"], b"c", Element::new_item(vec![3; 30])),
-        ]
-    };
-    for top in [b"one".as_slice(), b"two", b"three", b"four"] {
-        calls.batch("filled", filled(top));
-    }
-    // An item over a tree, by a batch.
-    calls.batch("item over one", vec![insert(&[], b"one", Element::new_item(vec![9; 5]))]);
-    calls.get(&[], b"one");
-    calls.either(|calls| calls.get(&[b"one"], b"a"));
-    // A tree over the item again, and what is read under it.
-    calls.batch("tree over the item", vec![insert(&[], b"one", Element::empty_tree())]);
-    calls.is_empty(&[b"one"]);
-    calls.either(|calls| calls.get(&[b"one"], b"a"));
-    calls.batch("into it", vec![insert(&[b"one"], b"a", Element::new_item(vec![7; 12]))]);
-    calls.get(&[b"one"], b"a");
-    calls.either(|calls| calls.get(&[b"one"], b"b"));
-    calls.is_empty(&[b"one", b"nested"]);
-
-    // An empty tree over a tree, by a batch that also writes into it.
+    let far: &[&[u8]] = &[b"far", b"farther", b"farthest"];
     let ops = vec![
-        insert(&[], b"two", Element::empty_sum_tree()),
-        insert(&[b"two"], b"x", Element::new_sum_item(4)),
+        insert(&[], b"near", Element::empty_tree()),
+        insert(&[], b"sums", Element::empty_sum_tree()),
+        insert(&[], b"far", Element::empty_tree()),
+        insert(&far[..1], b"farther", Element::empty_count_tree()),
+        insert(&far[..2], b"farthest", Element::empty_tree()),
+        insert(&[b"near"], b"plain", Element::new_item(vec![1; 10])),
     ];
-    calls.batch("a tree over two, written", ops);
-    calls.get(&[], b"two");
-    calls.either(|calls| calls.get(&[b"two"], b"a"));
-    calls.get(&[b"two"], b"x");
+    calls.batch("trees", ops);
 
-    // An empty tree over a tree, alone.
-    calls.batch("a tree over three", vec![insert(&[], b"three", Element::empty_tree())]);
-    calls.get(&[], b"three");
-    calls.is_empty(&[b"three"]);
-    calls.either(|calls| calls.get(&[b"three"], b"a"));
-
-    // A direct insert of an item over a tree.
-    let options = InsertOptions {
-        validate_insertion_does_not_override_tree: false,
-        ..InsertOptions::default()
-    };
-    let under_the_root: &[&[u8]] = &[];
-    let inserted = db.insert(
-        under_the_root,
-        b"four",
-        Element::new_item(vec![8; 6]),
-        Some(options),
-        None,
-        version,
+    // A target, then a chain of two references to it, each in a batch of
+    // its own, and a reference from three trees down.
+    calls.batch(
+        "a target",
+        vec![insert(&[b"near"], b"value", target(b"hello"))],
     );
-    calls.log.answer("insert an item over four".to_owned(), inserted);
+    calls.batch(
+        "a reference",
+        vec![insert(
+            &[b"near"],
+            b"r1",
+            bidirectional(beside(b"value"), true),
+        )],
+    );
+    calls.batch(
+        "a reference to it",
+        vec![insert(
+            &[b"near"],
+            b"r2",
+            bidirectional(beside(b"r1"), true),
+        )],
+    );
+    let ops = vec![insert(
+        far,
+        b"from afar",
+        bidirectional(at(&[b"near", b"value"]), true),
+    )];
+    calls.batch("a reference from afar", ops);
+    for key in [b"value".as_slice(), b"r1", b"r2"] {
+        calls.get(&[b"near"], key);
+    }
+    calls.get(far, b"from afar");
+    calls.verify();
+
+    // The target is written again: every reference of the chain follows.
+    calls.batch(
+        "the target again",
+        vec![insert(&[b"near"], b"value", target(b"a longer value"))],
+    );
+    calls.get(&[b"near"], b"r2");
+    calls.get(far, b"from afar");
+    // The same reference again changes nothing, and a reference is
+    // pointed at another target.
+    calls.batch(
+        "the same reference",
+        vec![insert(
+            &[b"near"],
+            b"r1",
+            bidirectional(beside(b"value"), true),
+        )],
+    );
+    calls.batch(
+        "another target",
+        vec![insert(&[b"near"], b"second", target(b"second"))],
+    );
+    calls.batch(
+        "pointed at it",
+        vec![insert(
+            &[b"near"],
+            b"r2",
+            bidirectional(beside(b"second"), true),
+        )],
+    );
+    calls.get(&[b"near"], b"r2");
+    calls.verify();
+
+    // A target, a reference to it and a reference to that one, made by one
+    // batch in a tree that sums, and a plain reference to a target.
+    let ops = vec![
+        insert(&[b"sums"], b"r2", bidirectional(beside(b"r1"), true)),
+        insert(&[b"sums"], b"r1", bidirectional(beside(b"value"), true)),
+        insert(
+            &[b"sums"],
+            b"value",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"pay".to_vec(), 5),
+        ),
+        insert(&[b"sums"], b"other", Element::new_sum_item(7)),
+    ];
+    calls.batch("a chain in one batch", ops);
+    calls.get(&[b"sums"], b"r2");
+    calls.get(&[], b"sums");
+    calls.batch(
+        "a plain reference to a target",
+        vec![insert(
+            &[b"near"],
+            b"to a target",
+            reference(&[b"near", b"value"]),
+        )],
+    );
+    calls.get(&[b"near"], b"to a target");
+    // A target written with a reference to it in one batch.
+    let ops = vec![
+        insert(
+            &[b"sums"],
+            b"value",
+            Element::new_item_with_sum_item_allowing_bidirectional_references(b"paid".to_vec(), 9),
+        ),
+        insert(&[b"sums"], b"r3", bidirectional(beside(b"value"), true)),
+    ];
+    calls.batch("a target again with a new reference", ops);
+    calls.get(&[], b"sums");
+    calls.verify();
+
+    // What a batch is refused for: a reference to a target that the batch
+    // deletes, a target that is deleted while a reference does not
+    // cascade, a reference in a partial batch, and a reference deeper
+    // than the bound.
+    calls.refused(|calls| {
+        let ops = vec![
+            insert(&[b"near"], b"r9", bidirectional(beside(b"second"), true)),
+            delete(&[b"near"], b"second"),
+        ];
+        calls.batch("to a target the batch deletes", ops);
+    });
+    calls.batch(
+        "a reference that does not cascade",
+        vec![insert(
+            &[b"near"],
+            b"held",
+            bidirectional(beside(b"second"), false),
+        )],
+    );
+    calls.refused(|calls| calls.batch("its target deleted", vec![delete(&[b"near"], b"second")]));
+    calls.refused(|calls| {
+        let ops = vec![insert(
+            &[b"near"],
+            b"r8",
+            bidirectional(beside(b"value"), true),
+        )];
+        calls.partial("a reference in a partial batch", ops, None, |_| {
+            Ok(Vec::new())
+        });
+    });
+    calls.refused(|calls| {
+        let wrapped = Element::NonCounted(Box::new(target(b"wrapped")));
+        calls.batch(
+            "a target in a wrapper",
+            vec![insert(&far[..2], b"wrapped", wrapped)],
+        );
+    });
+    let mut deep: Vec<Vec<u8>> = vec![b"near".to_vec()];
+    while deep.len() <= MAX_BACKWARD_REFERENCES_GROVE_DEPTH {
+        let segment = format!("d{}", deep.len()).into_bytes();
+        let above: Vec<&[u8]> = deep.iter().map(Vec::as_slice).collect();
+        calls.insert(&above, &segment, Element::empty_tree());
+        deep.push(segment);
+    }
+    let deepest: Vec<&[u8]> = deep.iter().map(Vec::as_slice).collect();
+    calls.refused(|calls| {
+        let ops = vec![insert(
+            &deepest,
+            b"ref",
+            bidirectional(at(&[b"near", b"value"]), true),
+        )];
+        calls.batch("deeper than the bound", ops);
+    });
+    let ops = vec![insert(
+        &deepest[..MAX_BACKWARD_REFERENCES_GROVE_DEPTH],
+        b"ref",
+        bidirectional(at(&[b"near", b"value"]), true),
+    )];
+    calls.batch("at the bound", ops);
+    calls.batch(
+        "the target once more",
+        vec![insert(&[b"near"], b"value", target(b"seen from the bound"))],
+    );
+    calls.get(&deepest[..MAX_BACKWARD_REFERENCES_GROVE_DEPTH], b"ref");
+    calls.verify();
+
+    // Deletes: the plain reference, a reference alone, and a target with
+    // every reference that cascades, the one three trees down and the one
+    // at the bound too.
+    calls.batch(
+        "the plain reference deleted",
+        vec![delete(&[b"near"], b"to a target")],
+    );
+    calls.batch("a reference deleted", vec![delete(&[b"near"], b"held")]);
+    calls.batch("a target deleted", vec![delete(&[b"near"], b"second")]);
+    calls.refused(|calls| calls.get(&[b"near"], b"r2"));
+    calls.batch(
+        "a target with references far away deleted",
+        vec![delete(&[b"near"], b"value")],
+    );
+    calls.refused(|calls| calls.get(far, b"from afar"));
+    calls.refused(|calls| calls.get(&[b"near"], b"r1"));
+    calls.get(&[], b"far");
+    // A target is written over by a plain item, and its chain goes.
+    calls.batch(
+        "a plain item over a target",
+        vec![insert(&[b"sums"], b"value", Element::new_sum_item(1))],
+    );
+    calls.refused(|calls| calls.get(&[b"sums"], b"r2"));
+    calls.get(&[], b"sums");
+    calls.verify();
+
+    drop(calls);
+    let transaction = db.start_transaction();
+    let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
+    let ops = vec![
+        insert(&[b"near"], b"value", target(b"in a transaction")),
+        insert(
+            far,
+            b"from afar",
+            bidirectional(at(&[b"near", b"value"]), true),
+        ),
+    ];
+    calls.batch("a target and a reference in a transaction", ops);
+    db.set_savepoint(&transaction).expect("a savepoint");
+    calls.batch(
+        "to be undone",
+        vec![insert(&[b"near"], b"value", target(b"undone"))],
+    );
+    calls.get(far, b"from afar");
+    db.rollback_to_savepoint(&transaction).expect("a rollback");
     calls.root();
-    calls.get(&[], b"four");
+    calls.get(far, b"from afar");
+    calls.batch(
+        "in its place",
+        vec![insert(&[b"near"], b"value", target(b"kept"))],
+    );
+    calls.verify();
+    drop(calls);
+    let committed = db.commit_transaction(transaction);
+    log.answer("commit".to_owned(), committed);
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    calls.root();
+    calls.get(far, b"from afar");
+    calls.verify();
+    db.flush().expect("a flush");
+    log
+}
+
+/// On the grove versions whose batches maintain no backward references,
+/// a batch is refused for an element that takes them and for a reference
+/// that asks for one, and writes nothing.
+fn family_refused<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
+    let db = open::<E>(dir);
+    let mut log = Log::default();
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let ops = vec![
+        insert(&[], b"near", Element::empty_tree()),
+        insert(&[b"near"], b"plain", Element::new_item(vec![1; 10])),
+    ];
+    calls.batch("trees", ops);
+    calls.refused(|calls| {
+        calls.batch(
+            "a target",
+            vec![insert(&[b"near"], b"value", target(b"hello"))],
+        )
+    });
+    calls.refused(|calls| {
+        let ops = vec![insert(
+            &[b"near"],
+            b"r1",
+            bidirectional(beside(b"plain"), true),
+        )];
+        calls.batch("a reference", ops);
+    });
+    calls.refused(|calls| {
+        let ops = vec![
+            insert(&[b"near"], b"kept out", Element::new_item(vec![2; 20])),
+            insert(&[b"near"], b"value", target(b"hello")),
+        ];
+        calls.partial("a target in a partial batch", ops, None, |_| Ok(Vec::new()));
+    });
+    calls.refused(|calls| calls.get(&[b"near"], b"kept out"));
+    calls.get(&[], b"near");
     db.flush().expect("a flush");
     log
 }
 
 #[test]
-fn exploring_another_element_over_a_tree() {
+fn backward_references_in_batches_are_refused_alike_on_grove_v1_to_v3() {
+    for version in &GROVE_VERSIONS[..3] {
+        on_both_engines!(family_refused, version);
+    }
+}
+
+fn backward_references_in_batches_on(version: &'static GroveVersion) {
+    let log = on_both_engines!(bidirectional_references, version);
+    // The grove was verified after each stage of the history, references
+    // and backward references with it. One issue was found, after the
+    // fourth: the plain reference to a target, which no batch writes
+    // again when its target is.
+    let verified = log.answers.iter().filter(|(call, ..)| call == "verify");
+    let verified: Vec<&str> = verified.map(|(.., issues)| issues.as_str()).collect();
+    let stale = r#"Ok(["at/near/to a target"])"#;
+    assert_eq!(
+        verified,
+        ["Ok([])", "Ok([])", "Ok([])", stale, "Ok([])", "Ok([])", "Ok([])"]
+    );
+}
+
+#[test]
+fn backward_references_in_batches_on_grove_v4() {
+    backward_references_in_batches_on(&GROVE_VERSIONS[3]);
+}
+
+#[test]
+fn backward_references_in_batches_on_grove_v5() {
+    backward_references_in_batches_on(&GROVE_VERSIONS[4]);
+}
+
+/// How many trees deep the grove of `verified_deep` is, one inside the
+/// other, and the stack its verification is given.
+const DEEP: usize = 64;
+const STACK_OF_THE_VERIFICATION: usize = 1024 * 1024;
+
+/// A grove [`DEEP`] trees deep with an item in the innermost and one in
+/// every eighth, made by a thread with a stack to spare. A second thread
+/// with a stack of [`STACK_OF_THE_VERIFICATION`] bytes then opens the
+/// database and verifies the grove. Gives how many issues it found.
+fn verified_deep<E: Engine>(dir: &Path, version: &'static GroveVersion) -> usize {
+    let on_a_stack_of = |bytes: usize, run: &(dyn Fn() -> usize + Sync)| {
+        std::thread::scope(|scope| {
+            let thread = std::thread::Builder::new().stack_size(bytes);
+            let thread = thread.spawn_scoped(scope, run).expect("a thread");
+            thread.join().expect("the thread ends")
+        })
+    };
+    let made = on_a_stack_of(64 * 1024 * 1024, &|| {
+        let db = open::<E>(dir);
+        let mut at: Vec<Vec<u8>> = Vec::new();
+        for level in 0..DEEP {
+            let key = format!("level {level}").into_bytes();
+            let inserted = db.insert(
+                segments(&at).as_slice(),
+                &key,
+                Element::empty_tree(),
+                None,
+                None,
+                version,
+            );
+            inserted.unwrap().expect("a tree");
+            at.push(key);
+            if level % 8 == 7 {
+                let item = Element::new_item(vec![level as u8; 30]);
+                let inserted =
+                    db.insert(segments(&at).as_slice(), b"item", item, None, None, version);
+                inserted.unwrap().expect("an item");
+            }
+        }
+        db.flush().expect("a flush");
+        at.len()
+    });
+    assert_eq!(made, DEEP);
+    on_a_stack_of(STACK_OF_THE_VERIFICATION, &|| {
+        let db = open::<E>(dir);
+        let issues = db.verify_grovedb(None, true, true, version);
+        issues.expect("the verification ends").len()
+    })
+}
+
+/// `verify_grovedb` calls itself once for each level of the grove. What
+/// one level keeps on the stack is small: the walk of a Merk's elements,
+/// whose frame is large, has returned before the Merk of a tree in it is
+/// walked. A grove [`DEEP`] trees deep is verified on a stack half
+/// the size of a test thread's.
+#[test]
+fn the_verification_of_a_deep_grove_keeps_little_on_the_stack_for_each_level() {
     for version in [&GROVE_VERSIONS[0], &GROVE_VERSIONS[4]] {
         let dir = tempfile::tempdir().expect("a directory");
-        let lignin = over_a_tree::<LigninEngine>(dir.path(), version);
-        let other = tempfile::tempdir().expect("a directory");
-        let rocksdb = over_a_tree::<crate::RocksDbEngine>(other.path(), version);
-        for (call, (lignin, rocksdb)) in lignin.answers.iter().zip(&rocksdb.answers).enumerate() {
-            let same = if lignin == rocksdb { "same  " } else { "DIFFER" };
-            eprintln!("{same} {call} {} | L {:?} {} | R {:?} {}", lignin.0, lignin.1, lignin.2, rocksdb.1, rocksdb.2);
+        assert_eq!(verified_deep::<LigninEngine>(dir.path(), version), 0);
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            assert_eq!(
+                verified_deep::<crate::RocksDbEngine>(dir.path(), version),
+                0
+            );
         }
-        let checked = std::panic::catch_unwind(|| check(dir.path(), version));
-        eprintln!("checker on grove version {}: {}", version.protocol_version, checked.is_ok());
     }
 }

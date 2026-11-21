@@ -59,11 +59,12 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
             b"flagged",
             Element::new_item_with_flags(vec![3; 20], flags.clone()),
         ),
+        insert(&[b"plain"], b"stays", Element::new_item(vec![9; 9])),
         insert(&[b"plain"], b"to it", reference(&[b"plain", b"item"])),
         insert(
             &[b"plain"],
             b"beside",
-            Element::new_reference(ReferencePathType::SiblingReference(b"long item".to_vec())),
+            Element::new_reference(ReferencePathType::SiblingReference(b"stays".to_vec())),
         ),
         insert(&[b"plain"], b"never", Element::empty_tree()),
         insert(&[b"plain"], b"never sums", Element::empty_sum_tree()),
@@ -76,11 +77,31 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
 
     // An item to a key of the same length, of a shorter one and of a
     // longer one, and a number in a tree that sums.
-    moving(&mut calls, "an item", vec![rename(&[b"plain"], b"item", b"meti")]);
-    moving(&mut calls, "to a shorter key", vec![rename(&[b"plain"], b"long item", b"l")]);
-    moving(&mut calls, "to a longer key", vec![rename(&[b"plain"], b"l", b"a much longer key")]);
-    moving(&mut calls, "a number", vec![rename(&[b"sums"], b"five", b"evif")]);
-    moving(&mut calls, "in a tree that counts", vec![rename(&[b"counts"], b"one", b"eno")]);
+    moving(
+        &mut calls,
+        "an item",
+        vec![rename(&[b"plain"], b"item", b"meti")],
+    );
+    moving(
+        &mut calls,
+        "to a shorter key",
+        vec![rename(&[b"plain"], b"long item", b"l")],
+    );
+    moving(
+        &mut calls,
+        "to a longer key",
+        vec![rename(&[b"plain"], b"l", b"a much longer key")],
+    );
+    moving(
+        &mut calls,
+        "a number",
+        vec![rename(&[b"sums"], b"five", b"evif")],
+    );
+    moving(
+        &mut calls,
+        "in a tree that counts",
+        vec![rename(&[b"counts"], b"one", b"eno")],
+    );
     calls.get(&[], b"sums");
     calls.get(&[], b"counts");
     for key in [b"meti".as_slice(), b"a much longer key"] {
@@ -92,29 +113,62 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
 
     // An element with flags goes to a key of the same length and to no
     // other.
-    moving(&mut calls, "with flags", vec![rename(&[b"plain"], b"flagged", b"deggalf")]);
+    moving(
+        &mut calls,
+        "with flags",
+        vec![rename(&[b"plain"], b"flagged", b"deggalf")],
+    );
     calls.refused(|calls| {
         let from: &[u8] = if takes { b"deggalf" } else { b"flagged" };
-        calls.batch("with flags, a longer key", vec![rename(&[b"plain"], from, b"longer than it")]);
+        calls.batch(
+            "with flags, a longer key",
+            vec![rename(&[b"plain"], from, b"longer than it")],
+        );
     });
 
     // References: one that is moved, and one whose target is.
-    moving(&mut calls, "a reference", vec![rename(&[b"plain"], b"beside", b"edeisb")]);
+    moving(
+        &mut calls,
+        "a reference",
+        vec![rename(&[b"plain"], b"beside", b"edeisb")],
+    );
     calls.either(|calls| calls.get(&[b"plain"], b"edeisb"));
     calls.either(|calls| calls.get(&[b"plain"], b"to it"));
 
     // A tree nothing was written into, which is then written under its
     // new key, and one that is moved twice.
-    moving(&mut calls, "an empty tree", vec![rename(&[b"plain"], b"never", b"moved")]);
+    moving(
+        &mut calls,
+        "an empty tree",
+        vec![rename(&[b"plain"], b"never", b"moved")],
+    );
     let under: &[u8] = if takes { b"moved" } else { b"never" };
-    calls.batch("written after it", vec![insert(&[b"plain", under], b"first", Element::new_item(vec![6; 6]))]);
+    calls.batch(
+        "written after it",
+        vec![insert(
+            &[b"plain", under],
+            b"first",
+            Element::new_item(vec![6; 6]),
+        )],
+    );
     calls.get(&[b"plain"], under);
-    moving(&mut calls, "an empty sum tree", vec![rename(&[b"plain"], b"never sums", b"once")]);
-    moving(&mut calls, "and again", vec![rename(&[b"plain"], b"once", b"twice")]);
+    moving(
+        &mut calls,
+        "an empty sum tree",
+        vec![rename(&[b"plain"], b"never sums", b"once")],
+    );
+    moving(
+        &mut calls,
+        "and again",
+        vec![rename(&[b"plain"], b"once", b"twice")],
+    );
 
     // Two elements that change places, three that move round, and an
     // element with a tree nothing was written into.
-    let ops = vec![rename(&[b"sums"], b"evif", b"nine"), rename(&[b"sums"], b"nine", b"evif")];
+    let ops = vec![
+        rename(&[b"sums"], b"evif", b"nine"),
+        rename(&[b"sums"], b"nine", b"evif"),
+    ];
     match takes {
         true => calls.batch("a swap", ops),
         false => calls.refused(|calls| calls.batch("a swap", ops)),
@@ -134,13 +188,22 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
 
     // What a batch with a move is refused for.
     calls.refused(|calls| {
-        calls.batch("nothing to move", vec![rename(&[b"plain"], b"nothing", b"anything")]);
+        calls.batch(
+            "nothing to move",
+            vec![rename(&[b"plain"], b"nothing", b"anything")],
+        );
     });
     calls.refused(|calls| {
-        calls.batch("onto an element", vec![rename(&[b"counts"], b"three", b"two")]);
+        calls.batch(
+            "onto an element",
+            vec![rename(&[b"counts"], b"three", b"two")],
+        );
     });
     calls.refused(|calls| {
-        calls.batch("to its own key", vec![rename(&[b"counts"], b"three", b"three")]);
+        calls.batch(
+            "to its own key",
+            vec![rename(&[b"counts"], b"three", b"three")],
+        );
     });
     calls.refused(|calls| {
         let ops = vec![
@@ -157,7 +220,10 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
         calls.batch("with a write under the moved key", ops);
     });
     calls.refused(|calls| {
-        let ops = vec![rename(&[b"counts"], b"three", b"four"), delete(&[], b"counts")];
+        let ops = vec![
+            rename(&[b"counts"], b"three", b"four"),
+            delete(&[], b"counts"),
+        ];
         calls.batch("in a tree the batch deletes", ops);
     });
     calls.refused(|calls| {
@@ -173,15 +239,34 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
     let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
     // Inside a write transaction: an element is made and moved, a
     // savepoint is rolled back over a move, and the move is made again.
-    calls.batch("made in a transaction", vec![insert(&[b"plain"], b"fresh", Element::new_item(vec![8; 80]))]);
-    moving(&mut calls, "moved in it", vec![rename(&[b"plain"], b"fresh", b"hserf")]);
+    calls.batch(
+        "made in a transaction",
+        vec![insert(
+            &[b"plain"],
+            b"fresh",
+            Element::new_item(vec![8; 80]),
+        )],
+    );
+    moving(
+        &mut calls,
+        "moved in it",
+        vec![rename(&[b"plain"], b"fresh", b"hserf")],
+    );
     db.set_savepoint(&transaction).expect("a savepoint");
     let from: &[u8] = if takes { b"hserf" } else { b"fresh" };
-    moving(&mut calls, "to be undone", vec![rename(&[b"plain"], from, b"undone")]);
+    moving(
+        &mut calls,
+        "to be undone",
+        vec![rename(&[b"plain"], from, b"undone")],
+    );
     db.rollback_to_savepoint(&transaction).expect("a rollback");
     calls.root();
     calls.get(&[b"plain"], from);
-    moving(&mut calls, "in its place", vec![rename(&[b"plain"], from, b"placed")]);
+    moving(
+        &mut calls,
+        "in its place",
+        vec![rename(&[b"plain"], from, b"placed")],
+    );
     drop(calls);
     let committed = db.commit_transaction(transaction);
     log.answer("commit".to_owned(), committed);
@@ -225,7 +310,7 @@ fn elements_that_keep_no_merk_are_moved_on_grove_v5() {
 /// carry: items, a number, a tree with a tree in it, a tree nothing was
 /// written into, a tree that was emptied, and references that stay inside
 /// it.
-fn filled(at: &[&[u8]], key: &[u8], kind: usize, made: usize) -> Vec<Op> {
+pub(super) fn filled(at: &[&[u8]], key: &[u8], kind: usize, made: usize) -> Vec<Op> {
     let (outer, inner) = (&KINDS[kind], &KINDS[(kind + 1) % made]);
     let own = [at, &[key]].concat();
     let nested = [own.as_slice(), &[b"nested"]].concat();
@@ -238,7 +323,11 @@ fn filled(at: &[&[u8]], key: &[u8], kind: usize, made: usize) -> Vec<Op> {
         insert(&own, b"nested", (inner.make)()),
         insert(&own, b"never", (inner.make)()),
         insert(&own, b"emptied", Element::empty_tree()),
-        insert(&[own.as_slice(), &[b"emptied"]].concat(), b"gone", Element::new_item(vec![1; 9])),
+        insert(
+            &[own.as_slice(), &[b"emptied"]].concat(),
+            b"gone",
+            Element::new_item(vec![1; 9]),
+        ),
         insert(&nested, b"a", number(inner.sums, 3)),
         insert(&nested, b"b", Element::new_item(vec![7; 70])),
         insert(&nested, b"deeper", Element::empty_tree()),
@@ -263,14 +352,21 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     for kind in 0..made {
         let parent = format!("parent {kind:02}").into_bytes();
         let parent = parent.as_slice();
-        let mut ops = vec![insert(&[], parent, (KINDS[(kind + made - 1) % made].make)())];
+        let mut ops = vec![insert(
+            &[],
+            parent,
+            (KINDS[(kind + made - 1) % made].make)(),
+        )];
         ops.extend(filled(&[parent], b"tree", kind, made));
         ops.extend(filled(&[parent], b"other", (kind + 2) % made, made));
         calls.batch("made", ops);
-        calls.batch("emptied", vec![
-            delete(&[parent, b"tree", b"emptied"], b"gone"),
-            delete(&[parent, b"other", b"emptied"], b"gone"),
-        ]);
+        calls.batch(
+            "emptied",
+            vec![
+                delete(&[parent, b"tree", b"emptied"], b"gone"),
+                delete(&[parent, b"other", b"emptied"], b"gone"),
+            ],
+        );
     }
     for kind in 0..made {
         let parent = format!("parent {kind:02}").into_bytes();
@@ -288,24 +384,54 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         // and in the two trees that hold nothing.
         let ops = vec![
             insert(&[parent, b"eert"], b"item", Element::new_item(vec![5; 55])),
-            insert(&[parent, b"eert", b"nested", b"deeper"], b"more", Element::new_item(vec![6; 6])),
-            insert(&[parent, b"eert", b"never"], b"first", number(KINDS[(kind + 1) % made].sums, 1)),
-            insert(&[parent, b"eert", b"emptied"], b"again", Element::new_item(vec![2; 2])),
+            insert(
+                &[parent, b"eert", b"nested", b"deeper"],
+                b"more",
+                Element::new_item(vec![6; 6]),
+            ),
+            insert(
+                &[parent, b"eert", b"never"],
+                b"first",
+                number(KINDS[(kind + 1) % made].sums, 1),
+            ),
+            insert(
+                &[parent, b"eert", b"emptied"],
+                b"again",
+                Element::new_item(vec![2; 2]),
+            ),
             delete(&[parent, b"eert", b"nested"], b"a"),
         ];
         calls.batch("written under its new key", ops);
         // To a longer key and to a shorter one, a swap with the other
         // tree, whose nested trees have the same keys, and a chain.
-        calls.batch("to a longer key", vec![rename(&[parent], b"eert", b"a longer key")]);
-        calls.batch("to a shorter key", vec![rename(&[parent], b"a longer key", b"t")]);
-        calls.batch("a swap", vec![rename(&[parent], b"t", b"other"), rename(&[parent], b"other", b"t")]);
+        calls.batch(
+            "to a longer key",
+            vec![rename(&[parent], b"eert", b"a longer key")],
+        );
+        calls.batch(
+            "to a shorter key",
+            vec![rename(&[parent], b"a longer key", b"t")],
+        );
+        calls.batch(
+            "a swap",
+            vec![
+                rename(&[parent], b"t", b"other"),
+                rename(&[parent], b"other", b"t"),
+            ],
+        );
         calls.get(&[parent, b"other", b"nested", b"deeper"], b"more");
         calls.refused(|calls| calls.get(&[parent, b"t", b"nested", b"deeper"], b"more"));
-        let ops = vec![rename(&[parent], b"t", b"u"), rename(&[parent], b"other", b"t")];
+        let ops = vec![
+            rename(&[parent], b"t", b"u"),
+            rename(&[parent], b"other", b"t"),
+        ];
         calls.batch("a chain", ops);
         calls.get(&[], parent);
         // A tree in the moved tree is moved inside it.
-        calls.batch("a tree in it", vec![rename(&[parent, b"t"], b"nested", b"detsen")]);
+        calls.batch(
+            "a tree in it",
+            vec![rename(&[parent, b"t"], b"nested", b"detsen")],
+        );
         calls.get(&[parent, b"t", b"detsen", b"deeper"], b"more");
         // A tree is inserted at a key a tree left, and written.
         let ops = vec![
@@ -331,10 +457,17 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     // key.
     let ops = vec![
         insert(&[parent, b"t"], b"before", Element::new_item(vec![1; 11])),
-        insert(&[parent, b"t", b"never"], b"second", number(KINDS[1 % made].sums, 2)),
+        insert(
+            &[parent, b"t", b"never"],
+            b"second",
+            number(KINDS[1 % made].sums, 2),
+        ),
     ];
     calls.batch("written before the move", ops);
-    calls.batch("moved in the transaction", vec![rename(&[parent], b"t", b"in")]);
+    calls.batch(
+        "moved in the transaction",
+        vec![rename(&[parent], b"t", b"in")],
+    );
     calls.get(&[parent, b"in"], b"before");
     calls.get(&[parent, b"in", b"never"], b"second");
     calls.refused(|calls| calls.get(&[parent, b"t"], b"before"));
@@ -342,7 +475,11 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let ops = vec![
         insert(&[parent, b"in"], b"after", Element::new_item(vec![3; 33])),
         delete(&[parent, b"in"], b"before"),
-        insert(&[parent, b"in", b"detsen", b"deeper"], b"third", Element::new_item(vec![4; 4])),
+        insert(
+            &[parent, b"in", b"detsen", b"deeper"],
+            b"third",
+            Element::new_item(vec![4; 4]),
+        ),
     ];
     calls.batch("written after the move", ops);
     calls.batch("moved again", vec![rename(&[parent], b"in", b"on")]);
@@ -353,7 +490,10 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     calls.root();
     calls.get(&[parent, b"on"], b"after");
     calls.refused(|calls| calls.get(&[parent, b"off"], b"after"));
-    calls.batch("back to the first key", vec![rename(&[parent], b"on", b"t")]);
+    calls.batch(
+        "back to the first key",
+        vec![rename(&[parent], b"on", b"t")],
+    );
     drop(calls);
     let committed = db.commit_transaction(transaction);
     log.answer("commit".to_owned(), committed);

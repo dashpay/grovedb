@@ -1061,17 +1061,30 @@ mod walked_on_both_engines {
                 let key = [b'k', n];
                 let item = Element::new_item(vec![n; 7 + 41 * usize::from(n)]);
                 ops.push(insert(&[TOP, tree], &key, item));
-                ops.push(insert(&[TOP, tree, b"n"], &key, Element::new_item(vec![n; 9])));
+                ops.push(insert(
+                    &[TOP, tree, b"n"],
+                    &key,
+                    Element::new_item(vec![n; 9]),
+                ));
             }
             ops.push(insert(&[TOP, tree], b"n", Element::empty_tree()));
             ops.push(insert(&[TOP, tree], b"never", Element::empty_tree()));
             ops.push(insert(&[TOP, tree], b"sums", Element::empty_sum_tree()));
-            ops.push(insert(&[TOP, tree, b"sums"], b"one", Element::new_sum_item(1)));
-            ops.push(insert(&[TOP, tree, b"n"], b"deeper", Element::empty_count_tree()));
+            ops.push(insert(
+                &[TOP, tree, b"sums"],
+                b"one",
+                Element::new_sum_item(1),
+            ));
+            ops.push(insert(
+                &[TOP, tree, b"n"],
+                b"deeper",
+                Element::empty_count_tree(),
+            ));
             let deep = Element::new_item(vec![first; 300]);
             ops.push(insert(&[TOP, tree, b"n", b"deeper"], b"deep", deep));
             let target = path(&[TOP, tree, b"n", &[b'k', first]]);
-            let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(target));
+            let reference =
+                Element::new_reference(ReferencePathType::AbsolutePathReference(target));
             ops.push(insert(&[TOP, tree], b"reference", reference));
         }
         (db.apply_batch(ops, None, None, version).unwrap()).expect("a grove");
