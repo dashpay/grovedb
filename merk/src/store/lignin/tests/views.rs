@@ -1036,3 +1036,131 @@ fn settled_batches_are_applied_together_or_not_at_all() {
     facade.commit(&transaction);
     facade.sound();
 }
+
+/// The keys a cursor shows from the first node to the last, each with a
+/// record under it.
+fn keys_under(cursor: &mut crate::store::lignin::LigninCursor<'_>) -> Vec<Vec<u8>> {
+    let mut keys = Vec::new();
+    cursor.seek_to_first().unwrap();
+    while cursor.valid().unwrap() {
+        keys.push(cursor.key().unwrap().expect("a key").to_vec());
+        assert!(cursor.value().unwrap().is_some(), "a record under the key");
+        cursor.next().unwrap();
+    }
+    cursor.status().expect("the walk came to its end");
+    keys
+}
+
+const BESIDE: LigninSubtree = LigninSubtree::alone([5; 32]);
+
+/// Writes `batch` into the Merk of `subtree` through a deferred handle on
+/// `view`, and applies the batch it staged.
+fn write_through<'v>(
+    view: LigninView<'v>,
+    subtree: &LigninSubtree,
+    batch: &[(Vec<u8>, Op)],
+    enter: bool,
+) {
+    let staged = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(view, subtree.clone(), Some(&staged));
+    if enter {
+        handle.enter(TreeType::NormalTree).expect("an enter");
+    }
+    let mut merk = open(handle, TreeType::NormalTree);
+    apply(&mut merk, batch);
+    drop(merk);
+    staged.apply(view).unwrap().expect("the batch is applied");
+}
+
+/// A cursor of a write transaction is pointed at another subtree
+/// (`LigninCursor::retarget`), on a handle of the transaction and on a
+/// handle of a writer: it shows that subtree as the committed state had it
+/// when the cursor was opened, with the transaction's own writes, and
+/// stands on no node until it is sought.
+fn pointed_elsewhere<'v>(facade: &Facade, view: LigninView<'v>, round: u64) {
+    let keys = |range: std::ops::Range<u64>| -> Vec<Vec<u8>> { range.map(plain).collect() };
+    let at_open = (keys(1..20 + round), keys(100..130 + round));
+    let handle = LigninNodeStore::read_only(view, ROOT);
+    let mut cursor = NodeStore::cursor(&handle);
+    assert_eq!(keys_under(&mut cursor), at_open.0);
+
+    // A commit outside the transaction writes both Merks.
+    let outside = facade.db.begin();
+    write_through(
+        (&outside).into(),
+        &ROOT,
+        &puts(20 + round..21 + round, 9),
+        false,
+    );
+    write_through(
+        (&outside).into(),
+        &BESIDE,
+        &puts(130 + round..131 + round, 9),
+        false,
+    );
+    facade.commit(&outside);
+
+    // Pointed at the other Merk, the cursor stands on no node, and a step
+    // goes nowhere. Sought, it shows the Merk of the state it was opened
+    // on. A cursor that is opened now shows the commit.
+    cursor.seek(plain(5)).unwrap();
+    let mut cursor = cursor.retarget(&BESIDE.prefix);
+    assert!(!cursor.valid().unwrap());
+    assert_eq!(cursor.key().unwrap(), None);
+    assert_eq!(cursor.value().unwrap(), None);
+    cursor.next().unwrap();
+    cursor.prev().unwrap();
+    assert!(!cursor.valid().unwrap());
+    cursor.status().expect("no node, and no error");
+    assert_eq!(keys_under(&mut cursor), at_open.1);
+    cursor.seek_for_prev(plain(104)).unwrap();
+    cursor.prev().unwrap();
+    assert_eq!(cursor.key().unwrap(), Some(plain(103).as_slice()));
+    let later = LigninNodeStore::read_only(view, BESIDE);
+    assert_eq!(
+        keys_under(&mut NodeStore::cursor(&later)),
+        keys(100..131 + round)
+    );
+
+    // At a subtree that is not entered it shows nothing, and back at the
+    // first Merk what it showed before.
+    let mut cursor = cursor.retarget(&[9; 32]);
+    assert_eq!(keys_under(&mut cursor), Vec::<Vec<u8>>::new());
+    let mut cursor = cursor.retarget(&ROOT.prefix);
+    assert_eq!(keys_under(&mut cursor), at_open.0);
+
+    // The transaction writes the other Merk: a node the cursor's state
+    // does not have, and the removal of one it has. Pointed there, the
+    // cursor shows both, and nothing of it in the first Merk.
+    let mut own = puts(50..51, 3);
+    own.push((plain(110), Op::Delete));
+    write_through(view, &BESIDE, &own, false);
+    let mut cursor = cursor.retarget(&BESIDE.prefix);
+    let mut expected = keys(50..51);
+    expected.extend(at_open.1.iter().filter(|key| **key != plain(110)).cloned());
+    assert_eq!(keys_under(&mut cursor), expected);
+    let mut cursor = cursor.retarget(&ROOT.prefix);
+    assert_eq!(keys_under(&mut cursor), at_open.0);
+}
+
+#[test]
+fn a_cursor_of_a_write_transaction_is_pointed_at_another_subtree_in_the_state_it_was_opened_on() {
+    let facade = Facade::new();
+    let setup = facade.db.begin();
+    write_through((&setup).into(), &ROOT, &puts(1..20, 1), true);
+    write_through((&setup).into(), &BESIDE, &puts(100..130, 1), true);
+    facade.commit(&setup);
+
+    // A handle of the transaction, whose cursor is the transaction's.
+    let transaction = facade.db.begin();
+    pointed_elsewhere(&facade, (&transaction).into(), 0);
+    drop(transaction);
+
+    // A handle of a writer, whose cursor is parked between two calls.
+    let transaction = facade.db.begin();
+    let writer = LigninWriter::new(transaction.scope().expect("a scope"));
+    pointed_elsewhere(&facade, (&writer).into(), 1);
+    writer.into_scope().rollback();
+    drop(transaction);
+    facade.sound();
+}

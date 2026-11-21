@@ -1059,6 +1059,10 @@ impl Walk for FailingWalk<'_> {
             false => Err(Error::CorruptedData("the node was not read".to_owned())),
         }
     }
+
+    fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
+        self.under.retarget(subtree)
+    }
 }
 
 impl Access for Failing<'_> {

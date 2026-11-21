@@ -84,10 +84,14 @@ impl<'db> LigninCursor<'db> {
 
     /// Points the cursor at the Merk of the subtree `prefix`, in the
     /// committed state it has read from since it was opened
-    /// (`engine.md`, "One state across subtrees"). It stands on no node
-    /// then. A cursor that cannot be pointed elsewhere, as the cursor of a
-    /// write transaction, stands on no node either, and
-    /// [`NodeCursor::status`] says why.
+    /// (`engine.md`, "One state across subtrees"): the version of its
+    /// snapshot, or for a cursor of a write transaction the version it
+    /// pinned when it was opened, with the transaction's writes to
+    /// `prefix` as they are at each call. It stands on no node then, and
+    /// is sought before it is read or stepped.
+    ///
+    /// A cursor that could not be pointed there stands on no node from
+    /// then on, whatever it is asked, and [`NodeCursor::status`] says why.
     pub fn retarget(mut self, prefix: &Prefix) -> Self {
         self.key.clear();
         self.on_key = false;

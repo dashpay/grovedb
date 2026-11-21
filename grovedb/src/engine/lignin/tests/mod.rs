@@ -989,7 +989,7 @@ fn a_write_scope_is_one_writers_part_of_its_transaction() {
 }
 
 #[test]
-fn a_cursor_of_a_snapshot_is_pointed_at_another_subtree_in_the_same_state() {
+fn a_cursor_is_pointed_at_another_subtree_in_the_state_it_was_opened_on() {
     let grove = Grove::<LigninEngine>::new();
     grove.insert(A, b"a1", None);
     grove.insert(B, b"b1", None);
@@ -1028,17 +1028,21 @@ fn a_cursor_of_a_snapshot_is_pointed_at_another_subtree_in_the_same_state() {
         [b"b1".to_vec(), b"b2".to_vec()]
     );
 
-    // A cursor of a write transaction is not pointed elsewhere: it shows
-    // nothing, and says why.
+    // A cursor of a write transaction is pointed elsewhere too. It shows
+    // the other subtree as the committed state had it when the cursor was
+    // opened, with what its transaction has written there.
     let tx = engine.start_transaction();
     let handle = engine.subtree_by_prefix(a, None, &tx).unwrap();
     let cursor = NodeStore::cursor(&handle);
+    grove.insert(B, b"b3", None);
+    grove.insert(B, b"b0", Some(&tx));
     let mut cursor = LigninEngine::retarget_cursor(cursor, b);
-    let refused = keys(&mut cursor).expect_err("a cursor that was not retargeted");
-    assert!(
-        refused.to_string().contains("write transaction"),
-        "{refused}"
+    assert_eq!(
+        keys(&mut cursor).expect("a walk"),
+        [b"b0".to_vec(), b"b1".to_vec(), b"b2".to_vec()]
     );
+    let mut cursor = LigninEngine::retarget_cursor(cursor, a);
+    assert_eq!(keys(&mut cursor).expect("a walk"), [b"a1".to_vec()]);
 }
 
 #[test]
