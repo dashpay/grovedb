@@ -16,9 +16,12 @@
 //!   compared, with what it was given.
 //! - `over_a_tree`: another element written over a tree that holds
 //!   elements (D-133). LigninDB drops the Merk of the tree where RocksDB
-//!   leaves its records under the prefix, and every answer and cost is
-//!   the same but one, which `where_a_tree_was` holds for each engine:
-//!   whether a tree that stands where the old one stood is empty.
+//!   leaves its records under the prefix. The writes, their costs, the
+//!   root hashes and the proofs are the same. `where_a_tree_was` holds
+//!   the reads that are not, which `GROVE-03-F1` is to make RocksDB's
+//!   (D-227).
+//! - `wrong_hashes`: a grove with wrong hashes planted at several depths,
+//!   and what `verify_grovedb` reports of it on each engine.
 //! - `bidirectional`: batches that write elements which take backward
 //!   references and the references to them, on the grove versions whose
 //!   batches maintain them: chains, a target written again, a reference
@@ -33,6 +36,7 @@ use std::{cell::RefCell, path::Path};
 
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, OperationCost};
 use grovedb_epoch_based_storage_flags::StorageFlags;
+use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
@@ -1225,11 +1229,12 @@ fn another_element_over_a_tree_on_grove_v5() {
 }
 
 /// What the two engines answer differently once a tree was written over
-/// (D-133). On RocksDB the records of the old tree are still under its
-/// prefix, and so are those of the trees it held under theirs: a tree
+/// (D-133, D-227). On RocksDB the records of the old tree are still under
+/// its prefix, and so are those of the trees it held under theirs: a tree
 /// made at that path stands on them, and a path that leads through an
 /// element of the old tree still finds it by its key. On LigninDB the old
-/// tree's Merk left with its element, and the Merks below with it.
+/// tree's Merk left with its element, and the Merks below with it, until
+/// `GROVE-03-F1` keeps their nodes as records that no tree links.
 ///
 /// Gives the log of the calls that both engines answer alike, and apart
 /// from it each of the other reads with what it gave.
@@ -1332,68 +1337,80 @@ fn where_a_tree_was<E: Engine>(
 }
 
 /// The reads of `where_a_tree_was` that the engines answer differently,
-/// each with what it gives on LigninDB and on RocksDB: whether a tree is
-/// empty, how many elements a query finds in a range, whether a key is
-/// read, and whether the delete of a tree is made.
-const READ_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
+/// each with the answer that is required, which is RocksDB's, and with
+/// the one LigninDB gives until `GROVE-03-F1` closes the difference
+/// (D-227): whether a tree is empty, how many elements a query finds in a
+/// range, whether a key is read, and whether the delete of a tree is made.
+/// They are the acceptance list of that task: once the nodes of a tree
+/// that was written over are kept as records that no tree links, LigninDB
+/// gives the second column, and the third goes.
+const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
     // A tree nothing was written into, over a tree with elements.
-    ("empty/one", "Ok(true)", "Ok(false)"),
-    ("get/one/nested/b", "nothing", "found"),
-    ("get/one/nested/deeper/deep", "nothing", "found"),
+    ("empty/one", "Ok(false)", "Ok(true)"),
+    ("get/one/nested/b", "found", "nothing"),
+    ("get/one/nested/deeper/deep", "found", "nothing"),
     // An item over a tree: the trees that the old tree held.
-    ("get/two/nested/b", "nothing", "found"),
-    ("get/two/nested/deeper/deep", "nothing", "found"),
+    ("get/two/nested/b", "found", "nothing"),
+    ("get/two/nested/deeper/deep", "found", "nothing"),
     // A tree over that item with one tree in it.
-    ("all/two", "1", "7"),
+    ("all/two", "7", "1"),
     ("empty/two", "Ok(false)", "Ok(false)"),
-    ("empty/two/nested", "Ok(true)", "Ok(false)"),
-    ("get/two/nested/deeper/deep", "nothing", "found"),
+    ("empty/two/nested", "Ok(false)", "Ok(true)"),
+    ("get/two/nested/deeper/deep", "found", "nothing"),
     // A tree over a tree, with a tree in it and a tree in that.
     ("empty/three/nested", "Ok(false)", "Ok(false)"),
-    ("empty/three/nested/deeper", "Ok(true)", "Ok(false)"),
+    ("empty/three/nested/deeper", "Ok(false)", "Ok(true)"),
     // A tree over a tree, with three elements and two in a tree in it.
-    ("all/four", "3", "8"),
-    ("all/four/nested", "2", "4"),
-    ("get/four/long", "nothing", "found"),
-    ("get/four/number", "nothing", "found"),
-    ("get/four/inside", "nothing", "found"),
-    ("get/four/emptied", "nothing", "found"),
-    ("get/four/never", "nothing", "found"),
-    ("get/four/nested/a", "nothing", "found"),
-    ("get/four/nested/deeper/deep", "nothing", "found"),
-    // The tree nothing was written into is deleted.
-    ("delete/one", "made", "refused"),
+    ("all/four", "8", "3"),
+    ("all/four/nested", "4", "2"),
+    ("get/four/long", "found", "nothing"),
+    ("get/four/number", "found", "nothing"),
+    ("get/four/inside", "found", "nothing"),
+    ("get/four/emptied", "found", "nothing"),
+    ("get/four/never", "found", "nothing"),
+    ("get/four/nested/a", "found", "nothing"),
+    ("get/four/nested/deeper/deep", "found", "nothing"),
+    // The tree nothing was written into is deleted: a write.
+    ("delete/one", "refused", "made"),
 ];
 
+/// A known difference, and no property of the engine (D-227,
+/// `GROVE-03-F1`): where a tree was written over, RocksDB still reads the
+/// records of the old tree, and LigninDB, which dropped its Merk, does
+/// not. RocksDB's answers are the required ones and are held here on
+/// RocksDB. What LigninDB answers today is held beside them so that the
+/// difference is the one that is written down, neither more nor less:
+/// 19 reads with another answer, and 2 with the same answer at another
+/// cost. Every other call of the history answers and costs the same.
 #[test]
-fn what_is_read_where_a_tree_was_written_over_on_each_engine() {
-    let expected = |on_lignindb: bool| -> Vec<(String, String)> {
-        let reads = READ_WHERE_A_TREE_WAS.iter();
-        let gave = |&(read, lignindb, rocksdb): &(&str, &str, &str)| {
-            let gave = if on_lignindb { lignindb } else { rocksdb };
+fn lignindb_does_not_yet_read_what_rocksdb_reads_where_a_tree_was_written_over() {
+    let answers = |required: bool| -> Vec<(String, String)> {
+        let reads = READS_WHERE_A_TREE_WAS.iter();
+        let gave = |&(read, rocksdb, lignindb): &(&str, &str, &str)| {
+            let gave = if required { rocksdb } else { lignindb };
             (read.to_owned(), gave.to_owned())
         };
         reads.map(gave).collect()
     };
-    // The two that give the same answer are charged differently: RocksDB
-    // comes to a record of the old tree first.
-    let differ = READ_WHERE_A_TREE_WAS.iter().filter(|read| read.1 != read.2);
-    assert_eq!(differ.count(), READ_WHERE_A_TREE_WAS.len() - 2);
+    let differ = READS_WHERE_A_TREE_WAS
+        .iter()
+        .filter(|read| read.1 != read.2);
+    assert_eq!(differ.count(), READS_WHERE_A_TREE_WAS.len() - 2);
     for version in GROVE_VERSIONS.iter() {
         let dir = tempfile::tempdir().expect("a directory");
         let (log, read) = where_a_tree_was::<LigninEngine>(dir.path(), version);
         log.assert_refusals();
-        // Nothing of the old trees is left: each tree holds what was
-        // written into it since, and no path leads to what they held.
-        assert_eq!(read, expected(true));
+        // The known difference: nothing of the old trees is read.
+        assert_eq!(read, answers(false));
         check(dir.path(), version);
         #[cfg(feature = "rocksdb_storage")]
         {
             let dir = tempfile::tempdir().expect("a directory");
             let (on_rocksdb, read) = where_a_tree_was::<crate::RocksDbEngine>(dir.path(), version);
             assert_same(&log, &on_rocksdb);
-            // Each tree stands on the records of the one that was there.
-            assert_eq!(read, expected(false));
+            // The required answers: each tree stands on the records of
+            // the one that was there.
+            assert_eq!(read, answers(true));
         }
     }
 }
@@ -1898,6 +1915,136 @@ fn the_verification_of_a_deep_grove_keeps_little_on_the_stack_for_each_level() {
                 verified_deep::<crate::RocksDbEngine>(dir.path(), version),
                 0
             );
+        }
+    }
+}
+
+/// How many trees deep the grove of `wrong_hashes` is, the depths of the
+/// trees whose Merk is written behind the back of its element, and those
+/// of the references whose target is written again.
+const CHAIN: usize = 12;
+const PLANTED: [usize; 4] = [0, 3, 7, 11];
+const STALE: [usize; 2] = [2, 9];
+
+/// A grove with wrong hashes at several depths, and what `verify_grovedb`
+/// reports of it: each issue as its path and its three hashes, in the
+/// order of the paths.
+///
+/// The grove is a chain of [`CHAIN`] trees of three kinds in turn, one
+/// inside the other, each with an element `m`. At the depths of
+/// [`STALE`] a reference to `m` is written, and `m` again after it. At
+/// the depths of [`PLANTED`] an element is written into the Merk of the
+/// tree through the engine, and nothing is carried up: the element of
+/// that tree commits to the root hash its Merk had before. Its key is
+/// one that leaves the root of the Merk where it is, which the element
+/// names.
+///
+/// `damaged` is told the database before the hashes are planted: an
+/// engine that checks what it holds when it is closed is told there to
+/// leave this one out.
+fn wrong_hashes<E: Engine>(
+    dir: &Path,
+    version: &'static GroveVersion,
+    damaged: impl FnOnce(&GroveDb<E>),
+) -> Vec<String> {
+    let db = open::<E>(dir);
+    damaged(&db);
+    let kind = |level: usize| &KINDS[level % 3];
+    let mut at: Vec<Vec<u8>> = Vec::new();
+    let mut trees = Vec::new();
+    let put = |at: &[Vec<u8>], key: &[u8], element: Element| {
+        let inserted = db.insert(segments(at).as_slice(), key, element, None, None, version);
+        inserted.unwrap().expect("an element");
+    };
+    for level in 0..CHAIN {
+        put(&at, b"t", (kind(level).make)());
+        at.push(b"t".to_vec());
+        put(&at, b"m", number(kind(level).sums, level as i64));
+        trees.push(at.clone());
+    }
+    for level in STALE {
+        let sibling = ReferencePathType::SiblingReference(b"m".to_vec());
+        put(&trees[level], b"r", Element::new_reference(sibling));
+        put(
+            &trees[level],
+            b"m",
+            number(kind(level).sums, 100 + level as i64),
+        );
+    }
+    for level in PLANTED {
+        let transaction = db.start_transaction();
+        let batch = E::Batch::default();
+        {
+            let at = segments(&trees[level]);
+            let mut merk = db
+                .open_transactional_merk_at_path(
+                    at.as_slice().into(),
+                    &transaction,
+                    Some(&batch),
+                    version,
+                )
+                .unwrap()
+                .expect("the Merk of a tree");
+            let planted = number(kind(level).sums, 1000);
+            planted
+                .insert(&mut merk, b"a", None, version)
+                .unwrap()
+                .expect("an element in it");
+        }
+        (db.db.apply_batch(batch, &transaction).unwrap()).expect("the batch is applied");
+        db.commit_transaction(transaction)
+            .unwrap()
+            .expect("a commit");
+    }
+    let issues = db
+        .verify_grovedb(None, true, true, version)
+        .expect("the verification ends");
+    let mut issues: Vec<(String, String)> = (issues.iter())
+        .map(|(path, (root, expected, actual))| {
+            let hashes = [root, expected, actual].map(hex::encode).join(" ");
+            (named("at", &segments(path)), hashes)
+        })
+        .collect();
+    issues.sort();
+    let issues = issues.iter();
+    issues
+        .map(|(at, hashes)| format!("{at}: {hashes}"))
+        .collect()
+}
+
+/// `verify_grovedb` walks a grove with wrong hashes at several depths
+/// and reports each of them, and nothing else, with the same hashes on
+/// both engines. The digest that is printed is of every issue with its
+/// hashes: it is what the verification reported of this grove before its
+/// walk was split in two functions, too.
+#[test]
+fn the_verification_reports_the_wrong_hashes_of_a_grove_at_every_depth() {
+    let under = |depth: usize, key: &str| format!("at{}{key}", "/t".repeat(depth + 1));
+    let mut expected: Vec<String> = (PLANTED.iter().map(|depth| under(*depth, "")))
+        .chain(STALE.iter().map(|depth| under(*depth, "/r")))
+        .collect();
+    expected.sort();
+    for version in [&GROVE_VERSIONS[0], &GROVE_VERSIONS[4]] {
+        let dir = tempfile::tempdir().expect("a directory");
+        // A close of LigninDB in a debug build checks the hashes of every
+        // Merk in use, and would find the planted ones.
+        let unchecked = |db: &GroveDb<LigninEngine>| db.db.database().unchecked_at_close();
+        let issues = wrong_hashes(dir.path(), version, unchecked);
+        let at: Vec<&str> = (issues.iter())
+            .map(|issue| issue.split(": ").next().expect("a path"))
+            .collect();
+        assert_eq!(at, expected);
+        let digest = blake3::hash(issues.join("\n").as_bytes());
+        eprintln!(
+            "the issues of the grove with wrong hashes on grove version {}: {}",
+            version.protocol_version,
+            digest.to_hex()
+        );
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_rocksdb = wrong_hashes::<crate::RocksDbEngine>(dir.path(), version, |_| ());
+            assert_eq!(issues, on_rocksdb);
         }
     }
 }

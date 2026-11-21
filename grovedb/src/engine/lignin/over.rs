@@ -40,6 +40,10 @@
 //!
 //! What this does not do:
 //!
+//! - It keeps nothing of a dropped tree. RocksDB keeps the tree's
+//!   records, and a read that takes the records under a prefix as they
+//!   are still finds them there: that difference is `GROVE-03-F1`'s to
+//!   close (D-227; `engine.md`, "An element written over a tree").
 //! - It reads the element as the group states it and not the element
 //!   that was there. An element that is written again as the tree it was,
 //!   with a root key or through a handle that loaded nodes of its Merk,
