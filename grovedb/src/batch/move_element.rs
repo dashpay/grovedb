@@ -1025,3 +1025,124 @@ mod tests {
         );
     }
 }
+
+/// What a move is charged on the LigninDB engine, which does not copy a
+/// moved subtree, held against what the copy is charged on RocksDB.
+#[cfg(all(test, feature = "lignin_storage", feature = "rocksdb_storage"))]
+mod walked_on_both_engines {
+    use grovedb_costs::OperationCost;
+    use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
+
+    use super::MovedSubtree;
+    use crate::{
+        batch::QualifiedGroveDbOp,
+        engine::{Engine, WriteGroup},
+        reference_path::ReferencePathType,
+        Element, GroveDb, LigninEngine, RocksDbEngine,
+    };
+
+    const TOP: &[u8] = b"top";
+
+    fn path(segments: &[&[u8]]) -> Vec<Vec<u8>> {
+        segments.iter().map(|segment| segment.to_vec()).collect()
+    }
+
+    /// Two trees under `TOP`, `a` and `b`, whose keys meet: items of many
+    /// lengths, a reference, a sum tree with sum items, a tree nothing was
+    /// written into, and a tree `n` in each with a tree in it.
+    fn grove<E: Engine>(db: &GroveDb<E>, version: &GroveVersion) {
+        let insert = |at: &[&[u8]], key: &[u8], element: Element| {
+            QualifiedGroveDbOp::insert_or_replace_op(path(at), key.to_vec(), element)
+        };
+        let mut ops = vec![insert(&[], TOP, Element::empty_tree())];
+        for (tree, first) in [(b"a".as_slice(), 0u8), (b"b", 3)] {
+            ops.push(insert(&[TOP], tree, Element::empty_tree()));
+            for n in first..first + 6 {
+                let key = [b'k', n];
+                let item = Element::new_item(vec![n; 7 + 41 * usize::from(n)]);
+                ops.push(insert(&[TOP, tree], &key, item));
+                ops.push(insert(&[TOP, tree, b"n"], &key, Element::new_item(vec![n; 9])));
+            }
+            ops.push(insert(&[TOP, tree], b"n", Element::empty_tree()));
+            ops.push(insert(&[TOP, tree], b"never", Element::empty_tree()));
+            ops.push(insert(&[TOP, tree], b"sums", Element::empty_sum_tree()));
+            ops.push(insert(&[TOP, tree, b"sums"], b"one", Element::new_sum_item(1)));
+            ops.push(insert(&[TOP, tree, b"n"], b"deeper", Element::empty_count_tree()));
+            let deep = Element::new_item(vec![first; 300]);
+            ops.push(insert(&[TOP, tree, b"n", b"deeper"], b"deep", deep));
+            let target = path(&[TOP, tree, b"n", &[b'k', first]]);
+            let reference = Element::new_reference(ReferencePathType::AbsolutePathReference(target));
+            ops.push(insert(&[TOP, tree], b"reference", reference));
+        }
+        (db.apply_batch(ops, None, None, version).unwrap()).expect("a grove");
+    }
+
+    /// The costs of the storage step of each move of `moves`, staged in
+    /// one batch, and of settling that batch: what is charged at once, and
+    /// what is charged once the batch is applied.
+    fn costs<E: Engine>(moves: &[(&[u8], &[u8])], version: &GroveVersion) -> Vec<OperationCost> {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = GroveDb::<E>::open_with_engine(dir.path()).expect("a database");
+        grove(&db, version);
+        let transaction = db.start_transaction();
+        let batch = E::Batch::default();
+        let mut costs = Vec::new();
+        for &(from, to) in moves {
+            let element = db.get_raw([TOP].as_ref().into(), from, Some(&transaction), version);
+            let moved = MovedSubtree {
+                from: path(&[TOP, from]),
+                to: path(&[TOP, to]),
+                element: element.unwrap().expect("the tree that is moved"),
+            };
+            let walked = db.move_subtree_storage(&moved, &transaction, &batch, version);
+            costs.push(walked.cost.clone());
+            walked.unwrap().expect("a walk");
+        }
+        let mut group = E::WriteGroup::default();
+        let settled = db.engine().settle_batch(&mut group, batch);
+        costs.push(settled.cost.clone());
+        settled.unwrap().expect("a batch that is settled");
+        costs.push(group.pending_cost().clone());
+        costs
+    }
+
+    fn charged_alike(moves: &[(&[u8], &[u8])]) {
+        for version in &GROVE_VERSIONS[3..] {
+            let copied = costs::<RocksDbEngine>(moves, version);
+            let walked = costs::<LigninEngine>(moves, version);
+            assert_eq!(walked, copied, "grove version {}", version.protocol_version);
+            // The walk read records, and the batch is charged for them.
+            let (walk, pending) = (&copied[0], copied.last().expect("a cost"));
+            assert!(walk.seek_count > 20, "{walk:?}");
+            assert!(walk.storage_loaded_bytes > 3000, "{walk:?}");
+            assert!(pending.storage_cost.replaced_bytes > 3000, "{pending:?}");
+        }
+    }
+
+    #[test]
+    fn a_moved_tree_is_charged_what_its_copy_is() {
+        charged_alike(&[(b"a", b"c")]);
+    }
+
+    /// In a swap a record that one move leaves and the other lands on is
+    /// charged for the put alone, as a storage batch holds one write for
+    /// its key.
+    #[test]
+    fn a_swap_is_charged_what_its_copies_are() {
+        charged_alike(&[(b"a", b"b"), (b"b", b"a")]);
+        // The puts stand against the deletes of the keys that meet: the
+        // swap is charged fewer seeks than its two moves alone.
+        let version = &GROVE_VERSIONS[4];
+        let seeks = |moves: &[(&[u8], &[u8])]| {
+            let costs = costs::<LigninEngine>(moves, version);
+            costs[costs.len() - 2].seek_count
+        };
+        let apart = seeks(&[(b"a", b"c")]) + seeks(&[(b"b", b"d")]);
+        assert!(seeks(&[(b"a", b"b"), (b"b", b"a")]) < apart);
+    }
+
+    #[test]
+    fn a_chain_is_charged_what_its_copies_are() {
+        charged_alike(&[(b"a", b"b"), (b"b", b"c")]);
+    }
+}

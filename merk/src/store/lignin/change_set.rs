@@ -1,7 +1,7 @@
 //! The change set of a Merk on LigninDB, and the batch of one operation.
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{btree_map::Entry, BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     sync::{Mutex, MutexGuard, PoisonError},
 };
@@ -587,12 +587,22 @@ pub struct LigninBatch {
 }
 
 /// What a batch keeps beside the outcomes: the subtrees that a staged
-/// write is in, in any column, each as its handle named it.
+/// write is in, in any column, each as its handle named it, and what it
+/// was told of subtrees that are moved.
 #[derive(Default)]
 struct Marks {
     written: BTreeMap<Prefix, LigninSubtree>,
     /// The subtrees that two handles named different hosts for.
     two_hosts: BTreeSet<Prefix>,
+    /// The operation the batch is in, counted from its first.
+    generation: u64,
+    /// What the records of moved subtrees are charged, by the subtree and
+    /// the key of the data record each charge is for, with the operation
+    /// that staged it ([`LigninBatch::charge_landed`]).
+    moved: BTreeMap<(Prefix, Vec<u8>), (u64, Charge)>,
+    /// The subtrees that are moved, each with the prefix it goes to, in
+    /// the order they were said ([`LigninBatch::move_subtree`]).
+    moves: Vec<(Prefix, Prefix)>,
 }
 
 impl Marks {
@@ -620,11 +630,19 @@ impl Marks {
         }
     }
 
+    /// Takes in what `other` holds as a later operation, with whatever
+    /// follows later still.
     fn take_in(&mut self, other: Self) {
         self.two_hosts.extend(other.two_hosts);
         for named in other.written.into_values() {
             self.write(named);
         }
+        self.generation += 1;
+        for (record, (_, charge)) in other.moved {
+            self.moved.insert(record, (self.generation, charge));
+        }
+        self.generation += 1;
+        self.moves.extend(other.moves);
     }
 }
 
@@ -650,14 +668,79 @@ impl LigninBatch {
 
     /// Whether nothing is staged.
     pub fn is_empty(&self) -> bool {
-        self.staged.is_empty()
+        let marks = self.marks();
+        marks.moved.is_empty() && marks.moves.is_empty() && self.staged.is_empty()
     }
 
     /// Marks the boundary between two operations that share the batch:
     /// what is staged so far is the outcome of earlier operations, and a
     /// delete that follows takes the place of a put among them.
     pub fn next_operation(&self) {
+        let mut marks = self.marks();
+        marks.generation += 1;
         self.staged.next_operation();
+    }
+
+    /// Says that the subtree `from` goes to the prefix `to` with this
+    /// batch, with everything it holds: the move of a subtree that keeps
+    /// its nodes where they are (`tree-layout.md` D5). It is said of a
+    /// subtree that is entered, by the batch that writes the element which
+    /// hosts it afterwards, and of each subtree below it that goes with
+    /// it.
+    ///
+    /// The transaction has no such operation yet (`TXN-03-F4`): a batch
+    /// that says it is settled and charged, and refused where it is
+    /// applied ([`LigninSettled::apply`]).
+    pub fn move_subtree(&self, from: &Prefix, to: &Prefix) {
+        self.marks().moves.push((*from, *to));
+    }
+
+    /// Stages what a record of a moved subtree is charged where it lands:
+    /// a put of `record_len` bytes under `key` in the data keyspace of
+    /// `to`, with the writer's cost.
+    ///
+    /// It is a charge and no write: the record goes with its subtree
+    /// ([`Self::move_subtree`]), and on existing GroveVersions a move is
+    /// charged as the copy that it is on RocksDB (`cost-model.md`, section
+    /// 7.1). The charges of moved records are resolved by key as the
+    /// writes of a storage batch are: inside one operation this one stands
+    /// against a [`Self::charge_cleared`] of its key, and across a
+    /// boundary the later operation stands.
+    pub fn charge_landed(
+        &self,
+        to: &Prefix,
+        key: &[u8],
+        record_len: usize,
+        cost: KeyValueStorageCost,
+    ) {
+        let cost = MODEL.complete_new_key_cost(Some(cost), stored_key_len(key));
+        let charge = Charge::Put {
+            record_len,
+            children: None,
+            cost,
+        };
+        let mut marks = self.marks();
+        let at = marks.generation;
+        marks.moved.insert((*to, key.to_vec()), (at, charge));
+    }
+
+    /// Stages what a record of a moved subtree is charged where it leaves:
+    /// a delete of `key` in the data keyspace of `from`, with the writer's
+    /// cost. It is a charge and no write, as [`Self::charge_landed`] is,
+    /// and stands unless the same operation staged a charge for the key.
+    pub fn charge_cleared(&self, from: &Prefix, key: &[u8], cost: KeyValueStorageCost) {
+        let mut marks = self.marks();
+        let at = marks.generation;
+        let charge = (at, Charge::Delete(Some(cost)));
+        match marks.moved.entry((*from, key.to_vec())) {
+            Entry::Vacant(free) => {
+                free.insert(charge);
+            }
+            Entry::Occupied(mut held) if held.get().0 < at => {
+                held.insert(charge);
+            }
+            Entry::Occupied(_) => {}
+        }
     }
 
     /// Moves everything staged into a new batch and leaves this one empty,
@@ -798,12 +881,13 @@ impl LigninBatch {
         committed: impl Into<LigninView<'v>>,
     ) -> CostResult<LigninSettled, Error> {
         let LigninBatch { staged, marks } = self.take_pending();
-        let marks = marks.into_inner().unwrap_or_else(PoisonError::into_inner);
+        let mut marks = marks.into_inner().unwrap_or_else(PoisonError::into_inner);
+        let moved = std::mem::take(&mut marks.moved);
         let mut charge = MODEL.batch();
         let settled = (staged.resolve())
             .map_err(|error| fault(TxnError::Batch(error)))
             .and_then(|mut resolved| {
-                charge_outcomes(&mut resolved, committed.into().0, &mut charge)?;
+                charge_outcomes(&mut resolved, moved, committed.into().0, &mut charge)?;
                 Ok(resolved)
             });
         match settled {
@@ -841,6 +925,7 @@ impl LigninBatch {
 pub struct LigninSettled {
     resolved: Resolved<Charge>,
     written: BTreeMap<Prefix, LigninSubtree>,
+    moves: Vec<(Prefix, Prefix)>,
     pending: OperationCost,
     /// Whether two handles named different hosts for a subtree the batch
     /// holds a write for.
@@ -928,6 +1013,7 @@ impl LigninSettled {
         Self {
             resolved,
             written,
+            moves: marks.moves,
             pending,
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
@@ -975,7 +1061,13 @@ impl LigninSettled {
 
     /// Whether the batch writes nothing.
     pub fn is_empty(&self) -> bool {
-        self.resolved.is_empty()
+        self.resolved.is_empty() && self.moves.is_empty()
+    }
+
+    /// The subtrees the batch moves, each with the prefix it goes to, in
+    /// the order they were said ([`LigninBatch::move_subtree`]).
+    pub fn moves(&self) -> &[([u8; 32], [u8; 32])] {
+        &self.moves
     }
 
     /// The subtrees the batch holds a write for, in any column, each as
@@ -1048,6 +1140,14 @@ impl LigninSettled {
         for part in parts.iter() {
             pending += part.pending.clone();
         }
+        // The transaction cannot give a subtree another prefix yet
+        // (`TXN-03-F4`).
+        if parts.iter().any(|part| !part.moves.is_empty()) {
+            let moving = "lignindb: the move of a subtree to another prefix";
+            let error = Error::NotSupported(moving.to_owned());
+            return Err(LigninRefused { error, entry: None })
+                .wrap_with_cost(MODEL.batch_written(pending, false));
+        }
         // A subtree is entered by the part that enters the subtree its
         // host is in, or that the enter of that one goes with, and by the
         // first part otherwise.
@@ -1096,11 +1196,42 @@ pub struct LigninRefused {
     pub entry: Option<LigninEntryRefused>,
 }
 
+/// Feeds `charge` one charge of a moved record: a put or a delete of a
+/// data record, with the writer's cost.
+fn charge_moved(
+    charge: &mut BatchCharge,
+    key: &[u8],
+    attached: Charge,
+) -> Result<(), Error> {
+    match attached {
+        Charge::Put {
+            record_len,
+            children,
+            cost,
+        } => charge
+            .put(Keyspace::Data, stored_key_len(key), record_len, children, cost)
+            .map_err(cost_refused),
+        Charge::Delete(Some(cost)) => {
+            charge.delete(cost);
+            Ok(())
+        }
+        Charge::Delete(None) => Err(Error::CorruptedState(
+            "a record of a moved subtree is cleared with no cost",
+        )),
+    }
+}
+
 /// Feeds `charge` every outcome of the batch: the keyspaces in the order
 /// of the cost rules, and within each the writes by stored key. It takes
 /// what each call attached out of the batch, which is charged once.
+///
+/// The charges of moved records (`moved`) are charges of data records
+/// that no outcome of the batch stands for. They take their place among
+/// the outcomes by stored key, as the puts and deletes of the copy have
+/// it in a storage batch (`cost-model.md` B1).
 fn charge_outcomes(
     resolved: &mut Resolved<Charge>,
+    moved: BTreeMap<(Prefix, Vec<u8>), (u64, Charge)>,
     access: &dyn Access,
     charge: &mut BatchCharge,
 ) -> Result<(), Error> {
@@ -1112,9 +1243,21 @@ fn charge_outcomes(
             "a batch does not have one charge for each of its outcomes",
         ));
     }
+    let mut moved = moved.into_iter().peekable();
     for (outcome, attached) in resolved.outcomes().zip(charges) {
         let keyspace = keyspace(outcome.unit.column);
         let prefix = outcome.unit.subtree.as_bytes();
+        // The data keyspace is the last, and a moved record comes before
+        // the outcome whose stored key is the first after its own.
+        while keyspace == Keyspace::Data {
+            let before = |((subtree, key), _): &((Prefix, Vec<u8>), (u64, Charge))| {
+                (subtree, key.as_slice()) < (prefix, outcome.key)
+            };
+            let Some(((_, key), (_, attached))) = moved.next_if(before) else {
+                break;
+            };
+            charge_moved(charge, &key, attached)?;
+        }
         let stored_key_len = stored_key_len(outcome.key);
         match (outcome.write, attached) {
             (
@@ -1149,6 +1292,9 @@ fn charge_outcomes(
                 ));
             }
         }
+    }
+    for ((_, key), (_, attached)) in moved {
+        charge_moved(charge, &key, attached)?;
     }
     Ok(())
 }

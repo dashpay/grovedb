@@ -48,9 +48,11 @@
 //!
 //! Each is refused with `Error::NotSupported` and changes nothing: a
 //! checkpoint of an open database and the open of one (GROVE-08), the
-//! move of a subtree (GROVE-03), a first write into a subtree under a key
-//! that holds no element, and the removal of the records that a flat drop
-//! left (GROVE-05). The delete of a tree whose
+//! application of a batch that moves a subtree which is entered, which
+//! is walked and charged and then refused until the transaction can give
+//! a subtree another prefix (`TXN-03-F4`), a first write into a subtree
+//! under a key that holds no element, and the removal of the records
+//! that a flat drop left (GROVE-05). The delete of a tree whose
 //! Merk holds elements is refused by its handle (`FlatStore::clear` of
 //! the node store), and a subtree is not dropped when its element goes
 //! (GROVE-05).
@@ -71,10 +73,13 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_merk::{
-    store::lignin::{
-        hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor, LigninHost,
-        LigninKeyspace, LigninNodeStore, LigninSettled, LigninSnapshot, LigninSubtree, LigninView,
-        LigninWriter,
+    store::{
+        lignin::{
+            hash::MerkHashRules, tree_type_bytes, LigninApplied, LigninBatch, LigninCursor,
+            LigninFlatCursor, LigninHost, LigninKeyspace, LigninNodeStore, LigninSettled,
+            LigninSnapshot, LigninSubtree, LigninView, LigninWriter,
+        },
+        NodeStore,
     },
     TreeType,
 };
@@ -85,7 +90,7 @@ use grovedb_storage::{
         pending_prefix_drops_namespace, PendingPrefixDropRecord, PendingPrefixDrops, SubtreePrefix,
     },
     prefix::build_prefix,
-    Error, RawIterator,
+    Error, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
 use lignindb::{
@@ -96,7 +101,9 @@ use lignindb::{
 };
 
 use self::error::{failed, merk_error, not_supported, txn_error, write_error};
-use super::{Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup};
+use super::{
+    move_record, Engine, EngineBatch, SubtreeCursor, SubtreeHandle, SubtreeMove, WriteGroup,
+};
 use crate::replication::INCOMPLETE_RESTORE_AUX_KEY;
 
 /// The subtree at the root of a grove: the one with the empty path.
@@ -410,19 +417,61 @@ impl std::fmt::Debug for LigninWriteScope<'_> {
     }
 }
 
-/// The move of a subtree to another prefix, which the LigninDB engine
-/// does not make yet: the first step says so (GROVE-03).
+/// The records of the data keyspace of a subtree, as a move walks them:
+/// the nodes of its Merk, each as the record Merk encodes of it, or the
+/// flat records of a tree that keeps its data flat.
 #[derive(Debug)]
-pub struct LigninSubtreeMove;
+enum Records<'db> {
+    Nodes(LigninCursor<'db>),
+    Flat(LigninFlatCursor<'db>),
+}
 
-impl SubtreeMove for LigninSubtreeMove {
+/// A subtree on its way to another prefix on the LigninDB engine.
+///
+/// The subtree is not copied: it goes to its new prefix with the batch,
+/// its nodes where they are (`tree-layout.md` D5), and the batch says so
+/// ([`LigninBatch::move_subtree`]). What a move is charged on existing
+/// GroveVersions is what the copy of RocksDB is charged, record by
+/// record, so each step reads the next record through a cursor of the
+/// transaction, at a cursor's cost, shows it to the caller, and stages
+/// for it the two charges of the copy: the put where the record lands,
+/// with the bill the caller gives, and the delete where it leaves, which
+/// frees nothing. No record is written.
+#[derive(Debug)]
+pub struct LigninSubtreeMove<'db> {
+    records: Records<'db>,
+    from: SubtreePrefix,
+    to: SubtreePrefix,
+    batch: &'db LigninBatch,
+}
+
+impl SubtreeMove for LigninSubtreeMove<'_> {
     fn move_next<T>(
         &mut self,
-        _inspect: impl FnOnce(&[u8], &[u8]) -> Result<T, crate::Error>,
-        _bill: impl FnOnce(&[u8], &[u8]) -> KeyValueStorageCost,
+        inspect: impl FnOnce(&[u8], &[u8]) -> Result<T, crate::Error>,
+        bill: impl FnOnce(&[u8], &[u8]) -> KeyValueStorageCost,
     ) -> CostResult<Option<T>, crate::Error> {
-        Err(not_supported("the move of a subtree to another prefix").into())
-            .wrap_with_cost(OperationCost::default())
+        let Self {
+            records,
+            from,
+            to,
+            batch,
+        } = self;
+        let staged = || Ok(()).wrap_with_cost(OperationCost::default());
+        let land = |key: &[u8], record: &[u8]| {
+            batch.charge_landed(to, key, record.len(), bill(key, record));
+            staged()
+        };
+        // Billed where it lands. In a swap the charge of the record that
+        // the other move lands under the same key stands against this one.
+        let clear = |key: &[u8]| {
+            batch.charge_cleared(from, key, KeyValueStorageCost::default());
+            staged()
+        };
+        match records {
+            Records::Nodes(cursor) => move_record(cursor, inspect, land, clear),
+            Records::Flat(cursor) => move_record(cursor, inspect, land, clear),
+        }
     }
 }
 
@@ -566,7 +615,7 @@ impl Engine for LigninEngine {
     type Batch = LigninBatch;
     type ImmediateSubtree<'db> = LigninNodeStore<'db>;
     type Subtree<'db> = LigninNodeStore<'db>;
-    type SubtreeMove<'db> = LigninSubtreeMove;
+    type SubtreeMove<'db> = LigninSubtreeMove<'db>;
     type Transaction<'db> = LigninTransaction<'db>;
     type WriteGroup = LigninWriteGroup;
     type WriteScope<'db> = LigninWriteScope<'db>;
@@ -855,11 +904,39 @@ impl Engine for LigninEngine {
 
     fn move_subtree<'a>(
         &'a self,
-        _from: SubtreePrefix,
-        _to: SubtreePrefix,
-        _batch: &'a LigninBatch,
-        _transaction: &'a LigninTransaction<'_>,
-    ) -> CostContext<LigninSubtreeMove> {
-        LigninSubtreeMove.wrap_with_cost(OperationCost::default())
+        from: SubtreePrefix,
+        to: SubtreePrefix,
+        batch: &'a LigninBatch,
+        transaction: &'a LigninTransaction<'_>,
+    ) -> CostContext<LigninSubtreeMove<'a>> {
+        let source = LigninNodeStore::read_only(transaction.view(), LigninSubtree::alone(from));
+        // A subtree that is not entered has no record and no entry to
+        // move: its walk finds nothing, and the batch is told of no move.
+        // A read of the entry that the transaction refuses is met again by
+        // the cursor, whose status ends the move.
+        let entry = source.entry().ok().flatten();
+        if entry.is_some() {
+            batch.move_subtree(&from, &to);
+        }
+        let mut cost = OperationCost::default();
+        let records = match entry.is_some_and(|entry| entry.root_key.is_none()) {
+            false => {
+                let mut cursor = NodeStore::cursor(&source);
+                cursor.seek_to_first().unwrap_add_cost(&mut cost);
+                Records::Nodes(cursor)
+            }
+            true => {
+                let mut cursor = FlatStore::cursor(&source);
+                cursor.seek_to_first().unwrap_add_cost(&mut cost);
+                Records::Flat(cursor)
+            }
+        };
+        LigninSubtreeMove {
+            records,
+            from,
+            to,
+            batch,
+        }
+        .wrap_with_cost(cost)
     }
 }

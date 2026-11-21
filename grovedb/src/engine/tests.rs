@@ -22,8 +22,8 @@ use grovedb_version::version::GroveVersion;
 use tempfile::TempDir;
 
 use super::{
-    rocksdb::move_record, CommitError, Engine, EngineBatch, RocksDbEngine, SubtreeHandle,
-    SubtreeMove, WriteGroup, WriteScopeError,
+    move_record, CommitError, Engine, EngineBatch, RocksDbEngine, SubtreeHandle, SubtreeMove,
+    WriteGroup, WriteScopeError,
 };
 use crate::{tests::common::EMPTY_PATH, Element, GroveDb};
 
