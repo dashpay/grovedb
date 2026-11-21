@@ -1273,6 +1273,17 @@ impl WriteSet {
         sources.copied().map(Subtree::new).collect()
     }
 
+    /// The subtrees that the hosts of the set's moves are in. A subtree
+    /// that was moved hangs in one of them, under whichever prefix it has
+    /// since: a move keeps the Merk of the host.
+    pub(crate) fn move_hosts(&self) -> Vec<Subtree> {
+        let hosts = self.subtrees.iter().filter_map(|entry| match entry {
+            SubtreeEntry::Move { host, .. } => Some(host.0),
+            _ => None,
+        });
+        hosts.collect()
+    }
+
     /// Every prefix that the moves of the set name, on either side.
     pub(crate) fn moved_names(&self) -> Vec<Subtree> {
         let named = |id: &EntryId| self.names(*id).named().collect::<Vec<_>>();

@@ -1377,6 +1377,23 @@ impl<'s> WriteTxn<'s> {
             for subtree in written {
                 self.guard_moved(state, op, who, subtree)?;
             }
+            // A drop or a clear of a subtree that the host of a move is
+            // in or below takes the subtree that was moved. What the
+            // entry of that drop has to cover of the moved subtree is the
+            // frames' to say, where it hangs under the prefix it has now.
+            let leaving = batch.leaving();
+            if let Some(first) = leaving.first().copied() {
+                let hosts = state.set.move_hosts();
+                let State { directory, set, .. } = &mut *state;
+                let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
+                let mut takes = false;
+                for host in hosts {
+                    takes |= leaving.contains(&host) || by_key.below(host, &leaving, None)?;
+                }
+                if takes {
+                    return Err(self.unlaid(state, &op.guard, first));
+                }
+            }
         }
         for record in batch.records {
             // The transaction has written no node of the subtree since it

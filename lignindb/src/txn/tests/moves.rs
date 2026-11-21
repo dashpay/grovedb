@@ -816,6 +816,10 @@ fn a_commit_under_a_prefix_a_move_names_meets_the_move() {
         };
         let refused = world.apply(&mover, &record).expect_err("a refusal");
         assert!(moved_by_key(&refused, B), "case {case}: {refused}");
+        // And so is a drop of the Merk the host of the move is in.
+        let above = subtrees(vec![OwnedSubtree::Drop(sub(TOP))]);
+        let refused = world.apply(&mover, &above).expect_err("a refusal");
+        assert!(moved_by_key(&refused, TOP), "case {case}: {refused}");
         // What no move decides is read as before, and the committed
         // records are those of the committed state (RD10).
         let top = (case != 5).then(|| b"top".to_vec());
@@ -849,6 +853,10 @@ fn a_move_that_commits_is_a_conflict_for_those_who_wrote_and_read_under_its_sour
     world.write(&wrote, vec![put(aux(A_IN), b"f", b"beside")]);
     let wrote_below = world.begin();
     world.write(&wrote_below, vec![put(aux(EMPTY), b"f", b"beside")]);
+    // And one dropped that subtree.
+    let dropped_below = world.begin();
+    let dropped = subtrees(vec![OwnedSubtree::Drop(sub(EMPTY))]);
+    (world.apply(&dropped_below, &dropped)).expect("a drop");
     // And one entered a subtree under the prefix the moved one goes to,
     // and wrote a flat record there.
     let wrote_target = world.begin();
@@ -885,6 +893,7 @@ fn a_move_that_commits_is_a_conflict_for_those_who_wrote_and_read_under_its_sour
     let beside = [
         &wrote,
         &wrote_below,
+        &dropped_below,
         &wrote_target,
         &reader,
         &looked,
@@ -917,6 +926,7 @@ fn a_move_that_commits_is_a_conflict_for_those_who_wrote_and_read_under_its_sour
     world.check(&wrote_below);
     assert_eq!(wrote_below.txn.stats().overlapped, 1);
     assert_eq!(world.commit(wrote_below, &[]), Outcome::Conflict);
+    assert_eq!(world.commit(dropped_below, &[]), Outcome::Conflict);
     // What the move writes: every key under the prefix it brought a
     // subtree to.
     assert_eq!(world.commit(wrote_target, &[]), Outcome::Conflict);
@@ -1684,6 +1694,12 @@ fn a_move_is_made_through_a_scope_whose_writes_are_laid_out() {
         let subtree = sub(name);
         assert_eq!(beside_error(refused), BatchError::MoveBeside { subtree });
     }
+    // Nor a drop of the Merk that the host of the move is in: it would
+    // take the subtree that was moved.
+    let above = subtrees(vec![OwnedSubtree::Drop(sub(TOP))]);
+    let refused = (world.apply_in(&tx, &second, &above)).expect_err("refused");
+    let subtree = sub(TOP);
+    assert_eq!(beside_error(refused), BatchError::MoveBeside { subtree });
     second.lay_out().expect("it has no write");
     out.clear();
     assert!(second.get(aux(B), b"a", &mut out).expect("a read"));

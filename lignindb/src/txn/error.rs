@@ -318,8 +318,9 @@ pub enum BatchError {
     },
     /// The transaction serves its records by key because a commit outside
     /// it met one of its writes (WT7b), and the operation states a move,
-    /// or reads or writes a subtree that a move in its write set names,
-    /// or a subtree below one: its frames would say what is there, and it
+    /// reads or writes a subtree that a move in its write set names or a
+    /// subtree below one, or drops or clears a subtree that the host of a
+    /// move is in or below: its frames would say what is there, and it
     /// has none.
     ///
     /// **It is a conflict** ([`Self::is_conflict`]): the transaction's

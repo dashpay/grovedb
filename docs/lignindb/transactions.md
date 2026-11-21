@@ -1031,8 +1031,10 @@ if a move of *T* decides what is under it: a prefix the move names, a
 subtree that left with it, a subtree that *T* entered below one of those
 by the hosts its own enters state, and a subtree that the committed state
 has below a prefix the move names, on either side. A batch that states a
-move is refused there too. A cursor takes in the commits up to the version
-it reads before it asks.
+move is refused there too, and so is one that drops or clears a subtree
+which the host of a move is in or below: it would take the subtree that
+was moved. A cursor takes in the commits up to the version it reads before
+it asks.
 
 - Where a foreign commit has met a write of *T*, the refusal is a conflict
   (`MovedByKey`, CF6): the commit of *T* fails with `Conflict` anyway
@@ -2632,7 +2634,7 @@ same result.
   after it; the refusals that a foreign commit explains, with a drop in
   the batch and without; every read and write by key where a move decides,
   a cursor as the first call after the commit among them; and the scopes
-  of MV8. Eleven planted faults of these rules are each caught by a test.
+  of MV8.
 - T-MV6: the power is cut after every change of a session whose commit
   moves subtrees: two change places, with flat records under each and
   under the subtree below it, and a subtree with no node leaves. Every cut
