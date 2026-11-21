@@ -39,9 +39,10 @@
 //! last segment names the element under that segment
 //! ([`Engine::subtree_beside`]). Where a group of batches is applied that
 //! holds a write for one of these Merks through a handle that names the
-//! element, the engine reads what the element hosts, enters all of its
-//! Merks if none is entered, and says to the store which Merks the
-//! element's node names ([`enter`]).
+//! element, and no batch of the group enters that Merk itself, the engine
+//! reads what the element hosts, enters those of its Merks that no batch
+//! of the group enters itself if none of them is entered, and says to the
+//! store which Merks the element's node names ([`enter`]).
 //!
 //! # What it does not do yet
 //!

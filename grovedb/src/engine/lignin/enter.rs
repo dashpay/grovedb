@@ -28,35 +28,39 @@
 //! of its own path, the primary, and after it one secondary Merk for each
 //! of its axes, in the order the element has them. A handle knows one
 //! subtree, so what such an element hosts is said here, for the group,
-//! from the element as the group leaves it ([`Owed::hosts`]):
+//! from the element as the group leaves it ([`Owed::hosts`]).
+//!
+//! All of it is of a **named write**: a write that the group holds for a
+//! subtree through a handle that names an element, where no batch of the
+//! group enters that subtree itself. For a subtree that a batch of the
+//! group enters itself nothing is worked out: its host, its position and
+//! its tree type are what that batch resolves them to, and the element
+//! is not read for it.
 //!
 //! - **The Merks of an indexed tree are entered together**, by a group
-//!   that holds a write for one of them through a handle that names the
-//!   element while none is entered, each at its
-//!   position under the element: the primary as a tree of the element's
-//!   type, a secondary as a tree of the type its axis keeps. They are
-//!   entered with the batch of the group that enters the subtree the
-//!   element is in, and with the first batch of the group where that
-//!   subtree is entered already.
+//!   that holds a named write for one of them while none is entered, each
+//!   at its position under the element: the primary as a tree of the
+//!   element's type, a secondary as a tree of the type its axis keeps.
+//!   Those that no batch of the group enters itself are entered with the
+//!   batch of the group that enters the subtree the element is in, and
+//!   with the first batch of the group where that subtree is entered
+//!   already.
 //! - **The element's node names all of them** in every batch that puts
-//!   it, of a group that holds a write for one of them through a handle
-//!   that names the element, where no batch of the group enters that one
-//!   itself.
+//!   it, of a group that holds a named write for one of them.
 //! - **A handle that names an element says whose subtree it writes**:
 //!   a handle by path, of the subtree of its path, and a handle beside
 //!   that subtree ([`Engine::subtree_beside`](crate::Engine::subtree_beside)),
-//!   of the subtree with its prefix. A write through such a handle into
-//!   a subtree other than the one of the element's own path is refused
-//!   with `Error::NotSupported` where the element hosts no subtree with
-//!   that prefix once the group is applied, and so are writes into one
-//!   subtree through handles that
-//!   name two elements, or one element with two subtrees of its own path.
-//!   A write into the subtree of the element's own path under a key that
-//!   holds no element once the group is applied is refused where the
-//!   subtree is not entered, and applied where it is: the delete of a
-//!   tree removes the records of its subtree with its element. A handle that names no
-//!   element, by prefix or beside the path of the root, is not held to an
-//!   element.
+//!   of the subtree with its prefix. A named write into a subtree other
+//!   than the one of the element's own path is refused with
+//!   `Error::NotSupported` where the element hosts no subtree with that
+//!   prefix once the group is applied, and so is a group whose handles
+//!   name two elements for one subtree, or one element with two subtrees
+//!   of its own path. A named write into the subtree of the element's
+//!   own path under a key that holds no element once the group is applied
+//!   is refused where the subtree is not entered, and applied where it
+//!   is: the delete of a tree removes the records of its subtree with its
+//!   element. A handle that names no element, by prefix or beside the
+//!   path of the root, is not held to an element.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise it is
@@ -66,15 +70,11 @@
 //!   none.** A subtree is not dropped when its element goes (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
 //!   (MERK-09). So an indexed tree can find, under its key, subtrees that
-//!   are entered already. A group that holds a write for one of its Merks
-//!   through a handle that names the element is refused with
-//!   `Error::NotSupported` where a subtree the element
-//!   hosts is entered at another position or under another element, and
-//!   where one of them is entered and another is not.
-//!
-//! Nothing is worked out here for a subtree that a batch of the group
-//! enters itself: its host, its position and its tree type are what that
-//! batch resolves them to.
+//!   are entered already. A group that holds a named write for one of its
+//!   Merks is refused with `Error::NotSupported` where a subtree the
+//!   element hosts, and that no batch of the group enters itself, is
+//!   entered at another position or under another element, and where one
+//!   of those is entered and another is not.
 //!
 //! What this does not do:
 //!
