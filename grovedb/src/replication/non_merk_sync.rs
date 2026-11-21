@@ -652,6 +652,15 @@ impl NonMerkRestorer {
         let path_refs: Vec<&[u8]> = path.iter().map(|v| v.as_slice()).collect();
         let subtree_path: SubtreePath<&[u8]> = SubtreePath::from(path_refs.as_slice());
 
+        // The page writes into the subtree, through immediate handles: an
+        // engine that keeps a record of its subtrees is told of the element
+        // that hosts it before the first write
+        // (`Engine::adopt_restored_subtrees`). A page that writes nothing,
+        // as the one page of a tree with no entry, names nothing.
+        if frontier_to_store.is_some() || !entries.is_empty() {
+            db.db.adopt_restored_subtrees(subtree_path.clone(), tx)?;
+        }
+
         if let Some(frontier) = frontier_to_store {
             let ctx = db.db.immediate_subtree(subtree_path.clone(), tx).unwrap();
             ctx.put(COMMITMENT_TREE_DATA_KEY, frontier, None)

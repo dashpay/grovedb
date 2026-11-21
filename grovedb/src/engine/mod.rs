@@ -357,9 +357,9 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
 
     /// Brings what the engine keeps of the subtrees that the element at
     /// `path` hosts in step with that element as `transaction` holds it,
-    /// for a restore that writes those subtrees through immediate handles,
-    /// each as a whole (state sync). The restore calls it before it writes
-    /// into one of them, and again after it has handed one over.
+    /// for a restore that writes those subtrees through immediate handles
+    /// (state sync). The restore calls it before it first writes into one
+    /// of them, and again after it has handed a Merk over.
     ///
     /// The element is the one under the last segment of `path`, in the
     /// subtree of the segments before; the empty path has none, and the
