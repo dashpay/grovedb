@@ -24,8 +24,12 @@
 //!
 //! ```text
 //! BULK_LOAD_DIR=/dev/shm/bulk-load cargo test --release -p lignin-testkit --test bulk_load -- \
-//!     --ignored --nocapture the_reference_workload
+//!     --ignored --nocapture --exact the_reference_workload_loads_within_the_time_and_fill
 //! ```
+//!
+//! The same grove loaded through the engine is the last test of this
+//! file, with a command of its own: the two are not run at once on one
+//! `BULK_LOAD_DIR`, where each builds or opens the grove.
 //!
 //! `BULK_LOAD_STORE` names another directory for the store the load is
 //! written to, to have it on a disk. Two more settings are for measuring
@@ -1101,6 +1105,9 @@ struct Handed {
     logged: u64,
     /// The bytes of value records in those groups.
     value_bytes: u64,
+    /// The bytes in use in the emptiest page that a loader filled and
+    /// left before its batch ended.
+    least_filled: Option<usize>,
     loading: Duration,
     committing: Duration,
 }
@@ -1278,6 +1285,8 @@ impl<'db> EngineWalk<'db, '_> {
         handed.acquired += published.acquired as u64;
         handed.logged += published.group_len;
         handed.value_bytes += published.value_bytes;
+        let least = [handed.least_filled, applied.least_filled];
+        handed.least_filled = least.into_iter().flatten().min();
     }
 
     /// Reads the node under `key` of the Merk `subtree` back through
@@ -1348,11 +1357,24 @@ fn peak_memory() -> Option<u64> {
     Some(kib << 10)
 }
 
+/// What [`load_through_the_engine`] came to.
+struct ThroughTheEngine {
+    nodes: u64,
+    merks: u64,
+    /// The fill of the pages the loads started, all taken together.
+    fill: f64,
+    /// The bytes in use in the emptiest page that a loader filled and
+    /// left before its batch ended: the last page of each level of each
+    /// batch, which holds what was left, is not among them.
+    least_filled: Option<usize>,
+    /// The seconds the loads, their commits and the flush after them
+    /// took. Zero where nothing was loaded.
+    seconds: f64,
+}
+
 /// Loads the grove of `workload` through the engine, into a database in
-/// `dir`, and reads it back. Returns the nodes and the Merks of the grove,
-/// the fill of the pages the loads started, and the seconds the loads,
-/// their commits and the flush after them took.
-fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f64) {
+/// `dir`, and reads it back.
+fn load_through_the_engine(dir: &Path, workload: Documents) -> ThroughTheEngine {
     let version = GroveVersion::latest();
     let grove = grove(dir, workload);
     let transaction = grove.start_transaction();
@@ -1366,14 +1388,17 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f
     let only_read = std::env::var_os("BULK_LOAD_ONLY_READ").is_some();
     let store = std::env::var_os("BULK_LOAD_STORE").map(PathBuf::from);
     let store = store.unwrap_or_else(|| dir.join("lignindb"));
-    if store.exists() {
-        std::fs::remove_dir_all(&store).expect("the store of an earlier run is removed");
-    }
     let options = lignindb::Options {
         page_size: Some(SIZE),
         ..lignindb::Options::default()
     };
-    let db = (!only_read).then(|| Db::open(&store, &options).expect("a new database"));
+    // A run that loads nothing leaves the store of an earlier run alone.
+    let db = (!only_read).then(|| {
+        if store.exists() {
+            std::fs::remove_dir_all(&store).expect("the store of an earlier run is removed");
+        }
+        Db::open(&store, &options).expect("a new database")
+    });
     let mut walk = EngineWalk {
         source: source(),
         db: db.as_ref(),
@@ -1393,8 +1418,15 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f
         "read {} nodes of {} Merks and handed them over in {walked:.1} s",
         walk.nodes, walk.merks_read
     );
+    let outcome = |fill: f64, least_filled: Option<usize>, seconds: f64| ThroughTheEngine {
+        nodes: walk.nodes,
+        merks: walk.merks_read,
+        fill,
+        least_filled,
+        seconds,
+    };
     let Some(db) = &db else {
-        return (walk.nodes, walk.merks_read, 0.0, 0.0);
+        return outcome(0.0, None, 0.0);
     };
     let started = Instant::now();
     db.flush().expect("the loads are durable");
@@ -1405,13 +1437,15 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f
     let seconds = (handed.loading + handed.committing + flushing).as_secs_f64();
     println!(
         "{} batches loaded {} nodes into {} pages: {:.1} nodes per page, {:.2}% of what cells can \
-         use, {} fragments",
+         use, {} fragments; the emptiest page that was filled has {} of {} bytes in use",
         handed.batches,
         handed.counters.nodes,
         handed.counters.pages,
         handed.counters.nodes as f64 / handed.counters.pages.max(1) as f64,
         fill * 100.0,
         handed.counters.fragments,
+        handed.least_filled.unwrap_or(0),
+        layout.capacity(),
     );
     println!(
         "{} values out of line of {} bytes went into the value log before their commits, which \
@@ -1433,8 +1467,9 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f
     assert_eq!(handed.counters.nodes, walk.nodes);
     assert_eq!(handed.acquired, handed.counters.values);
     assert_eq!(handed.value_bytes, 0, "a load's commit carries no value");
+    let done = outcome(fill, handed.least_filled, seconds);
     if std::env::var_os("BULK_LOAD_NO_READ_BACK").is_some() {
-        return (walk.nodes, walk.merks_read, fill, seconds);
+        return done;
     }
 
     let started = Instant::now();
@@ -1457,7 +1492,7 @@ fn load_through_the_engine(dir: &Path, workload: Documents) -> (u64, u64, f64, f
     assert_eq!(report.census.hosted_roots, walk.hosted_roots);
     assert_eq!(report.census.placed_values, handed.counters.values);
     assert_eq!(report.census.pending_values, 0);
-    (walk.nodes, walk.merks_read, fill, seconds)
+    done
 }
 
 #[test]
@@ -1468,21 +1503,31 @@ fn a_grove_of_documents_is_loaded_through_the_engine_as_grovedb_has_it() {
         owners: 30,
         ..Documents::reference()
     };
-    let (nodes, merks, fill, _) = on_a_big_stack(|| load_through_the_engine(dir.path(), workload));
-    assert_eq!(nodes, 2 * 3_000 + 2 * 30 + 7);
-    assert_eq!(merks, 2 * 30 + 7);
+    let loaded = on_a_big_stack(|| load_through_the_engine(dir.path(), workload));
+    assert_eq!(loaded.nodes, 2 * 3_000 + 2 * 30 + 7);
+    assert_eq!(loaded.merks, 2 * 30 + 7);
     // 45 pages, of which the last of each level is as full as the grove
     // left it: the fill of the loader is that of the reference workload.
-    assert!(fill >= 0.75, "fill {fill:.4}");
+    assert!(loaded.fill >= 0.75, "fill {:.4}", loaded.fill);
+    assert!(loaded.least_filled.is_some(), "pages that were filled");
 }
 
 /// TXN-10's "done when" for the bulk-load row of the performance table:
 /// the reference workload, one million documents and their references,
 /// handed to the engine as whole Merks and committed, loads within 50
-/// seconds into pages that are at least 90% full. The time is that of the
+/// seconds into pages that are at least 90% full: the pages of all
+/// batches taken together, and each page that a loader filled and left
+/// before its batch ended. The last page of each level of a batch holds
+/// what was left, and is held to nothing. The time is that of the
 /// scopes, the commits and the flush that makes them durable: reading the
-/// grove from RocksDB is not in it. Run it as the test above it is run,
-/// with the same settings.
+/// grove from RocksDB is not in it. It takes the settings of the module
+/// documentation, and is run alone:
+///
+/// ```text
+/// BULK_LOAD_DIR=/dev/shm/bulk-load cargo test --release -p lignin-testkit --test bulk_load -- \
+///     --ignored --nocapture --exact \
+///     the_reference_workload_loads_through_the_engine_within_the_time_and_fill
+/// ```
 #[test]
 #[ignore = "loads one million documents; run it in release mode"]
 fn the_reference_workload_loads_through_the_engine_within_the_time_and_fill() {
@@ -1490,13 +1535,15 @@ fn the_reference_workload_loads_through_the_engine_within_the_time_and_fill() {
     let temporary = tempfile::tempdir().expect("a directory");
     let dir = kept.as_deref().unwrap_or(temporary.path());
     std::fs::create_dir_all(dir).expect("the directory of the load");
-    let (nodes, merks, fill, seconds) =
-        on_a_big_stack(|| load_through_the_engine(dir, Documents::reference()));
-    assert_eq!(nodes, 2_020_007);
-    assert_eq!(merks, 20_007);
-    if seconds == 0.0 {
+    let loaded = on_a_big_stack(|| load_through_the_engine(dir, Documents::reference()));
+    assert_eq!(loaded.nodes, 2_020_007);
+    assert_eq!(loaded.merks, 20_007);
+    if loaded.seconds == 0.0 {
         return;
     }
-    assert!(fill >= 0.90, "fill {fill:.4}");
-    assert!(seconds <= 50.0, "{seconds:.1} s");
+    assert!(loaded.fill >= 0.90, "fill {:.4}", loaded.fill);
+    let capacity = Layout::proposed(SIZE).capacity();
+    let least = loaded.least_filled.expect("pages that were filled");
+    assert!(least * 10 >= capacity * 9, "a page with {least} bytes used");
+    assert!(loaded.seconds <= 50.0, "{:.1} s", loaded.seconds);
 }
