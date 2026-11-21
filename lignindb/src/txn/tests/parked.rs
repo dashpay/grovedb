@@ -567,6 +567,8 @@ fn a_cursor_is_pointed_at_another_merk_of_the_version_it_pinned() {
     let mut cursor = tx.txn.merk_cursor(model::subtree(1)).expect("a cursor");
     cursor.seek(&key(4)).expect("a seek");
     assert_eq!(cursor.key(), Some(&key(4)[..]));
+    let pins_at_open = versions.pins_held();
+    assert!(pins_at_open > 0, "the cursor holds a pin");
 
     // Commits outside, after the cursor was opened: every Merk gets a
     // node, loses one, and the third is made again whole, which frees the
@@ -611,12 +613,17 @@ fn a_cursor_is_pointed_at_another_merk_of_the_version_it_pinned() {
         let mut back = scan_merk(&mut cursor, &view, true);
         back.reverse();
         assert_eq!(back, keys_at_open(name), "Merk {name}");
-        // It is left standing past an end, and the next retarget takes it
+        // It is left standing on a key, and the next retarget takes it
         // from there.
         cursor.seek_for_prev(&key(5)).expect("a seek");
         assert_eq!(cursor.key(), Some(&key(4)[..]));
     }
-    assert_eq!(db.oldest_pin(&versions), opened, "one pin, of one version");
+    assert_eq!(
+        db.oldest_pin(&versions),
+        opened,
+        "the version it was opened on"
+    );
+    assert_eq!(versions.pins_held(), pins_at_open, "and no pin more");
     assert_eq!(db.pool.census().pinned, 0, "and no page");
 
     // A subtree the version has no entry for has nothing to show, and the

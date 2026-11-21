@@ -414,10 +414,12 @@ impl<'t, 's> MerkCursor<'t, 's> {
     /// it is sought before it is read or stepped. A call that fails
     /// leaves it pointed at the Merk it was pointed at before.
     ///
-    /// Each later call is a read of `subtree` like any other, and is
-    /// refused where another open scope holds that Merk for writing (SC3).
-    /// This call makes one lookup in the directory for a subtree the
-    /// cursor has not been pointed at before, and reads no node.
+    /// A later seek, and a read or a step from a key the cursor stands
+    /// on, is a read of `subtree` like any other, and is refused where
+    /// another open scope holds that Merk for writing (SC3). A read or a
+    /// step of a cursor that stands on no key reads nothing, and is not
+    /// refused. This call makes one lookup in the directory for a subtree
+    /// the cursor has not been pointed at before, and reads no node.
     pub fn retarget(&mut self, subtree: Subtree) -> Result<(), TxnError> {
         self.key = None;
         self.way = Way::Lost;
