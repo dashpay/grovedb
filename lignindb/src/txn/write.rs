@@ -419,8 +419,15 @@ pub struct HostPut<'a> {
 ///   below one that leaves
 ///   ([`BatchError::MoveUnnamed`](super::BatchError::MoveUnnamed)).
 /// - **The batch puts the node that hosts the subtree afterwards**, in
-///   the Merk the host is in before and at the position the subtree had
-///   ([`BatchError::MoveHost`](super::BatchError::MoveHost)). It states
+///   the Merk the host is in before and at the position the subtree had.
+///   Whether the cell of that node points at the moved Merk is as it was
+///   for the old host: the node names the new prefix among the Merks it
+///   hosts ([`Hosted::Set`]) where the cell of the old host hosts a Merk
+///   at that position, and hosts no Merk at the position where that
+///   cell hosts none there, as the element of a tree that keeps its data
+///   flat does
+///   ([`BatchError::MoveHost`](super::BatchError::MoveHost) for each
+///   mismatch). It states
 ///   nothing else of a prefix that one of its moves names, but the drop
 ///   of a subtree that is entered where one goes
 ///   ([`BatchError::Moved`](super::BatchError::Moved)). Its moves are
@@ -432,15 +439,16 @@ pub struct HostPut<'a> {
 ///   move of a subtree whose host is a node of the committed state names
 ///   a read ([`BatchError::NoRead`](super::BatchError::NoRead)).
 /// - **Afterwards the transaction reads under the new prefix** what it
-///   read under the old one, and no subtree under the old one unless
-///   another move of the batch brought one there. Frames that are made
-///   again make the move again, and write the flat records again. A
-///   transaction that serves its records by key refuses every read and
-///   write that a move of it decides
-///   ([`BatchError::MovedByKey`](super::BatchError::MovedByKey)), and a
-///   scope that keeps its writes in the write set refuses a move, and
-///   what a move decides
-///   ([`BatchError::MoveBeside`](super::BatchError::MoveBeside)).
+///   read under the old one, and no subtree under a prefix that a
+///   subtree was taken from and that no move of the batch brought one
+///   to. Frames that are made again make the move again, and write the
+///   flat records again. A transaction that serves its records by key,
+///   and a scope that keeps its writes in the write set, do not answer
+///   for a move: each refuses a move, every read and write that a move
+///   decides, and every drop and clear. MV7 and MV8 say with which
+///   refusal: [`BatchError::MovedByKey`](super::BatchError::MovedByKey),
+///   the one that stops the layout of the transaction's writes, or
+///   [`BatchError::MoveBeside`](super::BatchError::MoveBeside).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtreeWrite<'a> {
     /// Enters the subtree, with no node: the operation writes the element
@@ -520,8 +528,12 @@ pub enum SubtreeWrite<'a> {
         /// The prefix it has afterwards.
         to: Subtree,
         /// The element that hosts it afterwards: a node that the same
-        /// batch puts, in the Merk its host is in before, hosting `to`
-        /// at the position the subtree had.
+        /// batch puts, in the Merk its host is in before, at the
+        /// position the subtree had. The node names `to` among the Merks
+        /// it hosts ([`Hosted::Set`]) where the cell of the node that
+        /// hosts the subtree before hosts a Merk at that position, and
+        /// hosts no Merk at the position where that cell hosts none
+        /// there.
         host: HostPut<'a>,
         /// The handle the mover read the node with that hosts the
         /// subtree before the batch, or `None` where that node is a

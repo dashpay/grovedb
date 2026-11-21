@@ -215,6 +215,12 @@
 //! moves or by an earlier one. What else it holds there refuses it where
 //! it is resolved ([`BatchError::Moved`]), and so does a move for whose
 //! new prefix the batch was told no host ([`BatchError::MoveHost`]). A
+//! staged batch says where a subtree hangs by naming it among the Merks
+//! an element hosts, so the node it puts as the host of a moved subtree
+//! names the new prefix: the move is one of a subtree that the cell of
+//! its host points at (`transactions.md` MV3). The move of a subtree
+//! whose host's cell hosts no Merk is stated to the transaction directly
+//! (`SubtreeWrite::Move`). A
 //! batch that holds a move is not empty. A merge makes the moves again in
 //! the batch that takes them.
 //!

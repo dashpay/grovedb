@@ -895,30 +895,20 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     ///
     /// Where the transaction moved the subtree, the committed side is the
     /// records that the cursor's version has under the prefix the subtree
-    /// was taken from, and where a move took a subtree from the cursor's
-    /// prefix and brought none, or takes the subtree out with one above
-    /// it ([`Opened::leaves_with_a_move`]), it is not read. A transaction that serves
-    /// its records by key refuses the read where a move decides what is
-    /// under the subtree ([`BatchError::MovedByKey`](super::BatchError)).
+    /// was taken from, read where the Merk the transaction has under the
+    /// cursor's prefix is the Merk that version has there, and never
+    /// where a move took a subtree from the cursor's prefix and brought
+    /// none (`WriteTxn::committed_side`). A subtree that no move names
+    /// and that leaves with one is not read
+    /// ([`Opened::leaves_with_a_move`]). Whoever has no frames that show
+    /// the moves is refused where a move decides what is under the
+    /// subtree ([`BatchError::MovedByKey`](super::BatchError)): the call
+    /// first brings the transaction to the latest version, as each of its
+    /// operations does (`WriteTxn::cursor_side`).
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
-        let (path, at, subtree) = (*self.txn.path(), self.pin.version(), self.unit.subtree);
-        (self.txn).guard_cursor(self.who, subtree, &mut self.opened, guard, at)?;
-        let (opened, seen) = (&mut self.opened, self.seen);
-        let (left, reads, under) = self.txn.with_set(self.who, self.unit, |set| {
-            if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
-                return Ok((set.left(), reads, None));
-            }
-            let from = set.committed_from(subtree);
-            let opened = Opened::at(opened, &path, guard, at)?;
-            let reads = match from {
-                Some((under, since)) => {
-                    !opened.leaves_with_a_move(&path, guard, set, &subtree)?
-                        && (opened.seen_before(&path, guard, set, &under, since)?).is_some()
-                }
-                None => false,
-            };
-            Ok::<_, TxnError>((set.left(), reads, from.map(|(under, _)| under)))
-        })??;
+        let (at, seen) = (self.pin.version(), self.seen);
+        let side = (self.txn).cursor_side(self.who, self.unit, &mut self.opened, guard, at, seen);
+        let (left, reads, under) = side?;
         if let Some(under) = under.filter(|under| *under != self.side.under()) {
             self.side.point(guard, under)?;
         }

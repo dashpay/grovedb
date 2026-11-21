@@ -1078,6 +1078,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         made: Option<&[bool]>,
     ) -> Result<Applied, Refused> {
         let view = self.subtrees(batch).map_err(Refused::clean)?;
+        self.hosts_moved(batch).map_err(Refused::clean)?;
         let mut entered = HashMap::new();
         for record in batch.records {
             // A record is of a subtree that is entered, in every column,
@@ -1202,6 +1203,75 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             done.map_err(Refused::dirty)?;
         }
         Ok(applied)
+    }
+
+    /// Whether the cell of the node under `key`, in the Merk whose root is
+    /// `root`, hosts a Merk at `position`: the cell has a pointer there,
+    /// to a root or to none. Where no node is under the key, none does.
+    fn hosts_at(
+        &mut self,
+        root: Option<CellAddress>,
+        key: &[u8],
+        position: usize,
+    ) -> Result<bool, TxnError> {
+        let Some(at) = find(&mut self.tree, root, key)? else {
+            return Ok(false);
+        };
+        let hosts = self.tree.page(at.page(), |page| {
+            Some(page.node(at.slot())?.hosted_roots().count() > position)
+        })?;
+        Ok(hosts.ok_or(NodeError::NoNode { address: at })?)
+    }
+
+    /// Checks, for each subtree that `batch` moves, that the cell of the
+    /// node which the batch puts as its host points at the moved Merk as
+    /// the cell of the node that hosts it before the batch does
+    /// (`transactions.md` MV3):
+    ///
+    /// - where the old host's cell hosts a Merk at the subtree's
+    ///   position, the new host names the subtree's new prefix there;
+    /// - where it hosts none there, or no node is under the key that the
+    ///   subtree's entry names, the new host hosts no Merk at the
+    ///   position: it names none there, or it keeps what it hosts and its
+    ///   cell hosts none there.
+    ///
+    /// The entry of a subtree names its host whether or not the host's
+    /// cell points at a Merk: the element of a tree that keeps its data
+    /// flat hosts none (`tree-layout.md`, section 2), and a move leaves
+    /// that as it is. Nothing is changed.
+    fn hosts_moved(&mut self, batch: &Batch<'_>) -> Result<(), TxnError> {
+        for moving in batch.moves() {
+            let subtree = moving.from;
+            // A subtree that is not entered, or that has no host, was
+            // refused where the moves were planned.
+            let Some(entry) = self.directory.open(&*self.flat, subtree.as_bytes())? else {
+                continue;
+            };
+            let Some(host) = entry.host() else {
+                continue;
+            };
+            let position = usize::from(host.position);
+            // The host stays in its Merk, at its position.
+            let root = self.root(&Subtree::new(*host.parent))?;
+            let hosted = self.hosts_at(root, host.key, position)?;
+            let stated = moving.host;
+            let merk = (batch.merks.iter()).find(|merk| merk.subtree == stated.subtree);
+            let node = merk.and_then(|merk| merk.nodes.iter().find(|node| node.key == stated.key));
+            let fits = match node.map(|node| node.hosted) {
+                Some(Hosted::Set(named)) => match hosted {
+                    true => named.get(position) == Some(&moving.to),
+                    false => named.len() <= position,
+                },
+                // A node that keeps what it hosts names nothing.
+                Some(Hosted::Keep) | None => {
+                    !hosted && !self.hosts_at(root, stated.key, position)?
+                }
+            };
+            if !fits {
+                return Err(BatchError::MoveHost { subtree }.into());
+            }
+        }
+        Ok(())
     }
 
     fn apply_merks(

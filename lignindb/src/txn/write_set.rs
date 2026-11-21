@@ -2,7 +2,7 @@
 //! and an index of them by record key (`transactions.md` WT2, WT3).
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ops::Bound,
 };
 
@@ -680,14 +680,11 @@ impl WriteSet {
     fn covered(arena: &Arena, entry: &Entry) -> Vec<Unit> {
         let subtree = entry.unit.subtree;
         if matches!(entry.kind, Kind::Moved) {
-            let mut named: Vec<Subtree> = Vec::new();
-            for subtree in Names::of(arena.get(entry.key)).covered() {
-                if !named.contains(&subtree) {
-                    named.push(subtree);
-                }
-            }
+            let mut seen = HashSet::new();
+            let covered = Names::of(arena.get(entry.key)).covered();
+            let named = covered.filter(|subtree| seen.insert(*subtree));
             let units = |subtree| Column::ALL.map(|column| Unit::new(column, subtree));
-            return named.into_iter().flat_map(units).collect();
+            return named.flat_map(units).collect();
         }
         let own = match entry.kind.leaves() {
             [] => vec![entry.unit],
@@ -1273,17 +1270,6 @@ impl WriteSet {
         sources.copied().map(Subtree::new).collect()
     }
 
-    /// The subtrees that the hosts of the set's moves are in. A subtree
-    /// that was moved hangs in one of them, under whichever prefix it has
-    /// since: a move keeps the Merk of the host.
-    pub(crate) fn move_hosts(&self) -> Vec<Subtree> {
-        let hosts = self.subtrees.iter().filter_map(|entry| match entry {
-            SubtreeEntry::Move { host, .. } => Some(host.0),
-            _ => None,
-        });
-        hosts.collect()
-    }
-
     /// Every prefix that the moves of the set name, on either side.
     pub(crate) fn moved_names(&self) -> Vec<Subtree> {
         let named = |id: &EntryId| self.names(*id).named().collect::<Vec<_>>();
@@ -1336,30 +1322,21 @@ impl WriteSet {
 
     /// The prefix the committed state has the records of `subtree` under,
     /// as the transaction reads the subtree now: the subtree's own where
-    /// no move of the transaction named it, the prefix a move took it
-    /// from, and `None` where a move took a subtree from the prefix and
-    /// none was brought there since. With it, the oldest move that the
-    /// subtree passed on its way from that prefix, if it passed one.
+    /// no move of the transaction named it, the prefix that the moves
+    /// took it from, and `None` where a move took a subtree from the
+    /// prefix and none was brought there since.
     ///
-    /// What the transaction dropped or cleared before that move, it
-    /// dropped or cleared while the subtree was under the committed
-    /// state's own prefix: whether that took the subtree is asked of the
-    /// committed directory ([`Self::leaving_before`]). From that move on
-    /// the subtree is one the transaction has written, under whichever
-    /// prefix, so a drop or a clear that took it covers it by its entry
-    /// (the cut of the drop), and the prefixes of such a write say
-    /// nothing of the committed state: a prefix that a move took a
-    /// subtree from can be another subtree's afterwards.
-    pub(crate) fn committed_from(&self, subtree: Subtree) -> Option<(Subtree, Option<EntryId>)> {
-        if self.moved.is_empty() {
-            return Some((subtree, None));
+    /// Whether the transaction reads those records is not said here: it
+    /// may have dropped the subtree since, alone or with one above it
+    /// (`WriteTxn::committed_side`).
+    pub(crate) fn committed_under(&self, subtree: Subtree) -> Option<Subtree> {
+        match self.moved.is_empty() {
+            true => Some(subtree),
+            false => self.stretches(subtree, None).1,
         }
-        let (stretches, under) = self.stretches(subtree, None);
-        let oldest = stretches.last().and_then(|stretch| stretch.before);
-        under.map(|under| (under, oldest))
     }
 
-    /// The prefix of [`Self::committed_from`], for the subtree of the
+    /// The prefix of [`Self::committed_under`], for the subtree of the
     /// entry `id` as it was read when that entry was written.
     pub(crate) fn committed_under_at(&self, id: EntryId) -> Option<Subtree> {
         let subtree = self.entry(id).unit.subtree;
@@ -1412,17 +1389,7 @@ impl WriteSet {
 
     /// The subtrees the transaction dropped or cleared, oldest first.
     pub(crate) fn leaving(&self) -> impl Iterator<Item = Subtree> + '_ {
-        self.leaving_before(None)
-    }
-
-    /// The subtrees the transaction dropped or cleared before the entry
-    /// `before`, or all of them where none is given, oldest first.
-    pub(crate) fn leaving_before(
-        &self,
-        before: Option<EntryId>,
-    ) -> impl Iterator<Item = Subtree> + '_ {
-        let older = move |id: &&EntryId| before.is_none_or(|before| **id < before);
-        (self.leaving.iter().filter(older)).map(|id| self.entry(*id).unit.subtree)
+        (self.leaving.iter()).map(|id| self.entry(*id).unit.subtree)
     }
 
     /// A number that is another whenever the transaction drops or clears a
@@ -1736,7 +1703,7 @@ impl WriteSet {
     /// of the record under the prefix the subtree had before are its
     /// writes of it ([`Self::stretches`]). [`Own::Unwritten`] then says
     /// that the record is the committed one, which the committed state
-    /// has under the prefix of [`Self::committed_from`].
+    /// has under the prefix of [`Self::committed_under`].
     pub(crate) fn own(&self, unit: Unit, key: &[u8]) -> Own<'_> {
         if self.moved.is_empty() {
             let whole = Stretch {

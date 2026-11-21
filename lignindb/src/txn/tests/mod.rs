@@ -178,15 +178,17 @@ impl<'s> World<'s> {
             if let Write::Move(moved) = &mut write {
                 // Of the subtrees below a moved one, those the moves name
                 // go with it, and the others leave. A pair for a subtree
-                // that is not below one says nothing.
+                // that is not there takes none now, and stays stated.
                 let tops = moved.tops.clone();
                 let below: Vec<Subtree> = (tops.iter())
                     .flat_map(|top| model::below(&hosts, *top))
                     .collect();
+                moved.stated = moved.pairs.clone();
                 (moved.pairs).retain(|(old, _)| tops.contains(old) || below.contains(old));
                 moved.left = (below.iter().copied())
                     .filter(|below| moved.pairs.iter().all(|(old, _)| old != below))
                     .collect();
+                moved.gone = moved.left.clone();
             }
             model.writes.push((write, first_write, false));
         }
@@ -286,9 +288,10 @@ impl<'s> World<'s> {
         let committed = self.model.records.keys().map(|(unit, _)| *unit);
         let model = tx.model.borrow();
         let written = model.writes.iter().map(|(write, ..)| write.unit());
-        // A move writes every column under each prefix it names.
+        // A move writes every column under each prefix it covers, and
+        // takes what is under each subtree that leaves with it.
         let moved = model.writes.iter().flat_map(|(write, ..)| match write {
-            Write::Move(moved) => moved.named.clone(),
+            Write::Move(moved) => moved.covered().chain(moved.gone.clone()).collect(),
             _ => Vec::new(),
         });
         let moved = moved.flat_map(|named| Column::ALL.map(|column| Unit::new(column, named)));

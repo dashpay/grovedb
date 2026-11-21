@@ -29,8 +29,11 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 ///
 /// Of its moves: that no prefix is named twice as one a subtree is taken
 /// from, and none twice as one a subtree is brought to; that the batch
-/// puts the node each move states as the host, with the new prefix at
-/// the position; and that nothing else is stated of a prefix a move
+/// puts the node each move states as the host, and names the new prefix
+/// among the Merks that node hosts at the stated position or not at all
+/// (which of the two is asked where the batch is applied, of the cell
+/// that hosts the subtree before); and that nothing else is stated of a
+/// prefix a move
 /// names, but the drop of a subtree that is entered where one is moved to
 /// and that no move takes away.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
@@ -60,8 +63,14 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
         }
         let merk = batch.merks.iter().find(|merk| merk.subtree == host.subtree);
         let node = merk.and_then(|merk| merk.nodes.iter().find(|node| node.key == host.key));
-        let hosts = |hosted: &[Subtree]| hosted.get(usize::from(host.position)) == Some(&moving.to);
-        if !node.is_some_and(|node| matches!(node.hosted, Hosted::Set(hosted) if hosts(hosted))) {
+        let at = usize::from(host.position);
+        let elsewhere = |hosted: &[Subtree]| {
+            let mut named = hosted.iter().enumerate();
+            named.any(|(position, hosted)| *hosted == moving.to && position != at)
+        };
+        if !node
+            .is_some_and(|node| !matches!(node.hosted, Hosted::Set(hosted) if elsewhere(hosted)))
+        {
             let subtree = moving.from;
             return Err(BatchError::MoveHost { subtree });
         }

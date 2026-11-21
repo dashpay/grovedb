@@ -690,16 +690,14 @@ impl<'s> WriteTxn<'s> {
         let state = &mut *state;
         let applied = (self.begin(state, true)).and_then(|op| {
             let laid = state.scopes.laid(id);
+            // What a move decides is not written by key, and a move is
+            // laid out on the frames when it is stated: asked first, so
+            // that a batch which is refused for it has claimed nothing.
+            self.guard_batch(state, &op, Who::scope(id), batch)?;
             for moving in batch.moves() {
+                // And a move knows nothing of the marks of pending
+                // elements.
                 let subtree = moving.from;
-                // A move is laid out on the frames when it is stated.
-                // Where the transaction, or this scope, lays nothing out,
-                // the refusal says why: a commit that met the transaction
-                // comes before a scope that keeps its writes in the set.
-                if Self::by_key(state, Who::scope(id)) {
-                    return Err(self.unlaid(state, &op.guard, subtree));
-                }
-                // And it knows nothing of the marks of pending elements.
                 let marked = state.scopes.ever_marked();
                 if (moving.named()).any(|named| marked.iter().any(|(at, _)| *at == named)) {
                     return Err(BatchError::MoveBeside { subtree }.into());
@@ -725,7 +723,7 @@ impl<'s> WriteTxn<'s> {
                 }
                 false => {
                     state.set.admits(batch)?;
-                    self.write_by_key(state, &op, Who::scope(id), batch)?
+                    self.write_by_key(state, &op, batch)?
                 }
             };
             state.set.tag_last(id, laid);
@@ -1066,7 +1064,8 @@ impl<'s> WriteTxn<'s> {
     /// The conflict rule for what a drop covers without naming it
     /// (`transactions.md` CF5, CV9): a drop deletes every record under
     /// every subtree below the dropped one, and its key set names the
-    /// dropped subtree alone. `commits` were published since the
+    /// dropped subtree and, of the subtrees below it, those that its
+    /// transaction had written under. `commits` were published since the
     /// transaction last looked, up to the version `at`.
     ///
     /// - **A commit dropped or cleared a subtree above one the transaction

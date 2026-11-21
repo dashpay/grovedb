@@ -1,6 +1,6 @@
 //! What a batch holds, and how each call changes it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use lignin_tree::node::NodeHandle;
 
@@ -616,8 +616,8 @@ impl<C> Staged<C> {
         let sources: Vec<Subtree> = self.moves.iter().flat_map(Move::sources).collect();
         let targets: Vec<Subtree> = self.moves.iter().flat_map(Move::targets).collect();
         let twice = |names: &[Subtree]| {
-            let again = |(at, name): (usize, &Subtree)| names[..at].contains(name).then_some(*name);
-            names.iter().enumerate().find_map(again)
+            let mut seen = HashSet::new();
+            names.iter().find(|name| !seen.insert(**name)).copied()
         };
         if let Some(subtree) = twice(&sources).or_else(|| twice(&targets)) {
             return Some(BatchError::SubtreeTwice { subtree });

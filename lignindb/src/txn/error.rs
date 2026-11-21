@@ -276,10 +276,13 @@ pub enum BatchError {
         subtree: Subtree,
     },
     /// A subtree is moved ([`SubtreeWrite::Move`](super::SubtreeWrite::Move))
-    /// to a host it cannot have: the subtree has no host, the host that is
+    /// to a host it cannot have: the subtree has no host; the host that is
     /// stated is in another Merk or at another position than the one it
-    /// has, or the batch does not put that node hosting the subtree's new
-    /// prefix at the position.
+    /// has; the batch does not put that node; the node names the
+    /// subtree's new prefix among the Merks it hosts at another position;
+    /// it does not name that prefix at the position where the cell of the
+    /// node that hosts the subtree before hosts a Merk there; or its cell
+    /// hosts a Merk at the position where that cell hosts none there.
     MoveHost {
         /// The subtree, by the prefix it is moved from.
         subtree: Subtree,
@@ -304,24 +307,27 @@ pub enum BatchError {
         /// The subtree the other statement names.
         subtree: Subtree,
     },
-    /// A scope that keeps its writes in the write set states a move, or
-    /// reads or writes a subtree that a move of the transaction decides
-    /// (`transactions.md` MV7, MV8): a move is laid out on the
-    /// transaction's frames when it is stated, and what is read after it
-    /// is read from them. Or a move is stated while an element of a Merk
-    /// under a prefix it names is marked pending, or was at some point of
-    /// the writes that the transaction's frames show (`crate::scope`).
+    /// A scope that keeps its writes in the write set states a move,
+    /// reads or writes a subtree that a move of the transaction decides,
+    /// or drops or clears a subtree while the transaction's write set
+    /// holds a move (`transactions.md` MV7, MV8): a move is laid out on
+    /// the transaction's frames when it is stated, and such a scope is
+    /// answered from the write set. Or a move is stated while an element
+    /// of a Merk under a prefix it names is marked pending, or was at
+    /// some point of the writes that the transaction's frames show
+    /// (`crate::scope`).
     MoveBeside {
-        /// The subtree the refused move takes from its prefix, or the
-        /// subtree whose read or write was refused.
+        /// The subtree the refused move takes from its prefix, the first
+        /// subtree the refused batch drops or clears, or the subtree
+        /// whose read or write was refused.
         subtree: Subtree,
     },
     /// The transaction serves its records by key because a commit outside
     /// it met one of its writes (WT7b), and the operation states a move,
-    /// reads or writes a subtree that a move in its write set names or a
-    /// subtree below one, or drops or clears a subtree that the host of a
-    /// move is in or below: its frames would say what is there, and it
-    /// has none.
+    /// reads or writes a subtree that a move in its write set decides, or
+    /// drops or clears a subtree while its write set holds a move
+    /// (`transactions.md` MV7): its frames would say what is there, and
+    /// it has none.
     ///
     /// **It is a conflict** ([`Self::is_conflict`]): the transaction's
     /// commit fails with one unless a rollback to a savepoint takes the
@@ -329,8 +335,9 @@ pub enum BatchError {
     /// that are left can be laid out. Nothing was changed, and the
     /// transaction is still open.
     MovedByKey {
-        /// The subtree that was read or written, or the one a move was
-        /// stated for.
+        /// The subtree that was read or written, the first one the
+        /// refused batch drops or clears, or the one a move was stated
+        /// for.
         subtree: Subtree,
     },
     /// The tree type of an entered subtree is longer than the subtree
