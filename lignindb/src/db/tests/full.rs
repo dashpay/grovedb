@@ -695,18 +695,25 @@ impl Session {
         self.after_step();
     }
 
-    /// Ends the session as a close does. Says whether the close did
-    /// everything a close does.
+    /// Ends the session by the steps of [`Db::close`]: the two threads end
+    /// after the turn they are in, and then the close finishes what it
+    /// can. The session is asked whether it has ended between the two.
+    /// Asked while its threads run, it can say nothing and its close can
+    /// still answer with what stays failed (DF8): a turn of write-back
+    /// that is under way meets a refused sync of a segment after the
+    /// answer, and a look that finds the commit lock held by the reclaimer
+    /// records nothing. Says whether the close did everything a close
+    /// does.
     pub(super) fn close(&mut self) -> bool {
         self.resumes();
         let Some(db) = self.db.take() else {
             return false;
         };
+        if !self.halted {
+            halt_background(&db);
+        }
         let over = db.reopen();
-        let closed = match self.halted {
-            true => db.finish(),
-            false => db.close(),
-        };
+        let closed = db.finish();
         match closed {
             Ok(()) => {
                 // A close makes the log durable, in a session whose log
