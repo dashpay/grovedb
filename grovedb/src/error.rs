@@ -235,7 +235,9 @@ impl Error {
     /// Whether a commit returned this error because another commit wrote a
     /// key after the transaction first wrote it. Any engine reports that
     /// case so: on the RocksDB engine it holds for the `Busy` error of a
-    /// commit.
+    /// commit. It also holds for a write that an engine refused as the same
+    /// conflict, with the transaction open and as it was
+    /// (`grovedb_storage::error::CommitError::Conflict`).
     pub fn is_commit_conflict(&self) -> bool {
         self.commit_error() == Some(grovedb_storage::error::CommitError::Conflict)
     }
