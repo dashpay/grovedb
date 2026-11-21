@@ -5,14 +5,15 @@ use std::{fmt, io};
 
 use super::{
     crash::{FileChangeKind, NameChange, Tear},
-    fault::{Fault, OpKind},
+    fault::{Fault, OpKind, Told},
 };
 
 /// One entry of [`SimVfs::trace`](super::SimVfs::trace).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Event {
-    /// An operation and how it ended. An operation a fault was injected into
-    /// is always recorded, every other one only with
+    /// An operation and how it ended. An operation a fault was injected
+    /// into, and a sync that was told of a write-back, is always recorded,
+    /// every other one only with
     /// [`SimConfig::trace_ops`](super::SimConfig::trace_ops).
     Op(OpRecord),
     /// A sync succeeded on a file that an earlier, failed sync had left with
@@ -37,6 +38,43 @@ pub enum Event {
     /// event of a file system made by
     /// [`CrashImage::recover`](super::CrashImage::recover).
     Crash(CrashRecord),
+    /// The system's own write of a file's unsynced changes failed, and no
+    /// call reported it.
+    WriteBack(WriteBackRecord),
+    /// A sync through a handle that a failed write-back had marked was told
+    /// of it, and failed with its error. The sync itself is the
+    /// [`Op`](Self::Op) that follows.
+    Reported {
+        /// The number of the sync.
+        op: u64,
+        /// The path the file was synced by.
+        path: String,
+        /// The number of the operation after which the write-back failed.
+        after_op: u64,
+    },
+}
+
+/// A write-back that failed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteBackRecord {
+    /// The number of the operation after which it failed.
+    pub after_op: u64,
+    /// The path that the handle of that operation was opened by.
+    pub path: String,
+    /// The error a sync fails with that is told of it.
+    pub fault: Fault,
+    /// Which handles it marked.
+    pub told: Told,
+    /// How many open handles it marked. A marked handle is told by the
+    /// next sync it makes, and of this failure only if no later one marks
+    /// it first.
+    pub handles: u64,
+    /// Whether the system forgot at once what storage does not have of the
+    /// file.
+    pub forgotten: bool,
+    /// The changes of the file that were not synced, in the order they were
+    /// made, and what storage has of each.
+    pub changes: Vec<ChangeFate>,
 }
 
 /// An operation and how it ended.
@@ -65,7 +103,8 @@ pub enum Outcome {
     Ok,
     /// It failed as the contract says it must, for example with `NotFound`.
     Failed(io::ErrorKind),
-    /// The simulator made it fail.
+    /// The simulator made it fail: it injected a fault into the operation,
+    /// or the operation is a sync that was told of a write-back.
     Injected {
         /// The error it failed with.
         fault: Fault,
@@ -159,7 +198,31 @@ impl fmt::Display for Event {
             }
             Self::PowerOff { after_op } => write!(f, "power off after #{after_op}"),
             Self::Crash(record) => record.fmt(f),
+            Self::WriteBack(record) => record.fmt(f),
+            Self::Reported { op, path, after_op } => write!(
+                f,
+                "#{op} the sync of {path} is told of the write-back that failed after #{after_op}"
+            ),
         }
+    }
+}
+
+impl fmt::Display for WriteBackRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let forgotten = if self.forgotten {
+            "forgotten at once"
+        } else {
+            "not forgotten"
+        };
+        write!(
+            f,
+            "after #{} the write-back of {} failed with {}, reported by no call; told: {:?}, {} \
+             marked; {forgotten}:",
+            self.after_op, self.path, self.fault, self.told, self.handles
+        )?;
+        self.changes
+            .iter()
+            .try_for_each(|change| write!(f, "\n  {change}"))
     }
 }
 
@@ -332,6 +395,22 @@ impl Event {
                     hasher.u64(name.survives.into());
                 }
                 hash_changes(&record.changes, hasher);
+            }
+            Self::WriteBack(record) => {
+                hasher.u64(5);
+                hasher.u64(record.after_op);
+                hasher.text(&record.path);
+                hasher.u64(record.fault as u64);
+                hasher.u64(record.told as u64);
+                hasher.u64(record.handles);
+                hasher.u64(record.forgotten.into());
+                hash_changes(&record.changes, hasher);
+            }
+            Self::Reported { op, path, after_op } => {
+                hasher.u64(6);
+                hasher.u64(*op);
+                hasher.text(path);
+                hasher.u64(*after_op);
             }
         }
     }

@@ -1,19 +1,5 @@
 use super::*;
 
-fn injected(fs: &SimVfs) -> Vec<(OpKind, Fault, Effect)> {
-    fs.trace()
-        .into_iter()
-        .filter_map(|event| match event {
-            Event::Op(OpRecord {
-                kind,
-                outcome: Outcome::Injected { fault, effect },
-                ..
-            }) => Some((kind, fault, effect)),
-            _ => None,
-        })
-        .collect()
-}
-
 type Operation = Box<dyn Fn(&SimVfs) -> io::Result<()>>;
 
 /// One call of each operation that succeeds on [`populated`].

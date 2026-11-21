@@ -501,6 +501,10 @@ fn a_recovered_file_system_starts_afresh_and_remembers_where_it_came_from() {
             eio: Chance::one_in(1_000),
             ..FaultOdds::NONE
         },
+        write_back: WriteBackOdds {
+            forgotten: Chance::ALWAYS,
+            ..WriteBackOdds::NONE
+        },
         crash: CrashOdds {
             lose: Chance::new(1, 3),
             ..CrashOdds::default()

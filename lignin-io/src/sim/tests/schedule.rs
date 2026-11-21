@@ -18,6 +18,8 @@ struct Campaign {
     settled: usize,
     power_cuts: usize,
     lost_and_kept: (usize, usize),
+    write_backs: usize,
+    told: usize,
 }
 
 /// A workload that its seed decides alone, on a file system that fails and
@@ -25,6 +27,11 @@ struct Campaign {
 /// did along the way: every operation and how it ended, every fault and what
 /// it left, and every crash state.
 fn campaign(seed: u64) -> Campaign {
+    campaign_with(seed, WriteBackOdds::NONE)
+}
+
+/// [`campaign`], with write-backs that fail as `write_back` says.
+fn campaign_with(seed: u64, write_back: WriteBackOdds) -> Campaign {
     let config = SimConfig {
         sector_size: 16,
         trace_ops: true,
@@ -33,6 +40,7 @@ fn campaign(seed: u64) -> Campaign {
             enospc: Chance::new(1, 12),
             ..FaultOdds::NONE
         },
+        write_back,
         ..SimConfig::new(seed)
     };
     let mut fs = SimVfs::new(config);
@@ -45,6 +53,8 @@ fn campaign(seed: u64) -> Campaign {
         settled: 0,
         power_cuts: 0,
         lost_and_kept: (0, 0),
+        write_backs: 0,
+        told: 0,
     };
 
     for step in 0..STEPS {
@@ -123,6 +133,8 @@ fn campaign(seed: u64) -> Campaign {
                         campaign.lost_and_kept.0 += record.changes.len() - kept;
                         campaign.lost_and_kept.1 += kept;
                     }
+                    Event::WriteBack(_) => campaign.write_backs += 1,
+                    Event::Reported { .. } => campaign.told += 1,
                     Event::Op(_) => {}
                 }
             }
@@ -177,8 +189,37 @@ fn the_schedule_of_a_seed_is_the_same_everywhere() {
         assert!(lost > 5 && kept > 5, "{lost} lost, {kept} kept");
         seen.0 += campaign.settled;
         seen.1 += campaign.power_cuts;
+        assert_eq!((campaign.write_backs, campaign.told), (0, 0));
     }
     assert!(seen.0 > 0 && seen.1 > 0, "{seen:?}");
+}
+
+/// The schedules of two seeds with write-backs that fail. They are the same
+/// on every machine, as the schedules without them are.
+#[test]
+fn the_schedule_with_write_backs_that_fail_is_the_same_everywhere() {
+    let odds = WriteBackOdds {
+        fail: Chance::new(1, 3),
+        ..WriteBackOdds::NONE
+    };
+    let pinned: [(u64, u64); 2] = [(1, 0x6A1B_EFD6_24F6_E7D9), (2, 0x53AA_7848_24B1_DDCC)];
+    let mut differ = Vec::new();
+    for (seed, schedule) in pinned {
+        if cfg!(miri) && seed > 1 {
+            continue;
+        }
+        let campaign = campaign_with(seed, odds.clone());
+        if campaign.schedule != schedule {
+            differ.push((seed, campaign.schedule));
+        }
+        if !cfg!(miri) {
+            let again = campaign_with(seed, odds.clone());
+            assert_eq!(campaign.schedule, again.schedule);
+        }
+        let failed = (campaign.write_backs, campaign.told);
+        assert!(failed.0 > 10 && failed.1 > 3, "seed {seed}: {failed:?}");
+    }
+    assert!(differ.is_empty(), "the schedules differ: {differ:x?}");
 }
 
 fn in_turns(seed: u64) -> u64 {

@@ -6,11 +6,11 @@
 //! every state the contract lets that crash leave, and `ENOSPC` and `EIO` at
 //! chosen operations. Everything it decides comes from one seed.
 //!
-//! The simulator models errors at chosen operations. It does not model
-//! background write-back failing and its error record disappearing before a
-//! later sync, which the contract has as the last rule under
-//! [Durability](crate::vfs#durability). So no test on the simulator tells a
-//! sync through the handle that made a change from a sync through another.
+//! It can also fail the system's own write of a file's changes, which no
+//! call reports: the last rule under [Durability](crate::vfs#durability).
+//! That is what tells a sync through the handle that made a change from a
+//! sync through another. No write-back fails unless a test asks for it: see
+//! [A write-back that fails](self#a-write-back-that-fails).
 //!
 //! ```
 //! use lignin_io::{
@@ -48,7 +48,7 @@
 //!
 //! | The contract says | The simulator does |
 //! | --- | --- |
-//! | A process that exits loses nothing, absent a failed write-back. | Dropping every handle and lock changes nothing in the file system: open it again and all of it is there. No write-back fails here. |
+//! | A process that exits loses nothing, absent a failed write-back. | Dropping every handle and lock changes no name, and no file that has a name: open the file system again and all of it is there. What a write-back that failed lost, it lost when it failed, and with the last handle of a file goes the record of that failure (the last row). |
 //! | A lock is not durable. | No crash state has a guard: every lock file of a [`CrashImage::recover`]ed file system is free. Locking a file that is there records no change, with [`Vfs::lock`] or with [`Vfs::lock_existing`], and [`Vfs::lock`] records one [`NameChange`] when it makes the file. [`VfsLock::is_at`] is no operation: it is not counted, no fault falls on it, and with the power off it fails as every call does. |
 //! | Synced content is durable. | A sync that returns `Ok` puts the changes it covers into the file's durable version, and no crash plan can take them out. The changes that an earlier failed sync left unknown are not among them: it settles those as the row "A failed sync cannot be made good" says. |
 //! | Any subset of the unsynced changes of a file survives. | Each change that a `write_at`, an `append` or a `set_len` makes is a [`FileChange`], and a [`CrashPlan`] keeps any of them. |
@@ -62,9 +62,9 @@
 //! | A crash keeps a change of names only with the earlier changes it builds on. | A plan keeps the changes its own build on, listed or not: [`CrashImage::names_kept`] says which. A sync makes them durable together with the change that builds on them. |
 //! | Syncing a file does not sync its name, nor the other way round. | Names and content are kept or lost separately. A file whose name is lost is gone with all its content, and a name can survive for a file that is empty or stale. A directory whose own name is lost is gone with everything in it, synced or not. |
 //! | A rename is atomic, synced or not. | A rename is a single [`NameChange`], of a file and of a directory: a plan keeps it or loses it, and no state has half of it. It is durable once the directories of both names are synced. A directory that is renamed takes what is in it along as it is: its names and the content of its files stay as durable or as unsynced as they were. |
-//! | A set synced together is the syncs of its list, and a crash may find any of them made. | [`Vfs::sync_together`] is the method the trait provides: `sync_data`, `sync_all` and `sync_dir`, one after another in the order of the list, each an operation with its own number. A crash point can fall after each and a fault on each. A crash image taken between two of them has the first ones made and the others not, and so have its plans and the file systems they give. [`SimVfs::fingerprint`] is of what operations see, which no sync changes: to tell the points of a list apart, take the fingerprints of the file systems a crash at each of them leaves. The states in which a later one was made without an earlier one are the plans of the image before the first. |
-//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. A `set_len` to the length a file has records no change, so nothing of it is there for a sync to cover. |
-//! | A write-back can fail unreported. | None fails here: what a sync covers and what a read sees depend neither on which handle made a change nor on whether that handle is still open. |
+//! | A set synced together is the syncs of its list, and a crash may find any of them made. | [`Vfs::sync_together`] is the method the trait provides: `sync_data`, `sync_all` and `sync_dir`, one after another in the order of the list, each an operation with its own number. A crash point can fall after each and a fault on each. A crash image taken between two of them has the first ones made and the others not, and so have its plans and the file systems they give. [`SimVfs::fingerprint`] is of what operations see, which no sync changes unless a write-back is made to fail after it: to tell the points of a list apart, take the fingerprints of the file systems a crash at each of them leaves. The states in which a later one was made without an earlier one are the plans of the image before the first. |
+//! | A failed sync cannot be made good. | When a sync fails, the file's unsynced changes are marked [unknown](FileChange::unknown). A crash keeps any of them, like other unsynced changes. A later sync that succeeds covers the changes made after the failure, and settles the unknown ones as [`SimConfig::unknown`] says, by default drawn from the seed: kept, torn or lost, as an [`Event::Settled`]. Reads keep seeing them either way. A write-back of the file that fails before such a sync settles them as well, with the file's other unsynced changes. A `set_len` to the length a file has records no change, so nothing of it is there for a sync to cover. |
+//! | A write-back can fail unreported. | None fails unless a [`WriteBackRule`] or the [`WriteBackOdds`] say so. Without one, what a sync covers depends neither on which handle made a change nor on whether that handle is still open, and operations see every change that was made. With one: the table under [A write-back that fails](self#a-write-back-that-fails). |
 //!
 //! ## Changes of names that build on each other
 //!
@@ -102,8 +102,8 @@
 //! without its growth, so it ends where the file ended, not at a sector
 //! boundary: the sector was written whole, and the length is kept elsewhere.
 //! And once every directory and every file has been synced, with no sync
-//! failing, nothing is unsynced: [`lose_all`](CrashImage::lose_all) then
-//! gives the file system as it is.
+//! and no write-back failing, nothing is unsynced:
+//! [`lose_all`](CrashImage::lose_all) then gives the file system as it is.
 //!
 //! # Crashing
 //!
@@ -171,6 +171,10 @@
 //!   no room for fails with `ENOSPC`, and removing a file or cutting one
 //!   short gives room back.
 //!
+//! A write-back that fails is no fault of an operation, and has a section
+//! of its own [below](self#a-write-back-that-fails). The sync that is told
+//! of one fails as a sync does that a fault was injected into.
+//!
 //! What a failed operation leaves is what the contract allows it to leave:
 //!
 //! | Operation | After an injected fault |
@@ -182,13 +186,76 @@
 //! | `sync_together` | What the fault leaves of the sync it fell on, as in the two rows above. The syncs before it in the list were made, the ones after it were not, and the call returns the error. |
 //! | Every other one | Nothing changed. |
 //!
+//! # A write-back that fails
+//!
+//! The system writes a file's changes to storage in its own time, and that
+//! write can fail with no call reporting it. Here it fails after an
+//! operation on the file, when a [`WriteBackRule`] says so
+//! ([`SimVfs::add_write_back`]) or by the [`WriteBackOdds`] of the
+//! configuration ([`SimVfs::set_write_back`]), and at no other time. What
+//! follows is the last rule under [Durability](crate::vfs#durability). Who
+//! is told follows the error sequence that Linux keeps for a file
+//! (`docs/lignindb/sync-handles.md`, section 3). Where the simulator does
+//! not copy a system, the list below the table says so. All of it is with
+//! the power on: once it is off, a call fails as [Crashing](self#crashing)
+//! says, and is no operation.
+//!
+//! A write-back that fails **marks** handles of its file. A handle has one
+//! mark at most, of the last failure that marked it. The next sync through
+//! a marked handle is told of that failure: it fails with the failure's
+//! error, and the mark is gone.
+//!
+//! | The contract, and the error sequence of Linux | The simulator |
+//! | --- | --- |
+//! | The system's own write of a file's changes fails, and no call reports it. | The write-back of a file fails after an operation on it that leaves it with unsynced changes: a `write_at`, an `append` or a `set_len`, or the operations the rule names. That operation returns what it would have. Of the later ones only syncs fail for it: each sync that is told, and after it every sync through the same handle. The failure is an [`Event::WriteBack`], and [`SimStats::write_backs`] counts it. |
+//! | The data is not written again, and the system does not say what storage has of it. | What storage has is settled at the failure, for every change of the file that was not synced, as [`SimConfig::unknown`] says: all of it, none of it, or as drawn from the seed, each change lost, torn, kept or applied out of turn. What storage has is durable from then on, and no crash brings back what it does not have. The changes are unsynced no longer: no later sync covers them, and no [`CrashPlan`] chooses among them. |
+//! | A write lost to a write-back error can cease to be visible to reads. | If the changes are [forgotten](WriteBackRule::forgotten), what operations see of the file is at that moment what storage has of it, cut or filled with zeros to the length the file had for them just before. So everything is gone from reads that storage does not have: these changes, and whatever an earlier write-back that failed, or a sync that settled unknown changes, had left reads seeing. The file keeps the length it had: an append lands where it would have without the failure, a read returns zeros where storage has less than that length, and ends before storage does where it has more. If the changes are not forgotten, the failure changes nothing that a read or `len` returns. |
+//! | Every handle that was open when the write-back failed is told once, by its next sync. | With [`Told::OpenHandles`], the failure marks each handle of the file that is open and on which no sync has failed. The sync that is told fails with the [`Fault`] of the rule or of the odds: an [`Event::Reported`]. An earlier failure that had marked the handle is not reported through it. A handle on which a sync had failed is not marked: it syncs no more, as before. |
+//! | A handle opened afterwards is told only if no other was told before it. | A handle that is opened later is marked, as if it had been open, for the last write-back of the file that failed with [`Told::OpenHandles`], unless a sync was told of that failure before, or the file had no open handle at some moment since. |
+//! | A sync on a reopened file can succeed after both the unwritten data and the error record are gone. | The record goes with the last handle of the file: a handle that is opened after no handle was open is marked for no failure from before. |
+//! | A sync through a handle that was not told returns `Ok` for bytes that are gone. | A sync through a handle that is not marked, and on which no sync has failed, is a sync like any other, whatever the file has lost: unless a fault is injected into it, it returns `Ok`. It covers the changes made after the last write-back of the file that failed, and after the last sync of the file that was told of one or had a fault injected into it. |
+//! | A sync that reports a failed write-back is a sync that failed. | The sync that is told leaves the file's unsynced changes unknown, and its handle syncs no more: the row "A failed sync cannot be made good" above. |
+//! | To check for such errors, retain the writing handle and check a sync on it. | With [`Told::Writers`] the failure marks the open handles that made one of the changes it was to write, and on which no sync has failed. It marks no other, and no handle that is opened later is marked for it. That is the least the contract promises, and less than Linux does: code that is right with it does not rest on which handles one system tells. |
+//!
+//! What storage has after a write-back failed is what a crash at that moment
+//! could have left of the file. What is new is that the file system goes
+//! on. A sync after it can return `Ok` while
+//! bytes that were written before it are not durable, and a read can return
+//! other bytes than were written.
+//!
+//! The simulator does not copy a system in these ways. Each leaves a state
+//! the contract allows:
+//!
+//! - The record of a failed write-back is gone whenever the last handle of
+//!   the file is closed. Linux keeps it in the file's inode in memory, which
+//!   it may give up once nothing has the file open (the audit's section 3).
+//! - A change of length is lost as a write is, by what
+//!   [`SimConfig::unknown`] says.
+//! - What storage does not have is forgotten for the whole file at once,
+//!   and only when a write-back of the file fails: not part by part, and at
+//!   no later time.
+//! - A change that is made after a write-back failed is recorded as it was
+//!   made, and a sync that covers it applies it to what storage has. Where
+//!   a `set_len` that cut a file was lost and forgotten, a later `set_len`
+//!   that grows the file again is durable as a length over the bytes
+//!   storage still has there, while reads return zeros for them.
+//! - The write-back of a file can fail although a sync of the file failed
+//!   before. The changes that sync left unknown are then settled with the
+//!   others, and the failure marks handles as any other does.
+//! - A sync that a [`FaultRule`] or the [`FaultOdds`] fail is no failed
+//!   write-back: it marks no handle.
+//!
+//! A handle on which a sync has failed is not marked: it syncs no more, so
+//! there is no sync of it that could be told.
+//!
 //! # The same seed, the same schedule
 //!
-//! The schedule is every fault the simulator injects, with what it left, and
-//! every crash state it samples. It is a function of the
-//! [configuration](SimConfig), seed included, and of the sequence of calls
-//! made to the simulator, and of nothing else: not the clock, not an address,
-//! not the order of a hash map, not the width of `usize`, and no dependency.
+//! The schedule is every fault the simulator injects, with what it left,
+//! every write-back it fails, and every crash state it samples. It is a
+//! function of the [configuration](SimConfig), seed included, and of the
+//! sequence of calls made to the simulator, and of nothing else: not the
+//! clock, not an address, not the order of a hash map, not the width of
+//! `usize`, and no dependency.
 //! The random numbers are [`SimRng`], which is SplitMix64 written out in this
 //! crate.
 //!
@@ -211,12 +278,15 @@
 //!
 //! [`SimVfs::trace`] is the record of what was injected: every operation
 //! that was failed, with what the failure left, the settling of changes a
-//! failed sync left unknown, the power going off, and, as the first
+//! failed sync left unknown, every write-back that failed and every sync
+//! that was told of one, the power going off, and, as the first
 //! [`Event`] of a recovered file system, the [`CrashRecord`] of the plan
 //! that made it. With [`SimConfig::trace_ops`] it records every operation.
-//! Events print as one line each. [`SimVfs::trace_digest`] is a number that
-//! is the same for the same trace on every machine, so two runs whose
-//! digests differ did not make the same schedule.
+//! An event prints as a header. A crash, a settling and a write-back that
+//! failed print an indented entry after it for each change they list.
+//! [`SimVfs::trace_digest`] is a number that is the same for the same trace
+//! on every machine, so two runs whose digests differ did not make the same
+//! schedule.
 //!
 //! # Limits
 //!
@@ -247,15 +317,20 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
-use self::state::{ArmedRule, FileId, State};
+use self::state::{canonical, Armed, FileId, State};
 pub use self::{
     crash::{
         CrashImage, CrashOdds, CrashPlan, FileChange, FileChangeKind, InvalidPlan, NameChange,
         NameChangeKind, Survivor, Tear,
     },
-    fault::{Fault, FaultOdds, FaultRule, OpKind, OpSet, SimError},
+    fault::{
+        Fault, FaultOdds, FaultRule, OpKind, OpSet, SimError, Told, WriteBackOdds, WriteBackRule,
+    },
     rng::{Chance, SimRng},
-    trace::{digest, ChangeFate, CrashRecord, Effect, Event, Fate, NameFate, OpRecord, Outcome},
+    trace::{
+        digest, ChangeFate, CrashRecord, Effect, Event, Fate, NameFate, OpRecord, Outcome,
+        WriteBackRecord,
+    },
 };
 use crate::vfs::{DirEntry, OpenMode, Vfs, VfsFile, VfsLock};
 
@@ -276,10 +351,13 @@ pub struct SimConfig {
     pub max_file_len: u64,
     /// The faults injected by chance.
     pub faults: FaultOdds,
+    /// The write-backs that fail by chance.
+    pub write_back: WriteBackOdds,
     /// How [`CrashImage::sample`] draws a crash state.
     pub crash: CrashOdds,
     /// What becomes of the changes a failed sync left unknown, once a later
-    /// sync of the file succeeds.
+    /// sync of the file succeeds, and of the unsynced changes of a file
+    /// whose write-back fails.
     pub unknown: UnknownFate,
     /// Whether the trace records every operation, not only the failed ones.
     pub trace_ops: bool,
@@ -287,14 +365,16 @@ pub struct SimConfig {
 
 impl SimConfig {
     /// The configuration with `seed`, sectors of 512 bytes, files of up to
-    /// 1 GiB, no faults, the default [`CrashOdds`], unknown changes settled
-    /// by the first draw from the seed, and a trace of injected events only.
+    /// 1 GiB, no faults, no write-back that fails, the default
+    /// [`CrashOdds`], unknown changes settled by the first draw from the
+    /// seed, and a trace of injected events only.
     pub fn new(seed: u64) -> Self {
         Self {
             seed,
             sector_size: 512,
             max_file_len: 1 << 30,
             faults: FaultOdds::NONE,
+            write_back: WriteBackOdds::NONE,
             crash: CrashOdds::default(),
             unknown: UnknownFate::Drawn(0),
             trace_ops: false,
@@ -302,15 +382,16 @@ impl SimConfig {
     }
 }
 
-/// What becomes of the changes a failed sync left unknown, once a later sync
-/// of the file succeeds.
+/// What becomes of changes that the system wrote or dropped without saying
+/// which. There are two moments at which that is settled: for the changes a
+/// failed sync left unknown, when a later sync of the file succeeds; and for
+/// every unsynced change of a file, the unknown ones among them, when its
+/// [write-back fails](self#a-write-back-that-fails).
 ///
-/// Until then a crash keeps or loses them like any unsynced change, and a
-/// [`CrashPlan`] chooses. The later sync covers only what came after the
-/// failure, so from then on the unknown changes are settled one way, and the
-/// crash plans of that file system no longer choose. To see the other ways,
-/// run the same calls again with another value here: nothing else in the
-/// schedule depends on it.
+/// Until one of the two a crash keeps or loses such a change like any
+/// unsynced change, and a [`CrashPlan`] chooses. From then on it is settled
+/// one way, and the crash plans of that file system no longer choose. To
+/// see the other ways, run the same calls again with another value here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnknownFate {
     /// Each one is lost, torn, kept or applied out of turn, as drawn from
@@ -331,9 +412,11 @@ pub enum CrashPoint {
     AfterOp(u64),
     /// After this many calls of `sync_data`, `sync_all` and `sync_dir`.
     AfterSync(u64),
-    /// After this many operations that changed what a crash can leave: an
-    /// operation that made an unsynced change, or a sync that made at least
-    /// one durable. These are the points at which a crash is worth taking.
+    /// After this many operations of these kinds: one that made an unsynced
+    /// change, a sync of a file that returned `Ok` and found unsynced
+    /// changes to cover or to settle, a sync of a directory that made a
+    /// change of names durable, and one after which a write-back failed.
+    /// These are the points at which a crash is worth taking.
     AfterChange(u64),
 }
 
@@ -344,10 +427,13 @@ pub struct SimStats {
     pub ops: u64,
     /// Calls of `sync_data`, `sync_all` and `sync_dir` among them.
     pub syncs: u64,
-    /// Operations that changed what a crash can leave.
+    /// Operations of the kinds [`CrashPoint::AfterChange`] counts.
     pub changes: u64,
     /// Operations the simulator failed.
     pub faults: u64,
+    /// Write-backs the simulator failed. None of them is an operation: the
+    /// syncs that were told of one are among [`faults`](Self::faults).
+    pub write_backs: u64,
 }
 
 /// The fault-injecting [`Vfs`] in memory.
@@ -388,7 +474,8 @@ impl SimVfs {
         }
     }
 
-    /// The configuration, with the fault odds as they are now.
+    /// The configuration, with the odds of faults and of write-backs as
+    /// they are now.
     pub fn config(&self) -> SimConfig {
         self.shared.state().config.clone()
     }
@@ -404,12 +491,34 @@ impl SimVfs {
     /// still counts for the others. Faults by chance are drawn only for an
     /// operation no rule failed.
     pub fn add_rule(&self, rule: FaultRule) {
-        self.shared.state().rules.push(ArmedRule::new(rule));
+        let path = rule.path.as_deref().map(canonical);
+        self.shared.state().rules.push(Armed::new(rule, path));
     }
 
-    /// Removes every rule: the space is back, the device works again.
+    /// Replaces the write-backs that fail by chance.
+    /// [`WriteBackOdds::NONE`] switches them off.
+    pub fn set_write_back(&self, odds: WriteBackOdds) {
+        self.shared.state().config.write_back = odds;
+    }
+
+    /// Adds a write-back that fails at a chosen moment. Rules are asked in
+    /// the order they were added and the first whose turn it is decides; the
+    /// operation still counts for the others. A write-back fails by chance
+    /// only after an operation at which no rule had its turn.
+    pub fn add_write_back(&self, rule: WriteBackRule) {
+        let path = rule.path.as_deref().map(canonical);
+        self.shared.state().write_backs.push(Armed::new(rule, path));
+    }
+
+    /// Removes every rule, of faults and of write-backs, and nothing else:
+    /// what fails by chance ([`set_faults`](Self::set_faults),
+    /// [`set_write_back`](Self::set_write_back)), a
+    /// [capacity](Self::set_capacity), and the marks that a write-back
+    /// which failed has left on handles stay as they are.
     pub fn clear_rules(&self) {
-        self.shared.state().rules.clear();
+        let mut state = self.shared.state();
+        state.rules.clear();
+        state.write_backs.clear();
     }
 
     /// Turns the power off now.
