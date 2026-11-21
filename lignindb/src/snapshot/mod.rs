@@ -235,5 +235,5 @@ pub use error::{PublishError, SnapshotError};
 pub use kept::Directories;
 pub use nodes::NodeWalk;
 pub use read::{LatestLease, Operation, ReadPath, Snapshot};
-pub use records::{Kept, Opened, ReadError, RecordCursor, RecordWalk};
+pub use records::{EntryWalk, Kept, Listed, Opened, ReadError, RecordCursor, RecordWalk};
 pub use versions::{OperationGuard, Reclaim, VersionPin, Versions};
