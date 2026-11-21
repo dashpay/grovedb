@@ -729,6 +729,30 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         );
     }
     calls.get(second, &[b's', 25]);
+    // The same for a tree that keeps its data flat: leaves appended by a
+    // first segment that stops below the tree's element.
+    calls.batch(
+        "a tree of leaves",
+        vec![insert(&documents[..2], b"log", Element::empty_mmr_tree())],
+    );
+    for height in [3u8, 2, 1] {
+        let options = BatchApplyOptions {
+            batch_pause_height: Some(height),
+            ..BatchApplyOptions::default()
+        };
+        let log = path(&[b"documents", b"contract", b"log"]);
+        let ops = vec![
+            Op::mmr_tree_append_op(log.clone(), vec![height; 50]),
+            Op::mmr_tree_append_op(log, vec![height + 1; 20]),
+        ];
+        calls.partial(
+            &format!("leaves, paused at {height}"),
+            ops,
+            Some(options),
+            pay,
+        );
+    }
+    calls.get(&documents[..2], b"log");
 
     // A caller that fails, an addition that the batch refuses, and a batch
     // that is refused before the caller is asked.

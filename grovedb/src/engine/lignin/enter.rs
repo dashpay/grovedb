@@ -340,8 +340,8 @@ pub(super) struct Owed {
     /// Each indexed tree that the group writes a Merk of, with every Merk
     /// it hosts, by position.
     pub(super) hosts: Vec<LigninHost>,
-    /// In a group of more than one batch, each tree with one Merk that
-    /// the group has a named write for, with that Merk. One batch can
+    /// In a group of more than one batch, each tree whose data is one
+    /// Merk that the group has a named write for, with that Merk. One batch can
     /// write the nodes of the Merk and a later one the node of its
     /// element, as the two segments of a partial batch do: the first
     /// leaves the root of the Merk for the element's node to name
@@ -515,7 +515,9 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                     let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
                     owed.enters.push((subtree.clone(), bytes));
                 }
-                if tree_type.is_some() && parts.len() > 1 {
+                // A tree that keeps its data flat has no Merk to name.
+                let merk = tree_type.is_some_and(|tree| !tree.uses_non_merk_data_storage());
+                if merk && parts.len() > 1 {
                     owed.apart.push(host.clone());
                 }
             }
