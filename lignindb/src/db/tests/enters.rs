@@ -501,6 +501,17 @@ fn a_delete_of_every_flat_record_above_a_first_writer_is_no_conflict() {
     let operation = snapshot.operation();
     let found = seen(&operation, subtree(CHILD), b"x");
     assert_eq!(found, Some((0, vec![(Column::Aux, b"x".to_vec())])));
+    drop(operation);
+    drop(snapshot);
+    // A subtree under a key of a flat keyspace hangs under no node, which
+    // the physical checker reports for as long as the subtree is there:
+    // it is dropped before the store is checked.
+    let dropped = Writes {
+        drop: vec![subtree(CHILD)],
+        ..Writes::default()
+    };
+    dropped.commit(&db);
+    sound(&db, "a subtree that hung under a flat keyspace");
 }
 
 /// A scope's claim on a record is on the subtree as it hangs when the
