@@ -83,7 +83,9 @@ pub enum CommitError {
     /// transaction read it. That write changed nothing: its transaction is
     /// open and holds the writes it held before, and a write scope of the
     /// caller's keeps what the write claimed in it.
-    #[error("conflict: another commit wrote a key after this transaction first wrote it")]
+    #[error(
+        "conflict: another commit wrote a key after this transaction first wrote it, or took a value that a write of this transaction keeps"
+    )]
     Conflict,
     /// The commit happened and is visible, but the engine was asked to make
     /// it durable and could not: a crash may still lose it.

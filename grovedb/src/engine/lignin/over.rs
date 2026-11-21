@@ -52,19 +52,25 @@
 //!   (`BatchError::NotEntered`) and takes nothing of the group. The
 //!   engine looks again by the rule of the enters
 //!   ([`Left::found_otherwise`], `Engine::apply_write_group`), and applies
-//!   the group with what that look states.
+//!   the group with what that look states. A group that writes into a
+//!   subtree which leaves with it and is not entered again is refused for
+//!   that subtree by its own doing ([`Left::own_doing`]), and is not
+//!   looked for again.
 //! - This look comes after the one for what the group enters. A subtree
-//!   that the first found absent and this one finds entered is dropped
-//!   and entered once, as this one has it.
-//! - Where both found no subtree and such a commit entered it before the
-//!   group was applied, by a first write into the tree, nothing is
-//!   dropped and nothing is said of the element's node: the element is
-//!   written as the group states it, its node keeps the Merk that the
-//!   commit hung under it, and the entry outlives the tree. That commit
-//!   wrote the element's node too. Its transaction and this one do not
-//!   meet as a conflict where this one had not written the node before
-//!   it, on either engine, and RocksDB keeps that commit's records under
-//!   the prefix.
+//!   that the first found absent, and that this one finds entered and
+//!   states the drop of, is entered once, as this one has it.
+//! - Where both found no subtree of a tree that the group leaves as no
+//!   tree, or as a tree that it does not write into, and such a commit
+//!   entered the subtree before the group was applied, by a first write
+//!   into the tree, nothing is dropped and this look says nothing of the
+//!   element's node: the element is written as the group states it, its
+//!   node keeps the Merk that the commit hung under it, and the entry
+//!   outlives the tree. That commit wrote the element's node too. Its
+//!   transaction and this one do not meet as a conflict where this one
+//!   had not written the node before it, on either engine, and RocksDB
+//!   keeps that commit's records under the prefix. A group that writes
+//!   into the subtree itself meets that commit as two first writers of
+//!   one subtree meet ([`super::enter`]).
 //!
 //! What this does not do:
 //!
@@ -112,6 +118,9 @@ pub(super) struct Left {
     /// The subtrees that are entered again with the group, each with the
     /// bytes of its tree type: a dropped one before those below it.
     pub(super) enters: Vec<(LigninSubtree, Vec<u8>)>,
+    /// The subtrees that the group holds a write for and that leave with
+    /// it: a dropped one, or one below it, that is not entered again.
+    bare: Vec<[u8; 32]>,
 }
 
 impl Left {
@@ -121,6 +130,17 @@ impl Left {
     pub(super) fn found_otherwise(&self, refused: LigninEntryRefused) -> bool {
         match refused {
             LigninEntryRefused::NotEntered(subtree) => self.drops.contains(&subtree),
+            LigninEntryRefused::EnteredOtherwise(_) => false,
+        }
+    }
+
+    /// Whether `refused` is of a subtree that has no entry by the group's
+    /// own doing: one that the group writes into, that leaves with a drop
+    /// of this look and that is not entered again. No commit beside the
+    /// group made that so.
+    pub(super) fn own_doing(&self, refused: LigninEntryRefused) -> bool {
+        match refused {
+            LigninEntryRefused::NotEntered(subtree) => self.bare.contains(&subtree),
             LigninEntryRefused::EnteredOtherwise(_) => false,
         }
     }
@@ -274,6 +294,19 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
         }
         let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
         left.enters.push((subtree.clone(), bytes));
+    }
+    // What the group writes into a subtree that leaves and is not entered
+    // again is refused by the transaction, whatever is published beside
+    // the group.
+    for subtree in parts.iter().flat_map(LigninSettled::written) {
+        let prefix = subtree.prefix;
+        let again = left.enters.iter().any(|(known, _)| known.prefix == prefix);
+        if again || own_business(&prefix) {
+            continue;
+        }
+        if left.drops.contains(&prefix) || below(view, &left.drops, prefix)? {
+            left.bare.push(prefix);
+        }
     }
     Ok(left)
 }

@@ -360,7 +360,7 @@ impl LigninChangeSet {
     /// Whether the change set writes or removes a node. The root of a Merk
     /// changes only with a node, so a root that is stated with none says
     /// nothing new: a commit that leaves an empty Merk empty.
-    fn writes_nodes(&self) -> bool {
+    pub(super) fn writes_nodes(&self) -> bool {
         !self.nodes.is_empty() || !self.removed.is_empty()
     }
 
@@ -845,9 +845,10 @@ impl LigninBatch {
         self.staged.drop_subtree(Subtree::new(subtree.prefix));
     }
 
-    /// Stages `change_set`. `began_empty` says that the handle which
-    /// hands it over has loaded no node of its Merk, and `path` is the
-    /// path that handle was opened by, if it was told one.
+    /// Stages `change_set`. `began_empty` says that it is of a writer
+    /// that began with no node ([`LigninSettled::began_empty`]), and
+    /// `path` is the path that the handle which hands it over was opened
+    /// by, if it was told one.
     pub(super) fn stage(
         &self,
         change_set: LigninChangeSet,
@@ -1100,9 +1101,10 @@ impl LigninSettled {
         }
     }
 
-    /// The nodes that the batch puts, with a stated value, where the handle
-    /// that put them had loaded the node with the element of a tree as its
-    /// value: each by its subtree and its key. What such an element hosted
+    /// The nodes that the batch puts with a stated value, of those that a
+    /// handle staged a put of, with a stated value, after it had loaded the
+    /// node with the element of a tree as its value: each by its subtree
+    /// and its key. What such an element hosted
     /// is not the new element's, unless that is the same tree written
     /// again, and the store does not know which: whoever applies the batch
     /// looks at what the node hosts and drops what the new element does
@@ -1119,16 +1121,19 @@ impl LigninSettled {
 
     /// Whether a change set of the Merk `prefix` in the batch is of a
     /// writer that began with no node, as the writer of a tree that the
-    /// same batch makes does. It is said of a change set that neither puts
-    /// nor removes the node its handle fetched first, staged through a
-    /// handle that had taken in no application of the Merk
-    /// ([`LigninNodeStore::take_locations`](super::LigninNodeStore::take_locations)).
+    /// same batch makes does. A handle decides it with the first change
+    /// set of nodes that it stages, for that one and every later one: the
+    /// change set neither puts nor removes the node the handle fetched
+    /// first. A change set that a handle stages after it took in an
+    /// application of the Merk
+    /// ([`LigninNodeStore::take_locations`](super::LigninNodeStore::take_locations))
+    /// is of no such writer: it writes on what that application left.
     ///
     /// A Merk that is opened with a root fetches it before anything else,
-    /// and every change set of a Merk puts its root or removes it; the
-    /// writer of a Merk with no node fetches nothing for it. A node that
-    /// such a writer fetches by its key, where the transaction holds one
-    /// under the prefix, counts against it only if the change set writes
+    /// and its first change set puts that root or removes it; the writer
+    /// of a Merk with no node fetches nothing for it. A node that such a
+    /// writer fetches by its key, where the transaction holds one under
+    /// the prefix, counts against it only if its first change set writes
     /// that key.
     ///
     /// It says what a handle did and nothing else: a handle is taken to

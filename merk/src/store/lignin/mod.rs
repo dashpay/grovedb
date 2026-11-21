@@ -273,6 +273,10 @@ pub struct LigninNodeStore<'db> {
     /// The key of the node that was fetched through the handle first, for
     /// a Merk or by its key: the root of a Merk that was opened with one.
     first: RefCell<Option<Vec<u8>>>,
+    /// Whether the writer of the handle's Merk began with no node, once
+    /// the first change set of nodes was staged through the handle
+    /// ([`Self::began_empty`]).
+    began: Cell<Option<bool>>,
     /// Whether the handle took in where an application put nodes of its
     /// subtree ([`Self::take_locations`]).
     placed: Cell<bool>,
@@ -356,6 +360,7 @@ impl<'db> LigninNodeStore<'db> {
             reads: RefCell::new(HashMap::new()),
             trees: RefCell::new(HashSet::new()),
             first: RefCell::new(None),
+            began: Cell::new(None),
             placed: Cell::new(false),
             path: None,
         }
@@ -473,18 +478,28 @@ impl<'db> LigninNodeStore<'db> {
         self.first.borrow_mut().get_or_insert_with(|| key.to_vec());
     }
 
-    /// Whether a change set that this handle stages is of a Merk whose
-    /// writer began with no node: the handle took in no application of
-    /// the Merk, and the change set neither puts nor removes the node that
-    /// the handle fetched first. A Merk that is opened with a root fetches
-    /// it before anything else, and every change set of a Merk writes its
-    /// root or removes it.
+    /// Whether a change set of nodes that this handle stages is of a Merk
+    /// whose writer began with no node. It is decided by the first such
+    /// change set and holds for every later one of the handle, which are
+    /// of the same writer: that change set neither puts nor removes the
+    /// node that the handle fetched first. A Merk that is opened with a
+    /// root fetches it before anything else, and its first change set
+    /// writes that root or removes it; a later one need not, once the
+    /// root is another. A handle that took in an application of the Merk
+    /// writes on what that application left, whatever it began with.
     fn began_empty(&self, change_set: &LigninChangeSet) -> bool {
+        if self.placed.get() {
+            return false;
+        }
+        if let Some(began) = self.began.get() {
+            return began;
+        }
         let first = self.first.borrow();
         let on = first
             .as_ref()
             .is_some_and(|key| change_set.writes_node(key));
-        !(self.placed.get() || on)
+        self.began.set(Some(!on));
+        !on
     }
 
     /// Keeps the key of a node that was loaded with the element of a tree
@@ -578,7 +593,7 @@ impl<'db> LigninNodeStore<'db> {
             }
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
-                let began_empty = self.began_empty(&change_set);
+                let began_empty = change_set.writes_nodes() && self.began_empty(&change_set);
                 let staged = staged
                     .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
                 staged.wrap_with_cost(MODEL.staged_write())

@@ -70,6 +70,7 @@ use std::{
 };
 
 use grovedb_costs::{
+    cost_return_on_error, cost_return_on_error_no_add,
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
     OperationCost,
 };
@@ -432,8 +433,9 @@ enum Records<'db> {
 /// The subtree is not copied: it goes to its new prefix with the batch,
 /// its nodes where they are (`tree-layout.md` D5), and the batch says so
 /// ([`LigninBatch::move_subtree`]): where the subtree is entered when the
-/// walk begins, and otherwise with the first record that the walk finds,
-/// under a subtree that a commit beside the transaction entered since.
+/// walk begins, and otherwise where it is entered when the walk ends,
+/// which a commit beside the transaction made so. The walk reads the
+/// state of each of its steps, and keeps none.
 /// What a move is charged on existing
 /// GroveVersions is what the copy of RocksDB is charged, record by
 /// record, so each step reads the next record through a cursor of the
@@ -444,6 +446,8 @@ enum Records<'db> {
 #[derive(Debug)]
 pub struct LigninSubtreeMove<'db> {
     records: Records<'db>,
+    /// The handle the subtree is read by where it is.
+    source: LigninNodeStore<'db>,
     from: SubtreePrefix,
     to: SubtreePrefix,
     batch: &'db LigninBatch,
@@ -459,6 +463,7 @@ impl SubtreeMove for LigninSubtreeMove<'_> {
     ) -> CostResult<Option<T>, crate::Error> {
         let Self {
             records,
+            source,
             from,
             to,
             batch,
@@ -466,11 +471,6 @@ impl SubtreeMove for LigninSubtreeMove<'_> {
         } = self;
         let staged = || Ok(()).wrap_with_cost(OperationCost::default());
         let land = |key: &[u8], record: &[u8]| {
-            // A record is a subtree that is entered, whatever the read
-            // of its entry found before the cursor was made.
-            if !std::mem::replace(told, true) {
-                batch.move_subtree(from, to);
-            }
             batch.charge_landed(to, key, record.len(), bill(key, record));
             staged()
         };
@@ -480,10 +480,25 @@ impl SubtreeMove for LigninSubtreeMove<'_> {
             batch.charge_cleared(from, key, KeyValueStorageCost::default());
             staged()
         };
-        match records {
+        let moved = match records {
             Records::Nodes(cursor) => move_record(cursor, inspect, land, clear),
             Records::Flat(cursor) => move_record(cursor, inspect, land, clear),
+        };
+        let mut cost = OperationCost::default();
+        let found = cost_return_on_error!(&mut cost, moved);
+        if found.is_none() && !*told {
+            // The walk has ended on a subtree that was not entered when
+            // it began. Where it is entered now, a commit beside the
+            // transaction entered it since, whatever the walk saw of it:
+            // the batch holds the move.
+            let entry = source.entry().map_err(merk_error);
+            let entry = cost_return_on_error_no_add!(cost, entry.map_err(crate::Error::from));
+            if entry.is_some() {
+                batch.move_subtree(from, to);
+                *told = true;
+            }
         }
+        Ok(found).wrap_with_cost(cost)
     }
 }
 
@@ -924,12 +939,14 @@ impl Engine for LigninEngine {
             }
             // The group is looked for and applied again where the
             // transaction found the entry of a subtree otherwise than
-            // the look had, no batch of the group enters, drops or
-            // clears a subtree itself, and a commit was published since
-            // before the look. Every other refusal is the caller's
-            // answer.
-            let stale = (refused.entry)
-                .is_some_and(|entry| owed.found_otherwise(entry) || left.found_otherwise(entry));
+            // the look had, and not by a drop that the look stated; no
+            // batch of the group enters, drops or clears a subtree
+            // itself; and a commit was published since before the look.
+            // Every other refusal is the caller's answer.
+            let stale = (refused.entry).is_some_and(|entry| {
+                let found_otherwise = owed.found_otherwise(entry) || left.found_otherwise(entry);
+                found_otherwise && !left.own_doing(entry)
+            });
             if !stale || own || self.db.version() == before {
                 return applied.map_err(|refused| merk_error(refused.error));
             }
@@ -955,8 +972,8 @@ impl Engine for LigninEngine {
         // move: its walk finds nothing, and the batch is told of no move.
         // A read of the entry that the transaction refuses is met again by
         // the cursor, whose status ends the move. The cursor is made after
-        // the entry is read: a record that it finds under a subtree which
-        // was entered in between tells the batch of the move.
+        // the entry is read, and reads the state of each step: a subtree
+        // that is entered meanwhile is found at the end of the walk.
         let entry = source.entry().ok().flatten();
         #[cfg(test)]
         an_entry_was_read();
@@ -979,6 +996,7 @@ impl Engine for LigninEngine {
         };
         LigninSubtreeMove {
             records,
+            source,
             from,
             to,
             batch,

@@ -45,7 +45,9 @@ pub enum CommitError {
     /// Another commit wrote a key after this transaction first wrote it. The
     /// transaction's writes are discarded and the database is unchanged.
     /// This outcome is reported for a conflict and for nothing else.
-    #[error("conflict: another commit wrote a key after this transaction first wrote it")]
+    #[error(
+        "conflict: another commit wrote a key after this transaction first wrote it, or took a value that a write of this transaction keeps"
+    )]
     Conflict,
     /// The commit happened and is visible, but the engine was asked to make
     /// it durable and could not: a crash may still lose it.

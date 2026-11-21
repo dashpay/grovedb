@@ -3,9 +3,9 @@
 //! engine refuses of a group of several batches and tells a batch of a
 //! move, at the seam.
 //!
-//! The order is forced in each test: the other writer runs on the same
-//! thread, inside the application of the group, at a place the engine
-//! names (`AFTER_A_LOOK`, `AFTER_ENTRY_READS`).
+//! Where a test has another writer, the order is forced: that writer
+//! runs on the test's thread, inside the call of the engine, at a place
+//! the engine names (`AFTER_A_LOOK`, `AFTER_ENTRY_READS`).
 
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
@@ -13,7 +13,7 @@ use grovedb_merk::{
     store::lignin::hash::MerkHashRules, tree::kv::ValueDefinedCostType, Merk, Op, TreeFeatureType,
     TreeType,
 };
-use grovedb_storage::{prefix::build_prefix, Error as StorageError};
+use grovedb_storage::{prefix::build_prefix, Error as StorageError, FlatStore};
 use grovedb_version::version::GroveVersion;
 use lignindb::{Db, Options};
 
@@ -186,9 +186,64 @@ fn a_tree_that_is_dropped_after_the_look_is_looked_for_again() {
     applied.unwrap().expect("the group is applied");
     let refused = REFUSED.take();
     assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].contains("not entered"), "{refused:?}");
     assert_eq!(entry_of_t(&db), None);
     let read = (db.get(ROOT, b"t", None, v).unwrap()).expect("an element");
     assert_eq!(read, item(2));
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
+}
+
+/// A group writes an item over a tree and a record into the tree's
+/// subtree. The subtree is dropped with the group and not entered again,
+/// so the transaction refuses the record by the group's own doing. A
+/// commit that another writer publishes after the look does not make the
+/// engine look again: the refusal is the caller's answer, and nothing of
+/// the group is applied.
+#[test]
+fn a_group_that_writes_into_a_tree_it_leaves_as_no_tree_is_looked_for_once() {
+    let v = version();
+    let (dir, db) = grove(true);
+    let engine = db.engine();
+    let (other, done) = beside(&db, |db| {
+        let engine = db.engine();
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let handle = engine.subtree_by_prefix([7; 32], Some(&batch), &tx);
+        let handle = handle.unwrap();
+        (handle.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        engine.apply_batch(batch, &tx).unwrap().expect("a batch");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+    });
+    let tx = engine.start_transaction();
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let root = engine.subtree(ROOT, Some(&batch), &tx).unwrap();
+    let mut merk = Merk::open_base(root, TreeType::NormalTree, NO_COST, v)
+        .unwrap()
+        .expect("the root Merk");
+    let over = item(2).serialize(v).expect("the bytes of an element");
+    let put = Op::Put(over, TreeFeatureType::BasicMerkNode);
+    (merk.apply::<_, Vec<u8>>(&[(b"t".to_vec(), put)], &[], None, v))
+        .unwrap()
+        .expect("a write of the root Merk");
+    drop(merk);
+    let below = engine.subtree(T.into(), Some(&batch), &tx).unwrap();
+    (below.aux().put(b"k", b"v", None).unwrap()).expect("staging");
+    drop(below);
+    REFUSED.take();
+    AFTER_A_LOOK.set([apart(other), apart(Box::new(|| ()))].into());
+    let applied = engine.apply_batch(batch, &tx).unwrap();
+    assert!(done.get());
+    assert_eq!(AFTER_A_LOOK.take().len(), 1, "one look");
+    applied.expect_err("the group is refused");
+    let refused = REFUSED.take();
+    assert_eq!(refused.len(), 1, "{refused:?}");
+    assert!(refused[0].contains("not entered"), "{refused:?}");
+    drop(tx);
+    assert_eq!(entry_of_t(&db), Some((TreeType::NormalTree, true)));
+    let kept = (db.get(T, b"x", None, v).unwrap()).expect("the element of the tree");
+    assert_eq!(kept, item(1));
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
     check(dir.path());
 }
@@ -199,8 +254,6 @@ fn a_tree_that_is_dropped_after_the_look_is_looked_for_again() {
 /// the element's node names no root: the new tree has none.
 #[test]
 fn a_flat_tree_written_over_a_merk_with_a_record_of_its_own_hosts_no_root() {
-    use grovedb_storage::FlatStore;
-
     let v = version();
     let (dir, db) = grove(true);
     let engine = db.engine();
@@ -324,30 +377,28 @@ fn a_group_that_writes_a_merk_after_its_last_write_of_the_element_is_refused() {
     assert!(entered);
 }
 
-/// The move of a subtree reads the entry of the subtree and then makes
-/// the cursor that walks it. A subtree that was not entered at the read
-/// and that another writer's commit entered before the cursor was made
-/// has records for the walk: the batch is told of the move with the
-/// first of them, so that no record is charged for a move that the batch
-/// does not hold.
-#[test]
-fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batch() {
-    let v = version();
-    let (_dir, db) = grove(false);
+/// Walks the move of the subtree at `at` to the key `u` with `other`
+/// happening after the engine read the entry of the subtree, before it
+/// makes the cursor. Gives the keys the walk showed and the moves that
+/// the batch holds afterwards, with the move that was asked for.
+#[allow(clippy::type_complexity)]
+fn moved_beside(
+    db: &Lignin,
+    at: &[&[u8]],
+    other: Box<dyn FnOnce()>,
+) -> (
+    Vec<Vec<u8>>,
+    Vec<([u8; 32], [u8; 32])>,
+    ([u8; 32], [u8; 32]),
+) {
     let engine = db.engine();
-    let from = build_prefix(T.into()).unwrap();
+    let from = build_prefix(at.into()).unwrap();
     let to = build_prefix([b"u".as_slice()].as_ref().into()).unwrap();
-    let (other, done) = beside(&db, move |db| {
-        (db.insert(T, b"x", item(1), None, None, v))
-            .unwrap()
-            .expect("the first element of the tree");
-    });
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
     AFTER_ENTRY_READS.set(Some((1, other)));
     let mut moving = engine.move_subtree(from, to, &batch, &tx).unwrap();
     assert!(AFTER_ENTRY_READS.take().is_none());
-    assert!(done.get());
     let mut walked = Vec::new();
     loop {
         let moved = moving.move_next(|key, _| Ok(key.to_vec()), |_, _| Default::default());
@@ -357,8 +408,59 @@ fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batc
         }
     }
     drop(moving);
-    assert_eq!(walked, [b"x".to_vec()]);
     let mut group = <LigninEngine as Engine>::WriteGroup::default();
     (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
-    assert_eq!(group.parts[0].moves(), [(from, to)]);
+    (walked, group.parts[0].moves().to_vec(), (from, to))
+}
+
+/// The move of a subtree reads the entry of the subtree and then makes
+/// the cursor that walks it. A subtree that was not entered at the read
+/// and that another writer's commit entered before the cursor was made
+/// is entered when the walk ends, and the batch is told of the move
+/// there: no move is applied as that of a tree nothing was written into.
+/// The walk shows the nodes of a Merk that was entered so.
+#[test]
+fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batch() {
+    let v = version();
+    let (_dir, db) = grove(false);
+    let (other, done) = beside(&db, move |db| {
+        (db.insert(T, b"x", item(1), None, None, v))
+            .unwrap()
+            .expect("the first element of the tree");
+    });
+    let (walked, moves, asked) = moved_beside(&db, T, other);
+    assert!(done.get());
+    assert_eq!(walked, [b"x".to_vec()]);
+    assert_eq!(moves, [asked]);
+}
+
+/// The same for a tree that keeps its data flat. The cursor was made for
+/// the nodes of a Merk, since the subtree was not entered, and shows
+/// none of the records that the other writer's commit put there: the
+/// batch is told of the move all the same, where the walk ends.
+#[test]
+fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batch() {
+    let v = version();
+    let (_dir, db) = grove(false);
+    let root: &[&[u8]] = &[];
+    (db.insert(root, b"m", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves");
+    let (other, done) = beside(&db, move |db| {
+        let root: &[&[u8]] = &[];
+        (db.mmr_tree_append(root, b"m", vec![7; 40], None, v))
+            .unwrap()
+            .expect("the first leaf");
+    });
+    let (walked, moves, asked) = moved_beside(&db, &[b"m"], other);
+    assert!(done.get());
+    assert_eq!(walked, Vec::<Vec<u8>>::new());
+    assert_eq!(moves, [asked]);
+    // With no writer beside it, the tree nothing was appended to is no
+    // move of its batch.
+    (db.insert(root, b"n", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves");
+    let (walked, moves, _) = moved_beside(&db, &[b"n"], Box::new(|| ()));
+    assert_eq!((walked.len(), moves.len()), (0, 0));
 }

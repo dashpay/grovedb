@@ -78,8 +78,8 @@
 //!   what it hosts would point at the root the Merk had before, or at
 //!   none. A group in which a batch writes nodes of the Merk after the
 //!   last batch that puts the element's node is refused with
-//!   `Error::NotSupported`: no node would name the root that batch
-//!   leaves.
+//!   `Error::NotSupported`: where that batch moves the root, no node
+//!   would name it.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise it is

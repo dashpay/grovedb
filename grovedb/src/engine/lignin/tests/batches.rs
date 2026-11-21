@@ -766,6 +766,41 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         size *= 2;
     }
     calls.get(grown[2], &[47]);
+    // A first segment that deletes the element under the key of a tree's
+    // root, and operations added after it that write into the same tree:
+    // the tree is written on, with what it holds and the tree in it.
+    let rooted: &[&[u8]] = &[b"documents", b"rooted"];
+    let inner: &[&[u8]] = &[b"documents", b"rooted", b"z"];
+    let mut ops = vec![insert(&rooted[..1], b"rooted", Element::empty_tree())];
+    ops.extend((0..7).map(|n| node(rooted, n)));
+    ops.push(insert(rooted, b"z", Element::empty_tree()));
+    ops.push(insert(inner, b"deep", Element::new_item(vec![3; 30])));
+    calls.batch("a tree with a tree in it", ops);
+    for (round, height) in [None, Some(1u8), Some(2), Some(3)].into_iter().enumerate() {
+        let tree = db.get(&rooted[..1], b"rooted", None, version).unwrap();
+        let root = (tree.expect("the tree").root_key_and_tree_type_owned())
+            .and_then(|(root, _)| root)
+            .expect("a root key");
+        assert_ne!(root, b"z");
+        let options = BatchApplyOptions {
+            batch_pause_height: height,
+            ..BatchApplyOptions::default()
+        };
+        let added = [b'n', round as u8];
+        calls.partial(
+            &format!("the root of a tree deleted, paused at {height:?}"),
+            vec![delete(rooted, &root)],
+            Some(options),
+            |cost| {
+                Ok(vec![
+                    insert(&[b"balances"], b"payer", charged(cost)),
+                    insert(rooted, &added, Element::new_item(vec![5; 12])),
+                ])
+            },
+        );
+        calls.get(rooted, &added);
+        calls.get(inner, b"deep");
+    }
     // The same for a tree that keeps its data flat: leaves appended by a
     // first segment that stops below the tree's element.
     calls.batch(
@@ -1510,7 +1545,8 @@ fn the_directory_has_a_tree_that_took_the_place_of_another_by_its_own_type() {
 /// tree only what is not there. Such an insert asks the store for its
 /// key, and until the batch is applied the store holds what the tree
 /// that was there had under it, on both engines: under such a key the
-/// insert fails its batch, and under any other it is made.
+/// insert fails its batch or is left out, as its kind has it, and under
+/// any other it is made.
 fn only_what_is_not_there<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     let db = open::<E>(dir);
     let made = made_by(version);
@@ -1519,7 +1555,12 @@ fn only_what_is_not_there<E: Engine>(dir: &Path, version: &'static GroveVersion)
     let item = || Element::new_item(vec![0x77; 7]);
     let absent =
         |at: &[&[u8]], key: &[u8]| Op::insert_if_not_exists_op(path(at), key.to_vec(), item());
-    for top in [b"one".as_slice(), b"two", b"three"] {
+    // The same insert as one that is left out where its key holds a
+    // record, with no refusal.
+    let or_skipped = |at: &[&[u8]], key: &[u8]| {
+        Op::insert_if_not_exists_or_skip_op(path(at), key.to_vec(), item())
+    };
+    for top in [b"one".as_slice(), b"two", b"three", b"four", b"five"] {
         calls.batch("filled", filled(&[], top, 0, made));
     }
     // Under each key that the old tree had, the key of its root among
@@ -1562,6 +1603,25 @@ fn only_what_is_not_there<E: Engine>(dir: &Path, version: &'static GroveVersion)
     ];
     calls.batch("a tree over three, and what is not there", ops);
     calls.proven(&[b"three"]);
+    // Inserts that are left out under every key the old tree had, beside
+    // one under a key it had not and another write: the new tree holds
+    // those two.
+    let mut ops = vec![insert(&[], b"four", Element::empty_tree())];
+    ops.extend(old.iter().map(|key| or_skipped(&[b"four"], key)));
+    ops.push(or_skipped(&[b"four"], b"new"));
+    ops.push(insert(&[b"four"], b"other", item()));
+    calls.batch("a tree over four, and what is there left out", ops);
+    calls.get(&[b"four"], b"new");
+    calls.get(&[b"four"], b"other");
+    calls.proven(&[b"four"]);
+    // All of them left out, and nothing else written: the new tree has no
+    // element, and takes one later.
+    let mut ops = vec![insert(&[], b"five", Element::empty_tree())];
+    ops.extend(old.iter().map(|key| or_skipped(&[b"five"], key)));
+    calls.batch("a tree over five, and all of it left out", ops);
+    calls.proven(&[b"five"]);
+    calls.batch("into it", vec![insert(&[b"five"], b"later", item())]);
+    calls.proven(&[b"five"]);
     let after = |top: &[u8]| insert(&[top], b"after", item());
     calls.batch("after it all", vec![after(b"one"), after(b"three")]);
     calls.batch(
@@ -1596,6 +1656,8 @@ fn a_tree_over_a_tree_takes_what_is_not_there_as_on_rocksdb() {
             (b"one".as_slice(), TreeType::NormalTree),
             (b"two", TreeType::SumTree),
             (b"three", TreeType::NormalTree),
+            (b"four", TreeType::NormalTree),
+            (b"five", TreeType::NormalTree),
         ] {
             let tx = engine.start_read_transaction();
             let handle = engine.subtree([key].as_ref().into(), None, &tx).unwrap();
@@ -1699,20 +1761,29 @@ fn where_a_tree_was<E: Engine>(
     }
     reads.get(&[b"four", b"nested"], b"a");
     reads.get(&[b"four", b"nested", b"deeper"], b"deep");
+    // Two writes that read first: each with whether it changed the root.
+    let root = || db.root_hash(None, version).unwrap().expect("a root");
+    let moved = |before: [u8; 32]| (OperationCost::default(), (root() != before).to_string());
     // An insert of what is not there asks the store for its key, and is
     // refused where the store holds a record under it.
+    let before = root();
     let absent = Op::insert_if_not_exists_op(path(&[b"four"]), b"long".to_vec(), item.clone());
     let applied = db.apply_batch(vec![absent], None, None, version);
     reads.log.answer("absent/four/long".to_owned(), applied);
+    let (cost, changed) = moved(before);
+    (reads.log.answers).push(("root/absent/four/long".to_owned(), cost, changed));
     // The delete of a tree asks whether it is empty.
+    let before = root();
     let under_the_root: &[&[u8]] = &[];
     let deleted = db.delete(under_the_root, b"one", None, None, version);
     reads.log.answer("delete/one".to_owned(), deleted);
+    let (cost, changed) = moved(before);
+    (reads.log.answers).push(("root/delete/one".to_owned(), cost, changed));
     db.flush().expect("a flush");
     let gave = |(call, cost, answer): &(String, OperationCost, String)| {
         let found = answer.starts_with("Ok");
         let gave = match call.split('/').next() {
-            Some("empty") => answer.clone(),
+            Some("empty" | "root") => answer.clone(),
             Some("all") => answer
                 .matches("KeyElementPairResultItem")
                 .count()
@@ -1734,7 +1805,7 @@ fn where_a_tree_was<E: Engine>(
 /// They are the acceptance list of that task: once the nodes of a tree
 /// that was written over are kept as records that no tree links, LigninDB
 /// gives the second column, and the third goes.
-const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 22] = [
+const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 24] = [
     // A tree nothing was written into, over a tree with elements.
     ("empty/one", "Ok(false)", "Ok(true)"),
     ("get/one/nested/b", "found", "nothing"),
@@ -1763,8 +1834,10 @@ const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 22] = [
     // An insert of what is not there, under a key the old tree had: a
     // write.
     ("absent/four/long", "refused", "made"),
+    ("root/absent/four/long", "false", "true"),
     // The tree nothing was written into is deleted: a write.
     ("delete/one", "refused", "made"),
+    ("root/delete/one", "false", "true"),
 ];
 
 /// A known difference, and no property of the engine (D-227,
@@ -1773,9 +1846,10 @@ const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 22] = [
 /// not. RocksDB's answers are the required ones and are held here on
 /// RocksDB. What LigninDB answers today is held beside them so that the
 /// difference is the one that is written down, neither more nor less:
-/// 20 reads with another answer, and 2 with the same answer, which the
-/// engines are compared on for their cost and differ in it. Every other
-/// call of the history answers and costs the same.
+/// 20 reads with another answer, 2 with the same answer, which the
+/// engines are compared on for their cost and differ in it, and for each
+/// of the two reads that are writes whether the root hash changed with
+/// it. Every other call of the history answers and costs the same.
 #[test]
 fn lignindb_does_not_yet_read_what_rocksdb_reads_where_a_tree_was_written_over() {
     let answers = |required: bool| -> Vec<(String, String)> {
