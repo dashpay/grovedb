@@ -13,12 +13,12 @@ use lignin_io::{StdVfs, Vfs};
 use lignin_store::{flush::Checkpointed, segment::read_manifest};
 
 use super::{
-    block, bytes_of, checkpointer, checkpoints_in, names_of, open, open_on, remove_block,
-    root_hash, sim, store_files, store_on, store_with_log, turn, write_documents, History, DIR,
-    NO_CATCH_UP,
+    block, building, bytes_of, checkpointer, checkpoints_in, gone, names_of, open, open_on,
+    remove_block, root_hash, sim, store_files, store_on, store_with_log, turn, write_documents,
+    History, DIR, NO_CATCH_UP,
 };
 use crate::{
-    checkpoint::{CheckpointError, CheckpointOptions, DEFAULT_CATCH_UP_ABOVE},
+    checkpoint::{create::Step, CheckpointError, CheckpointOptions, DEFAULT_CATCH_UP_ABOVE},
     commit::{CommitError, NoStaleHashes, Stopped},
     txn::tests::{
         model::OwnedBatch,
@@ -534,11 +534,62 @@ fn an_existing_target_is_refused_and_left_untouched() {
     world.check_committed();
 }
 
-/// A manifest that a replacement left in doubt is not sampled: the
-/// creation is refused, with nothing left of the target, until write-back
-/// has found out which manifest is in force. Then it is made.
+/// A catch-up of write-back leaves the manifest in doubt, by replacements
+/// of its own that fail, every one, and the manifest can be opened again:
+/// the creation has it settled after the catch-up, and the checkpoint is
+/// made. The catch-up's error is reported.
 #[test]
-fn a_manifest_in_doubt_is_not_sampled() {
+fn a_catch_up_that_leaves_the_manifest_in_doubt_is_settled() {
+    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
+    use lignin_store::segment::ManifestStore;
+
+    let fs = sim(12);
+    let (db, versions) = store_on(&fs);
+    let mut world = World::new(&db, &versions);
+    let mut rng = Rng::new(12);
+    for round in 0..3 {
+        block(&mut world, &mut rng, round * 10, 10);
+    }
+    let target = checkpoints_in(&db).join("1");
+    let options = CheckpointOptions {
+        catch_up_above: Some(0),
+    };
+    let maker = checkpointer(&db, &versions).with_options(options);
+    // Every rename of a manifest of the live database fails, so the
+    // last replacement that the catch-up tries leaves it in doubt.
+    // Opening the manifest again renames nothing.
+    let renames = OpSet::of(&[OpKind::Rename]);
+    let manifest = Path::new(DIR).join(ManifestStore::FILE_NAME);
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(renames)
+            .at(manifest)
+            .forever(),
+    );
+    let created = maker.create(&target).expect("a checkpoint");
+    fs.clear_rules();
+    assert!(
+        matches!(&created.catch_up, Some(Err(_))),
+        "{:?}",
+        created.catch_up
+    );
+    assert!((db.manifest.lock().expect("the manifest").manifest()).is_ok());
+    assert_eq!(created.version, versions.latest());
+    let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+    let opened = open_on(vfs, &target, &db).expect("the checkpoint opens");
+    opened.check(&world.model);
+}
+
+/// A creation asks write-back for the settled manifest before it makes
+/// a directory: a manifest that a replacement left in doubt is opened
+/// again, and the checkpoint is made, with no table checkpoint and no
+/// commit in between. Where the manifest cannot be opened again, the
+/// creation fails with that error and no directory made, and can be made
+/// again. A manifest that is left in doubt after the creation asked is
+/// not sampled: that creation is refused, with nothing left of it, and
+/// the next is made.
+#[test]
+fn a_manifest_in_doubt_is_settled_before_it_is_sampled() {
     use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
     use lignin_store::segment::SegmentStoreError;
 
@@ -546,28 +597,70 @@ fn a_manifest_in_doubt_is_not_sampled() {
     let (db, versions) = store_on(&fs);
     let mut world = World::new(&db, &versions);
     let mut rng = Rng::new(10);
-    for round in 0..3 {
-        block(&mut world, &mut rng, round * 10, 10);
-    }
-    (db.write_back(&versions).pass()).expect("a pass of write-back");
-    db.segments.sync().expect("the segment is synced");
     // The rename of the next manifest fails: the directory has the old one
     // or the new one, and the store does not know which.
-    let renames = OpSet::of(&[OpKind::Rename]);
-    fs.add_rule(FaultRule::new(Fault::Eio).on(renames));
-    {
+    let leave_in_doubt = || {
+        (db.write_back(&versions).pass()).expect("a pass of write-back");
+        db.segments.sync().expect("the segment is synced");
+        let renames = OpSet::of(&[OpKind::Rename]);
+        fs.add_rule(FaultRule::new(Fault::Eio).on(renames));
         let mut manifest = db.manifest.lock().expect("the manifest");
         let failed = db.segments.commit(&mut manifest);
         assert!(
             failed.is_err() && manifest.manifest().is_err(),
             "{failed:?}"
         );
+        fs.clear_rules();
+    };
+    let in_doubt = || (db.manifest.lock().expect("the manifest").manifest()).is_err();
+    let checkpoints = checkpoints_in(&db);
+    let nothing_made = |target: &Path| {
+        assert!(gone(&fs, target) && gone(&fs, &building(target)));
+        assert_eq!(versions.pins_held(), 0);
+    };
+    let maker = checkpointer(&db, &versions).with_options(NO_CATCH_UP);
+    for round in 0..3 {
+        block(&mut world, &mut rng, round * 10, 10);
+    }
+    leave_in_doubt();
+
+    // Opening the manifest again reads it and then syncs its directory.
+    // That sync is refused, so the manifest in memory is not replaced.
+    let target = checkpoints.join("1");
+    let syncs = OpSet::of(&[OpKind::SyncDir]);
+    fs.add_rule(FaultRule::new(Fault::Enospc).on(syncs).forever());
+    for _ in 0..2 {
+        let refused = maker.create(&target);
+        assert!(
+            matches!(&refused, Err(CheckpointError::Settle(_))),
+            "{refused:?}"
+        );
+        nothing_made(&target);
+        assert!(in_doubt());
     }
     fs.clear_rules();
 
-    let target = checkpoints_in(&db).join("1");
-    let maker = checkpointer(&db, &versions).with_options(NO_CATCH_UP);
-    let refused = maker.create(&target);
+    // It can: the creation has it settled, and is made.
+    let created = maker.create(&target).expect("a checkpoint");
+    assert_eq!(created.version, versions.latest());
+    assert!(!in_doubt());
+    let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
+    let opened = open_on(vfs.clone(), &target, &db).expect("the checkpoint opens");
+    opened.check(&world.model);
+
+    // A replacement leaves the manifest in doubt once the creation has
+    // asked, and before the sample.
+    for round in 3..6 {
+        block(&mut world, &mut rng, round * 10, 10);
+    }
+    let second = checkpoints.join("2");
+    let once = std::sync::atomic::AtomicBool::new(false);
+    let pause = |step: Step| {
+        if step == Step::Made && !once.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            leave_in_doubt();
+        }
+    };
+    let refused = maker.pausing(&pause).create(&second);
     assert!(
         matches!(
             &refused,
@@ -577,16 +670,12 @@ fn a_manifest_in_doubt_is_not_sampled() {
         ),
         "{refused:?}"
     );
-    assert!(
-        fs.read_dir(&target).is_err(),
-        "a refused checkpoint leaves a directory"
-    );
-    assert_eq!(versions.pins_held(), 0);
-
-    // Write-back's next table checkpoint opens the manifest again.
-    (db.write_back(&versions).checkpoint()).expect("a table checkpoint");
+    nothing_made(&second);
+    assert!(in_doubt());
+    let target = second;
     let created = maker.create(&target).expect("a checkpoint");
     assert_eq!(created.version, versions.latest());
+    assert!(!in_doubt());
     let vfs: Arc<dyn Vfs> = Arc::new(fs.clone());
     let opened = open_on(vfs, &target, &db).expect("the checkpoint opens");
     opened.check(&world.model);

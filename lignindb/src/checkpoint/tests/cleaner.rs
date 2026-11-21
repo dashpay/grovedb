@@ -25,7 +25,8 @@ use lignin_store::{
 };
 
 use super::{
-    block, bytes_of, checkpointer, checkpoints_in, open, remove_block, root_hash, turn, Opened,
+    block, building, bytes_of, checkpointer, checkpoints_in, open, remove_block, root_hash, turn,
+    Opened,
 };
 use crate::{
     checkpoint::create::Step,
@@ -186,14 +187,14 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
     let cleaner = Cleaner::new(write_back, &state).with_stats(&db.stats);
     let target = checkpoints_in(&db).join("1");
     let emptied = OnceLock::new();
-    let clean = || {
-        let went = empty_linked_segments(&db, &cleaner, &target);
+    let clean = |checkpoint: &Path| {
+        let went = empty_linked_segments(&db, &cleaner, checkpoint);
         emptied.set(went).expect("one cleaning");
     };
     let pause = |step: Step| {
         if while_created && step == Step::Sampled {
             assert_eq!(versions.pins_held(), 1, "the creation holds its pin");
-            clean();
+            clean(&building(&target));
         }
     };
     let created = (checkpointer(&db, &versions).pausing(&pause))
@@ -202,7 +203,7 @@ fn the_cleaner_deletes_segments_that_a_checkpoint_links(while_created: bool) {
     assert_eq!(created.version.get(), captured.version);
     assert!(created.linked > 0 && created.copied == 0, "{created:?}");
     if !while_created {
-        clean();
+        clean(&target);
     }
     let emptied = emptied.into_inner().expect("a cleaning");
     let still_whole = || {
@@ -281,6 +282,7 @@ fn a_pass_that_begins_while_a_creation_links_deletes_nothing_before_the_links() 
     let captured = world.model.clone();
     let hash = root_hash(&db, &versions, versions.latest()).expect("the grove has a root");
     let target = checkpoints_in(&db).join("1");
+    let built = building(&target);
 
     let created = std::thread::scope(|scope| {
         let pass = Mutex::new(None);
@@ -300,19 +302,19 @@ fn a_pass_that_begins_while_a_creation_links_deletes_nothing_before_the_links() 
                 assert_eq!(state.stats().segments_dropped, 0);
                 for file in &empty {
                     assert!(segment_in(&db.dir, *file).exists(), "segment {file}");
-                    assert!(!segment_in(&target, *file).exists(), "segment {file}");
+                    assert!(!segment_in(&built, *file).exists(), "segment {file}");
                 }
             }
             Step::Sampled => {
                 for file in &empty {
-                    assert!(segment_in(&target, *file).exists(), "segment {file}");
+                    assert!(segment_in(&built, *file).exists(), "segment {file}");
                 }
                 let began = pass.lock().expect("the pass").take().expect("a pass");
                 let done = began.join().expect("the pass");
                 assert!(done.dropped >= empty.len(), "{done:?}");
                 for file in &empty {
                     assert!(!segment_in(&db.dir, *file).exists(), "segment {file}");
-                    assert!(segment_in(&target, *file).exists(), "segment {file}");
+                    assert!(segment_in(&built, *file).exists(), "segment {file}");
                 }
             }
             _ => {}

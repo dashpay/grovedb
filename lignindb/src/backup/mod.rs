@@ -168,8 +168,8 @@
 //! (`crate::db::OpenError::NoManifest`, or a new and empty database where
 //! the directory holds no file of a database yet and the open may create).
 //! It is removed, by whoever asked for the copy, before the copy is made
-//! again: the target of a copy is a directory that is not there. The same
-//! holds for what a creation of a checkpoint leaves when it is cut short
+//! again: the target of a copy is a directory that is not there. A
+//! creation of a checkpoint leaves no such directory at its target
 //! ([`crate::checkpoint`], "Durability, and a creation that fails").
 //!
 //! A full disk under the target fails the copy with the error of the file

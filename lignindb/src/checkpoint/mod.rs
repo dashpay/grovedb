@@ -8,6 +8,8 @@
 //!   much log it leaves for the checkpoint's first open to replay.
 //! - [`delete`] removes a checkpoint's directory, and
 //!   [`DELETING_FILE_NAME`] marks one that it is removing.
+//! - [`CREATING_SUFFIX`] is what the name of a directory ends in that a
+//!   checkpoint is built in.
 //! - [`CheckpointError`] is every way a creation or a deletion fails.
 //!
 //! `docs/lignindb/transactions.md` section 11 is the specification (CK1 to
@@ -29,6 +31,7 @@
 //!
 //! ```text
 //! <target>/
+//!   LOCK                 the lock file of the directory, made with it
 //!   MANIFEST             the page size, the last file ids and the table
 //!                        checkpoint of the live manifest; every file closed
 //!                        or sealed, with its valid length
@@ -62,24 +65,32 @@
 //!
 //! | Step | What is done | Held |
 //! | --- | --- | --- |
-//! | 1 | A session that takes no commit any more is refused, and so is a target that is there, with nothing touched (P-14). | nothing |
-//! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). | nothing of the checkpoint's |
-//! | 3 | The target is made, a new directory, and its lock is taken, as for any database directory that is written. A target that holds anything but its lock file by then is somebody else's, and is refused as one that was there. | the lock of the target, to the end |
+//! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
+//! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). Then write-back is asked for the settled manifest: one that a replacement left in doubt, the catch-up's own among them, is opened again (`lignin_store::flush::WriteBack::settle_manifest`). If write-back answers an error to that, the creation fails with no directory made ([`CheckpointError::Settle`]). | nothing of the checkpoint's |
+//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. Where its lock is found held, the creation goes no further and fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
-//! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the target, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
+//! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
 //! | 7 | The log's files up to the one the sample ended in are linked. | the same |
-//! | 8 | What could not be linked is copied, and each copy is synced. | nothing: each such file is open |
-//! | 9 | Every name in the target is made durable, and then the target's own name. | nothing |
-//! | 10 | The manifest is written, as the first manifest of a database directory is: to a temporary file that is synced, renamed, and made durable with the directory. | nothing |
+//! | 8 | What could not be linked is copied. | nothing: each such file is open |
+//! | 9 | The manifest is written into the directory. | nothing |
+//! | 10 | **One set of syncs** makes durable everything in the directory and the directory's own name: each copy and the manifest, every name in the directory and in the directories in it, and the name it is built under in the directory above. | nothing |
+//! | 11 | The directory is renamed to the target, and the directory above is synced. | nothing |
 //!
-//! **Commits wait for the reads of step 4 and for nothing else** (CK5,
-//! CM8). The commit lock is given back as soon as the three things are
-//! read, before the first link is made. And no commit waits for the lock
-//! on the manifest, which write-back holds over a sync when it replaces a
-//! manifest and which another creation holds while it links: the sample
-//! only tries that lock while it has the commit lock. Where the manifest
-//! is taken, it gives the commit lock back, waits, and takes both anew.
+//! **A creation holds the commit lock for the reads of step 4 and for
+//! nothing else** (CK5, CM8). The commit lock is given back as soon as
+//! the three things are read, before the first link is made. And the
+//! sample makes no commit wait for the lock on the manifest, which
+//! write-back holds over a sync when it replaces a manifest and which
+//! another creation holds while it links: the sample only tries that lock
+//! while it has the commit lock. Where the manifest is taken, it gives
+//! the commit lock back, waits, and takes both anew.
+//!
+//! A commit that found the manifest in doubt before it began does wait
+//! for that lock, to have it settled, behind whoever holds it then
+//! (`crate::db`). A creation holds it longest in step 2, while a manifest
+//! in doubt is opened again, as anybody does who settles it, and through
+//! step 5.
 //!
 //! **A commit that syncs the log itself can wait for a sync of the log,
 //! and a creation makes as few as it can.** The log makes itself durable
@@ -87,8 +98,12 @@
 //! under the commit lock (CM7), where it waits for a sync that is under
 //! way, whoever makes it: write-back in its own loop, a flush, or a
 //! creation. CK5 and CM8 word "never waits for the fsync" for commits
-//! that sync nothing, which is the default, and where no commit syncs the
-//! log no commit waits for a sync. For the other policies:
+//! that sync nothing, which is the default: such a commit asks the log
+//! for no sync, and so does not wait in the log for one that is under
+//! way. (A commit that found the manifest in doubt waits for whoever
+//! holds the lock on the manifest, as said above, and for any sync that
+//! is made under that lock, in the catch-up of step 2 too.) For the other
+//! policies:
 //!
 //! - **Step 6 syncs nothing where the log is durable through *vc* at the
 //!   sample.** The checkpoint's log then ends where the log is durable
@@ -115,15 +130,17 @@
 //! **The lock on the manifest is held through step 5**, which is one
 //! `link` for each file the manifest names: write-back replaces no
 //! manifest and deletes no file for that long (row 18 of section 13). A
-//! committer meets it only where its thread takes a turn for write-back
-//! after its commit is published.
+//! committer meets it where its thread takes a turn for write-back after
+//! its commit is published, and before its commit begins where it found
+//! the manifest in doubt.
 //!
-//! **The manifest is written last, and it is what makes the directory a
-//! checkpoint.** A directory without one is not a database. So a creation
-//! that was cut short before its manifest was written, by an error or by
-//! the power, leaves nothing that opens as the checkpoint, and one that
-//! was cut short after it leaves the whole checkpoint or nothing that
-//! opens ("Durability, and a creation that fails").
+//! **The directory gets the name of the target last, and whole.** Until
+//! step 11 the creation puts nothing under that name, and the directory
+//! has a name that says it is no database to open. When it is renamed,
+//! everything in it is durable, and so is the name it had: a rename is
+//! kept whole or not at all, so a creation that is cut short, by an error
+//! or by the power, leaves the whole checkpoint at the target or nothing
+//! there ("Durability, and a creation that fails").
 //!
 //! # Why that is the state of *vc*
 //!
@@ -160,11 +177,13 @@
 //!   and a block that write-back has appended since is reached by no link
 //!   that a recovery would load. So nothing is gained by taking more, and
 //!   nobody but a store syncs a file it is writing.
-//! - **Only the log is synced, and the log does it.** A sync that fails
-//!   through another handle is invisible to the log (`lignin_store::wal`),
-//!   so the creation asks write-back for the sync, where one is needed,
-//!   and links the log's files afterwards. It never syncs a log file,
-//!   under its name or under a link.
+//! - **Of the live database's files only the log is synced, and the log
+//!   does it.** A sync that fails through another handle is invisible to
+//!   the log (`lignin_store::wal`), so the creation asks write-back for
+//!   the sync, where one is needed, and links the log's files afterwards.
+//!   It never syncs a log file, under its name or under a link, and the
+//!   log's sync is not among those of step 10 ("The syncs of a
+//!   creation").
 //! - **The file the sample ended in is named closed at the sampled end.**
 //!   The live database appends to it at once, and a sync of step 6 covers
 //!   what it appended meanwhile. The checkpoint's manifest gives the
@@ -178,10 +197,49 @@
 //! second name, and the log by a hold; and the one file that is synced is
 //! the log.
 //!
+//! # The syncs of a creation
+//!
+//! A creation that finds nothing under the name it builds under, and
+//! does not fail, asks the file layer for three things, and for no other
+//! sync:
+//!
+//! 1. the log's sync of step 6, which the log makes, where the log is not
+//!    durable through *vc*;
+//! 2. the set of step 10 (`lignin_io::Vfs::sync_together`): the files
+//!    this creation wrote, which are the manifest and the copies, each
+//!    through the handle that wrote it; the directories of the
+//!    checkpoint; the directory it is built in; and the directory above;
+//! 3. the directory above once more, after the rename of step 11.
+//!
+//! Write-back's catch-up of step 2 makes its own, and so does the opening
+//! of a manifest that was in doubt. A creation that takes over what an
+//! earlier one left syncs the directory above before it empties what it
+//! found, and one that fails after the rename syncs it once more, to take
+//! the name back ("Durability, and a creation that fails"). What a set
+//! costs less than its syncs one by one is the file layer's to say.
+//!
+//! **The set has no order and is not whole before it returns, and step 10
+//! needs neither**: whatever a power cut keeps of it is in a directory
+//! that no power cut leaves at the target. The creation made that
+//! directory under the other name, or made that name durable when it took
+//! the directory over. What does need an order has a call of its own. The
+//! rename comes after the set has returned, because the directory must be
+//! whole when it gets its name, and the sync of the directory above comes
+//! after the rename.
+//!
+//! **The log's sync is not in the set.** A set that fails leaves every
+//! file in it as after a failed sync, and a log whose sync failed makes
+//! nothing more durable until the database is opened again: with the log
+//! in the set, a failing file system under the target would stop the
+//! live database's log. And the log's sync comes early, while the pin and
+//! the holds are held, so that they are given back before anything is
+//! copied.
+//!
 //! # What the live database is held to
 //!
 //! **While a checkpoint is being made** it holds, from the sample until
-//! every file is in the target or open to be copied (CK3):
+//! every file is in the checkpoint's directory or open to be copied
+//! (CK3):
 //!
 //! - a [version pin](crate::snapshot::VersionPin) on *vc*, which holds
 //!   back what any pin on that version does: the reuse of page ids freed
@@ -198,10 +256,10 @@
 //!   manifest names is on disk, and its name is removed only under that
 //!   lock**, by the `manifest_replaced` of its store. The creation relies
 //!   on that for the segments and the table checkpoint, which no hold
-//!   keeps: once a file has a name in the target, or is open, what the
-//!   live database does with its own name is its business. A store that
-//!   deletes files (STORE-08) keeps that rule, and needs to know of no
-//!   checkpoint.
+//!   keeps: once a file has a name in the checkpoint's directory, or is
+//!   open, what the live database does with its own name is its business.
+//!   A store that deletes files (STORE-08) keeps that rule, and needs to
+//!   know of no checkpoint.
 //!
 //! All of it is given back when the creation ends, whether it made a
 //! checkpoint or not. Where files are copied, it is given back before the
@@ -231,52 +289,195 @@
 //! **When [`Checkpointer::create`] returns `Ok`, the checkpoint is durable
 //! and so is its version in the live database** (CK4). After a power cut
 //! at any later moment the target opens at *vc*, and the live database
-//! opens at *vc* or later.
+//! opens at *vc* or later. The checkpoint is as durable as the directory
+//! above it, whose own name is the caller's to have made durable.
 //!
-//! A cut during the creation leaves the target without a manifest, or not
-//! at all, or whole. Every name in it is durable before its own name is,
-//! and that before the manifest is written, whose name appears in one
-//! rename.
+//! **A creation gives the name of the target to nothing but the whole
+//! checkpoint.** The checkpoint is built in a directory of another name,
+//! the target's with [`CREATING_SUFFIX`] added, and that directory is
+//! renamed to the target only when everything in it is durable, with the
+//! name it has. So a power cut during a creation leaves at the target
+//! what would be there without the creation, which is nothing unless
+//! somebody else put something there, or the whole checkpoint. The
+//! creation itself never leaves there a directory that is empty or has a
+//! part of a checkpoint. That matters because
+//! an open that makes a database where it finds none takes an
+//! empty directory, and one with a lock file alone, for a place to make
+//! one in: Platform opens its checkpoints with such an open (P-19), and
+//! would have an empty database for a checkpoint. The tests of
+//! `tests/opener.rs` open the states that such cuts leave with the
+//! engine's open.
 //!
-//! **A target that is left without a manifest is not a database, and it
-//! must not become one.** A power cut can keep the making of the target
-//! and lose everything after it, so the directory can be left empty, and
-//! the file layer has no rename of a directory by which the target could
-//! appear whole, as a RocksDB checkpoint does. Removing such a directory
-//! is the caller's (CK10, P-18). Until it is removed, **an open that makes
-//! a database where it finds none must not take it for a place where there
-//! is none**: Platform opens every directory beside its checkpoints with
-//! the open that creates (P-19), and would have an empty database for a
-//! checkpoint. See "What other tasks take from here".
+//! **What a cut leaves that is not at the target is under the other
+//! name**: a part of a checkpoint, or a whole one that did not get its
+//! name. A directory of that name is not to be opened as a database, and
+//! that is its callers' to keep: the engine's open has no rule for the
+//! name, and would take an empty one, or one with a lock file alone, for
+//! a place to make a database in. It holds links
+//! to the live database's files, and so the space of those that the live
+//! database deletes, until it is removed. A creation at the same target
+//! that gets as far as building empties it and builds in it, and
+//! [`delete`] removes it ("Deleting a checkpoint, and removing one that
+//! is open"). A directory of that name is taken for a creation's with
+//! everything in it, so whatever it holds goes then. A target that is
+//! given a name that ends so, whatever the case of its ASCII letters, is
+//! refused, and the name under which the file system lists a checkpoint
+//! is the caller's to keep outside these names ([`CREATING_SUFFIX`]).
+//! Only a directory that the directory above lists under that name, byte
+//! for byte, with a lock file of its own or none, is taken for one, and
+//! a call that finds the lock of one held goes no further: what is looked
+//! at for that comes below.
 //!
-//! When the creation fails, the live database is as it was (CK10), except
-//! that its log may be durable further. One failure is the live
-//! database's as much as the creation's: if the sync of the log fails
+//! **The name of the target is the caller's to keep free.** A target that
+//! is there is refused before anything is done, and again right before
+//! the rename, with nothing of it touched. The file layer refuses a
+//! rename onto a file and onto a directory that has entries. An empty
+//! directory that somebody makes at the target between that last look and
+//! the rename is replaced by the checkpoint.
+//!
+//! **And the directory a checkpoint is built in is the creation's to
+//! build in alone, by its name and its lock and by nothing else.** The
+//! file layer names everything by its path, so nothing keeps somebody who
+//! takes no lock from changing that directory while a checkpoint is built
+//! in it: from removing or replacing a file, or from putting a link where
+//! the directory, or a directory in it, was. What a creation and a
+//! deletion do about it is look, and **a look says what was there when it
+//! was made, and no more**. Each later call to the file layer resolves
+//! its path when it runs ("What the looks do not tell", below). So
+//! whatever this module says a call leaves alone, does not follow, or
+//! does only to a directory of its own, it says of what these looks
+//! found:
+//!
+//! - Whoever is to build in a directory that is there, or to remove one
+//!   that a creation left, looks before it takes the lock. The directory
+//!   above has to list the name, byte for byte, as a directory. What it
+//!   lists as anything else is not locked, and neither is what it does
+//!   not list under that name though the file system finds it there, as
+//!   one does that takes several spellings for one name: a creation
+//!   refuses it ([`CheckpointError::NotADirectory`]), and a deletion
+//!   finds no directory that a creation left.
+//! - The lock of such a directory is taken in a lock file of its own.
+//!   Where the directory lists one, under that name byte for byte, it
+//!   has to be a file, and none is made. Where it lists none, the call
+//!   looks whether the name leads to something all the same, by a rename
+//!   of the path of the lock file to that same path, which follows no
+//!   link at that name. A lock file is made, by the call that takes the
+//!   lock, only once that look answers that nothing has the name. Where
+//!   the look finds something twice, and the directory lists no lock
+//!   file after either, it is not locked
+//!   ([`CheckpointError::NotALock`]).
+//! - It looks again under the lock, and so does a creation in the
+//!   directory it has just made: the lock file at the path has to be the
+//!   one that was locked, the directory has to list it as a file, and
+//!   the directory above has to list the path as a directory. A
+//!   directory that the creation made itself is found also where the
+//!   directory above lists nothing under the name as it was given: then
+//!   every entry of it in which that lock file is found has to be a
+//!   directory. Only then is anything emptied or built
+//!   ([`CheckpointError::Replaced`]).
+//! - Right before the rename, the creation looks for that directory once
+//!   more, and for what it holds: what the creation put into it and
+//!   nothing else, each a file or a directory of its own. Otherwise
+//!   nothing is renamed ([`CheckpointError::Replaced`]).
+//! - A creation that fails looks in the same way for its directory
+//!   before it removes what it made, and removes a file or a directory
+//!   only where it is listed as one.
+//!
+//! What the looks do not tell:
+//!
+//! - **A change after a look.** Each later call resolves its path when
+//!   it runs, and a directory on the way that was changed can lead it
+//!   elsewhere. Whether a link at the last name of the path is followed
+//!   depends on the call: a removal and a rename act on the entry itself.
+//!   So of what a call removes after its look, some, all or none can be
+//!   removed where a changed directory leads, and a rename renames what
+//!   its path names when it is made. The rename that looks for a lock
+//!   file is given one path twice. Where nothing on that path is changed
+//!   while it runs, it leaves what is there as it is. The system's file
+//!   layer resolves the path once for each side, though: where a
+//!   directory on that path is replaced between the two, that rename can
+//!   move an entry from the one directory into the other, and replace an
+//!   entry there.
+//! - **Where a lock file is made.** `lignin_io::Vfs::lock` makes the
+//!   lock file where there is none, where its path leads at that moment:
+//!   through a link at the name of the lock file too. A creation calls
+//!   it in the directory it has just made. A creation and a deletion
+//!   call it in a directory that a creation left and that lists no lock
+//!   file, after the look that found nothing under the name: a link that
+//!   is put there between the look and the call is followed. And a
+//!   deletion calls it for a database directory.
+//! - **A file from another file that was put under its name.** Such a
+//!   file gets the name of the target with the rest, and a creation that
+//!   fails removes it with the rest. The lock file is told from another
+//!   file, but not a directory from another directory that holds a
+//!   second name of that same lock file, as a hard link gives it one.
+//! - **What is under a name that the directory above lists in another
+//!   spelling than the one given**, as a file system does that keeps
+//!   names in a form of its own. A directory that the creation has just
+//!   made is then known by its lock file alone, and the look under the
+//!   lock refuses it where that lock file is found through a link in the
+//!   directory above, or where a link is beside it that the file layer
+//!   fails to follow. And what a creation left under such a name is not
+//!   found by a creation or a deletion that is given the other spelling:
+//!   the creation is refused ([`CheckpointError::NotADirectory`]), and
+//!   it is taken over, or removed, under the spelling that is listed.
+//! - **A name inside the directory from another, where its directory
+//!   lists it in another spelling than the creation gave**, as a carried
+//!   file's can be. It is taken for the creation's where that directory
+//!   lists as many files and as many directories as the creation put
+//!   there and nothing else, and the name the creation gave opens there.
+//!
+//! When the creation fails after step 2, the live database is as step 2
+//! left it (CK10), except that its log may be durable further. What step
+//! 2 does is write-back's work, a catch-up, with whatever that met, and
+//! the settling of the manifest, and a failure after it does not undo it.
+//! One failure is the live database's as much as the creation's: if the
+//! sync of the log fails
 //! ([`CheckpointError::Sync`]), the log makes nothing more durable until
 //! the database is opened again (`lignin_store::wal`). The creation
-//! removes what it made in the target, the manifest first, and the target
-//! itself, so that the same call can be made again. It removes nothing it
-//! did not make: a file that somebody else put into the target while it
-//! was made stays, and the target with it. Where the creation does not
-//! get the lock of the target it has just made, somebody else may have
-//! it, and where it gets the lock and finds more than the lock file,
-//! somebody else has been there: nothing in the target is touched in
-//! either case. A manifest in the target is the creation's to remove only
-//! once it has asked the store to write one, and not where the store
-//! answers that one is there. The name a manifest is written under first
-//! is the store's to use in a database directory, and a file of that name
-//! is replaced. Where the file layer fails the removal too, or fails the
-//! making of a file without saying whether it made it, what is left is
-//! for the caller to remove, and so is a target that could not be listed
-//! once its lock was taken: it holds its lock file, and [`delete`]
-//! removes it. **No file goes while a
-//! manifest could come back**: where a manifest was written and its
-//! removal cannot be made durable, every file stays, so that a power cut
-//! leaves the whole checkpoint or a directory without a manifest, and not
-//! a manifest without one of its files. An error of
-//! the catch-up of step 2 does not fail
-//! the creation: it is reported in [`Created::catch_up`], and the
-//! checkpoint's first open replays more log.
+//! then removes what it made, and the directory it built in, so that the
+//! same call can be made again, with these exceptions. It removes a file
+//! or a directory it made only where the directory that holds it lists
+//! it, under the name the creation gave, as a file or as a directory of
+//! its own. Whatever else the directory holds by then stays, and the
+//! directory with it, as what a creation left: what has a name the
+//! creation did not use, and what is listed, under a name it did use, as
+//! something else than the creation put there. What the file layer does
+//! not let it remove stays in the same way, and so does a file whose
+//! making failed without the file layer saying whether it was made, and
+//! a directory that could not be looked at, or whose name could not be
+//! made durable, once its lock was taken. And a directory that had been
+//! given the name of the target is dealt with as the next paragraph
+//! says.
+//!
+//! **A creation that fails, the next creation, and a deletion of what a
+//! creation left remove what is in a creation's directory only once that
+//! directory has not the name of the target and cannot come back with
+//! it:**
+//!
+//! - If the rename of step 11 was made and the sync after it fails, the
+//!   directory, if it is at the target still, is given its first name
+//!   back, and only once that is durable is anything in it removed.
+//!   Where the name cannot be taken
+//!   back, the whole checkpoint is at the target when the call returns
+//!   its error, and is not known to be durable there. Where it is taken
+//!   back and that cannot be made durable, the whole checkpoint is under
+//!   the other name, and a power cut can leave it under either. A
+//!   [`delete`] of the target is the call for either, given the target
+//!   in the spelling that the directory above lists for it, or for it
+//!   with [`CREATING_SUFFIX`] added.
+//! - Whoever empties a directory that it found under the other name
+//!   syncs the directory above first, under the directory's lock, which
+//!   settles which of the two names it has. A power cut can keep what is
+//!   removed from a directory and lose a rename of it. A creation finds
+//!   such a directory also where it has just made its own: one that
+//!   another creation of the same target renamed back onto it. So it
+//!   looks under the lock, and takes over whatever holds more than a lock
+//!   file.
+//!
+//! An error of the catch-up of step 2 does not fail the creation: it is
+//! reported in [`Created::catch_up`], and the checkpoint's first open
+//! replays more log.
 //!
 //! # Links and copies
 //!
@@ -297,9 +498,10 @@
 //!
 //! A copy is of the first bytes of the file, as many as the checkpoint's
 //! manifest gives it, read through a handle that was opened in step 5 or
-//! step 7, and it is synced before the manifest names it. It costs the
-//! time and the space of the whole database, and the checkpoint is then
-//! the consistent copy of the database that a backup wants (OPS-08).
+//! step 7. It is made durable in step 10, through the handle that wrote
+//! it. It costs the time and the space of the whole database, and the
+//! checkpoint is then the consistent copy of the database that a backup
+//! wants (OPS-08).
 //!
 //! # What the first open of a checkpoint costs
 //!
@@ -322,7 +524,7 @@
 //! own to choose (TXN-07). If that is a file in the database directory,
 //! or if the engine keeps any other file there that an open needs, the
 //! checkpoint has to have it: [`Checkpointer::carrying`] names such files,
-//! and each is linked or copied in step 5, before the manifest is written.
+//! and each is linked in step 5 or copied in step 8.
 //! Each is a file, and not a link to one, which would lead nowhere from
 //! the target.
 //! A checkpoint takes nothing else from the database directory: not what
@@ -336,15 +538,16 @@
 //! live database knows of it. A caller that removes the directory itself
 //! does as well as [`delete`] (P-18), which is the careful way:
 //!
-//! - It removes nothing of a path that is no directory of its own, of a
-//!   directory that is no database of this engine, or of one that a handle
-//!   has open. A database is known by a manifest of this engine in a file
-//!   of the directory's own, under the manifest's name or the renamed
-//!   one's, and not by a name. What the other of the two names holds then
-//!   goes with the rest. An empty directory, and
-//!   the empty lock file of one that holds nothing else, it removes
-//!   whatever they were: nothing is lost with them, and a deletion that
-//!   was cut short can leave both.
+//! - What has the name it is given goes only if that is a directory of
+//!   its own, a database of this engine, and one that no handle has open.
+//!   A database is known by a manifest of this engine in a file of the
+//!   directory's own, under the manifest's name or the renamed one's, and
+//!   not by a name. What the other of the two names holds then goes with
+//!   the rest. An empty directory, and the empty lock file of one that
+//!   holds nothing else, it removes whatever they were: nothing is lost
+//!   with them, and a deletion that was cut short can leave both. A
+//!   directory whose name is one that creations build under is not held
+//!   to this: the last point here.
 //! - **It makes the directory stop being a database before it removes a
 //!   file.** The manifest is renamed to [`DELETING_FILE_NAME`], nothing
 //!   is left under the manifest's own name, durably, and then everything
@@ -353,6 +556,11 @@
 //!   something missing: not a file of the store, which an open would miss,
 //!   and not a file that the engine or Platform keeps beside them (P-17),
 //!   which it would not. A second call finishes what it leaves.
+//! - **It removes what a creation at that target left beside it**
+//!   ("Durability, and a creation that fails"), once the target is
+//!   deleted or where nothing has its name, and, given a directory of
+//!   that kind itself, removes that: with whatever it holds, where the
+//!   looks of that section find it and its lock is not held.
 //!
 //! Platform removes the directory of a checkpoint while a handle has it
 //! open. That handle goes on reading: its pages are in its pool, and the
@@ -377,18 +585,11 @@
 //!
 //! - **The open of the engine** (TXN-07, GROVE-01) opens a checkpoint as
 //!   it opens any directory, and is told nothing by the directory.
-//!   - **Where it makes a database because it finds none, it must not
-//!     make one in a directory that a creation left** (above). That is
-//!     any directory that is there, where checkpoints are made, and has
-//!     no manifest: one with a directory of the store in it, one with the
-//!     lock file alone, and, since a creation can be cut before it has
-//!     its lock, one that is empty. The store's own opens refuse the
-//!     first kind where a segment, a value-log file or a log file with
-//!     data is left there, since no manifest names it. They do not refuse
-//!     one that is left with a table checkpoint alone or with empty
-//!     directories, and nothing refuses the other two kinds. A rename of a directory in the
-//!     file layer would let a creation build under another name and
-//!     appear whole, and is the owner's to decide on.
+//!   - **For a creation that was cut short it needs one rule, which is
+//!     its callers' to keep**: a directory whose name ends in
+//!     [`CREATING_SUFFIX`] is not opened as a database. A creation puts
+//!     nothing but the whole checkpoint under the name of its target, so
+//!     nothing that it leaves is at a name that a caller opens.
 //!   - **It makes no database in a directory that holds
 //!     [`DELETING_FILE_NAME`]**: that is a checkpoint, or a database,
 //!     whose deletion was cut short, and [`delete`] finishes it.
@@ -398,11 +599,16 @@
 //!     errors of write-back and no more: it creates no directory, and it
 //!     is the one to see that nothing is written then (P-18). It shares
 //!     the name of the lock file with [`delete`], which is `LOCK`.
+//! - **Whoever keeps a directory of checkpoints** (GROVE-08, OPS-03) finds
+//!   in it, after a creation that was cut short, a directory whose name
+//!   ends in [`CREATING_SUFFIX`]. It is no checkpoint and holds space
+//!   until it is removed ("Durability, and a creation that fails").
 //! - **GroveDB's engine** (GROVE-01, GROVE-08) makes a [`Checkpointer`]
 //!   from the committer of the open database for `create_checkpoint`,
 //!   which refuses an existing path as the trait asks. Its
 //!   `open_checkpoint` never makes a database. GroveDB's own
-//!   `delete_checkpoint` needs nothing of the engine.
+//!   `delete_checkpoint` needs nothing of the engine for a checkpoint
+//!   that is there.
 //! - **The segment cleaner** (STORE-08) deletes a file as the other stores
 //!   do: only once a durable manifest no longer names it, in its
 //!   `manifest_replaced`, under the lock on the manifest. "Once no
@@ -414,8 +620,11 @@
 //!   commit lock against the sample and a manifest replacement is VER-05's
 //!   (`transactions.md` 15.2).
 //! - **Backup** (OPS-08): a checkpoint on another file system is a
-//!   consistent copy. A full disk fails the creation with the error of the
-//!   file layer and leaves the live database as it was.
+//!   consistent copy. An error for want of space at a step that the
+//!   checkpoint needs fails the creation, and what is left then is said
+//!   under "Durability, and a creation that fails". A catch-up that
+//!   fails for it is reported in [`Created::catch_up`] where the
+//!   checkpoint is made all the same.
 //!
 //! # Tests
 //!
@@ -426,7 +635,11 @@
 //!   and with the live database let in at a chosen step.
 //! - `tests/crash.rs`: the power cut and the file layer failed at every
 //!   operation of a creation, on the simulated file system.
-//! - `tests/files.rs`: copies, carried files, deletion, and the errors.
+//! - `tests/opener.rs`: each state that a cut creation leaves, opened at
+//!   the target with the engine's open that makes a database where it
+//!   finds none.
+//! - `tests/files.rs`: copies, carried files, what a creation left,
+//!   deletion, the syncs a creation asks for, and the errors.
 //! - `tests/reference.rs`: the timings on a store of the reference
 //!   database's size, left out of a normal run.
 
@@ -436,7 +649,7 @@ mod files;
 
 pub use create::{CheckpointOptions, Checkpointer, Created, DEFAULT_CATCH_UP_ABOVE};
 pub use error::CheckpointError;
-pub use files::{delete, DELETING_FILE_NAME};
+pub use files::{delete, CREATING_SUFFIX, DELETING_FILE_NAME};
 
 #[cfg(all(test, not(loom)))]
 mod tests;

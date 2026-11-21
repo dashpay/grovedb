@@ -271,12 +271,12 @@
 //! of the directory after it, leaves the manifest in doubt: which of two a
 //! crash would leave is not known. That does not last. Write-back opens
 //! the manifest again where it next needs it, and so do a commit before it
-//! begins and a close, by the same call (`WriteBack::settle_manifest`).
-//! Where the manifest cannot be opened again now, the commit that found
-//! it in doubt is refused with that error and its transaction whole
-//! ([`CommitError::NotReady`]), and a close answers it. Until one of them
-//! has come by, the creation of a checkpoint of the database fails with
-//! the manifest's error and can be made again.
+//! begins, a close, and the creation of a checkpoint of the database
+//! before it makes a directory, by the same call
+//! (`WriteBack::settle_manifest`). Where the manifest cannot be opened
+//! again now, the commit that found it in doubt is refused with that error
+//! and its transaction whole ([`CommitError::NotReady`]), a close answers
+//! it, and the creation fails with it and can be made again.
 //!
 //! A commit looks at the manifest without waiting for it. While
 //! write-back holds the manifest to replace it, or another thread holds it
@@ -1466,8 +1466,7 @@ impl Db {
     ///
     /// This is a look at what the store holds. It makes no operation on a
     /// file and settles nothing: a replacement of the manifest that was
-    /// left in doubt is no reason, and is settled by the next commit, by a
-    /// close and by write-back, not here.
+    /// left in doubt is no reason, and is not settled here.
     pub fn reopen(&self) -> Option<Reopen> {
         self.shared.store.refusal()
     }

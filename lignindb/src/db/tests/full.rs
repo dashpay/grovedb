@@ -649,9 +649,9 @@ impl Session {
                 self.checkpointed = Some((state, true));
             }
             Err(error) => {
-                // A creation that meets a manifest in doubt before anybody
-                // has settled it fails for that, and can be made again
-                // (DF8).
+                // A creation whose manifest a replacement leaves in doubt
+                // after it asked for it to be settled fails for that, and
+                // can be made again (DF8a).
                 let in_doubt = matches!(
                     &error,
                     CheckpointError::Manifest(SegmentStoreError::ManifestInDoubt { .. })

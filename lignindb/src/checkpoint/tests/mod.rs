@@ -6,6 +6,7 @@ mod acceptance;
 mod cleaner;
 mod crash;
 mod files;
+mod opener;
 mod races;
 mod reference;
 
@@ -13,7 +14,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use lignin_format::{
@@ -24,7 +28,7 @@ use lignin_format::{
 };
 use lignin_io::{
     sim::{SimConfig, SimVfs},
-    DirEntry, OpenMode, Vfs, VfsFile, VfsLock,
+    DirEntry, OpenMode, SyncItem, Vfs, VfsFile, VfsLock,
 };
 use lignin_store::{
     alloc::PageState,
@@ -36,7 +40,7 @@ use lignin_store::{
 };
 use lignin_tree::node::{Lease, NodePage};
 
-use super::{CheckpointOptions, Checkpointer};
+use super::{files::building_of, CheckpointOptions, Checkpointer};
 use crate::{
     snapshot::Versions,
     txn::{
@@ -213,6 +217,16 @@ pub(super) fn checkpoints_in(db: &Db) -> PathBuf {
     }
     (db.vfs.sync_dir(&db.dir)).expect("its name is durable");
     dir
+}
+
+/// The directory that a checkpoint at `target` is built in.
+pub(super) fn building(target: &Path) -> PathBuf {
+    building_of(target).expect("a target with a name")
+}
+
+/// Whether nothing has the name `path` in `vfs`.
+pub(super) fn gone(vfs: &dyn Vfs, path: &Path) -> bool {
+    matches!(vfs.read_dir(path), Err(error) if error.kind() == io::ErrorKind::NotFound)
 }
 
 /// A database that was opened from a directory.
@@ -446,6 +460,9 @@ pub(super) fn bytes_of(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
     bytes
 }
 
+/// Locks that a test holds, or that are taken for it.
+pub(super) type Locks = Arc<Mutex<Vec<Box<dyn VfsLock>>>>;
+
 /// What a test has done right before an operation on a path. An error is
 /// what the operation then fails with, undone.
 pub(super) type Before = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
@@ -490,36 +507,147 @@ pub(super) struct Meddling {
     pub(super) before_lock: Option<Before>,
     /// Before a file is removed.
     pub(super) before_remove: Option<Before>,
+    /// Before a directory is listed.
+    pub(super) before_list: Option<Before>,
+    /// Before a directory is made.
+    pub(super) before_create_dir: Option<Before>,
+    /// Under this directory the file system keeps a name in another
+    /// spelling than it is given in, as HFS+ does: a name that is given
+    /// with [`ONE_LETTER`] is listed with [`TWO_LETTERS`], and either
+    /// spelling names the same entry.
+    pub(super) respelled: Option<PathBuf>,
+    /// Whether the listings under [`Self::respelled`] are in the other
+    /// spelling now: a test turns it on at a moment of its choice, as if
+    /// somebody had renamed what is there to the other spelling then.
+    pub(super) respelling: Arc<AtomicBool>,
+    /// Under this directory the file system does not tell capital letters
+    /// from small ones, as far as a rename of a name onto itself goes: a
+    /// name that its directory does not list, and that differs in case
+    /// alone from one it does list, is found there.
+    pub(super) folds: Option<PathBuf>,
+    /// The lock of a path at which [`Vfs::open`] made a new file with
+    /// `Create::New` is refused, as it is where new files are made so that
+    /// they cannot be opened again for writing.
+    pub(super) made_read_only: Option<Mutex<BTreeSet<PathBuf>>>,
+    /// What the listing of the directory above it leaves out, though it
+    /// is there: a name that the file system finds and does not list so.
+    pub(super) unlisted: Option<PathBuf>,
+    /// How many syncs each set had that was asked for
+    /// ([`Vfs::sync_together`]).
+    pub(super) sets: Mutex<Vec<usize>>,
 }
 
 impl Meddling {
+    /// `inner`, as it is but for the count of the sets.
+    pub(super) fn plain(inner: Arc<dyn Vfs>) -> Self {
+        Self {
+            inner,
+            no_links: None,
+            before_lock: None,
+            before_remove: None,
+            before_list: None,
+            before_create_dir: None,
+            respelled: None,
+            respelling: Arc::new(AtomicBool::new(true)),
+            folds: None,
+            made_read_only: None,
+            unlisted: None,
+            sets: Mutex::default(),
+        }
+    }
+
+    /// `inner`, with the names under the directory `under` listed in
+    /// another spelling than they are given in.
+    pub(super) fn respelled(inner: Arc<dyn Vfs>, under: PathBuf) -> Self {
+        Self {
+            respelled: Some(under),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `inner`, with a name under the directory `under` found, by a rename
+    /// onto itself, where one is listed that differs from it in case alone.
+    pub(super) fn folding(inner: Arc<dyn Vfs>, under: PathBuf) -> Self {
+        Self {
+            folds: Some(under),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `inner`, with `path` left out of the listing of the directory
+    /// above it.
+    pub(super) fn not_listing(inner: Arc<dyn Vfs>, path: PathBuf) -> Self {
+        Self {
+            unlisted: Some(path),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `path` as the directory above it lists it, where that differs from
+    /// the name given in the case of its letters alone and the file
+    /// system takes the two for one name.
+    fn folded(&self, path: &Path) -> io::Result<Option<PathBuf>> {
+        let (Some(under), Some(dir), Some(name)) = (&self.folds, path.parent(), path.file_name())
+        else {
+            return Ok(None);
+        };
+        if !path.starts_with(under) {
+            return Ok(None);
+        }
+        let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_lowercase();
+        let beside = self.inner.read_dir(dir)?;
+        if beside.iter().any(|entry| entry.name == name) {
+            return Ok(None);
+        }
+        let listed = (beside.iter()).find(|entry| folded(&entry.name) == folded(name));
+        Ok(listed.map(|entry| dir.join(&entry.name)))
+    }
+
+    /// Refuses a file that was made so that it cannot be opened again for
+    /// writing ([`Self::made_read_only`]).
+    fn writable(&self, path: &Path) -> io::Result<()> {
+        match &self.made_read_only {
+            Some(made) if made.lock().expect("the files").contains(path) => {
+                Err(io::ErrorKind::PermissionDenied.into())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// `path` as `inner` is given it.
+    fn kept(&self, path: &Path) -> PathBuf {
+        kept_under(self.respelled.as_deref(), path)
+    }
+
     /// `inner`, with no hard link into the directory `under`.
     pub(super) fn no_links(inner: Arc<dyn Vfs>, under: PathBuf, kind: io::ErrorKind) -> Self {
         Self {
-            inner,
             no_links: Some((under, kind)),
-            before_lock: None,
-            before_remove: None,
+            ..Self::plain(inner)
         }
     }
 
     /// `inner`, with `before` run before each lock is taken.
     pub(super) fn before_lock(inner: Arc<dyn Vfs>, before: Before) -> Self {
         Self {
-            inner,
-            no_links: None,
             before_lock: Some(before),
-            before_remove: None,
+            ..Self::plain(inner)
         }
     }
 
     /// `inner`, with `before` run before each file is removed.
     pub(super) fn before_remove(inner: Arc<dyn Vfs>, before: Before) -> Self {
         Self {
-            inner,
-            no_links: None,
-            before_lock: None,
             before_remove: Some(before),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `inner`, with `before` run before each directory is listed.
+    pub(super) fn before_list(inner: Arc<dyn Vfs>, before: Before) -> Self {
+        Self {
+            before_list: Some(before),
+            ..Self::plain(inner)
         }
     }
 }
@@ -533,19 +661,74 @@ impl std::fmt::Debug for Meddling {
     }
 }
 
+/// The letter `e` with an acute accent as one letter, and as the letter
+/// and a combining accent: two spellings that HFS+ takes for one name. It
+/// keeps and lists the second whichever it was given.
+pub(super) const ONE_LETTER: &str = "\u{e9}";
+pub(super) const TWO_LETTERS: &str = "e\u{301}";
+
+/// `path` in the one spelling that the file layer under a [`Meddling`]
+/// is given for a name under the directory `respelled`.
+fn kept_under(respelled: Option<&Path>, path: &Path) -> PathBuf {
+    match respelled {
+        Some(under) if path.starts_with(under) => {
+            let path = path.to_str().expect("a path of the tests");
+            PathBuf::from(path.replace(TWO_LETTERS, ONE_LETTER))
+        }
+        _ => path.to_path_buf(),
+    }
+}
+
+/// A guard of a [`Meddling`] that lists names in another spelling: it
+/// reads a path as that file layer does.
+#[derive(Debug)]
+struct RespelledLock {
+    lock: Box<dyn VfsLock>,
+    under: PathBuf,
+}
+
+impl VfsLock for RespelledLock {
+    fn is_at(&self, path: &Path) -> io::Result<bool> {
+        self.lock.is_at(&kept_under(Some(&self.under), path))
+    }
+}
+
+impl Meddling {
+    fn guard(&self, lock: Box<dyn VfsLock>) -> Box<dyn VfsLock> {
+        match &self.respelled {
+            Some(under) => Box::new(RespelledLock {
+                lock,
+                under: under.clone(),
+            }),
+            None => lock,
+        }
+    }
+}
+
 impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        self.inner.open(path, mode)
+        let file = self.inner.open(&self.kept(path), mode)?;
+        let new = matches!(
+            mode,
+            OpenMode::Write(lignin_io::Create::New) | OpenMode::Append(lignin_io::Create::New)
+        );
+        if let (true, Some(made)) = (new, &self.made_read_only) {
+            (made.lock().expect("the files")).insert(path.to_path_buf());
+        }
+        Ok(file)
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
-        self.inner.rename(from, to)
+        match self.folded(from)? {
+            Some(listed) if from == to => self.inner.rename(&listed, &listed),
+            _ => self.inner.rename(&self.kept(from), &self.kept(to)),
+        }
     }
 
     fn hard_link(&self, original: &Path, link: &Path) -> io::Result<()> {
         match &self.no_links {
             Some((under, kind)) if link.starts_with(under) => Err((*kind).into()),
-            _ => self.inner.hard_link(original, link),
+            _ => (self.inner).hard_link(&self.kept(original), &self.kept(link)),
         }
     }
 
@@ -553,36 +736,76 @@ impl Vfs for Meddling {
         if let Some(before) = &self.before_remove {
             before(path)?;
         }
-        self.inner.remove_file(path)
+        self.inner.remove_file(&self.kept(path))
     }
 
     fn create_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.create_dir(path)
+        if let Some(before) = &self.before_create_dir {
+            before(path)?;
+        }
+        self.inner.create_dir(&self.kept(path))
     }
 
     fn remove_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.remove_dir(path)
+        self.inner.remove_dir(&self.kept(path))
     }
 
     fn read_dir(&self, path: &Path) -> io::Result<Vec<DirEntry>> {
-        self.inner.read_dir(path)
+        if let Some(before) = &self.before_list {
+            before(path)?;
+        }
+        let mut entries = self.inner.read_dir(&self.kept(path))?;
+        if let Some(unlisted) = &self.unlisted
+            && unlisted.parent() == Some(path)
+        {
+            entries.retain(|entry| Some(&*entry.name) != unlisted.file_name());
+        }
+        if (self.respelled.as_deref()).is_some_and(|under| path.starts_with(under))
+            && self.respelling.load(Ordering::SeqCst)
+        {
+            for entry in &mut entries {
+                let name = entry.name.to_str().expect("a name of the tests");
+                entry.name = name.replace(ONE_LETTER, TWO_LETTERS).into();
+            }
+            entries.sort_by(|one, other| one.name.cmp(&other.name));
+        }
+        Ok(entries)
     }
 
     fn sync_dir(&self, path: &Path) -> io::Result<()> {
-        self.inner.sync_dir(path)
+        self.inner.sync_dir(&self.kept(path))
+    }
+
+    fn sync_together(&self, items: &[SyncItem<'_>]) -> io::Result<()> {
+        (self.sets.lock().expect("the sets")).push(items.len());
+        let dirs: Vec<Option<PathBuf>> = (items.iter())
+            .map(|item| match item {
+                SyncItem::Dir(path) => Some(self.kept(path)),
+                _ => None,
+            })
+            .collect();
+        let kept: Vec<SyncItem<'_>> = (items.iter().zip(&dirs))
+            .map(|(item, dir)| match dir {
+                Some(dir) => SyncItem::Dir(dir),
+                None => *item,
+            })
+            .collect();
+        self.inner.sync_together(&kept)
     }
 
     fn lock(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.writable(path)?;
         if let Some(before) = &self.before_lock {
             before(path)?;
         }
-        self.inner.lock(path)
+        Ok(self.guard(self.inner.lock(&self.kept(path))?))
     }
 
     fn lock_existing(&self, path: &Path) -> io::Result<Box<dyn VfsLock>> {
+        self.writable(path)?;
         if let Some(before) = &self.before_lock {
             before(path)?;
         }
-        self.inner.lock_existing(path)
+        Ok(self.guard(self.inner.lock_existing(&self.kept(path))?))
     }
 }

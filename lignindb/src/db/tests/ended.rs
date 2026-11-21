@@ -25,7 +25,7 @@ use lignin_io::{
 };
 use lignin_store::{
     flush::{Checkpointed, FlushError},
-    segment::SegmentStoreError,
+    segment::ManifestStore,
     wal::{LogError, SyncPolicy},
 };
 
@@ -435,30 +435,20 @@ fn a_table_checkpoint_is_installed_though_its_earlier_replacement_was_refused() 
 /// table checkpoint: in its rename, or in the sync of the directory after
 /// it. Which manifest a crash would leave is not known. That ends no
 /// session (D-157). A look at the session says so, settles nothing and
-/// makes no operation on a file, under the commit lock as well. Until a
-/// commit, a close or write-back has had the manifest opened again, no
-/// checkpoint is made of the database, and that creation can be made
-/// again. The next commit settles the manifest, and is taken.
+/// makes no operation on a file, under the commit lock as well: the
+/// manifest is in doubt as before. The next commit settles the manifest,
+/// and is taken. (A creation of a checkpoint that comes first settles it
+/// as well: `checkpoint::tests::acceptance`.)
 #[test]
 fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
     for kind in [OpKind::Rename, OpKind::SyncDir] {
         let mut session = in_doubt(34, kind);
         let db = session.db.as_ref().expect("the session");
-        let committer = db.shared.committer();
-        let refused = || {
-            let checkpoint = Checkpointer::new(&committer).create(Path::new("/checkpoint"));
-            assert!(
-                matches!(
-                    &checkpoint,
-                    Err(CheckpointError::Manifest(
-                        SegmentStoreError::ManifestInDoubt { .. }
-                    ))
-                ),
-                "{kind}: {checkpoint:?}"
-            );
-            assert!(gone(&session, "/checkpoint"));
+        let in_doubt = || {
+            let manifest = db.shared.store.manifest.lock().expect("the manifest");
+            assert!(manifest.manifest().is_err(), "{kind}");
         };
-        refused();
+        in_doubt();
 
         let ops = session.fs.stats().ops;
         assert_eq!(db.reopen(), None, "{kind}");
@@ -473,7 +463,7 @@ fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
             "{kind}: a look made an operation"
         );
         // The looks have settled nothing.
-        refused();
+        in_doubt();
 
         let published = session.told.latest;
         session.write("taken", next, false);
@@ -491,6 +481,81 @@ fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
         session.check_cut("in the session that went on");
         assert!(session.close(), "{kind}");
     }
+}
+
+/// The creation of a checkpoint is the first to come by, after a table
+/// checkpoint that was refused every replacement of the manifest. The
+/// test then refuses directory syncs. Checkpoint creation returns the
+/// out-of-space error from settling the manifest and leaves neither
+/// checkpoint directory; the trace from the start of that call on has no
+/// making of a directory at a path that begins with `/checkpoint`, and
+/// has a listing at such a path, as the test's looks for the two
+/// directories make; the manifest remains in doubt and the session stays
+/// open. Once the test refuses nothing any more, the next creation
+/// settles the manifest and is made.
+#[test]
+fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
+    let mut session = session(34, SyncPolicy::Never);
+    let db = session.db.as_ref().expect("the session");
+    // Every rename onto the manifest is refused, so the last replacement
+    // that the table checkpoint tries leaves the manifest in doubt.
+    let manifest = Path::new("/db").join(ManifestStore::FILE_NAME);
+    session.fs.add_rule(
+        FaultRule::new(Fault::Enospc)
+            .on(OpKind::Rename)
+            .at(manifest)
+            .forever(),
+    );
+    let error = (db.shared.write_back().checkpoint()).expect_err("the manifest is not replaced");
+    assert!(out_of_space(&error), "{error}");
+    session.fs.clear_rules();
+    let in_doubt = || {
+        let manifest = db.shared.store.manifest.lock().expect("the manifest");
+        manifest.manifest().is_err()
+    };
+    assert!(in_doubt());
+
+    session
+        .fs
+        .add_rule(FaultRule::new(Fault::Enospc).on(OpKind::SyncDir).forever());
+    let committer = db.shared.committer();
+    let before = session.fs.trace().len();
+    let refused = Checkpointer::new(&committer)
+        .create(Path::new("/checkpoint"))
+        .expect_err("no manifest is opened");
+    assert!(matches!(&refused, CheckpointError::Settle(_)), "{refused}");
+    assert!(out_of_space(&refused), "{refused}");
+    assert!(gone(&session, "/checkpoint") && gone(&session, "/checkpoint.creating"));
+    let traced: Vec<Event> = session.fs.trace().into_iter().skip(before).collect();
+    let has = |kind: OpKind, under: &str| {
+        traced.iter().any(
+            |event| matches!(event, Event::Op(op) if op.kind == kind && op.path.starts_with(under)),
+        )
+    };
+    assert!(
+        has(OpKind::ReadDir, "/checkpoint"),
+        "the trace has no read_dir at a path that begins with /checkpoint"
+    );
+    assert!(
+        !has(OpKind::CreateDir, "/checkpoint"),
+        "the trace of the failed creation has a create_dir at a path that begins with /checkpoint"
+    );
+    assert!(in_doubt());
+    assert_eq!(db.reopen(), None);
+
+    session.fs.clear_rules();
+    Checkpointer::new(&committer)
+        .create(Path::new("/checkpoint"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(!in_doubt());
+    assert!(gone(&session, "/checkpoint.creating"));
+    assert_eq!(db.reopen(), None);
+    assert!(!session.ticks("t"));
+    session.flush();
+    assert_eq!(session.told.durable, session.told.latest);
+    session.check("in the session that went on");
+    session.check_cut("in the session that went on");
+    assert!(session.close());
 }
 
 /// A commit is the first to come by, on a device that still refuses the
