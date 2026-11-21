@@ -24,7 +24,7 @@ use lignin_io::{
     Vfs,
 };
 use lignin_store::{
-    flush::FlushError,
+    flush::{Checkpointed, FlushError},
     segment::SegmentStoreError,
     wal::{LogError, SyncPolicy},
 };
@@ -322,16 +322,15 @@ fn a_reason_that_was_given_stays_when_the_store_has_one_too() {
     );
 }
 
-/// The rule that refuses the replacement of the manifest by which the next
-/// table checkpoint is installed: its rename, or the sync of the directory
-/// after it.
-fn refuse_the_manifest(session: &Session, kind: OpKind) {
-    let earlier = replacements_before_the_installation();
+/// The rule that refuses one replacement of the manifest of those that
+/// the next table checkpoint makes, the one that `earlier` of them come
+/// before: its rename, or the sync of the directory after it.
+fn refuse_a_replacement(session: &Session, kind: OpKind, earlier: u64) {
     let rule = FaultRule::new(Fault::Enospc).on(kind);
     session.fs.add_rule(match kind {
         OpKind::Rename => rule.skip(earlier),
         // The directory is synced for the files a table checkpoint makes
-        // as well: the sync after the rename of the installation is the
+        // as well: the sync after the rename of that replacement is the
         // one.
         _ => rule.at("/db").skip(sync_dirs_before_the_rename(earlier)),
     });
@@ -374,7 +373,8 @@ fn replacements_before_the_installation() -> u64 {
 fn in_doubt(seed: u64, kind: OpKind) -> Session {
     let session = session(seed, SyncPolicy::Never);
     let db = session.db.as_ref().expect("the session");
-    refuse_the_manifest(&session, kind);
+    // The replacement by which the checkpoint is installed.
+    refuse_a_replacement(&session, kind, replacements_before_the_installation());
     let write_back = db.shared.write_back();
     let error = (write_back.checkpoint()).expect_err("the manifest is not replaced");
     assert!(out_of_space(&error), "{kind}: {error}");
@@ -386,6 +386,49 @@ fn in_doubt(seed: u64, kind: OpKind) -> Session {
     drop(manifest);
     session.fs.clear_rules();
     session
+}
+
+/// A table checkpoint that turns the log replaces the manifest for the
+/// file it turns to before it replaces it to install itself. Where that
+/// earlier replacement is refused, in its rename or in the sync of the
+/// directory after it, the checkpoint is installed all the same, the
+/// manifest is in no doubt when the checkpoint returns, and the session
+/// goes on (DF8a).
+#[test]
+fn a_table_checkpoint_is_installed_though_its_earlier_replacement_was_refused() {
+    let installing = replacements_before_the_installation();
+    assert!(
+        installing > 0,
+        "a table checkpoint of these sessions replaces the manifest once"
+    );
+    for kind in [OpKind::Rename, OpKind::SyncDir] {
+        for earlier in 0..installing {
+            let mut session = session(40, SyncPolicy::Never);
+            let db = session.db.as_ref().expect("the session");
+            refuse_a_replacement(&session, kind, earlier);
+            let checkpointed = db.shared.write_back().checkpoint();
+            assert_eq!(session.fs.stats().faults, 1, "{kind}, {earlier}");
+            session.fs.clear_rules();
+            assert!(
+                matches!(checkpointed, Ok(Checkpointed::Installed { .. })),
+                "{kind}, {earlier}: {checkpointed:?}"
+            );
+            let manifest = db.shared.store.manifest.lock().expect("the manifest");
+            assert!(manifest.manifest().is_ok(), "{kind}, {earlier}");
+            drop(manifest);
+            assert_eq!(db.reopen(), None, "{kind}, {earlier}");
+
+            let published = session.told.latest;
+            session.write("taken", next, false);
+            assert_eq!(session.told.latest, published + 1, "{kind}, {earlier}");
+            assert!(!session.ticks("t"));
+            session.flush();
+            assert_eq!(session.told.durable, session.told.latest);
+            session.check("after the checkpoint");
+            session.check_cut("after the checkpoint");
+            assert!(session.close(), "{kind}, {earlier}");
+        }
+    }
 }
 
 /// The replacement of the manifest is refused when write-back installs a
