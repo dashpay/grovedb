@@ -18,10 +18,11 @@
 #   lignin-ci.sh docs                rustdoc with warnings denied, for the
 #                                    crates whose documentation builds clean
 #   lignin-ci.sh loom                the loom models
-#   lignin-ci.sh miri [--full]       Miri over the file layer, the buffer pool
-#                                    and the software path of the checksum;
-#                                    --full adds the file layer under Tree
-#                                    Borrows and every test of the checksum
+#   lignin-ci.sh miri [--full]       Miri over the file layer, the ring of its
+#                                    direct I/O path, the buffer pool and the
+#                                    software path of the checksum; --full
+#                                    adds the file layer under Tree Borrows
+#                                    and every test of the checksum
 #   lignin-ci.sh fuzz-targets        build the fuzz targets of lignin-format
 #   lignin-ci.sh cost-model          the golden corpus replayed on the cost model
 #
@@ -288,9 +289,11 @@ MODELS
     ;;
 
 miri)
-    # The file layer has no unsafe code of its own, so a pull request runs
-    # it under one borrow model and the night under both. The pool's unsafe
-    # code runs under both on every run.
+    # Without its feature direct_io the file layer has no unsafe code of its
+    # own, so a pull request runs it under one borrow model and the night
+    # under both. The unsafe code of that feature is the ring's, and runs
+    # on a model of the system's side under both on every run, as the
+    # pool's does.
     case "$#:${2:-}" in
     1:) file_layer=("") checksum=checksum::tests::crc32c_matches ;;
     2:--full) file_layer=("" -Zmiri-tree-borrows) checksum=checksum:: ;;
@@ -303,6 +306,12 @@ miri)
         say "Miri: the file layer ${borrows:-(Stacked Borrows)}"
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-disable-isolation $borrows" \
             cargo "+$nightly" miri test -p lignin-io --no-fail-fast || status=$?
+    done
+    for borrows in "" -Zmiri-tree-borrows; do
+        say "Miri: the ring of the direct I/O path ${borrows:-(Stacked Borrows)}"
+        MIRIFLAGS="${MIRIFLAGS:-} $borrows" \
+            cargo "+$nightly" miri test -p lignin-io --features direct_io --lib --no-fail-fast linux:: ||
+            status=$?
     done
     for borrows in "" -Zmiri-tree-borrows; do
         say "Miri: the buffer pool ${borrows:-(Stacked Borrows)}"
