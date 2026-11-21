@@ -2168,6 +2168,79 @@ fn a_commit_between_the_comparing_read_and_the_write_is_a_commit_since_the_read(
     }
 }
 
+/// A change set that says it is the whole Merk is handed to the
+/// transaction after the store has looked at the Merk's entry, and a
+/// commit of another transaction can come between the two. That the Merk
+/// has no root is a precondition of the engine's write
+/// (`transactions.md` LD6), so no Merk is written over another's:
+///
+/// - where the other commit gives the Merk a root before the write is
+///   taken, the write is refused there, and nothing of it is taken;
+/// - where it does so after the write, the transaction's commit is a
+///   conflict, although the two wrote no key in common.
+///
+/// Either way the Merk is the other commit's.
+#[test]
+fn a_whole_merk_is_not_written_over_the_merk_of_a_commit_between() {
+    for before_the_write in [true, false] {
+        let lignin = Arc::new(Lignin::new());
+        let path = lignin.path();
+        let transaction = path.begin();
+        let writer = LigninWriter::new(transaction.scope().unwrap());
+        let theirs = Arc::clone(&lignin);
+        let mut other_commit =
+            Some(move || commit_outside(&theirs, &mut None, &[basic(9, &[9; 8])]));
+        if before_the_write {
+            // Made when the store has looked at the entry, and before it
+            // hands the change set to the transaction.
+            AFTER_COMPARING.set(other_commit.take().map(|commit| Box::new(commit) as _));
+        }
+
+        let store = LigninNodeStore::immediate(&writer, ROOT);
+        let node = TreeNode::new(be(1), vec![0xf7; 5], None, TreeFeatureType::BasicMerkNode);
+        let node = node.unwrap();
+        let mut change_set = store.change_set();
+        change_set.state_root(Some(node.key()));
+        change_set.state_whole_merk();
+        let prepared = change_set.prepare_node(&node, NodeChange::ValueWritten);
+        change_set.put_node(node.key(), prepared, None).unwrap();
+        let handed = store.commit(change_set).unwrap();
+        drop(store);
+        assert!(
+            AFTER_COMPARING.take().is_none(),
+            "no commit came between the look and the write"
+        );
+        match other_commit.take() {
+            None => {
+                let refused = handed.expect_err("the Merk has a root");
+                assert!(
+                    matches!(&refused, Error::StorageError(what)
+                        if what.to_string().contains("the Merk has a root")),
+                    "{refused}"
+                );
+            }
+            Some(commit) => {
+                handed.expect("a Merk with no root takes a whole Merk");
+                commit();
+            }
+        }
+        writer.into_scope().merge();
+        let ended = lignin.commit(&transaction);
+        let expected = match before_the_write {
+            true => Outcome::Empty,
+            false => Outcome::Conflict,
+        };
+        assert_eq!(ended, expected, "before the write: {before_the_write}");
+
+        assert_eq!(lignin.root_in_directory(ROOT.prefix), Some(be(9)));
+        assert_eq!(committed_node(&lignin, 9).value_as_slice(), [9; 8]);
+        let reader = path.begin();
+        let store = LigninNodeStore::read_only(&reader, ROOT);
+        let mine = store.get_node(&be(1), NO_VALUE_DEFINED_COST, version());
+        assert!(mine.unwrap().unwrap().is_none(), "a node of the whole Merk");
+    }
+}
+
 /// A node that is written outside a commit through a handle that has not
 /// loaded it has no read to name. So its value is stated, whatever kind of
 /// change the caller says it is: it is kept where the same bytes are held,
