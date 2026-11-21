@@ -311,9 +311,9 @@ pub enum BatchError {
     /// reads or writes a subtree that a move of the transaction decides,
     /// or drops or clears a subtree while the transaction's write set
     /// holds a move (`transactions.md` MV7, MV8). Or a move is stated
-    /// while the pending mark of an element of a Merk under a prefix it
-    /// names stands, or a call that set that mark or took it off is among
-    /// the writes that the transaction's frames show (MV8).
+    /// while a pending mark stands under a prefix it names, or a call
+    /// that set such a mark or took one off is among the writes that the
+    /// transaction's frames show (MV8).
     MoveBeside {
         /// The subtree the refused move takes from its prefix, the first
         /// subtree the refused batch drops or clears, or the subtree

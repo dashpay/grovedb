@@ -18,7 +18,7 @@ use super::{
     opened::Opened,
     pages::{child_keys, find},
     path::{FlatReader, Idle, WritePath, IDLE},
-    txn::{show_committed, WriteTxn},
+    txn::{show_committed, Pinned, Sided, WriteTxn},
     unlinked,
     view::{ChildKeys, NodeView},
     write_set::{Own, WriteSet},
@@ -695,16 +695,23 @@ impl<'t, 's> MerkCursor<'t, 's> {
         };
         let key = key.clone();
         let subtree = self.unit.subtree;
-        // Whether the node is read at all is asked as the seek that found
-        // its key asked it: of the cursor's version, before the
-        // transaction's own node is shown.
+        // One operation of the transaction says what is under the key:
+        // its own node, or the node of the cursor's version, and then
+        // under which prefix that version has it.
         let guard = self.txn.path().versions().guard();
-        let reads = self.reads(&guard)?;
-        let own = children.as_deref_mut();
-        let read = match (self.txn).own_node_in(self.who, subtree, &key, own, read)? {
-            Ok(shown) => return Ok(shown),
-            Err(read) => read,
+        let pinned = Pinned {
+            opened: &mut self.opened,
+            guard: &guard,
+            at: self.pin.version(),
+            seen: self.seen,
         };
+        let own = children.as_deref_mut();
+        let shown = (self.txn).cursor_node(self.who, subtree, &key, own, pinned, read)?;
+        let (read, side) = match shown {
+            Ok(shown) => return Ok(shown),
+            Err(rest) => rest,
+        };
+        let reads = self.placed(&guard, side)?;
         let mut found = false;
         let shown = match reads {
             true => self.side.node(&guard, &key, children, |view| {
@@ -898,8 +905,9 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     ///
     /// Where the transaction moved the subtree, the committed side is the
     /// records that the cursor's version has under the prefix the subtree
-    /// was taken from, where the transaction has that subtree still, and
-    /// never where a move took a subtree from the cursor's prefix and
+    /// was taken from, where that version has a subtree entered there and
+    /// the transaction's own writes have not dropped the one it moved,
+    /// and never where a move took a subtree from the cursor's prefix and
     /// brought none (`WriteTxn::committed_side`). A subtree that no move
     /// names and that leaves with one is not read
     /// ([`Opened::leaves_with_a_move`]). Whoever has no frames that show
@@ -907,13 +915,25 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// subtree ([`BatchError::MovedByKey`](super::BatchError)), by the
     /// directory of the cursor's version (`WriteTxn::cursor_side`).
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
-        let (at, seen) = (self.pin.version(), self.seen);
-        let side = (self.txn).cursor_side(self.who, self.unit, &mut self.opened, guard, at, seen);
-        let (left, reads, under) = side?;
+        let pinned = Pinned {
+            opened: &mut self.opened,
+            guard,
+            at: self.pin.version(),
+            seen: self.seen,
+        };
+        let side = (self.txn).cursor_side(self.who, self.unit, pinned)?;
+        self.placed(guard, side)
+    }
+
+    /// Takes in what the transaction said of the committed side: the
+    /// side is pointed at the prefix it is read under, and says whether
+    /// it is read.
+    fn placed(&mut self, guard: &OperationGuard<'s>, side: Sided) -> Result<bool, TxnError> {
+        let Sided { left, reads, under } = side;
         if let Some(under) = under.filter(|under| *under != self.side.under()) {
             self.side.point(guard, under)?;
         }
-        if seen != Some((left, reads)) {
+        if self.seen != Some((left, reads)) {
             // The transaction dropped or cleared a subtree, or took such a
             // write back: the committed side may have come into the
             // cursor's view or left it, and is placed again by the next

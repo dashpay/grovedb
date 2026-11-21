@@ -139,6 +139,11 @@ struct State<'s> {
     /// test of a read that fails there.
     #[cfg(test)]
     refuse_look: bool,
+    /// The transaction is rolled back where the next read of a node
+    /// through a cursor comes to take its lock: for a test of a rollback
+    /// by another thread at that moment.
+    #[cfg(test)]
+    rolls_back: bool,
     /// The savepoints that are set, oldest first, each the place of the
     /// write set at which it was set (WT8, `crate::savepoint`).
     savepoints: Vec<Mark>,
@@ -341,6 +346,33 @@ const MAX_DEPTH: usize = 1 << 16;
 struct Op<'s> {
     guard: OperationGuard<'s>,
     at: CommitVersion,
+}
+
+/// What a cursor brings to a call into its transaction.
+pub(crate) struct Pinned<'a, 's> {
+    /// The subtree directory of the version the cursor reads, which the
+    /// cursor keeps from call to call.
+    pub(crate) opened: &'a mut Option<Opened>,
+    /// The guard of the cursor's operation.
+    pub(crate) guard: &'a OperationGuard<'s>,
+    /// The version the cursor reads.
+    pub(crate) at: CommitVersion,
+    /// The answer the cursor has of its committed side: the count of
+    /// [`WriteSet::left`] it is of, and whether the side is read. It
+    /// stands while the count does.
+    pub(crate) seen: Option<(u64, bool)>,
+}
+
+/// What a cursor has as its committed side
+/// ([`WriteTxn::committed_side`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Sided {
+    /// The count of [`WriteSet::left`] that the answer is of.
+    pub(crate) left: u64,
+    /// Whether the side is read.
+    pub(crate) reads: bool,
+    /// The prefix it is read under, where that was asked again.
+    pub(crate) under: Option<Subtree>,
 }
 
 /// Whether `error` says that a batch names what is not there: the tree
@@ -628,6 +660,8 @@ impl<'s> WriteTxn<'s> {
                 owed: Vec::new(),
                 #[cfg(test)]
                 refuse_look: false,
+                #[cfg(test)]
+                rolls_back: false,
                 savepoints: Vec::new(),
                 buffers: LoadBuffers::new(),
                 key: Vec::new(),
@@ -1202,8 +1236,9 @@ impl<'s> WriteTxn<'s> {
     /// [`BatchError::MovedByKey`] or [`BatchError::MoveBeside`], it names
     /// the first subtree in that order: the prefix the first move takes a
     /// subtree from, the first subtree that is dropped or cleared, or the
-    /// written subtree. The refusal of a layout that stopped names what
-    /// stopped it. It is asked before the batch takes a claim (SC3) and
+    /// written subtree. The refusal of a layout that stopped is that
+    /// layout's own, as it is. It is asked before the batch takes a claim
+    /// (SC3) and
     /// before it is judged by what the write set holds
     /// ([`WriteSet::admits`]): a batch that is refused here has claimed
     /// nothing.
@@ -1262,18 +1297,28 @@ impl<'s> WriteTxn<'s> {
     /// ([`Opened::leaves_with_a_move`]).
     ///
     /// For one that a move names, it is the prefix that the moves took
-    /// the subtree from ([`WriteSet::committed_under`]), where the Merk
-    /// that the transaction has under `subtree` is the Merk that the
-    /// version has under that prefix. The frames say which Merk the
-    /// transaction has there: they show every move, drop, clear and enter
-    /// that is laid out. A Merk keeps its id through a move. A clear of a
-    /// Merk with a node gives it another id and leaves it the subtree it
-    /// was, with its flat records but those of its data, which the entry
-    /// of the clear deletes: the frames remember the id it had
-    /// ([`Awake::before_clears`]). A subtree that was dropped, alone or
-    /// with one above it, and entered again is another Merk, under
-    /// another id. Whoever has no frames that show the moves was refused
-    /// the read before this is asked ([`Self::refuse_moved`]).
+    /// the subtree from ([`WriteSet::committed_under`]), where two things
+    /// hold.
+    ///
+    /// - **The transaction's own writes left the Merk the one it was**:
+    ///   the Merk that its frames have under `subtree` is the Merk that
+    ///   the version they are laid out over has under that prefix. The
+    ///   frames show every move, drop, clear and enter that is laid out.
+    ///   A Merk keeps its id through a move. A clear of a Merk with a
+    ///   node gives it another id and leaves it the subtree it was, with
+    ///   its flat records but those of its data, which the entry of the
+    ///   clear deletes: the frames remember the id it had
+    ///   ([`Awake::before_clears`]). A subtree that the transaction
+    ///   dropped, alone or with one above it, and entered again is
+    ///   another Merk, under another id.
+    /// - **The version `at` has a subtree entered under that prefix.** A
+    ///   cursor reads the records of the version it was opened on,
+    ///   whatever the commits since then did to the subtree (RD6): it is
+    ///   not asked whether the Merk of that version is the one the
+    ///   transaction moved.
+    ///
+    /// Whoever has no frames that show the moves was refused the read
+    /// before this is asked ([`Self::refuse_moved`]).
     fn committed_side(
         &self,
         state: &mut State<'s>,
@@ -1283,7 +1328,12 @@ impl<'s> WriteTxn<'s> {
         subtree: Subtree,
     ) -> Result<Option<Subtree>, TxnError> {
         let path = &self.path;
-        let State { set, frames, .. } = state;
+        let State {
+            set,
+            frames,
+            directory,
+            ..
+        } = state;
         let opened = Opened::at(opened, path, guard, at)?;
         if !set.moves(&subtree) {
             let reads = !opened.leaves_with_a_move(path, guard, set, &subtree)?
@@ -1300,49 +1350,88 @@ impl<'s> WriteTxn<'s> {
         };
         let own = frames.entry(&subtree)?;
         let own = own.map(|entry| frames.before_clears(entry.id()));
-        let committed = opened.id(path, guard, &under)?;
-        Ok((own.is_some() && own == committed).then_some(under))
+        let base = frames.base();
+        drop(frames);
+        let was = match base == at {
+            true => opened.id(path, guard, &under)?,
+            false => Opened::at(directory, path, guard, base)?.id(path, guard, &under)?,
+        };
+        if own.is_none() || own != was {
+            return Ok(None);
+        }
+        Ok(opened.root(path, guard, &under)?.map(|_| under))
     }
 
-    /// What a cursor of `who` over `unit`, which reads the committed
-    /// version `at` through `opened`, has as its committed side: the
-    /// count of [`WriteSet::left`] that the answer is of, whether the
-    /// side is read, and the prefix it is read under where that was asked
-    /// ([`Self::committed_side`]). `seen` is the answer the cursor has,
-    /// which stands while the count does.
+    /// What a cursor of `who` over `unit` has as its committed side
+    /// ([`Self::sided`]), for a seek or a step of the cursor.
     ///
     /// While the write set holds a move, the call begins as an operation
-    /// of the transaction does ([`Self::begin`]), at the latest version:
-    /// the commits since its last look are taken in, and a layout of its
-    /// writes over that version is tried. So a commit that met the
-    /// transaction, and one over which its writes cannot be laid out, is
-    /// known to a cursor that is the first to call after it. Whoever has
-    /// no frames that show the moves is then refused where a move decides
-    /// what is under the subtree ([`Self::refuse_moved`]), by the
-    /// directory of the cursor's own version. The read is claimed after
-    /// that (SC3).
+    /// of the transaction does ([`Self::begin`]), at the latest version.
+    /// So a commit that met the transaction, and one over which its
+    /// writes cannot be laid out, is known to a cursor that is the first
+    /// to call after it. Whoever has no frames that show the moves is
+    /// then refused where a move decides what is under the subtree
+    /// ([`Self::refuse_moved`]), by the directory of the cursor's own
+    /// version. The read is claimed after that (SC3).
     pub(crate) fn cursor_side(
         &self,
         who: Who,
         unit: Unit,
-        opened: &mut Option<Opened>,
-        guard: &OperationGuard<'s>,
-        at: CommitVersion,
-        seen: Option<(u64, bool)>,
-    ) -> Result<(u64, bool, Option<Subtree>), TxnError> {
+        pinned: Pinned<'_, 's>,
+    ) -> Result<Sided, TxnError> {
         let mut state = self.lock();
         let state = &mut *state;
+        let Pinned {
+            opened,
+            guard,
+            at,
+            seen,
+        } = pinned;
         if state.set.has_moves() {
             self.begin(state, false)?;
             self.refuse_moved(state, opened, guard, at, who, unit.subtree)?;
         }
         self.claim_read_now(state, who, unit)?;
+        self.sided(state, opened, guard, at, seen, unit.subtree)
+    }
+
+    /// The committed side of a cursor over `subtree` that reads the
+    /// version `at` through `opened`: the answer the cursor has (`seen`)
+    /// while the count of [`WriteSet::left`] stands, and otherwise what
+    /// [`Self::committed_side`] says now.
+    fn sided(
+        &self,
+        state: &mut State<'s>,
+        opened: &mut Option<Opened>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        seen: Option<(u64, bool)>,
+        subtree: Subtree,
+    ) -> Result<Sided, TxnError> {
         let left = state.set.left();
         if let Some((_, reads)) = seen.filter(|(seen, _)| *seen == left) {
-            return Ok((left, reads, None));
+            let under = None;
+            return Ok(Sided { left, reads, under });
         }
-        let under = self.committed_side(state, opened, guard, at, unit.subtree)?;
-        Ok((left, under.is_some(), under))
+        let under = self.committed_side(state, opened, guard, at, subtree)?;
+        let reads = under.is_some();
+        Ok(Sided { left, reads, under })
+    }
+
+    /// Has the transaction rolled back, as by another thread, at the
+    /// moment the next read of a node through a cursor comes to take the
+    /// transaction's lock.
+    #[cfg(test)]
+    pub(crate) fn roll_back_before_cursor_node(&self) {
+        self.lock().rolls_back = true;
+    }
+
+    #[cfg(test)]
+    fn interleave(&self) {
+        let rolls_back = std::mem::take(&mut self.lock().rolls_back);
+        if rolls_back {
+            self.rollback().expect("no scope is open");
+        }
     }
 
     /// The refusal `error` of `batch`, which says so where a commit outside
@@ -2018,42 +2107,78 @@ impl<'s> WriteTxn<'s> {
         show_committed(&mut pages, at, read)
     }
 
-    /// Shows `read` the transaction's own node under `key`, or that it
-    /// deleted the node, if it has a write that covers the key. With none,
-    /// `read` is handed back, and nothing committed is read: a cursor then
-    /// reads the node of its own version (RD6), under its own lease, and
-    /// then says what it read ([`Self::cursor_read`]). The operation
-    /// watches from here on, as one that may show a node.
+    /// The read of the node under the key `key` that a cursor of `who`
+    /// over the Merk `subtree` stands on, as one operation of the
+    /// transaction: what it holds is looked at once, under its lock, and
+    /// every answer is of that moment.
     ///
-    /// Whether a move decides what is under the subtree is not asked
-    /// here: the cursor has asked it, of the version it reads
-    /// ([`Self::cursor_side`]).
+    /// It begins as an operation does, and watches from here on, as one
+    /// that may show a node. Whoever has no frames that show the
+    /// transaction's moves is refused where a move decides what is under
+    /// the subtree, by the directory of the cursor's own version, as the
+    /// seek that found the key was ([`Self::cursor_side`]). Then `read`
+    /// is shown the transaction's own node, or that it deleted the node,
+    /// if it has a write that covers the key. With none, `read` is handed
+    /// back with the cursor's committed side ([`Self::sided`]), and
+    /// nothing committed is read: the cursor then reads the node of its
+    /// own version (RD6) under the prefix it was told, under its own
+    /// lease, and says what it read ([`Self::cursor_read`]).
     ///
     /// `children`, where it is given, takes the key of each child of a
     /// node that is shown from a cell of the frames, in the same operation.
     /// A record of the write set names its children itself.
-    pub(crate) fn own_node_in<R, F>(
+    pub(crate) fn cursor_node<R, F>(
         &self,
         who: Who,
         subtree: Subtree,
         key: &[u8],
         children: Option<&mut ChildKeys>,
+        pinned: Pinned<'_, 's>,
         read: F,
-    ) -> Result<Result<R, F>, TxnError>
+    ) -> Result<Result<R, (F, Sided)>, TxnError>
     where
         F: FnOnce(Option<NodeView<'_>>) -> R,
     {
+        #[cfg(test)]
+        self.interleave();
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin_shown(state, who, Unit::data(subtree), false)?;
+        let Pinned {
+            opened,
+            guard,
+            at,
+            seen,
+        } = pinned;
+        let unit = Unit::data(subtree);
+        self.watch(state);
+        let begun = self.begin(state, false).and_then(|op| {
+            self.refuse_moved(state, opened, guard, at, who, subtree)?;
+            self.claim_read(state, &op.guard, op.at, who, unit)?;
+            Ok(op)
+        });
+        let op = match begun {
+            Ok(op) => op,
+            Err(error) => {
+                state.unwatch();
+                return Err(error);
+            }
+        };
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(Ok(shown)),
             Err(read) => read,
         };
-        if state.set.own(Unit::data(subtree), key) == Own::Unwritten {
-            return Ok(Err(read));
-        }
-        self.own_node(state, &op, subtree, key, Beside::Children(children), read)
+        let read = match state.set.own(unit, key) == Own::Unwritten {
+            true => read,
+            false => {
+                let beside = Beside::Children(children);
+                match self.own_node(state, &op, subtree, key, beside, read)? {
+                    Ok(shown) => return Ok(Ok(shown)),
+                    Err(read) => read,
+                }
+            }
+        };
+        let side = self.sided(state, opened, guard, at, seen, subtree)?;
+        Ok(Err((read, side)))
     }
 
     /// A cursor read the node of its own version, `pinned`, under its

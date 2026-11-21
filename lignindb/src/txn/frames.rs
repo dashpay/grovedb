@@ -239,8 +239,8 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// last.
     left: Vec<Subtree>,
     /// For each Merk that a clear applied to these frames entered again
-    /// under another id (`Directory::clear`), the id it had before, by
-    /// the id it has since.
+    /// under another id (`Directory::clear`), the id it had before every
+    /// such clear, by the id it has since.
     renewed: HashMap<MerkId, MerkId>,
 }
 
@@ -731,11 +731,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// The id that the Merk which has `id` in these frames had before the
     /// clears that were applied to them: its own, where none of them gave
     /// it another.
-    pub(crate) fn before_clears(&self, mut id: MerkId) -> MerkId {
-        while let Some(was) = self.renewed.get(&id) {
-            id = *was;
-        }
-        id
+    pub(crate) fn before_clears(&self, id: MerkId) -> MerkId {
+        self.renewed.get(&id).copied().unwrap_or(id)
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -1134,7 +1131,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let cleared = cleared.map_err(Refused::dirty)?;
             let was = left.entry.id();
             if let Some(now) = cleared.map(|entry| entry.id()).filter(|now| *now != was) {
-                self.renewed.insert(now, was);
+                self.renewed.insert(now, self.before_clears(was));
             }
         }
         // The unlinked records: those under the keys that the change sets

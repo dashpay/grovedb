@@ -184,6 +184,15 @@ impl<'s> World<'s> {
             }
             model.writes.push((write, first_write, false));
         }
+        // The write looked at the committed state before it was made.
+        model.look(&self.model.hosts);
+    }
+
+    /// Tells the model of `tx` that the transaction looked at the
+    /// committed state: a test that calls the transaction by itself
+    /// between two commits says so.
+    pub(crate) fn looked(&self, tx: &Tx<'s>) {
+        tx.model.borrow_mut().look(&self.model.hosts);
     }
 
     /// Applies one change of one Merk.
@@ -316,6 +325,7 @@ impl<'s> World<'s> {
     /// key (RD3, RD5), the committed read of each key (RD10), and a cursor
     /// over each unit of flat records, in both directions (RD6).
     pub(crate) fn check(&self, tx: &Tx<'s>) {
+        self.looked(tx);
         let committed = &self.model.records;
         let model = tx.model.borrow();
         for unit in self.units(tx) {
