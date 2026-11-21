@@ -409,11 +409,11 @@ id allocator (ID4; R3 of `page-alloc.md`):
 
 **LG16. What a group says of the value log's counts** is the commit's
 change to the counts of live values (DU5, O7): every pointer a cell stopped
-holding, and every pointer a cell started to hold. A commit that writes new
-values acquires nothing: its values have no pointer yet (FL7). The acquired
-entries are for a commit that stores pointers to values which are already
-in the value log, under a manifest that covers them: the commit of a load
-(`transactions.md` LD5).
+holding, and every pointer a cell started to hold. A commit acquires
+nothing for the new values it writes: they have no pointer yet (FL7). The
+acquired entries are for a commit that stores pointers to values which are
+already in the value log, under a manifest that covers them: the commit of
+a load (`transactions.md` LD5).
 
 **LG17. A group may have no entry.** A commit that takes a version and
 changes no page (ST5) is one part with no entry, 26 bytes. A part with no

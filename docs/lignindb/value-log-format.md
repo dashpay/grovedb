@@ -417,7 +417,9 @@ that causes it, never earlier. A cell that a transaction makes stop holding
 a pointer counts as one fewer in that transaction's commit. A value the
 transaction writes has no pointer at its commit: write-back gives the cell
 the pointer, and the value counts as one more from the checked step that
-does so. A value that the cleaner moves is counted in such a step as well,
+does so. The exception is a value of a bulk load, which is in the value
+log before the commit: the cell holds its pointer, and it counts as one
+more in that commit (`transactions.md` LD5). A value that the cleaner moves is counted in such a step as well,
 one fewer in the old file and one more in the new. Neither step takes a
 commit version: the pointer and the counts are installed together and are
 recovered with the pages (rules PV6, PV7 and FL7 of `transactions.md`). A

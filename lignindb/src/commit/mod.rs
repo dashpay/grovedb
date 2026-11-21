@@ -45,7 +45,8 @@
 //! The order of the locks is LT7's: the commit lock (level 1), the lock of
 //! the transaction (2), the latches of pages (4), the counts lock (4a). A
 //! commit waits for the commit lock, for the counts lock and, after it has
-//! ended, for write-back's bounds, and for nothing else (CM8): not for a
+//! ended, for write-back's bounds, and for nothing else (CM8) but what
+//! the commit of a load waits for ("The commit of a load"): not for a
 //! reader and not for another open write transaction. The latches it takes
 //! under the counts lock are those of its own private copies, which nobody
 //! else holds: no reader sees a private copy, and no page step changes a
@@ -82,22 +83,34 @@
 //! # The commit of a load
 //!
 //! A transaction whose loads put values into the value log
-//! ([`crate::txn`], "A load") holds them there under no count and no
-//! manifest. Its commit takes them over (`transactions.md` LD5,
-//! `log-format.md` LG16). It is a commit like any other, with this more:
+//! ([`crate::txn`], "A load") holds them there under no count. Its commit
+//! takes them over (`transactions.md` LD5, `log-format.md` LG16). It is a
+//! commit like any other, with this more:
 //!
 //! | Step | What is done | Locks held |
 //! | --- | --- | --- |
-//! | before | The file the loads append to is synced, and the manifest is replaced so that it covers their values, unless a durable manifest covers them all already. A failure refuses the commit with the transaction whole ([`CommitError::Refused`]). | the transaction's own, the manifest's |
-//! | after 5 | The pointers that cells of the transaction's pages hold to values of its loads are read from the cells. If a manifest does not cover one, which is so where steps 2 to 4 made the frames again and the values were appended anew, the file is synced and the manifest replaced here. A value that is still not covered fails the commit ([`CommitError::Failed`]). | commit lock, the manifest's |
-//! | 6 | The group lists those pointers as acquired, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
+//! | before | The transaction's frames are made over the latest version, and where no durable manifest covers the values its loads appended for them, the file the loads fill is synced and the manifest is replaced. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). | the transaction's own, that of the loads' file, the manifest's |
+//! | 2 to 4 | The same again, before the frames are taken. Nothing is left to do unless frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
+//! | 6 | The group lists as acquired the pointers that cells of the transaction's pages hold to values of its loads, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
 //! | 7 | The acquired pointers are counted with the released ones, and the hold on the files of the loads ends. | as for any commit |
 //!
-//! So such a commit syncs a value-log file and replaces the manifest,
-//! which costs what those cost on the store's disk, and makes them before
-//! it takes the commit lock: another commit waits for them only in the
-//! case of the second row (CM8). [`Published::acquired`] counts the
-//! pointers.
+//! So such a commit can sync a value-log file and replace the manifest,
+//! which costs what those cost on the store's disk. No other commit waits
+//! for them where they are made in the first row. In the second row a
+//! commit waits for them under the commit lock, and for what the frames
+//! append (CM8). [`Published::acquired`] counts the pointers.
+//!
+//! **A value in a file whose sync failed is covered by no manifest**
+//! ([`ValueStoreError::FileFailed`](lignin_store::values::ValueStoreError::FileFailed)).
+//! The commit of a transaction whose frames hold a pointer to one is
+//! refused each time, and the transaction is rolled back.
+//!
+//! **Where the commit ends with its group possibly in the log and the
+//! values not counted**, the hold stays for as long as the session lasts:
+//! a commit that cannot be settled ([`CommitError::Unsettled`]), one whose
+//! install is refused ([`CommitError::Halted`]), and one that panics from
+//! its append on. A recovery that keeps the group finds cells that point
+//! into those files.
 //!
 //! **After a crash the store has all of a load or none of it.** A manifest
 //! that covers every value is durable before the group that names their
@@ -200,7 +213,8 @@
 //!
 //! The key set of a commit is the keys of its writes. A commit that stands
 //! for more than it writes says so ([`Committer::commit_covering`], CF5): a
-//! load covers the range it put records into, and a wipe covers every key.
+//! wipe covers every key, and a load that stands for the whole of a range
+//! is given that range by its caller.
 //!
 //! **A kept value is dated at its read** (CF2a). A node that is written
 //! with its value kept ([`ValuePut::Keep`](crate::txn::ValuePut::Keep))
@@ -248,8 +262,8 @@
 //! and its commit is a commit like any other to them: one that wrote a key
 //! of the batch before fails with a conflict (CF8). The transaction is the
 //! write's own, so whatever the error nothing of the batch is left: a
-//! batch that is refused is [`CommitError::Refused`], and nothing was
-//! written.
+//! batch that is refused is [`CommitError::Refused`], and none of its
+//! writes is committed.
 //!
 //! The transaction of such a write has read nothing, so its batch has no
 //! read of its own to name: a node in it that keeps a committed value and
