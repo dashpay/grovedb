@@ -40,19 +40,21 @@
 //!   subtree is entered already.
 //! - **The element's node names all of them** in every batch that puts
 //!   it, of a group that holds a write for one of them through a handle
-//!   that names the element.
+//!   that names the element, where no batch of the group enters that one
+//!   itself.
 //! - **A handle that names an element says whose subtree it writes**:
 //!   a handle by path, of the subtree of its path, and a handle beside
 //!   that subtree ([`Engine::subtree_beside`](crate::Engine::subtree_beside)),
-//!   of the subtree with its prefix. A write through a handle beside a
-//!   subtree is refused with `Error::NotSupported` where the element it
-//!   names hosts no subtree with the handle's prefix once the group is
-//!   applied, and so are writes into one subtree through handles that
+//!   of the subtree with its prefix. A write through such a handle into
+//!   a subtree other than the one of the element's own path is refused
+//!   with `Error::NotSupported` where the element hosts no subtree with
+//!   that prefix once the group is applied, and so are writes into one
+//!   subtree through handles that
 //!   name two elements, or one element with two subtrees of its own path.
-//!   A write through a handle by path under a key that holds no element
-//!   once the group is applied is refused where the subtree is not
-//!   entered, and applied where it is: the delete of a tree removes the
-//!   records of its subtree with its element. A handle that names no
+//!   A write into the subtree of the element's own path under a key that
+//!   holds no element once the group is applied is refused where the
+//!   subtree is not entered, and applied where it is: the delete of a
+//!   tree removes the records of its subtree with its element. A handle that names no
 //!   element, by prefix or beside the path of the root, is not held to an
 //!   element.
 //! - **What an element hosts is read from the group where it states the

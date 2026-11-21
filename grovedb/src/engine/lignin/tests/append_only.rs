@@ -13,6 +13,7 @@
 
 use std::fmt::Debug;
 
+use grovedb_bulk_append_tree::deserialize_chunk_blob;
 use grovedb_commitment_tree::{
     serialize_ciphertext, DashMemo, NoteBytesData, TransmittedNoteCiphertext,
 };
@@ -357,23 +358,14 @@ impl Appended for Bulk {
         QualifiedGroveDbOp::bulk_append_op(tree, Self::value(n))
     }
 
-    /// A full chunk is read with the values that filled it: the first
-    /// four of the tree at the root, each whole and in their order.
+    /// A full chunk is read with the values that filled it: some chunk
+    /// decodes to exactly the first four values of the tree at the root.
     fn held(answers: &[Answer]) {
-        let shown = |n: usize| format!("{:?}", Self::value(n));
-        let bytes = |n: usize| shown(n).trim_matches(['[', ']']).to_owned();
-        let holds = |chunk: &str| {
-            let mut from = 0;
-            (0..1 << CHUNK_POWER).all(|n| {
-                let at = chunk[from..]
-                    .find(&bytes(n))
-                    .map(|at| from + at + bytes(n).len());
-                at.inspect(|at| from = *at).is_some()
-            })
-        };
+        let first: Vec<Vec<u8>> = (0..1 << CHUNK_POWER).map(Self::value).collect();
+        let decoded = format!(", Some(Some({first:?}))))");
         let chunks = answers.iter().filter(|(call, ..)| call == "chunk");
-        let full = chunks.filter(|(.., answer)| holds(answer)).count();
-        assert!(full > 0, "no chunk with the first four values");
+        let full = chunks.filter(|(.., answer)| answer.ends_with(&decoded));
+        assert!(full.count() > 0, "no chunk with the first four values");
     }
 
     fn reads<'db, E: Engine>(
@@ -392,7 +384,15 @@ impl Appended for Bulk {
             h.read("value", value);
         }
         for chunk in [0, at >> CHUNK_POWER, (at >> CHUNK_POWER) + 1] {
-            h.read("chunk", db.bulk_get_chunk(path, key, chunk, through, v));
+            // A chunk with the values it decodes to.
+            let read = db.bulk_get_chunk(path, key, chunk, through, v);
+            let read = read.map_ok(|blob| {
+                let values = blob
+                    .as_deref()
+                    .map(|blob| deserialize_chunk_blob(blob).ok());
+                (blob, values)
+            });
+            h.read("chunk", read);
         }
         for (start, limit) in [(0, 3), (at.saturating_sub(5), 7), (at, 2), (0, u16::MAX)] {
             let page = db.bulk_get_range(path, key, start, limit, through, v);
@@ -933,7 +933,7 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
             let needles: [(&str, &[&str]); 4] = [
                 ("value", &["Ok(Some([", "Ok(None)"]),
                 ("range", &["entries: [(", "entries: []"]),
-                ("chunk", &["Ok(Some([", "Ok(None)"]),
+                ("chunk", &["Ok((Some([", "Ok((None, None))"]),
                 ("buffer", &["Ok([["]),
             ];
             for (call, with) in needles.into_iter().filter(|(call, _)| has(call)) {
