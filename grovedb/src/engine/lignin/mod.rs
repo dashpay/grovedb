@@ -49,18 +49,17 @@
 //! GroveDB names no subtree where it removes an element. Where a group of
 //! batches is applied that removes a node, the engine drops what the
 //! directory has entered under that node, with every subtree below it
-//! ([`gone`]). The removals that GroveDB staged for the records of such
-//! a subtree are settled and charged, as on RocksDB, and the drop takes
+//! ([`gone`]), but for a subtree that a batch of the group was told to
+//! move, which goes to another prefix ([`moved`]). The removals that
+//! GroveDB staged for the records of a dropped
+//! subtree are settled and charged, as on RocksDB, and the drop takes
 //! the place of applying them. What a drop leaves in the pages is
 //! reclaimed by the engine's background work.
 //!
 //! # What it does not do yet
 //!
-//! Each is refused with `Error::NotSupported` and changes nothing: the
-//! application of a batch that moves a subtree which is entered, which
-//! is walked and charged and then refused until the transaction can give
-//! a subtree another prefix (`TXN-03-F4`), and a first write into a
-//! subtree under a key that holds no element.
+//! A first write into a subtree under a key that holds no element is
+//! refused with `Error::NotSupported` and changes nothing.
 
 mod checkpoint;
 mod enter;
@@ -444,7 +443,8 @@ enum Records<'db> {
 /// A subtree on its way to another prefix on the LigninDB engine.
 ///
 /// The subtree is not copied: it goes to its new prefix with the batch,
-/// its nodes where they are (`tree-layout.md` D5), and the batch says so
+/// its nodes where they are (`tree-layout.md` D5), where the batch is
+/// applied ([`moved`]), and the batch says so
 /// ([`LigninBatch::move_subtree`]): where the subtree is entered when the
 /// walk begins, and otherwise where it is entered when the walk ends,
 /// which a commit beside the transaction made so. The cursor of the walk
@@ -969,9 +969,9 @@ impl Engine for LigninEngine {
                     true => gone,
                     false => gone::gone(view, &parts, own, &left)?,
                 };
-                Ok((owed, left, gone, before))
+                Ok((owed, left, gone, before, moved::moved(view, &parts)?))
             });
-            let (owed, left, gone, left_before) = match looked {
+            let (owed, left, gone, left_before, moved) = match looked {
                 Ok(looked) => looked,
                 Err(error) => return Err(error).wrap_with_cost(OperationCost::default()),
             };
@@ -980,13 +980,16 @@ impl Engine for LigninEngine {
             // What an indexed tree hosts is said of its element in
             // every batch of the group, as this look read the element.
             // So is the Merk of a tree that one batch of several writes
-            // while another writes its element, and that an element
-            // hosts nothing whose subtree is dropped. No batch hands over
-            // a write that this look leaves out.
+            // while another writes its element, that an element hosts
+            // nothing whose subtree is dropped, and what the elements
+            // host that a moved subtree goes to or leaves. No batch hands
+            // over a write that this look leaves out.
             for part in &mut parts {
                 part.forget_hosts();
                 part.forget_drops();
-                for host in (owed.hosts.iter().chain(&owed.apart)).chain(&left.hosts) {
+                part.forget_moves();
+                let stated = (owed.hosts.iter().chain(&owed.apart)).chain(&left.hosts);
+                for host in stated.chain(&moved.hosts) {
                     part.host(host);
                 }
                 for left_out in &gone.left_out {
@@ -1006,6 +1009,14 @@ impl Engine for LigninEngine {
                 for dropped in stated {
                     first.drop_subtree(dropped);
                 }
+            }
+            // A subtree is moved with the batch that was told of it, and
+            // what makes room for it is dropped with the same batch.
+            for (part, dropped) in &moved.drops {
+                parts[*part].drop_subtree(dropped);
+            }
+            for (part, stated) in &moved.moves {
+                parts[*part].move_as(stated);
             }
             // A subtree that is dropped and entered again is entered
             // once, as the look for what is dropped has it, where the

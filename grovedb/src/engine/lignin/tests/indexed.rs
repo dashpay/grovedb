@@ -349,7 +349,7 @@ fn owned(path: &[&[u8]]) -> Vec<Vec<u8>> {
 /// bands of values in ascending order, the rank of a key that is there
 /// and of one that is not, the two folds over a band, and the proofs of
 /// a ranking and of a rank.
-fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
+pub(super) fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
     axis_reads_of::<T, E>(h, path, "");
 }
 

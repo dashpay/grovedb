@@ -2456,6 +2456,30 @@ fn a_write_under_the_key_of_a_moved_record_is_refused_at_the_settle() {
     );
 }
 
+/// A batch that was told of the move of a subtree is applied where
+/// whoever applies it states the move ([`LigninSettled::move_as`]). A
+/// pair that nobody stated is refused, and the transaction takes nothing
+/// of the batch.
+#[test]
+fn a_move_that_nobody_stated_is_refused_where_its_batch_is_applied() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let staged = LigninBatch::new();
+    let root = LigninNodeStore::deferred(&writer, ROOT, Some(&staged));
+    root.put_meta_record(b"m", b"meta").unwrap().unwrap();
+    drop(root);
+    staged.move_subtree(&[7; 32], &[9; 32]);
+    let Err(refused) = staged.apply(&writer).unwrap() else {
+        panic!("nobody stated the move");
+    };
+    assert!(refused.to_string().contains("was not stated"), "{refused}");
+    let read = LigninNodeStore::deferred(&writer, ROOT, None);
+    assert_eq!(read.get_meta_record(b"m").unwrap().unwrap(), None);
+    assert_eq!(transaction.stats().writes, 0);
+}
+
 /// What a settled batch says for whoever applies it to drop the subtree
 /// of a tree that another element is written over, and the drop it takes.
 #[test]
