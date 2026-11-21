@@ -660,43 +660,53 @@ returns when its copy is durable (BK5).
 **The acceptance test** is the sweep of `lignindb/src/db/tests/full.rs`.
 One session through the facade is scripted: a database is made, written
 with and without a transaction, written back, flushed, checkpointed,
-reclaimed after a drop, wiped, closed and opened again: 537 file
-operations, 86 of them syncs, and 553 with 102 syncs under a policy that
+reclaimed after a drop, wiped, closed and opened again: 522 file
+operations, 79 of them syncs, and 537 with 94 syncs under a policy that
 syncs every commit. It is run with no fault, and then once for each file
 operation that a device can refuse for room, with the device full at that
-operation. The background work is at rest and the script makes its
-turns, so that the operation that is refused is the same one in the run
-with no fault.
+operation.
 
-That holds of a run that came to its refusal by the operations of the run
-with no fault. A run that came to it by others is checked like any other,
-and is made again: each operation of the run with no fault is refused in a
-run that came to it as that run did, or the sweep fails. In the run quoted
-here that was 1 run of 3,365. In the runs of this kind that were looked
-at, one block of a segment was one byte longer than in the run with no
-fault. The background threads of a database run from its open until the
-test puts them to rest, which is the likely cause and was not established.
-The run with no fault is itself taken as the measure only once a second
-one has made the same operations.
+A database of the sweep is opened with neither of its two background
+threads, and the script makes every turn of write-back and of the
+reclaimer. Nothing but the script and the device then decides what a run
+does: each run makes the file operations of the run with no fault up to
+the one that is refused, so the operation that is refused is the one at
+its place in that run. A run that came to its refusal by other operations
+fails the sweep, which names the first operation that differed, and so do
+two runs with no fault that differ. No run is made again.
 
-Nine sweeps are made. The counts are those of one run of the tests, at
-head `a0f90fa3` plus this task: the operations that are refused are the
-same in every run, and the counts of what the runs met can differ by a few
-from one run to the next.
+A thread that `Db::open` starts can make its first turn before a test
+ends it, and either thread's turn shows in what the session does next:
+
+- The reclaimer's first round frees the page ids that the open took as
+  retired, which an earlier session had freed. The first commit of the
+  session can then give a new page one of them. In the script that is the
+  root of a Merk: the subtree directory keeps a record under the root's
+  address, which then sorts before the record of another Merk and not
+  after it, and the block of the directory's page is one byte longer.
+- Write-back's first turn makes the file operations that the script's
+  first turn makes otherwise, and meets what the device refuses of them
+  before the session is looked at.
+
+Nine sweeps are made. No background thread and no clock decides anything
+in them, and the counts were the same in every run that was made of them,
+on Linux x86-64 and on macOS aarch64. They are the counts at head
+`48c69be1` plus this task: a change of what the store does to its files
+at an open, a close or a turn of write-back changes them.
 
 | The device | Sync policy | Operations refused |
 | --- | --- | --- |
-| refuses one operation | no sync at a commit | 378 |
-| refuses one operation | a sync at every commit | 394 |
-| is full from the operation on, syncs included | no sync at a commit | 378 |
-| is full from the operation on, syncs included | a sync at every commit | 394 |
-| is full from the operation on, and syncs work | no sync at a commit | 292 |
-| refuses one operation, and loses what a refused sync had not made durable | no sync at a commit | 378 |
-| is full from the operation on, and loses the same | a sync at every commit | 394 |
-| refuses one operation and loses the same, and write-back makes its next turn before the session's next commit | no sync at a commit | 378 |
-| refuses one operation and keeps the same, and write-back makes its next turn first | no sync at a commit | 378 |
+| refuses one operation | no sync at a commit | 367 |
+| refuses one operation | a sync at every commit | 382 |
+| is full from the operation on, syncs included | no sync at a commit | 367 |
+| is full from the operation on, syncs included | a sync at every commit | 382 |
+| is full from the operation on, and syncs work | no sync at a commit | 288 |
+| refuses one operation, and loses what a refused sync had not made durable | no sync at a commit | 367 |
+| is full from the operation on, and loses the same | a sync at every commit | 382 |
+| refuses one operation and loses the same, and write-back makes its next turn before the session's next commit | no sync at a commit | 367 |
+| refuses one operation and keeps the same, and write-back makes its next turn first | no sync at a commit | 367 |
 
-At each of the 3,364 operations:
+At each of the 3,269 operations:
 
 - the session that met the refusal is looked at before anything ends it,
   and the session that is open when the script has ended is looked at
@@ -721,13 +731,13 @@ At each of the 3,364 operations:
   when the script has ended is asked again, and where there is none, or
   it has ended, the session after it takes the next commit. A session
   that was opened after the refusal is not counted as one that resumed.
-  In the run quoted here, 278 to 282 sessions of each sweep that refuses
-  one operation resumed where they were, 158 where the device stays full
-  and syncs work, and 2 and 9 where syncs are refused as well, under the
-  two policies. A sweep in which none did fails;
+  284 sessions of each sweep that refuses one operation resumed where
+  they were, 160 where the device stays full and syncs work, and 3 and 7
+  where syncs are refused as well, under the two policies. A sweep in
+  which none did fails;
 - no session has ended for a replacement of the manifest that was refused
   once (DF8a), whether the session's next commit or write-back came first:
-  38 runs of each sweep that refuses one operation;
+  36 runs of each sweep that refuses one operation;
 - nothing of the background work failed while the device had refused
   nothing;
 - write-back, a flush and a close work again, and the database closes and
