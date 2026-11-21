@@ -23,6 +23,7 @@ mod indexed;
 mod nested;
 mod queries;
 mod restore;
+mod sync;
 
 use grovedb_costs::OperationCost;
 use grovedb_merk::store::{lignin::hash::MerkHashRules, NodeStore};

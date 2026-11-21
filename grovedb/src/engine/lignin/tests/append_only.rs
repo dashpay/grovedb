@@ -206,7 +206,7 @@ fn owned(path: &[&[u8]], key: &[u8]) -> Vec<Vec<u8>> {
 }
 
 /// One kind of append-only tree, as its history uses it.
-trait Appended {
+pub(super) trait Appended {
     /// What the history calls the tree.
     const NAME: &'static str;
     /// How many values the history appends to one tree with no
@@ -260,7 +260,7 @@ fn shown<T: Debug>(answer: CostResult<T, Error>) -> CostResult<String, Error> {
     answer.map_ok(|answer| format!("{answer:?}"))
 }
 
-struct Mmr;
+pub(super) struct Mmr;
 
 impl Appended for Mmr {
     const DIRECT: usize = 19;
@@ -311,7 +311,7 @@ impl Appended for Mmr {
     }
 }
 
-struct Bulk;
+pub(super) struct Bulk;
 
 /// The chunk power of the bulk-append trees, the commitment trees and the
 /// private-document stores of the histories: a chunk of four values, so
@@ -404,7 +404,7 @@ impl Appended for Bulk {
     }
 }
 
-struct Dense;
+pub(super) struct Dense;
 
 /// The height of the dense trees of the histories: 31 positions.
 const DENSE_HEIGHT: u8 = 5;
@@ -462,7 +462,7 @@ impl Appended for Dense {
     }
 }
 
-struct Commitment;
+pub(super) struct Commitment;
 
 fn note(n: usize, tag: u8) -> [u8; 32] {
     let mut bytes = [0u8; 32];
@@ -558,7 +558,7 @@ impl Appended for Commitment {
     }
 }
 
-struct Private;
+pub(super) struct Private;
 
 /// The entry size of the private-document stores of the histories.
 const ENTRY_SIZE: u32 = 16;

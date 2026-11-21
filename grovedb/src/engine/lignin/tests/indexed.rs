@@ -853,7 +853,7 @@ fn a_count_and_sum_indexed_tree_in_another_answers_on_lignindb_as_on_rocksdb() {
     on_both_engines!(nested::<CountSum, _>, nested_told::<CountSum>());
 }
 
-fn entry(db: &Lignin, prefix: [u8; 32]) -> Option<LigninEntry> {
+pub(super) fn entry(db: &Lignin, prefix: [u8; 32]) -> Option<LigninEntry> {
     let tx = db.start_transaction();
     let view = tx.write_transaction().expect("a write transaction");
     let handle = LigninNodeStore::read_only(view, LigninSubtree::alone(prefix));
