@@ -132,8 +132,8 @@ pub(super) type Answer = (String, OperationCost, String);
 pub(super) struct Log {
     pub(super) answers: Vec<Answer>,
     /// How many calls were refused, and how many the history made to be.
-    refused: usize,
-    on_purpose: usize,
+    pub(super) refused: usize,
+    pub(super) on_purpose: usize,
     /// The pairs of a tree and the tree in it that its chains held.
     pairs: BTreeSet<(usize, usize)>,
 }
@@ -151,12 +151,12 @@ impl Log {
     }
 
     /// The answer of the last call, as text.
-    fn last(&self) -> &str {
+    pub(super) fn last(&self) -> &str {
         &self.answers.last().expect("a call").2
     }
 
     /// The history made no refusal but those it made on purpose.
-    fn assert_refusals(&self) {
+    pub(super) fn assert_refusals(&self) {
         let refused: Vec<(&str, &str)> = (self.answers.iter())
             .filter(|(_, _, answer)| answer.starts_with("Err"))
             .map(|(call, _, answer)| (call.as_str(), answer.as_str()))
@@ -431,7 +431,7 @@ pub(super) fn check(dir: &Path, version: &GroveVersion) {
     assert!(report.is_sound(), "{:#?}", report.findings);
 }
 
-fn assert_same(lignin: &Log, rocksdb: &Log) {
+pub(super) fn assert_same(lignin: &Log, rocksdb: &Log) {
     assert_eq!(lignin.answers.len(), rocksdb.answers.len());
     for (call, (lignin, rocksdb)) in lignin.answers.iter().zip(&rocksdb.answers).enumerate() {
         assert_eq!(lignin, rocksdb, "call {call}");
@@ -466,6 +466,7 @@ macro_rules! on_both_engines {
         log
     }};
 }
+pub(super) use on_both_engines;
 
 /// A chain for every ordered pair of the kinds `version` makes, written
 /// with no transaction.

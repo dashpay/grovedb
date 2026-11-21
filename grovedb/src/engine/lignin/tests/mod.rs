@@ -18,8 +18,10 @@
 
 mod append_only;
 mod axes;
+mod batches;
 mod cases;
 mod indexed;
+mod moves;
 mod nested;
 mod queries;
 mod restore;
@@ -1081,14 +1083,17 @@ fn what_the_engine_does_not_do_yet_is_not_supported_and_changes_nothing() {
     let error = (engine.delete_prefix_ranges(&[[1; 32]])).expect_err("a range delete");
     not_supported(&error, matches!(error, StorageError::NotSupported(_)));
 
+    // A subtree that is not entered has no record and no entry to move:
+    // its walk ends at once, and the batch is told of nothing.
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    let mut moving = engine.move_subtree([1; 32], [2; 32], &batch, &tx).unwrap();
-    let moved = moving.move_next(|_, _| Ok(()), |_, _| Default::default());
-    assert_eq!(moved.cost, OperationCost::default());
-    let error = moved.unwrap().expect_err("a move");
-    not_supported(&error, matches!(error, Error::NotSupported(_)));
-    assert_eq!(format!("{moving:?}"), "LigninSubtreeMove");
+    {
+        let mut moving = engine.move_subtree([1; 32], [2; 32], &batch, &tx).unwrap();
+        let moved = moving.move_next(|_, _| Ok(()), |_, _| Default::default());
+        assert_eq!(moved.unwrap().expect("a walk of no record"), None);
+        assert!(format!("{moving:?}").starts_with("LigninSubtreeMove"));
+    }
+    assert!(batch.is_empty());
     drop((batch, tx));
 
     // No checkpoint is opened either, so none is deleted: the directory
