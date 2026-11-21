@@ -640,6 +640,9 @@ struct Marks {
     /// The subtrees that are moved, each with the prefix it goes to, in
     /// the order they were said ([`LigninBatch::move_subtree`]).
     moves: Vec<(Prefix, Prefix)>,
+    /// The subtrees that the walk of a move found none of, each with the
+    /// prefix it was to go to ([`LigninBatch::move_of_none`]).
+    absent: Vec<(Prefix, Prefix)>,
     /// The nodes that a handle put, with a stated value, in the place of
     /// the element of a tree ([`LigninChangeSet::note_trees`]).
     over_trees: BTreeSet<(Prefix, Vec<u8>)>,
@@ -691,6 +694,7 @@ impl Marks {
         }
         self.generation += 1;
         self.moves.extend(other.moves);
+        self.absent.extend(other.absent);
         self.over_trees.extend(other.over_trees);
         for (prefix, anew) in other.merks {
             *self.merks.entry(prefix).or_default() |= anew;
@@ -746,6 +750,16 @@ impl LigninBatch {
     /// applied ([`LigninSettled::apply`]).
     pub fn move_subtree(&self, from: &Prefix, to: &Prefix) {
         self.marks().moves.push((*from, *to));
+    }
+
+    /// Says that the walk of a move was asked for the subtree `from`, to
+    /// go to the prefix `to`, and found none: nothing is entered under
+    /// `from`, and nothing goes anywhere. It states no write. Whoever
+    /// applies the batch reads the pair from it
+    /// ([`LigninSettled::moves_of_none`]), and can hold the element that
+    /// the batch puts over `to` against it.
+    pub fn move_of_none(&self, from: &Prefix, to: &Prefix) {
+        self.marks().absent.push((*from, *to));
     }
 
     /// Stages what a record of a moved subtree is charged where it lands:
@@ -995,6 +1009,7 @@ pub struct LigninSettled {
     resolved: Resolved<Charge>,
     written: BTreeMap<Prefix, LigninSubtree>,
     moves: Vec<(Prefix, Prefix)>,
+    absent: Vec<(Prefix, Prefix)>,
     pending: OperationCost,
     /// Whether two handles named different hosts for a subtree the batch
     /// holds a write for.
@@ -1104,6 +1119,7 @@ impl LigninSettled {
             resolved,
             written,
             moves: marks.moves,
+            absent: marks.absent,
             pending,
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
@@ -1241,6 +1257,25 @@ impl LigninSettled {
     /// the order they were said ([`LigninBatch::move_subtree`]).
     pub fn moves(&self) -> &[([u8; 32], [u8; 32])] {
         &self.moves
+    }
+
+    /// The subtrees that the walk of a move found none of, each with the
+    /// prefix it was to go to, in the order they were said
+    /// ([`LigninBatch::move_of_none`]).
+    pub fn moves_of_none(&self) -> &[([u8; 32], [u8; 32])] {
+        &self.absent
+    }
+
+    /// The nodes that the batch puts in the Merk `prefix` with a stated
+    /// value: each by its key, with that value.
+    pub fn stated(&self, prefix: &[u8; 32]) -> impl Iterator<Item = (&[u8], &[u8])> {
+        let subtree = Subtree::new(*prefix);
+        let nodes =
+            (self.resolved.outcomes()).filter(move |outcome| outcome.unit.subtree == subtree);
+        nodes.filter_map(|outcome| match outcome.write {
+            Staged::Node(node) => Some((outcome.key, node.value.as_deref()?)),
+            _ => None,
+        })
     }
 
     /// The subtrees the batch holds a write for, in any column, each as

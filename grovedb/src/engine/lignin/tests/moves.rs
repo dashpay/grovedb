@@ -501,6 +501,7 @@ fn trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
 
     let transaction = db.start_transaction();
     let mut calls = Calls::new(&db, version, Some(&transaction), &mut log);
+    calls.root();
     calls.batch("moved and given up", vec![rename(&[parent], b"t", b"lost")]);
     db.rollback_transaction(&transaction).expect("a rollback");
     calls.root();

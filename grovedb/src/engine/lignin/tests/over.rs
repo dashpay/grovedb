@@ -20,7 +20,7 @@ use lignindb::{Db, Options};
 use super::{apart, batches::insert, check, version, Lignin, ROOT};
 use crate::{
     engine::{
-        lignin::{LigninEngine, AFTER_A_LOOK, AFTER_ENTRY_READS, REFUSED},
+        lignin::{LigninEngine, AFTER_A_LOOK, AFTER_ENTRY_READS, BEFORE_A_WALK, REFUSED},
         Engine, SubtreeMove,
     },
     Element,
@@ -389,8 +389,9 @@ fn a_group_that_writes_a_merk_after_its_last_write_of_the_element_is_refused() {
 
 /// Walks the move of the subtree at `at` to the key `u` with `other`
 /// happening after the engine read the entry of the subtree, before it
-/// makes the cursor. Gives the keys the walk showed and the moves that
-/// the batch holds afterwards, with the move that was asked for.
+/// makes the cursor. Gives the keys the walk showed, and the moves and
+/// the walks that found no subtree which the batch holds afterwards,
+/// with the move that was asked for.
 #[allow(clippy::type_complexity)]
 fn moved_beside(
     db: &Lignin,
@@ -398,7 +399,7 @@ fn moved_beside(
     other: Box<dyn FnOnce()>,
 ) -> (
     Vec<Vec<u8>>,
-    Vec<([u8; 32], [u8; 32])>,
+    [Vec<([u8; 32], [u8; 32])>; 2],
     ([u8; 32], [u8; 32]),
 ) {
     let engine = db.engine();
@@ -420,7 +421,9 @@ fn moved_beside(
     drop(moving);
     let mut group = <LigninEngine as Engine>::WriteGroup::default();
     (engine.settle_batch(&mut group, batch).unwrap()).expect("a settled batch");
-    (walked, group.parts[0].moves().to_vec(), (from, to))
+    let part = &group.parts[0];
+    let told = [part.moves().to_vec(), part.moves_of_none().to_vec()];
+    (walked, told, (from, to))
 }
 
 /// The move of a subtree reads the entry of the subtree and then makes
@@ -438,10 +441,10 @@ fn a_subtree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_batc
             .unwrap()
             .expect("the first element of the tree");
     });
-    let (walked, moves, asked) = moved_beside(&db, T, other);
+    let (walked, [moves, none], asked) = moved_beside(&db, T, other);
     assert!(done.get());
     assert_eq!(walked, [b"x".to_vec()]);
-    assert_eq!(moves, [asked]);
+    assert_eq!((moves, none), (vec![asked], vec![]));
 }
 
 /// The same for a tree that keeps its data flat. The cursor was made for
@@ -462,15 +465,75 @@ fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_ba
             .unwrap()
             .expect("the first leaf");
     });
-    let (walked, moves, asked) = moved_beside(&db, &[b"m"], other);
+    let (walked, [moves, none], asked) = moved_beside(&db, &[b"m"], other);
     assert!(done.get());
     assert_eq!(walked, Vec::<Vec<u8>>::new());
-    assert_eq!(moves, [asked]);
+    assert_eq!((moves, none), (vec![asked], vec![]));
     // With no writer beside it, the tree nothing was appended to is no
-    // move of its batch.
+    // move of its batch: the batch is told that the walk found none.
     (db.insert(root, b"n", Element::empty_mmr_tree(), None, None, v))
         .unwrap()
         .expect("a tree of leaves");
-    let (walked, moves, _) = moved_beside(&db, &[b"n"], Box::new(|| ()));
-    assert_eq!((walked.len(), moves.len()), (0, 0));
+    let (walked, [moves, none], asked) = moved_beside(&db, &[b"n"], Box::new(|| ()));
+    assert_eq!(walked.len(), 0);
+    assert_eq!((moves, none), (vec![], vec![asked]));
+}
+
+/// GroveDB works out the move of a tree from the element it read, stages
+/// the put and the delete of that element, and asks the engine to walk
+/// the subtree afterwards. Where a commit beside the transaction writes
+/// an item over the tree in between, the subtree is dropped and the walk
+/// finds none, while the batch puts an element that names the tree's
+/// data under the new key. The batch is refused as a conflict, and
+/// nothing of it is applied: for a tree whose data is a Merk, and for a
+/// tree of leaves. A tree of leaves that nothing was appended to has no
+/// subtree and names no data, and is moved.
+#[test]
+fn a_move_whose_subtree_a_commit_dropped_before_its_walk_is_a_conflict() {
+    use crate::batch::QualifiedGroveDbOp;
+
+    let v = version();
+    let (dir, db) = grove(true);
+    let root: &[&[u8]] = &[];
+    (db.insert(root, b"m", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves");
+    (db.mmr_tree_append(root, b"m", vec![7; 40], None, v))
+        .unwrap()
+        .expect("a leaf");
+    (db.insert(root, b"e", Element::empty_mmr_tree(), None, None, v))
+        .unwrap()
+        .expect("a tree of leaves that nothing is appended to");
+    let rename = |key: &[u8], new_key: &[u8]| {
+        vec![QualifiedGroveDbOp::move_op(
+            Vec::new(),
+            key.to_vec(),
+            new_key.to_vec(),
+        )]
+    };
+    for (key, new_key) in [(b"t".as_slice(), b"u".as_slice()), (b"m", b"n")] {
+        let (written_over, landed) = (key.to_vec(), new_key.to_vec());
+        let (other, done) = beside(&db, move |db| {
+            (db.apply_batch(vec![insert(&[], &written_over, item(3))], None, None, v))
+                .unwrap()
+                .expect("an item over the tree, beside the mover");
+        });
+        BEFORE_A_WALK.set(Some(other));
+        let moved = db.apply_batch(rename(key, new_key), None, None, v).unwrap();
+        assert!(BEFORE_A_WALK.take().is_none(), "the subtree was walked");
+        assert!(done.get());
+        let refused = moved.expect_err("the subtree was dropped since the mover read its element");
+        assert!(refused.is_commit_conflict(), "{refused}");
+        let read = (db.get(ROOT, key, None, v).unwrap()).expect("the other writer's item");
+        assert_eq!(read, item(3));
+        assert!(db.get(ROOT, &landed, None, v).unwrap().is_err());
+    }
+    assert_eq!(entry_of_t(&db), None);
+    (db.apply_batch(rename(b"e", b"f"), None, None, v))
+        .unwrap()
+        .expect("the move of a tree of leaves that nothing was appended to");
+    let read = (db.get(ROOT, b"f", None, v).unwrap()).expect("the moved tree");
+    assert_eq!(read, Element::empty_mmr_tree());
+    drop(Arc::into_inner(db).expect("the only handle on the grove"));
+    check(dir.path());
 }

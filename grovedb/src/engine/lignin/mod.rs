@@ -59,6 +59,7 @@
 
 mod enter;
 mod error;
+mod moved;
 mod over;
 mod restore;
 #[cfg(test)]
@@ -240,6 +241,10 @@ thread_local! {
     /// What a test has happen on its own thread inside a look, once: the
     /// number of reads of an entry that it comes after, and what it is.
     static AFTER_ENTRY_READS: std::cell::RefCell<Option<(usize, Box<dyn FnOnce()>)>> =
+        const { std::cell::RefCell::new(None) };
+    /// What a test has happen on its own thread where the next walk of a
+    /// move begins, before the entry of its subtree is read, once.
+    static BEFORE_A_WALK: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
         const { std::cell::RefCell::new(None) };
     /// A test's word that the next read of the mark of a restore that did
     /// not finish fails, on this thread.
@@ -492,13 +497,15 @@ impl SubtreeMove for LigninSubtreeMove<'_> {
             // The walk has ended on a subtree that was not entered when
             // it began. Where it is entered now, a commit beside the
             // transaction entered it since, whatever the walk saw of it:
-            // the batch holds the move.
+            // the batch holds the move. Where it is not, the batch is told
+            // that the walk found none.
             let entry = source.entry().map_err(merk_error);
             let entry = cost_return_on_error_no_add!(cost, entry.map_err(crate::Error::from));
-            if entry.is_some() {
-                batch.move_subtree(from, to);
-                *told = true;
+            match entry {
+                Some(_) => batch.move_subtree(from, to),
+                None => batch.move_of_none(from, to),
             }
+            *told = true;
         }
         Ok(found).wrap_with_cost(cost)
     }
@@ -888,6 +895,12 @@ impl Engine for LigninEngine {
         if transaction.is_snapshot_read() {
             return LigninSettled::apply(parts, view, &[]).map_err(merk_error);
         }
+        // A batch that lands an element which names data where the walk
+        // of its move found no subtree was worked out from a tree that a
+        // commit beside the transaction took since.
+        if let Err(error) = moved::found_none(&parts) {
+            return Err(error).wrap_with_cost(OperationCost::default());
+        }
         // A group in which a batch enters, drops or clears a subtree
         // itself can be refused for an entry by its own doing, with
         // nothing published beside it: it is not looked for again.
@@ -969,9 +982,15 @@ impl Engine for LigninEngine {
         batch: &'a LigninBatch,
         transaction: &'a LigninTransaction<'_>,
     ) -> CostContext<LigninSubtreeMove<'a>> {
+        #[cfg(test)]
+        if let Some(due) = BEFORE_A_WALK.take() {
+            beside_the_group(due);
+        }
         let source = LigninNodeStore::read_only(transaction.view(), LigninSubtree::alone(from));
         // A subtree that is not entered has no record and no entry to
         // move: its walk finds nothing, and the batch is told of no move.
+        // Where it is not entered at the end of the walk either, the batch
+        // is told that the walk found none (`moved::found_none`).
         // A read of the entry that the transaction refuses is met again by
         // the cursor, whose status ends the move. The cursor is made after
         // the entry is read. A subtree that is entered in between or

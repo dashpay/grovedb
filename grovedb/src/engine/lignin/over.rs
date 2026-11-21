@@ -149,7 +149,7 @@ impl Left {
 }
 
 /// The prefix of the subtree under `key` of the subtree at `path`.
-fn prefix_under(path: &[Vec<u8>], key: &[u8]) -> [u8; 32] {
+pub(super) fn prefix_under(path: &[Vec<u8>], key: &[u8]) -> [u8; 32] {
     let segments: Vec<&[u8]> = (path.iter().map(Vec::as_slice))
         .chain(std::iter::once(key))
         .collect();

@@ -316,6 +316,20 @@ pub(super) fn hosting(element: &Element, own: [u8; 32]) -> Result<Hosting, Error
     ))
 }
 
+/// The subtrees that the element with the bytes `value` hosts, by
+/// position, where `own` is the subtree of its own path: none for what is
+/// no tree.
+pub(super) fn hosted_by(value: &[u8], own: [u8; 32]) -> Result<Vec<[u8; 32]>, Error> {
+    let Some(element) = element_of(value) else {
+        return Ok(Vec::new());
+    };
+    Ok(match hosting(&element, own)? {
+        Hosting::Nothing | Hosting::One(None) => Vec::new(),
+        Hosting::One(Some(_)) => vec![own],
+        Hosting::Many(merks) => merks.into_iter().map(|(prefix, _)| prefix).collect(),
+    })
+}
+
 pub(super) fn entered(
     view: LigninView<'_>,
     prefix: [u8; 32],
