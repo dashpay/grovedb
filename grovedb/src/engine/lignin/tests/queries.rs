@@ -240,8 +240,16 @@ fn direction(left_to_right: bool) -> &'static str {
 /// tree commits to its count: the second and the third element of each,
 /// from either end.
 const PAGE_OF_EACH: &str = "a page of each counting group";
-/// The groups of [`PAGE_OF_EACH`], by their kinds.
-const COUNTING_GROUPS: [usize; 3] = [5, 6, 8];
+
+/// The groups of [`PAGE_OF_EACH`], by their kinds: every kind of tree
+/// that commits to its count, of those the grove version makes.
+fn counting_groups(version: &GroveVersion) -> Vec<usize> {
+    let kinds = [5, 6, 8, 9].into_iter();
+    kinds.filter(|kind| *kind < made_by(version)).collect()
+}
+
+/// The name of the query for a reference that leads to a tree with nodes.
+const REFERENCE_TO_A_TREE: &str = "a reference to a tree";
 /// The call under which the rows of such a page are noted by their keys.
 const ROWS_OF_THE_PAGE: &str = "rows of the page";
 
@@ -413,7 +421,7 @@ fn row_queries(version: &GroveVersion) -> Vec<(String, PathQuery)> {
         sized(&[ODD], Query::new_range_full(), None, None),
     ));
     queries.push((
-        "a reference to a tree".to_owned(),
+        REFERENCE_TO_A_TREE.to_owned(),
         sized(
             &[ODD],
             Query::new_single_key(b"to a tree".to_vec()),
@@ -440,7 +448,7 @@ fn row_queries(version: &GroveVersion) -> Vec<(String, PathQuery)> {
         page.offset = Some(1);
         page.limit = Some(2);
         let mut pages = Query::new_with_direction(left_to_right);
-        for kind in COUNTING_GROUPS {
+        for kind in counting_groups(version) {
             pages.insert_key(group(kind));
         }
         pages.set_subquery(page.clone());
@@ -488,7 +496,8 @@ fn row_queries(version: &GroveVersion) -> Vec<(String, PathQuery)> {
 }
 
 /// Pairs of path queries that are read and proven as one: keys and ranges
-/// with no limit, in one subtree and in two, and pairs taken from
+/// with no limit, in one subtree and in two, each of the two references
+/// whose proof a verifier refuses with a row, and pairs taken from
 /// [`row_queries`] as they come, most of which do not merge.
 fn pairs(version: &GroveVersion) -> Vec<(String, PathQuery, PathQuery)> {
     let key = |at: &[&[u8]], n: u8| sized(at, Query::new_single_key(row(n)), None, None);
@@ -514,6 +523,23 @@ fn pairs(version: &GroveVersion) -> Vec<(String, PathQuery, PathQuery)> {
             "two trees side by side".to_owned(),
             all(&[PLAIN, b"nested", b"inner a"]),
             all(&[PLAIN, b"nested", b"inner b"]),
+        ),
+        // The two references whose proofs a verifier refuses
+        // (`refused_by_the_verifier`), each with a row of another tree.
+        (
+            format!("{STALE} and a row"),
+            sized(&[ODD], Query::new_single_key(b"stale".to_vec()), None, None),
+            key(&[PLAIN], 1),
+        ),
+        (
+            format!("{REFERENCE_TO_A_TREE} and a row"),
+            sized(
+                &[ODD],
+                Query::new_single_key(b"to a tree".to_vec()),
+                None,
+                None,
+            ),
+            key(&[PLAIN], 1),
         ),
         // References by their whole paths, which is what a read of
         // encoded values takes.
@@ -622,9 +648,9 @@ fn sum_walks(version: &GroveVersion) -> Vec<(String, AggregateSumPathQuery)> {
 
 /// The elements that are read by their keys: four rows, the references
 /// and the trees of the plain tree, keys of a tree two deep in it and of
-/// the tree of odd elements, a row and the reference of every group, the
-/// group itself, the trees of the root, the elements that are linked both
-/// ways, and what is not there.
+/// the tree of odd elements, a row and the reference of every group the
+/// grove is made with, the group itself, the trees of the root, the
+/// elements that are linked both ways, and what is not there.
 fn keys(version: &GroveVersion) -> Vec<(Vec<Vec<u8>>, Vec<u8>)> {
     let mut keys: Vec<(Vec<Vec<u8>>, Vec<u8>)> = Vec::new();
     for n in [0, 3, 9, 13] {
@@ -1003,7 +1029,7 @@ pub(super) type Verified = Result<([u8; 32], String), crate::Error>;
 pub(super) fn verification(verified: Verified, root: &[u8; 32]) -> (&'static str, String) {
     match verified {
         Ok((verified_root, answer)) if verified_root == *root => {
-            ("verified", format!("Ok({answer})"))
+            (VERIFIED, format!("Ok({answer})"))
         }
         Ok((_, answer)) => (ANOTHER_ROOT, answer),
         Err(error) => (NOT_VERIFIED, error.to_string()),
@@ -1057,6 +1083,10 @@ fn verify(proof: &[u8], query: &PathQuery, version: &GroveVersion) -> Verified {
     })
 }
 
+/// The call under which a proof is noted that the verifier took and by
+/// which it came to the committed root hash.
+pub(super) const VERIFIED: &str = "verified";
+
 /// The call under which a proof is noted that the verifier refused.
 pub(super) const NOT_VERIFIED: &str = "not verified";
 
@@ -1084,10 +1114,11 @@ fn prove<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
             note_verified(recorder.log, phase, "", name, verified, &root);
         }
         recorder.log.answer(named(phase, "prove", name), proved);
-        // The read that answers with a proof, for some of the queries,
-        // with no transaction and with a write transaction that has
-        // written nothing.
-        if at % 16 == 0 {
+        // The read that answers with a proof, for one query in sixteen
+        // and for those whose proof a verifier refuses, with no
+        // transaction and with a write transaction that has written
+        // nothing, which the read refuses.
+        if at % 16 == 0 || [STALE, REFERENCE_TO_A_TREE].contains(&name.as_str()) {
             let transaction = db.start_transaction();
             for through in [None, Some(&transaction)] {
                 let proved = db.get_proved_path_query(query, None, through, version);
@@ -1579,41 +1610,49 @@ pub(super) fn assert_same_calls<C: PartialEq + std::fmt::Debug>(
 fn refused_by_the_verifier(version: &GroveVersion) -> Vec<&'static str> {
     let mut refused = vec![STALE];
     if version.protocol_version == GROVE_VERSIONS[2].protocol_version {
-        refused.push("a reference to a tree");
+        refused.push(REFERENCE_TO_A_TREE);
     }
     refused
 }
 
-/// No proof led the verifier to another root hash than that of the
-/// committed state. The verifier took every proof that was made, but
-/// those of [`refused_by_the_verifier`]: each of them it refused, with an
-/// error, in both rounds of proofs, and refused as well wherever a read
-/// answered with it or it was one of two queries proven as one. A proof
-/// made with the other setting of the prover's option is held to the
-/// same.
+/// What the verifier made of every proof it was given, of whatever
+/// family (a query, a read that answers with a proof, the other setting
+/// of the prover's option, two queries as one). No proof led it to
+/// another root hash than that of the committed state. It refused, with
+/// an error, each proof of a query that is one of
+/// [`refused_by_the_verifier`] or holds one, and took every other. Each
+/// refused query was proven, and its proof refused, in both rounds of
+/// proofs three times: by itself, by a read that answers with a proof,
+/// and as one of two queries.
 fn assert_verified(log: &Log, version: &GroveVersion) {
-    let allowed = refused_by_the_verifier(version);
+    let to_refuse = refused_by_the_verifier(version);
     let mut refused: Vec<String> = Vec::new();
     for answer in &log.answers {
         let kind = kind_of(answer).0;
-        assert!(!kind.starts_with(ANOTHER_ROOT), "{answer:#?}");
-        if !kind.starts_with(NOT_VERIFIED) {
+        let outcomes = [VERIFIED, NOT_VERIFIED, ANOTHER_ROOT].into_iter();
+        let Some(outcome) = outcomes
+            .into_iter()
+            .find(|outcome| kind.starts_with(outcome))
+        else {
             continue;
-        }
+        };
+        assert_ne!(outcome, ANOTHER_ROOT, "{answer:#?}");
         let name = answer.0.split(" | ").nth(2).unwrap_or_default();
-        assert!(
-            allowed.iter().any(|allowed| name.contains(allowed)),
-            "{answer:#?}"
-        );
-        if kind == NOT_VERIFIED {
+        let is_to_be_refused = to_refuse.iter().any(|refused| name.contains(refused));
+        assert_eq!(outcome == NOT_VERIFIED, is_to_be_refused, "{answer:#?}");
+        if is_to_be_refused {
             refused.push(answer.0.clone());
         }
     }
     refused.sort();
     let mut expected: Vec<String> = Vec::new();
-    for name in allowed {
+    for name in to_refuse {
         for phase in ["committed", "committed again"] {
+            let read_proved = format!("{NOT_VERIFIED}{READ_PROVED}");
+            let many = format!("{NOT_VERIFIED}{MANY}");
             expected.push(named(phase, NOT_VERIFIED, name));
+            expected.push(named(phase, &read_proved, name));
+            expected.push(named(phase, &many, &format!("{name} and a row")));
         }
     }
     expected.sort();
@@ -1757,10 +1796,15 @@ fn reads_and_proofs_on_grove_v5() {
     for (phase, last_two) in last_two {
         for left_to_right in [true, false] {
             let name = format!("{PAGE_OF_EACH} {}", direction(left_to_right));
-            let named = named(phase, ROWS_OF_THE_PAGE, &name);
-            let noted = log.answers.iter().filter(|answer| answer.0 == named);
+            let noted_under = named(phase, ROWS_OF_THE_PAGE, &name);
+            let noted = log.answers.iter().filter(|answer| answer.0 == noted_under);
             let noted: Vec<&str> = noted.map(|answer| answer.2.as_str()).collect();
-            let mut groups = COUNTING_GROUPS.to_vec();
+            // The read of any shape answers the query too.
+            let run = named(phase, "run", &name);
+            let ran = log.answers.iter().filter(|answer| answer.0 == run);
+            let ran: Vec<bool> = ran.map(|answer| answer.2.starts_with("Ok")).collect();
+            assert_eq!(ran, [true], "{run}");
+            let mut groups = counting_groups(&GROVE_VERSIONS[4]);
             let rows = match left_to_right {
                 true => [0, 1],
                 false => {
@@ -1773,7 +1817,7 @@ fn reads_and_proofs_on_grove_v5() {
                 rows.map(|n| at_key(&at, &row(n)))
             });
             let expected = expected.collect::<Vec<_>>().join(", ");
-            assert_eq!(noted, [expected.as_str()], "{named}");
+            assert_eq!(noted, [expected.as_str()], "{noted_under}");
         }
     }
     // A page by count is proven as well, of each group and of one tree,

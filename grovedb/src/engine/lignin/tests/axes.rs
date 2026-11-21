@@ -30,7 +30,7 @@ use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
     indexed::{BigSum, Count, CountBigSum, CountSum, Indexed, Sum, SumAndAverage},
-    nested::{check, open, segments, Log, Recorder},
+    nested::{check, open, segments, Answer, Log, Recorder},
     queries::{
         assert_same_calls, exact, kind_of, named, note, path, tally, verification, ANOTHER_ROOT,
         NOT_VERIFIED,
@@ -370,21 +370,26 @@ fn on_both_engines<T: Indexed>(has_kind: impl Fn(usize) -> bool) {
             continue;
         }
         // A version that makes the kind takes every write of the history
-        // into its indexed trees.
+        // into its indexed trees: each insert is answered, and each
+        // delete removes the leaf it names.
         for write in WRITES {
+            let taken = |answer: &&Answer| match write {
+                "delete a leaf" => answer.2 == "Ok(true)",
+                _ => answer.2.starts_with("Ok"),
+            };
             let made = log.answers.iter().filter(|answer| answer.0 == write);
-            let (made, refused): (Vec<_>, Vec<_>) =
-                made.partition(|answer| answer.2.starts_with("Ok"));
+            let (made, refused): (Vec<_>, Vec<_>) = made.partition(taken);
             assert!(
                 !made.is_empty() && refused.is_empty(),
                 "{write}: {refused:#?}"
             );
         }
         // The reads of an axis are of grove version 4. From there on, a
-        // version that makes the kind answers every ranking of every axis
-        // in every round with the rows and the skip that the children of
-        // its tree give, the rankings with an offset among them, and
-        // proves each in both rounds of proofs.
+        // version that makes the kind answers each ranking of
+        // [`RANKINGS`], of every axis of the two trees of
+        // [`READ_ALONE`], in every round with the rows and the skip that
+        // the children of the tree give, the rankings with an offset
+        // among them, and proves each in both rounds of proofs.
         if number < 4 {
             continue;
         }
