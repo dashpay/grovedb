@@ -7,12 +7,13 @@
 //! It is run once to count the file operations that can need room, and
 //! then once for each of them with the simulated device full at that
 //! operation: for that operation alone, from it on with syncs refused as
-//! well, and from it on with syncs that succeed. The background work of
-//! the database is at rest, and the script makes its turns, so that a run
-//! makes the same operations up to the one that is refused. A run that
-//! came to its refusal by other operations is checked like any other, and
-//! made again: each operation of the run with no fault is refused in a run
-//! that came to it as that run did.
+//! well, and from it on with syncs that succeed. A database of the sweep
+//! is opened with neither of its threads (`open_at_rest`), and the script
+//! makes every turn of write-back and of the reclaimer. So nothing but the
+//! script and the device decides what a run does, and each run makes the
+//! file operations of the run with no fault up to the one that is refused:
+//! a run that does not is a failure of the sweep, which names the first
+//! operation that differed.
 //!
 //! Whatever was refused, the session behaves as its caller would: it goes
 //! on where the engine lets it, and closes the database and opens it again
@@ -186,9 +187,6 @@ pub(super) struct Seen {
     /// When there was room again, the session that was open took the next
     /// commit.
     pub(super) went_on: bool,
-    /// Before the operation that was refused, the run made its operations
-    /// in another order than the run with no fault.
-    pub(super) other_order: bool,
     /// The one operation that was refused was a step of a replacement of
     /// the manifest, which no session ends for.
     pub(super) settled: bool,
@@ -203,7 +201,8 @@ pub(super) struct Session {
     pub(super) db: Option<Db>,
     pub(super) told: Told,
     /// Whether the background work of the database is at rest, and the
-    /// session makes its turns.
+    /// session makes its turns. A database that is opened while it is, is
+    /// opened with neither of its threads.
     halted: bool,
     /// The state that a checkpoint in [`CHECKPOINT`] holds if there is
     /// one, and whether its creation returned: one that was refused may
@@ -357,8 +356,9 @@ fn answered(db: &Db, what: &str, error: &(dyn std::error::Error + 'static)) {
 }
 
 impl Session {
-    /// A session on an empty file system. With `halted` the background
-    /// work of its databases is at rest, and every file operation is
+    /// A session on an empty file system. With `halted` its databases are
+    /// opened with neither of their threads, so that the session makes
+    /// every turn of the background work, and every file operation is
     /// recorded.
     pub(super) fn new(seed: u64, sync: SyncPolicy, halted: bool) -> Self {
         Self::fated(seed, sync, halted, SimConfig::new(seed).unknown)
@@ -409,11 +409,12 @@ impl Session {
         if self.db.is_some() {
             return true;
         }
-        match Db::open(DIR, &self.options) {
+        let opened = match self.halted {
+            true => open_at_rest(DIR, &self.options),
+            false => Db::open(DIR, &self.options),
+        };
+        match opened {
             Ok(db) => {
-                if self.halted {
-                    halt_background(&db);
-                }
                 let landed = db.version().get();
                 let state = self.told.allowed(landed, false, "an open").clone();
                 let told = &mut self.told;
@@ -831,9 +832,8 @@ impl Session {
                 let reference = open_after_a_cut(&on(&apart), &context).version();
                 with_room = Some(reference);
                 fs.add_rule(Mode::Full.rule(0));
-                match Db::open(DIR, &options) {
+                match open_at_rest(DIR, &options) {
                     Ok(db) => {
-                        halt_background(&db);
                         let landed = db.version();
                         assert_eq!(landed, reference, "{context}: an open on the full device");
                     }
@@ -871,7 +871,7 @@ impl Session {
                 create_if_missing: false,
                 ..self.options.clone()
             };
-            let opened = Db::open(CHECKPOINT, &options);
+            let opened = open_at_rest(CHECKPOINT, &options);
             assert!(
                 matches!(
                     opened,
@@ -892,20 +892,18 @@ impl Session {
             create_if_missing: false,
             ..self.options.clone()
         };
-        let db = Db::open("/backup", &options).unwrap_or_else(|error| panic!("{context}: {error}"));
-        halt_background(&db);
+        let db =
+            open_at_rest("/backup", &options).unwrap_or_else(|error| panic!("{context}: {error}"));
         let context = format!("{context}, the backup of the checkpoint");
         check_reads(&db, state, &context);
         sound(&db, &context);
     }
 }
 
-/// Opens what a power cut left, in the file system of `options`, with its
-/// background work at rest.
+/// Opens what a power cut left, in the file system of `options`, with
+/// neither of its threads.
 fn open_after_a_cut(options: &Options, context: &str) -> Db {
-    let db = Db::open(DIR, options).unwrap_or_else(|error| panic!("{context}: {error}"));
-    halt_background(&db);
-    db
+    open_at_rest(DIR, options).unwrap_or_else(|error| panic!("{context}: {error}"))
 }
 
 /// The session of the sweep. Each write is of the database as the session
@@ -1082,9 +1080,11 @@ fn place(path: &str) -> &'static str {
 /// after the database was opened again. Returns what was refused.
 fn epilogue(session: &mut Session, baseline: &[Change]) -> String {
     // Up to the operation that was refused, the run made the operations
-    // that the run with no fault made. One that made them in another
-    // order is counted, and is checked like any other: the operation it
-    // was refused is the one at its place all the same.
+    // that the run with no fault made: no thread ran in its sessions, so
+    // nothing but the script and the device decided what it did. The
+    // operation that was refused is then the one at its place in that
+    // run, and the sweep refuses each operation of that run that its
+    // device can refuse in one run.
     let made = changes(&session.fs);
     let refused = made
         .iter()
@@ -1095,12 +1095,12 @@ fn epilogue(session: &mut Session, baseline: &[Change]) -> String {
     let differs =
         (0..=refused).find(|&at| baseline.get(at).is_none_or(|other| !same(&made[at], other)));
     if let Some(at) = differs {
-        session.seen.other_order = true;
-        session.told.note(format!(
-            "order@{at}/{refused}:{:?}!={:?}",
+        panic!(
+            "the run did not come to its refusal, at its file operation {refused}, by the \
+             operations of the run with no fault: its operation {at} was {:?}, and there {:?}",
             made[at],
             baseline.get(at)
-        ));
+        );
     }
     let (kind, path, ..) = &made[refused];
     let renames_manifest =
@@ -1228,7 +1228,6 @@ struct Ran {
     /// What was refused.
     what: String,
     seen: Seen,
-    notes: String,
 }
 
 impl Sweep {
@@ -1266,7 +1265,6 @@ impl Sweep {
             Ok(what) => Some(Ok(Ran {
                 what: what?,
                 seen: session.seen,
-                notes,
             })),
             Err(panic) => {
                 let message = panic
@@ -1299,32 +1297,27 @@ impl Sweep {
             );
             (changes(&session.fs), said)
         };
-        // The run with no fault is the measure of every other, so it is
-        // one that the next run with no fault repeats.
-        let mut pairs = 0;
-        let baseline = loop {
-            let ((one, said), (other, _)) = (no_fault(), no_fault());
-            if one == other {
-                eprintln!("{said}");
-                break one;
-            }
-            pairs += 1;
-            assert!(pairs < 5, "{self}: no two runs with no fault are alike");
-        };
+        // The run with no fault is the measure of every other. The
+        // script alone decides what it does, so a second one makes the
+        // same operations.
+        let (baseline, said) = no_fault();
+        let (again, _) = no_fault();
+        let longer = baseline.len().max(again.len());
+        if let Some(at) = (0..longer).find(|&at| baseline.get(at) != again.get(at)) {
+            panic!(
+                "{self}: two runs with no fault differ at their file operation {at}: {:?} and {:?}",
+                baseline.get(at),
+                again.get(at)
+            );
+        }
+        eprintln!("{said}");
         let mut failures = Vec::new();
-        let mut seen: BTreeMap<String, [u64; 10]> = BTreeMap::new();
+        let mut seen: BTreeMap<String, [u64; 9]> = BTreeMap::new();
         let mut skip = 0;
-        // The runs that refused the operation `skip` after other
-        // operations than the run with no fault made before it.
-        let mut otherwise = 0;
         while let Some(ended) = self.refuse(skip, &baseline) {
-            let other_order = matches!(&ended, Ok(ran) if ran.seen.other_order);
             match ended {
                 Ok(ran) => {
                     let saw = ran.seen;
-                    if saw.other_order {
-                        eprintln!("{self}, operation {skip}: {}", ran.notes);
-                    }
                     let counts = seen.entry(ran.what).or_default();
                     let flags = [
                         true,
@@ -1334,7 +1327,6 @@ impl Sweep {
                         saw.open_refused,
                         saw.went_on,
                         saw.reopened,
-                        saw.other_order,
                         saw.settled,
                         saw.resumed,
                     ];
@@ -1344,21 +1336,6 @@ impl Sweep {
                 }
                 Err(failure) => failures.push(failure),
             }
-            // The run refused whatever came at the place of the operation:
-            // that it was the operation of the run with no fault is known
-            // of a run that came to it as that run did.
-            if other_order && otherwise < 4 {
-                otherwise += 1;
-                continue;
-            }
-            if other_order {
-                failures.push(format!(
-                    "{self}, operation {skip} of those that can need room: no run of {} came to \
-                     it by the operations of the run with no fault",
-                    otherwise + 1
-                ));
-            }
-            otherwise = 0;
             skip += 1;
         }
         eprintln!(
@@ -1366,12 +1343,11 @@ impl Sweep {
              in which a commit failed or waited for the cut, a commit was unsettled, a session \
              said that it had ended, an open was refused, the session took the next commit when \
              there was room, the next commit was taken after the database was opened again, \
-             the operations before the refusal came in another order and the run was made \
-             again, the refusal was of a replacement of the manifest and nothing else was \
-             refused, the session that met the refusal took a commit as soon as there was room:"
+             the refusal was of a replacement of the manifest and nothing else was refused, \
+             the session that met the refusal took a commit as soon as there was room:"
         );
-        let mut all = [0; 10];
-        let row = |what: &str, counts: &[u64; 10]| {
+        let mut all = [0; 9];
+        let row = |what: &str, counts: &[u64; 9]| {
             let counts: Vec<String> = counts.iter().map(|count| format!("{count:4}")).collect();
             eprintln!("  {what:36} {}", counts.join(" "));
         };
@@ -1386,12 +1362,12 @@ impl Sweep {
         // manifest among them: the check that none of them ends a session
         // was made of something.
         assert!(
-            self.mode != Mode::Once || all[8] > 0,
+            self.mode != Mode::Once || all[7] > 0,
             "{self}: no run refused a replacement of the manifest"
         );
         // The session that met a refusal was asked with room, and not
         // only the one that was open in the end.
-        assert!(all[9] > 0, "{self}: no session resumed where it was");
+        assert!(all[8] > 0, "{self}: no session resumed where it was");
         assert!(
             failures.is_empty(),
             "{self}: {} of {skip} runs did not hold what they should. The first:\n{}",
