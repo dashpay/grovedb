@@ -25,6 +25,7 @@ use lignin_io::{
 };
 use lignin_store::{
     flush::{Checkpointed, FlushError},
+    segment::ManifestStore,
     wal::{LogError, SyncPolicy},
 };
 
@@ -482,44 +483,60 @@ fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
     }
 }
 
-/// The creation of a checkpoint is the first to come by. On a device that
-/// still refuses the sync of a directory the manifest cannot be opened
-/// again: the creation fails with that error and leaves nothing, and the
-/// session has not ended. With room the next creation settles the
-/// manifest and is made.
+/// The creation of a checkpoint is the first to come by, after a table
+/// checkpoint that was refused every replacement of the manifest. On a
+/// device that still refuses the sync of a directory the manifest cannot
+/// be opened again: the creation fails with that error and leaves
+/// nothing, the manifest is in doubt as before, and the session has not
+/// ended. With room the next creation settles the manifest and is made.
 #[test]
 fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
-    for kind in [OpKind::Rename, OpKind::SyncDir] {
-        let mut session = in_doubt(34, kind);
-        session
-            .fs
-            .add_rule(FaultRule::new(Fault::Enospc).on(OpKind::SyncDir).forever());
-        let db = session.db.as_ref().expect("the session");
-        let committer = db.shared.committer();
-        let refused = Checkpointer::new(&committer)
-            .create(Path::new("/checkpoint"))
-            .expect_err("no manifest is opened");
-        assert!(
-            matches!(&refused, CheckpointError::Settle(_)),
-            "{kind}: {refused}"
-        );
-        assert!(out_of_space(&refused), "{kind}: {refused}");
-        assert!(gone(&session, "/checkpoint") && gone(&session, "/checkpoint.creating"));
-        assert_eq!(db.reopen(), None, "{kind}");
+    let mut session = session(34, SyncPolicy::Never);
+    let db = session.db.as_ref().expect("the session");
+    // Every rename onto the manifest is refused, so the last replacement
+    // that the table checkpoint tries leaves the manifest in doubt.
+    let manifest = Path::new("/db").join(ManifestStore::FILE_NAME);
+    session.fs.add_rule(
+        FaultRule::new(Fault::Enospc)
+            .on(OpKind::Rename)
+            .at(manifest)
+            .forever(),
+    );
+    let error = (db.shared.write_back().checkpoint()).expect_err("the manifest is not replaced");
+    assert!(out_of_space(&error), "{error}");
+    session.fs.clear_rules();
+    let in_doubt = || {
+        let manifest = db.shared.store.manifest.lock().expect("the manifest");
+        manifest.manifest().is_err()
+    };
+    assert!(in_doubt());
 
-        session.fs.clear_rules();
-        Checkpointer::new(&committer)
-            .create(Path::new("/checkpoint"))
-            .unwrap_or_else(|error| panic!("{kind}: {error}"));
-        assert!(gone(&session, "/checkpoint.creating"));
-        assert_eq!(db.reopen(), None, "{kind}");
-        assert!(!session.ticks("t"));
-        session.flush();
-        assert_eq!(session.told.durable, session.told.latest);
-        session.check("in the session that went on");
-        session.check_cut("in the session that went on");
-        assert!(session.close(), "{kind}");
-    }
+    session
+        .fs
+        .add_rule(FaultRule::new(Fault::Enospc).on(OpKind::SyncDir).forever());
+    let committer = db.shared.committer();
+    let refused = Checkpointer::new(&committer)
+        .create(Path::new("/checkpoint"))
+        .expect_err("no manifest is opened");
+    assert!(matches!(&refused, CheckpointError::Settle(_)), "{refused}");
+    assert!(out_of_space(&refused), "{refused}");
+    assert!(gone(&session, "/checkpoint") && gone(&session, "/checkpoint.creating"));
+    assert!(in_doubt());
+    assert_eq!(db.reopen(), None);
+
+    session.fs.clear_rules();
+    Checkpointer::new(&committer)
+        .create(Path::new("/checkpoint"))
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert!(!in_doubt());
+    assert!(gone(&session, "/checkpoint.creating"));
+    assert_eq!(db.reopen(), None);
+    assert!(!session.ticks("t"));
+    session.flush();
+    assert_eq!(session.told.durable, session.told.latest);
+    session.check("in the session that went on");
+    session.check_cut("in the session that went on");
+    assert!(session.close());
 }
 
 /// A commit is the first to come by, on a device that still refuses the
