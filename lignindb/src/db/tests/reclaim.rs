@@ -294,6 +294,7 @@ fn the_reclaimer_runs_beside_a_writer_and_readers_on_threads() {
                         (outer_of(round), None),
                         (inner_of(round), Some((outer_of(round), host_key.clone()))),
                     ],
+                    enter_if_absent: Vec::new(),
                     drop: match round > 2 {
                         true => vec![outer_of(round - 2)],
                         false => Vec::new(),
