@@ -92,6 +92,47 @@ impl Directory {
         Entries(Records::new(&self.tree, &[RecordKind::Entry.code()]))
     }
 
+    /// The nearest Merk with a node after `prefix` in the order of the
+    /// prefixes, or with `back` the nearest before it: a Merk in use whose
+    /// entry names a root. `None` if there is none that way.
+    ///
+    /// It is one seek among the entries and a step for each entry it
+    /// passes: that of a Merk with no node, of a tree that keeps its data
+    /// elsewhere, and one that a drop left.
+    pub fn rooted_beside<P: FlatPages + ?Sized>(
+        &self,
+        pages: &P,
+        prefix: &Prefix,
+        back: bool,
+    ) -> Result<Option<Prefix>, DirectoryError> {
+        let within = [RecordKind::Entry.code()];
+        let mut cursor = self.tree.cursor_within(&within);
+        match back {
+            false => cursor.seek(pages, prefix)?,
+            true => cursor.seek_for_prev(pages, prefix)?,
+        }
+        let mut value = Vec::new();
+        loop {
+            let Some(key) = cursor.key() else {
+                return Ok(None);
+            };
+            let damaged = |what: Malformed| damaged(&[&within[..], key].concat(), what.0);
+            let beside = decode_prefix(key).map_err(damaged)?;
+            value.clear();
+            // A record that a page step took out under the walk is passed.
+            if beside != *prefix && cursor.value(pages, &mut value)? {
+                let entry = Entry::decode(std::mem::take(&mut value)).map_err(damaged)?;
+                if self.is_live(&entry) && entry.root().is_some() {
+                    return Ok(Some(beside));
+                }
+            }
+            match back {
+                false => cursor.next(pages)?,
+                true => cursor.prev(pages)?,
+            }
+        }
+    }
+
     /// What each dropped or cleared Merk left that is not reclaimed yet,
     /// in the order of the ids as they are stored.
     pub fn drops(&self) -> Drops {

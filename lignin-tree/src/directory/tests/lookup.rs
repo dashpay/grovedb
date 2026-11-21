@@ -220,3 +220,74 @@ fn a_host_has_a_merk_at_each_of_its_positions() {
     }
     assert_eq!(grove.check().live, 4);
 }
+
+/// The Merk with a node beside a prefix is the nearest in the order of the
+/// prefixes whose entry is in use and names a root: a Merk with no node,
+/// and what a drop left, are passed.
+#[test]
+fn the_merk_with_a_node_beside_a_prefix_is_the_nearest_in_use() {
+    let (mut grove, paths) = wide(5, 2);
+    // Every third Merk of the second level gets a root. The root of the
+    // grove and the Merks of the first level have one, as hosts.
+    for at in paths.iter().filter(|at| at.len() == 2).step_by(3) {
+        grove.root(&keys(at));
+    }
+    // One Merk of the first level is dropped: it and the five below it
+    // are left in the directory, and are of no state.
+    let dropped = &paths[2];
+    assert_eq!(dropped.len(), 1);
+    grove.unlink(&keys(dropped));
+
+    let rooted: Vec<Prefix> = {
+        let mut rooted: Vec<Prefix> = (paths.iter())
+            .filter(|at| !at.starts_with(dropped))
+            .filter_map(|at| {
+                let entry = grove.entry(&keys(at));
+                entry.root().map(|_| prefix_of(&path(&keys(at))))
+            })
+            .collect();
+        rooted.sort_unstable();
+        rooted
+    };
+    assert_eq!(rooted.len(), 1 + 4 + 7);
+    let left_over = (paths.iter()).filter(|at| at.starts_with(dropped)).count();
+    assert_eq!(left_over, 6);
+
+    let beside = |from: &Prefix, back: bool| {
+        (grove.directory)
+            .rooted_beside(&grove.pages, from, back)
+            .expect("a walk")
+    };
+    // From every prefix of the grove, entered or dropped, with a root or
+    // with none, and from two that are not in the directory.
+    let entered: Vec<Prefix> = paths.iter().map(|at| prefix_of(&path(&keys(at)))).collect();
+    for from in entered.iter().chain(&[[0x55; 32], [0xff; 32]]) {
+        let after = rooted.iter().find(|prefix| *prefix > from).copied();
+        let before = rooted.iter().rev().find(|prefix| *prefix < from).copied();
+        assert_eq!(beside(from, false), after, "after {from:?}");
+        assert_eq!(beside(from, true), before, "before {from:?}");
+    }
+    assert_eq!(beside(&rooted[rooted.len() - 1], false), None);
+    assert_eq!(beside(&rooted[0], true), None);
+
+    // The walk reads the entries it passes and nothing else: from the last
+    // Merk with a node, its own entry and the entries behind it. A seek, a
+    // step and the read of an entry are each one way down the keyspace at
+    // most.
+    let last = rooted[rooted.len() - 1];
+    let behind = entered.iter().filter(|prefix| **prefix > last).count() as u64;
+    let levels = grove.pages.levels(&grove.directory);
+    let (found, read) = grove.pages.reads(|| beside(&last, false));
+    assert_eq!(found, None);
+    assert!(
+        read.0 <= levels * 2 * (1 + behind),
+        "{read:?}, {behind} behind"
+    );
+    assert_eq!(read.1, 0);
+    let (all, whole) = grove.pages.reads(|| {
+        let mut walk = grove.directory.entries();
+        std::iter::from_fn(|| walk.next(&grove.pages).expect("an entry")).count()
+    });
+    assert_eq!(all, entered.len());
+    assert!(read.0 * 4 < whole.0, "{read:?} of {whole:?}");
+}
