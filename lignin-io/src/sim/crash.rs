@@ -747,6 +747,9 @@ impl CrashImage {
 
         let mut orders = Vec::new();
         let limit = limit / names.len() as u64;
+        if ways.len() >= 64 || 1 << ways.len() > limit {
+            return None;
+        }
         every_order(&ways, &mut Vec::new(), &mut orders, limit).then_some(())?;
         let mut plans = Vec::with_capacity(names.len() * orders.len());
         for names in names {
@@ -949,6 +952,11 @@ impl CrashImage {
 /// Adds to `orders` every choice of changes, each in one of its `ways` to
 /// survive, in every order, on top of `current`. Says whether they fit in
 /// `limit`.
+///
+/// It calls itself once for each change of an order. The caller gives it
+/// `ways` only if the choices of changes alone fit in `limit`, each kept or
+/// not: two to the power of their number. So an order has fewer than 64
+/// changes.
 fn every_order(
     ways: &[Vec<Option<Tear>>],
     current: &mut Vec<Survivor>,
