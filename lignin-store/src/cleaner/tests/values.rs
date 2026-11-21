@@ -174,6 +174,140 @@ fn a_file_that_commits_emptied_is_dropped() {
     db.check_warm();
 }
 
+/// D-209. A store on a simulated device in which write-back was refused
+/// an append to the value-log file it fills, with the values of two pages
+/// in the file already; with `sync_refused`, the sync of the file at its
+/// giving up is refused too. The third value has gone to another file by
+/// a later pass. Returns the store and the file that was given up.
+fn given_up(sync_refused: bool) -> (Db, FileId) {
+    use lignin_io::sim::{Fault, FaultRule, OpKind};
+
+    use crate::{
+        segment::{tests::sim::db_dir, FileNames},
+        wal::LogOptions,
+    };
+
+    let (fs, db) = Db::on_sim(small_segments(), LogOptions::default());
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", long(2, 900)),
+        insert((3, 1), b"c", long(3, 900)),
+    ]);
+    let file = FileId::new(1).expect("a file id");
+    let path = FileNames::VALUE_LOG.path(db_dir(), file);
+    // The header of the file and two values are appended, and the third
+    // value is refused.
+    let append = FaultRule::new(Fault::Enospc).on(OpKind::Append).at(&path);
+    fs.add_rule(append.skip(3).torn_append(false));
+    if sync_refused {
+        // The creation of the file syncs its header, and the next sync
+        // of the file is the one of its giving up.
+        let sync = FaultRule::new(Fault::Enospc).on(OpKind::SyncData).at(&path);
+        fs.add_rule(sync.skip(1).forever());
+    }
+    let refused = db.wb().pass().expect_err("an append to the value log");
+    let said = refused.to_string();
+    assert!(
+        said.contains("append to") && said.contains("00000001.val"),
+        "{said}"
+    );
+    fs.clear_rules();
+    assert!(value_files(&db).contains(&file), "the file was made");
+    db.wb().pass().expect("a pass on a device with room");
+    assert_ne!(db.pointers(page(3))[0].file(), file, "the third value");
+    (db, file)
+}
+
+/// D-209. A value-log file that write-back gave up after a refused append
+/// is cleaned and dropped by the cleaner in the same session: the file
+/// was synced through its writer and closed where it ended, so its two
+/// values were placed in it, and once one of them is dead the cleaner
+/// moves the other out and the file goes, with no close and no open of
+/// the store in between.
+#[test]
+fn a_value_log_file_that_write_back_gave_up_is_cleaned_and_dropped_with_no_reopen() {
+    let (db, file) = given_up(false);
+    assert_eq!(db.pointers(page(1))[0].file(), file);
+    assert_eq!(db.pointers(page(2))[0].file(), file);
+    assert_eq!(db.stats().values_given_up, 0);
+    let named = db.values.files_named().expect("the files");
+    let given_up = named.iter().find(|named| named.id() == file);
+    let given_up = given_up.expect("the manifest names the file");
+    assert_eq!(given_up.state(), FileState::Closed);
+    let path = crate::segment::FileNames::VALUE_LOG.path(&db.path, file);
+    let on_device = db.vfs.open(&path, lignin_io::OpenMode::Read);
+    let on_device = on_device.and_then(|file| file.len()).expect("a length");
+    assert_eq!(given_up.valid_len(), on_device, "nothing of it is unsynced");
+
+    db.commit(&[set((1, 1), inline(b"short"))]);
+    db.wb().pass().expect("a pass");
+    let live = db.live_values();
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    let (cleaned_file, cleaned) = pass.cleaned.expect("a file was cleaned");
+    assert_eq!(cleaned_file, file);
+    assert_eq!((cleaned.moved, cleaned.live), (1, 0), "{cleaned:?}");
+    assert_eq!(pass.dropped, [file]);
+    assert!(!value_on_disk(&db, file));
+    assert!(!value_files(&db).contains(&file));
+    assert_ne!(db.pointers(page(2))[0].file(), file);
+    assert_eq!(db.live_values(), live);
+    db.wb().pass().expect("a pass");
+    db.check_warm();
+    db.check_cold();
+}
+
+/// D-209. Where the sync of the file at its giving up is refused as well,
+/// the file is closed where it was last durable: none of the values that
+/// were appended to it is covered, so no cell is given a pointer into it,
+/// and the two are counted as given up and go to another file with the
+/// third. The file holds no live value, and the cleaner drops it in the
+/// same session. No session ends for that sync: a table checkpoint is
+/// installed after it.
+#[test]
+fn a_value_log_file_given_up_with_its_sync_refused_is_closed_where_it_was_durable_and_dropped() {
+    let (db, file) = given_up(true);
+    for id in 1..=3 {
+        let pointers = db.pointers(page(id));
+        assert_eq!(pointers.len(), 1, "page {id}");
+        assert_ne!(pointers[0].file(), file, "page {id}");
+    }
+    assert_eq!(db.stats().values_given_up, 2);
+    let named = db.values.files_named().expect("the files");
+    let given_up = named.iter().find(|named| named.id() == file);
+    let given_up = given_up.expect("the manifest names the file");
+    assert_eq!(given_up.state(), FileState::Closed);
+    let path = crate::segment::FileNames::VALUE_LOG.path(&db.path, file);
+    let on_device = db.vfs.open(&path, lignin_io::OpenMode::Read);
+    let on_device = on_device.and_then(|file| file.len()).expect("a length");
+    assert!(
+        given_up.valid_len() < on_device,
+        "{} of {on_device} bytes",
+        given_up.valid_len()
+    );
+
+    let flush = db.wb().state();
+    assert!(!flush.segments_not_durable());
+    let installed = db.wb().checkpoint().expect("a table checkpoint");
+    assert!(
+        matches!(installed, Checkpointed::Installed { .. }),
+        "{installed:?}"
+    );
+
+    let live = db.live_values();
+    assert_eq!(live, 3);
+    let state = CleanerState::new(eager());
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let pass = cleaner.pass_values(&Cells(&db)).expect("a pass");
+    assert_eq!(pass.cleaned, None, "{pass:?}");
+    assert_eq!(pass.dropped, [file]);
+    assert!(!value_on_disk(&db, file));
+    assert_eq!(db.live_values(), live);
+    db.check_warm();
+    db.check_cold();
+}
+
 /// **Test T-PN5, for a value-log file.** A file that a cleaning emptied is
 /// not deleted while an operation that was running then is running: it
 /// may have read a pointer into the file.

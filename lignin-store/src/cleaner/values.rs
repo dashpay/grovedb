@@ -367,8 +367,12 @@ impl<'s> Cleaner<'s> {
         };
         if cleaned.as_ref().is_err_and(|error| !not_found(error)) {
             // The copies are given up, and the next value goes to another
-            // file: a sync of this one may have failed.
-            work.values = None;
+            // file: a sync of this one may have failed. The file is
+            // synced through its writer and closed, so that a later pass
+            // can clean it (`WriteBack::give_up_value_file`).
+            if let Some(writer) = work.values.take() {
+                let _ = writer.finish();
+            }
         }
         cleaned
     }

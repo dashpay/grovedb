@@ -496,7 +496,10 @@ impl<'s> WriteBack<'s> {
     pub(super) fn append_failed(&self, error: &LogError) {
         let cut_needed = matches!(
             error,
-            LogError::TakenBack { .. } | LogError::NotAppended { .. } | LogError::NoActiveFile
+            LogError::TakenBack { .. }
+                | LogError::NotAppended { .. }
+                | LogError::NoActiveFile
+                | LogError::NoActiveFileSince { .. }
         );
         if cut_needed {
             self.state.wake();
@@ -804,9 +807,29 @@ impl<'s> WriteBack<'s> {
             Err(source) => {
                 // The copies are given up, and the next value goes to
                 // another file: a sync of this one may have failed.
-                files.values = None;
+                self.give_up_value_file(files);
                 Err(FlushError::Regroup { page, source })
             }
+        }
+    }
+
+    /// Ends the use of the value-log file that write-back fills, after an
+    /// append to it failed or a step that wrote to it did. The next value
+    /// goes to another file.
+    ///
+    /// The file is synced by its writer before the writer goes, and is
+    /// closed where it ends. Whoever cleans the value log takes closed
+    /// files only, and a file whose writer is dropped while it holds
+    /// values that were never synced stays open for as long as the
+    /// session lasts. If the sync fails, the file is closed at the length
+    /// that was durable before it, as after any sync of a value-log file
+    /// that fails: no cell points behind that length, since a cell is
+    /// given its pointer only behind a manifest that covers the value.
+    pub(super) fn give_up_value_file(&self, files: &mut Files) {
+        if let Some(writer) = files.values.take() {
+            // Whatever the sync answers, the file is closed once its
+            // writer is gone.
+            let _ = writer.finish();
         }
     }
 

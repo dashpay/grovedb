@@ -288,3 +288,65 @@ fn a_committer_waits_for_room_and_never_for_its_own_copies() {
     assert_eq!(db.wb().wait_for_room().expect("room"), Room::Free);
     db.check_cold();
 }
+
+/// D-209. An append to the value-log file that write-back fills is
+/// refused, with a value of the same pass in the file already. The file
+/// is given up: what it holds is synced through its writer, and the file
+/// is closed where it ends. So the value before the refused one is
+/// covered and placed, and the file is one that the cleaner of the value
+/// log takes, in this session. The other value goes to another file.
+#[test]
+fn a_value_log_file_that_is_given_up_after_a_refused_append_is_closed_in_the_session() {
+    use lignin_format::{manifest::FileState, FileId};
+    use lignin_io::{
+        sim::{Fault, FaultRule, OpKind},
+        OpenMode,
+    };
+
+    use crate::segment::{tests::sim::db_dir, FileNames};
+
+    let (fs, db) = Db::on_sim(FlushConfig::new(Db::SIZE), LogOptions::default());
+    db.commit(&[
+        insert((1, 1), b"a", long(1, 900)),
+        insert((2, 1), b"b", long(2, 900)),
+    ]);
+    let file = |raw| FileId::new(raw).expect("a file id");
+    // The file's header and the first value are appended, and the second
+    // value is refused.
+    let refused = FaultRule::new(Fault::Enospc)
+        .on(OpKind::Append)
+        .at(FileNames::VALUE_LOG.path(db_dir(), file(1)));
+    fs.add_rule(refused.skip(2).torn_append(false));
+    let error = db.wb().pass().expect_err("an append to the value log");
+    assert!(error.to_string().contains("00000001.val"), "{error}");
+
+    let files = |pointers: Vec<ValuePointer>| -> Vec<FileId> {
+        pointers.iter().map(|pointer| pointer.file()).collect()
+    };
+    assert_eq!(files(db.pointers(page(1))), [file(1)], "the first value");
+    assert_eq!(db.stats().values_given_up, 0);
+    let closed: Vec<FileId> = (db.values.cleanable(0).iter())
+        .map(|cleanable| cleanable.file)
+        .collect();
+    assert_eq!(
+        closed,
+        [file(1)],
+        "the file that was given up is not closed"
+    );
+
+    // The next pass puts the other value into another file, and the
+    // manifest it writes names the first one closed at its whole length.
+    db.wb().pass().expect("a pass");
+    assert_eq!(files(db.pointers(page(2))), [file(2)], "the second value");
+    let named = db.values.files_named().expect("the files");
+    let first = named.iter().find(|named| named.id() == file(1));
+    let first = first.expect("the file is named");
+    assert_eq!(first.state(), FileState::Closed);
+    let on_device = db.vfs.open(
+        &FileNames::VALUE_LOG.path(db_dir(), file(1)),
+        OpenMode::Read,
+    );
+    let on_device = on_device.and_then(|file| file.len()).expect("a length");
+    assert_eq!(first.valid_len(), on_device);
+    db.check_cold();
+}

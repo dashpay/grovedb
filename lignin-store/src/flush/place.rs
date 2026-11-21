@@ -177,7 +177,10 @@ impl<'s> WriteBack<'s> {
             Ok(pointer) => pointer,
             Err(error) => {
                 if !matches!(error, ValueStoreError::Format { .. }) {
-                    files.values = None;
+                    // The values that went into the file before this one
+                    // are made durable there, and the manifest of this
+                    // pass covers them ([`Self::cover`]).
+                    self.give_up_value_file(files);
                 }
                 return Err(error.into());
             }
