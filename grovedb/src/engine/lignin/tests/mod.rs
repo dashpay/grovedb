@@ -23,6 +23,7 @@ mod cases;
 mod indexed;
 mod moves;
 mod nested;
+mod over;
 mod queries;
 mod restore;
 mod sync;
@@ -1186,6 +1187,11 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         Some(CommitError::Conflict)
     );
     assert!(error::write_error(WriteError::Commit(Commit::Refused(taken()))).is_commit_conflict());
+    // A Merk hands the refusal of its store on as its own error, and
+    // GroveDB's error of a Merk keeps the class.
+    let passed = Error::from(grovedb_merk::Error::StorageError(error::txn_error(taken())));
+    assert!(matches!(passed, Error::MerkError(_)));
+    assert!(passed.is_commit_conflict());
     // The outcomes of a commit by their class.
     let class = |error: WriteError| error::write_error(error).commit_error();
     assert_eq!(

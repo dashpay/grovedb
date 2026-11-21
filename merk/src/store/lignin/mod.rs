@@ -159,7 +159,7 @@ mod tests;
 mod view;
 
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     collections::{HashMap, HashSet},
     fmt,
 };
@@ -270,6 +270,12 @@ pub struct LigninNodeStore<'db> {
     /// them is told to the batch that takes it
     /// ([`LigninSettled::over_trees`]).
     trees: RefCell<HashSet<Vec<u8>>>,
+    /// The key of the node that was fetched through the handle first, for
+    /// a Merk or by its key: the root of a Merk that was opened with one.
+    first: RefCell<Option<Vec<u8>>>,
+    /// Whether the handle took in where an application put nodes of its
+    /// subtree ([`Self::take_locations`]).
+    placed: Cell<bool>,
     /// The path the handle was opened by, if it was told one
     /// ([`Self::at_path`]).
     path: Option<Vec<Vec<u8>>>,
@@ -349,6 +355,8 @@ impl<'db> LigninNodeStore<'db> {
             hints: RefCell::new(HashMap::new()),
             reads: RefCell::new(HashMap::new()),
             trees: RefCell::new(HashSet::new()),
+            first: RefCell::new(None),
+            placed: Cell::new(false),
             path: None,
         }
     }
@@ -398,6 +406,7 @@ impl<'db> LigninNodeStore<'db> {
         let mut hints = self.hints.borrow_mut();
         applied.locations(&self.subtree.prefix, |key, location| {
             hints.insert(key.to_vec(), location);
+            self.placed.set(true);
         });
     }
 
@@ -457,6 +466,25 @@ impl<'db> LigninNodeStore<'db> {
             return Ok(Some(node));
         }
         Err(refused("a node changed under every read of it"))
+    }
+
+    /// Keeps the key of the first node that is fetched through the handle.
+    fn note_fetch(&self, key: &[u8]) {
+        self.first.borrow_mut().get_or_insert_with(|| key.to_vec());
+    }
+
+    /// Whether a change set that this handle stages is of a Merk whose
+    /// writer began with no node: the handle took in no application of
+    /// the Merk, and the change set neither puts nor removes the node that
+    /// the handle fetched first. A Merk that is opened with a root fetches
+    /// it before anything else, and every change set of a Merk writes its
+    /// root or removes it.
+    fn began_empty(&self, change_set: &LigninChangeSet) -> bool {
+        let first = self.first.borrow();
+        let on = first
+            .as_ref()
+            .is_some_and(|key| change_set.writes_node(key));
+        !(self.placed.get() || on)
     }
 
     /// Keeps the key of a node that was loaded with the element of a tree
@@ -550,7 +578,7 @@ impl<'db> LigninNodeStore<'db> {
             }
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
-                let began_empty = self.hints.borrow().is_empty() && self.reads.borrow().is_empty();
+                let began_empty = self.began_empty(&change_set);
                 let staged = staged
                     .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
                 staged.wrap_with_cost(MODEL.staged_write())
@@ -612,6 +640,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.read(key, true)
             .map_ok(|node| {
                 node.map(|node| {
+                    self.note_fetch(key);
                     let mut inner = node_inner(key.to_vec(), node)?;
                     if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
                         inner.kv.value_defined_cost =
@@ -639,6 +668,7 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.read(key, false)
             .map_ok(|node| {
                 let node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
+                self.note_fetch(key);
                 node_without_value(key.to_vec(), node)
             })
             .flatten()

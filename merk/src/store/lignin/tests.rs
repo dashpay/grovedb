@@ -2426,6 +2426,33 @@ fn a_record_of_the_cursor_is_no_load_of_its_node() {
     writer.into_scope().rollback();
 }
 
+/// A batch that holds a write of its own under the stored key that a
+/// record of a moved subtree is charged at is refused where it is
+/// settled: a storage batch keeps one of the two, and the batch does not
+/// say which. A write under another key of the subtree is settled.
+#[test]
+fn a_write_under_the_key_of_a_moved_record_is_refused_at_the_settle() {
+    let lignin = Lignin::new();
+    let path = lignin.path();
+    let transaction = path.begin();
+    let writer = LigninWriter::new(transaction.scope().unwrap());
+    let to = LigninSubtree::alone([9; 32]);
+    let settled = |written: u64| {
+        let staged = LigninBatch::new();
+        staged.enter(&to, b"tree").unwrap();
+        let handle = LigninNodeStore::deferred(&writer, to.clone(), Some(&staged));
+        apply(&mut open_layered(handle, None), &[basic(written, b"own")]);
+        staged.charge_landed(&to.prefix, &be(7), 40, Default::default());
+        staged.settle(&writer).unwrap().map(|_| ())
+    };
+    settled(8).expect("a write beside the moved record");
+    let refused = settled(7).expect_err("a write under the moved record's key");
+    assert!(
+        refused.to_string().contains("a record of a moved subtree"),
+        "{refused}"
+    );
+}
+
 /// What a settled batch says for whoever applies it to drop the subtree
 /// of a tree that another element is written over, and the drop it takes.
 #[test]
@@ -2471,6 +2498,63 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     assert_eq!(settled.over_trees().count(), 0);
     assert_eq!(settled.path(&parent.prefix), None);
     (LigninSettled::apply(vec![settled], &writer, &[]).unwrap()).expect("the batch is applied");
+
+    // The writer of a Merk that begins with no node can ask for a key
+    // which the transaction holds under the prefix, as an insert of what
+    // is not there does. Its change set does not write that node, and it
+    // began with no node all the same. One that is opened with the root
+    // and writes on did not.
+    let began = |root: Option<Vec<u8>>, asked: Option<u64>, put: u64| {
+        let staged = LigninBatch::new();
+        let lower = LigninNodeStore::deferred(&writer, child.clone(), Some(&staged));
+        let mut lower = open_layered(lower, root);
+        if let Some(asked) = asked {
+            let there = lower.exists(&be(asked), NO_VALUE_DEFINED_COST, version());
+            assert!(there.unwrap().expect("a read"));
+        }
+        apply(&mut lower, &[basic(put, b"beside")]);
+        drop(lower);
+        let settled = staged.settle(&writer).unwrap().expect("a settled batch");
+        (
+            settled.began_empty(&child.prefix),
+            settled.writes_merk(&child.prefix),
+        )
+    };
+    assert_eq!(began(None, None, 2), (true, true));
+    assert_eq!(began(None, Some(1), 2), (true, true));
+    assert_eq!(began(Some(be(1)), None, 2), (false, true));
+    assert_eq!(began(Some(be(1)), Some(1), 2), (false, true));
+    // A writer that began with no node and writes the key it asked for is
+    // taken for one that writes the Merk on.
+    assert_eq!(began(None, Some(1), 1), (false, true));
+    // A handle that took in where an application put the nodes it wrote
+    // writes that Merk on, whatever it fetched.
+    let own = LigninSubtree::alone([223; 32]);
+    let staged = LigninBatch::new();
+    staged.enter(&own, b"tree").unwrap();
+    let handle = LigninNodeStore::deferred(&writer, own.clone(), Some(&staged));
+    let mut merk = open_layered(handle, None);
+    apply(&mut merk, &[basic(1, b"one")]);
+    let first = staged.settle(&writer).unwrap().expect("a settled batch");
+    assert!(first.began_empty(&own.prefix));
+    let applied = LigninSettled::apply(vec![first], &writer, &[]).unwrap();
+    merk.storage
+        .take_locations(&applied.expect("the batch is applied"));
+    apply(&mut merk, &[basic(2, b"two")]);
+    drop(merk);
+    let second = staged.settle(&writer).unwrap().expect("a settled batch");
+    assert!(!second.began_empty(&own.prefix) && second.writes_merk(&own.prefix));
+    let none = LigninBatch::new()
+        .settle(&writer)
+        .unwrap()
+        .expect("a settled batch");
+    assert_eq!(
+        (
+            none.began_empty(&child.prefix),
+            none.writes_merk(&child.prefix)
+        ),
+        (false, false)
+    );
 
     // A handle that was told its path loads both nodes and states another
     // value for each: the put where it loaded a tree's element is over a

@@ -246,6 +246,12 @@ impl LigninChangeSet {
         }
     }
 
+    /// Whether the change set puts or removes the node under `key`.
+    pub(super) fn writes_node(&self, key: &[u8]) -> bool {
+        let put = self.nodes.iter().any(|(node, _)| node.key == key);
+        put || self.removed.iter().any(|(removed, _)| removed == key)
+    }
+
     /// Notes which of the written nodes take the place of the element of a
     /// tree: those whose value the change set states, of the keys in
     /// `trees`, which are the nodes that the handle loaded with such an
@@ -624,9 +630,10 @@ struct Marks {
     /// The nodes that a handle put, with a stated value, in the place of
     /// the element of a tree ([`LigninChangeSet::note_trees`]).
     over_trees: BTreeSet<(Prefix, Vec<u8>)>,
-    /// The Merks that a handle wrote nodes of which had loaded none: its
-    /// writer began with a Merk that has no node.
-    anew: BTreeSet<Prefix>,
+    /// The Merks that a handle staged nodes of, each with whether one of
+    /// their change sets was of a writer that began with no node
+    /// ([`LigninSettled::began_empty`]).
+    merks: BTreeMap<Prefix, bool>,
     /// The path that a handle which staged a write was opened by, for the
     /// subtrees whose handle was told one
     /// ([`LigninNodeStore::at_path`](super::LigninNodeStore::at_path)).
@@ -672,7 +679,9 @@ impl Marks {
         self.generation += 1;
         self.moves.extend(other.moves);
         self.over_trees.extend(other.over_trees);
-        self.anew.extend(other.anew);
+        for (prefix, anew) in other.merks {
+            *self.merks.entry(prefix).or_default() |= anew;
+        }
         self.paths.extend(other.paths);
     }
 }
@@ -870,9 +879,7 @@ impl LigninBatch {
         let mut marks = self.marks();
         if writes_nodes {
             self.host(&named);
-            if began_empty {
-                marks.anew.insert(named.prefix);
-            }
+            *marks.merks.entry(named.prefix).or_default() |= began_empty;
             let over = over_trees.into_iter().map(|key| (named.prefix, key));
             marks.over_trees.extend(over);
         }
@@ -984,8 +991,9 @@ pub struct LigninSettled {
     hosts: Vec<(Subtree, Vec<u8>, Vec<Subtree>)>,
     /// The nodes that handles put in the place of the element of a tree.
     over_trees: BTreeSet<(Prefix, Vec<u8>)>,
-    /// The Merks whose writer began with no node.
-    anew: BTreeSet<Prefix>,
+    /// The Merks that handles staged nodes of, each with whether a writer
+    /// of it began with no node.
+    merks: BTreeMap<Prefix, bool>,
     /// The paths the handles of written subtrees were opened by.
     paths: BTreeMap<Prefix, Vec<Vec<u8>>>,
     /// The subtrees that whoever applies the batch dropped with it
@@ -1075,8 +1083,8 @@ impl LigninSettled {
             .collect();
         let mut written = marks.written;
         written.retain(|prefix, _| live.contains(prefix));
-        let (mut anew, mut paths) = (marks.anew, marks.paths);
-        anew.retain(|prefix| live.contains(prefix));
+        let (mut merks, mut paths) = (marks.merks, marks.paths);
+        merks.retain(|prefix, _| live.contains(prefix));
         paths.retain(|prefix, _| live.contains(prefix));
         Self {
             resolved,
@@ -1086,7 +1094,7 @@ impl LigninSettled {
             two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
             hosts: Vec::new(),
             over_trees: marks.over_trees,
-            anew,
+            merks,
             paths,
             drops: Vec::new(),
         }
@@ -1109,13 +1117,34 @@ impl LigninSettled {
             .filter(stated)
     }
 
-    /// Whether the handle that wrote the nodes of the Merk `prefix` into
-    /// the batch had loaded no node of it: its writer began with a Merk
-    /// that has no node, as the writer of a tree that the same batch makes
-    /// does. Where the transaction holds nodes under the prefix, they are
-    /// not that Merk's.
+    /// Whether a change set of the Merk `prefix` in the batch is of a
+    /// writer that began with no node, as the writer of a tree that the
+    /// same batch makes does. It is said of a change set that neither puts
+    /// nor removes the node its handle fetched first, staged through a
+    /// handle that had taken in no application of the Merk
+    /// ([`LigninNodeStore::take_locations`](super::LigninNodeStore::take_locations)).
+    ///
+    /// A Merk that is opened with a root fetches it before anything else,
+    /// and every change set of a Merk puts its root or removes it; the
+    /// writer of a Merk with no node fetches nothing for it. A node that
+    /// such a writer fetches by its key, where the transaction holds one
+    /// under the prefix, counts against it only if the change set writes
+    /// that key.
+    ///
+    /// It says what a handle did and nothing else: a handle is taken to
+    /// write the Merk whose nodes it read. A handle that stages nodes of a
+    /// Merk which another handle read answers as a writer that began with
+    /// no node, though the Merk has nodes. What to make of the answer is
+    /// up to whoever applies the batch.
     pub fn began_empty(&self, prefix: &[u8; 32]) -> bool {
-        self.anew.contains(prefix)
+        self.merks.get(prefix).copied().unwrap_or(false)
+    }
+
+    /// Whether a handle staged nodes of the Merk `prefix` into the batch,
+    /// to put or to remove, where the batch still holds a write for the
+    /// subtree.
+    pub fn writes_merk(&self, prefix: &[u8; 32]) -> bool {
+        self.merks.contains_key(prefix)
     }
 
     /// The path that the handle which wrote into the subtree `prefix` was
@@ -1138,6 +1167,11 @@ impl LigninSettled {
         if !self.drops.contains(&subtree) {
             self.drops.push(subtree);
         }
+    }
+
+    /// Takes back every drop of [`Self::drop_subtree`].
+    pub fn forget_drops(&mut self) {
+        self.drops.clear();
     }
 
     /// Whether handles that staged into the batch named two different
@@ -1350,7 +1384,8 @@ fn charge_moved(charge: &mut BatchCharge, key: &[u8], attached: Charge) -> Resul
 /// The charges of moved records (`moved`) are charges of data records
 /// that no outcome of the batch stands for. They take their place among
 /// the outcomes by stored key, as the puts and deletes of the copy have
-/// it in a storage batch (`cost-model.md` B1).
+/// it in a storage batch (`cost-model.md` B1). A batch that holds a write
+/// of its own under the stored key of one of them is refused.
 fn charge_outcomes(
     resolved: &mut Resolved<Charge>,
     moved: BTreeMap<(Prefix, Vec<u8>), (u64, Charge)>,
@@ -1376,6 +1411,17 @@ fn charge_outcomes(
         };
         while let Some(((_, key), (_, attached))) = moved.next_if(before) {
             charge_moved(charge, &key, attached)?;
+        }
+        // A storage batch keeps one of two writes under one stored key,
+        // and nothing here says which of a moved record and a write of
+        // the batch that would be.
+        let same = |((subtree, key), _): &((Prefix, Vec<u8>), (u64, Charge))| {
+            keyspace == Keyspace::Data && (subtree, key.as_slice()) == (prefix, outcome.key)
+        };
+        if moved.peek().is_some_and(same) {
+            return Err(refused(
+                "a write under the key that a record of a moved subtree is charged at",
+            ));
         }
         let stored_key_len = stored_key_len(outcome.key);
         match (outcome.write, attached) {

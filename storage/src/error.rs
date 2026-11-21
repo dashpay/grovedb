@@ -80,8 +80,9 @@ pub enum CommitError {
     ///
     /// An engine can report it from a write as well, before any commit:
     /// another commit took away a value that the write keeps as its
-    /// transaction read it. That write changed nothing, and its transaction
-    /// is open and as it was before the write.
+    /// transaction read it. That write changed nothing: its transaction is
+    /// open and holds the writes it held before, and a write scope of the
+    /// caller's keeps what the write claimed in it.
     #[error("conflict: another commit wrote a key after this transaction first wrote it")]
     Conflict,
     /// The commit happened and is visible, but the engine was asked to make

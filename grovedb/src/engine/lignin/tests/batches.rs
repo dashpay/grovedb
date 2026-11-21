@@ -38,7 +38,9 @@ use std::{cell::RefCell, path::Path};
 
 use grovedb_costs::{storage_cost::removal::StorageRemovedBytes, OperationCost};
 use grovedb_epoch_based_storage_flags::StorageFlags;
-use grovedb_merk::element::insert::ElementInsertToStorageExtensions;
+use grovedb_merk::element::{
+    insert::ElementInsertToStorageExtensions, tree_type::ElementTreeTypeExtensions,
+};
 use grovedb_version::version::{GroveVersion, GROVE_VERSIONS};
 
 use super::{
@@ -52,7 +54,7 @@ use crate::{
     engine::Engine,
     query_result_type::QueryResultType,
     reference_path::ReferencePathType,
-    Element, ElementFlags, Error, GroveDb, PathQuery, Query, TransactionArg,
+    Element, ElementFlags, Error, GroveDb, PathQuery, Query, TransactionArg, TreeType,
 };
 
 pub(super) type Op = QualifiedGroveDbOp;
@@ -729,6 +731,41 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
         );
     }
     calls.get(second, &[b's', 25]);
+    // Nodes that move the root of a tree which is entered, in a first
+    // segment that stops below the tree's element or above it: at every
+    // height, for a tree at every depth. Keys in their order move the
+    // root where the tree grows to 6, 12, 24 and 48 nodes.
+    let grown: [&[&[u8]]; 3] = [
+        &[b"grown"],
+        &[b"documents", b"grown"],
+        &[b"documents", b"contract", b"grown"],
+    ];
+    let node = |at: &[&[u8]], n: u8| insert(at, &[n], Element::new_item(vec![n; 10]));
+    let mut ops = Vec::new();
+    for at in grown {
+        let (key, above) = at.split_last().expect("a key");
+        ops.push(insert(above, key, Element::empty_tree()));
+        ops.extend((0..3).map(|n| node(at, n)));
+    }
+    calls.batch("trees to grow", ops);
+    let mut size = 3u8;
+    for height in [0u8, 1, 2, 3] {
+        let options = BatchApplyOptions {
+            batch_pause_height: Some(height),
+            ..BatchApplyOptions::default()
+        };
+        for at in grown {
+            let ops = (size..size * 2).map(|n| node(at, n)).collect();
+            let name = format!(
+                "grown to {} at depth {}, paused at {height}",
+                size * 2,
+                at.len()
+            );
+            calls.partial(&name, ops, Some(options.clone()), pay);
+        }
+        size *= 2;
+    }
+    calls.get(grown[2], &[47]);
     // The same for a tree that keeps its data flat: leaves appended by a
     // first segment that stops below the tree's element.
     calls.batch(
@@ -1305,6 +1342,15 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
     for key in [b"t1".as_slice(), b"t2", b"t3"] {
         calls.batch("filled", filled(&[], key, 0, made));
     }
+    // Trees that were written into and emptied: entered, with no node.
+    for key in [b"e1".as_slice(), b"e2"] {
+        let ops = vec![
+            insert(&[], key, Element::empty_tree()),
+            insert(&[key], b"x", item()),
+        ];
+        calls.batch("a tree with an element", ops);
+        calls.batch("emptied", vec![delete(&[key], b"x")]);
+    }
 
     // An item over a tree of leaves, a tree over the item, and an element
     // in it.
@@ -1350,6 +1396,21 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
     calls.get(&[], b"m4");
     calls.get(&[b"m4"], b"five");
     calls.proven(&[b"m4"]);
+
+    // A tree of another type over a tree that was emptied: with a
+    // number in it, and alone with an element in it later.
+    let ops = vec![
+        insert(&[], b"e1", Element::empty_sum_tree()),
+        insert(&[b"e1"], b"five", Element::new_sum_item(5)),
+    ];
+    calls.batch("a sum tree over an emptied tree, written", ops);
+    calls.get(&[b"e1"], b"five");
+    calls.batch(
+        "a count tree over an emptied tree",
+        vec![insert(&[], b"e2", Element::empty_count_tree())],
+    );
+    calls.batch("into it", vec![insert(&[b"e2"], b"x", item())]);
+    calls.get(&[], b"e2");
 
     // A partial batch writes an item over a tree: its two segments are
     // one group.
@@ -1407,12 +1468,147 @@ fn trees_that_keep_their_data_flat_are_written_over_and_written_over_trees() {
             .answers
             .iter()
             .filter(|(call, ..)| call.starts_with("batch "));
-        let taken: Vec<bool> = batches
-            .map(|(.., answer)| answer.starts_with("Ok"))
+        let refused: Vec<&str> = batches
+            .filter(|(.., answer)| !answer.starts_with("Ok"))
+            .map(|(call, ..)| call.as_str())
             .collect();
-        let mut expected = [true; 16];
-        expected[14] = false;
-        assert_eq!(taken, expected);
+        assert_eq!(refused, ["batch an item over a tree and over a tree in it"]);
+    }
+}
+
+/// Once the history of `over_flat_trees` is applied, the subtree
+/// directory of LigninDB has each tree that took the place of another
+/// as a tree of its element's type: a tree that keeps its data flat where
+/// a Merk was, a Merk where such a tree was, and a Merk of another type
+/// where a tree was entered that has no node.
+#[test]
+fn the_directory_has_a_tree_that_took_the_place_of_another_by_its_own_type() {
+    for version in GROVE_VERSIONS.iter() {
+        let dir = tempfile::tempdir().expect("a directory");
+        over_flat_trees::<LigninEngine>(dir.path(), version);
+        let db = open::<LigninEngine>(dir.path());
+        let engine = db.engine();
+        let under_the_root: &[&[u8]] = &[];
+        let mut entered = 0;
+        for key in [b"m1".as_slice(), b"m2", b"m3", b"m4", b"t1", b"e1", b"e2"] {
+            let element = db.get(under_the_root, key, None, version).unwrap();
+            let tree_type = (element.expect("an element").tree_type()).expect("a tree");
+            let tx = engine.start_read_transaction();
+            let handle = engine.subtree([key].as_ref().into(), None, &tx).unwrap();
+            let entry = handle.entry().expect("the directory answers");
+            let entry = entry.unwrap_or_else(|| panic!("{} is entered", hex::encode(key)));
+            assert_eq!(entry.tree_type().expect("a tree type"), tree_type);
+            entered += 1;
+        }
+        assert_eq!(entered, 7);
+        drop(db);
+        check(dir.path(), version);
+    }
+}
+
+/// Trees written over trees by batches that also insert into the new
+/// tree only what is not there. Such an insert asks the store for its
+/// key, and until the batch is applied the store holds what the tree
+/// that was there had under it, on both engines: under such a key the
+/// insert fails its batch, and under any other it is made.
+fn only_what_is_not_there<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
+    let db = open::<E>(dir);
+    let made = made_by(version);
+    let mut log = Log::default();
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let item = || Element::new_item(vec![0x77; 7]);
+    let absent =
+        |at: &[&[u8]], key: &[u8]| Op::insert_if_not_exists_op(path(at), key.to_vec(), item());
+    for top in [b"one".as_slice(), b"two", b"three"] {
+        calls.batch("filled", filled(&[], top, 0, made));
+    }
+    // Under each key that the old tree had, the key of its root among
+    // them, the insert finds a record and fails its batch.
+    let old: [&[u8]; 7] = [
+        b"item", b"long", b"number", b"nested", b"never", b"emptied", b"inside",
+    ];
+    for key in old {
+        let ops = vec![
+            insert(&[], b"one", Element::empty_tree()),
+            absent(&[b"one"], key),
+            insert(&[b"one"], b"other", item()),
+        ];
+        calls.refused(|calls| calls.batch("a tree over one, and what is there", ops));
+    }
+    calls.get(&[b"one"], b"long");
+    // Under a key that the old tree had not, beside another write.
+    let ops = vec![
+        insert(&[], b"one", Element::empty_tree()),
+        absent(&[b"one"], b"new"),
+        insert(&[b"one"], b"other", item()),
+    ];
+    calls.batch("a tree over one, and what is not there", ops);
+    calls.get(&[b"one"], b"new");
+    calls.get(&[b"one"], b"other");
+    calls.proven(&[b"one"]);
+    // A tree of another type, with a number beside.
+    let ops = vec![
+        insert(&[], b"two", Element::empty_sum_tree()),
+        absent(&[b"two"], b"new"),
+        insert(&[b"two"], b"other", Element::new_sum_item(4)),
+    ];
+    calls.batch("a sum tree over two, and what is not there", ops);
+    calls.get(&[b"two"], b"other");
+    calls.proven(&[b"two"]);
+    // The same with nothing else written into the new tree.
+    let ops = vec![
+        insert(&[], b"three", Element::empty_tree()),
+        absent(&[b"three"], b"new"),
+    ];
+    calls.batch("a tree over three, and what is not there", ops);
+    calls.proven(&[b"three"]);
+    let after = |top: &[u8]| insert(&[top], b"after", item());
+    calls.batch("after it all", vec![after(b"one"), after(b"three")]);
+    calls.batch(
+        "after it all",
+        vec![insert(&[b"two"], b"after", Element::new_sum_item(1))],
+    );
+    calls.proven(&[b"one"]);
+    calls.proven(&[b"two"]);
+    calls.proven(&[b"three"]);
+    db.flush().expect("a flush");
+    log
+}
+
+/// The history of `only_what_is_not_there` on every grove version: the
+/// same answers, costs and root hashes on both engines, and a sound
+/// LigninDB database whose directory has each new tree by its own type.
+#[test]
+fn a_tree_over_a_tree_takes_what_is_not_there_as_on_rocksdb() {
+    for version in GROVE_VERSIONS.iter() {
+        let dir = tempfile::tempdir().expect("a directory");
+        let log = only_what_is_not_there::<LigninEngine>(dir.path(), version);
+        #[cfg(feature = "rocksdb_storage")]
+        {
+            let dir = tempfile::tempdir().expect("a directory");
+            let on_rocksdb = only_what_is_not_there::<crate::RocksDbEngine>(dir.path(), version);
+            assert_same(&log, &on_rocksdb);
+        }
+        log.assert_refusals();
+        let db = open::<LigninEngine>(dir.path());
+        let engine = db.engine();
+        for (key, tree_type) in [
+            (b"one".as_slice(), TreeType::NormalTree),
+            (b"two", TreeType::SumTree),
+            (b"three", TreeType::NormalTree),
+        ] {
+            let tx = engine.start_read_transaction();
+            let handle = engine.subtree([key].as_ref().into(), None, &tx).unwrap();
+            let entry = handle.entry().expect("the directory answers");
+            let entry = entry.unwrap_or_else(|| panic!("{} is entered", hex::encode(key)));
+            assert_eq!(entry.tree_type().expect("a tree type"), tree_type);
+            // Nothing of the tree that was there is under the new one.
+            let nested: [&[u8]; 2] = [key, b"nested"];
+            let below = engine.subtree(nested.as_ref().into(), None, &tx).unwrap();
+            assert_eq!(below.entry().expect("the directory answers"), None);
+        }
+        drop(db);
+        check(dir.path(), version);
     }
 }
 
@@ -1429,7 +1625,7 @@ fn trees_that_keep_their_data_flat_are_written_over_and_written_over_trees() {
 fn where_a_tree_was<E: Engine>(
     dir: &Path,
     version: &'static GroveVersion,
-) -> (Log, Vec<(String, String)>) {
+) -> (Log, Vec<(String, OperationCost, String)>) {
     let db = open::<E>(dir);
     let made = made_by(version);
     let (mut log, mut apart) = (Log::default(), Log::default());
@@ -1503,12 +1699,17 @@ fn where_a_tree_was<E: Engine>(
     }
     reads.get(&[b"four", b"nested"], b"a");
     reads.get(&[b"four", b"nested", b"deeper"], b"deep");
+    // An insert of what is not there asks the store for its key, and is
+    // refused where the store holds a record under it.
+    let absent = Op::insert_if_not_exists_op(path(&[b"four"]), b"long".to_vec(), item.clone());
+    let applied = db.apply_batch(vec![absent], None, None, version);
+    reads.log.answer("absent/four/long".to_owned(), applied);
     // The delete of a tree asks whether it is empty.
     let under_the_root: &[&[u8]] = &[];
     let deleted = db.delete(under_the_root, b"one", None, None, version);
     reads.log.answer("delete/one".to_owned(), deleted);
     db.flush().expect("a flush");
-    let gave = |(call, _, answer): &(String, OperationCost, String)| {
+    let gave = |(call, cost, answer): &(String, OperationCost, String)| {
         let found = answer.starts_with("Ok");
         let gave = match call.split('/').next() {
             Some("empty") => answer.clone(),
@@ -1516,10 +1717,10 @@ fn where_a_tree_was<E: Engine>(
                 .matches("KeyElementPairResultItem")
                 .count()
                 .to_string(),
-            Some("delete") => String::from(if found { "made" } else { "refused" }),
+            Some("delete" | "absent") => String::from(if found { "made" } else { "refused" }),
             _ => String::from(if found { "found" } else { "nothing" }),
         };
-        (call.clone(), gave)
+        (call.clone(), cost.clone(), gave)
     };
     (log, apart.answers.iter().map(gave).collect())
 }
@@ -1528,11 +1729,12 @@ fn where_a_tree_was<E: Engine>(
 /// each with the answer that is required, which is RocksDB's, and with
 /// the one LigninDB gives until `GROVE-03-F1` closes the difference
 /// (D-227): whether a tree is empty, how many elements a query finds in a
-/// range, whether a key is read, and whether the delete of a tree is made.
+/// range, whether a key is read, whether an insert of what is not there
+/// is made, and whether the delete of a tree is made.
 /// They are the acceptance list of that task: once the nodes of a tree
 /// that was written over are kept as records that no tree links, LigninDB
 /// gives the second column, and the third goes.
-const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
+const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 22] = [
     // A tree nothing was written into, over a tree with elements.
     ("empty/one", "Ok(false)", "Ok(true)"),
     ("get/one/nested/b", "found", "nothing"),
@@ -1558,6 +1760,9 @@ const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
     ("get/four/never", "found", "nothing"),
     ("get/four/nested/a", "found", "nothing"),
     ("get/four/nested/deeper/deep", "found", "nothing"),
+    // An insert of what is not there, under a key the old tree had: a
+    // write.
+    ("absent/four/long", "refused", "made"),
     // The tree nothing was written into is deleted: a write.
     ("delete/one", "refused", "made"),
 ];
@@ -1568,8 +1773,9 @@ const READS_WHERE_A_TREE_WAS: [(&str, &str, &str); 21] = [
 /// not. RocksDB's answers are the required ones and are held here on
 /// RocksDB. What LigninDB answers today is held beside them so that the
 /// difference is the one that is written down, neither more nor less:
-/// 19 reads with another answer, and 2 with the same answer at another
-/// cost. Every other call of the history answers and costs the same.
+/// 20 reads with another answer, and 2 with the same answer, which the
+/// engines are compared on for their cost and differ in it. Every other
+/// call of the history answers and costs the same.
 #[test]
 fn lignindb_does_not_yet_read_what_rocksdb_reads_where_a_tree_was_written_over() {
     let answers = |required: bool| -> Vec<(String, String)> {
@@ -1584,21 +1790,36 @@ fn lignindb_does_not_yet_read_what_rocksdb_reads_where_a_tree_was_written_over()
         .iter()
         .filter(|read| read.1 != read.2);
     assert_eq!(differ.count(), READS_WHERE_A_TREE_WAS.len() - 2);
+    let gave = |read: &[(String, OperationCost, String)]| -> Vec<(String, String)> {
+        let read = read.iter();
+        read.map(|(call, _, gave)| (call.clone(), gave.clone()))
+            .collect()
+    };
     for version in GROVE_VERSIONS.iter() {
         let dir = tempfile::tempdir().expect("a directory");
         let (log, read) = where_a_tree_was::<LigninEngine>(dir.path(), version);
         log.assert_refusals();
         // The known difference: nothing of the old trees is read.
-        assert_eq!(read, answers(false));
+        assert_eq!(gave(&read), answers(false));
         check(dir.path(), version);
         #[cfg(feature = "rocksdb_storage")]
         {
             let dir = tempfile::tempdir().expect("a directory");
-            let (on_rocksdb, read) = where_a_tree_was::<crate::RocksDbEngine>(dir.path(), version);
+            let (on_rocksdb, required) =
+                where_a_tree_was::<crate::RocksDbEngine>(dir.path(), version);
             assert_same(&log, &on_rocksdb);
             // The required answers: each tree stands on the records of
             // the one that was there.
-            assert_eq!(read, answers(true));
+            assert_eq!(gave(&required), answers(true));
+            // A read that both answer alike is in the list for its cost.
+            let mut alike = 0;
+            for (lignin, rocksdb) in read.iter().zip(&required) {
+                if lignin.2 == rocksdb.2 {
+                    assert_ne!(lignin.1, rocksdb.1, "{}", lignin.0);
+                    alike += 1;
+                }
+            }
+            assert_eq!(alike, 2);
         }
     }
 }
@@ -2200,11 +2421,16 @@ fn wrong_hashes<E: Engine>(
         .collect()
 }
 
+/// The digest of every issue that `verify_grovedb` reports of the grove of
+/// `wrong_hashes`, each with its hashes. It is what the verification
+/// reported of this grove before its walk was split in two functions.
+const ISSUES_OF_THE_WRONG_HASHES: &str =
+    "61322a7f39c88e18862f8614797cf4c69c6c00c9a9c79bb68130f8471bca925d";
+
 /// `verify_grovedb` walks a grove with wrong hashes at several depths
 /// and reports each of them, and nothing else, with the same hashes on
-/// both engines. The digest that is printed is of every issue with its
-/// hashes: it is what the verification reported of this grove before its
-/// walk was split in two functions, too.
+/// both engines, which are the hashes it reported before its walk was
+/// split in two functions.
 #[test]
 fn the_verification_reports_the_wrong_hashes_of_a_grove_at_every_depth() {
     let under = |depth: usize, key: &str| format!("at{}{key}", "/t".repeat(depth + 1));
@@ -2228,6 +2454,7 @@ fn the_verification_reports_the_wrong_hashes_of_a_grove_at_every_depth() {
             version.protocol_version,
             digest.to_hex()
         );
+        assert_eq!(digest.to_hex().as_str(), ISSUES_OF_THE_WRONG_HASHES);
         #[cfg(feature = "rocksdb_storage")]
         {
             let dir = tempfile::tempdir().expect("a directory");

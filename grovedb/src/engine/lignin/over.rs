@@ -10,11 +10,12 @@
 //!
 //! It is said of a **write over a tree**: a node that the group puts
 //! with a stated value where its writer had loaded the element of a tree
-//! ([`LigninSettled::over_trees`]), through a handle by path. The subtree
-//! looked at is the one of the element's own path, where the directory
-//! has it under that element. The element as the group leaves it is the
-//! one that the last batch of the group to state a value for the node
-//! states.
+//! ([`LigninSettled::over_trees`]), in a subtree whose path the engine
+//! knows because a handle by path wrote into it with the group
+//! ([`LigninSettled::path`]). The subtree looked at is the one of the
+//! element's own path, where the directory has it under that element.
+//! The element as the group leaves it is the one that the last batch of
+//! the group to state a value for the node states.
 //!
 //! - **No tree:** the subtree is dropped.
 //! - **A tree, whose subtree the group does not write:** the subtree is
@@ -23,11 +24,11 @@
 //!   data flat if the subtree is entered as a tree of another type.
 //! - **A tree, whose subtree the group writes:** the subtree is dropped
 //!   and entered again, as a tree of the element's type, if it has a node
-//!   or is entered as a tree of another type and the handle that wrote its
-//!   nodes had loaded none ([`LigninSettled::began_empty`]): the writer of
-//!   a tree that the group itself makes begins with no node. A tree that
-//!   keeps its data flat is dropped and entered again where it is entered
-//!   as a tree of another type.
+//!   or is entered as a tree of another type and a change set of its Merk
+//!   is of a writer that began with no node
+//!   ([`LigninSettled::began_empty`]), as the writer of a tree that the
+//!   group itself makes does. A tree that keeps its data flat is dropped
+//!   and entered again where it is entered as a tree of another type.
 //!
 //! A drop takes every subtree below with it. A subtree below a dropped
 //! one that the group writes into, under an element that the group
@@ -35,26 +36,35 @@
 //! type.
 //!
 //! A subtree that is dropped is dropped with the first batch of the
-//! group, and its element is written as one that hosts nothing, or with
-//! the subtree that is entered again.
+//! group. The node of its element is written as one that hosts nothing
+//! where no Merk of the group takes the place of the one that leaves:
+//! where the subtree is not entered again, and where it is entered again
+//! as a tree that keeps its data flat. Where it is entered again with a
+//! Merk, the node names that Merk.
 //!
 //! **The look can be stale when the group is applied**, as the look for
 //! what a group enters can ([`super::enter`]): a commit of another
 //! transaction can be published between the reads here and the
-//! application. A group that this states a drop for writes the directory
-//! itself and is applied once: a refusal is the caller's answer, and the
-//! engine does not look again.
+//! application.
 //!
 //! - Where the look found the subtree and such a commit dropped it since,
-//!   the transaction refuses the group (`BatchError::NotEntered`) and
-//!   takes nothing of it.
-//! - Where the look found no subtree and such a commit entered it since,
-//!   by a first write into the tree, nothing is dropped: the element is
-//!   written as the group states it and the entry outlives it, as the
-//!   entry of a deleted tree does (GROVE-05). That commit wrote the
-//!   element's node too. Its transaction and this one do not meet as a
-//!   conflict where this one had not written the node before, on either
-//!   engine, and RocksDB keeps that commit's records under the prefix.
+//!   the transaction refuses the drop of a subtree that is not entered
+//!   (`BatchError::NotEntered`) and takes nothing of the group. The
+//!   engine looks again by the rule of the enters
+//!   ([`Left::found_otherwise`], `Engine::apply_write_group`), and applies
+//!   the group with what that look states.
+//! - This look comes after the one for what the group enters. A subtree
+//!   that the first found absent and this one finds entered is dropped
+//!   and entered once, as this one has it.
+//! - Where both found no subtree and such a commit entered it before the
+//!   group was applied, by a first write into the tree, nothing is
+//!   dropped and nothing is said of the element's node: the element is
+//!   written as the group states it, its node keeps the Merk that the
+//!   commit hung under it, and the entry outlives the tree. That commit
+//!   wrote the element's node too. Its transaction and this one do not
+//!   meet as a conflict where this one had not written the node before
+//!   it, on either engine, and RocksDB keeps that commit's records under
+//!   the prefix.
 //!
 //! What this does not do:
 //!
@@ -63,23 +73,26 @@
 //!   are still finds them there: that difference is `GROVE-03-F1`'s to
 //!   close (D-227; `engine.md`, "An element written over a tree").
 //! - It reads the element as the group states it and not the element
-//!   that was there. An element that is written again as the tree it was,
-//!   with a root key or through a handle that loaded nodes of its Merk,
-//!   keeps its subtree, whatever the type the subtree was entered with.
+//!   that was there. An element that is written again as a tree with a
+//!   root key, or whose subtree the group writes on through the handle
+//!   that fetched its root, keeps its subtree, whatever the type the
+//!   subtree was entered with.
 //! - A tree that keeps its data flat and is written over with a tree of
 //!   its own type keeps its records: the element of such a tree changes
 //!   with every write into it, and nothing tells a new one from it.
 //! - An indexed tree, written over or written, is left as it is
 //!   (GROVE-04-F1), and so is the subtree of an element that the group
 //!   removes (GROVE-05), a subtree that a batch of the group enters
-//!   itself or moves, and a node that was put through a handle which was
-//!   not opened by a path.
+//!   itself or moves, and a node of a subtree that no handle by path
+//!   wrote into with the group.
 
 use std::collections::BTreeSet;
 
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
-    store::lignin::{tree_type_bytes, LigninHost, LigninSettled, LigninSubtree, LigninView},
+    store::lignin::{
+        tree_type_bytes, LigninEntryRefused, LigninHost, LigninSettled, LigninSubtree, LigninView,
+    },
     TreeType,
 };
 use grovedb_path::SubtreePath;
@@ -99,6 +112,18 @@ pub(super) struct Left {
     /// The subtrees that are entered again with the group, each with the
     /// bytes of its tree type: a dropped one before those below it.
     pub(super) enters: Vec<(LigninSubtree, Vec<u8>)>,
+}
+
+impl Left {
+    /// Whether `refused` is of a subtree whose entry this look found
+    /// otherwise: no entry, for a subtree that the look found entered and
+    /// stated the drop of.
+    pub(super) fn found_otherwise(&self, refused: LigninEntryRefused) -> bool {
+        match refused {
+            LigninEntryRefused::NotEntered(subtree) => self.drops.contains(&subtree),
+            LigninEntryRefused::EnteredOtherwise(_) => false,
+        }
+    }
 }
 
 /// The prefix of the subtree under `key` of the subtree at `path`.
@@ -195,22 +220,26 @@ pub(super) fn left(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Left
                 if !fresh {
                     continue;
                 }
-                written(&own).then_some(bytes)
+                written(&own).then_some((bytes, flat))
             }
         };
         dropped.push((own, *subtree));
-        match again {
-            Some(tree_type) => {
-                let subtree = LigninSubtree {
-                    prefix: own,
-                    host: Some(host),
-                };
-                left.enters.push((subtree, tree_type));
-            }
-            None => left.hosts.push(LigninHost {
+        // The element's node hosts nothing where no Merk of the group
+        // takes the place of the one that is dropped: where the subtree
+        // is not entered again, and where it is entered again as a tree
+        // that keeps its data flat, which has no Merk to name.
+        if again.as_ref().is_none_or(|(_, flat)| *flat) {
+            left.hosts.push(LigninHost {
                 hosted: Vec::new(),
-                ..host
-            }),
+                ..host.clone()
+            });
+        }
+        if let Some((tree_type, _)) = again {
+            let subtree = LigninSubtree {
+                prefix: own,
+                host: Some(host),
+            };
+            left.enters.push((subtree, tree_type));
         }
     }
     if dropped.is_empty() {

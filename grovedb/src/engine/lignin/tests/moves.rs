@@ -163,8 +163,9 @@ fn without_a_merk<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log 
         vec![rename(&[b"plain"], b"once", b"twice")],
     );
 
-    // Two elements that change places, three that move round, and an
-    // element with a tree nothing was written into.
+    // Two elements that change places, one that moves to the key
+    // another leaves, and an element with a tree nothing was written
+    // into.
     let ops = vec![
         rename(&[b"sums"], b"evif", b"nine"),
         rename(&[b"sums"], b"nine", b"evif"),

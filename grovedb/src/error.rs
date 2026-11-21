@@ -224,10 +224,13 @@ impl Error {
     /// is then over and the database unchanged, as for any failed commit.
     ///
     /// See [`grovedb_storage::Error::commit_error`] for how each engine's
-    /// own errors are classed.
+    /// own errors are classed. A storage error is classed where this error
+    /// holds it as it is, and where it holds it as the error of a Merk,
+    /// which is how a write through a Merk hands it on.
     pub fn commit_error(&self) -> Option<grovedb_storage::error::CommitError> {
         match self {
-            Self::StorageError(error) => error.commit_error(),
+            Self::StorageError(error)
+            | Self::MerkError(grovedb_merk::Error::StorageError(error)) => error.commit_error(),
             _ => None,
         }
     }

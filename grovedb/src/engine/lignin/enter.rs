@@ -76,7 +76,10 @@
 //!   batch do. The first then leaves the root of the Merk for the
 //!   element's node to name (`tree-layout.md` T3), and a node that kept
 //!   what it hosts would point at the root the Merk had before, or at
-//!   none.
+//!   none. A group in which a batch writes nodes of the Merk after the
+//!   last batch that puts the element's node is refused with
+//!   `Error::NotSupported`: no node would name the root that batch
+//!   leaves.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise it is
@@ -237,6 +240,14 @@ fn beside_nothing(host: &LigninHost) -> Error {
 /// which what the element hosts is worked out from.
 fn same_element(one: &LigninHost, other: &LigninHost) -> bool {
     (one.subtree, &one.key, one.hosted.first()) == (other.subtree, &other.key, other.hosted.first())
+}
+
+fn unnamed_root(host: &LigninHost) -> Error {
+    let key = key_of(host);
+    not_supported(&format!(
+        "a group of batches that writes nodes of the tree under the key {key} in a batch after \
+         the last one that writes the tree's element"
+    ))
 }
 
 fn named_twice() -> Error {
@@ -526,6 +537,18 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                 // A tree that keeps its data flat has no Merk to name.
                 let merk = tree_type.is_some_and(|tree| !tree.uses_non_merk_data_storage());
                 if merk && parts.len() > 1 {
+                    // The last batch that writes nodes of the Merk leaves
+                    // its root for the element's node to name, in that
+                    // batch or in a later one.
+                    let puts = |part: &LigninSettled| {
+                        let node = part.node(&host.subtree, &host.key);
+                        matches!(node, Some(LigninOutcome::Put(_)))
+                    };
+                    let named = parts.iter().rposition(puts);
+                    let written = parts.iter().rposition(|part| part.writes_merk(&own));
+                    if written.is_some_and(|at| named.is_none_or(|named| named < at)) {
+                        return Err(unnamed_root(host));
+                    }
                     owed.apart.push(host.clone());
                 }
             }
