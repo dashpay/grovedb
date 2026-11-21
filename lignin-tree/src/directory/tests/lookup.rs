@@ -232,8 +232,9 @@ fn the_merk_with_a_node_beside_a_prefix_is_the_nearest_in_use() {
     for at in paths.iter().filter(|at| at.len() == 2).step_by(3) {
         grove.root(&keys(at));
     }
-    // One Merk of the first level is dropped: it and the five below it
-    // are left in the directory, and are of no state.
+    // One Merk of the first level is dropped: its entry goes, those of
+    // the five below it are left in the directory, and all six are of no
+    // state.
     let dropped = &paths[2];
     assert_eq!(dropped.len(), 1);
     grove.unlink(&keys(dropped));
