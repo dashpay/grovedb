@@ -321,10 +321,7 @@ impl<'s> WriteBack<'s> {
     ///
     /// If the manifest cannot be opened again, the call ends with that
     /// error, no store is told, and the doubt stays for the next call.
-    ///
-    /// Whoever replaces the manifest of an open store beside write-back
-    /// takes it through this, so that a doubt is settled in one way.
-    pub fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
+    pub(crate) fn manifest(&self) -> Result<MutexGuard<'s, ManifestStore>, FlushError> {
         let mut manifest = lock(self.stores.manifest);
         if manifest.manifest().is_err() {
             let reopened = ManifestStore::open(manifest.vfs().clone(), manifest.dir())?;

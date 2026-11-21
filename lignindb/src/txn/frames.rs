@@ -252,7 +252,8 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     renewed: HashMap<MerkId, MerkId>,
     /// The values that the loads of the batch that was applied last put
     /// into the value log, each by the place of its node among the entries
-    /// of the batch's change sets, in ascending order.
+    /// of the batch's change sets, in ascending order: for the write set,
+    /// which takes them. A batch that is applied again leaves none here.
     stored: Vec<(u32, StoredValue)>,
 }
 
@@ -792,11 +793,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         self.renewed.get(&id).copied().unwrap_or(id)
     }
 
-    /// The values that the loads of the batch that was applied last put
-    /// into the value log, as the write set takes them
-    /// ([`Again::stored`]).
-    pub(crate) fn stored(&self) -> &[(u32, StoredValue)] {
-        &self.stored
+    /// Takes the places of the values that the loads of the batch that
+    /// was applied last put into the value log, as the write set keeps
+    /// them ([`Again::stored`]). The frames keep none of them.
+    pub(crate) fn take_stored(&mut self) -> Vec<(u32, StoredValue)> {
+        std::mem::take(&mut self.stored)
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -1517,6 +1518,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             resolver.adopted = std::mem::take(&mut plan.adopted);
             let done = self.load(path, batch, &resolver, plan, stored, loaded);
             let done = done.map_err(Refused::dirty)?;
+            if again.is_some() {
+                // The write set has the places of a batch that is applied
+                // again: nobody takes these.
+                self.stored = Vec::new();
+            }
             (resolver.loaded, handles, load) = (done.roots, done.handles, Some(done.counters));
         }
         // A refusal from here on leaves the pages of the loads in the

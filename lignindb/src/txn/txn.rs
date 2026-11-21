@@ -1106,8 +1106,9 @@ impl<'s> WriteTxn<'s> {
         };
         match frames.apply(path, batch, None, &mut state.loaded) {
             Ok(applied) => {
+                let stored = frames.take_stored();
                 let (empty, left) = (frames.empty_before(), frames.left_with_moves());
-                let first = state.set.add(batch, op.at, empty, &cut, left, frames.stored());
+                let first = state.set.add(batch, op.at, empty, &cut, left, &stored);
                 if !kept.met.is_empty() {
                     for (offset, unit, key) in &kept.met {
                         state.set.meet_kept(first + offset, *unit, key);

@@ -353,19 +353,18 @@ impl Drop for Held<'_> {
 /// deletion is tried again (`ValueStoreError::NotDeleted`).
 ///
 /// A manifest that an earlier replacement left in doubt is settled first,
-/// as write-back settles it ([`WriteBack::manifest`]): it is opened
-/// again, and every store is told which manifest is in force. What a
-/// store answers to that is not returned here. The manifest is in force
-/// once it was opened, and where it could not be opened the replacement
-/// below fails with the doubt, which stays for the next call.
+/// as write-back settles it ([`WriteBack::settle_manifest`]): it is
+/// opened again, and every store is told which manifest is in force. What
+/// that answers is not returned here. The manifest is in force once it
+/// was opened, and where it could not be opened, or was left in doubt
+/// again before the lock is taken here, the replacement below fails with
+/// the doubt, which stays for the next call.
 ///
-/// [`WriteBack::manifest`]: lignin_store::flush::WriteBack::manifest
+/// [`WriteBack::settle_manifest`]: lignin_store::flush::WriteBack::settle_manifest
 fn name_files(path: &WritePath<'_>) -> Result<(), ValueStoreError> {
     let write_back = path.write_back;
-    let mut manifest = match write_back.manifest() {
-        Ok(manifest) => manifest,
-        Err(_) => lock(write_back.stores().manifest),
-    };
+    let _ = write_back.settle_manifest();
+    let mut manifest = lock(write_back.stores().manifest);
     match path.values.commit(&mut manifest) {
         Ok(()) | Err(ValueStoreError::NotDeleted { .. }) => Ok(()),
         Err(error) => Err(error),
