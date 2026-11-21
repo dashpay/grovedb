@@ -534,3 +534,165 @@ fn a_node_with_the_keys_of_its_children_asks_the_pool_for_at_most_two_pages_more
     // And one for each child there is: two at most for a node.
     assert_eq!(with_children - with_nodes, children_of);
 }
+
+/// One cursor reads several Merks as one committed version has them
+/// ([`MerkCursor::retarget`]): pointed at another Merk it keeps its
+/// version and its pin, stands on no key until it is sought, and shows that
+/// Merk as the version has it beside the transaction's writes to it. So
+/// does a parked cursor, through its scope.
+#[test]
+fn a_cursor_is_pointed_at_another_merk_of_the_version_it_pinned() {
+    let (db, versions) = Db::new(128);
+    let mut world = World::new(&db, &versions);
+    let unit = |name: u8| Unit::data(model::subtree(name));
+    for name in [1u8, 2, 3] {
+        world.edit_outside(
+            name,
+            |items| {
+                for index in 0..usize::from(name) * 9 {
+                    items.insert(key(index * 2), vec![name; 40]);
+                }
+            },
+            &[],
+        );
+    }
+    let at_open = world.model.records.clone();
+    let opened = world.latest();
+    let keys_at_open = |name: u8| -> Vec<Vec<u8>> {
+        let of_unit = at_open.iter().filter(|((own, _), _)| *own == unit(name));
+        of_unit.map(|((_, key), _)| key.clone()).collect()
+    };
+
+    let tx = world.begin();
+    let mut cursor = tx.txn.merk_cursor(model::subtree(1)).expect("a cursor");
+    cursor.seek(&key(4)).expect("a seek");
+    assert_eq!(cursor.key(), Some(&key(4)[..]));
+
+    // Commits outside, after the cursor was opened: every Merk gets a
+    // node, loses one, and the third is made again whole, which frees the
+    // pages the version has of it.
+    for name in [1u8, 2, 3] {
+        world.edit_outside(
+            name,
+            |items| {
+                items.insert(key(1), b"outside".to_vec());
+                items.remove(&key(2));
+            },
+            &[&tx],
+        );
+    }
+    world.edit_outside(
+        3,
+        |items| {
+            items.clear();
+            for index in 0..50 {
+                items.insert(key(index), vec![0xee; 70]);
+            }
+        },
+        &[&tx],
+    );
+    assert!(world.latest() > opened);
+
+    // Pointed at the second Merk it stands on no key, and a step from
+    // there goes nowhere. Sought, it shows the Merk of its version.
+    cursor
+        .retarget(model::subtree(2))
+        .expect("the directory is read");
+    assert_eq!(cursor.version(), opened);
+    assert!(!cursor.valid());
+    assert!(cursor.node(|node| node.is_none()).expect("a read"));
+    cursor.next().expect("a step from no key");
+    cursor.prev().expect("a step from no key");
+    assert_eq!(cursor.key(), None);
+    for name in [2u8, 3, 1, 3] {
+        cursor.retarget(model::subtree(name)).expect("a retarget");
+        let view = tx.model.borrow().view(&at_open, unit(name));
+        assert_eq!(scan_merk(&mut cursor, &view, false), keys_at_open(name));
+        let mut back = scan_merk(&mut cursor, &view, true);
+        back.reverse();
+        assert_eq!(back, keys_at_open(name), "Merk {name}");
+        // It is left standing past an end, and the next retarget takes it
+        // from there.
+        cursor.seek_for_prev(&key(5)).expect("a seek");
+        assert_eq!(cursor.key(), Some(&key(4)[..]));
+    }
+    assert_eq!(db.oldest_pin(&versions), opened, "one pin, of one version");
+    assert_eq!(db.pool.census().pinned, 0, "and no page");
+
+    // A subtree the version has no entry for has nothing to show, and the
+    // cursor goes on from there.
+    cursor.retarget(model::subtree(9)).expect("a retarget");
+    cursor.seek_to_first().expect("a seek");
+    assert_eq!(cursor.key(), None);
+    cursor.seek_for_prev(&key(99)).expect("a seek");
+    assert_eq!(cursor.key(), None);
+
+    // The transaction writes the second Merk. The cursor, pointed there,
+    // shows the write beside the nodes of its version, and pointed back at
+    // the first Merk it shows none of it.
+    let scope = tx.txn.scope().expect("a scope");
+    let mine = change(&world, &tx, 2, |items| {
+        items.insert(b"0003x".to_vec(), b"written by the transaction".to_vec());
+        items.remove(&key(6));
+    });
+    // The transaction's own change is made from the latest state, which
+    // has the commits from outside: its view is over that.
+    apply_through(&world, &tx, &scope, &mine);
+    scope.merge();
+    cursor.retarget(model::subtree(2)).expect("a retarget");
+    cursor.seek(b"0003").expect("a seek");
+    assert_eq!(cursor.key(), Some(&b"0003x"[..]), "its transaction's node");
+    cursor.seek(&key(6)).expect("a seek");
+    assert_eq!(cursor.key(), Some(&key(8)[..]), "its transaction's removal");
+    cursor.retarget(model::subtree(1)).expect("a retarget");
+    let view = tx.model.borrow().view(&at_open, unit(1));
+    assert_eq!(scan_merk(&mut cursor, &view, false), keys_at_open(1));
+    drop(cursor);
+    assert!(db.oldest_pin(&versions) > opened, "the pin went with it");
+
+    // A parked cursor is pointed elsewhere through its scope, and a read
+    // of the Merk it is pointed at is a read of that Merk: another scope
+    // that holds it for writing refuses it (SC3).
+    let now = world.model.records.clone();
+    let first = tx.txn.scope().expect("a scope");
+    let mut parked = first
+        .parked_merk_cursor(model::subtree(1))
+        .expect("a cursor");
+    let second = tx.txn.scope().expect("a scope beside the first");
+    let theirs = change(&world, &tx, 3, |items| {
+        drop(items.insert(b"zz".to_vec(), b"the second scope's".to_vec()))
+    });
+    apply_through(&world, &tx, &second, &theirs);
+    {
+        let mut cursor = first.resume(&mut parked).expect("its own scope");
+        cursor.seek_to_first().expect("the first Merk is free");
+        assert!(cursor.valid());
+        cursor
+            .retarget(model::subtree(3))
+            .expect("a retarget reads no node");
+        assert!(!cursor.valid());
+        let refused = cursor.seek_to_first().expect_err("the Merk is held");
+        assert!(
+            matches!(refused, TxnError::ScopeOverlap { unit: held } if held == unit(3)),
+            "{refused:?}"
+        );
+        assert_eq!(cursor.key(), None);
+        // The refusal is of that Merk, and leaves the cursor usable.
+        cursor.retarget(model::subtree(1)).expect("a retarget");
+        cursor.seek_to_last().expect("a seek");
+        assert!(cursor.valid());
+    }
+    second.merge();
+    {
+        let mut cursor = first.resume(&mut parked).expect("its own scope");
+        cursor.retarget(model::subtree(3)).expect("a retarget");
+        cursor.seek_to_last().expect("the Merk is free again");
+        assert_eq!(cursor.key(), Some(&b"zz"[..]));
+        let view = tx.model.borrow().view(&now, unit(3));
+        let keys: Vec<Vec<u8>> = view.keys().cloned().collect();
+        assert_eq!(scan_merk(cursor.cursor(), &view, false), keys);
+    }
+    first.merge();
+    drop(parked);
+    world.check(&tx);
+}

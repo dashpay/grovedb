@@ -401,6 +401,38 @@ impl<'t, 's> MerkCursor<'t, 's> {
         Ok(cursor)
     }
 
+    /// Points the cursor at the Merk `subtree`. Its committed side stays
+    /// the version the cursor was opened on, which it goes on keeping
+    /// pinned, under the lease it took then: it now shows the nodes that
+    /// version has of `subtree`, found through that version's subtree
+    /// directory, merged with what the transaction has written to
+    /// `subtree` by each call (`transactions.md` RD6). So one cursor reads
+    /// several Merks as one committed state has them, whatever is
+    /// committed between two of its reads.
+    ///
+    /// The cursor then stands on no key, whether or not the call fails:
+    /// it is sought before it is read or stepped. A call that fails
+    /// leaves it pointed at the Merk it was pointed at before.
+    ///
+    /// Each later call is a read of `subtree` like any other, and is
+    /// refused where another open scope holds that Merk for writing (SC3).
+    /// This call makes one lookup in the directory for a subtree the
+    /// cursor has not been pointed at before, and reads no node.
+    pub fn retarget(&mut self, subtree: Subtree) -> Result<(), TxnError> {
+        self.key = None;
+        self.way = Way::Lost;
+        let path = *self.txn.path();
+        let guard = path.versions().guard();
+        let directory = Opened::at(&mut self.opened, &path, &guard, self.side.at)?;
+        let root = directory.root(&path, &guard, &subtree)?.flatten();
+        self.side.cursor = tree::Cursor::open(&self.side.reader(&guard), root);
+        self.unit = Unit::data(subtree);
+        // Whether the committed side is read is asked again, of the new
+        // subtree, by the next move.
+        self.seen = None;
+        Ok(())
+    }
+
     /// Shows `read` the node under the key the cursor stands on: the
     /// transaction's own node if it has written the key, and otherwise the
     /// node of the cursor's version. `None` if the cursor stands on no
@@ -584,6 +616,11 @@ impl<'t, 's, C> Resumed<'_, 't, 's, C> {
 }
 
 impl<'s> Resumed<'_, '_, 's, MerkSide<'s>> {
+    /// [`MerkCursor::retarget`].
+    pub fn retarget(&mut self, subtree: Subtree) -> Result<(), TxnError> {
+        self.cursor.retarget(subtree)
+    }
+
     /// [`MerkCursor::node`].
     pub fn node<R>(&mut self, read: impl FnOnce(Option<NodeView<'_>>) -> R) -> Result<R, TxnError> {
         self.cursor.node(read)
