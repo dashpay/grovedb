@@ -136,12 +136,17 @@ pub trait LoadValues: Values {
     /// took, is written with when it goes into `page`. A load calls this
     /// once for each value out of line, right before it writes the
     /// fragment the cell is in, and writes the cell with what it returns.
+    /// The values of one fragment are asked for one after the other, in
+    /// the order a scan reads the cells of the fragment
+    /// ([`scan_order`](crate::value::scan_order)).
     ///
     /// The default leaves the pending value in the cell and tells
     /// [`Values::placed`], so the value waits for its commit as that of any
     /// write does. A load that puts its values into the value log as their
     /// cells get their pages appends the value for `page` here and returns
-    /// the pointer: the cell holds it from its first write on. A place of
+    /// the pointer: the cell holds it from its first write on, and the
+    /// values of a fragment lie in the value log in the order a scan reads
+    /// them, as a regrouping would leave them (`crate::value`). A place of
     /// another length than the value ends the load with
     /// [`LoadError::Value`](super::LoadError::Value), before the cell is
     /// written.

@@ -238,6 +238,9 @@ pub struct Loader {
     levels: Vec<Option<Filling>>,
     order: Vec<u32>,
     walk: Vec<u32>,
+    /// The walk of a piece in the order of its keys: each node with
+    /// whether its left subtree was walked.
+    scan: Vec<(u32, bool)>,
     path: Vec<u32>,
     search: Vec<(u32, usize)>,
     roots: Vec<Option<CellAddress>>,
@@ -270,6 +273,7 @@ impl Loader {
             levels: Vec::new(),
             order: Vec::new(),
             walk: Vec::new(),
+            scan: Vec::new(),
             path: Vec::new(),
             search: Vec::new(),
             roots: Vec::new(),
@@ -692,20 +696,42 @@ impl Loader {
             filling.cells += 1;
             filling.used += node.size as usize;
             self.counters.cell_bytes += u64::from(node.size);
-            if let Some(pending) = node.pending {
-                let place = values.place(pending, filling.page);
-                let place = place.map_err(LoadError::Value)?;
-                // The cell was counted with the length of the value it
-                // was given: a place of another length is of another value.
-                if place.value_len() != pending.value_len() {
-                    let (held, placed) = (pending.value_len(), place.value_len());
-                    let other = format!("a value of {held} bytes was given a place of {placed}");
-                    return Err(LoadError::Value(other.into()));
-                }
-                node.place = Some(place);
-                self.counters.values += 1;
-                self.counters.value_bytes += u64::from(pending.value_len());
+        }
+        // The values are given their places in the order a scan reads the
+        // cells of the fragment (`crate::value::scan_order`): a node after
+        // its left subtree, then the Merks it hosts, then its right
+        // subtree. Values that are appended as they are placed so lie
+        // back to back in that order, and write-back finds nothing to
+        // regroup in them.
+        self.scan.clear();
+        self.scan.push((root, false));
+        while let Some((index, left_walked)) = self.scan.pop() {
+            let node = self.nodes[index as usize].as_mut().expect(LIVE);
+            if !left_walked {
+                let open = |child: &Option<Child>| child.and_then(Child::open);
+                self.scan
+                    .extend(open(&node.right).map(|right| (right, false)));
+                let hosted = node.hosted.iter().rev().filter_map(open);
+                self.scan.extend(hosted.map(|hosted| (hosted, false)));
+                self.scan.push((index, true));
+                self.scan.extend(open(&node.left).map(|left| (left, false)));
+                continue;
             }
+            let Some(pending) = node.pending else {
+                continue;
+            };
+            let place = values.place(pending, filling.page);
+            let place = place.map_err(LoadError::Value)?;
+            // The cell was counted with the length of the value it was
+            // given: a place of another length is of another value.
+            let (held, placed) = (pending.value_len(), place.value_len());
+            if held != placed {
+                let other = format!("a value of {held} bytes was given a place of {placed}");
+                return Err(LoadError::Value(other.into()));
+            }
+            node.place = Some(place);
+            self.counters.values += 1;
+            self.counters.value_bytes += u64::from(held);
         }
 
         let (nodes, order, roots) = (&self.nodes, &self.order, &mut self.roots);

@@ -418,6 +418,81 @@ fn a_load_that_places_its_values_writes_its_cells_with_their_places() {
     mem.check();
 }
 
+/// A balanced Merk of `count` nodes, every second one with a value out
+/// of line, handed to `loader` with `values`: a child before its parent.
+fn balanced(
+    loader: &mut Loader,
+    mem: &mut Mem,
+    values: &mut Placed,
+    count: usize,
+) -> Result<Root, LoadError> {
+    fn below(
+        (loader, mem, values): (&mut Loader, &mut Mem, &mut Placed),
+        (from, to): (usize, usize),
+    ) -> Result<Option<Loaded>, LoadError> {
+        if from == to {
+            return Ok(None);
+        }
+        let top = from + (to - from) / 2;
+        let left = below((loader, mem, values), (from, top))?;
+        let right = below((loader, mem, values), (top + 1, to))?;
+        let key = format!("key-{top:05}");
+        let long = [7u8; THRESHOLD + 40];
+        let value: &[u8] = if top % 2 == 0 { &long } else { b"short" };
+        let node = NodeLoad {
+            left: left.and_then(link),
+            right: right.and_then(link),
+            ..plain(key.as_bytes(), value)
+        };
+        let taken = loader.node(mem, values, &mut Rules::default(), &node);
+        taken.map(Some)
+    }
+    let top = below((loader, mem, values), (0, count))?;
+    loader.root(mem, values, top.expect("a Merk with a node"))
+}
+
+/// The values of a fragment are given their places in the order a scan
+/// reads its cells. So values that are appended as they are placed lie in
+/// the value log as a regrouping would leave them: a scan of a page
+/// leaves the place it reads at only between two fragments.
+#[test]
+fn the_values_of_a_fragment_are_placed_in_the_order_of_a_scan() {
+    use crate::value::scan_order;
+
+    let layout = Layout::proposed(SIZE);
+    let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
+    let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
+    balanced(&mut loader, &mut mem, &mut values, 3_000).expect("a load");
+    let report = loader.finish().expect("every subtree has its place");
+    assert_eq!(report.counters.values, 1_500);
+    let (mut fragments, mut in_fragments_of_many) = (0, 0);
+    for page in &report.pages {
+        let view = mem.view(page.page);
+        let tree_page = view.tree_page();
+        let placed = scan_order(&tree_page)
+            .into_iter()
+            .filter_map(|slot| tree_page.cell(slot)?.value_pointer());
+        let positions: Vec<usize> = placed.map(Placed::position).collect();
+        let jumps = (positions.windows(2))
+            .filter(|pair| pair[1] != pair[0] + 1)
+            .count();
+        let roots = tree_page.fragment_roots().count();
+        assert!(
+            jumps < roots.max(1),
+            "{}: a scan jumps {jumps} times in {roots} fragments",
+            page.page
+        );
+        fragments += roots;
+        in_fragments_of_many += positions.len().saturating_sub(roots);
+    }
+    assert!(fragments >= report.pages.len(), "{fragments} fragments");
+    assert!(
+        in_fragments_of_many > 1_000,
+        "{in_fragments_of_many} values follow another of their fragment"
+    );
+    mem.check();
+}
+
 #[test]
 fn a_value_that_is_refused_its_place_ends_the_load() {
     let layout = Layout::proposed(SIZE);
