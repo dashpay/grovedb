@@ -9,6 +9,7 @@ mod deleting;
 mod errors;
 mod faults;
 mod moving;
+mod not_durable;
 mod threads;
 mod values;
 
