@@ -30,6 +30,13 @@
 //! subtree, so what such an element hosts is said here, for the group,
 //! from the element as the group leaves it ([`Owed::hosts`]).
 //!
+//! A handle is taken at its word. Those that [`Engine`](crate::Engine)
+//! opens name the element of their path, the element under which their
+//! subtree is entered as its first, or none. A handle that is made with
+//! a description of the caller's own (`LigninNodeStore::deferred`) is
+//! the caller's statement: the contradictions named below are refused,
+//! and the engine looks for no other.
+//!
 //! All of it is of a **named write**: a write that the group holds for a
 //! subtree through a handle that names an element, where no batch of the
 //! group enters that subtree itself. For a subtree that a batch of the
@@ -54,11 +61,12 @@
 //!   than the one of the element's own path is refused with
 //!   `Error::NotSupported` where the element hosts no subtree with that
 //!   prefix once the group is applied, and so is a group whose handles
-//!   name two elements for one subtree, or one element with two subtrees
-//!   of its own path. A named write into the subtree of the element's
-//!   own path under a key that holds no element once the group is applied
-//!   is refused where the subtree is not entered, and applied where it
-//!   is: the delete of a tree removes the records of its subtree with its
+//!   name two elements for one subtree, or name one element with two
+//!   subtrees of its own path, in the handles of one subtree or of two.
+//!   A named write into the subtree of the element's own path under a
+//!   key that holds no element once the group is applied is refused
+//!   where the subtree is not entered, and applied where it is: the
+//!   delete of a tree removes the records of its subtree with its
 //!   element. A handle that names no element, by prefix or beside the
 //!   path of the root, is not held to an element.
 //! - **What an element hosts is read from the group where it states the
@@ -278,7 +286,17 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
         return Err(named_twice());
     }
     let mut written: BTreeMap<_, &LigninSubtree> = BTreeMap::new();
+    // The subtree of its own path that each named element was named
+    // with: every handle of the group that names the element names it
+    // with the same, whichever subtree the handle is of.
+    let mut own: BTreeMap<(_, &[u8]), _> = BTreeMap::new();
     for subtree in parts.iter().flat_map(LigninSettled::written) {
+        if let Some(host) = &subtree.host {
+            let named = own.entry((host.subtree, host.key.as_slice()));
+            if *named.or_insert(host.hosted.first()) != host.hosted.first() {
+                return Err(named_twice());
+            }
+        }
         match written.get(&subtree.prefix) {
             Some(LigninSubtree {
                 host: Some(known), ..
@@ -383,6 +401,17 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
             }
         }
     }
+    // A subtree is entered once: as its element names it, where a write
+    // through a handle that names no element owed it an enter too.
+    let mut once: Vec<(LigninSubtree, Vec<u8>)> = Vec::with_capacity(owed.enters.len());
+    for enter in std::mem::take(&mut owed.enters) {
+        match (once.iter_mut()).find(|(known, _)| known.prefix == enter.0.prefix) {
+            Some(known) if known.0.host.is_none() => *known = enter,
+            Some(_) => {}
+            None => once.push(enter),
+        }
+    }
+    owed.enters = once;
     // A subtree whose host is in a subtree that is entered here too comes
     // after it: by how many of its hosts' subtrees are entered here.
     let depth = |subtree: &LigninSubtree| {

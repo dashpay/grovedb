@@ -1231,19 +1231,20 @@ fn handles_that_name_two_elements_for_one_subtree_are_refused() {
     // Handles that name the element of the indexed tree, and disagree
     // about which subtree is the one of its own path: in one batch, and
     // in two batches of a group in either order.
-    let wrong = |batch: &<LigninEngine as Engine>::Batch| {
+    let misnamed = |batch: &<LigninEngine as Engine>::Batch, prefix, own| {
         let subtree = LigninSubtree {
-            prefix: secondary,
+            prefix,
             host: Some(LigninHost {
                 subtree: [0; 32],
                 key: b"idx".to_vec(),
-                hosted: vec![secondary],
+                hosted: vec![own],
             }),
         };
         let view = tx.write_transaction().expect("a write transaction");
         let handle = LigninNodeStore::deferred(view, subtree, Some(batch));
         (handle.aux().put(b"z", b"v", None).unwrap()).expect("staging");
     };
+    let wrong = |batch: &<LigninEngine as Engine>::Batch| misnamed(batch, secondary, secondary);
     let batch = <LigninEngine as Engine>::Batch::default();
     stage(&batch, idx, b"x");
     wrong(&batch);
@@ -1266,9 +1267,69 @@ fn handles_that_name_two_elements_for_one_subtree_are_refused() {
         assert_eq!(read.aux().get(key).unwrap().expect("a read"), None);
     }
     drop(read);
+    // So are handles of two subtrees: one beside the tree, and one of
+    // another prefix that names the tree's element with another subtree
+    // of its own path.
+    let (elsewhere, beside_it) = ([5; 32], [6; 32]);
+    let batch = <LigninEngine as Engine>::Batch::default();
+    stage(&batch, idx, b"x");
+    misnamed(&batch, beside_it, elsewhere);
+    two_elements((engine.apply_batch(batch, &tx).unwrap()).expect_err("two subtrees"));
+    let read = engine.subtree_by_prefix(beside_it, None, &tx).unwrap();
+    assert_eq!(read.entry().expect("the directory answers"), None);
+    drop(read);
 
     // The right handle alone writes.
     let batch = <LigninEngine as Engine>::Batch::default();
     stage(&batch, idx, b"x");
     (engine.apply_batch(batch, &tx).unwrap()).expect("a record of the secondary");
+}
+
+/// A write into the primary through its path handle and a write into a
+/// secondary through a handle by prefix, in one batch, as the first
+/// writes into the tree: the secondary is owed an enter by both, and is
+/// entered once, as the element names it.
+#[test]
+fn a_secondary_that_a_handle_by_prefix_writes_beside_a_named_write_is_entered_once() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        db.insert(ROOT, b"idx", Sum::empty(), None, None, v)
+            .unwrap()
+            .expect("an indexed tree");
+        let engine = db.engine();
+        let top: &[&[u8]] = &[b"idx"];
+        let primary = build_prefix(top.into()).value;
+        let secondary = secondary_prefix_for(&primary, IndexAxis::Sum.tag()).value;
+        let tx = engine.start_transaction();
+        let batch = <LigninEngine as Engine>::Batch::default();
+        let by_path = engine.subtree(top.into(), Some(&batch), &tx).unwrap();
+        (by_path.aux().put(b"p", b"v", None).unwrap()).expect("staging");
+        let by_prefix = engine
+            .subtree_by_prefix(secondary, Some(&batch), &tx)
+            .unwrap();
+        assert_eq!(by_prefix.subtree(), &LigninSubtree::alone(secondary));
+        (by_prefix.aux().put(b"s", b"v", None).unwrap()).expect("staging");
+        drop((by_path, by_prefix));
+        (engine.apply_batch(batch, &tx).unwrap()).expect("both records");
+        (engine.commit_transaction(tx).unwrap()).expect("a commit");
+
+        for (position, (prefix, key)) in
+            [(primary, b"p"), (secondary, b"s")].into_iter().enumerate()
+        {
+            let entry = entry(&db, prefix).expect("an entry");
+            let host = entry.host.expect("a host");
+            assert_eq!(
+                (host.key.as_slice(), usize::from(host.position)),
+                (b"idx".as_slice(), position)
+            );
+            let tx = engine.start_read_transaction();
+            let read = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+            let record = read.aux().get(key).unwrap().expect("a read");
+            assert_eq!(record.as_deref(), Some(b"v".as_slice()));
+        }
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
 }
