@@ -319,6 +319,26 @@ pub trait Engine: PendingPrefixDrops + Sized + Send + Sync + 'static {
         transaction: &'a Self::Transaction<'_>,
     ) -> CostContext<Self::Subtree<'a>>;
 
+    /// A deferred handle of the subtree `prefix`, which the element at
+    /// `path` hosts beside the subtree of its own path: a secondary Merk
+    /// of an indexed tree. It is the handle of `prefix`
+    /// ([`Self::subtree_by_prefix`]), at the same cost, opened by a caller
+    /// that says whose subtree it is: an engine that keeps the subtrees of
+    /// one element together is told the element here.
+    fn subtree_beside<'a, 'b, B>(
+        &'a self,
+        path: SubtreePath<'b, B>,
+        prefix: SubtreePrefix,
+        batch: Option<&'a Self::Batch>,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::Subtree<'a>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let _ = path;
+        self.subtree_by_prefix(prefix, batch, transaction)
+    }
+
     /// An immediate handle of the subtree at `path`.
     fn immediate_subtree<'a, 'b, B>(
         &'a self,

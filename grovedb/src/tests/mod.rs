@@ -224,10 +224,10 @@ pub type SuiteBatch = <SuiteEngine as Engine>::Batch;
 /// The keyspace holds Merk nodes or the records of an append-only tree,
 /// never both, and an engine may keep the two apart. Both cursors are
 /// walked, and the larger count is the keyspace's.
-pub(crate) fn data_keyspace_len(
-    db: &GroveDb,
+pub(crate) fn data_keyspace_len<'db>(
+    db: &'db GroveDb,
     prefix: [u8; 32],
-    transaction: TransactionArg,
+    transaction: TransactionArg<'db, '_>,
 ) -> usize {
     use grovedb_merk::store::{NodeCursor, NodeStore};
     use grovedb_storage::{FlatStore, RawIterator};

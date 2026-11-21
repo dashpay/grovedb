@@ -14,7 +14,7 @@ use grovedb_storage::Error as StorageError;
 use lignin_format::tree_page::{HashField, Side};
 use lignindb::{
     batch::{Resolved, StagedBatch, Written as Staged},
-    txn::{Batch, Column, Hosted, NodePut, Subtree, TxnError, Unit, ValuePut},
+    txn::{Batch, Column, Hosted, MerkWrite, NodePut, Subtree, TxnError, Unit, ValuePut},
 };
 
 use super::{
@@ -24,7 +24,7 @@ use super::{
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
-    record_len, refused, LigninSubtree, LigninView, MODEL,
+    record_len, refused, LigninHost, LigninSubtree, LigninView, MODEL,
 };
 use crate::{
     cost_model::{self, BatchCharge, ImmediateBatchCharge, Keyspace},
@@ -439,15 +439,6 @@ enum Charge {
     Delete(Option<KeyValueStorageCost>),
 }
 
-impl BatchPart for Resolved<Charge> {
-    fn with_batch(
-        &self,
-        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
-    ) -> Result<Written, Error> {
-        Resolved::with_batch(self, run)
-    }
-}
-
 /// What the application of a [`LigninBatch`] reports.
 #[derive(Debug, Default)]
 pub struct LigninApplied {
@@ -576,6 +567,8 @@ pub struct LigninBatch {
 #[derive(Default)]
 struct Marks {
     written: BTreeMap<Prefix, LigninSubtree>,
+    /// The subtrees that two handles named different hosts for.
+    two_hosts: BTreeSet<Prefix>,
 }
 
 impl Marks {
@@ -585,7 +578,18 @@ impl Marks {
     fn write(&mut self, named: LigninSubtree) {
         match self.written.get_mut(&named.prefix) {
             Some(known) if known.host.is_some() && named.host.is_none() => {}
-            Some(known) => *known = named,
+            Some(known) => {
+                // An element is its Merk and its key, and it is named
+                // with the first subtree it hosts.
+                let element = |named: &LigninSubtree| {
+                    let host = named.host.as_ref()?;
+                    Some((host.subtree, host.key.clone(), host.hosted.first().copied()))
+                };
+                if known.host.is_some() && element(known) != element(&named) {
+                    self.two_hosts.insert(named.prefix);
+                }
+                *known = named;
+            }
             None => {
                 self.written.insert(named.prefix, named);
             }
@@ -593,6 +597,7 @@ impl Marks {
     }
 
     fn take_in(&mut self, other: Self) {
+        self.two_hosts.extend(other.two_hosts);
         for named in other.written.into_values() {
             self.write(named);
         }
@@ -813,6 +818,69 @@ pub struct LigninSettled {
     resolved: Resolved<Charge>,
     written: BTreeMap<Prefix, LigninSubtree>,
     pending: OperationCost,
+    /// Whether two handles named different hosts for a subtree the batch
+    /// holds a write for.
+    two_hosts: bool,
+    /// What whoever applies the batch said of an element after the batch
+    /// was settled ([`Self::host`]): the element's subtree and key, and
+    /// the Merks it hosts.
+    hosts: Vec<(Subtree, Vec<u8>, Vec<Subtree>)>,
+}
+
+/// A settled batch is handed to the transaction as it was resolved, with
+/// what was said of an element since ([`LigninSettled::host`]) in the
+/// place of what its handles said.
+impl BatchPart for LigninSettled {
+    fn with_batch(
+        &self,
+        run: &mut dyn FnMut(&Batch<'_>) -> Result<Written, Error>,
+    ) -> Result<Written, Error> {
+        if self.hosts.is_empty() {
+            return self.resolved.with_batch(run);
+        }
+        self.resolved.with_batch(|batch| {
+            let hosted = |subtree: Subtree, key: &[u8]| {
+                (self.hosts.iter())
+                    .find(|(of, at, _)| *of == subtree && at == key)
+                    .map(|(.., hosted)| hosted.as_slice())
+            };
+            let puts = |subtree: Subtree, key: &[u8]| {
+                batch.merks.iter().any(|merk| {
+                    merk.subtree == subtree && merk.nodes.iter().any(|node| node.key == key)
+                })
+            };
+            let nodes: Vec<Vec<NodePut<'_>>> = (batch.merks.iter())
+                .map(|merk| {
+                    let puts = merk.nodes.iter().map(|node| NodePut {
+                        hosted: match hosted(merk.subtree, node.key) {
+                            Some(hosted) => Hosted::Set(hosted),
+                            None => node.hosted,
+                        },
+                        ..*node
+                    });
+                    puts.collect()
+                })
+                .collect();
+            let merks: Vec<MerkWrite<'_>> = (batch.merks.iter().zip(&nodes))
+                .map(|(merk, nodes)| MerkWrite {
+                    nodes,
+                    // A Merk is anchored where the batch does not put the
+                    // node of the element that hosts it.
+                    anchored: match (self.hosts.iter())
+                        .find(|(.., hosted)| hosted.contains(&merk.subtree))
+                    {
+                        Some((subtree, key, _)) => !puts(*subtree, key),
+                        None => merk.anchored,
+                    },
+                    ..*merk
+                })
+                .collect();
+            run(&Batch {
+                merks: &merks,
+                ..*batch
+            })
+        })
+    }
 }
 
 /// What a settled batch holds for the node under a key.
@@ -837,7 +905,36 @@ impl LigninSettled {
             resolved,
             written,
             pending,
+            two_hosts: marks.two_hosts.iter().any(|prefix| live.contains(prefix)),
+            hosts: Vec::new(),
         }
+    }
+
+    /// Whether handles that staged into the batch named two different
+    /// elements as the host of one subtree the batch holds a write for,
+    /// or one element with two different first subtrees.
+    /// [`Self::written`] has the later of the two; the store does not
+    /// choose between them, and whoever applies the batch may refuse it.
+    pub fn names_two_hosts(&self) -> bool {
+        self.two_hosts
+    }
+
+    /// Says which Merks the element `host` hosts once the batch is
+    /// applied, by position, in the place of what the handles that staged
+    /// into the batch said of it ([`LigninSubtree::host`]): the node of
+    /// the element names them if the batch puts it, and each of them that
+    /// the batch writes is anchored if it does not.
+    ///
+    /// A handle knows the one subtree it is of. Whoever applies the batch
+    /// knows the element as the batch leaves it, and says here what an
+    /// element hosts that hosts more than the subtree of its own path. Of
+    /// two statements of one element the later stands.
+    pub fn host(&mut self, host: &LigninHost) {
+        let subtree = Subtree::new(host.subtree);
+        self.hosts
+            .retain(|(of, key, _)| !(*of == subtree && *key == host.key));
+        let hosted = host.hosted.iter().copied().map(Subtree::new).collect();
+        self.hosts.push((subtree, host.key.clone(), hosted));
     }
 
     /// The storage cost of the batch, which is owed once the transaction
@@ -910,9 +1007,8 @@ impl LigninSettled {
             .map(|((subtree, tree_type), part)| Ok((part, entering(subtree, tree_type)?)))
             .collect::<Result<Vec<_>, _>>()
             .and_then(|enters| {
-                let batches: Vec<&dyn BatchPart> = (parts.iter())
-                    .map(|part| &part.resolved as &dyn BatchPart)
-                    .collect();
+                let batches: Vec<&dyn BatchPart> =
+                    parts.iter().map(|part| part as &dyn BatchPart).collect();
                 view.into().0.apply_parts(&batches, &enters)
             });
         match applied {

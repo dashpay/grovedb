@@ -201,10 +201,17 @@ pub struct LigninHost {
     pub subtree: [u8; 32],
     /// The element's key in that Merk.
     pub key: Vec<u8>,
-    /// Every Merk the element hosts once the batch is applied, by
-    /// position: one for a tree, more for an indexed tree. Every mention
-    /// of one element in one batch gives the same list. No position is
-    /// left out, so an element that loses a Merk loses those after it too.
+    /// The Merks the element hosts once the batch is applied, by position.
+    /// No position is left out, so an element that loses a Merk loses
+    /// those after it too.
+    ///
+    /// Every handle that names one element in one batch gives the same
+    /// list. A handle knows one subtree: for an element that hosts one
+    /// Merk the list is that Merk. Of an element that hosts more, an
+    /// indexed tree, the handles give the first Merk alone, and whoever
+    /// applies the batch says the whole list
+    /// ([`LigninSettled::host`]), where the element is known as the batch
+    /// leaves it.
     pub hosted: Vec<[u8; 32]>,
 }
 

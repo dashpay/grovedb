@@ -83,7 +83,11 @@ impl Family {
     }
 }
 
-fn namespace_non_empty(db: &TempGroveDb, prefix: [u8; 32], tx: TransactionArg) -> bool {
+fn namespace_non_empty<'db>(
+    db: &'db TempGroveDb,
+    prefix: [u8; 32],
+    tx: TransactionArg<'db, '_>,
+) -> bool {
     crate::tests::data_keyspace_len(db, prefix, tx) > 0
 }
 

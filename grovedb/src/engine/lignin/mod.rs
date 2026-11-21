@@ -33,14 +33,24 @@
 //! A tree that nothing was ever written into is therefore in no directory,
 //! and reads as the empty tree it is.
 //!
+//! An indexed tree hosts more than one Merk: its primary, at the path of
+//! its element, and a secondary for each of its axes. A deferred handle
+//! that is opened with a batch beside the subtree of a path that has a
+//! last segment names the element under that segment
+//! ([`Engine::subtree_beside`]). Where a group of batches is applied that
+//! holds a write for one of these Merks through a handle that names the
+//! element, and no batch of the group enters that Merk itself, the engine
+//! reads what the element hosts, enters those of its Merks that no batch
+//! of the group enters itself if none of them is entered, and says to the
+//! store which Merks the element's node names ([`enter`]).
+//!
 //! # What it does not do yet
 //!
 //! Each is refused with `Error::NotSupported` and changes nothing: a
 //! checkpoint of an open database and the open of one (GROVE-08), the
-//! move of a subtree (GROVE-03), a write into an indexed tree, whose
-//! element hosts more than one Merk (GROVE-04), a first write into a
-//! subtree under a key that holds no element, and the removal of the
-//! records that a flat drop left (GROVE-05). The delete of a tree whose
+//! move of a subtree (GROVE-03), a first write into a subtree under a key
+//! that holds no element, and the removal of the records that a flat drop
+//! left (GROVE-05). The delete of a tree whose
 //! Merk holds elements is refused by its handle (`FlatStore::clear` of
 //! the node store), and a subtree is not dropped when its element goes
 //! (GROVE-05).
@@ -375,6 +385,29 @@ fn named<'b, B: AsRef<[u8]> + 'b>(
     })
 }
 
+/// The subtree `prefix` as a handle names it that was opened beside the
+/// subtree of the element at `path`. With `hosted` it names that element,
+/// and of what the element hosts the subtree of its own path: the place
+/// of `prefix` among them is the element's to say, and the engine reads
+/// it there when the handle's batch is applied ([`enter`]). The prefixes
+/// of the path and of the Merk that holds the element are derived for it
+/// and not charged.
+fn beside<'b, B: AsRef<[u8]> + 'b>(
+    path: SubtreePath<'b, B>,
+    prefix: SubtreePrefix,
+    hosted: bool,
+) -> LigninSubtree {
+    let host = match path.derive_parent() {
+        Some((parent, key)) if hosted => Some(LigninHost {
+            subtree: build_prefix(parent).value,
+            key: key.to_vec(),
+            hosted: vec![build_prefix(path).value],
+        }),
+        _ => None,
+    };
+    LigninSubtree { prefix, host }
+}
+
 /// The subtree with `prefix` as a handle names it: with the element that
 /// hosts it where a write through the handle has to say so, read from the
 /// subtree directory as the transaction has it. A read that the
@@ -387,8 +420,10 @@ fn named_by_prefix(prefix: SubtreePrefix, view: Option<LigninView<'_>>) -> Ligni
     };
     let entry = LigninNodeStore::read_only(view, alone.clone()).entry();
     match entry.ok().flatten().and_then(|entry| entry.host) {
-        // An element that hosts more than one Merk is said with every
-        // one of them, which only its element names (GROVE-04).
+        // A subtree at a later position is one of several that its
+        // element hosts, which a handle by prefix cannot name: it is
+        // written through a handle that was opened beside the first
+        // ([`beside`]).
         Some(host) if host.position == 0 => LigninSubtree {
             prefix,
             host: Some(LigninHost {
@@ -562,6 +597,21 @@ impl Engine for LigninEngine {
         LigninNodeStore::deferred(view, subtree, batch).wrap_with_cost(OperationCost::default())
     }
 
+    fn subtree_beside<'a, 'b, B>(
+        &'a self,
+        path: SubtreePath<'b, B>,
+        prefix: SubtreePrefix,
+        batch: Option<&'a LigninBatch>,
+        transaction: &'a LigninTransaction<'_>,
+    ) -> CostContext<LigninNodeStore<'a>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        let subtree = beside(path, prefix, batch.is_some());
+        LigninNodeStore::deferred(transaction.view(), subtree, batch)
+            .wrap_with_cost(OperationCost::default())
+    }
+
     fn immediate_subtree<'a, 'b, B>(
         &'a self,
         path: SubtreePath<'b, B>,
@@ -611,11 +661,21 @@ impl Engine for LigninEngine {
         // A snapshot refuses the writes itself, and is asked for nothing
         // before it does.
         let enters = match transaction.is_snapshot_read() {
-            true => Ok(Vec::new()),
+            true => Ok(enter::Owed::default()),
             false => enter::owed(view, &group.parts),
         };
         match enters {
-            Ok(enters) => LigninSettled::apply(group.parts, view, &enters).map_err(merk_error),
+            Ok(owed) => {
+                let mut parts = group.parts;
+                // What an indexed tree hosts is said of its element in
+                // every batch of the group.
+                for part in &mut parts {
+                    for host in &owed.hosts {
+                        part.host(host);
+                    }
+                }
+                LigninSettled::apply(parts, view, &owed.enters).map_err(merk_error)
+            }
             Err(error) => Err(error).wrap_with_cost(OperationCost::default()),
         }
     }

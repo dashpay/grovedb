@@ -4,10 +4,10 @@
 //!
 //! A chain is five trees one inside the other under the root. The kinds of
 //! tree are the twelve whose data is one Merk. An indexed tree, whose
-//! element hosts more than one Merk, is in no chain: the engine refuses a
-//! write into one (GROVE-04). On each grove version the chains cover every
-//! ordered pair of the kinds that version makes, as a tree and the tree in
-//! it.
+//! element hosts more than one Merk, is in no chain: its histories are
+//! those of `indexed.rs` (GROVE-04). On each grove version the chains
+//! cover every ordered pair of the kinds that version makes, as a tree
+//! and the tree in it.
 //!
 //! - `every_pair`: chains written with no transaction.
 //! - `in_transactions`: chains made inside write transactions, with a

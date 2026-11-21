@@ -25,7 +25,7 @@ mod tests {
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
-        tests::{make_test_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, SuiteBatch, TEST_LEAF},
         Element, GroveDb,
     };
 
@@ -202,7 +202,7 @@ mod tests {
         assert!(issues.is_empty(), "healthy tree reported: {issues:?}");
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let path_segments: [&[u8]; 2] = [TEST_LEAF, b"cidx".as_ref()];
         let secondary_root_key = {
             let parent_merk = db
