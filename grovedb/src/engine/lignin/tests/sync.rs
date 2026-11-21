@@ -1331,14 +1331,15 @@ fn an_empty_chunk_is_refused<S: Side, T: Side>(v: &GroveVersion) -> Vec<String> 
 }
 
 /// What a receiving node makes of an indexed tree that holds children and
-/// is served as one that holds none: a header that gives the hash of an
-/// empty Merk for the primary and for each axis, an empty root chunk of
-/// the primary, and an empty chunk for each secondary. It is what a node
-/// answers for a root key that names no node, and what LigninDB answers a
-/// header request that names a subtree of flat records. The session takes
-/// the header and the empty Merks, and refuses them where it holds the
-/// roots of the tree's Merks against what the element commits to. It
-/// commits nothing, and leaves the target as it was.
+/// is served as one that holds none. Its header request is answered with
+/// a header that gives the hash of an empty Merk for the primary and for
+/// each axis, and an empty root chunk of the primary, which is what
+/// LigninDB answers a header request that names a subtree of flat
+/// records. The request of each secondary after it is answered with an
+/// empty chunk. The session takes the header and the empty Merks, and
+/// refuses them where it holds the roots of the tree's Merks against what
+/// the element commits to. It commits nothing, and leaves the target as
+/// it was.
 fn an_indexed_tree_served_as_empty_is_refused<S: Side, T: Side>(v: &GroveVersion) -> String {
     use grovedb_merk::tree::hash::NULL_HASH;
 
