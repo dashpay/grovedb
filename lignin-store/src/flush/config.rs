@@ -89,17 +89,17 @@ impl FlushConfig {
     /// included, failed and moved nothing on: 0 after a failed turn that
     /// moved something on.
     ///
-    /// It is [`Self::idle`] for 0 and for 1, and twice as long for each
-    /// turn more, up to [`Self::max_failed_wait`]. It is never shorter
-    /// than [`Self::idle`], whatever the bound is set to, and never
-    /// shorter than a millisecond.
+    /// For 0 and for 1 it is [`Self::idle`], or a millisecond where the
+    /// idle time is shorter. It is twice as long for each turn more, up
+    /// to [`Self::max_failed_wait`], and never shorter than for 1,
+    /// whatever the bound is set to.
     pub fn wait_after_failure(&self, in_vain: u32) -> Duration {
+        let first = self.idle.max(Duration::from_millis(1));
         let doublings = in_vain.saturating_sub(1).min(31);
-        let grown = self.idle.saturating_mul(1 << doublings);
-        grown
+        first
+            .saturating_mul(1 << doublings)
             .min(self.max_failed_wait)
-            .max(self.idle)
-            .max(Duration::from_millis(1))
+            .max(first)
     }
 }
 

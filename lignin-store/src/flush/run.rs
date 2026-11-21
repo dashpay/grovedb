@@ -238,14 +238,23 @@ impl WriteBack<'_> {
     /// **A turn that failed does not bring the next turn forward.** After
     /// it the loop waits for as long as
     /// [`FlushConfig::wait_after_failure`] says, whoever asks for a turn
-    /// before that wait or during it: the idle time, and twice as long
-    /// after each further turn in a row that failed and moved nothing on,
-    /// up to [`FlushConfig::max_failed_wait`]. The wait is the idle time
-    /// again after a failed turn that moved something on, and a turn that
-    /// does not fail is followed by the sleep of the first paragraph. A
-    /// wait in which a turn was asked for is counted
+    /// before that wait or during it: the idle time after the first turn
+    /// that failed and moved nothing on, and twice as long after each
+    /// further such turn in a row, up to
+    /// [`FlushConfig::max_failed_wait`]. After a failed turn that moved
+    /// something on the wait is the idle time and the row begins anew,
+    /// and a turn that does not fail is followed by the sleep of the
+    /// first paragraph. A wait in which a turn was asked for is counted
     /// ([`FlushStats::turns_put_off`]). `failed` is called before the wait
     /// begins. Only [`Self::stop`] ends the wait before its time.
+    ///
+    /// **A failed turn has moved something on** if its pass did what no
+    /// later turn has to do again ([`Pass::progressed`]): it wrote a page
+    /// version to a segment, gave a value its place, or kept a superseded
+    /// version for its readers and took it off what is owed. A roll of
+    /// the log and a file that was made do not count, since a turn can
+    /// roll and make files in vain, and neither does a value that was
+    /// appended and has no place yet.
     ///
     /// The store has no thread of its own. Whoever opens it runs this on
     /// one, for as long as the stores live.

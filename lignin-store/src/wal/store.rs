@@ -1699,8 +1699,9 @@ impl LogStore {
 
     /// Whether a creation of this session found every log file id used
     /// ([`LogError::FileIdsExhausted`]): the log can be given no file
-    /// after the ones it has, in this session or in a later one, so it
-    /// takes items only until the file it ends in is full.
+    /// after the ones it has in this session, so it takes items only
+    /// until the file it ends in is full. A later session is given none
+    /// either where a manifest has recorded the last id as used.
     ///
     /// Like [`Self::sync_failed`] this says what is and decides nothing:
     /// it is one read of a flag, makes no operation on a file, and nothing
@@ -1976,7 +1977,8 @@ impl LogStore {
     /// files. If the set fails, the file is given up, as a file is whose
     /// creation failed: it is removed, or left for the next open to
     /// remove if it cannot be, and the log needs another
-    /// ([`Self::create`]), under the next id.
+    /// ([`Self::create`]): under the same id where the file was removed,
+    /// and under the next id where the creation finds it.
     ///
     /// After [`LogError::NotDeleted`] the new manifest is in force. After
     /// any other error [`ManifestStore::manifest`] tells where things

@@ -26,11 +26,40 @@ use crate::{
 
 /// How often [`WriteBack::roll_log`] goes round before it gives up: as
 /// often as [`LogStore::roll`](crate::wal::LogStore::roll) does.
-const ROLL_ROUNDS: usize = 6;
+pub(super) const ROLL_ROUNDS: usize = 6;
 
 /// How often a table checkpoint rolls a log that has no file that takes
 /// items before it appends its mark.
-const MARK_ROLLS: usize = 3;
+pub(super) const MARK_ROLLS: usize = 3;
+
+/// Where [`AT_THE_MARK`] is run.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AtTheMark {
+    /// A roll of the log for the mark has returned.
+    Rolled,
+    /// The log was found with no file that takes items after the last
+    /// roll, and the lock on the counts is given back.
+    GivenUp,
+}
+
+#[cfg(test)]
+thread_local! {
+    /// What a test has run on the thread of a table checkpoint that looks
+    /// for a file for its mark: what another thread does to the log
+    /// beside it.
+    pub(super) static AT_THE_MARK: std::cell::RefCell<Option<Box<dyn FnMut(AtTheMark)>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn at_the_mark(at: AtTheMark) {
+    let hook = AT_THE_MARK.with(|hook| hook.borrow_mut().take());
+    if let Some(mut change) = hook {
+        change(at);
+        AT_THE_MARK.with(|hook| *hook.borrow_mut() = Some(change));
+    }
+}
 
 /// What a call of [`WriteBack::checkpoint`] came to.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +144,13 @@ impl<'s> WriteBack<'s> {
     /// After a failed append this is what makes the cut of CM9: the log
     /// takes no item until it has returned `Ok`.
     ///
+    /// A roll whose turns all ended in a file that takes no item has
+    /// failed, with what the file layer answered the append that left
+    /// the log so ([`LogError::NoActiveFileSince`]): a device that
+    /// refuses each start record and keeps its bytes gives such turns.
+    /// Each of them used a file, so whoever rolls the log again and again
+    /// has to know that it did so in vain ([`Self::run`]).
+    ///
     /// [`LogStore::roll`]: crate::wal::LogStore::roll
     pub fn roll_log(&self) -> Result<bool, FlushError> {
         let log = self.stores.log;
@@ -151,11 +187,17 @@ impl<'s> WriteBack<'s> {
             }
         }
         // A turn is due again after every round. If the last round made
-        // its turn, commits fill the files as fast as they are made:
-        // nothing is wrong, and the next call goes on. Otherwise what
-        // stood in the way of the last turn is the error.
+        // its turn and the log takes items, commits fill the files as
+        // fast as they are made: nothing is wrong, and the next call goes
+        // on. If the log takes none, each turn ended in a file whose
+        // start record the device refused and kept, or an append failed
+        // again: the roll has failed, with what the file layer answered.
+        // Otherwise what stood in the way of the last turn is the error.
         match in_the_way {
-            None => Ok(turned),
+            None => match log.refusal() {
+                None => Ok(turned),
+                Some(refused) => Err(refused.into()),
+            },
             Some(error) => Err(error.into()),
         }
     }
@@ -245,10 +287,12 @@ impl<'s> WriteBack<'s> {
     /// The log is rolled [`MARK_ROLLS`] times at most. After each roll an
     /// append can fail again before the lock is held again, and a roll
     /// can end with a file that takes no item where a start record was
-    /// refused and kept each time. A log that has no file after the last
-    /// roll is left so, and the checkpoint fails with what the file layer
-    /// answered the append that left it so ([`LogError::NoActiveFileSince`]).
-    /// Whoever keeps the log rolls it at its next turn.
+    /// refused and kept each time, which is the error of that roll. A
+    /// log that has no file after the last roll is left so, and the
+    /// checkpoint fails with what the file layer answered the append
+    /// that left it so ([`LogError::NoActiveFileSince`]), as the log had
+    /// it when it was found with no file. Whoever keeps the log rolls it
+    /// at its next turn.
     ///
     /// While the log has a file that takes items this makes no operation
     /// on a file.
@@ -261,13 +305,21 @@ impl<'s> WriteBack<'s> {
             if takes_items {
                 return Ok(step);
             }
+            // What left the log so is asked under the lock, under which
+            // no turn gives the log a file and no append of another
+            // fails: it is the cause of what was just found.
+            let refused = log.refusal();
             drop(step);
             if rolls == MARK_ROLLS {
-                let error = log.refusal().unwrap_or(LogError::NoActiveFile);
+                #[cfg(test)]
+                at_the_mark(AtTheMark::GivenUp);
+                let error = refused.unwrap_or(LogError::NoActiveFile);
                 self.append_failed(&error);
                 return Err(error.into());
             }
             self.roll_log()?;
+            #[cfg(test)]
+            at_the_mark(AtTheMark::Rolled);
             rolls += 1;
         }
     }

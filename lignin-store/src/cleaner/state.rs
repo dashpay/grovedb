@@ -169,10 +169,11 @@ impl CleanerState {
         lock(&self.written).push(record);
     }
 
-    /// Gives up the record of the segment `file`, whose writer is gone
-    /// and of which no sync has failed: none can fail any more.
+    /// Gives up the record of the segment `file`, which was sealed or
+    /// was synced as a whole just now with its writer still held: no
+    /// sync of it has failed, and none can fail any more.
     pub(super) fn wrote(&self, file: FileId) {
-        lock(&self.written).retain(|segment| segment.file_id() != file || segment.failed());
+        lock(&self.written).retain(|segment| segment.file_id() != file);
     }
 
     /// What the segments held when a pass last read the page table
