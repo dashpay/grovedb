@@ -19,7 +19,7 @@ use super::{
     *,
 };
 use crate::{
-    directory::{record::entry_key, DirectoryError, Host},
+    directory::{record::entry_key, DirectoryError, Host, Prefix, Rekey},
     flat::{FlatConfig, FlatPages, FlatPagesMut, FlatTree},
 };
 
@@ -885,6 +885,148 @@ fn an_enter_unlinks_what_a_left_over_entry_has_and_nothing_else() {
         assert!(grove.raw_flat(&txn.flat, &inner_prefix, column).is_empty());
     }
     assert!(!txn.flat.wrote.is_disjoint(&of_columns(&db)));
+    db.roll_back(txn);
+    grove.check(&db);
+}
+
+/// D6: a move takes the flat records of every Merk it re-keys to the
+/// prefix the Merk goes to, in every column, with their keys and values.
+/// Those of two Merks that change places change places, those of a Merk
+/// that leaves with the move go, and what a left-over entry has under a
+/// prefix that a Merk goes to goes first.
+#[test]
+fn a_move_takes_the_flat_records_to_the_new_prefix_in_every_column() {
+    let Built {
+        db,
+        mut grove,
+        outer,
+        inner,
+        deepest,
+        beside,
+        ..
+    } = build(120);
+    let prefix = |grove: &Grove, merk: usize| grove.merks[merk].prefix;
+    let (outer_at, inner_at, deepest_at, beside_at) = (
+        prefix(&grove, outer),
+        prefix(&grove, inner),
+        prefix(&grove, deepest),
+        prefix(&grove, beside),
+    );
+    let all = |grove: &Grove, txn: &Txn<'_>, at: &Prefix| -> Vec<Records> {
+        (0..3)
+            .map(|column| grove.raw_flat(&txn.flat, at, column))
+            .collect()
+    };
+    let none = vec![Records::new(); 3];
+    let (to, inner_to, deepest_to) = ([0x51; 32], [0x52; 32], [0x53; 32]);
+    let below = [(inner_at, inner_to), (deepest_at, deepest_to)];
+
+    // To a prefix that is free: every record is under the new prefix, and
+    // none under the old one. The Merk beside keeps its own.
+    let mut txn = db.begin();
+    let mut directory = grove.directory(&db);
+    let was: Vec<Vec<Records>> = [outer_at, inner_at, deepest_at, beside_at]
+        .iter()
+        .map(|at| all(&grove, &txn, at))
+        .collect();
+    assert!(was.iter().flatten().all(|records| !records.is_empty()));
+    let moves = [Rekey {
+        from: &outer_at,
+        to: &to,
+        key: b"moved",
+        below: &below,
+    }];
+    let plan = directory.plan_rekey(&txn.flat, &moves, &|_| false);
+    let plan = plan.expect("a plan");
+    let left = rekey(&mut directory, &mut grove.flats(&mut txn), &plan);
+    assert!(left.expect("moved").is_empty());
+    for (old, new, was) in [
+        (outer_at, to, &was[0]),
+        (inner_at, inner_to, &was[1]),
+        (deepest_at, deepest_to, &was[2]),
+    ] {
+        assert_eq!(all(&grove, &txn, &old), none);
+        assert_eq!(&all(&grove, &txn, &new), was);
+    }
+    assert_eq!(all(&grove, &txn, &beside_at), was[3]);
+    db.roll_back(txn);
+
+    // Two that change places, and a Merk with no node below one of them
+    // that the move does not name: it leaves, with its records.
+    let mut txn = db.begin();
+    let mut directory = grove.directory(&db);
+    let alone = [0x60; 32];
+    let host = Host {
+        parent: &outer_at,
+        key: &node(5),
+        position: 0,
+    };
+    let entered = enter(
+        &directory,
+        &mut grove.flats(&mut txn),
+        &alone,
+        b"tree",
+        Some(host),
+    );
+    let entered = entered.expect("entered");
+    for (column, held) in db.columns().iter().enumerate() {
+        let key = [&held.range(&alone)[..], b"its own"].concat();
+        let put = held.tree.put(&mut txn.flat, &key, &[column as u8; 40]);
+        put.expect("a put");
+    }
+    assert!(all(&grove, &txn, &alone)
+        .iter()
+        .all(|records| records.len() == 1));
+    let moves = [
+        Rekey {
+            from: &outer_at,
+            to: &beside_at,
+            key: b"beside",
+            below: &below,
+        },
+        Rekey {
+            from: &beside_at,
+            to: &outer_at,
+            key: b"host",
+            below: &[],
+        },
+    ];
+    let plan = directory.plan_rekey(&txn.flat, &moves, &|_| false);
+    let plan = plan.expect("a plan");
+    assert_eq!(plan.left(), [alone]);
+    let left = rekey(&mut directory, &mut grove.flats(&mut txn), &plan);
+    let left = left.expect("moved");
+    assert_eq!((left.len(), left[0].id, left[0].root), (1, entered, None));
+    assert_eq!(all(&grove, &txn, &beside_at), was[0]);
+    assert_eq!(all(&grove, &txn, &outer_at), was[3]);
+    assert_eq!(all(&grove, &txn, &inner_to), was[1]);
+    assert_eq!(all(&grove, &txn, &deepest_to), was[2]);
+    for gone in [inner_at, deepest_at, alone] {
+        assert_eq!(all(&grove, &txn, &gone), none);
+    }
+    db.roll_back(txn);
+    grove.check(&db);
+
+    // To a prefix under which a dropped Merk left an entry: the records
+    // of that entry are not those of the Merk that comes.
+    let mut txn = db.begin();
+    grove.drop_merks(&mut txn, &[outer], false);
+    db.commit(txn);
+    let mut txn = db.begin();
+    let mut directory = grove.directory(&db);
+    assert_eq!(all(&grove, &txn, &inner_at), was[1]);
+    let moves = [Rekey {
+        from: &beside_at,
+        to: &inner_at,
+        key: b"elsewhere",
+        below: &[],
+    }];
+    let plan = directory.plan_rekey(&txn.flat, &moves, &|_| false);
+    let plan = plan.expect("a plan");
+    let left = rekey(&mut directory, &mut grove.flats(&mut txn), &plan);
+    assert!(left.expect("moved").is_empty());
+    assert_eq!(all(&grove, &txn, &inner_at), was[3]);
+    assert_eq!(all(&grove, &txn, &beside_at), none);
     db.roll_back(txn);
     grove.check(&db);
 }
