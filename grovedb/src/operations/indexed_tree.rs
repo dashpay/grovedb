@@ -1918,6 +1918,7 @@ impl<E: Engine> GroveDb<E> {
                 None => break,
             }
         }
+        cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
         drop(iter);
         drop(secondary_merk);
 
@@ -4089,6 +4090,7 @@ fn collect_top_k_via_iterator<'db, S: NodeStore<'db>, T>(
             None => break,
         }
     }
+    cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
 
     Ok(results).wrap_with_cost(cost)
 }

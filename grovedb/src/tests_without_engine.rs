@@ -4,6 +4,8 @@
 
 #[path = "tests/faultable_reads.rs"]
 pub(crate) mod faultable_reads;
+#[path = "tests/refused_scans.rs"]
+pub(crate) mod refused_scans;
 
 #[cfg(feature = "estimated_costs")]
 #[path = "tests/delete_cost_estimation_tests.rs"]

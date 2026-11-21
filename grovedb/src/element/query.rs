@@ -706,9 +706,7 @@ pub(crate) fn query_item_internal<'db, E: Engine>(
             let value_bytes = iter
                 .value()
                 .unwrap_add_cost(&mut cost)
-                .ok_or(Error::CorruptedData(
-                    "expected iterator value but got None".to_string(),
-                ));
+                .ok_or_else(|| crate::element::elements_iterator::no_value_under_cursor(&iter));
             let element = cost_return_on_error_into_no_add!(
                 cost,
                 Element::raw_decode(
@@ -764,7 +762,9 @@ pub(crate) fn query_item_internal<'db, E: Engine>(
             }
             cost.seek_count += 1;
         }
-        Ok(())
+        // The range has ended. It is at its last record only if the cursor
+        // says so: a move that the storage did not make ends it as well.
+        iter.status().map_err(Error::StorageError)
     }
     .wrap_with_cost(cost)
 }

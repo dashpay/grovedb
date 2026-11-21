@@ -9,7 +9,10 @@
 //! handles, so that a read fails inside an operation of `GroveDb`: the
 //! fetch of a node by a walk, where [`with_one_failed_fetch`] arms it,
 //! which in an insert is the walk of its write or of the read that
-//! observes the old value before it.
+//! observes the old value before it; and a move of a cursor over the
+//! nodes of a subtree, or the read of the record a move comes to, where
+//! [`with_one_refused_move`] and [`with_one_unread_record`] arm them, which
+//! are the reads inside a scan.
 
 use std::{cell::RefCell, path::Path};
 
@@ -25,7 +28,7 @@ use grovedb_merk::{
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
     flat::{PendingPrefixDropRecord, PendingPrefixDrops, SubtreePrefix},
-    Error as StorageError, FlatStore,
+    Error as StorageError, FlatStore, RawIterator,
 };
 use grovedb_version::version::GroveVersion;
 
@@ -148,8 +151,200 @@ pub(crate) fn with_one_failed_fetch<T>(key: &[u8], body: impl FnOnce() -> T) -> 
     )
 }
 
+/// Which move of a cursor fails, and how.
+struct ArmedMove {
+    /// Moves let through before the one that fails.
+    passes_left: usize,
+    /// Whether the move is made and the record it comes to is withheld,
+    /// where otherwise the move itself is refused.
+    withholds: bool,
+    /// Whether the fault was injected. It is injected once.
+    fired: bool,
+}
+
+thread_local! {
+    static ARMED_MOVE: RefCell<Option<ArmedMove>> = const { RefCell::new(None) };
+}
+
+/// Runs `body` with one move of a cursor refused: the move after `passes`
+/// moves went through, counted over every cursor over the nodes of a
+/// subtree that a [`FaultableReads`] handle gives while `body` runs. A move
+/// is a seek or a step. The refused move is not made: its cursor stands on
+/// no record from then on, and its status is the injected failure, until it
+/// is sought again ([`RefusedMoves`]). Also returns whether `body` got as
+/// far as the refused move.
+pub(crate) fn with_one_refused_move<T>(passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
+    with_armed_move(passes, false, body)
+}
+
+/// Runs `body` with the record under one key withheld from a cursor: the
+/// key that the first move after `passes` moves comes to, of the moves
+/// that come to a key, counted as [`with_one_refused_move`] counts them.
+/// The cursor stands on the key and shows no record under it, and its
+/// status is the injected failure, until it is moved again. Also returns
+/// whether `body` got as far as that key.
+pub(crate) fn with_one_unread_record<T>(passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
+    with_armed_move(passes, true, body)
+}
+
+fn with_armed_move<T>(passes: usize, withholds: bool, body: impl FnOnce() -> T) -> (T, bool) {
+    struct Disarm(Option<ArmedMove>);
+
+    impl Drop for Disarm {
+        fn drop(&mut self) {
+            ARMED_MOVE.with(|armed| *armed.borrow_mut() = self.0.take());
+        }
+    }
+
+    let armed = ArmedMove {
+        passes_left: passes,
+        withholds,
+        fired: false,
+    };
+    let outer = Disarm(ARMED_MOVE.with(|slot| slot.replace(Some(armed))));
+    let result = body();
+    let fired = ARMED_MOVE.with(|armed| armed.borrow().as_ref().is_some_and(|armed| armed.fired));
+    drop(outer);
+    (result, fired)
+}
+
+/// The cursor of a [`FaultableReads`] handle over the nodes of its
+/// subtree: the cursor it wraps, except for the one fault that
+/// [`with_one_refused_move`] or [`with_one_unread_record`] arms.
+///
+/// A refused move is charged as a move and leaves the cursor as a cursor
+/// of an engine that refused it: on no record, with nothing to show and
+/// the refusal as its status. A step from there goes nowhere, and a seek
+/// starts again. A record that is withheld leaves the cursor on its key,
+/// with no value and the failure as its status, until the next move.
+pub(crate) struct RefusedMoves<C> {
+    cursor: C,
+    refused: bool,
+    unread: bool,
+}
+
+/// What is armed for the move that is about to be made: nothing, a refusal
+/// of the move, or the withholding of the record it comes to.
+fn armed_for_this_move() -> Option<bool> {
+    ARMED_MOVE.with(|armed| {
+        let mut armed = armed.borrow_mut();
+        let armed = armed.as_mut().filter(|armed| !armed.fired)?;
+        match armed.passes_left.checked_sub(1) {
+            Some(left) => {
+                armed.passes_left = left;
+                None
+            }
+            None => Some(armed.withholds),
+        }
+    })
+}
+
+fn fire() {
+    ARMED_MOVE.with(|armed| {
+        if let Some(armed) = armed.borrow_mut().as_mut() {
+            armed.fired = true;
+        }
+    });
+}
+
+impl<C: RawIterator> RefusedMoves<C> {
+    fn new(cursor: C) -> Self {
+        Self {
+            cursor,
+            refused: false,
+            unread: false,
+        }
+    }
+
+    /// Makes the move `go`, unless it is the armed one, or a step of a
+    /// cursor whose move was refused.
+    fn go(&mut self, seeks: bool, go: impl FnOnce(&mut C) -> CostContext<()>) -> CostContext<()> {
+        let armed = armed_for_this_move();
+        self.unread = false;
+        self.refused = match armed {
+            Some(false) => {
+                fire();
+                true
+            }
+            _ => self.refused && !seeks,
+        };
+        if self.refused {
+            return ().wrap_with_cost(OperationCost::with_seek_count(1));
+        }
+        let moved = go(&mut self.cursor);
+        // A record is withheld under a key: a move that comes to none
+        // leaves the fault armed for the next one.
+        if armed == Some(true) && self.cursor.valid().value {
+            fire();
+            self.unread = true;
+        }
+        moved
+    }
+
+    /// Hands the wrapped cursor to `retarget`, which points it at another
+    /// subtree. A cursor that is pointed elsewhere has no failure to show.
+    fn retargeted(self, retarget: impl FnOnce(C) -> C) -> Self {
+        Self::new(retarget(self.cursor))
+    }
+}
+
+impl<C: RawIterator> RawIterator for RefusedMoves<C> {
+    fn seek_to_first(&mut self) -> CostContext<()> {
+        self.go(true, C::seek_to_first)
+    }
+
+    fn seek_to_last(&mut self) -> CostContext<()> {
+        self.go(true, C::seek_to_last)
+    }
+
+    fn seek<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
+        self.go(true, |cursor| cursor.seek(key))
+    }
+
+    fn seek_for_prev<K: AsRef<[u8]>>(&mut self, key: K) -> CostContext<()> {
+        self.go(true, |cursor| cursor.seek_for_prev(key))
+    }
+
+    fn next(&mut self) -> CostContext<()> {
+        self.go(false, C::next)
+    }
+
+    fn prev(&mut self) -> CostContext<()> {
+        self.go(false, C::prev)
+    }
+
+    fn value(&self) -> CostContext<Option<&[u8]>> {
+        match self.refused || self.unread {
+            true => None.wrap_with_cost(OperationCost::default()),
+            false => self.cursor.value(),
+        }
+    }
+
+    fn key(&self) -> CostContext<Option<&[u8]>> {
+        match self.refused {
+            true => None.wrap_with_cost(OperationCost::default()),
+            false => self.cursor.key(),
+        }
+    }
+
+    fn valid(&self) -> CostContext<bool> {
+        match self.refused {
+            true => false.wrap_with_cost(OperationCost::default()),
+            false => self.cursor.valid(),
+        }
+    }
+
+    fn status(&self) -> Result<(), StorageError> {
+        match self.refused || self.unread {
+            true => Err(StorageError::StorageError(INJECTED_READ_FAILURE.to_owned())),
+            false => self.cursor.status(),
+        }
+    }
+}
+
 /// A subtree handle that is the one it wraps, except that a node read of an
-/// armed key fails.
+/// armed key fails, and that an armed move of its cursor over the nodes
+/// fails.
 pub(crate) struct FaultableReads<S>(pub(crate) S);
 
 /// The failed read of `key`, if one is armed: the seek is paid for, as on
@@ -172,7 +367,7 @@ fn injected_failure<T>(key: &[u8], fetch: bool) -> Option<CostResult<T, Error>> 
 
 impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
     type ChangeSet = S::ChangeSet;
-    type Cursor = S::Cursor;
+    type Cursor = RefusedMoves<S::Cursor>;
 
     fn get_node(
         &self,
@@ -238,7 +433,7 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
     }
 
     fn cursor(&self) -> Self::Cursor {
-        self.0.cursor()
+        RefusedMoves::new(self.0.cursor())
     }
 
     fn change_set(&self) -> Self::ChangeSet {
@@ -323,8 +518,9 @@ impl<'db, S: SubtreeHandle<'db>> SubtreeHandle<'db> for FaultableReads<S> {
 
 /// The engine `E` with one difference: its deferred subtree handles are
 /// [`FaultableReads`], so a node read of an armed key through one of them
-/// fails, in whichever operation of `GroveDb` makes it. Its immediate
-/// handles, and the cursors and the flat records of every handle, are
+/// fails, in whichever operation of `GroveDb` makes it, and an armed move
+/// of a cursor over the nodes of one of them fails. Its immediate
+/// handles, and the flat records of every handle with their cursors, are
 /// `E`'s.
 pub(crate) struct RefusedReads<E>(pub(crate) E);
 
@@ -493,7 +689,7 @@ impl<E: Engine> Engine for RefusedReads<E> {
         cursor: SubtreeCursor<'db, Self>,
         prefix: SubtreePrefix,
     ) -> SubtreeCursor<'db, Self> {
-        E::retarget_cursor(cursor, prefix)
+        cursor.retargeted(|cursor| E::retarget_cursor(cursor, prefix))
     }
 
     fn move_subtree<'a>(

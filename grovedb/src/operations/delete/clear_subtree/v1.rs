@@ -281,6 +281,10 @@ impl<E: Engine> GroveDb<E> {
                     }
                 }
             }
+            cost_return_on_error_no_add!(
+                cost,
+                element_iterator.status().map_err(Error::StorageError)
+            );
         }
 
         // delete non subtree values

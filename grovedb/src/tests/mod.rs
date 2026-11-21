@@ -4,6 +4,7 @@ pub mod common;
 pub(crate) mod faultable_reads;
 #[cfg(feature = "rocksdb_storage")]
 pub(crate) mod pinned_reads;
+pub(crate) mod refused_scans;
 
 mod query_tests;
 

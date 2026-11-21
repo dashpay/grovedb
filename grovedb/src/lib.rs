@@ -2810,6 +2810,7 @@ impl<E: Engine> GroveDb<E> {
                 }
             }
         }
+        element_iterator.status().map_err(Error::StorageError)?;
         drop(element_iterator);
 
         // The aggregate this Merk stores (its root node's own value plus what
@@ -3158,6 +3159,7 @@ pub(crate) fn verify_indexed_axis_content<'db, S: NodeStore<'db>>(
             ),
         );
     }
+    content_iter.status().map_err(Error::StorageError)?;
     drop(content_iter);
 
     // Actual secondary rows, keyed by the item key they point at. A Vec
@@ -3223,6 +3225,7 @@ pub(crate) fn verify_indexed_axis_content<'db, S: NodeStore<'db>>(
             .or_default()
             .push((sec_key.clone(), sec_elem, stored_value_hash));
     }
+    sec_iter.status().map_err(Error::StorageError)?;
     drop(sec_iter);
 
     for (item_key, rows) in &actual {

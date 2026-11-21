@@ -732,11 +732,9 @@ impl ElementAggregateSumQueryExtensions for Element {
             {
                 let value_bytes = cost_return_on_error_no_add!(
                     cost,
-                    iter.value()
-                        .unwrap_add_cost(&mut cost)
-                        .ok_or(Error::CorruptedData(
-                            "expected iterator value but got None".to_string(),
-                        ))
+                    iter.value().unwrap_add_cost(&mut cost).ok_or_else(|| {
+                        crate::element::elements_iterator::no_value_under_cursor(&iter)
+                    })
                 );
                 let element = cost_return_on_error_into_no_add!(
                     cost,
@@ -806,7 +804,9 @@ impl ElementAggregateSumQueryExtensions for Element {
                 }
                 cost.seek_count += 1;
             }
-            Ok(())
+            // As for the range of a query: the walk is at its last record
+            // only if the cursor says so.
+            iter.status().map_err(Error::StorageError)
         }
         .wrap_with_cost(cost)
     }
