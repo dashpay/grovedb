@@ -197,6 +197,22 @@ impl LigninChangeSet {
         Ok(change_set)
     }
 
+    /// A change set of one node that is put again as the transaction
+    /// holds it, with its value kept, and that names the Merks its element
+    /// hosts, by position ([`LigninNodeStore::name_hosted`]). The root of
+    /// the node's Merk is the node it was.
+    pub(super) fn of_host(
+        subtree: LigninSubtree,
+        node: &TreeNode,
+        hosted: &[[u8; 32]],
+    ) -> Result<Self, Error> {
+        let mut change_set = Self::of_node(subtree, node, NodeChange::HashOnly)?;
+        for (node, _) in &mut change_set.nodes {
+            node.hosted = Some(hosted.to_vec());
+        }
+        Ok(change_set)
+    }
+
     /// A change set of one record that is no node, written or removed
     /// with the writer's cost, if it gave one.
     pub(super) fn of_record(
