@@ -92,7 +92,7 @@ impl<'c, 'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> ChainStore
     fn element_at(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Element>, Error> {
         let mut cost = Default::default();
         let mut merk = cost_return_on_error!(&mut cost, self.0.get_merk(self.builder(path)));
-        merk.for_merk(|m| {
+        merk.read_merk(|m| {
             Element::get_optional(m, key, true, self.0.version).map_err(Error::MerkError)
         })
         .add_cost(cost)

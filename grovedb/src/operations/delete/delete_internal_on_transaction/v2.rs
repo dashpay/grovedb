@@ -190,7 +190,7 @@ impl<E: Engine> GroveDb<E> {
                 cost_return_on_error!(&mut cost, cache.get_merk(merk_to_delete_path.clone()));
             let is_empty = cost_return_on_error!(
                 &mut cost,
-                merk_to_delete.for_merk(|m| m.is_empty_tree().map(Ok))
+                merk_to_delete.read_merk(|m| m.is_empty_tree().map(Ok))
             );
 
             if !options.allow_deleting_non_empty_trees && !is_empty {

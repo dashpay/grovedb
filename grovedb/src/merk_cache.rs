@@ -32,6 +32,21 @@ enum Subtree<'db, E: Engine> {
     /// Subtree marked as deleted, this will prevent loading from backing storage
     /// which can be unaware of uncommitted deletion.
     Deleted,
+    /// Subtree whose Merk was dropped because a closure that had it to
+    /// write returned an error. A Merk whose write failed may not hold the
+    /// tree that its store and the batch hold: a write that fails in its
+    /// walk leaves it with no tree, and one that fails in its commit with a
+    /// tree that was not written. Nothing reaches the subtree again through
+    /// this cache, and an end of the cache that finds the subtree failed
+    /// opens and writes no Merk.
+    Failed,
+}
+
+/// The error of reaching a subtree again after a write of its Merk failed.
+/// The error of that write ends the operation, so this one means that a
+/// caller went on after it.
+fn failed_merk() -> Error {
+    Error::CorruptedCodeExecution("a Merk of the cache was reached after a write of it failed")
 }
 
 /// A subtree of the cache, with the flag that says whether a closure has
@@ -152,7 +167,10 @@ impl<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCache<'db, 'tx, 'b, B, E>
                 // reference to it lives across a call.
                 let cached = unsafe { cached.get().as_ref() };
                 cached.assert_not_taken();
-                unsafe { *cached.subtree.get() = Subtree::Deleted };
+                let subtree = unsafe { &mut *cached.subtree.get() };
+                if !matches!(subtree, Subtree::Failed) {
+                    *subtree = Subtree::Deleted
+                }
             }
             Entry::Vacant(vacant) => {
                 vacant.insert(self.keep(Subtree::Deleted));
@@ -226,6 +244,7 @@ impl<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCache<'db, 'tx, 'b, B, E>
                 return Err(Error::MerkCacheSubtreeDeleted("parent was deleted"))
                     .wrap_with_cost(cost)
             }
+            Subtree::Failed => return Err(failed_merk()).wrap_with_cost(cost),
         };
 
         Ok(Some(merk)).wrap_with_cost(cost)
@@ -277,6 +296,7 @@ impl<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCache<'db, 'tx, 'b, B, E>
             let deleted = match unsafe { &*entry.subtree.get() } {
                 // Cache hit, all good:
                 Subtree::LoadedMerk(_) => false,
+                Subtree::Failed => return Err(failed_merk()).wrap_with_cost(cost),
                 // Cache hit, but marked as deleted, need to look at the parent to see whether it
                 // was re-inserted:
                 Subtree::Deleted => true,
@@ -392,10 +412,16 @@ impl<'db, 'tx: 'db, 'b, B: AsRef<[u8]>, E: Engine> MerkCache<'db, 'tx, 'b, B, E>
     fn propagate_subtrees(&mut self) -> CostResult<(), Error> {
         let mut cost = Default::default();
 
-        // SAFETY, in the loop: the cache has itself to itself, so no handle is
-        // alive but the one the loop takes for a parent, which is gone by the
-        // next turn, and nothing else reaches an entry.
-        //
+        // SAFETY, here and in the loop: the cache has itself to itself, so
+        // no handle is alive but the one the loop takes for a parent, which
+        // is gone by the next turn, and nothing else reaches an entry.
+        let mut entries = self.merks.get_mut().values();
+        if entries
+            .any(|cached| matches!(unsafe { &*cached.as_ref().subtree.get() }, Subtree::Failed))
+        {
+            return Err(failed_merk()).wrap_with_cost(cost);
+        }
+
         // This relies on [SubtreePath]'s ordering implementation to put the deepest
         // path's first.
         while let Some((path, cached)) = self.merks.get_mut().pop_first() {
@@ -468,6 +494,12 @@ pub(crate) struct MerkHandle<'db, 'c, E: Engine> {
 
 impl<'db, E: Engine> MerkHandle<'db, '_, E> {
     /// Borrow Merk exclusively to perform provided closure on it.
+    ///
+    /// The closure may write the Merk, so an error of it drops the Merk from
+    /// the cache: the handle and the cache then answer with an error for the
+    /// subtree, and an end of the cache that is begun afterwards opens and
+    /// writes no Merk. A closure that only reads goes through
+    /// [`Self::read_merk`].
     /// # Panics
     /// *Rule of thumb: don't use nested `for_merk`*.
     /// Nested usage of `for_merk` can cause a panic in situations involving
@@ -480,6 +512,31 @@ impl<'db, E: Engine> MerkHandle<'db, '_, E> {
     /// nested `for_merk` calls are still available for use.
     pub(crate) fn for_merk<T>(
         &mut self,
+        f: impl FnOnce(&mut TxMerk<'db, E>) -> CostResult<T, Error>,
+    ) -> CostResult<T, Error> {
+        self.borrow_merk(true, f)
+    }
+
+    /// Borrow Merk for a closure that only reads it. The shared borrow keeps
+    /// the write methods of `Merk` out of the closure's reach, and an error
+    /// of the closure leaves the Merk in the cache. The closures GroveDB
+    /// passes read an element by its key or ask whether the Merk is empty,
+    /// and neither changes the tree the Merk holds, whatever it returns.
+    ///
+    /// The borrow is exclusive and marks an operation boundary in the
+    /// batch, as the one of [`Self::for_merk`] does.
+    /// # Panics
+    /// As [`Self::for_merk`].
+    pub(crate) fn read_merk<T>(
+        &mut self,
+        f: impl FnOnce(&TxMerk<'db, E>) -> CostResult<T, Error>,
+    ) -> CostResult<T, Error> {
+        self.borrow_merk(false, |merk| f(merk))
+    }
+
+    fn borrow_merk<T>(
+        &mut self,
+        writes: bool,
         f: impl FnOnce(&mut TxMerk<'db, E>) -> CostResult<T, Error>,
     ) -> CostResult<T, Error> {
         if self.taken_handle.get() {
@@ -502,22 +559,170 @@ impl<'db, E: Engine> MerkHandle<'db, '_, E> {
         //    allocated Merks stay at their place for the whole `MerkCache` lifetime.
         // 2. No other references exist because of `taken_handle` check above.
         let subtree = unsafe { self.merk.as_mut().expect("a cell's pointer is never null") };
-        let Subtree::LoadedMerk(merk) = subtree else {
-            // Release the borrow flag before bailing — otherwise every
-            // subsequent `for_merk` on this handle would panic with a
-            // phantom double-borrow.
-            self.taken_handle.set(false);
-            return Err(Error::InternalError(
-                "accessing subtree that was deleted".to_owned(),
-            ))
-            .wrap_with_cost(Default::default());
+        let merk = match subtree {
+            Subtree::LoadedMerk(merk) => merk,
+            gone => {
+                // Release the borrow flag before bailing — otherwise every
+                // subsequent `for_merk` on this handle would panic with a
+                // phantom double-borrow.
+                self.taken_handle.set(false);
+                let error = match gone {
+                    Subtree::Failed => failed_merk(),
+                    _ => Error::InternalError("accessing subtree that was deleted".to_owned()),
+                };
+                return Err(error).wrap_with_cost(Default::default());
+            }
         };
 
         let result = f(merk);
 
+        if writes && result.value.is_err() {
+            *subtree = Subtree::Failed;
+        }
         self.taken_handle.set(false);
 
         result
+    }
+}
+
+/// What the cache does with a Merk whose write failed, as a test that the
+/// tests of each engine run.
+#[cfg(test)]
+pub(crate) mod failed_writes {
+    use grovedb_costs::{CostResult, OperationCost};
+    use grovedb_merk::element::{
+        get::ElementFetchFromStorageExtensions, insert::ElementInsertToStorageExtensions,
+    };
+    use grovedb_path::SubtreePathBuilder;
+    use grovedb_version::version::GroveVersion;
+
+    use super::MerkCache;
+    use crate::{
+        tests::faultable_reads::{
+            with_failed_parent_read, with_one_failed_fetch, RefusedReads, INJECTED_READ_FAILURE,
+        },
+        Element, Engine, Error, GroveDb,
+    };
+
+    fn refused_by_the_store<T: std::fmt::Debug>(result: Result<T, Error>) {
+        let error = result.expect_err("a read that the store refused");
+        assert!(error.to_string().contains(INJECTED_READ_FAILURE), "{error}");
+    }
+
+    fn reached_after_a_failed_write<T: std::fmt::Debug>(result: Result<T, Error>) {
+        let error = result.expect_err("a Merk whose write failed");
+        assert!(matches!(error, Error::CorruptedCodeExecution(_)), "{error}");
+    }
+
+    /// A Merk of the cache whose store refuses a read inside a write: the
+    /// write fails with the store's error, and from then on both handles
+    /// of the subtree and the cache answer for it with an error, and the
+    /// end of the cache fails before it opens or writes a Merk. A read
+    /// that fails, or that finds nothing, leaves the Merk where it is.
+    pub(crate) fn a_merk_whose_write_failed_is_dropped<E: Engine>() {
+        let version = GroveVersion::latest();
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = GroveDb::<RefusedReads<E>>::open_with_engine(dir.path()).expect("a database");
+        let item = Element::new_item(b"value".to_vec());
+        let none: &[&[u8]] = &[];
+        let tree: &[&[u8]] = &[b"tree"];
+        // The Merk of `tree` holds `b` with `a` and `c` under it, and `a`
+        // is a tree. Beside it, `other` holds the tree `inner`.
+        let other: &[&[u8]] = &[b"other"];
+        let trees: [(&[&[u8]], &[u8]); 3] = [(none, b"tree"), (none, b"other"), (other, b"inner")];
+        for (path, key) in trees {
+            db.insert(path, key, Element::empty_tree(), None, None, version)
+                .unwrap()
+                .expect("a tree");
+        }
+        for (key, element) in [
+            (b"b", item.clone()),
+            (b"a", Element::empty_tree()),
+            (b"c", item.clone()),
+        ] {
+            db.insert(tree, key, element, None, None, version)
+                .unwrap()
+                .expect("an element");
+        }
+        let root = db.root_hash(None, version).unwrap().expect("a root");
+
+        let tx = db.start_transaction();
+        let cache = MerkCache::<[u8; 0], _>::new(&db, &tx, version);
+        let path = || SubtreePathBuilder::owned_from_iter([b"tree".as_slice()]);
+        let below = || SubtreePathBuilder::owned_from_iter([b"tree".as_slice(), b"a"]);
+        let read = |key: &'static [u8]| {
+            move |merk: &super::TxMerk<'_, RefusedReads<E>>| {
+                Element::get(merk, key, true, version).map_err(Error::MerkError)
+            }
+        };
+        let mut handle = cache.get_merk(path()).unwrap().expect("the Merk");
+        // A second handle of the subtree, taken before anything is done
+        // through the first and used in turn with it.
+        let mut beside = cache.get_merk(path()).unwrap().expect("the Merk again");
+
+        // A read that finds nothing and a read that the store refuses are
+        // errors that leave the Merk in the cache.
+        let missing = handle.read_merk(read(b"nothing")).unwrap();
+        assert!(matches!(missing, Err(Error::MerkError(_))), "{missing:?}");
+        let refused = with_failed_parent_read(b"c", || handle.read_merk(read(b"c")).unwrap());
+        refused_by_the_store(refused);
+        let found = handle.read_merk(read(b"c")).unwrap();
+        assert_eq!(found.expect("the element"), item);
+        let found = handle.for_merk(|merk| read(b"c")(merk)).unwrap();
+        assert_eq!(found.expect("the element"), item);
+        let found = beside.read_merk(read(b"c")).unwrap();
+        assert_eq!(found.expect("the element"), item);
+
+        // Another Merk of the cache is written, two trees deep: its root
+        // hash is owed to the Merk above it when the cache ends.
+        let inner = SubtreePathBuilder::owned_from_iter([b"other".as_slice(), b"inner"]);
+        let mut written = cache.get_merk(inner).unwrap().expect("the Merk");
+        let write = written.for_merk(|merk| {
+            item.insert(merk, b"e", None, version)
+                .map_err(Error::MerkError)
+        });
+        write.unwrap().expect("a write");
+
+        // A write whose walk is refused the fetch of `c`.
+        let (written, fired) = with_one_failed_fetch(b"c", || {
+            handle
+                .for_merk(|merk| {
+                    item.insert(merk, b"d", None, version)
+                        .map_err(Error::MerkError)
+                })
+                .unwrap()
+        });
+        assert!(fired);
+        refused_by_the_store(written);
+
+        // Nothing reaches the Merk again: not a closure of the handle that
+        // wrote or of the other one, not a new handle, not the open of a
+        // Merk under it, and not after the subtree was marked as deleted.
+        let reached = |_: &mut super::TxMerk<'_, RefusedReads<E>>| -> CostResult<(), Error> {
+            panic!("the Merk was handed out after its write failed")
+        };
+        reached_after_a_failed_write(handle.for_merk(reached).unwrap());
+        reached_after_a_failed_write(handle.read_merk(read(b"c")).unwrap());
+        reached_after_a_failed_write(beside.for_merk(reached).unwrap());
+        reached_after_a_failed_write(beside.read_merk(read(b"c")).unwrap());
+        reached_after_a_failed_write(cache.get_merk(path()).unwrap().map(|_| ()));
+        reached_after_a_failed_write(cache.get_merk(below()).unwrap().map(|_| ()));
+        cache.mark_deleted(path());
+        reached_after_a_failed_write(cache.get_merk(path()).unwrap().map(|_| ()));
+        // And the end of the cache opens and writes nothing, which costs
+        // nothing: the root hash of the Merk that was written is carried
+        // nowhere.
+        let ended = cache.into_batch();
+        assert_eq!(ended.cost, OperationCost::default());
+        reached_after_a_failed_write(ended.unwrap().map(|_| ()));
+
+        // The refusal went with its scope, and the next operation makes the
+        // write.
+        drop(tx);
+        db.insert(tree, b"d", item.clone(), None, None, version)
+            .unwrap()
+            .expect("the insert, made again");
+        assert_ne!(db.root_hash(None, version).unwrap().expect("a root"), root);
     }
 }
 
@@ -540,6 +745,12 @@ mod tests {
         tests::{make_deep_tree, make_test_grovedb, TEST_LEAF},
         Element, Error,
     };
+
+    #[test]
+    fn a_merk_whose_write_failed_is_dropped() {
+        super::failed_writes::a_merk_whose_write_failed_is_dropped::<crate::engine::DefaultEngine>(
+        );
+    }
 
     #[test]
     fn two_handles_of_one_subtree_are_used_in_turn() {

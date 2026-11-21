@@ -4,17 +4,32 @@
 //! In test builds `open_merk` reads a subtree's parent element through
 //! [`FaultableReads`], and a test can open a Merk over one to fail the read
 //! of one of its nodes.
+//!
+//! [`RefusedReads`] is an engine whose deferred handles are all such
+//! handles, so that a read fails inside an operation of `GroveDb`: the
+//! fetch of a node by a walk, where [`with_one_failed_fetch`] arms it,
+//! which in an insert is the walk of its write or of the read that
+//! observes the old value before it.
 
-use std::cell::RefCell;
+use std::{cell::RefCell, path::Path};
 
-use grovedb_costs::{CostResult, CostsExt, OperationCost};
+use grovedb_costs::{
+    storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
+    OperationCost,
+};
 use grovedb_merk::{
     store::{NodeChange, NodeStore},
     tree::{kv::ValueDefinedCostType, TreeNode, TreeNodeInner},
     Error, Link,
 };
-use grovedb_storage::Error as StorageError;
+use grovedb_path::SubtreePath;
+use grovedb_storage::{
+    flat::{PendingPrefixDropRecord, PendingPrefixDrops, SubtreePrefix},
+    Error as StorageError, FlatStore,
+};
 use grovedb_version::version::GroveVersion;
+
+use crate::engine::{Engine, SubtreeCursor, SubtreeHandle};
 
 /// The message of the injected failure.
 pub(crate) const INJECTED_READ_FAILURE: &str = "injected read failure";
@@ -26,13 +41,17 @@ struct ArmedFault {
     passes_left: usize,
     /// Failures still to inject; `None` fails every read from then on.
     failures_left: Option<usize>,
+    /// Whether only the fetch of a node through a link fails, which is the
+    /// read a walk makes through a link, and no read of the node by its
+    /// key.
+    fetches_only: bool,
     /// Whether a read has failed.
     fired: bool,
 }
 
 impl ArmedFault {
-    fn fails(&mut self, key: &[u8]) -> bool {
-        if key != self.key {
+    fn fails(&mut self, key: &[u8], fetch: bool) -> bool {
+        if key != self.key || (self.fetches_only && !fetch) {
             return false;
         }
         if self.passes_left > 0 {
@@ -81,6 +100,7 @@ pub(crate) fn with_failed_parent_read<T>(key: &[u8], body: impl FnOnce() -> T) -
             key: key.to_vec(),
             passes_left: 0,
             failures_left: None,
+            fetches_only: false,
             fired: false,
         },
         body,
@@ -101,6 +121,27 @@ pub(crate) fn with_one_failed_parent_read<T>(
             key: key.to_vec(),
             passes_left: passes,
             failures_left: Some(1),
+            fetches_only: false,
+            fired: false,
+        },
+        body,
+    )
+}
+
+/// Runs `body` with the first fetch of the node `key` through a link
+/// failing, in whichever subtree a [`FaultableReads`] handle makes it:
+/// `NodeStore::fetch_node` or `fetch_node_without_value`, the calls by
+/// which a walk comes to a node that is not in memory. `get_node`,
+/// `get_node_for_read` and `has_node` of the key go through, and so does
+/// every fetch after the failed one. Also returns whether `body` got as far
+/// as the failing fetch.
+pub(crate) fn with_one_failed_fetch<T>(key: &[u8], body: impl FnOnce() -> T) -> (T, bool) {
+    with_fault(
+        ArmedFault {
+            key: key.to_vec(),
+            passes_left: 0,
+            failures_left: Some(1),
+            fetches_only: true,
             fired: false,
         },
         body,
@@ -113,13 +154,13 @@ pub(crate) struct FaultableReads<S>(pub(crate) S);
 
 /// The failed read of `key`, if one is armed: the seek is paid for, as on
 /// the real handle, and nothing is loaded.
-fn injected_failure<T>(key: &[u8]) -> Option<CostResult<T, Error>> {
+fn injected_failure<T>(key: &[u8], fetch: bool) -> Option<CostResult<T, Error>> {
     ARMED
         .with(|armed| {
             armed
                 .borrow_mut()
                 .as_mut()
-                .is_some_and(|fault| fault.fails(key))
+                .is_some_and(|fault| fault.fails(key, fetch))
         })
         .then(|| {
             Err(Error::StorageError(StorageError::StorageError(
@@ -141,16 +182,16 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<TreeNode>, Error> {
-        injected_failure(key)
+        injected_failure(key, false)
             .unwrap_or_else(|| self.0.get_node(key, value_defined_cost_fn, grove_version))
     }
 
     fn get_node_for_read(&self, key: &[u8]) -> CostResult<Option<TreeNodeInner>, Error> {
-        injected_failure(key).unwrap_or_else(|| self.0.get_node_for_read(key))
+        injected_failure(key, false).unwrap_or_else(|| self.0.get_node_for_read(key))
     }
 
     fn has_node(&self, key: &[u8]) -> CostResult<bool, Error> {
-        injected_failure(key).unwrap_or_else(|| self.0.has_node(key))
+        injected_failure(key, false).unwrap_or_else(|| self.0.has_node(key))
     }
 
     fn fetch_node(
@@ -161,7 +202,7 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         >,
         grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
-        injected_failure(link.key()).unwrap_or_else(|| {
+        injected_failure(link.key(), true).unwrap_or_else(|| {
             self.0
                 .fetch_node(link, value_defined_cost_fn, grove_version)
         })
@@ -172,7 +213,7 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
         link: &Link,
         grove_version: &GroveVersion,
     ) -> CostResult<TreeNode, Error> {
-        injected_failure(link.key())
+        injected_failure(link.key(), true)
             .unwrap_or_else(|| self.0.fetch_node_without_value(link, grove_version))
     }
 
@@ -222,5 +263,246 @@ impl<'db, S: NodeStore<'db>> NodeStore<'db> for FaultableReads<S> {
 
     fn delete_meta_record(&self, key: &[u8]) -> CostResult<(), Error> {
         self.0.delete_meta_record(key)
+    }
+}
+
+impl<S: FlatStore> FlatStore for FaultableReads<S> {
+    type Cursor<'a>
+        = S::Cursor<'a>
+    where
+        Self: 'a;
+
+    fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, StorageError> {
+        self.0.get(key)
+    }
+
+    fn put<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        value: &[u8],
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostResult<(), StorageError> {
+        self.0.put(key, value, cost_info)
+    }
+
+    fn delete<K: AsRef<[u8]>>(
+        &self,
+        key: K,
+        cost_info: Option<KeyValueStorageCost>,
+    ) -> CostResult<(), StorageError> {
+        self.0.delete(key, cost_info)
+    }
+
+    fn cursor(&self) -> Self::Cursor<'_> {
+        FlatStore::cursor(&self.0)
+    }
+
+    fn clear(&self) -> CostResult<(), StorageError> {
+        self.0.clear()
+    }
+}
+
+impl<'db, S: SubtreeHandle<'db>> SubtreeHandle<'db> for FaultableReads<S> {
+    type Aux<'a>
+        = S::Aux<'a>
+    where
+        Self: 'a;
+    type Meta<'a>
+        = S::Meta<'a>
+    where
+        Self: 'a;
+
+    fn aux(&self) -> Self::Aux<'_> {
+        self.0.aux()
+    }
+
+    fn meta(&self) -> Self::Meta<'_> {
+        self.0.meta()
+    }
+}
+
+/// The engine `E` with one difference: its deferred subtree handles are
+/// [`FaultableReads`], so a node read of an armed key through one of them
+/// fails, in whichever operation of `GroveDb` makes it. Its immediate
+/// handles, and the cursors and the flat records of every handle, are
+/// `E`'s.
+pub(crate) struct RefusedReads<E>(pub(crate) E);
+
+impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
+    fn pending_prefix_drop_records(&self) -> Result<Vec<PendingPrefixDropRecord>, StorageError> {
+        self.0.pending_prefix_drop_records()
+    }
+
+    fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), StorageError> {
+        self.0.delete_prefix_ranges(prefixes)
+    }
+
+    fn remove_pending_prefix_drop_record(
+        &self,
+        primary_prefix: &SubtreePrefix,
+    ) -> Result<(), StorageError> {
+        self.0.remove_pending_prefix_drop_record(primary_prefix)
+    }
+}
+
+impl<E: Engine> Engine for RefusedReads<E> {
+    type Applied = E::Applied;
+    type Batch = E::Batch;
+    type ImmediateSubtree<'db> = E::ImmediateSubtree<'db>;
+    type Subtree<'db> = FaultableReads<E::Subtree<'db>>;
+    type SubtreeMove<'db> = E::SubtreeMove<'db>;
+    type Transaction<'db> = E::Transaction<'db>;
+    type WriteGroup = E::WriteGroup;
+    type WriteScope<'db> = E::WriteScope<'db>;
+
+    fn open<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
+        E::open(path).map(Self)
+    }
+
+    fn open_checkpoint<P: AsRef<Path>>(path: P) -> Result<Self, StorageError> {
+        E::open_checkpoint(path).map(Self)
+    }
+
+    fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), StorageError> {
+        self.0.create_checkpoint(path)
+    }
+
+    fn flush(&self) -> Result<(), StorageError> {
+        self.0.flush()
+    }
+
+    fn wipe(&self) -> Result<(), StorageError> {
+        self.0.wipe()
+    }
+
+    fn start_transaction(&self) -> Self::Transaction<'_> {
+        self.0.start_transaction()
+    }
+
+    fn start_snapshot_read_transaction(&self) -> Self::Transaction<'_> {
+        self.0.start_snapshot_read_transaction()
+    }
+
+    fn start_read_transaction(&self) -> Self::Transaction<'_> {
+        self.0.start_read_transaction()
+    }
+
+    fn commit_transaction(
+        &self,
+        transaction: Self::Transaction<'_>,
+    ) -> CostResult<(), StorageError> {
+        self.0.commit_transaction(transaction)
+    }
+
+    fn rollback_transaction(
+        &self,
+        transaction: &Self::Transaction<'_>,
+    ) -> Result<(), StorageError> {
+        self.0.rollback_transaction(transaction)
+    }
+
+    fn set_savepoint(&self, transaction: &Self::Transaction<'_>) -> Result<(), StorageError> {
+        self.0.set_savepoint(transaction)
+    }
+
+    fn rollback_to_savepoint(
+        &self,
+        transaction: &Self::Transaction<'_>,
+    ) -> Result<(), StorageError> {
+        self.0.rollback_to_savepoint(transaction)
+    }
+
+    fn open_write_scope<'a>(
+        &'a self,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> Result<Self::WriteScope<'a>, StorageError> {
+        self.0.open_write_scope(transaction)
+    }
+
+    fn scope_transaction<'s, 'a: 's>(scope: &'s Self::WriteScope<'a>) -> &'s Self::Transaction<'a> {
+        E::scope_transaction(scope)
+    }
+
+    fn merge_write_scope(&self, scope: Self::WriteScope<'_>) -> Result<(), StorageError> {
+        self.0.merge_write_scope(scope)
+    }
+
+    fn rollback_write_scope(&self, scope: Self::WriteScope<'_>) -> Result<(), StorageError> {
+        self.0.rollback_write_scope(scope)
+    }
+
+    fn subtree<'a, 'b, B>(
+        &'a self,
+        path: SubtreePath<'b, B>,
+        batch: Option<&'a Self::Batch>,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::Subtree<'a>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        self.0.subtree(path, batch, transaction).map(FaultableReads)
+    }
+
+    fn subtree_by_prefix<'a>(
+        &'a self,
+        prefix: SubtreePrefix,
+        batch: Option<&'a Self::Batch>,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::Subtree<'a>> {
+        self.0
+            .subtree_by_prefix(prefix, batch, transaction)
+            .map(FaultableReads)
+    }
+
+    fn immediate_subtree<'a, 'b, B>(
+        &'a self,
+        path: SubtreePath<'b, B>,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::ImmediateSubtree<'a>>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        self.0.immediate_subtree(path, transaction)
+    }
+
+    fn immediate_subtree_by_prefix<'a>(
+        &'a self,
+        prefix: SubtreePrefix,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::ImmediateSubtree<'a>> {
+        self.0.immediate_subtree_by_prefix(prefix, transaction)
+    }
+
+    fn settle_batch(
+        &self,
+        group: &mut Self::WriteGroup,
+        batch: Self::Batch,
+    ) -> CostResult<(), StorageError> {
+        self.0.settle_batch(group, batch)
+    }
+
+    fn apply_write_group(
+        &self,
+        group: Self::WriteGroup,
+        transaction: &Self::Transaction<'_>,
+    ) -> CostResult<Self::Applied, StorageError> {
+        self.0.apply_write_group(group, transaction)
+    }
+
+    fn retarget_cursor<'db>(
+        cursor: SubtreeCursor<'db, Self>,
+        prefix: SubtreePrefix,
+    ) -> SubtreeCursor<'db, Self> {
+        E::retarget_cursor(cursor, prefix)
+    }
+
+    fn move_subtree<'a>(
+        &'a self,
+        from: SubtreePrefix,
+        to: SubtreePrefix,
+        batch: &'a Self::Batch,
+        transaction: &'a Self::Transaction<'_>,
+    ) -> CostContext<Self::SubtreeMove<'a>> {
+        self.0.move_subtree(from, to, batch, transaction)
     }
 }

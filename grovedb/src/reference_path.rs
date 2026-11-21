@@ -81,7 +81,7 @@ pub(crate) fn follow_reference<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
             cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
         let (element, value_hash) = cost_return_on_error!(
             &mut cost,
-            referred_merk.for_merk(|m| {
+            referred_merk.read_merk(|m| {
                 Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(
                     |e| match e {
                         grovedb_merk::error::Error::PathKeyNotFound(s) => {
@@ -180,7 +180,7 @@ pub(crate) fn follow_reference_once<'db, 'b, 'c, B: AsRef<[u8]>, E: Engine>(
         cost_return_on_error!(&mut cost, merk_cache.get_merk(referred_path.clone()));
     let (element, value_hash) = cost_return_on_error!(
         &mut cost,
-        referred_merk.for_merk(|m| {
+        referred_merk.read_merk(|m| {
             Element::get_with_value_hash(m, &referred_key, true, merk_cache.version).map_err(|e| {
                 match e {
                     grovedb_merk::error::Error::PathKeyNotFound(s) => {
