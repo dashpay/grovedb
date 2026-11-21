@@ -16,7 +16,7 @@
 //! | [`Db::snapshot`] | A snapshot of the latest version, read-only ([`Snapshot`]). | RD1, RD2 |
 //! | [`Db::read`] | One operation that pins no version and reads the latest one ([`Operation`]). | RD4 |
 //! | [`Db::flush`] | Makes every commit that was published when it was called durable. | DU1a, P-05 |
-//! | [`Db::wipe`] | Removes every record of every keyspace, in one commit. | CV3, CF5, P-23 |
+//! | [`Db::wipe`], [`Db::wipe_entering`] | Removes every record of every keyspace, in one commit, in which the second enters the subtrees its caller names. | CV3, CF5, P-23 |
 //! | [`Db::stats`] | Every count the engine keeps ([`DbStats`]). | |
 //! | [`Db::keyspaces`] | The flat keyspace of each column. | |
 //!
@@ -386,12 +386,29 @@
 //! the subtrees to drop until its version is published
 //! ([`Committer::commit_alone`](crate::commit::Committer)), so every
 //! other commit has a version before the wipe's, and is wiped, or after
-//! it. At the wipe's own version no subtree is entered. A snapshot from
+//! it. At the wipe's own version no subtree is entered, but those that
+//! [`Db::wipe_entering`] was given: they are entered by the same write as
+//! the drops, new and with nothing in them, so a caller that has subtrees
+//! in every database, as GroveDB has the root of its grove, is never
+//! left with a database that is wiped and does not have them. A snapshot from
 //! before the wipe keeps reading its version, a crash leaves the database
 //! as it was or empty, and an open write transaction that wrote a record
 //! before the wipe fails its commit with a conflict. Entering a subtree
-//! writes no record: a transaction that did nothing else commits after
-//! the wipe, and its subtree is in use and empty.
+//! writes no record: a transaction that did nothing else has no key for
+//! the wipe to meet, and its commit after the wipe is no conflict. Its
+//! enter is judged where it is laid out again over the wipe, as over any
+//! commit: by the directory the wipe left, with what the transaction's
+//! own writes before the enter made of it. It is refused where the
+//! subtree its host is in is not entered then. And it is refused where
+//! the subtree itself is entered then, as one that the wipe entered is:
+//! an enter of a subtree that is new, and an enter if it is absent that
+//! states another tree type or another host than the subtree has.
+//!
+//! **The wipe ends as a commit does**, and an error it returns does not
+//! always say that nothing was wiped ([`Db::wipe_entering`]):
+//! [`CommitError::NotDurable`] is of a wipe that is published and whose
+//! sync failed. Every read of the latest version then finds the database
+//! wiped, and a snapshot from before keeps reading its version.
 //!
 //! What the wipe removed is storage until the reclaimer has taken it out,
 //! like what any drop leaves. No file is deleted by a wipe, and no entry
@@ -437,7 +454,9 @@
 //! 3. **A wipe finds the subtrees to drop by a walk of the directory's
 //!    entries**, which reads every entry, under the commit lock. A wipe of
 //!    a database in which no subtree is entered is a commit all the same,
-//!    with a version and the key set of a wipe ([`Db::wipe`]).
+//!    with a version and the key set of a wipe (CV3): where its caller
+//!    names no subtree to enter, it enters one and drops it
+//!    ([`Db::wipe`]).
 //! 4. **A wipe is made under one hold of the commit lock**, and not as a
 //!    transaction that is made again when a commit lands beside it: a
 //!    commit that entered a subtree between the walk and the wipe's commit
@@ -1328,6 +1347,26 @@ impl Db {
     /// is a commit all the same, with a version and the key set of a wipe:
     /// it enters one subtree and drops it.
     pub fn wipe(&self) -> Result<Committed, WriteError> {
+        self.wipe_entering(&[])
+    }
+
+    /// As [`Self::wipe`], and enters each subtree of `enters` in the same
+    /// commit, as a tree of the type given with it and with no host: after
+    /// a wipe no element is left to host one. At the wipe's version these
+    /// subtrees are entered and hold nothing, and no other subtree is
+    /// entered. A subtree of the list that was entered before is dropped
+    /// with the others and is new.
+    ///
+    /// The drops and the enters are one write of one transaction and one
+    /// group of the log, so whatever the wipe returns is of both. An error
+    /// of a commit that was not made has removed nothing and entered
+    /// nothing: a list that is refused, as one that names a subtree twice
+    /// is, and every [`CommitError`] that says the commit is not in the
+    /// log. The errors of a commit that happened, or that the next open
+    /// may find ([`CommitError::NotDurable`], [`CommitError::Halted`],
+    /// [`CommitError::Unsettled`]), are of the wipe with its enters, and
+    /// never of the wipe alone.
+    pub fn wipe_entering(&self, enters: &[(Subtree, &[u8])]) -> Result<Committed, WriteError> {
         self.refused()?;
         let mut everything = KeySet::new();
         everything.everything();
@@ -1341,7 +1380,7 @@ impl Db {
                     ..Batch::default()
                 })
             };
-            if outermost.is_empty() {
+            if outermost.is_empty() && enters.is_empty() {
                 // A wipe is a commit also where there is nothing to drop
                 // (CV3): a subtree is entered and dropped, so that the
                 // wipe has a version and its key set meets what open
@@ -1354,10 +1393,19 @@ impl Db {
                 }])?;
                 apply(&[SubtreeWrite::Drop { subtree }])?;
             } else {
-                let drops: Vec<SubtreeWrite<'_>> = (outermost.iter())
-                    .map(|subtree| SubtreeWrite::Drop { subtree: *subtree })
-                    .collect();
-                apply(&drops)?;
+                // The drops come before the enters of their batch: each
+                // subtree of the list is absent when it is entered.
+                let drops =
+                    (outermost.iter()).map(|subtree| SubtreeWrite::Drop { subtree: *subtree });
+                let enters = enters
+                    .iter()
+                    .map(|(subtree, tree_type)| SubtreeWrite::Enter {
+                        subtree: *subtree,
+                        tree_type,
+                        host: None,
+                    });
+                let writes: Vec<SubtreeWrite<'_>> = drops.chain(enters).collect();
+                apply(&writes)?;
             }
             scope.merge();
             Ok(())

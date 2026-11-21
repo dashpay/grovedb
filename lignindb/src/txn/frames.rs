@@ -22,12 +22,13 @@ use lignin_tree::{
 };
 
 use super::{
-    error::{BatchError, TxnError},
+    error::{BatchError, Differs, HostName, TxnError},
     key::{Column, Subtree},
     pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
     write::{
-        Applied, Batch, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut,
+        Applied, Batch, Entering, Hosted, LinkPut, MerkWrite, RecordWrite, RootPut, SubtreeWrite,
+        ValuePut,
     },
 };
 use crate::snapshot::OperationGuard;
@@ -356,7 +357,40 @@ struct Leaving {
 #[derive(Default)]
 struct Subtrees {
     leaving: Vec<Leaving>,
+    /// The subtrees the batch makes an entry for: not one that is entered
+    /// if it is absent and was found entered.
     entering: HashSet<Subtree>,
+}
+
+/// Checks that `entry`, which the subtree of `enter` is entered with, has
+/// the tree type and the host the enter states
+/// ([`SubtreeWrite::EnterIfAbsent`]).
+fn same(entry: &Entry, enter: &Entering<'_>) -> Result<(), BatchError> {
+    let subtree = enter.subtree;
+    let differs = |differs| {
+        let differs = Box::new(differs);
+        Err(BatchError::EnteredOtherwise { subtree, differs })
+    };
+    if entry.tree_type() != enter.tree_type {
+        return differs(Differs::TreeType {
+            entered: entry.tree_type().into(),
+            stated: enter.tree_type.into(),
+        });
+    }
+    let entered = entry.host().map(|host| HostName {
+        subtree: Subtree::new(*host.parent),
+        key: host.key.into(),
+        position: host.position,
+    });
+    let stated = enter.host.map(|host| HostName {
+        subtree: host.subtree,
+        key: host.key.into(),
+        position: host.position,
+    });
+    if entered == stated {
+        return Ok(());
+    }
+    differs(Differs::Host { entered, stated })
 }
 
 impl Subtrees {
@@ -595,7 +629,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let (subtree, dropped) = match *write {
                 SubtreeWrite::Drop { subtree } => (subtree, true),
                 SubtreeWrite::Clear { subtree } => (subtree, false),
-                SubtreeWrite::Enter { .. } => continue,
+                SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => continue,
             };
             let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
             let entry = entry.ok_or(BatchError::NotEntered { subtree })?;
@@ -626,21 +660,45 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             }
         }
         for write in batch.subtrees {
-            let SubtreeWrite::Enter { subtree, host, .. } = write else {
+            let Some(enter) = write.entering() else {
                 continue;
             };
-            if self.entered(&view, subtree)?.is_some() {
-                return Err(BatchError::Entered { subtree: *subtree }.into());
+            let subtree = enter.subtree;
+            if self.entered(&view, &subtree)?.is_some() {
+                // An enter of a subtree that is absent finds it entered:
+                // by a commit, by an earlier write of the transaction, or
+                // kept by a clear of this batch. It is satisfied where
+                // that is the subtree it states.
+                let held = match enter.if_absent {
+                    true => self.kept(&view, &subtree)?,
+                    false => None,
+                };
+                let Some(held) = held else {
+                    return Err(BatchError::Entered { subtree }.into());
+                };
+                same(&held, &enter)?;
+                continue;
             }
-            if let Some(host) = host
+            if let Some(host) = enter.host
                 && self.entered(&view, &host.subtree)?.is_none()
             {
                 let subtree = host.subtree;
                 return Err(BatchError::NotEntered { subtree }.into());
             }
-            view.entering.insert(*subtree);
+            view.entering.insert(subtree);
         }
         Ok(view)
+    }
+
+    /// The entry `subtree` keeps through the batch: of a subtree that is
+    /// entered before it and that the batch does not drop, alone or with
+    /// one above it. A clear keeps the entry, without its root.
+    fn kept(&self, view: &Subtrees, subtree: &Subtree) -> Result<Option<Entry>, TxnError> {
+        if let Some(left) = view.leaving.iter().find(|left| left.subtree == *subtree) {
+            return Ok((!left.dropped).then(|| left.entry.clone()));
+        }
+        let entry = self.directory.open(&*self.flat, subtree.as_bytes())?;
+        Ok(entry.filter(|entry| !view.below_leaving(entry)))
     }
 
     /// Those of `written` that are below a Merk that `batch` drops or
@@ -960,24 +1018,19 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         // with no flat record, and then every root the write changed. A
         // subtree that the directory refuses has changed no page: where
         // nothing of the batch was written before it, the frames are as
-        // they were.
+        // they were. A subtree that is entered if it is absent, and was
+        // found entered, keeps its entry and its records: nothing is done
+        // for it.
         let mut untouched = merks.is_empty() && view.leaving.is_empty();
-        for write in batch.subtrees {
-            let SubtreeWrite::Enter {
-                subtree,
-                tree_type,
-                host,
-            } = write
-            else {
-                continue;
-            };
-            let host = host.as_ref().map(|host| Host {
+        let enters = batch.subtrees.iter().filter_map(SubtreeWrite::entering);
+        for enter in enters.filter(|enter| view.entering.contains(&enter.subtree)) {
+            let host = enter.host.as_ref().map(|host| Host {
                 parent: host.subtree.as_bytes(),
                 key: host.key,
                 position: host.position,
             });
-            let prefix = subtree.as_bytes();
-            match drop::enter(&self.directory, &mut flats, prefix, tree_type, host) {
+            let prefix = enter.subtree.as_bytes();
+            match drop::enter(&self.directory, &mut flats, prefix, enter.tree_type, host) {
                 Ok(_) => untouched = false,
                 Err(DropError::Directory(error)) if untouched && refuses(&error) => {
                     return Err(Refused::clean(error));

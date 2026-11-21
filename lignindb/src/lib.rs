@@ -167,8 +167,11 @@
 //!   meet at a lock, it is held for a few instructions and over no read
 //!   of a file.
 //! - **No record of a subtree is read or written without its entry.** A
-//!   batch enters a subtree before it writes into it
-//!   ([`SubtreeWrite::Enter`](txn::SubtreeWrite::Enter)), in any column,
+//!   batch enters a subtree before it writes into it, as one that is new
+//!   ([`SubtreeWrite::Enter`](txn::SubtreeWrite::Enter)) or if no writer
+//!   has entered it
+//!   ([`SubtreeWrite::EnterIfAbsent`](txn::SubtreeWrite::EnterIfAbsent)),
+//!   in any column,
 //!   and a subtree that was dropped, with every subtree below it, is gone
 //!   for every reader from the drop's version on.
 //! - **After [`WriteError::reopen`](db::WriteError::reopen) says so, no

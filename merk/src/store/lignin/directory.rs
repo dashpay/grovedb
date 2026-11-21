@@ -152,7 +152,7 @@ impl LigninNodeStore<'_> {
             }
             Mode::Deferred(Some(batch)) => batch.enter_tree(&self.subtree, tree_type),
             Mode::Immediate => {
-                let enter = entering(&self.subtree, &tree_type_bytes(tree_type))?;
+                let enter = entering(&self.subtree, &tree_type_bytes(tree_type), false)?;
                 let write = Write {
                     subtrees: vec![enter],
                     ..Write::default()

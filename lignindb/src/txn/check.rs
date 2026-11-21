@@ -7,7 +7,7 @@ use lignin_format::value_log::MAX_VALUE_LEN;
 use super::{
     error::BatchError,
     key::{Column, Unit},
-    write::{Batch, Hosted, RecordWrite, RootPut, SubtreeWrite, ValuePut},
+    write::{Batch, Entering, Hosted, RecordWrite, RootPut, ValuePut},
 };
 
 /// The longest key of a Merk node: a cell has one byte for its length
@@ -24,23 +24,24 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// writes each record key once, names each Merk once, sets no root without
 /// a node and none that it deletes, writes no flat record among the nodes of
 /// a Merk, holds no key or value that is too long, and enters no subtree
-/// twice and drops or clears none twice.
+/// twice, by either kind of enter, and drops or clears none twice.
 pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     let mut keys: HashSet<(Unit, &[u8])> = HashSet::new();
     let mut merks = HashSet::new();
     let (mut entered, mut left) = (HashSet::new(), HashSet::new());
     for write in batch.subtrees {
         let subtree = write.subtree();
-        let once = match write {
-            SubtreeWrite::Enter { .. } => entered.insert(subtree),
-            SubtreeWrite::Drop { .. } | SubtreeWrite::Clear { .. } => left.insert(subtree),
+        let enter = write.entering();
+        let once = match enter {
+            Some(_) => entered.insert(subtree),
+            None => left.insert(subtree),
         };
         if !once {
             return Err(BatchError::SubtreeTwice { subtree });
         }
-        if let SubtreeWrite::Enter {
+        if let Some(Entering {
             tree_type, host, ..
-        } = write
+        }) = enter
         {
             if tree_type.len() > MAX_TREE_TYPE {
                 let len = tree_type.len();

@@ -30,7 +30,7 @@ use super::{
     reads::{Reads, Since},
     view::{ChildKeys, NodeView, SubtreeView},
     write::{Applied, Batch, SubtreeWrite, ValuePut},
-    write_set::{EntryId, Mark, Own, OwnSubtree, WriteSet},
+    write_set::{EntryId, Mark, Own, OwnSubtree, Said, WriteSet},
 };
 use crate::{
     scope::table::{Scopes, Who},
@@ -127,6 +127,9 @@ struct State<'s> {
     /// or none where that version has not entered it (CF5,
     /// `WriteTxn::meet_below`).
     under: HashMap<Subtree, Option<Vec<MerkId>>>,
+    /// What each enter if it is absent that the transaction made stated
+    /// of where its subtree hangs (CF5, `WriteTxn::meet_below`).
+    above: Vec<Above>,
     /// The commits whose key sets were taken and that were not looked at
     /// for what their drops cover (`WriteTxn::meet_below`): the look that
     /// was owed them failed on a read, and the next one makes it.
@@ -155,6 +158,7 @@ impl State<'_> {
             self.unwatch();
             self.open = None;
             self.under.clear();
+            self.above.clear();
             self.owed.clear();
         }
     }
@@ -206,6 +210,12 @@ impl State<'_> {
         mark
     }
 
+    /// Forgets what the enters of operations noted that the write set
+    /// has no more.
+    fn forget_above(&mut self) {
+        (self.above).retain(|above| self.set.has_op(above.serial));
+    }
+
     /// Takes out the writes after `mark`, and says whether `mark` is a
     /// place of the write set still.
     fn rewind(&mut self, mark: Mark) -> bool {
@@ -223,6 +233,7 @@ impl State<'_> {
             self.frames = None;
             self.stuck = None;
             self.renew_lease();
+            self.forget_above();
             if self.set.is_empty() {
                 self.release();
             }
@@ -345,6 +356,224 @@ fn is_refusal(error: &TxnError) -> bool {
     }
 }
 
+/// Where an enter if it is absent put its subtree, as the transaction
+/// had the subtrees when it made the enter.
+#[derive(Debug)]
+struct Above {
+    /// The serial of the operation that made the enter.
+    serial: u64,
+    subtree: Subtree,
+    /// The subtrees that the host the enter states was in or below, by
+    /// their names, the nearest first.
+    names: Vec<Subtree>,
+}
+
+/// How a transaction with no frames has a subtree once the operations of
+/// its write set before one are made.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Standing {
+    /// It has none: it dropped the subtree, alone or with one above it
+    /// that it had written under, and has not entered it since.
+    Gone,
+    /// The one the committed version has, if that has one: no write of
+    /// the transaction made the subtree.
+    Committed,
+    /// Its own, which its operation of this number entered.
+    Own(usize),
+}
+
+/// An answer of [`ByKey`], or the standing it rests on that is not worked
+/// out yet: of a subtree, once the operations before one are made.
+enum Step<T> {
+    Done(T),
+    Needs((Subtree, usize)),
+}
+
+/// What a write set says of the subtrees over one committed version, for
+/// a transaction that has no frames to ask, and for a scope whose writes
+/// are kept in the write set beside them.
+///
+/// **A subtree is the committed one, the transaction's own, or gone**
+/// ([`Standing`]). An enter of a subtree that is new makes it the
+/// transaction's own. An enter if it is absent
+/// ([`SubtreeWrite::EnterIfAbsent`]) does so where the subtree was not
+/// there before it: the transaction had dropped it, a subtree above it had
+/// left since it was entered, or the committed version does not have it.
+/// The drops and the clears of the operation's own batch come before its
+/// enter. Where the subtree was there, it stays the one it was, whatever
+/// the enter states of it: by key no write to a subtree is judged
+/// ([`SubtreeWrite`]).
+///
+/// **Where a subtree hangs follows from which one it is.** The
+/// transaction's own hangs on the host that the enter which made it
+/// states, and the committed one where the committed directory has it.
+///
+/// **One answer can rest on another**: what a subtree is on what its host
+/// was when the subtree was entered, up a line of hosts. An answer that
+/// another rests on is worked out first and kept, one after another and
+/// not one inside another, so a line as long as the directory takes
+/// (`MAX_DEPTH`) is followed.
+struct ByKey<'a, 's> {
+    path: &'a WritePath<'s>,
+    guard: &'a OperationGuard<'s>,
+    set: &'a WriteSet,
+    opened: &'a mut Opened,
+    /// What was worked out already, by subtree and operation.
+    stands: HashMap<(Subtree, usize), Standing>,
+}
+
+impl<'a, 's> ByKey<'a, 's> {
+    /// The answers of `set` over the committed version `at`, whose
+    /// directory is kept in `slot`.
+    fn new(
+        path: &'a WritePath<'s>,
+        guard: &'a OperationGuard<'s>,
+        at: CommitVersion,
+        set: &'a WriteSet,
+        slot: &'a mut Option<Opened>,
+    ) -> Result<Self, TxnError> {
+        Ok(Self {
+            opened: Opened::at(slot, path, guard, at)?,
+            path,
+            guard,
+            set,
+            stands: HashMap::new(),
+        })
+    }
+
+    /// How the transaction has `subtree` once its operations before `end`
+    /// are made. A subtree that it entered and wrote nothing into is its
+    /// own here also where a subtree above it left since: no drop names
+    /// it, and [`Self::below`] says whether one took it.
+    fn standing(&mut self, subtree: Subtree, end: usize) -> Result<Standing, TxnError> {
+        // What is asked, and under it what each answer waits for. An
+        // answer waits only for answers of fewer operations, so the line
+        // ends.
+        let mut wanted = vec![(subtree, end)];
+        while let Some(&(subtree, end)) = wanted.last() {
+            if self.stands.contains_key(&(subtree, end)) {
+                wanted.pop();
+                continue;
+            }
+            match self.try_standing(subtree, end)? {
+                Step::Done(stands) => {
+                    self.stands.insert((subtree, end), stands);
+                    wanted.pop();
+                }
+                Step::Needs(first) => wanted.push(first),
+            }
+        }
+        Ok(self.stands[&(subtree, end)])
+    }
+
+    /// [`Self::standing`], from the answers that are worked out.
+    fn try_standing(&mut self, subtree: Subtree, end: usize) -> Result<Step<Standing>, TxnError> {
+        let set = self.set;
+        let Said { base, if_absent } = set.subtree(&subtree, end);
+        let mut stands = match base {
+            OwnSubtree::Gone => Standing::Gone,
+            OwnSubtree::Entered { op, .. } => Standing::Own(op),
+            OwnSubtree::Unwritten { .. } => Standing::Committed,
+        };
+        for (_, at) in if_absent.iter().rev() {
+            // Whether the subtree was there when the operation `at` came
+            // to its enters: the leaves of that operation come first.
+            let there = match stands {
+                Standing::Own(since) => {
+                    let left = set.left_in(since + 1..at + 1);
+                    left.is_empty()
+                        || match self.try_below(subtree, &left, Some((since, at + 1)))? {
+                            Step::Done(gone) => !gone,
+                            Step::Needs(first) => return Ok(Step::Needs(first)),
+                        }
+                }
+                Standing::Committed => {
+                    let left = set.left_in(0..at + 1);
+                    let entered = (self.opened.root(self.path, self.guard, &subtree)?).is_some();
+                    entered && !(self.opened).below(self.path, self.guard, &subtree, &left)?
+                }
+                Standing::Gone => false,
+            };
+            if !there {
+                stands = Standing::Own(*at);
+            }
+        }
+        Ok(Step::Done(stands))
+    }
+
+    /// Whether `subtree` is below one of `leaving`: by the hosts of the
+    /// subtrees that are the transaction's own, and by the committed
+    /// directory from the first that is the committed one.
+    ///
+    /// With `since`, `subtree` is the transaction's own, entered in the
+    /// first of the two operations, and `leaving` left in the operations
+    /// after it and before the second. A host that was entered again in
+    /// them, as a subtree that is new, left in between, with what it
+    /// hosted, whatever it is below now: a subtree is entered so only
+    /// after it left. Each host is taken as it stood when the subtree it
+    /// hosts was entered: one that was entered again later, if it was
+    /// absent, left with a subtree above it, which is found from where it
+    /// hung then. With no `since`, `subtree` is taken as it stands after
+    /// every operation.
+    ///
+    /// That holds for the write sets the frames take. One answer is not
+    /// the frames': a clear of a Merk with no node leaves the directory as
+    /// it is, and here it takes what the transaction entered below that
+    /// Merk. An element hosts a subtree, so no writer of a grove enters
+    /// one below a Merk with no node.
+    fn below(
+        &mut self,
+        subtree: Subtree,
+        leaving: &[Subtree],
+        since: Option<(usize, usize)>,
+    ) -> Result<bool, TxnError> {
+        loop {
+            match self.try_below(subtree, leaving, since)? {
+                Step::Done(below) => return Ok(below),
+                Step::Needs((host, end)) => drop(self.standing(host, end)?),
+            }
+        }
+    }
+
+    /// [`Self::below`], from the answers that are worked out.
+    fn try_below(
+        &mut self,
+        subtree: Subtree,
+        leaving: &[Subtree],
+        since: Option<(usize, usize)>,
+    ) -> Result<Step<bool>, TxnError> {
+        let set = self.set;
+        let again = |host: &Subtree| {
+            since.is_some_and(|(entered, end)| set.enters_anew(host, entered + 1..end))
+        };
+        let (mut at, mut end) = (subtree, set.ops());
+        let mut stands = match since {
+            Some((entered, _)) => Some(Standing::Own(entered)),
+            None => self.stands.get(&(subtree, end)).copied(),
+        };
+        for _ in 0..MAX_DEPTH {
+            let entered = match stands {
+                None => return Ok(Step::Needs((at, end))),
+                Some(Standing::Gone) => return Ok(Step::Done(false)),
+                Some(Standing::Committed) => {
+                    let below = (self.opened).below(self.path, self.guard, &at, leaving)?;
+                    return Ok(Step::Done(below));
+                }
+                Some(Standing::Own(entered)) => entered,
+            };
+            let Some(host) = set.host_in(&at, entered) else {
+                return Ok(Step::Done(false));
+            };
+            if leaving.contains(&host) || again(&host) {
+                return Ok(Step::Done(true));
+            }
+            (at, end) = (host, entered + 1);
+            stands = self.stands.get(&(at, end)).copied();
+        }
+        Ok(Step::Done(false))
+    }
+}
+
 /// A write transaction (`transactions.md` section 7).
 ///
 /// - **It reads its own writes, and for everything else the latest
@@ -394,6 +623,7 @@ impl<'s> WriteTxn<'s> {
                 stuck: None,
                 scopes: Scopes::default(),
                 under: HashMap::new(),
+                above: Vec::new(),
                 owed: Vec::new(),
                 #[cfg(test)]
                 refuse_look: false,
@@ -1100,6 +1330,13 @@ impl<'s> WriteTxn<'s> {
         op: &Op<'s>,
         subtree: &Subtree,
     ) -> Result<bool, TxnError> {
+        if state.set.enters_if_absent(subtree) {
+            // Whether such an enter found the subtree, with the root it
+            // had, is what a read of the subtree asks.
+            return self.said(state, op, *subtree, |view| {
+                view.is_some_and(|view| view.root_key.is_some())
+            });
+        }
         match state.set.rooted(subtree) {
             Some(rooted) => Ok(rooted),
             None => {
@@ -1140,98 +1377,81 @@ impl<'s> WriteTxn<'s> {
             let entry = frames.entry(&subtree)?;
             return Ok(read(entry.as_ref().map(SubtreeView::of)));
         }
+        self.said(state, &op, subtree, read)
+    }
+
+    /// Shows `read` what the transaction's write set says of `subtree`
+    /// over the committed version that `op` reads, or `None` for a subtree
+    /// that is not entered: what a transaction with no frames answers.
+    ///
+    /// The subtree is the committed one, the transaction's own, or gone
+    /// ([`ByKey::standing`]). The committed one is shown as the committed
+    /// version has it, with the root the transaction's writes gave it and
+    /// not where the transaction took a subtree above it. Its own is
+    /// shown as the enter that made it states it.
+    fn said<R>(
+        &self,
+        state: &mut State<'s>,
+        op: &Op<'s>,
+        subtree: Subtree,
+        read: impl FnOnce(Option<SubtreeView<'_>>) -> R,
+    ) -> Result<R, TxnError> {
         let State { directory, set, .. } = state;
-        let root = match set.subtree(&subtree) {
-            OwnSubtree::Gone => return Ok(read(None)),
-            OwnSubtree::Entered { view, op: entered } => {
-                // A subtree that was entered and not written is named by
-                // no drop: it went with a subtree above it that left since.
-                let left = set.left_after(entered);
-                let gone = !left.is_empty() && {
-                    let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
-                    self.below(set, opened, &op, subtree, &left, Some(entered))?
+        let (set, ops) = (&*set, set.ops());
+        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
+        let Said { base, if_absent } = set.subtree(&subtree, ops);
+        let entered = match by_key.standing(subtree, ops)? {
+            Standing::Gone => return Ok(read(None)),
+            Standing::Committed => {
+                let root = match base {
+                    OwnSubtree::Unwritten { root } => root,
+                    OwnSubtree::Entered { .. } | OwnSubtree::Gone => None,
                 };
-                return Ok(read((!gone).then_some(view)));
+                let opened = by_key.opened;
+                let entry = opened.seen_entry(&self.path, &op.guard, set, &subtree)?;
+                return Ok(read(entry.map(|entry| {
+                    let view = SubtreeView::of(entry);
+                    SubtreeView {
+                        root_key: root.unwrap_or(view.root_key),
+                        ..view
+                    }
+                })));
             }
-            OwnSubtree::Unwritten { root } => root,
+            Standing::Own(entered) => entered,
         };
-        let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
-        let entry = opened.seen_entry(&self.path, &op.guard, set, &subtree)?;
-        Ok(read(entry.map(|entry| {
-            let view = SubtreeView::of(entry);
-            SubtreeView {
-                root_key: root.unwrap_or(view.root_key),
-                ..view
-            }
-        })))
+        let view = match base {
+            OwnSubtree::Entered { view, op } if op == entered => Some(view),
+            _ => (if_absent.iter()).find_map(|(view, at)| (*at == entered).then_some(*view)),
+        };
+        // A subtree that was entered and not written is named by no drop:
+        // it went with a subtree above it that left since.
+        let left = set.left_after(entered);
+        let gone = !left.is_empty() && by_key.below(subtree, &left, Some((entered, ops)))?;
+        Ok(read(view.filter(|_| !gone)))
     }
 
     /// Those of the subtrees the transaction has written that are below
     /// one that `batch` drops or clears, where the transaction has no
-    /// frames to ask ([`Self::below`]).
+    /// frames to ask ([`ByKey::below`]).
     fn cut(
         &self,
         state: &mut State<'s>,
         op: &Op<'s>,
         batch: &Batch<'_>,
     ) -> Result<Vec<Subtree>, TxnError> {
-        let leaves = (batch.subtrees.iter()).filter(|write| !write.enters());
-        let leaving: Vec<Subtree> = leaves.map(SubtreeWrite::subtree).collect();
+        let leaving = batch.leaving();
         if leaving.is_empty() {
             return Ok(Vec::new());
         }
         let State { directory, set, .. } = state;
-        let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
+        let mut by_key = ByKey::new(&self.path, &op.guard, op.at, set, directory)?;
         let mut cut = Vec::new();
         for written in set.written().filter(|written| !leaving.contains(written)) {
-            if self.below(set, opened, op, written, &leaving, None)? {
+            if by_key.below(written, &leaving, None)? {
                 cut.push(written);
             }
         }
         Ok(cut)
-    }
-
-    /// Whether `subtree` is below one of `leaving`, where the transaction
-    /// has no frames to ask: by the hosts of the subtrees it entered
-    /// itself, and by the committed directory from there up.
-    ///
-    /// `since` is the operation that entered `subtree`, where `leaving`
-    /// left in operations after it. A host that was entered again since
-    /// left in between, with what it hosted, whatever it is below now: a
-    /// subtree is entered again only after it left. That holds for the
-    /// batches the frames take. While the transaction serves its records
-    /// by key a batch is not checked against the directory, and the commit
-    /// of a write set the frames would refuse is refused.
-    ///
-    /// One answer is not the frames': a clear of a Merk with no node
-    /// leaves the directory as it is, and here it takes what the
-    /// transaction entered below that Merk. An element hosts a subtree, so
-    /// no writer of a grove enters one below a Merk with no node.
-    fn below(
-        &self,
-        set: &WriteSet,
-        opened: &mut Opened,
-        op: &Op<'s>,
-        subtree: Subtree,
-        leaving: &[Subtree],
-        since: Option<usize>,
-    ) -> Result<bool, TxnError> {
-        let again =
-            |host: &Subtree, since| set.entered_in(host).is_some_and(|entered| entered > since);
-        let mut at = subtree;
-        for _ in 0..MAX_DEPTH {
-            let Some(Some(host)) = set.host_of(&at) else {
-                break;
-            };
-            if leaving.contains(&host) || since.is_some_and(|since| again(&host, since)) {
-                return Ok(true);
-            }
-            at = host;
-        }
-        match set.host_of(&at) {
-            None => opened.below(&self.path, &op.guard, &at, leaving),
-            Some(_) => Ok(false),
-        }
     }
 
     /// Shows `read` the node under `key` as the transaction has it: in its

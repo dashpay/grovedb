@@ -19,8 +19,9 @@ use lignindb::{
 
 use super::{
     access::{
-        column, fault, link_of, Access, BatchPart, LinkWrite, Location, MerkChange, NodeWrite,
-        Prefix, RecordChange, RootWrite, SubtreeChange, ValueWrite, Write, Written,
+        column, fault, link_of, Access, BatchPart, LigninEntryRefused, LinkWrite, Location,
+        MerkChange, NodeWrite, Prefix, RecordChange, RootWrite, SubtreeChange, ValueWrite, Write,
+        Written,
     },
     feature::{encode_aggregate, encode_feature},
     hash::{held_link, stale_hashes, HeldLink},
@@ -482,8 +483,14 @@ impl LigninApplied {
 
 /// What enters `subtree` in the subtree directory as a tree of
 /// `tree_type`: its place among the subtrees of its host is the place of
-/// its prefix in [`LigninHost::hosted`](super::LigninHost::hosted).
-pub(super) fn entering(subtree: &LigninSubtree, tree_type: &[u8]) -> Result<SubtreeChange, Error> {
+/// its prefix in [`LigninHost::hosted`](super::LigninHost::hosted). With
+/// `if_absent` it is entered only where the transaction does not have it
+/// entered when the write is applied.
+pub(super) fn entering(
+    subtree: &LigninSubtree,
+    tree_type: &[u8],
+    if_absent: bool,
+) -> Result<SubtreeChange, Error> {
     let host = match &subtree.host {
         None => None,
         Some(host) => {
@@ -498,6 +505,7 @@ pub(super) fn entering(subtree: &LigninSubtree, tree_type: &[u8]) -> Result<Subt
         subtree: subtree.prefix,
         tree_type: tree_type.to_vec(),
         host,
+        if_absent,
     })
 }
 
@@ -676,7 +684,7 @@ impl LigninBatch {
     /// is the place of its prefix in
     /// [`LigninHost::hosted`](super::LigninHost::hosted).
     pub fn enter(&self, subtree: &LigninSubtree, tree_type: &[u8]) -> Result<(), Error> {
-        entering(subtree, tree_type)?;
+        entering(subtree, tree_type, false)?;
         // What the element hosts and the enter are staged as one: no
         // batch is taken between the two.
         let _held = self.marks();
@@ -937,6 +945,12 @@ impl LigninSettled {
         self.hosts.push((subtree, host.key.clone(), hosted));
     }
 
+    /// Takes back every statement of [`Self::host`]: each element hosts
+    /// what the handles that staged into the batch said.
+    pub fn forget_hosts(&mut self) {
+        self.hosts.clear();
+    }
+
     /// The storage cost of the batch, which is owed once the transaction
     /// took its writes.
     pub fn pending_cost(&self) -> &OperationCost {
@@ -960,6 +974,12 @@ impl LigninSettled {
         self.resolved.enters().contains(&Subtree::new(*prefix))
     }
 
+    /// Whether the batch itself enters, drops or clears a subtree: what
+    /// whoever applies it has entered with it does not count.
+    pub fn writes_directory(&self) -> bool {
+        self.resolved.leaves() || !self.resolved.enters().is_empty()
+    }
+
     /// What the batch holds for the node `key` of the Merk under `prefix`,
     /// or `None` if it holds nothing for it.
     pub fn node(&self, prefix: &[u8; 32], key: &[u8]) -> Option<LigninOutcome<'_>> {
@@ -978,15 +998,38 @@ impl LigninSettled {
     /// host is in. Each is entered with the first part, or with the part
     /// that enters the subtree its host is in.
     ///
+    /// Each is entered if it is absent (`SubtreeWrite::EnterIfAbsent`): a
+    /// subtree that a commit beside the transaction entered since the
+    /// caller looked, or enters before the transaction commits, is found
+    /// where the write is laid out, and stays as that commit left it. Where
+    /// it is entered there as another tree, or under another element, the
+    /// write is refused.
+    ///
     /// The cost is the storage cost of every part, which is owed only if
     /// the transaction took the writes (`cost-model.md`, B1).
     pub fn apply<'v>(
-        parts: Vec<Self>,
+        mut parts: Vec<Self>,
         view: impl Into<LigninView<'v>>,
         enters: &[(LigninSubtree, Vec<u8>)],
     ) -> CostResult<LigninApplied, Error> {
+        Self::apply_kept(&mut parts, view, enters).map_err(|refused| refused.error)
+    }
+
+    /// As [`Self::apply`], for a caller that may apply the parts again
+    /// where the transaction took none of them. `parts` then holds the
+    /// batches that were handed in, and the transaction holds no write of
+    /// them; a write scope of the caller's keeps what the application
+    /// claimed in it. The refusal says where the transaction refused
+    /// them with one of the two refusals that [`LigninEntryRefused`]
+    /// names. Where the transaction took the batches, `parts` is left
+    /// with none.
+    pub fn apply_kept<'v>(
+        parts: &mut Vec<Self>,
+        view: impl Into<LigninView<'v>>,
+        enters: &[(LigninSubtree, Vec<u8>)],
+    ) -> CostResult<LigninApplied, LigninRefused> {
         let mut pending = OperationCost::default();
-        for part in &parts {
+        for part in parts.iter() {
             pending += part.pending.clone();
         }
         // A subtree is entered by the part that enters the subtree its
@@ -1003,25 +1046,38 @@ impl LigninSettled {
             });
             entered_by.push(part.unwrap_or(0));
         }
+        let mut entry = None;
         let applied = (enters.iter().zip(entered_by))
-            .map(|((subtree, tree_type), part)| Ok((part, entering(subtree, tree_type)?)))
+            .map(|((subtree, tree_type), part)| Ok((part, entering(subtree, tree_type, true)?)))
             .collect::<Result<Vec<_>, _>>()
             .and_then(|enters| {
                 let batches: Vec<&dyn BatchPart> =
                     parts.iter().map(|part| part as &dyn BatchPart).collect();
-                view.into().0.apply_parts(&batches, &enters)
+                view.into().0.apply_parts(&batches, &enters, &mut entry)
             });
         match applied {
             Ok(written) => {
                 let mut applied = LigninApplied::default();
-                for (part, written) in parts.into_iter().zip(written) {
+                for (part, written) in parts.drain(..).zip(written) {
                     applied.take_in(part.resolved, written);
                 }
                 Ok(applied).wrap_with_cost(MODEL.batch_written(pending, true))
             }
-            Err(error) => Err(error).wrap_with_cost(MODEL.batch_written(pending, false)),
+            Err(error) => Err(LigninRefused { error, entry })
+                .wrap_with_cost(MODEL.batch_written(pending, false)),
         }
     }
+}
+
+/// Batches of which a transaction took none ([`LigninSettled::apply_kept`]).
+#[derive(Debug)]
+pub struct LigninRefused {
+    /// Why, as [`LigninSettled::apply`] answers it.
+    pub error: Error,
+    /// The entry of a subtree as the transaction found it, where it
+    /// refused the batches with `NotEntered` or `EnteredOtherwise`, and
+    /// `None` with any other refusal.
+    pub entry: Option<LigninEntryRefused>,
 }
 
 /// Feeds `charge` every outcome of the batch: the keyspaces in the order

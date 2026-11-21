@@ -1333,3 +1333,202 @@ fn a_secondary_that_a_handle_by_prefix_writes_beside_a_named_write_is_entered_on
     }
     check(dir.path(), v);
 }
+
+/// What another writer does inside the look of
+/// [`a_writer_inside_the_look_of_an_indexed_tree_is_found_or_refuses_the_group`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Inside {
+    /// The first write into the tree, through a handle that names its
+    /// element: both Merks are entered under the element.
+    Named,
+    /// The first write into the tree, into the Merk that the group
+    /// writes by prefix, by its prefix alone: that Merk is entered under
+    /// no element, and the other is not entered.
+    ByPrefix,
+    /// The tree's Merks were entered under its element before the look,
+    /// after the group's handles were opened. A wipe, the tree inserted
+    /// again, and a write into each Merk by its prefix alone: both are
+    /// entered under no element.
+    Replaced,
+}
+
+/// A group writes the two Merks of an indexed tree, one through a handle
+/// that names the element and the other through a handle by prefix. Its
+/// look reads the entry of the second twice, once for each handle, and
+/// another writer's commits are published between the two reads, by a
+/// hook inside the look, in both orders of the two handles.
+///
+/// The look goes by its last read of an entry. Where the other writer
+/// entered both Merks under the element, the group is applied once and
+/// both writers' records are there. Where the last read finds a Merk
+/// under no element, whether nothing was entered before or both Merks
+/// hung under the element at the first read, the look refuses the group:
+/// nothing is applied, and the transaction, which stays open, holds none
+/// of the group's records and no entry of its making.
+#[test]
+fn a_writer_inside_the_look_of_an_indexed_tree_is_found_or_refuses_the_group() {
+    use std::{cell::Cell, rc::Rc, sync::Arc};
+
+    use crate::engine::lignin::{AFTER_ENTRY_READS, REFUSED};
+
+    let v = GroveVersion::latest();
+    let cases = [Inside::Named, Inside::ByPrefix, Inside::Replaced];
+    for (named_first, inside) in cases
+        .into_iter()
+        .flat_map(|inside| [(true, inside), (false, inside)])
+    {
+        let case = format!("named first: {named_first}, {inside:?}");
+        let dir = tempfile::tempdir().expect("a directory");
+        {
+            let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+            let tree = move |db: &Lignin| {
+                db.insert(ROOT, b"idx", Sum::empty(), None, None, v)
+                    .unwrap()
+                    .expect("an indexed tree");
+            };
+            tree(&db);
+            let engine = db.engine();
+            let top: &[&[u8]] = &[b"idx"];
+            let primary = build_prefix(top.into()).value;
+            let secondary = secondary_prefix_for(&primary, IndexAxis::Sum.tag()).value;
+            // One committed record in each of `into`: through a handle
+            // that names the element where there is one subtree and
+            // `names` is set, and by prefix otherwise.
+            let put = |db: &Lignin, into: &[[u8; 32]], names: bool, key: &[u8]| {
+                let engine = db.engine();
+                let tx = engine.start_transaction();
+                let batch = <LigninEngine as Engine>::Batch::default();
+                let top: &[&[u8]] = &[b"idx"];
+                for prefix in into {
+                    let handle = match names {
+                        true => engine.subtree(top.into(), Some(&batch), &tx),
+                        false => engine.subtree_by_prefix(*prefix, Some(&batch), &tx),
+                    };
+                    let handle = handle.unwrap();
+                    (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+                }
+                (engine.apply_batch(batch, &tx).unwrap()).expect("a batch");
+                (engine.commit_transaction(tx).unwrap()).expect("a commit");
+            };
+            // The subtrees are looked at in the order of their prefixes:
+            // the handle that names the element is of the one that comes
+            // first, or of the other.
+            let (low, high) = (primary.min(secondary), primary.max(secondary));
+            let (named, by_prefix) = match named_first {
+                true => (low, high),
+                false => (high, low),
+            };
+            let tx = engine.start_transaction();
+            let batch = <LigninEngine as Engine>::Batch::default();
+            let handle = match named == primary {
+                true => engine.subtree(top.into(), Some(&batch), &tx),
+                false => engine.subtree_beside(top.into(), secondary, Some(&batch), &tx),
+            };
+            let handle = handle.unwrap();
+            (handle.aux().put(b"n", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            let handle = engine
+                .subtree_by_prefix(by_prefix, Some(&batch), &tx)
+                .unwrap();
+            (handle.aux().put(b"p", b"v", None).unwrap()).expect("staging");
+            drop(handle);
+            // The group's handles were opened while nothing was entered:
+            // the one by prefix names no element.
+            if inside == Inside::Replaced {
+                put(&db, &[primary], true, b"z");
+            }
+
+            // The named write reads the entry of each Merk of the tree,
+            // and the write by prefix reads the entry of its own: the
+            // other writer comes after the first read of that entry.
+            let reads = match named_first {
+                true => 2,
+                false => 1,
+            };
+            let published = Rc::new(Cell::new(false));
+            let other = {
+                let (db, published) = (db.clone(), published.clone());
+                Box::new(move || {
+                    match inside {
+                        Inside::Named => put(&db, &[primary], true, b"o"),
+                        Inside::ByPrefix => put(&db, &[by_prefix], false, b"o"),
+                        Inside::Replaced => {
+                            db.wipe().expect("a wipe");
+                            tree(&db);
+                            put(&db, &[primary, secondary], false, b"o");
+                        }
+                    }
+                    published.set(true);
+                })
+            };
+            REFUSED.take();
+            AFTER_ENTRY_READS.set(Some((reads, other)));
+            let applied = engine.apply_batch(batch, &tx).unwrap();
+            assert!(
+                published.get(),
+                "{case}: the other writer came inside the look"
+            );
+            assert!(AFTER_ENTRY_READS.take().is_none(), "{case}");
+            // No application was refused by the transaction: a group is
+            // taken as its look left it, or refused by its look.
+            assert_eq!(REFUSED.take().len(), 0, "{case}");
+            // Whether a record is there, and the entry of a subtree, as a
+            // transaction shows them.
+            let read = |tx: &<LigninEngine as Engine>::Transaction<'_>, prefix, key: &[u8]| {
+                let handle = engine.subtree_by_prefix(prefix, None, tx).unwrap();
+                handle.aux().get(key).unwrap().expect("a read").is_some()
+            };
+            let entry_in = |tx: &<LigninEngine as Engine>::Transaction<'_>, prefix| {
+                let handle = engine.subtree_by_prefix(prefix, None, tx).unwrap();
+                handle.entry().expect("the directory answers")
+            };
+            match inside {
+                Inside::Named => {
+                    applied.expect("both records");
+                    (engine.commit_transaction(tx).unwrap()).expect("a commit");
+                    let reader = engine.start_read_transaction();
+                    let written = [(named, b"n"), (by_prefix, b"p"), (primary, b"o")];
+                    for (prefix, key) in written {
+                        assert!(read(&reader, prefix, key), "{case}");
+                    }
+                    for (position, prefix) in [primary, secondary].into_iter().enumerate() {
+                        let host = entry_in(&reader, prefix).expect("an entry").host;
+                        let host = host.expect("a host");
+                        assert_eq!(
+                            (host.key.as_slice(), usize::from(host.position)),
+                            (b"idx".as_slice(), position),
+                            "{case}"
+                        );
+                    }
+                }
+                Inside::ByPrefix | Inside::Replaced => {
+                    let refused = applied.map(|_| ()).expect_err("a Merk under no element");
+                    assert!(
+                        matches!(refused, StorageError::NotSupported(_)),
+                        "{case}: {refused}"
+                    );
+                    // The refused transaction, which stays open, and a
+                    // reader beside it.
+                    let reader = engine.start_read_transaction();
+                    for (through, which) in [(&tx, "the transaction"), (&reader, "a reader")] {
+                        let case = format!("{case}, {which}");
+                        assert!(read(through, by_prefix, b"o"), "{case}");
+                        assert!(!read(through, by_prefix, b"p"), "{case}");
+                        assert!(!read(through, named, b"n"), "{case}");
+                        assert!(!read(through, primary, b"z"), "{case}");
+                        let alone = entry_in(through, by_prefix).expect("an entry");
+                        assert_eq!(alone.host, None, "{case}");
+                        let beside = entry_in(through, named);
+                        match inside {
+                            Inside::ByPrefix => assert_eq!(beside, None, "{case}"),
+                            _ => assert_eq!(beside.expect("an entry").host, None, "{case}"),
+                        }
+                    }
+                    drop(tx);
+                }
+            }
+            db.flush().expect("a flush");
+        }
+        check(dir.path(), v);
+    }
+}

@@ -31,6 +31,11 @@ grovedb-dense-fixed-sized-merkle-tree = { version = "6.1.1", path = "../grovedb-
 grovedb-query = { version = "6.1.1", path = "../grovedb-query" }
 lignindb = { version = "6.1.1", path = "../lignindb", optional = true }
 lignin-tree = { version = "6.1.1", path = "../lignin-tree", optional = true }
+# The file layer of LigninDB, which `lignindb::Options` takes. The tests of
+# the engine fail file operations on its simulated one. It is named here and
+# not among the dev-dependencies, so that a build with no engine has no
+# LigninDB crate in its tests either.
+lignin-io = { version = "6.1.1", path = "../lignin-io", optional = true }
 
 axum = { workspace = true, optional = true }
 bincode = { workspace = true }
@@ -119,6 +124,7 @@ lignin_storage = [
     "grovedb-merk/lignin_storage",
     "dep:lignindb",
     "dep:lignin-tree",
+    "dep:lignin-io",
 ]
 # Everything of GroveDB that is written for any storage engine: `GroveDb<E>`
 # and its operations, batches, proofs and state sync, and the estimated

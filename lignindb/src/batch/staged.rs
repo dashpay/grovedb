@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use super::node::StagedNode;
-use crate::txn::{BatchError, Column, Hosted, NodePut, Subtree, Unit};
+use crate::txn::{BatchError, Column, Differs, Hosted, NodePut, Subtree, Unit};
 
 /// The columns in the order a batch is iterated in, and so charged in
 /// (`cost-model.md` B1): the order `StorageBatch` iterates its maps in.
@@ -68,6 +68,18 @@ pub(super) enum Leave {
 pub(super) struct Enter {
     pub(super) tree_type: Box<[u8]>,
     pub(super) order: u64,
+    /// Whether the subtree is entered only where the transaction does not
+    /// have it ([`SubtreeWrite::EnterIfAbsent`](crate::txn::SubtreeWrite)).
+    pub(super) if_absent: bool,
+}
+
+/// The refusal of two enters of one subtree that state two tree types.
+fn other_type(subtree: Subtree, entered: &Enter, stated: &Enter) -> BatchError {
+    let differs = Box::new(Differs::TreeType {
+        entered: entered.tree_type.clone(),
+        stated: stated.tree_type.clone(),
+    });
+    BatchError::EnteredOtherwise { subtree, differs }
 }
 
 /// Which enter of a subtree stands.
@@ -101,24 +113,107 @@ impl SubtreeState {
     /// What the statements come to, or the error the transaction would
     /// give the operation that made the last of them.
     fn outcome(&self, subtree: Subtree) -> Result<(Option<Leave>, Entered), BatchError> {
-        let (mut leave, mut own) = (self.leave, self.enter.is_some());
-        match (self.leaving, own, leave) {
+        let before = (self.leave, self.enter.as_ref());
+        Self::judge(subtree, before, (self.leaving, self.entering.as_ref()))
+    }
+
+    /// As [`Self::outcome`], for a subtree below one that leaves in the
+    /// operation of the two statements. The subtree goes with the one
+    /// above, and a leave of it by that operation is not handed to the
+    /// transaction. That leave is held against a leave of an earlier
+    /// operation, as anywhere, and not against an earlier enter if it is
+    /// absent: whether the transaction has the subtree to leave need not
+    /// be known. The operation's enter comes after the subtree went, and
+    /// is of a new one: it is held against the leave of its own operation,
+    /// as in a batch that holds nothing else, and against no enter of an
+    /// operation before.
+    fn outcome_below(&self, subtree: Subtree) -> Result<(), BatchError> {
+        let before = (self.leave, self.enter.as_ref());
+        match Self::judge(subtree, before, (self.leaving, None)) {
+            Ok(_) | Err(BatchError::LeavesIfEntered { .. }) => {}
+            Err(refusal) => return Err(refusal),
+        }
+        Self::judge(
+            subtree,
+            (None, None),
+            (self.leaving, self.entering.as_ref()),
+        )
+        .map(drop)
+    }
+
+    /// What a leave and an enter of one operation come to after `before`,
+    /// which is what the operations before it came to.
+    fn judge(
+        subtree: Subtree,
+        (leave, enter): (Option<Leave>, Option<&Enter>),
+        (leaving, entering): (Option<Leave>, Option<&Enter>),
+    ) -> Result<(Option<Leave>, Entered), BatchError> {
+        let (mut leave, mut own) = (leave, enter.is_some());
+        match (leaving, enter, leave) {
             (None, ..) => {}
-            // A subtree that an earlier operation entered is the batch's
-            // own: a drop takes that enter back, and the transaction has
-            // none to leave.
-            (Some(leaving), true, _) => own = leaving == Leave::Clear,
-            (Some(_), false, Some(Leave::Drop)) => {
+            // A subtree that an earlier operation entered if it was
+            // absent, with no leave before it, is the batch's own or the
+            // transaction's, and the batch cannot say which: whether
+            // there is one to leave.
+            (
+                Some(_),
+                Some(Enter {
+                    if_absent: true, ..
+                }),
+                None,
+            ) => {
+                return Err(BatchError::LeavesIfEntered { subtree });
+            }
+            // After a clear such an enter found the transaction's subtree,
+            // which the clear left entered. The leave is of that one, and
+            // a drop of it leaves nothing that was entered.
+            (
+                Some(leaving),
+                Some(Enter {
+                    if_absent: true, ..
+                }),
+                Some(Leave::Clear),
+            ) => (leave, own) = (Some(leaving), leaving == Leave::Clear),
+            // A subtree that an earlier operation entered as one that is
+            // new, or if it was absent after a drop, is the batch's own: a
+            // drop takes that enter back, and the transaction has none to
+            // leave.
+            (Some(leaving), Some(_), _) => own = leaving == Leave::Clear,
+            (Some(_), None, Some(Leave::Drop)) => {
                 return Err(BatchError::NotEntered { subtree });
             }
-            (Some(leaving), false, _) => leave = Some(leaving),
+            (Some(leaving), None, _) => leave = Some(leaving),
         }
-        match (&self.entering, own) {
+        match (entering, own) {
             (None, true) => Ok((leave, Entered::Before)),
             (None, false) => Ok((leave, Entered::No)),
+            // An enter of a subtree that may be entered finds the one the
+            // batch entered, and is satisfied where the two state one tree
+            // type. Their host is the one statement the batch has of it.
+            (
+                Some(
+                    entering @ Enter {
+                        if_absent: true, ..
+                    },
+                ),
+                true,
+            ) => match enter {
+                Some(held) if held.tree_type != entering.tree_type => {
+                    Err(other_type(subtree, held, entering))
+                }
+                _ => Ok((leave, Entered::Before)),
+            },
             // A clear leaves the subtree entered, as an enter does.
             (Some(_), true) => Err(BatchError::Entered { subtree }),
-            (Some(_), false) if leave == Some(Leave::Clear) => Err(BatchError::Entered { subtree }),
+            // The subtree that a clear leaves entered is the
+            // transaction's, which judges an enter of a subtree that may
+            // be entered against it.
+            (
+                Some(Enter {
+                    if_absent: false, ..
+                }),
+                false,
+            ) if leave == Some(Leave::Clear) => Err(BatchError::Entered { subtree }),
             (Some(_), false) => Ok((leave, Entered::Now)),
         }
     }
@@ -225,7 +320,7 @@ impl<C> Staged<C> {
             // What earlier operations said of a subtree below one that
             // leaves goes with it.
             true if state.at < generation => state.outcome(*subtree).is_ok(),
-            true => state.outcome(*subtree).is_ok() && state.entering.is_none(),
+            true => state.outcome_below(*subtree).is_ok() && state.entering.is_none(),
             false => matches!(state.outcome(*subtree), Ok((None, Entered::No))),
         };
         self.refused.is_none() && self.len() == 0 && self.subtrees.iter().all(blank)
@@ -423,13 +518,32 @@ impl<C> Staged<C> {
         state
     }
 
-    pub(super) fn enter(&mut self, subtree: Subtree, tree_type: &[u8]) {
+    /// Two enters of one operation are refused, unless one of them is of
+    /// a subtree that may be entered: that one is satisfied by the other,
+    /// where the two state one tree type. The enter of a new subtree
+    /// stands over it, and of two of its own kind the first.
+    pub(super) fn enter(&mut self, subtree: Subtree, tree_type: &[u8], if_absent: bool) {
         let enter = Enter {
             tree_type: tree_type.into(),
             order: self.next_order(),
+            if_absent,
         };
-        if self.current(subtree).entering.replace(enter).is_some() {
-            self.refuse(BatchError::SubtreeTwice { subtree });
+        let state = self.current(subtree);
+        let (stands, refusal) = match state.entering.take() {
+            None => (enter, None),
+            Some(held) if held.if_absent || enter.if_absent => {
+                let differs = held.tree_type != enter.tree_type;
+                let refusal = differs.then(|| other_type(subtree, &held, &enter));
+                match held.if_absent && !enter.if_absent {
+                    true => (enter, refusal),
+                    false => (held, refusal),
+                }
+            }
+            Some(_) => (enter, Some(BatchError::SubtreeTwice { subtree })),
+        };
+        state.entering = Some(stands);
+        if let Some(refusal) = refusal {
+            self.refuse(refusal);
         }
     }
 
@@ -493,7 +607,7 @@ impl<C> Staged<C> {
             if let Some(state) = self.subtrees.get_mut(below) {
                 let said = match state.at < generation {
                     true => state.fold(*below),
-                    false => state.outcome(*below).map(|_| ()),
+                    false => state.outcome_below(*below),
                 };
                 if let Err(refusal) = said {
                     self.refused.get_or_insert(refusal);
@@ -638,15 +752,11 @@ impl<C> Staged<C> {
                 let parent = &mut self.current(subtree).parent;
                 *parent = parent.or(state.parent);
             }
-            enters.extend(
-                state
-                    .enter
-                    .map(|enter| (enter.order, subtree, enter.tree_type)),
-            );
+            enters.extend(state.enter.map(|enter| (enter.order, subtree, enter)));
         }
         enters.sort_by_key(|(order, ..)| *order);
-        for (_, subtree, tree_type) in enters {
-            self.enter(subtree, &tree_type);
+        for (_, subtree, enter) in enters {
+            self.enter(subtree, &enter.tree_type, enter.if_absent);
         }
         for (subtree, root) in other.roots {
             self.set_root(subtree, root.key.as_deref());

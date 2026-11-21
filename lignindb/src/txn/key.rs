@@ -151,6 +151,10 @@ impl UnitKeys {
 pub struct KeySet {
     pub(crate) units: HashMap<Unit, UnitKeys>,
     pub(crate) subtrees: BTreeSet<Subtree>,
+    /// The subtrees whose Merk the commit cleared. Their keys are a range
+    /// of `units`; this says that the range is a clear, which takes the
+    /// subtrees below with it, and no other delete of every key (CV9).
+    pub(crate) cleared: BTreeSet<Subtree>,
     pub(crate) everything: bool,
 }
 
@@ -185,6 +189,13 @@ impl KeySet {
         self
     }
 
+    /// Adds every key of the data column of `subtree`, as the clear of
+    /// its Merk that takes every subtree below it too (CV9).
+    pub fn cleared(&mut self, subtree: Subtree) -> &mut Self {
+        self.cleared.insert(subtree);
+        self.range(Unit::data(subtree), &[], None)
+    }
+
     /// Adds every key of every column: a wipe (CV3).
     pub fn everything(&mut self) -> &mut Self {
         self.everything = true;
@@ -204,6 +215,7 @@ impl KeySet {
             }
         }
         self.subtrees.extend(other.subtrees.iter().copied());
+        self.cleared.extend(other.cleared.iter().copied());
         self.everything |= other.everything;
         self
     }
@@ -250,6 +262,14 @@ impl KeySet {
     /// Whether the set holds every key of `unit`.
     pub(crate) fn covers_unit(&self, unit: Unit) -> bool {
         self.everything || self.subtrees.contains(&unit.subtree)
+    }
+
+    /// Whether the commit took `subtree` out with every subtree below it:
+    /// it dropped the subtree or cleared its Merk, or it was a wipe. A
+    /// delete of every key of the subtree's data column that is no clear,
+    /// as of flat records, takes no subtree.
+    pub(crate) fn takes(&self, subtree: &Subtree) -> bool {
+        self.covers_unit(Unit::data(*subtree)) || self.cleared.contains(subtree)
     }
 }
 

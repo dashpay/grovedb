@@ -7,6 +7,7 @@ mod beside;
 mod check;
 mod clean;
 mod ended;
+mod enters;
 mod filling;
 mod full;
 mod guards;
@@ -48,8 +49,8 @@ use crate::{
     db::{OpenError, ReclaimStats},
     snapshot::Operation,
     txn::{
-        Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, Subtree,
-        SubtreeWrite, ValuePut,
+        Batch, Column, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite,
+        RootPut, Subtree, SubtreeWrite, ValuePut,
     },
     Db, Options,
 };
@@ -674,6 +675,8 @@ pub(super) type Seen = (usize, Vec<(Column, Vec<u8>)>);
 pub(super) struct Writes {
     /// Subtrees to enter, each with the node that hosts it, if one does.
     pub(super) enter: Vec<Entered>,
+    /// Subtrees to enter if they are absent, each as for `enter`.
+    pub(super) enter_if_absent: Vec<Entered>,
     /// Subtrees to drop.
     pub(super) drop: Vec<Subtree>,
     /// Whole Merks to write.
@@ -719,10 +722,9 @@ impl Writes {
                 anchored: false,
             })
             .collect();
-        let enters = self
-            .enter
-            .iter()
-            .map(|(subtree, host)| SubtreeWrite::Enter {
+        fn entering(entered: &Entered, if_absent: bool) -> SubtreeWrite<'_> {
+            let (subtree, host) = entered;
+            let entering = Entering {
                 subtree: *subtree,
                 tree_type: TREE_TYPE,
                 host: host.as_ref().map(|(parent, key)| HostPut {
@@ -730,7 +732,13 @@ impl Writes {
                     key,
                     position: 0,
                 }),
-            });
+                if_absent,
+            };
+            entering.write()
+        }
+        let new = self.enter.iter().map(|entered| entering(entered, false));
+        let absent = self.enter_if_absent.iter();
+        let enters = new.chain(absent.map(|entered| entering(entered, true)));
         let drops = (self.drop.iter()).map(|subtree| SubtreeWrite::Drop { subtree: *subtree });
         let subtrees: Vec<SubtreeWrite<'_>> = drops.chain(enters).collect();
         let records: Vec<RecordWrite<'_>> = (self.records.iter())

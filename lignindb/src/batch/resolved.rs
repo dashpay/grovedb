@@ -10,8 +10,8 @@ use super::{
     staged::{Entry, Keys, Leave, Staged, SubtreeState, Write, DATA, ORDER},
 };
 use crate::txn::{
-    Applied, Batch, BatchError, Column, HostPut, Hosted, MerkWrite, RecordWrite, RootPut, Scope,
-    Subtree, SubtreeWrite, TxnError, Unit,
+    Applied, Batch, BatchError, Column, Entering, HostPut, Hosted, MerkWrite, RecordWrite, RootPut,
+    Scope, Subtree, SubtreeWrite, TxnError, Unit,
 };
 
 /// The most Merks an element hosts: a pointer is named by one byte.
@@ -172,9 +172,19 @@ impl<C> Resolved<C> {
         })
     }
 
-    /// The subtrees the batch enters, in the order they are entered.
+    /// The subtrees the batch enters, in the order they are entered: those
+    /// it enters as new ([`StagedBatch::enter`](super::StagedBatch::enter))
+    /// and those it enters if they are absent
+    /// ([`StagedBatch::enter_if_absent`](super::StagedBatch::enter_if_absent)).
+    /// Each is entered once the batch is applied, and the second kind may
+    /// have been before: [`Self::with_batch`] shows which enter each is.
     pub fn enters(&self) -> &[Subtree] {
         &self.enters
+    }
+
+    /// Whether the batch drops or clears a subtree.
+    pub fn leaves(&self) -> bool {
+        !self.leaves.is_empty()
     }
 
     /// What the batch holds for `key` in the data column of `subtree`, or
@@ -292,16 +302,19 @@ impl<C> Resolved<C> {
             Leave::Drop => SubtreeWrite::Drop { subtree: *subtree },
             Leave::Clear => SubtreeWrite::Clear { subtree: *subtree },
         });
-        let enters = self.enters.iter().map(|subtree| SubtreeWrite::Enter {
-            subtree: *subtree,
-            tree_type: (self.staged.subtrees.get(subtree))
-                .and_then(|state| state.enter.as_ref())
-                .map_or(&[][..], |enter| &enter.tree_type),
-            host: self.hung.get(subtree).map(|hung| HostPut {
-                subtree: hung.subtree,
-                key: &hung.key,
-                position: hung.position,
-            }),
+        let enters = self.enters.iter().map(|subtree| {
+            let enter = (self.staged.subtrees.get(subtree)).and_then(|state| state.enter.as_ref());
+            let entering = Entering {
+                subtree: *subtree,
+                tree_type: enter.map_or(&[][..], |enter| &enter.tree_type),
+                host: self.hung.get(subtree).map(|hung| HostPut {
+                    subtree: hung.subtree,
+                    key: &hung.key,
+                    position: hung.position,
+                }),
+                if_absent: enter.is_some_and(|enter| enter.if_absent),
+            };
+            entering.write()
         });
         let subtrees: Vec<_> = leaves.chain(enters).collect();
         run(&Batch {

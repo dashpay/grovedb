@@ -12,7 +12,11 @@ use std::{
 use lignin_io::sim::{SimConfig, SimVfs};
 
 use super::*;
-use crate::{commit::CommitError, db::WriteError, txn::Unit};
+use crate::{
+    commit::CommitError,
+    db::WriteError,
+    txn::{BatchError, TxnError, Unit},
+};
 
 /// A grove of five subtrees: Merks with values in their cells and out of
 /// line, one Merk nested in another, one subtree whose data column is
@@ -466,4 +470,432 @@ fn a_wipe_beside_writers_and_readers_is_one_commit_to_each() {
     let stats = db.stats();
     assert_eq!(stats.background.reclaim_errors, 0, "{:?}", stats.background);
     assert_eq!(stats.reclaimed.given_up, 0);
+}
+
+/// What a reader finds of the subtree `name`: the tree type it is entered
+/// with, its nodes and its records under `k`.
+fn entered(operation: &Operation<'_>, name: u8) -> Option<(Vec<u8>, usize, usize)> {
+    let opened = operation.open(subtree(name)).expect("a lookup")?;
+    let tree_type = opened.entry().tree_type().to_vec();
+    let (nodes, records) = seen(operation, subtree(name), b"k").expect("it is entered");
+    Some((tree_type, nodes, records.len()))
+}
+
+/// D-181 item 5: a wipe enters the subtrees its caller names in its own
+/// commit. At the wipe's version they are entered, new and empty, and no
+/// other subtree is: one of them was entered before with all it held, one
+/// was hosted by a subtree that the wipe drops, and one was never there.
+#[test]
+fn a_wipe_enters_the_subtrees_its_caller_names_in_its_own_commit() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    grove(&db);
+    let before = db.snapshot();
+    let open = db.begin();
+    let scope = open.scope().expect("a scope");
+    let staged = Writes {
+        records: vec![(Column::Aux, subtree(5), b"t".to_vec(), b"mine".to_vec())],
+        ..Writes::default()
+    };
+    (staged.with(|batch| scope.apply(batch))).expect("the batch is applied");
+    scope.merge();
+
+    let (at, logged) = (db.version(), db.stats().store.log_bytes);
+    let enters: [(Subtree, &[u8]); 3] = [
+        (subtree(1), b"one"),
+        (subtree(3), b""),
+        (subtree(9), b"nine"),
+    ];
+    let Ok(Committed::Published(wiped)) = db.wipe_entering(&enters) else {
+        panic!("the wipe is a commit");
+    };
+    assert_eq!(Some(wiped.version), at.next(), "one commit");
+    assert_eq!(db.version(), wiped.version);
+    assert!(db.stats().store.log_bytes > logged, "one group");
+
+    let read_all = |operation: &Operation<'_>| -> Vec<Option<(Vec<u8>, usize, usize)>> {
+        (1..=9).map(|name| entered(operation, name)).collect()
+    };
+    let new = |tree_type: &[u8]| Some((tree_type.to_vec(), 0, 0));
+    let expected = vec![
+        new(b"one"),
+        None,
+        new(b""),
+        None,
+        None,
+        None,
+        None,
+        None,
+        new(b"nine"),
+    ];
+    let snapshot = db.snapshot();
+    assert_eq!(snapshot.version(), wiped.version);
+    assert_eq!(read_all(&snapshot.operation()), expected);
+    // The subtree that was hosted has no host now.
+    let operation = snapshot.operation();
+    let third = operation.open(subtree(3)).expect("a lookup");
+    assert!(third.expect("it is entered").entry().host().is_none());
+    drop(operation);
+    drop(snapshot);
+    // A reader from before keeps its version, and a transaction that
+    // wrote before the wipe meets it.
+    assert_eq!(read(&before.operation()), FULL);
+    drop(before);
+    let error = (db.commit(&open, &mut NoStaleHashes)).expect_err("a conflict");
+    assert!(error.is_conflict(), "{error}");
+    drop(open);
+
+    // The subtrees are written as any other, and what the wipe left of
+    // the old ones is reclaimed beside them.
+    let again = Writes {
+        merks: vec![(subtree(1), Merk::sized(b'n', 30, 24))],
+        records: vec![(Column::Aux, subtree(9), b"k".to_vec(), vec![9; 40])],
+        ..Writes::default()
+    };
+    again.commit(&db);
+    reclaimed(&db, "what the wipe left is reclaimed", |reclaimed| {
+        reclaimed.merks == 4 && reclaimed.waiting == 0
+    });
+    let written = vec![
+        Some((b"one".to_vec(), 30, 0)),
+        None,
+        new(b""),
+        None,
+        None,
+        None,
+        None,
+        None,
+        Some((b"nine".to_vec(), 0, 1)),
+    ];
+    assert_eq!(read_all(&db.snapshot().operation()), written);
+    db.flush().expect("the log is synced");
+    let report = {
+        halt_background(&db);
+        checked(&db)
+    };
+    assert!(
+        report.findings.is_empty() && report.more_findings == 0,
+        "{report}"
+    );
+    drop(db);
+    let db = Db::open(dir.path(), &options()).expect("the database is opened again");
+    assert_eq!(read_all(&db.snapshot().operation()), written);
+}
+
+/// CV3 and CF5 for a database with nothing in it: with subtrees to enter
+/// its wipe is one commit with the key set of a wipe, in which they are
+/// entered, and nothing else is made to be dropped.
+#[test]
+fn a_wipe_of_a_database_with_no_subtree_enters_what_its_caller_names() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    // A transaction that entered a subtree and wrote a record before the
+    // wipe: the wipe drops nothing of it, and its key set meets it.
+    let wrote = db.begin();
+    let scope = wrote.scope().expect("a scope");
+    let staged = Writes {
+        enter_if_absent: vec![(subtree(3), None)],
+        records: vec![(Column::Aux, subtree(3), b"t".to_vec(), b"mine".to_vec())],
+        ..Writes::default()
+    };
+    (staged.with(|batch| scope.apply(batch))).expect("the batch is applied");
+    scope.merge();
+
+    let at = db.version();
+    let enters: [(Subtree, &[u8]); 2] = [(subtree(0), b"root"), (subtree(3), b"")];
+    let Ok(Committed::Published(wiped)) = db.wipe_entering(&enters) else {
+        panic!("the wipe is a commit");
+    };
+    assert_eq!(Some(wiped.version), at.next(), "one commit");
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    assert_eq!(entered(&operation, 0), Some((b"root".to_vec(), 0, 0)));
+    assert_eq!(entered(&operation, 3), Some((Vec::new(), 0, 0)));
+    drop(operation);
+    drop(snapshot);
+    let error = (db.commit(&wrote, &mut NoStaleHashes)).expect_err("a conflict");
+    assert!(error.is_conflict(), "{error}");
+    // Nothing was entered to be dropped: there is nothing to reclaim.
+    assert_eq!(db.stats().reclaimed.merks, 0);
+    drop(wrote);
+
+    // The same wipe again drops the two and enters them anew.
+    let Ok(Committed::Published(again)) = db.wipe_entering(&enters) else {
+        panic!("the wipe is a commit");
+    };
+    assert_eq!(Some(again.version), wiped.version.next());
+    reclaimed(&db, "the two subtrees are reclaimed", |reclaimed| {
+        reclaimed.merks == 2 && reclaimed.waiting == 0
+    });
+    assert_eq!(
+        entered(&db.snapshot().operation(), 0),
+        Some((b"root".to_vec(), 0, 0))
+    );
+}
+
+/// A wipe that is refused has wiped nothing and entered nothing: a list
+/// that names a subtree twice, and one with a tree type the directory
+/// does not keep. The session goes on.
+#[test]
+fn a_wipe_whose_enters_are_refused_has_wiped_nothing() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    grove(&db);
+    let at = db.version();
+    let long = vec![7u8; 256];
+    let twice: [(Subtree, &[u8]); 3] = [(subtree(9), b"a"), (subtree(1), b"b"), (subtree(9), b"a")];
+    let too_long: [(Subtree, &[u8]); 2] = [(subtree(9), b"a"), (subtree(8), &long)];
+    for (case, enters) in [&twice[..], &too_long[..]].into_iter().enumerate() {
+        let error = db.wipe_entering(enters).expect_err("the list is refused");
+        let refused = matches!(
+            &error,
+            WriteError::Commit(CommitError::Refused(TxnError::Batch(
+                BatchError::SubtreeTwice { .. } | BatchError::TreeTypeTooLong { .. }
+            )))
+        );
+        assert!(refused, "case {case}: {error}");
+        assert!(!error.is_conflict() && error.reopen().is_none(), "{error}");
+        assert_eq!(db.version(), at, "case {case}: no commit");
+        let snapshot = db.snapshot();
+        assert_eq!(read(&snapshot.operation()), FULL, "case {case}");
+        let operation = snapshot.operation();
+        for name in [8, 9] {
+            assert!(operation.open(subtree(name)).expect("a lookup").is_none());
+        }
+    }
+    assert!(db.reopen().is_none());
+    // The next wipe is made, with its enters.
+    let enters: [(Subtree, &[u8]); 1] = [(subtree(9), b"a")];
+    let Ok(Committed::Published(wiped)) = db.wipe_entering(&enters) else {
+        panic!("the wipe is a commit");
+    };
+    assert_eq!(Some(wiped.version), at.next());
+    assert_eq!(read(&db.snapshot().operation()), [None; 5]);
+}
+
+/// T-WP1 for a wipe with enters: a power cut around it leaves the
+/// database as it was, with none of them entered, or empty with all of
+/// them entered.
+#[test]
+fn a_power_cut_around_a_wipe_with_enters_leaves_all_or_nothing() {
+    let (mut whole, mut empty) = (0, 0);
+    for seed in 0..16u64 {
+        let fs = SimVfs::new(SimConfig::new(seed));
+        let options = Options {
+            vfs: Arc::new(fs.clone()),
+            ..options()
+        };
+        let db = Db::open("/db", &options).expect("a new database");
+        grove(&db);
+        db.flush().expect("the log is synced");
+        let grown = db.version();
+        let enters: [(Subtree, &[u8]); 2] = [(subtree(2), b"two"), (subtree(9), b"nine")];
+        assert!(matches!(
+            db.wipe_entering(&enters),
+            Ok(Committed::Published(_))
+        ));
+        if seed % 2 == 0 {
+            db.flush().expect("the log is synced");
+            db.reclaim();
+        }
+        let crashed = fs.crash(seed * 7 + 1);
+        drop(db);
+
+        let options = Options {
+            vfs: Arc::new(crashed),
+            ..options
+        };
+        let db = Db::open("/db", &options).expect("the database opens");
+        let snapshot = db.snapshot();
+        let operation = snapshot.operation();
+        let found = read(&operation);
+        let (two, nine) = (entered(&operation, 2), entered(&operation, 9));
+        match db.version() == grown {
+            true => {
+                assert!(seed % 2 == 1, "seed {seed}: the wipe was durable");
+                assert_eq!(found, FULL, "seed {seed}: as it was");
+                assert_eq!(nine, None, "seed {seed}: nothing is entered");
+                assert_eq!(two, Some((TREE_TYPE.to_vec(), 300, 3)), "seed {seed}");
+                whole += 1;
+            }
+            false => {
+                assert_eq!(Some(db.version()), grown.next(), "seed {seed}");
+                let wiped = [None, Some((0, 0)), None, None, None];
+                assert_eq!(found, wiped, "seed {seed}: empty");
+                assert_eq!(two, Some((b"two".to_vec(), 0, 0)), "seed {seed}");
+                assert_eq!(nine, Some((b"nine".to_vec(), 0, 0)), "seed {seed}");
+                empty += 1;
+            }
+        }
+    }
+    assert!(empty >= 8, "{empty} wipes survived, {whole} did not");
+}
+
+/// A wipe whose commit fails at the log: every append of the file layer
+/// fails from the wipe on. An append that is undone leaves the log as it
+/// was, and the wipe has failed: nothing is wiped and nothing is entered,
+/// in this session and in the next. An append that is torn leaves a part
+/// of its bytes in the file, or all of them, and the wipe is then made or
+/// not. Whichever it is and whatever the wipe returned, a reader finds
+/// the database as it was with nothing entered, or empty with what the
+/// wipe was given: never one without the other.
+#[test]
+fn a_wipe_that_fails_at_the_log_leaves_the_database_as_it_was() {
+    use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
+
+    for seed in 0..12u64 {
+        let torn = seed % 2 == 1;
+        let fs = SimVfs::new(SimConfig::new(seed));
+        let options = Options {
+            vfs: Arc::new(fs.clone()),
+            ..options()
+        };
+        let db = Db::open("/db", &options).expect("a new database");
+        grove(&db);
+        db.flush().expect("the log is synced");
+        let grown = db.version();
+        let appends = OpSet::of(&[OpKind::Append]);
+        let rule = FaultRule::new(Fault::Eio).on(appends);
+        fs.add_rule(rule.torn_append(torn).forever());
+        let enters: [(Subtree, &[u8]); 1] = [(subtree(9), b"nine")];
+        let wiped = db.wipe_entering(&enters);
+        fs.clear_rules();
+
+        // Whether a reader finds the database as it was.
+        let whole = |db: &Db, at: &str| {
+            let snapshot = db.snapshot();
+            let operation = snapshot.operation();
+            let found = read(&operation);
+            match entered(&operation, 9) {
+                None => {
+                    assert_eq!(found, FULL, "seed {seed}, {at}: as it was");
+                    true
+                }
+                Some(nine) => {
+                    assert_eq!(found, [None; 5], "seed {seed}, {at}: empty");
+                    assert_eq!(nine, (b"nine".to_vec(), 0, 0), "seed {seed}, {at}");
+                    false
+                }
+            }
+        };
+        let published = db.version() != grown;
+        assert_eq!(whole(&db, "in this session"), !published, "seed {seed}");
+        match &wiped {
+            Ok(_) => assert!(published, "seed {seed}"),
+            Err(error) => assert_eq!(
+                error.published().is_some(),
+                published,
+                "seed {seed}: {error}"
+            ),
+        }
+        if !torn {
+            assert!(wiped.is_err() && !published, "seed {seed}: {wiped:?}");
+        }
+        drop(db);
+
+        let db = Db::open("/db", &options).expect("the database opens");
+        let kept = whole(&db, "in the next session");
+        assert!(
+            !(published && kept),
+            "seed {seed}: a published wipe is lost"
+        );
+        assert!(
+            torn || kept,
+            "seed {seed}: a wipe that was taken back is made"
+        );
+    }
+}
+
+/// A wipe is one commit, and ends as a commit does. One of its outcomes
+/// is an error after it is published: the log took the group whole, and
+/// the sync the commit asked for failed (`CommitError::NotDurable`). The
+/// error says that the wipe is published, and it is published whole: a
+/// reader of the latest version finds the database empty with what the
+/// wipe was given, and a snapshot from before reads what it read.
+#[test]
+fn a_wipe_whose_sync_fails_is_published_whole_and_says_so() {
+    use lignin_io::sim::{Fault, FaultRule, OpSet};
+    use lignin_store::wal::SyncPolicy;
+
+    let fs = SimVfs::new(SimConfig::new(31));
+    let options = Options {
+        vfs: Arc::new(fs.clone()),
+        sync: SyncPolicy::EveryCommit,
+        ..options()
+    };
+    let db = Db::open("/db", &options).expect("a new database");
+    grove(&db);
+    // The background work is at rest, so the sync that fails is the
+    // commit's.
+    halt_background(&db);
+    let grown = db.version();
+    let before = db.snapshot();
+    fs.add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS).forever());
+    let enters: [(Subtree, &[u8]); 1] = [(subtree(9), b"nine")];
+    let error = db.wipe_entering(&enters).expect_err("the sync failed");
+    fs.clear_rules();
+    assert!(
+        matches!(error, WriteError::Commit(CommitError::NotDurable { .. })),
+        "{error}"
+    );
+    let version = error.published().expect("the wipe is published").version;
+    assert_eq!((Some(version), db.version()), (grown.next(), version));
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    assert_eq!(read(&operation), [None; 5]);
+    assert_eq!(entered(&operation, 9), Some((b"nine".to_vec(), 0, 0)));
+    let operation = before.operation();
+    assert_eq!(read(&operation), FULL);
+    assert_eq!(entered(&operation, 9), None);
+}
+
+/// A transaction that only enters a subtree has written no record, so a
+/// wipe meets no key of it and is no conflict for it (CF5). Its enter is
+/// judged by the directory the wipe leaves, as by that of any commit: a
+/// subtree that the wipe entered refuses the enter of a subtree that is
+/// new, and an enter if it is absent that states another tree type. An
+/// enter if it is absent that states the type the wipe gave is satisfied.
+#[test]
+fn an_enter_beside_a_wipe_is_judged_by_what_the_wipe_entered() {
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    grove(&db);
+    let entering = |name: u8, new: bool| {
+        let (mut writes, enter) = (Writes::default(), (subtree(name), None));
+        match new {
+            true => writes.enter.push(enter),
+            false => writes.enter_if_absent.push(enter),
+        }
+        let txn = db.begin();
+        let scope = txn.scope().expect("a scope");
+        (writes.with(|batch| scope.apply(batch))).expect("the batch is applied");
+        scope.merge();
+        txn
+    };
+    let refused = |txn: &crate::txn::WriteTxn<'_>| {
+        let error = (db.commit(txn, &mut NoStaleHashes)).expect_err("a refusal");
+        assert!(!error.is_conflict(), "{error}");
+        match error {
+            WriteError::Commit(CommitError::Refused(TxnError::Batch(refused))) => refused,
+            other => panic!("the directory refuses the enter, and not {other}"),
+        }
+    };
+
+    // All three are begun, and have entered, before the wipe.
+    let (new, other, same) = (entering(9, true), entering(9, false), entering(10, false));
+    let enters: [(Subtree, &[u8]); 2] = [(subtree(9), b"nine"), (subtree(10), TREE_TYPE)];
+    db.wipe_entering(&enters).expect("a wipe");
+    let entered_already = BatchError::Entered {
+        subtree: subtree(9),
+    };
+    assert_eq!(refused(&new), entered_already);
+    assert!(matches!(
+        refused(&other),
+        BatchError::EnteredOtherwise { subtree: found, .. } if found == subtree(9)
+    ));
+    (db.commit(&same, &mut NoStaleHashes)).expect("the enter finds the subtree of the wipe");
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    assert_eq!(entered(&operation, 9), Some((b"nine".to_vec(), 0, 0)));
+    assert_eq!(entered(&operation, 10), Some((TREE_TYPE.to_vec(), 0, 0)));
 }

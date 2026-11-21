@@ -124,6 +124,16 @@
 //!   ([`SubtreeWrite`]), as the caller that writes the hosting elements
 //!   knows them. A change set and a flat record, in any column, are of a
 //!   subtree that is entered ([`BatchError::NotEntered`]).
+//! - **A subtree is entered as one that is new, or if it is absent**
+//!   ([`SubtreeWrite::Enter`], [`SubtreeWrite::EnterIfAbsent`]). The first
+//!   is refused where the subtree is entered. The second is judged
+//!   wherever the write is laid out: it enters a subtree that is not
+//!   entered there, leaves one that is entered with the tree type and the
+//!   host it states as it is, and is refused where the subtree is entered
+//!   otherwise ([`BatchError::EnteredOtherwise`]). Frames that are made
+//!   again apply it again, so it finds a subtree that a commit beside the
+//!   transaction entered since, where the first kind is refused and the
+//!   transaction's commit with it. Neither is a key of the conflict rule.
 //! - **No record of a subtree is read without its entry.** In every
 //!   column the committed records under a prefix belong to the entry the
 //!   directory has under that prefix, so where the version that is read
@@ -560,7 +570,7 @@ pub(crate) mod tests;
 
 pub use commits::Commits;
 pub use cursor::{CommittedSide, Cursor, FlatSide, MerkCursor, MerkSide, ParkedCursor, Resumed};
-pub use error::{BatchError, TxnError};
+pub use error::{BatchError, Differs, HostName, TxnError};
 pub use key::{Column, KeySet, Subtree, Unit};
 pub(crate) use path::Store;
 pub use path::{FlatReader, FlatWriter, Keyspaces, WritePath};
@@ -568,7 +578,7 @@ pub(crate) use txn::Held;
 pub use txn::{Scope, TxnStats, WriteTxn};
 pub use view::{ChildKeys, LinkView, NodeView, SubtreeView};
 pub use write::{
-    Applied, Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
+    Applied, Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
     SubtreeWrite, ValuePut,
 };
 pub use write_set::Mark;

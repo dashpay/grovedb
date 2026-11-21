@@ -89,24 +89,83 @@
 //! - A subtree is not dropped when its element goes (GROVE-05), and its
 //!   entry keeps the tree type and the host it was entered with when its
 //!   element is written again as a tree of another type.
-//! - Two transactions that each write first into one subtree both enter
-//!   it, unless one commits before the other looks, and the directory
-//!   takes the enter of the first to commit. The second is refused where
-//!   its batch is applied, if the first committed by then, by the
-//!   directory and with the engine's words. Otherwise it is refused at
-//!   its commit: as a conflict where the two wrote a key, which two
-//!   writes into a tree always did, and by the directory where they
-//!   wrote none (`engine.md`, "Subtrees are entered by the first batch
-//!   that writes into them").
+//!
+//! A subtree is entered **if it is absent**
+//! (`lignindb::txn::SubtreeWrite::EnterIfAbsent`): the look here says
+//! which subtrees the transaction does not hold as entered, and what the
+//! batch then states is judged by the transaction where the write is laid
+//! out. So of two transactions that each write first into one subtree,
+//! the second to commit finds the entry of the first, whenever the first
+//! committed: before the second looked, between its look and its
+//! application, or after both were applied. An entry with the tree type
+//! and the host that the second states satisfies its enter, and any other
+//! refuses its write (`BatchError::EnteredOtherwise`). The enter is no
+//! key of the conflict rule: the second meets the first as a conflict
+//! where it had written a key before the first committed that the first
+//! wrote too, as on RocksDB, and commits where it had written none
+//! (`engine.md`, "Subtrees are entered by the first batch that writes
+//! into them").
+//!
+//! **The look can be stale when the group is applied.** The look is
+//! several reads of the transaction and the application an operation
+//! after them, and a commit of another transaction can be published
+//! between any two of them. A subtree whose entry the look reads more
+//! than once is as the last of those reads found it: nothing is stated
+//! for one that was entered then. A Merk of an indexed tree that was
+//! entered then has to hang where its element names it, as at the read
+//! that its element is worked out with, or the group is refused.
+//!
+//! So a transaction that lays the group out refuses a write into a
+//! subtree that a wipe took since (`BatchError::NotEntered`), and it
+//! refuses an enter that was stated for a subtree which another writer
+//! entered otherwise since (`BatchError::EnteredOtherwise`). The engine
+//! looks again, and applies the group with what that look states, where
+//! all of these hold (`Engine::apply_write_group`):
+//!
+//! - **The transaction refused the group for the entry of a subtree, and
+//!   found it otherwise than the look had** ([`Owed::found_otherwise`]):
+//!   no entry, for a subtree that the look stated no enter for, and that
+//!   it found entered or that holds the element of an enter it stated;
+//!   or another entry than the one the look stated an enter for. A
+//!   subtree that the look stated an enter for and that has no entry
+//!   where it is needed waits for an enter of the group itself, as one
+//!   that is named as the subtree of its own element does: no commit
+//!   made that so.
+//! - **No batch of the group enters, drops or clears a subtree
+//!   itself**: the enters that the look states are the group's only
+//!   writes of subtrees. Where a batch makes one itself, the group can
+//!   be refused for an entry by its own doing, with nothing published
+//!   beside it, and the engine does not tell that from a stale look:
+//!   such a group is not looked for again. No operation of GroveDB
+//!   makes such a group today.
+//! - **A commit was published since before that look**: the latest
+//!   version of the database is another than it was then.
+//!
+//! Every other refusal is the caller's answer as it is, and nothing is
+//! looked for after it: a refusal of the look, as the one of a first
+//! write under a key that holds no element; a refusal of the transaction
+//! that names no entry, or the entry of a subtree the look decided
+//! nothing of; and a refusal for an entry where no commit was published
+//! since before the look. The seam has one thread at a time write
+//! through a transaction, and what that thread's own calls do to the
+//! transaction is no commit.
+//!
+//! An application that the transaction refused left no write of the
+//! group in it; a write scope of the caller's keeps what the application
+//! claimed in it. A transaction that serves its records by key lays
+//! nothing out, so the checks that the frames make of entries are not
+//! made where it takes a group: what it holds is judged at its commit.
+//! What it checks with no layout can still refuse the group where it is
+//! applied.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use grovedb_merk::{
     element::tree_type::ElementTreeTypeExtensions,
     store::{
         lignin::{
-            tree_type_bytes, LigninEntry, LigninHost, LigninNodeStore, LigninOutcome,
-            LigninSettled, LigninSubtree, LigninView,
+            tree_type_bytes, LigninEntry, LigninEntryRefused, LigninHost, LigninNodeStore,
+            LigninOutcome, LigninSettled, LigninSubtree, LigninView,
         },
         NodeStore,
     },
@@ -274,6 +333,44 @@ pub(super) struct Owed {
     /// Each indexed tree that the group writes a Merk of, with every Merk
     /// it hosts, by position.
     pub(super) hosts: Vec<LigninHost>,
+    /// The subtrees whose entry the look read and, at its last read of
+    /// each, found entered: nothing is stated for them.
+    pub(super) found: BTreeSet<[u8; 32]>,
+}
+
+impl Owed {
+    /// Whether `refused` is of a subtree whose entry this look found
+    /// otherwise: no entry, for a subtree that no enter is stated for
+    /// here, and that the look found entered or that holds the element
+    /// of an enter stated here; or another entry than the one stated
+    /// here for the subtree.
+    pub(super) fn found_otherwise(&self, refused: LigninEntryRefused) -> bool {
+        let stated = |subtree: [u8; 32]| {
+            let mut enters = self.enters.iter();
+            enters.any(|(entered, _)| entered.prefix == subtree)
+        };
+        match refused {
+            // An enter that is stated here is made before anything that
+            // needs its subtree. One that has no entry all the same
+            // waits for an enter of the group itself.
+            LigninEntryRefused::NotEntered(subtree) => {
+                let hosts = |(entered, _): &(LigninSubtree, Vec<u8>)| {
+                    (entered.host.as_ref()).is_some_and(|host| host.subtree == subtree)
+                };
+                !stated(subtree) && (self.found.contains(&subtree) || self.enters.iter().any(hosts))
+            }
+            LigninEntryRefused::EnteredOtherwise(subtree) => stated(subtree),
+        }
+    }
+}
+
+/// Whether `entry` is of a subtree that hangs under the element `host`,
+/// at the place that `prefix` has among the subtrees `host` hosts.
+fn hangs(entry: &LigninEntry, host: &LigninHost, prefix: &[u8; 32]) -> bool {
+    let place = host.hosted.iter().position(|hosted| hosted == prefix);
+    entry.host.as_ref().is_some_and(|at| {
+        (at.subtree, &at.key, Some(usize::from(at.position))) == (host.subtree, &host.key, place)
+    })
 }
 
 /// What `parts` owe the subtree directory.
@@ -316,6 +413,16 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
         }
     }
     let enters_itself = |prefix: &[u8; 32]| parts.iter().any(|part| part.enters(prefix));
+    // The entry of each subtree as the last read of it found it: a
+    // commit can be published between two reads of one look.
+    let mut seen: BTreeMap<[u8; 32], Option<LigninEntry>> = BTreeMap::new();
+    let mut entered = |prefix: [u8; 32]| {
+        let entry = entered(view, prefix)?;
+        seen.insert(prefix, entry.clone());
+        #[cfg(test)]
+        super::an_entry_was_read();
+        Ok::<_, Error>(entry)
+    };
     // A subtree is entered under an element that is there once the group
     // is applied: the directory names no host that is no node.
     let no_element = || not_supported("a write into a subtree under a key that holds no element");
@@ -326,7 +433,7 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
             continue;
         }
         let Some(host) = &subtree.host else {
-            if entered(view, prefix)?.is_none() {
+            if entered(prefix)?.is_none() {
                 let tree_type = (prefix == ROOT).then_some(TreeType::NormalTree);
                 let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
                 owed.enters.push((subtree.clone(), bytes));
@@ -362,7 +469,7 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                     if enters_itself(&prefix) {
                         continue;
                     }
-                    let Some(entry) = entered(view, prefix)? else {
+                    let Some(entry) = entered(prefix)? else {
                         let subtree = LigninSubtree {
                             prefix,
                             host: Some(named.clone()),
@@ -389,18 +496,38 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
                 return Err(beside_nothing(host));
             }
             Hosting::One(tree_type) => {
-                if entered(view, prefix)?.is_none() {
+                if entered(prefix)?.is_none() {
                     let bytes = tree_type.map(tree_type_bytes).unwrap_or_default();
                     owed.enters.push((subtree.clone(), bytes));
                 }
             }
             Hosting::Nothing => {
-                if entered(view, prefix)?.is_none() {
+                if entered(prefix)?.is_none() {
                     return Err(no_element());
                 }
             }
         }
     }
+    // A Merk of an indexed tree is read where its element is worked out,
+    // and can be read again afterwards, through a handle that names no
+    // element. Where the last read found it entered, it has to hang
+    // where the element names it, as at the first.
+    for named in &owed.hosts {
+        for prefix in &named.hosted {
+            if let Some(Some(entry)) = seen.get(prefix)
+                && !hangs(entry, named, prefix)
+            {
+                return Err(entered_elsewhere(named));
+            }
+        }
+    }
+    // A subtree is as the last read of its entry found it: an enter that
+    // an earlier read owed it is owed no more where it was entered then.
+    owed.found = (seen.iter())
+        .filter_map(|(prefix, entry)| entry.is_some().then_some(*prefix))
+        .collect();
+    owed.enters
+        .retain(|(subtree, _)| !owed.found.contains(&subtree.prefix));
     // A subtree is entered once: as its element names it, where a write
     // through a handle that names no element owed it an enter too.
     let mut once: Vec<(LigninSubtree, Vec<u8>)> = Vec::with_capacity(owed.enters.len());

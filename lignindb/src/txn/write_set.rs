@@ -15,8 +15,8 @@ use super::{
     key::{in_range, ranges_meet, Column, KeySet, Subtree, Unit},
     view::SubtreeView,
     write::{
-        Batch, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut, SubtreeWrite,
-        ValuePut,
+        Batch, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, RecordWrite, RootPut,
+        SubtreeWrite, ValuePut,
     },
 };
 use crate::scope::table::ScopeId;
@@ -150,6 +150,11 @@ enum SubtreeEntry {
         tree_type: Span,
         /// The host's subtree, its key and the position.
         host: Option<(Subtree, Span, u8)>,
+        /// Whether the subtree is entered only where it is absent
+        /// ([`SubtreeWrite::EnterIfAbsent`]): the set keeps what was
+        /// stated, and each layout of it finds the subtree entered or
+        /// not.
+        if_absent: bool,
     },
     Drop(Subtree),
     Clear(Subtree),
@@ -210,6 +215,21 @@ pub(crate) enum OwnSubtree<'a> {
     /// The transaction dropped the subtree, or dropped or cleared one
     /// above it after it had written this one.
     Gone,
+}
+
+/// What a transaction's own writes say of a subtree ([`WriteSet::subtree`]).
+pub(crate) struct Said<'a> {
+    /// What they come to up to the last of them that entered the subtree
+    /// as one that is new, or took it out.
+    pub(crate) base: OwnSubtree<'a>,
+    /// The operations after that which entered the subtree if it was
+    /// absent ([`SubtreeWrite::EnterIfAbsent`]), newest first: each with
+    /// what it states and the root that the writes from it on left the
+    /// Merk with, as in [`OwnSubtree::Entered`]. Whether the subtree was
+    /// absent then is not in the write set alone: it was unless `base`,
+    /// or an enter before, left it entered, and no subtree above it left
+    /// since.
+    pub(crate) if_absent: Vec<(SubtreeView<'a>, usize)>,
 }
 
 /// The writes of one unit, by key.
@@ -312,7 +332,8 @@ impl<'a> OpBatch<'a> {
                     subtree,
                     tree_type,
                     host,
-                } => SubtreeWrite::Enter {
+                    if_absent,
+                } => Entering {
                     subtree,
                     tree_type: self.arena.get(tree_type),
                     host: host.map(|(subtree, key, position)| HostPut {
@@ -320,7 +341,9 @@ impl<'a> OpBatch<'a> {
                         key: self.arena.get(key),
                         position,
                     }),
-                },
+                    if_absent,
+                }
+                .write(),
                 SubtreeEntry::Drop(subtree) => SubtreeWrite::Drop { subtree },
                 SubtreeEntry::Clear(subtree) => SubtreeWrite::Clear { subtree },
             })
@@ -564,10 +587,16 @@ impl WriteSet {
                     subtree,
                     tree_type,
                     host,
+                }
+                | SubtreeWrite::EnterIfAbsent {
+                    subtree,
+                    tree_type,
+                    host,
                 } => SubtreeEntry::Enter {
                     subtree,
                     tree_type: self.arena.put(tree_type),
                     host: host.map(|host| (host.subtree, self.arena.put(host.key), host.position)),
+                    if_absent: matches!(write, SubtreeWrite::EnterIfAbsent { .. }),
                 },
                 SubtreeWrite::Drop { subtree } => SubtreeEntry::Drop(subtree),
                 SubtreeWrite::Clear { subtree } => SubtreeEntry::Clear(subtree),
@@ -579,7 +608,7 @@ impl WriteSet {
             let kind = match write {
                 SubtreeWrite::Drop { .. } => Kind::Dropped,
                 SubtreeWrite::Clear { .. } => Kind::Cleared,
-                SubtreeWrite::Enter { .. } => continue,
+                SubtreeWrite::Enter { .. } | SubtreeWrite::EnterIfAbsent { .. } => continue,
             };
             let below = std::mem::take(&mut cut);
             let id = self.push(Unit::data(write.subtree()), &below, kind, first_write);
@@ -972,10 +1001,11 @@ impl WriteSet {
         subtrees.into_iter()
     }
 
-    /// The subtree of the element that hosts `subtree`, if the transaction
-    /// entered it: `Some(None)` for one it entered with no host.
-    pub(crate) fn host_of(&self, subtree: &Subtree) -> Option<Option<Subtree>> {
-        self.subtrees.iter().rev().find_map(|entry| match entry {
+    /// The subtree of the element that the last enter of `subtree` among
+    /// `entries` states as its host, of either kind: `Some(None)` for an
+    /// enter with no host.
+    fn last_host(entries: &[SubtreeEntry], subtree: &Subtree) -> Option<Option<Subtree>> {
+        entries.iter().rev().find_map(|entry| match entry {
             SubtreeEntry::Enter {
                 subtree: entered,
                 host,
@@ -985,13 +1015,75 @@ impl WriteSet {
         })
     }
 
-    /// The operation in which the transaction entered `subtree` last, if
-    /// it entered it.
-    pub(crate) fn entered_in(&self, subtree: &Subtree) -> Option<usize> {
-        let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, .. } if entered == subtree);
-        (0..self.ops.len())
-            .rev()
-            .find(|op| self.op_subtrees(*op).iter().any(enters))
+    /// The subtree of the element that hosts `subtree`, as the last enter
+    /// of the subtree states it, of either kind, if the transaction has
+    /// one: `Some(None)` for an enter with no host. Where the subtree
+    /// stands, and so which enter made it, is not said here
+    /// (`ByKey::standing`).
+    pub(crate) fn host_of(&self, subtree: &Subtree) -> Option<Option<Subtree>> {
+        Self::last_host(&self.subtrees, subtree)
+    }
+
+    /// The place of the first operation of a scope that is open, or the
+    /// number of operations where there is none: the operations before it
+    /// are the transaction's.
+    pub(crate) fn first_open(&self) -> usize {
+        let open = self.ops.iter().position(|op| op.scope != 0);
+        open.unwrap_or(self.ops.len())
+    }
+
+    /// Every subtree that an enter of `subtree` states the host to be in,
+    /// of either kind of enter, in the operations from `since` on.
+    pub(crate) fn hosts_stated_from<'a>(
+        &'a self,
+        subtree: &'a Subtree,
+        since: usize,
+    ) -> impl Iterator<Item = Subtree> + 'a {
+        let from = self
+            .ops
+            .get(since)
+            .map_or(self.subtrees.len(), |op| op.subtrees as usize);
+        self.subtrees[from..]
+            .iter()
+            .filter_map(move |entry| match entry {
+                SubtreeEntry::Enter {
+                    subtree: entered,
+                    host,
+                    ..
+                } if entered == subtree => host.map(|(host, ..)| host),
+                _ => None,
+            })
+    }
+
+    /// The serial of the operation that was added last, or zero.
+    pub(crate) fn last_serial(&self) -> u64 {
+        self.ops.last().map_or(0, |op| op.serial)
+    }
+
+    /// The place of the operation with `serial`, if the set has it still.
+    fn op_with(&self, serial: u64) -> Option<usize> {
+        (self.ops.binary_search_by_key(&serial, |op| op.serial)).ok()
+    }
+
+    /// Whether the set has the operation with `serial` still.
+    pub(crate) fn has_op(&self, serial: u64) -> bool {
+        self.op_with(serial).is_some()
+    }
+
+    /// The subtree of the element that the enter of `subtree` in the
+    /// operation `op` states as its host, of either kind: `None` for an
+    /// enter with no host, and for an operation that does not enter it.
+    pub(crate) fn host_in(&self, subtree: &Subtree, op: usize) -> Option<Subtree> {
+        Self::last_host(self.op_subtrees(op), subtree).flatten()
+    }
+
+    /// Whether one of the operations `ops` entered `subtree` as one that
+    /// is new ([`SubtreeWrite::Enter`]): the subtree was not entered
+    /// before that operation. An enter of a subtree that may be entered
+    /// already says nothing of that.
+    pub(crate) fn enters_anew(&self, subtree: &Subtree, ops: std::ops::Range<usize>) -> bool {
+        let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, if_absent: false, .. } if entered == subtree);
+        ops.flat_map(|op| self.op_subtrees(op)).any(enters)
     }
 
     /// Checks `batch` against what the transaction has written: the data
@@ -1017,9 +1109,19 @@ impl WriteSet {
         Ok(())
     }
 
+    /// Whether an operation of the transaction entered `subtree` if it
+    /// was absent ([`SubtreeWrite::EnterIfAbsent`]).
+    pub(crate) fn enters_if_absent(&self, subtree: &Subtree) -> bool {
+        let enters = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Enter { subtree: entered, if_absent: true, .. } if entered == subtree);
+        self.subtrees.iter().any(enters)
+    }
+
     /// Whether the Merk `subtree` has a root after the transaction's
     /// writes, if one of them set its root, or entered, dropped or cleared
-    /// the subtree, which leaves it with none.
+    /// the subtree, which leaves it with none. It is asked of a subtree
+    /// that no write entered if it was absent
+    /// ([`Self::enters_if_absent`]): whether such a write left the subtree
+    /// with the root it had is in [`Self::subtree`].
     pub(crate) fn rooted(&self, subtree: &Subtree) -> Option<bool> {
         for op in (0..self.ops.len()).rev() {
             // The change sets of an operation come after what it does to
@@ -1045,13 +1147,17 @@ impl WriteSet {
         None
     }
 
-    /// What the transaction's writes say of `subtree` as a whole: whether
-    /// they entered it or took it out, and the root they left its Merk
-    /// with. It is what a transaction with no frames answers from, as
-    /// [`Self::rooted`] is.
-    pub(crate) fn subtree(&self, subtree: &Subtree) -> OwnSubtree<'_> {
+    /// What the operations of the transaction before `end` say of
+    /// `subtree` as a whole: whether they entered it or took it out, and
+    /// the root they left its Merk with. It is what a transaction with no
+    /// frames answers from, as [`Self::rooted`] is.
+    pub(crate) fn subtree(&self, subtree: &Subtree, end: usize) -> Said<'_> {
         let mut root: Option<Option<&[u8]>> = None;
-        for op in (0..self.ops.len()).rev() {
+        // The operations that entered the subtree if it was absent, newest
+        // first, after the write that says of the subtree what does not
+        // depend on that.
+        let mut if_absent: Vec<(SubtreeView<'_>, usize)> = Vec::new();
+        for op in (0..end.min(self.ops.len())).rev() {
             // In one operation the change sets come last, the enters
             // before them, and the drops and the clears first.
             let (entries_from, entries_to, merks_from, merks_to) = self.op_bounds(op);
@@ -1067,10 +1173,11 @@ impl WriteSet {
                     subtree: entered,
                     tree_type,
                     host,
-                } if entered == subtree => Some((*tree_type, *host)),
+                    if_absent,
+                } if entered == subtree => Some((*tree_type, *host, *if_absent)),
                 _ => None,
             });
-            if let Some((tree_type, host)) = entered {
+            if let Some((tree_type, host, absent)) = entered {
                 let view = SubtreeView {
                     root_key: root.flatten(),
                     tree_type: self.arena.get(tree_type),
@@ -1080,7 +1187,11 @@ impl WriteSet {
                         position,
                     }),
                 };
-                return OwnSubtree::Entered { view, op };
+                if !absent {
+                    let base = OwnSubtree::Entered { view, op };
+                    return Said { base, if_absent };
+                }
+                if_absent.push((view, op));
             }
             // What the operation wrote of a subtree below one that it
             // dropped or cleared went with it: the entry of the drop or the
@@ -1090,7 +1201,9 @@ impl WriteSet {
                 .flat_map(|id| Self::cut(&self.arena, &self.entries[*id as usize]));
             let dropped = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Drop(named) if named == subtree);
             if named.iter().any(dropped) || cut.any(|cut| cut == *subtree) {
-                return OwnSubtree::Gone;
+                // A drop comes before the enters of its operation.
+                let base = OwnSubtree::Gone;
+                return Said { base, if_absent };
             }
             let cleared = |entry: &SubtreeEntry| matches!(entry, SubtreeEntry::Clear(named) if named == subtree);
             if named.iter().any(cleared) {
@@ -1099,7 +1212,8 @@ impl WriteSet {
                 root = root.or(Some(None));
             }
         }
-        OwnSubtree::Unwritten { root }
+        let base = OwnSubtree::Unwritten { root };
+        Said { base, if_absent }
     }
 
     /// The subtrees that the operations after `op` dropped or cleared,
@@ -1109,8 +1223,14 @@ impl WriteSet {
     /// the entry of no drop: whether it went with a subtree above it is
     /// asked of these.
     pub(crate) fn left_after(&self, op: usize) -> Vec<Subtree> {
-        let later = (op + 1..self.ops.len()).flat_map(|op| self.op_subtrees(op));
-        let left = later.filter_map(|entry| match entry {
+        self.left_in(op + 1..self.ops.len())
+    }
+
+    /// The subtrees that the operations `ops` dropped or cleared, oldest
+    /// first.
+    pub(crate) fn left_in(&self, ops: std::ops::Range<usize>) -> Vec<Subtree> {
+        let named = ops.flat_map(|op| self.op_subtrees(op));
+        let left = named.filter_map(|entry| match entry {
             SubtreeEntry::Drop(subtree) | SubtreeEntry::Clear(subtree) => Some(*subtree),
             SubtreeEntry::Enter { .. } => None,
         });
@@ -1373,12 +1493,43 @@ impl WriteSet {
     /// `version`: a commit outside the transaction dropped the subtree, or
     /// one it is below, with every record under it (CF5, CV9).
     pub(crate) fn meet_subtree(&mut self, subtree: Subtree, version: CommitVersion) {
-        let covers = |entry: &Entry| {
-            let units = Self::covered(&self.arena, entry);
-            units.iter().any(|unit| unit.subtree == subtree)
-        };
         let met: Vec<EntryId> = (0..self.entries.len() as EntryId)
-            .filter(|id| covers(self.entry(*id)))
+            .filter(|id| self.covers_subtree(*id, subtree))
+            .collect();
+        for id in met {
+            self.mark_met(id, version);
+        }
+    }
+
+    /// Whether the entry `id` covers a key of `subtree`, in any column.
+    fn covers_subtree(&self, id: EntryId, subtree: Subtree) -> bool {
+        let units = Self::covered(&self.arena, self.entry(id));
+        units.iter().any(|unit| unit.subtree == subtree)
+    }
+
+    /// As [`Self::meet_subtree`], for the writes under `subtree` as the
+    /// operation with `serial` entered it, or found it: those of that
+    /// operation and of the ones after it, up to the next operation that
+    /// enters the subtree. A drop and a clear of that operation itself
+    /// come before its enter, and are none of them. It does nothing where
+    /// the set has the operation no more.
+    pub(crate) fn meet_entered(&mut self, serial: u64, subtree: Subtree, version: CommitVersion) {
+        let Some(first) = self.op_with(serial) else {
+            return;
+        };
+        let enters = |op: &usize| Self::last_host(self.op_subtrees(*op), &subtree).is_some();
+        let later = (first + 1..self.ops.len()).find(enters);
+        let end = later.unwrap_or(self.ops.len());
+        // Where the entries of an operation begin, or all of them end.
+        let begins = |op: usize| match self.ops.get(op) {
+            Some(op) => op.entries,
+            None => self.entries.len() as EntryId,
+        };
+        let own = begins(first + 1);
+        let met: Vec<EntryId> = (begins(first)..own)
+            .filter(|id| self.entry(*id).kind.leaves().is_empty())
+            .chain(own..begins(end))
+            .filter(|id| self.covers_subtree(*id, subtree))
             .collect();
         for id in met {
             self.mark_met(id, version);
@@ -1415,6 +1566,9 @@ impl WriteSet {
                     }
                     Kind::Cleared if unit.subtree != entry.unit.subtree => {
                         set.subtree(unit.subtree);
+                    }
+                    Kind::Cleared => {
+                        set.cleared(unit.subtree);
                     }
                     _ => {
                         let (start, end) = self.range_bounds(*range);

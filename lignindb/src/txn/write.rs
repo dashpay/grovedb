@@ -261,6 +261,72 @@ pub struct HostPut<'a> {
 /// - **A drop or a clear ends every node handle** that was read through
 ///   the transaction before it (PN8), and no hint of the batch that makes
 ///   it is followed ([`NodePut::at`]).
+///
+/// # The two enters
+///
+/// [`Self::Enter`] makes a subtree that is new: it is refused where the
+/// subtree is entered in the transaction's view
+/// ([`BatchError::Entered`](super::BatchError::Entered)), and a
+/// transaction that entered a subtree which a commit beside it has entered
+/// since cannot be laid out over that commit, so its own commit is
+/// refused. It is the enter of a writer that makes the subtree with its
+/// element, and of one that enters a subtree again after it dropped it: a
+/// subtree that is entered so starts empty.
+///
+/// [`Self::EnterIfAbsent`] says that the subtree is in use from here on,
+/// by whoever entered it. It is judged where the write is laid out, each
+/// time it is: when the batch is applied, and again whenever the
+/// transaction's writes are applied anew over another committed version
+/// or after a rollback to a mark (WT7, WT8).
+///
+/// - Where the subtree is not entered in the view the batch is applied
+///   on, it is entered, as [`Self::Enter`] enters it.
+/// - Where it is entered there, with the tree type and the host the write
+///   states, nothing is done: the subtree keeps its entry and all it
+///   holds, and no page is changed for it. It is entered there by a
+///   commit, by an earlier write of the transaction, or kept by a clear of
+///   the same batch. A drop of the same batch comes first, as before any
+///   enter: after it the subtree is absent, and is entered as one that is
+///   new.
+/// - Where it is entered there with another tree type, or under another
+///   element or at another position of it, the batch is refused
+///   ([`BatchError::EnteredOtherwise`](super::BatchError::EnteredOtherwise),
+///   which has both). The tree types are the same where their bytes are,
+///   and the hosts where the subtree, the key and the position are.
+///
+/// So of two transactions that each state it for one subtree, with one
+/// tree type and one host, the second to commit finds the subtree that
+/// the first entered when it is laid out over that commit, and its enter
+/// refuses nothing. An enter is no key of the conflict rule (CF2), of
+/// either kind. Whether the second commits is decided by the keys the two
+/// wrote, and by what else its writes ask of the committed state: a Merk
+/// that it gave its first node has to be empty still
+/// ([`BatchError::RootTaken`](super::BatchError::RootTaken)).
+///
+/// For the rule of what a drop covers (CF5), the subtree is below the
+/// host the write states from the write on. A commit beside the
+/// transaction that drops or clears a subtree which that host was in or
+/// below, as the transaction had the subtrees when it made the write,
+/// meets the writes that the transaction made under the subtree from this
+/// write on, until it enters the subtree again, and before that commit:
+/// whether the subtree was entered then or not, and also where that
+/// commit enters it again. A commit that takes the subtree with a subtree
+/// which is none of those is not met by this: where a commit beside the
+/// transaction entered the subtree under an element that none of them is
+/// above, or hung one of them elsewhere.
+///
+/// Between the scopes of one transaction the write is a write of the
+/// subtree's entry, whether it finds the subtree or enters it (SC3): two
+/// scopes that are open together do not both state it for one subtree.
+///
+/// While the transaction serves its records by key the write is not
+/// judged, as no write to a subtree is (above). Where the transaction
+/// had the subtree before the write, by its own earlier writes and the
+/// committed state, it has that subtree still, under the host that one
+/// has, whatever the write states: its reads go by that host, and so do
+/// what its own drops and clears take and what its scopes hold against
+/// each other. Where it had none, it has a subtree with what the write
+/// states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtreeWrite<'a> {
     /// Enters the subtree, with no node: the operation writes the element
@@ -272,6 +338,18 @@ pub enum SubtreeWrite<'a> {
         tree_type: &'a [u8],
         /// The element that hosts the subtree, or `None` for the root of
         /// the grove and for a Merk that stands alone.
+        host: Option<HostPut<'a>>,
+    },
+    /// Enters the subtree, with no node, if it is not entered, and leaves
+    /// it as it is if it is entered with the same tree type under the same
+    /// host: the operation writes into a subtree that it, or a commit
+    /// beside it, may be the first to write into.
+    EnterIfAbsent {
+        /// The subtree.
+        subtree: Subtree,
+        /// The tree type, as for [`Self::Enter`].
+        tree_type: &'a [u8],
+        /// The element that hosts the subtree, as for [`Self::Enter`].
         host: Option<HostPut<'a>>,
     },
     /// Drops the subtree: the operation deletes the element that hosts it,
@@ -290,19 +368,81 @@ pub enum SubtreeWrite<'a> {
     },
 }
 
-impl SubtreeWrite<'_> {
-    /// Whether the write enters its subtree. The others take it out, or
-    /// what it holds.
+/// An enter of a subtree, of either kind ([`SubtreeWrite::entering`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Entering<'a> {
+    /// The subtree.
+    pub subtree: Subtree,
+    /// The tree type.
+    pub tree_type: &'a [u8],
+    /// The element that hosts the subtree.
+    pub host: Option<HostPut<'a>>,
+    /// Whether the subtree is entered only where it is absent
+    /// ([`SubtreeWrite::EnterIfAbsent`]).
+    pub if_absent: bool,
+}
+
+impl<'a> Entering<'a> {
+    /// The enter as the write it is.
+    pub const fn write(&self) -> SubtreeWrite<'a> {
+        let Self {
+            subtree,
+            tree_type,
+            host,
+            if_absent,
+        } = *self;
+        match if_absent {
+            false => SubtreeWrite::Enter {
+                subtree,
+                tree_type,
+                host,
+            },
+            true => SubtreeWrite::EnterIfAbsent {
+                subtree,
+                tree_type,
+                host,
+            },
+        }
+    }
+}
+
+impl<'a> SubtreeWrite<'a> {
+    /// Whether the write is an enter of its subtree, of either kind. The
+    /// others take it out, or what it holds.
     pub const fn enters(&self) -> bool {
-        matches!(self, Self::Enter { .. })
+        matches!(self, Self::Enter { .. } | Self::EnterIfAbsent { .. })
+    }
+
+    /// The enter the write is, of either kind, or `None` for a drop and a
+    /// clear.
+    pub const fn entering(&self) -> Option<Entering<'a>> {
+        match *self {
+            Self::Enter {
+                subtree,
+                tree_type,
+                host,
+            }
+            | Self::EnterIfAbsent {
+                subtree,
+                tree_type,
+                host,
+            } => Some(Entering {
+                subtree,
+                tree_type,
+                host,
+                if_absent: matches!(self, Self::EnterIfAbsent { .. }),
+            }),
+            Self::Drop { .. } | Self::Clear { .. } => None,
+        }
     }
 
     /// The subtree the write names.
     pub const fn subtree(&self) -> Subtree {
         match *self {
-            Self::Enter { subtree, .. } | Self::Drop { subtree } | Self::Clear { subtree } => {
-                subtree
-            }
+            Self::Enter { subtree, .. }
+            | Self::EnterIfAbsent { subtree, .. }
+            | Self::Drop { subtree }
+            | Self::Clear { subtree } => subtree,
         }
     }
 }
@@ -319,8 +459,8 @@ impl SubtreeWrite<'_> {
 /// the batch above this one (TXN-08).
 ///
 /// The parts of a batch are applied in this order, wherever they stand in
-/// it: the drops and the clears, the enters in the order they are given,
-/// the change sets, and the records.
+/// it: the drops and the clears, the enters of both kinds in the order
+/// they are given, the change sets, and the records.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Batch<'a> {
     /// The writes of flat records.
@@ -345,6 +485,12 @@ impl Batch<'_> {
     /// Whether the batch drops or clears `subtree`.
     pub(crate) fn leaves(&self, subtree: Subtree) -> bool {
         (self.subtrees.iter()).any(|write| !write.enters() && write.subtree() == subtree)
+    }
+
+    /// The subtrees the batch drops and clears, in its order.
+    pub(crate) fn leaving(&self) -> Vec<Subtree> {
+        let leaves = (self.subtrees.iter()).filter(|write| !write.enters());
+        leaves.map(SubtreeWrite::subtree).collect()
     }
 }
 

@@ -1163,3 +1163,137 @@ fn a_cursor_of_a_write_transaction_is_pointed_at_another_subtree_in_the_state_it
     drop(transaction);
     facade.sound();
 }
+
+/// The subtrees that are given with a group are entered if they are
+/// absent (`SubtreeWrite::EnterIfAbsent`). One that a commit of another
+/// transaction entered, before the group was made, before it was applied
+/// or after it, is found and keeps what it holds, and a value that the
+/// group states and such a subtree holds already is left where it is.
+#[test]
+fn a_subtree_given_with_a_group_is_entered_only_where_it_is_absent() {
+    /// Writes `ops` into the Merk at `at` through one batch of
+    /// `transaction`, applied with the subtree to be entered, and says how
+    /// many values were written and how many were kept.
+    fn write(
+        transaction: &WriteTxn<'_>,
+        at: &LigninSubtree,
+        ops: &[(Vec<u8>, Op)],
+    ) -> (usize, usize) {
+        let batch = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(transaction, at.clone(), Some(&batch));
+        let mut merk = open(handle, TreeType::NormalTree);
+        apply(&mut merk, ops);
+        drop(merk);
+        let part = batch.settle(transaction).unwrap().expect("a settled batch");
+        let enters = [(at.clone(), tree_type_bytes(TreeType::NormalTree))];
+        let applied = LigninSettled::apply(vec![part], transaction, &enters);
+        let applied = applied.unwrap().expect("the group is applied");
+        (applied.values_written, applied.values_kept)
+    }
+    /// A settled batch of `transaction` that puts the aux record `key`
+    /// of the subtree at `at`.
+    fn record(transaction: &WriteTxn<'_>, at: &LigninSubtree, key: &[u8]) -> LigninSettled {
+        let batch = LigninBatch::new();
+        let handle = LigninNodeStore::deferred(transaction, at.clone(), Some(&batch));
+        (handle.aux().put(key, b"v", None).unwrap()).expect("staging");
+        drop(handle);
+        batch.settle(transaction).unwrap().expect("a settled batch")
+    }
+
+    let facade = Facade::new();
+    let merk_at = LigninSubtree::alone([12; 32]);
+    let first = facade.db.begin();
+    assert_eq!(write(&first, &merk_at, &puts(1..4, 1)), (3, 0));
+    facade.commit(&first);
+    // The subtree is entered now, and is given again: it keeps its nodes,
+    // and of the values that are stated the one that changed is written.
+    let second = facade.db.begin();
+    let mut again = puts(1..3, 1);
+    again.extend(puts(3..4, 2));
+    assert_eq!(write(&second, &merk_at, &again), (1, 2));
+    facade.commit(&second);
+    let reader = facade.db.begin();
+    let handle = LigninNodeStore::read_only(&reader, merk_at.clone());
+    for key in 1..4 {
+        assert!(handle.has_node(&plain(key)).unwrap().expect("a read"));
+    }
+    drop(handle);
+    drop(reader);
+
+    // Three transactions look while a subtree is not entered, and each
+    // has a record of its own for it. One commits. Of the others, one had
+    // applied its group before that commit and one applies it afterwards:
+    // both find the subtree that the first entered, and commit.
+    let flat_at = LigninSubtree::alone([13; 32]);
+    let enters = [(flat_at.clone(), Vec::new())];
+    let (third, fourth, fifth) = (facade.db.begin(), facade.db.begin(), facade.db.begin());
+    let three = record(&third, &flat_at, b"3");
+    let four = record(&fourth, &flat_at, b"4");
+    let five = record(&fifth, &flat_at, b"5");
+    let applied = LigninSettled::apply(vec![four], &fourth, &enters);
+    applied.unwrap().expect("a group that enters the subtree");
+    let applied = LigninSettled::apply(vec![three], &third, &enters);
+    applied.unwrap().expect("a group that enters the subtree");
+    facade.commit(&third);
+    let applied = LigninSettled::apply(vec![five], &fifth, &enters);
+    applied.unwrap().expect("a group that finds the subtree");
+    facade.commit(&fourth);
+    facade.commit(&fifth);
+    let reader = facade.db.begin();
+    let handle = LigninNodeStore::read_only(&reader, flat_at);
+    for key in [b"3", b"4", b"5"] {
+        let read = handle.aux().get(key).unwrap().expect("a read");
+        assert_eq!(read, Some(b"v".to_vec()));
+    }
+    drop(handle);
+    drop(reader);
+
+    // A group that the transaction refuses for the entry of a subtree
+    // says which, and is left to its caller: a record of a subtree that
+    // is not entered and that no enter is given for, and an enter of a
+    // subtree that is entered as a tree of another type.
+    let absent_at = LigninSubtree::alone([14; 32]);
+    let sixth = facade.db.begin();
+    let mut parts = vec![record(&sixth, &absent_at, b"6")];
+    let refused = LigninSettled::apply_kept(&mut parts, &sixth, &[]);
+    let refused = refused.unwrap().expect_err("the subtree is not entered");
+    let not_entered = LigninEntryRefused::NotEntered([14; 32]);
+    assert_eq!((refused.entry, parts.len()), (Some(not_entered), 1));
+    let as_sum_tree = [(merk_at.clone(), tree_type_bytes(TreeType::SumTree))];
+    let mut other = vec![record(&sixth, &merk_at, b"6")];
+    let refused = LigninSettled::apply_kept(&mut other, &sixth, &as_sum_tree);
+    let refused = refused.unwrap().expect_err("the subtree is a normal tree");
+    let otherwise = LigninEntryRefused::EnteredOtherwise([12; 32]);
+    assert_eq!((refused.entry, other.len()), (Some(otherwise), 1));
+    // Another refusal says none, also one that is of an entry: an enter
+    // of a subtree as one that is new, where the subtree is entered.
+    let batch = LigninBatch::new();
+    (batch.enter(&merk_at, &tree_type_bytes(TreeType::NormalTree))).expect("staging");
+    let mut entered = vec![batch.settle(&sixth).unwrap().expect("a settled batch")];
+    assert!(entered[0].writes_directory());
+    let refused = LigninSettled::apply_kept(&mut entered, &sixth, &[]);
+    let refused = refused.unwrap().expect_err("the subtree is entered");
+    assert_eq!((refused.entry, entered.len()), (None, 1));
+    // A batch says whether it enters, drops or clears a subtree itself.
+    let batch = LigninBatch::new();
+    batch.drop_subtree(&merk_at);
+    let drops = batch.settle(&sixth).unwrap().expect("a settled batch");
+    assert!(drops.writes_directory() && !parts[0].writes_directory());
+    // The transaction holds no write of either, and takes the first
+    // with the enter it lacked.
+    let enters = [(absent_at.clone(), Vec::new())];
+    let applied = LigninSettled::apply_kept(&mut parts, &sixth, &enters);
+    applied.unwrap().expect("the group is applied");
+    assert!(parts.is_empty());
+    facade.commit(&sixth);
+    let reader = facade.db.begin();
+    let handle = LigninNodeStore::read_only(&reader, absent_at);
+    let read = handle.aux().get(b"6").unwrap().expect("a read");
+    assert_eq!(read, Some(b"v".to_vec()));
+    drop(handle);
+    let handle = LigninNodeStore::read_only(&reader, merk_at);
+    assert_eq!(handle.aux().get(b"6").unwrap().expect("a read"), None);
+    drop(handle);
+    drop(reader);
+    facade.sound();
+}
