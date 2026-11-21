@@ -218,10 +218,10 @@
 //! ([`Commits`](crate::txn::Commits), CF3), so it is exact however much
 //! was committed in between.
 //!
-//! The key set of a commit is the keys of its writes. A commit that stands
-//! for more than it writes says so ([`Committer::commit_covering`], CF5): a
-//! wipe covers every key, and a load that stands for the whole of a range
-//! is given that range by its caller.
+//! The key set of a commit is the keys of its writes, and for each Merk
+//! it loaded the range of the nodes of that subtree (`transactions.md`
+//! LD6). A commit that stands for more than that says so
+//! ([`Committer::commit_covering`], CF5): a wipe covers every key.
 //!
 //! **A kept value is dated at its read** (CF2a). A node that is written
 //! with its value kept ([`ValuePut::Keep`](crate::txn::ValuePut::Keep))

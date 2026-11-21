@@ -325,10 +325,10 @@ pub struct MerkWrite<'a> {
     ///
     /// Anything else is refused
     /// ([`BatchError::NotWhole`](super::BatchError::NotWhole)), and so is
-    /// a load into a Merk that has a root. Where the root is one that a
-    /// commit outside made after the load was applied, the refusal is the
-    /// one of any first writer of a Merk
-    /// ([`BatchError::RootTaken`](super::BatchError::RootTaken)).
+    /// a load into a Merk that has a root when the write is taken. From
+    /// then on the load is a range over the nodes of its subtree to the
+    /// conflict rule: a commit outside that writes one of them meets it
+    /// (`transactions.md` LD6).
     ///
     /// A change set with no node loads nothing, and is taken as any other,
     /// whatever it says here.

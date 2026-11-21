@@ -193,12 +193,15 @@
 //! any write. When frames are made, the load is laid out from there, and
 //! each value out of line is appended again for the page of its cell.
 //!
-//! **To the conflict rule a load is the puts of its nodes** (LD6), and
-//! the first node of its Merk: it is not laid out over a root that a
-//! commit outside gave the Merk since ([`BatchError::RootTaken`], choice 8
-//! below). It is no range: a commit that wrote a key the load does not
-//! hold does not meet it. A batch that clears a Merk and loads it is a
-//! range by its clear. A load keeps no value, so no read is dated for it.
+//! **To the conflict rule a load is the puts of its nodes and a range
+//! over the nodes of its subtree** (LD6). That the Merk is entered and
+//! has no root is checked where the load is taken, laid out or by key
+//! ([`BatchError::NotEntered`], [`WholeFault::HasRoot`]). From then on a
+//! commit outside that puts or deletes a node of the Merk meets the load,
+//! whatever its key, and the commit of the load ends with the conflict.
+//! The commit of a load has the range in its key set, so a transaction
+//! that wrote a node of the Merk before it is met in turn. A load keeps
+//! no value, so no read is dated for it.
 //!
 //! **What a transaction holds in memory of a load that is laid out in its
 //! frames** (LD7), from the operation until its commit or rollback:

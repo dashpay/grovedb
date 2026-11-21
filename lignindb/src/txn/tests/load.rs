@@ -687,11 +687,9 @@ fn a_change_set_that_is_no_whole_merk_is_refused() {
     assert_eq!(applied.load, None);
 }
 
-/// What a load is to the conflict rule: the puts of its nodes, and the
-/// first node of a Merk. A commit that wrote another key of another Merk
-/// does not meet it. A commit that gave the Merk a root leaves a write set
-/// that cannot be laid out, and the commit of the load is refused; a
-/// commit that wrote a key of the load meets it.
+/// What a load is to the conflict rule: the puts of its nodes. Two loads
+/// of one Merk meet in each of them, and in the record that every first
+/// writer of a Merk writes beside it.
 #[test]
 fn a_load_is_the_puts_of_its_nodes_to_the_conflict_rule() {
     let (db, versions) = Db::new(256);
@@ -710,39 +708,123 @@ fn a_load_is_the_puts_of_its_nodes_to_the_conflict_rule() {
     ));
     assert_eq!(world.commit(second, &[]), Outcome::Conflict);
     assert_eq!(counted(&db), long_values(&merk) as u64);
+}
 
-    // With no record in common, the load is no range: the commit that
-    // gave the Merk its root wrote none of the load's keys. The load
-    // cannot be laid out over that root, and its commit is refused with
-    // the transaction as it was.
-    let tx = world.begin();
-    let alone = OwnedBatch {
-        merks: vec![whole(2, &merk)],
-        ..OwnedBatch::default()
-    };
-    load(&world, &tx, &alone, &[2]).expect("a load");
-    let other = world.begin();
-    let mut batch = OwnedBatch::default();
-    batch.merks.push(world.merk(&other, 2, |items| {
-        items.insert(b"zz-another-key".to_vec(), vec![5; 12]);
-    }));
-    world.apply(&other, &batch).expect("a first node");
-    assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
-    let committer = db.committer(&versions);
-    let refused = db
-        .commit_as(&committer, &tx.txn, None)
-        .expect_err("no commit");
-    let taken = BatchError::RootTaken {
-        subtree: model::subtree(2),
-    };
-    assert!(
-        matches!(&refused, CommitError::Refused(TxnError::Batch(error)) if *error == taken),
-        "{refused}"
-    );
-    assert!(refused.leaves_transaction_open());
-    assert_eq!(tx.txn.stats().overlapped, 0);
-    tx.txn.rollback().expect("no scope is open");
-    assert_eq!(counted(&db), long_values(&merk) as u64);
+/// Applies the load `batch` of the Merk `name` through a scope of `tx`
+/// that is laid out, or, with `by_key`, through one that is open beside
+/// another and keeps its writes in the write set until it merges.
+fn take<'s>(
+    world: &World<'s>,
+    tx: &Tx<'s>,
+    (batch, name): (&OwnedBatch, u8),
+    by_key: bool,
+) -> Result<Applied, TxnError> {
+    if !by_key {
+        return load(world, tx, batch, &[name]);
+    }
+    let first = tx.txn.scope()?;
+    let beside = tx.txn.scope()?;
+    let first_write = world.latest().get();
+    let applied = batch.loading(&[model::subtree(name)], |batch| beside.apply(batch));
+    first.merge();
+    beside.merge();
+    let applied = applied?;
+    assert!(applied.load.is_none(), "the load was taken by key");
+    world.note(tx, batch, first_write);
+    Ok(applied)
+}
+
+/// "The Merk is entered and has no root" is a precondition of a load that
+/// holds from the operation that takes it to its commit (LD6). Another
+/// transaction commits a first node of the Merk, under a key that the
+/// load does not hold and with no record beside it:
+///
+/// - after the transaction looked at the subtree and before it hands the
+///   load over: the load is refused where it is taken, and the transaction
+///   is as it was;
+/// - after the load was taken: the load is a range over the nodes of its
+///   subtree, the commit meets it, and the commit of the load ends with
+///   the conflict;
+/// - before the load was taken, by a transaction that commits after the
+///   load: that transaction is met by the range of the load, and ends with
+///   the conflict.
+///
+/// So it is where the load is laid out and where it is taken by key.
+#[test]
+fn a_load_holds_that_its_merk_has_no_root_from_the_write_to_the_commit() {
+    for by_key in [false, true] {
+        let (db, versions) = Db::new(256);
+        let mut world = World::new(&db, &versions);
+        let merk = items(&mut Rng::new(31), b'q', 120, 3);
+        let alone = |name: u8| OwnedBatch {
+            merks: vec![whole(name, &merk)],
+            ..OwnedBatch::default()
+        };
+        fn first_node<'s>(world: &World<'s>, tx: &Tx<'s>, name: u8) {
+            let mut batch = OwnedBatch::default();
+            batch.merks.push(world.merk(tx, name, |items| {
+                items.insert(b"zz-another-key".to_vec(), vec![5; 12]);
+            }));
+            world.apply(tx, &batch).expect("a first node");
+        }
+        let ends = |tx: &Tx<'_>| {
+            let committer = db.committer(&versions);
+            db.commit_as(&committer, &tx.txn, None).map(drop)
+        };
+
+        // A look, the other commit, the write.
+        let tx = world.begin();
+        let rootless = tx.txn.subtree(model::subtree(1), |view| {
+            view.expect("the subtree is entered").root_key.is_none()
+        });
+        assert!(rootless.expect("a look"), "by key: {by_key}");
+        let other = world.begin();
+        first_node(&world, &other, 1);
+        assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
+        let refused = take(&world, &tx, (&alone(1), 1), by_key).expect_err("a root");
+        let rooted = BatchError::NotWhole {
+            subtree: model::subtree(1),
+            fault: WholeFault::HasRoot,
+        };
+        assert!(
+            matches!(&refused, TxnError::Batch(error) if *error == rooted),
+            "by key: {by_key}: {refused}"
+        );
+        world.check(&tx);
+        assert_eq!(tx.txn.stats().overlapped, 0);
+        assert!(matches!(ends(&tx), Ok(())), "nothing was taken");
+
+        // The write, the other commit, the commit of the load.
+        let tx = world.begin();
+        take(&world, &tx, (&alone(2), 2), by_key).expect("a load");
+        let other = world.begin();
+        first_node(&world, &other, 2);
+        assert!(matches!(world.commit(other, &[&tx]), Outcome::Committed(_)));
+        let ended = ends(&tx);
+        assert!(
+            matches!(ended, Err(CommitError::Conflict)),
+            "by key: {by_key}: {ended:?}"
+        );
+
+        // The other write, the load and its commit, the other commit.
+        let other = world.begin();
+        first_node(&world, &other, 3);
+        let tx = world.begin();
+        take(&world, &tx, (&alone(3), 3), by_key).expect("a load");
+        let published = commit(&mut world, tx);
+        assert_eq!(published.acquired, long_values(&merk));
+        let ended = ends(&other);
+        assert!(
+            matches!(ended, Err(CommitError::Conflict)),
+            "by key: {by_key}: {ended:?}"
+        );
+
+        // The Merks are the first writer's, each whole.
+        world.check_committed();
+        assert_eq!(counted(&db), long_values(&merk) as u64);
+        let report = db.verify_still();
+        assert!(db.unsound(&report).is_empty(), "{report}");
+    }
 }
 
 /// The commit of a transaction that holds a load makes it ready before

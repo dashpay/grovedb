@@ -1265,19 +1265,30 @@ recovered cell points at a value of the load, and no count includes one.
 Neither case is new: the first is the rule for every stored pointer (M13),
 the second is DU3.
 
-**LD6. To the conflict rule a load is the puts of its nodes.** Its key set
-is the keys of its nodes (CF1), each with the first-write version of its
-operation (WT5), and CF2 decides key by key. A load keeps no value, so
-CF2a has no read to date. A load that is applied through *T* is not
-counted as a range, which CF5 allows and does not ask for: a foreign
-commit that wrote another key of the same Merk does not meet it. Where
-the root that such a commit gave the Merk stands when *T*'s frames are
-made, the load is not laid out over it, as no first node of a Merk is
-(GM3, and choice 8 of `lignindb::txn`): *T*'s commit is then refused with
-*T* as it was, unless a write of *T* is met, which is a conflict. A caller
-whose load stands for the whole column of its subtree says so: it clears
-the subtree in the batch of the load, which is a range (CV9), or gives the
-commit the range to add to its key set (CF5).
+**LD6. To the conflict rule a load is the puts of its nodes and a range
+over the nodes of its subtree.** Its key set is the keys of its nodes
+(CF1) and the range of every key of the data column of its subtree (CF5),
+with the first-write version of its operation (WT5). A load keeps no
+value, so CF2a has no read to date.
+
+So "the Merk is entered and has no root" is a precondition of a load that
+holds from the operation that takes it to its commit:
+
+- **Where the write is taken.** The operation refuses the load, with
+  nothing changed, where the subtree is not entered or the Merk has a root
+  in what *T* reads at that operation (LD1, RD3): be the load laid out in
+  *T*'s frames or taken by key (WT7b, TXN-09). A commit that gave the Merk
+  a root before the operation is read by it, whatever *T*'s caller read
+  before.
+- **From then to the commit.** A commit of another transaction that puts
+  or deletes a node of the Merk, or deletes a range of them, after the
+  load's operation meets the load (CF2), and *T*'s commit ends with
+  `Conflict`. *T*'s commit publishes the range, so a transaction that
+  wrote a node of the Merk before *T*'s commit is met by it in turn.
+
+The refusal of the first item is the answer to a write, as `ValueTaken`
+is (CF6): it is not `Conflict`, and it leaves *T* open with what it wrote
+before. A caller of a load adds no clear and no range for either item.
 
 **LD7. What *T* holds in memory of a load that is laid out in its frames**,
 from the operation to its commit:
@@ -1628,8 +1639,8 @@ A bulk load into a subtree, inside *T* or outside it, may be counted for
 this rule as one write of the range "that subtree's column", in place of one
 entry per loaded key. What is read back under those keys is the loaded
 records (RD3). A load that is applied through a write transaction is
-counted by its entries, and its caller adds the range where the load stands
-for one (LD6).
+counted by its entries and as the range of the data column of its subtree
+(LD6).
 
 **CF6. `Conflict` is one typed error, used for CF2 and CF2a and for nothing
 else.** GROVE-01 maps it to the engine-neutral conflict error of SEAM-04, the
@@ -3157,10 +3168,12 @@ TREE-09, VER-05)**
   TXN-10: every state the cut can leave opens with the Merk whole or with
   no node of it, and passes the physical invariant checker (VER-07).
 - T-LD4: a load and the conflict rule (LD6), owed by TXN-10: two loads of
-  one Merk, a load beside a first node of another transaction, a load
-  after more commits than a transaction keeps key sets of, and a commit of
-  a load that is met while the look at what its drop covers fails, which
-  ends with the conflict.
+  one Merk; a first node of the Merk that another transaction commits
+  before the load is taken, after it is taken, and after the load's
+  commit, each where the load is laid out and where it is taken by key; a
+  load after more commits than a transaction keeps key sets of; and a
+  commit of a load that is met while the look at what its drop covers
+  fails, which ends with the conflict.
 - T-VL6: the counts after a crash (DU5), owed by STORE-07 with STORE-03.
   Samples are taken while commits, write-back and value moves run, and a
   crash comes at any point. The counts recovered from the sample in force
@@ -3637,7 +3650,7 @@ that takes the values of a load over (plan draft 40).
 | A change set may state that it is its whole Merk. It writes the records it would write otherwise, and is laid out by the bulk loader. | LD1 (new), LD4 (new), LD7 (new) |
 | Where a load is laid out, its long values are appended to the value log before the commit, under a hold, and the write set keeps where they are. | LD2 (new), LD3 (new), WT4, FL1, FL7 |
 | The commit of a load has a durable manifest cover those values before its frames are taken, lists the pointers its cells hold as acquired, and counts them. | LD5 (new), PV6, CM3, CM7, CM8 |
-| A load is counted by the conflict rule as the puts of its nodes. | LD6 (new), CF5 |
+| A load is counted by the conflict rule as the puts of its nodes and as a range over the nodes of its subtree. | LD6 (new), CF5 |
 | A load and its commit take the lock of the file that loads fill and the lock on the manifest. | LD8 (new), section 13 rows 7b and 9 to 12 |
 
 New tests: T-LD1 to T-LD4.

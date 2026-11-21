@@ -1080,6 +1080,30 @@ impl WriteSet {
         self.merks.iter().any(|merk| merk.whole && merk.nodes > 0)
     }
 
+    /// The loads of the set: the subtree of each, and the entry of the
+    /// first node its change set states, which has the first-write
+    /// version of the load's operation.
+    fn loads(&self) -> Vec<(Subtree, EntryId)> {
+        let mut loads = Vec::new();
+        if !self.has_loads() {
+            return loads;
+        }
+        for op in 0..self.ops.len() {
+            let (from, to, merks_from, merks_to) = self.op_bounds(op);
+            // The drops and the clears of an operation stand before the
+            // entries of its change sets.
+            let leaving = |entry: &&Entry| !entry.kind.leaves().is_empty();
+            let mut first = from + self.entries[from..to].iter().take_while(leaving).count();
+            for merk in &self.merks[merks_from..merks_to] {
+                if merk.whole && merk.nodes > 0 {
+                    loads.push((merk.subtree, first as EntryId));
+                }
+                first += (merk.nodes + merk.removed) as usize;
+            }
+        }
+        loads
+    }
+
     /// The values of the operation `op` that a load put into the value
     /// log, each by the place of its node among the entries of the
     /// operation's change sets ([`Again::stored`]).
@@ -2062,7 +2086,9 @@ impl WriteSet {
     /// Compares the key set of a commit that was published outside the
     /// transaction with the write set, and puts into the overlap set every
     /// entry whose keys it meets and whose first-write version is before
-    /// `version` (CF2, CF3).
+    /// `version` (CF2, CF3). A load is met where the commit holds any key
+    /// or range of the nodes of its subtree: the entry of its first node
+    /// goes into the overlap set.
     ///
     /// It does not matter that the transaction wrote a key again later: the
     /// earlier entry is met (case A9).
@@ -2108,6 +2134,15 @@ impl WriteSet {
                     .keys
                     .range::<[u8], _>((Bound::Included(&**start), upper));
                 inside.for_each(|(_, id)| chain(*id, &mut met));
+            }
+        }
+        // A load is the whole of a Merk that had no root, so it is a range
+        // over the nodes of its subtree (`transactions.md` LD6): a commit
+        // that wrote or deleted any of them meets it.
+        for (subtree, first) in self.loads() {
+            let theirs = keys.units.get(&Unit::data(subtree));
+            if theirs.is_some_and(|theirs| !theirs.keys.is_empty() || !theirs.ranges.is_empty()) {
+                met.push(first);
             }
         }
         for id in met {
@@ -2176,7 +2211,8 @@ impl WriteSet {
     }
 
     /// The key set of the transaction's commit (CF1): every key it put or
-    /// deleted, and every range it deleted, each once.
+    /// deleted, every range it deleted, and the range of the nodes of
+    /// each Merk it loaded, each once.
     pub(crate) fn key_set(&self) -> KeySet {
         let mut set = KeySet::new();
         for (unit, index) in &self.units {
@@ -2208,6 +2244,10 @@ impl WriteSet {
                     }
                 }
             }
+        }
+        // Every node of the subtree of a load (LD6).
+        for (subtree, _) in self.loads() {
+            set.range(Unit::data(subtree), &[], None);
         }
         set
     }
