@@ -695,20 +695,23 @@ impl<'t, 's> MerkCursor<'t, 's> {
         };
         let key = key.clone();
         let subtree = self.unit.subtree;
+        // Whether the node is read at all is asked as the seek that found
+        // its key asked it: of the cursor's version, before the
+        // transaction's own node is shown.
+        let guard = self.txn.path().versions().guard();
+        let reads = self.reads(&guard)?;
         let own = children.as_deref_mut();
         let read = match (self.txn).own_node_in(self.who, subtree, &key, own, read)? {
             Ok(shown) => return Ok(shown),
             Err(read) => read,
         };
-        let guard = self.txn.path().versions().guard();
         let mut found = false;
-        let shown = match self.reads(&guard) {
-            Ok(true) => self.side.node(&guard, &key, children, |view| {
+        let shown = match reads {
+            true => self.side.node(&guard, &key, children, |view| {
                 found = view.is_some();
                 read(view)
             }),
-            Ok(false) => Ok(read(None)),
-            Err(error) => Err(error),
+            false => Ok(read(None)),
         };
         // The transaction's lock is not held over the cursor's own read,
         // and another thread may have ended the transaction, or had it
@@ -895,16 +898,14 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     ///
     /// Where the transaction moved the subtree, the committed side is the
     /// records that the cursor's version has under the prefix the subtree
-    /// was taken from, read where the Merk the transaction has under the
-    /// cursor's prefix is the Merk that version has there, and never
-    /// where a move took a subtree from the cursor's prefix and brought
-    /// none (`WriteTxn::committed_side`). A subtree that no move names
-    /// and that leaves with one is not read
+    /// was taken from, where the transaction has that subtree still, and
+    /// never where a move took a subtree from the cursor's prefix and
+    /// brought none (`WriteTxn::committed_side`). A subtree that no move
+    /// names and that leaves with one is not read
     /// ([`Opened::leaves_with_a_move`]). Whoever has no frames that show
     /// the moves is refused where a move decides what is under the
-    /// subtree ([`BatchError::MovedByKey`](super::BatchError)): the call
-    /// first brings the transaction to the latest version, as each of its
-    /// operations does (`WriteTxn::cursor_side`).
+    /// subtree ([`BatchError::MovedByKey`](super::BatchError)), by the
+    /// directory of the cursor's version (`WriteTxn::cursor_side`).
     fn reads(&mut self, guard: &OperationGuard<'s>) -> Result<bool, TxnError> {
         let (at, seen) = (self.pin.version(), self.seen);
         let side = (self.txn).cursor_side(self.who, self.unit, &mut self.opened, guard, at, seen);

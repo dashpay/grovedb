@@ -172,9 +172,10 @@ pub enum Write {
 ///
 /// What the write covers is settled when it is stated and stays: every
 /// prefix the statements name, and the subtrees that left then
-/// (`transactions.md` CF10). Which subtrees it takes where is asked again
-/// whenever the transaction's writes are applied over a commit (WT7):
-/// `pairs` and `gone` say that, as the directory has the subtrees now.
+/// (`transactions.md` CF10). Which subtrees it takes where is worked out
+/// when it is stated, and again whenever the transaction's writes are
+/// applied over a commit (WT7): `pairs`, `gone` and `stopped` say that
+/// ([`Self::lay`]).
 #[derive(Debug, Clone, Default)]
 pub struct Moved {
     /// Every prefix the statements name, on either side.
@@ -186,16 +187,19 @@ pub struct Moved {
     /// subtree is there or not.
     pub stated: Vec<(Subtree, Subtree)>,
     /// Those of the stated pairs whose subtree is there to take: a moved
-    /// one, or one below a moved one. The model works them out.
+    /// one, or one below a moved one.
     pub pairs: Vec<(Subtree, Subtree)>,
     /// The subtrees below the moved ones that left with them when the
     /// move was stated: with `named`, what the write covers in the write
     /// set and in the key set of its commit.
     pub left: Vec<Subtree>,
-    /// The subtrees that leave with the move as the directory has them
-    /// now: those of `left`, and those that a commit entered below a
-    /// moved one since.
+    /// The subtrees below the moved ones that no stated pair names, and
+    /// that leave with the move.
     pub gone: Vec<Subtree>,
+    /// Whether a stated pair names a subtree below one that leaves: such
+    /// a move is not made (MV2), and the model says nothing of what the
+    /// transaction then reads. It is the one such case the model tells.
+    pub stopped: bool,
 }
 
 impl Moved {
@@ -228,29 +232,27 @@ impl Moved {
         self.covered().any(|covered| covered == subtree)
     }
 
-    /// A commit entered `subtree` under an element of `host`, and the
-    /// move is made again over it: a subtree that a stated pair names,
-    /// below one that goes, goes where the pair says, and one that no
-    /// pair names leaves with the move. What the write covers stays.
-    /// The prefix the subtree has afterwards and the subtree its host is
-    /// in then are returned, for the moves that follow, or `None` for one
-    /// that left.
-    fn again(&mut self, subtree: Subtree, host: Subtree) -> Option<(Subtree, Subtree)> {
-        if !self.takes(host) || self.takes(subtree) {
-            return Some((subtree, host));
-        }
-        let stated = self.stated.iter().find(|(old, _)| *old == subtree);
-        match (stated.copied(), self.target(host)) {
-            (Some(pair), Some(above)) => {
-                self.pairs.push(pair);
-                Some((pair.1, above))
-            }
-            (Some(_), None) => panic!("the model lays out no move that is refused"),
-            (None, _) => {
-                self.gone.push(subtree);
-                None
-            }
-        }
+    /// Works out which subtrees the move takes where, from `hosts`, which
+    /// has the subtrees as they hang where the move is made: of the
+    /// subtrees below a moved one, those that a stated pair names go with
+    /// it, and the others leave. A pair for a subtree that is not there
+    /// takes none. What the write covers is not changed.
+    pub fn lay(&mut self, hosts: &Hosts) {
+        let under: Vec<Subtree> = (self.tops.iter())
+            .flat_map(|top| below(hosts, *top))
+            .collect();
+        let there = |old: &Subtree| self.tops.contains(old) || under.contains(old);
+        let pairs: Vec<(Subtree, Subtree)> = (self.stated.iter().copied())
+            .filter(|(old, _)| there(old))
+            .collect();
+        let named = |subtree: &Subtree| pairs.iter().any(|(old, _)| old == subtree);
+        let gone: Vec<Subtree> = (under.iter().copied())
+            .filter(|under| !named(under))
+            .collect();
+        let leaves = |old: &Subtree| hosts.get(old).is_some_and(|host| gone.contains(host));
+        self.stopped = pairs.iter().any(|(old, _)| leaves(old));
+        self.pairs = pairs;
+        self.gone = gone;
     }
 }
 
@@ -363,6 +365,25 @@ impl Write {
         }
     }
 
+    /// The subtrees whose place among the Merks the transaction that made
+    /// this write keeps for it (the first rule of CF5): the one it
+    /// writes under, drops or clears, and each one it moves.
+    fn watched(&self) -> Vec<Subtree> {
+        match self {
+            Self::Put(unit, ..) | Self::Delete(unit, _) | Self::Range(unit, ..) => {
+                vec![unit.subtree]
+            }
+            Self::Leave(left) => vec![left.subtree],
+            Self::Move(moved) => moved.tops.clone(),
+            Self::Enter(..) | Self::Stated(_) => Vec::new(),
+        }
+    }
+
+    /// Whether the write is a range delete that contains no key.
+    fn is_empty_range(&self) -> bool {
+        matches!(self, Self::Range(_, start, Some(end)) if end <= start)
+    }
+
     fn covers(&self, unit: Unit, key: &[u8]) -> bool {
         match self {
             Self::Put(own, at, _) | Self::Delete(own, at) => *own == unit && at == key,
@@ -375,7 +396,10 @@ impl Write {
         }
     }
 
-    /// Whether the two writes write a key in common (CF2).
+    /// Whether this write, of a commit, meets `other`, a write of a
+    /// transaction beside it: they write a key in common (CF2), or the
+    /// commit takes a subtree whole that the other write is under (CF5,
+    /// CF10).
     pub fn meets(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Enter(..) | Self::Stated(_), _) | (_, Self::Enter(..) | Self::Stated(_)) => {
@@ -383,18 +407,33 @@ impl Write {
             }
             // A move writes every key under each prefix it covers: those
             // it names, and those of the subtrees that left with it when
-            // it was stated. What a drop takes below its subtree is the
-            // model's to say, so a drop above a moved subtree meets the
-            // move.
+            // it was stated.
             (Self::Move(moved), Self::Move(other)) => {
                 moved.covered().any(|covered| other.covers(covered))
             }
-            (Self::Move(moved), Self::Leave(left)) | (Self::Leave(left), Self::Move(moved)) => {
+            // A commit that moved subtrees, and a drop or a clear of the
+            // transaction: what that takes below its subtree is the
+            // model's to say.
+            (Self::Move(moved), Self::Leave(left)) => {
                 let mut covered = moved.covered();
                 covered.any(|covered| left.names(Unit::data(covered)) || left.subtree == covered)
             }
-            (Self::Move(moved), other) | (other, Self::Move(moved)) => {
-                moved.covers(other.unit().subtree)
+            // A commit that dropped or cleared a subtree names it, and
+            // those below it that its transaction had written under
+            // (CF5): it meets a move that covers one of them. What it
+            // took without naming it is `TxnModel::foreign`'s to say.
+            (Self::Leave(left), Self::Move(moved)) => {
+                moved.covers(left.subtree) || left.cut.iter().any(|cut| moved.covers(*cut))
+            }
+            // A commit that moved a subtree took it whole: it meets every
+            // write under a prefix it covers, a range delete with no key
+            // in it among them.
+            (Self::Move(moved), other) => moved.covers(other.unit().subtree),
+            // A write of a commit meets a move that covers its prefix
+            // where it holds a key (CF2): a range delete with no key in
+            // it meets nothing.
+            (other, Self::Move(moved)) => {
+                moved.covers(other.unit().subtree) && !other.is_empty_range()
             }
             (Self::Leave(left), Self::Leave(other)) => {
                 let units = |left: &Left| {
@@ -570,22 +609,44 @@ impl TxnModel {
                 *met = true;
             }
         }
-        // A subtree that the commit entered below one that a move of the
-        // transaction takes to another prefix goes with that move, or
-        // leaves with it, where the transaction's writes are applied over
-        // the commit: and then with each later move in the same way.
-        for write in writes {
-            let Write::Enter(subtree, Some(host)) = write else {
+        // The first rule of CF5 for a move: a commit that took, with a
+        // subtree above it, a subtree that the transaction wrote under,
+        // dropped, cleared or moved meets every entry under that one, and
+        // a move is under every prefix it covers.
+        let took = |subtree: &Subtree| {
+            (writes.iter())
+                .any(|write| matches!(write, Write::Leave(left) if left.below.contains(subtree)))
+        };
+        let watched = self.writes.iter().flat_map(|(write, ..)| write.watched());
+        let taken: Vec<Subtree> = watched.filter(took).collect();
+        for (own, first_write, met) in &mut self.writes {
+            let Write::Move(moved) = own else {
                 continue;
             };
-            let mut entered = Some((*subtree, *host));
-            for (own, ..) in &mut self.writes {
-                let (Write::Move(moved), Some((subtree, host))) = (own, entered) else {
-                    continue;
-                };
-                entered = moved.again(subtree, host);
+            if *first_write < version && taken.iter().any(|taken| moved.covers(*taken)) {
+                *met = true;
             }
         }
+    }
+
+    /// Works out again what each move of the transaction takes where,
+    /// with its writes applied in their order over the committed subtrees
+    /// `committed` ([`Moved::lay`]): what a layout of the transaction's
+    /// writes over a commit does (WT7).
+    pub fn lay(&mut self, committed: &Hosts) {
+        let mut hosts = committed.clone();
+        for (write, ..) in &mut self.writes {
+            if let Write::Move(moved) = write {
+                moved.lay(&hosts);
+            }
+            hosted(&mut hosts, write);
+        }
+    }
+
+    /// Whether a move of the transaction is not made over the committed
+    /// subtrees it was last laid out over ([`Moved::stopped`]).
+    pub fn stopped(&self) -> bool {
+        (self.writes.iter()).any(|(write, ..)| matches!(write, Write::Move(moved) if moved.stopped))
     }
 }
 

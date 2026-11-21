@@ -238,6 +238,10 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// The subtrees that left with the moves of the batch that was applied
     /// last.
     left: Vec<Subtree>,
+    /// For each Merk that a clear applied to these frames entered again
+    /// under another id (`Directory::clear`), the id it had before, by
+    /// the id it has since.
+    renewed: HashMap<MerkId, MerkId>,
 }
 
 /// The most cells a search by key passes before the pages are taken for
@@ -665,6 +669,7 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             unlinked: self.unlinked,
             own: self.own,
             left: self.left,
+            renewed: self.renewed,
         }
     }
 }
@@ -701,6 +706,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             unlinked: HashMap::new(),
             own: HashSet::new(),
             left: Vec::new(),
+            renewed: HashMap::new(),
             base: at,
         })
     }
@@ -720,6 +726,16 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     /// batch that was applied last: those the moves named no prefix for.
     pub(crate) fn left_with_moves(&self) -> &[Subtree] {
         &self.left
+    }
+
+    /// The id that the Merk which has `id` in these frames had before the
+    /// clears that were applied to them: its own, where none of them gave
+    /// it another.
+    pub(crate) fn before_clears(&self, mut id: MerkId) -> MerkId {
+        while let Some(was) = self.renewed.get(&id) {
+            id = *was;
+        }
+        id
     }
 
     /// The lease the nodes of the frames are read under. It ends with the
@@ -1112,6 +1128,14 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             (path.flat_drops)
                 .unlink_prefix(&mut *self.flat, &data, prefix, self.base)
                 .map_err(Refused::dropping)?;
+            // The subtree is the one it was, with those records, under
+            // whichever id the clear left it.
+            let cleared = self.directory.open(&*self.flat, prefix);
+            let cleared = cleared.map_err(Refused::dirty)?;
+            let was = left.entry.id();
+            if let Some(now) = cleared.map(|entry| entry.id()).filter(|now| *now != was) {
+                self.renewed.insert(now, was);
+            }
         }
         // The unlinked records: those under the keys that the change sets
         // link a node under or delete go, and the nodes that the trees do

@@ -176,19 +176,11 @@ impl<'s> World<'s> {
                 left.cut = left.below.iter().copied().filter(written).collect();
             }
             if let Write::Move(moved) = &mut write {
-                // Of the subtrees below a moved one, those the moves name
-                // go with it, and the others leave. A pair for a subtree
-                // that is not there takes none now, and stays stated.
-                let tops = moved.tops.clone();
-                let below: Vec<Subtree> = (tops.iter())
-                    .flat_map(|top| model::below(&hosts, *top))
-                    .collect();
+                // Which subtrees the move takes where, and which leave
+                // with it: those are what it covers from here on.
                 moved.stated = moved.pairs.clone();
-                (moved.pairs).retain(|(old, _)| tops.contains(old) || below.contains(old));
-                moved.left = (below.iter().copied())
-                    .filter(|below| moved.pairs.iter().all(|(old, _)| old != below))
-                    .collect();
-                moved.gone = moved.left.clone();
+                moved.lay(&hosts);
+                moved.left = moved.gone.clone();
             }
             model.writes.push((write, first_write, false));
         }
@@ -242,7 +234,10 @@ impl<'s> World<'s> {
                     .collect();
                 let commit = self.model.commit(&writes);
                 for other in others {
-                    other.model.borrow_mut().foreign(commit, &writes);
+                    let mut other = other.model.borrow_mut();
+                    other.foreign(commit, &writes);
+                    // Its moves are made again over the commit.
+                    other.lay(&self.model.hosts);
                 }
                 Outcome::Committed(version(commit))
             }

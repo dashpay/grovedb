@@ -1,7 +1,7 @@
 //! The write transaction and its scope.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fmt,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
@@ -896,6 +896,9 @@ impl<'s> WriteTxn<'s> {
                     }
                     state.frames = Some(frames);
                     state.base = Some(pin);
+                    // Whatever stopped a layout over an earlier version
+                    // stops this one no more.
+                    state.stuck = None;
                 }
                 Err(error) if is_refusal(&error) => {
                     // The values the write set keeps are read at the
@@ -931,8 +934,9 @@ impl<'s> WriteTxn<'s> {
     /// the reader has no frames that show it ([`Self::guard_moved`]); the
     /// committed read is never refused for a move (RD10). Then the read
     /// is claimed for `who` (SC2). An operation that does not begin, or
-    /// whose read is refused, gives the watch up again, and one that is
-    /// refused for a move has claimed nothing.
+    /// whose read is refused, gives the watch up again where nothing else
+    /// needs it ([`State::unwatch`]), and one that is refused for a move
+    /// has claimed nothing.
     fn begin_shown(
         &self,
         state: &mut State<'s>,
@@ -1047,6 +1051,7 @@ impl<'s> WriteTxn<'s> {
                     if let Ok(frames) = frames {
                         state.frames = Some(frames);
                         state.rebuilds += 1;
+                        state.stuck = None;
                     }
                 } else {
                     drop(frames);
@@ -1193,12 +1198,15 @@ impl<'s> WriteTxn<'s> {
     ///   enters, enters a subtree under, or names as one that a node it
     ///   puts hosts, whose entry the batch reads (SC2).
     ///
-    /// The refusal is that of [`Self::unlaid`], for the first subtree in
-    /// that order: the prefix the first move takes a subtree from, the
-    /// first subtree that is dropped or cleared, or the written subtree.
-    /// It is asked before the batch takes a claim (SC3) and before it is
-    /// judged by what the write set holds ([`WriteSet::admits`]): a batch
-    /// that is refused here has claimed nothing.
+    /// The refusal is that of [`Self::unlaid`]. Where that is
+    /// [`BatchError::MovedByKey`] or [`BatchError::MoveBeside`], it names
+    /// the first subtree in that order: the prefix the first move takes a
+    /// subtree from, the first subtree that is dropped or cleared, or the
+    /// written subtree. The refusal of a layout that stopped names what
+    /// stopped it. It is asked before the batch takes a claim (SC3) and
+    /// before it is judged by what the write set holds
+    /// ([`WriteSet::admits`]): a batch that is refused here has claimed
+    /// nothing.
     fn guard_batch(
         &self,
         state: &mut State<'s>,
@@ -1231,7 +1239,11 @@ impl<'s> WriteTxn<'s> {
             Hosted::Keep => &[],
         });
         let written = merks.chain(records).chain(hosts).chain(named);
-        let written: Vec<Subtree> = written.chain(hosted.copied()).collect();
+        // Each subtree is asked once, the first the batch names first.
+        let mut asked = HashSet::new();
+        let written: Vec<Subtree> = (written.chain(hosted.copied()))
+            .filter(|subtree| asked.insert(*subtree))
+            .collect();
         for subtree in written {
             self.guard_moved(state, op, who, subtree)?;
         }
@@ -1254,10 +1266,14 @@ impl<'s> WriteTxn<'s> {
     /// that the transaction has under `subtree` is the Merk that the
     /// version has under that prefix. The frames say which Merk the
     /// transaction has there: they show every move, drop, clear and enter
-    /// that is laid out, and a Merk keeps its id through a move and
-    /// through a clear, and has another once it was dropped and entered
-    /// again. Whoever has no frames that show the moves was refused the
-    /// read before this is asked ([`Self::refuse_moved`]).
+    /// that is laid out. A Merk keeps its id through a move. A clear of a
+    /// Merk with a node gives it another id and leaves it the subtree it
+    /// was, with its flat records but those of its data, which the entry
+    /// of the clear deletes: the frames remember the id it had
+    /// ([`Awake::before_clears`]). A subtree that was dropped, alone or
+    /// with one above it, and entered again is another Merk, under
+    /// another id. Whoever has no frames that show the moves was refused
+    /// the read before this is asked ([`Self::refuse_moved`]).
     fn committed_side(
         &self,
         state: &mut State<'s>,
@@ -1282,7 +1298,8 @@ impl<'s> WriteTxn<'s> {
                 "a move is read with no frames that show it",
             ));
         };
-        let own = frames.entry(&subtree)?.map(|entry| entry.id());
+        let own = frames.entry(&subtree)?;
+        let own = own.map(|entry| frames.before_clears(entry.id()));
         let committed = opened.id(path, guard, &under)?;
         Ok((own.is_some() && own == committed).then_some(under))
     }
@@ -1294,10 +1311,10 @@ impl<'s> WriteTxn<'s> {
     /// ([`Self::committed_side`]). `seen` is the answer the cursor has,
     /// which stands while the count does.
     ///
-    /// Where the transaction has moved a subtree, the call begins as an
-    /// operation of the transaction does ([`Self::begin`]): it takes in
-    /// the commits up to the latest version, each at its own version, and
-    /// has the frames made again over it. So a commit that met the
+    /// While the write set holds a move, the call begins as an operation
+    /// of the transaction does ([`Self::begin`]), at the latest version:
+    /// the commits since its last look are taken in, and a layout of its
+    /// writes over that version is tried. So a commit that met the
     /// transaction, and one over which its writes cannot be laid out, is
     /// known to a cursor that is the first to call after it. Whoever has
     /// no frames that show the moves is then refused where a move decides
@@ -2008,6 +2025,10 @@ impl<'s> WriteTxn<'s> {
     /// then says what it read ([`Self::cursor_read`]). The operation
     /// watches from here on, as one that may show a node.
     ///
+    /// Whether a move decides what is under the subtree is not asked
+    /// here: the cursor has asked it, of the version it reads
+    /// ([`Self::cursor_side`]).
+    ///
     /// `children`, where it is given, takes the key of each child of a
     /// node that is shown from a cell of the frames, in the same operation.
     /// A record of the write set names its children itself.
@@ -2024,7 +2045,7 @@ impl<'s> WriteTxn<'s> {
     {
         let mut state = self.lock();
         let state = &mut *state;
-        let op = self.begin_shown(state, who, Unit::data(subtree), true)?;
+        let op = self.begin_shown(state, who, Unit::data(subtree), false)?;
         let read = match self.unlaid_node(state, &op, who, subtree, key, read)? {
             Ok(shown) => return Ok(Ok(shown)),
             Err(read) => read,

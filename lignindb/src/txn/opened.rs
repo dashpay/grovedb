@@ -88,8 +88,7 @@ impl Opened {
     }
 
     /// The id of the Merk that this version has under `subtree`, if the
-    /// subtree is entered. A Merk keeps its id for as long as it is
-    /// entered, under whichever prefix (`lignin_tree::directory`, "Ids").
+    /// subtree is entered (`lignin_tree::directory`, "Ids").
     pub(crate) fn id<'s>(
         &mut self,
         path: &WritePath<'s>,

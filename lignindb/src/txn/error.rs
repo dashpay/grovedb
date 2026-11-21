@@ -310,12 +310,10 @@ pub enum BatchError {
     /// A scope that keeps its writes in the write set states a move,
     /// reads or writes a subtree that a move of the transaction decides,
     /// or drops or clears a subtree while the transaction's write set
-    /// holds a move (`transactions.md` MV7, MV8): a move is laid out on
-    /// the transaction's frames when it is stated, and such a scope is
-    /// answered from the write set. Or a move is stated while an element
-    /// of a Merk under a prefix it names is marked pending, or was at
-    /// some point of the writes that the transaction's frames show
-    /// (`crate::scope`).
+    /// holds a move (`transactions.md` MV7, MV8). Or a move is stated
+    /// while the pending mark of an element of a Merk under a prefix it
+    /// names stands, or a call that set that mark or took it off is among
+    /// the writes that the transaction's frames show (MV8).
     MoveBeside {
         /// The subtree the refused move takes from its prefix, the first
         /// subtree the refused batch drops or clears, or the subtree

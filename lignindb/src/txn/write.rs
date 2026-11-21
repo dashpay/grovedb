@@ -444,8 +444,9 @@ pub struct HostPut<'a> {
 ///   to. Frames that are made again make the move again, and write the
 ///   flat records again. A transaction that serves its records by key,
 ///   and a scope that keeps its writes in the write set, do not answer
-///   for a move: each refuses a move, every read and write that a move
-///   decides, and every drop and clear. MV7 and MV8 say with which
+///   for a move: each refuses a move, and while the write set holds a
+///   move, every read and write that a move decides, and every drop and
+///   clear. MV7 and MV8 say with which
 ///   refusal: [`BatchError::MovedByKey`](super::BatchError::MovedByKey),
 ///   the one that stops the layout of the transaction's writes, or
 ///   [`BatchError::MoveBeside`](super::BatchError::MoveBeside).
