@@ -1409,3 +1409,67 @@ fn every_error_has_its_text_and_its_source() {
         assert_eq!(error.source().is_some(), caused, "{text}");
     }
 }
+
+/// A path whose last name ends in `.creating`, in whatever case of its
+/// ASCII letters, is the name that a checkpoint is built under: no open
+/// opens it and none makes a database at it, whatever it is told about
+/// creating, and the open makes no call that changes anything. That holds
+/// with a database at the path, with an empty directory and with nothing
+/// there. The same directory under a name that does not end so is
+/// opened.
+#[test]
+fn a_name_that_checkpoints_are_built_under_is_not_opened_and_gets_no_database() {
+    let dir = temp();
+    for (case, name) in ["7.creating", "7.CREATING", "7.Creating", ".creating"]
+        .into_iter()
+        .enumerate()
+    {
+        for held in ["a database", "an empty directory", "nothing"] {
+            let above = dir.path().join(format!("{case}-{}", held.len()));
+            fs::create_dir(&above).expect("a directory");
+            let (path, plain) = (above.join(name), above.join("7"));
+            match held {
+                "a database" => {
+                    let db = Db::open(&plain, &options()).expect("a new database");
+                    plant(&db, subtree(1), Merk::sized(b'k', 10, 20));
+                    db.close().expect("the session ends");
+                    fs::rename(&plain, &path).expect("the database gets the name");
+                }
+                "an empty directory" => fs::create_dir(&path).expect("a directory"),
+                _ => {}
+            }
+            let before = image(&above);
+            for create_if_missing in [true, false] {
+                let watched = Watched::default();
+                let opening = Options {
+                    create_if_missing,
+                    vfs: Arc::new(watched.clone()),
+                    ..options()
+                };
+                let what = format!("{name} with {held}, create {create_if_missing}");
+                let error = Db::open(&path, &opening).expect_err("a name that is built under");
+                assert!(
+                    matches!(&error, OpenError::Creating { dir } if *dir == path),
+                    "{what}: {error:?}"
+                );
+                assert!(error.left_untouched() && error.source().is_none());
+                assert!(error.to_string().contains(".creating"), "{error}");
+                assert_eq!(watched.changes(), 0, "{what}: the open wrote");
+                assert_eq!(image(&above), before, "{what}");
+            }
+            if held == "a database" {
+                fs::rename(&path, &plain).expect("the database gets its name back");
+                let db = Db::open(&plain, &options()).expect("the database opens");
+                assert!(!db.created());
+                assert!(seen(&db.snapshot().operation(), subtree(1), b"k").is_some());
+            }
+        }
+    }
+    // A name that only holds the letters, and one above the last name,
+    // are no such name.
+    for name in ["creating", "7.creating.old", "7.creating/db"] {
+        let path = dir.path().join("plain").join(name);
+        let db = Db::open(&path, &options()).unwrap_or_else(|error| panic!("{name}: {error}"));
+        assert!(db.created(), "{name}");
+    }
+}

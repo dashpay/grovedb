@@ -33,10 +33,12 @@ pub const DELETING_FILE_NAME: &str = "MANIFEST.deleting";
 /// durable.
 ///
 /// **A directory that the directory above lists under such a name, byte
-/// for byte, is a creation's, with everything in it, and its callers open
-/// none as a database.** Nothing in the engine's open knows the name: it
-/// would take an empty one, or one with a lock file alone, for a place to
-/// make a database in. One whose lock is found held is taken for one
+/// for byte, is a creation's, with everything in it, and is not to be
+/// opened as a database.** The engine's open refuses a path whose last
+/// name ends so, in any case of its ASCII letters
+/// (`crate::db::OpenError::Creating`); a path that leads to such a
+/// directory under another last name is its callers' to keep from the
+/// open. One whose lock is found held is taken for one
 /// that is being built, and the call goes no further. One whose lock is
 /// had is taken for what a creation that was cut short left, a part of a
 /// checkpoint or a whole one that did not get its name: the next creation
@@ -90,11 +92,12 @@ fn is_building(path: &Path) -> bool {
     (path.file_name()).is_some_and(|name| name.as_encoded_bytes().ends_with(suffix))
 }
 
-/// Whether a target that is given as `path` is refused for its name: one
-/// that a creation builds under, in any case of its ASCII letters. A file
-/// system that does not tell capital letters from small ones takes each
-/// of them for that name.
-fn is_reserved(path: &Path) -> bool {
+/// Whether the last name of `path` is one that a creation builds under,
+/// in any case of its ASCII letters. A target that is given as such a
+/// path is refused, and so is an open of the engine that is given one
+/// (`crate::db::OpenError::Creating`). A file system that does not tell
+/// capital letters from small ones takes each of them for that name.
+pub(crate) fn is_reserved(path: &Path) -> bool {
     let suffix = CREATING_SUFFIX.as_bytes();
     (path.file_name()).is_some_and(|name| {
         let name = name.as_encoded_bytes();

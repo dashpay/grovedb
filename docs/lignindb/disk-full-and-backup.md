@@ -470,8 +470,9 @@ creation that fails"). So a creation that the power cuts leaves nothing at
 the target, or the whole checkpoint. A part of a checkpoint that a creation leaves, when
 it is cut short or when it fails and cannot take away what it made, is
 under that other name. A directory of that name is not to be opened as a
-database: the engine's open has no rule for the name. It is for a later
-creation at the same target to take over, or for
+database: the engine's open refuses a path whose last name ends in
+`.creating`, in any case of its ASCII letters (`OpenError::Creating`). It
+is for a later creation at the same target to take over, or for
 `lignindb::checkpoint::delete` to remove: that module says when each does.
 
 One failure leaves the whole target instead. For a copy, the manifest was

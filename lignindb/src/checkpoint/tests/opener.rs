@@ -32,6 +32,7 @@ use super::{
 use crate::{
     checkpoint,
     commit::{Committed, NoStaleHashes},
+    db::OpenError,
     snapshot::Versions,
     txn::{
         tests::store::{Db, SIZE},
@@ -160,6 +161,30 @@ fn opens_as_the_checkpoint(
         .unwrap_or_else(|error| panic!("{context}: the close: {error}"));
 }
 
+/// Asks the engine's open for the name that the checkpoint at `target` is
+/// built under, in `state`, with either setting of
+/// [`Options::create_if_missing`]: it is refused for the name, whatever is
+/// there, and the state is as it was.
+fn the_building_name_is_not_opened(state: &SimVfs, target: &Path, context: &str) {
+    let built = building(target);
+    let ops = state.stats().ops;
+    for create_if_missing in [true, false] {
+        let opening = Options {
+            create_if_missing,
+            ..options(state)
+        };
+        let error = match crate::Db::open(&built, &opening) {
+            Ok(_) => panic!("{context}: the name it was built under is opened"),
+            Err(error) => error,
+        };
+        assert!(
+            matches!(&error, OpenError::Creating { dir } if *dir == built),
+            "{context}, create {create_if_missing}: {error:?}"
+        );
+    }
+    assert_eq!(state.stats().ops, ops, "{context}: the open made a call");
+}
+
 fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
     let (fs, records, version) = engine_made(91);
     // Each cut begins from a copy of the file system as the engine left
@@ -213,6 +238,7 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
             };
             let context = format!("{files:?}, cut {cut} of {ops}, crash plan {index}");
             seen.built += usize::from(!gone(&state, &building(&target)));
+            the_building_name_is_not_opened(&state, &target, &context);
             if gone(&state, &target) {
                 // What was at that name before: nothing.
                 assert!(created.is_err(), "{context}: the checkpoint is gone");
@@ -254,7 +280,10 @@ fn every_state_opens_as_the_checkpoint_or_has_nothing(files: Files) {
 /// database where it finds none. Either nothing has the name of the
 /// target, which is what was there before, or the open finds the
 /// checkpoint: it makes no database, lands on the checkpoint's version and
-/// reads every record of it.
+/// reads every record of it. And in each of those states the name that
+/// the checkpoint was built under is asked of the engine's open, with
+/// either setting of creating: it is refused for its name
+/// ([`OpenError::Creating`]), with no call made to the file layer.
 #[test]
 fn a_cut_creation_leaves_the_checkpoint_or_nothing_for_the_open_that_creates() {
     every_state_opens_as_the_checkpoint_or_has_nothing(Files::Linked);

@@ -310,10 +310,13 @@
 //!
 //! **What a cut leaves that is not at the target is under the other
 //! name**: a part of a checkpoint, or a whole one that did not get its
-//! name. A directory of that name is not to be opened as a database, and
-//! that is its callers' to keep: the engine's open has no rule for the
-//! name, and would take an empty one, or one with a lock file alone, for
-//! a place to make a database in. It holds links
+//! name. A directory of that name is not to be opened as a database. The
+//! engine's open refuses a path whose last name ends so, in any case of
+//! its ASCII letters, before it looks at what is there
+//! (`crate::db::OpenError::Creating`): it would take an empty one, or one
+//! with a lock file alone, for a place to make a database in. A path
+//! that leads to such a directory under another last name is its
+//! callers' to keep from the open. It holds links
 //! to the live database's files, and so the space of those that the live
 //! database deletes, until it is removed. A creation at the same target
 //! that gets as far as building empties it and builds in it, and
@@ -585,11 +588,12 @@
 //!
 //! - **The open of the engine** (TXN-07, GROVE-01) opens a checkpoint as
 //!   it opens any directory, and is told nothing by the directory.
-//!   - **For a creation that was cut short it needs one rule, which is
-//!     its callers' to keep**: a directory whose name ends in
-//!     [`CREATING_SUFFIX`] is not opened as a database. A creation puts
-//!     nothing but the whole checkpoint under the name of its target, so
-//!     nothing that it leaves is at a name that a caller opens.
+//!   - **For a creation that was cut short it has one rule**: a path
+//!     whose last name ends in [`CREATING_SUFFIX`], in any case of its
+//!     ASCII letters, is not opened and gets no database
+//!     (`crate::db::OpenError::Creating`). A creation puts nothing but
+//!     the whole checkpoint under the name of its target, and builds in
+//!     a directory of a name that the open refuses.
 //!   - **It makes no database in a directory that holds
 //!     [`DELETING_FILE_NAME`]**: that is a checkpoint, or a database,
 //!     whose deletion was cut short, and [`delete`] finishes it.
@@ -649,6 +653,7 @@ mod files;
 
 pub use create::{CheckpointOptions, Checkpointer, Created, DEFAULT_CATCH_UP_ABOVE};
 pub use error::CheckpointError;
+pub(crate) use files::is_reserved;
 pub use files::{delete, CREATING_SUFFIX, DELETING_FILE_NAME};
 
 #[cfg(all(test, not(loom)))]

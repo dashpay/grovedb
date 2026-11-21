@@ -325,7 +325,7 @@ Above the engine, the golden corpus (BASE-02) replays unchanged on the branch, a
 
 | Operation | On LigninDB |
 | --- | --- |
-| `open(path)` | `Db::open` with the default `Options`, which makes the database if the directory has none. A directory of another engine is refused and left as it is (the module documentation of `lignindb::db`). Then the root Merk and the namespace of the pending-drop records are entered, if they are not, in one commit: see [Subtrees](#subtrees-are-entered-by-the-first-batch-that-writes-into-them). |
+| `open(path)` | `Db::open` with the default `Options`, which makes the database if the directory has none (and refuses a path whose last name ends in `.creating`, `OpenError::Creating`). A directory of another engine is refused and left as it is (the module documentation of `lignindb::db`). Then the root Merk and the namespace of the pending-drop records are entered, if they are not, in one commit: see [Subtrees](#subtrees-are-entered-by-the-first-batch-that-writes-into-them). |
 | `open_checkpoint(path)` | refused, `Error::NotSupported` (GROVE-08). The engine makes no checkpoint yet and has no way to tell one from the directory of a database, and `GroveDb::delete_checkpoint` removes whatever this opens: it removes nothing while this is refused. |
 | `create_checkpoint(path)` | refused, `Error::NotSupported`: the facade has no checkpoint of an open database yet (GROVE-08). |
 | `flush()` | `Db::flush` (DU1a). |

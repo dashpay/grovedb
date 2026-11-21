@@ -123,6 +123,7 @@
 //!
 //! | The directory | The open |
 //! | --- | --- |
+//! | is given by a path whose last name ends in `.creating`, in any case of its ASCII letters, whatever is there | [`OpenError::Creating`] |
 //! | is not there, or holds nothing of any engine | makes the database, or fails with [`OpenError::NoDatabase`] if [`Options::create_if_missing`] is off |
 //! | has an entry named `MANIFEST.deleting`, whatever else it holds | [`OpenError::Deleting`] |
 //! | has an entry that RocksDB makes (`CURRENT`, `IDENTITY`, `MANIFEST-…`, `OPTIONS-…`, an `.sst` file), or a `MANIFEST` that is no LigninDB file | [`OpenError::OtherEngine`] |
@@ -133,8 +134,9 @@
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
 //! Each of these is found with no file made
-//! ([`OpenError::left_untouched`]): by reading alone before the lock, or
-//! under the lock of a lock file that was there. A `MANIFEST` that is too
+//! ([`OpenError::left_untouched`]): by the name alone, by reading alone
+//! before the lock, or under the lock of a lock file that was there. A
+//! `MANIFEST` that is too
 //! short to have a header is reported as a manifest that cannot be read
 //! ([`OpenError::Manifest`]), and nothing is written for it either.
 //!
@@ -171,7 +173,8 @@
 //! the path of a database that is being opened or is open, as with the
 //! close below.
 //!
-//! **Where a database is made** ([`Options::create_if_missing`]): in a
+//! **Where a database is made** ([`Options::create_if_missing`]): at a
+//! path whose last name does not end in `.creating` (below), in a
 //! directory that is not there, and in one that holds none of these: an
 //! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
 //! `MANIFEST`, and an entry with the name of a directory of a store's
@@ -185,18 +188,19 @@
 //! `lignindb::checkpoint::delete` does with it). Once the mark is gone
 //! the directory is looked at as any other, by the table above: what a
 //! removal leaves that was cut short after its mark went and before the
-//! directory itself did is a place. What a creation of a
-//! checkpoint left with a directory of a store's files in it is looked
-//! at by the same table, its rows in their order: where no row before
-//! refuses it, it gets no database while it has no manifest
-//! ([`OpenError::NoManifest`]), and with its manifest it is a database,
-//! and is opened. What such a creation left
-//! empty, or with its lock file alone, the open cannot tell from a place
-//! and makes a database in: a checkpoint is to be built under another
-//! name and renamed into place, so that a cut creation leaves nothing
-//! under the name it was for (D-128 B). Until it is, whoever makes
-//! checkpoints removes a target that a failed or cut creation left before
-//! anything opens it.
+//! directory itself did is a place.
+//!
+//! A path whose last name ends in `.creating`, in any case of its ASCII
+//! letters, is not opened and gets no database
+//! ([`OpenError::Creating`]). That is the name a checkpoint is built
+//! under, beside its target (`lignindb::checkpoint`, D-128 B): a
+//! directory of that name can hold nothing, a lock file alone, a part of
+//! a checkpoint or a whole one, and the first two the open could not
+//! tell from a place. The open goes by the name it is given, before it
+//! makes a call to the file layer, so this row of the table comes before
+//! every other. What a creation leaves at its target, and what becomes
+//! of the directory it built in, is said there ("Durability, and a
+//! creation that fails").
 //!
 //! # A new database
 //!
@@ -753,7 +757,8 @@ impl Db {
     /// Opens the database in the directory `dir`, and makes one there if
     /// the directory has none and [`Options::create_if_missing`] is on.
     /// The directory is created with every directory above it that is
-    /// missing.
+    /// missing. A path whose last name ends in `.creating` is refused
+    /// whatever is there, with nothing made ([`OpenError::Creating`]).
     ///
     /// The directory's lock is held from here until the handle is dropped.
     /// The store is recovered to the last commit whose group its log holds

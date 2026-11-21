@@ -30,7 +30,7 @@ use super::{
     store::{Catalog, Shared},
 };
 use crate::{
-    checkpoint::DELETING_FILE_NAME,
+    checkpoint::{is_reserved, DELETING_FILE_NAME},
     options::Options,
     txn::{KeySet, Keyspaces, WritePath},
 };
@@ -252,6 +252,14 @@ pub(super) struct Opened {
 /// `LOCK` (D-129): another process wrote into it between that look and the
 /// making of the lock file.
 pub(super) fn open_dir(dir: &Path, options: &Options) -> Result<Opened, OpenError> {
+    // The name that a checkpoint is built under (`crate::checkpoint`,
+    // D-242): nothing is opened and nothing is made at it. The open goes
+    // by the name it is given, before its first call to the file layer.
+    if is_reserved(dir) {
+        return Err(OpenError::Creating {
+            dir: dir.to_path_buf(),
+        });
+    }
     let vfs: &Arc<dyn Vfs> = &options.vfs;
     let page_size = |manifest: &Manifest| match options.page_size {
         Some(requested) if requested != manifest.page_size() => Err(OpenError::PageSize {
