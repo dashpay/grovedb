@@ -689,3 +689,94 @@ fn a_session_that_goes_on_is_asked_at_no_cost() {
     }
     assert_eq!(session.fs.stats().ops, before);
 }
+
+/// The file that the close of [`session`] turns the log to, read from
+/// the trace of a close with no fault: the close makes the file, and
+/// appends its header, then its start record, then the mark of the table
+/// checkpoint.
+fn turned_to_by_a_close(seed: u64) -> String {
+    let mut twin = session(seed, SyncPolicy::Never);
+    let active = written_last(&twin, "/wal/");
+    let from = twin.fs.trace().len();
+    assert!(twin.close(), "a close with no fault");
+    let appended: Vec<String> = (twin.fs.trace().into_iter().skip(from))
+        .filter_map(|event| match event {
+            Event::Op(op) if op.kind == OpKind::Append && op.path.contains("/wal/") => {
+                Some(op.path)
+            }
+            _ => None,
+        })
+        .collect();
+    let to = appended.first().expect("the close appends to the log");
+    assert_ne!(*to, active, "the close turns the log");
+    let appends = appended.iter().filter(|path| *path == to).count();
+    assert!(
+        appends >= 3,
+        "a header, a start record and a mark: {appended:?}"
+    );
+    to.clone()
+}
+
+/// A close turns the log where its table checkpoint begins, and the
+/// device refuses the start record of the file it turns to, for room.
+/// What a refused append leaves in the file is the device's to say, and
+/// each seed here is a device: one leaves nothing of the record and the
+/// log stays in the file it was in, another leaves all of it, and then
+/// the log has turned and takes no item until it is rolled again. The
+/// device has room for everything else. A close of a session that has
+/// not ended fails for room or not at all (DF8), and here it has room
+/// for all it does after the one refusal, on every device.
+#[test]
+fn a_close_that_is_refused_the_start_of_a_log_file_fails_for_room_or_not_at_all() {
+    use lignin_io::sim::{Effect, Outcome};
+
+    let (mut whole, mut cut) = (0, 0);
+    for seed in 35..51 {
+        let spare = turned_to_by_a_close(seed);
+        let mut session = session(seed, SyncPolicy::Never);
+        // The header is the first append to the file, and the start
+        // record the second.
+        session.fs.add_rule(
+            FaultRule::new(Fault::Enospc)
+                .on(OpSet::WRITES)
+                .at(&spare)
+                .skip(1)
+                .torn_append(true),
+        );
+        let closed = session.close();
+        let left = session
+            .fs
+            .trace()
+            .into_iter()
+            .find_map(|event| match event {
+                Event::Op(op) if op.kind == OpKind::Append && op.path == spare => {
+                    match op.outcome {
+                        Outcome::Injected {
+                            effect: Effect::AppendTorn(left),
+                            ..
+                        } => Some((left, op.len)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+        let (left, len) = left.unwrap_or_else(|| panic!("seed {seed}: no start record refused"));
+        match left == len {
+            true => whole += 1,
+            false => cut += 1,
+        }
+        session.fs.clear_rules();
+        assert!(
+            closed,
+            "seed {seed}: a close with room for everything after the refusal, \
+             which left {left} of {len} bytes"
+        );
+        assert!(session.open(), "seed {seed}: the database opens again");
+        session.check("opened again");
+        assert!(session.close(), "seed {seed}: the next session closes");
+    }
+    assert!(
+        whole > 0 && cut > 0,
+        "{whole} devices left the whole record and {cut} less"
+    );
+}

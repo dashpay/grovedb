@@ -547,7 +547,13 @@ pub enum DbError {
     Flush(FlushError),
     /// The cleaner could not close the files it was moving blocks and
     /// values into. What it had moved stands, and the rest of the close
-    /// was made.
+    /// was made. Where write-back failed as well, the close answers with
+    /// write-back's error ([`Self::Flush`]), with one exception: a segment
+    /// of the cleaner that could not be made durable at the close
+    /// (`CleanerError::SegmentNotDurable`), after which write-back says
+    /// only that no table checkpoint is installed. The close answers that
+    /// with this, which names the segment and has what the file layer
+    /// said where the cleaner's own call met the refusal.
     Clean(CleanerError),
     /// A thread of the background work panicked. Its work is not done, and
     /// what it held is as a crash would leave it: the next open recovers.

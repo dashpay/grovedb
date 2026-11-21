@@ -483,8 +483,8 @@ use std::{
 use lignin_format::{tree_page::Hash, CommitVersion, PageSize};
 use lignin_io::VfsLock;
 use lignin_store::{
-    cleaner::{BothOwners, Cleaner, CleanerStats},
-    flush::{Stores, WriteBack},
+    cleaner::{BothOwners, Cleaner, CleanerError, CleanerStats},
+    flush::{FlushError, Stores, WriteBack},
     recovery::RecoveryReport,
     stats::StoreStats,
     table::LogDurable,
@@ -1136,8 +1136,22 @@ impl Db {
         // finish names them as they are.
         shared.finish_reclaiming();
         let cleaned = shared.cleaner().finish();
-        shared.write_back().finish()?;
-        cleaned.map_err(DbError::Clean)
+        let written = shared.write_back().finish();
+        match (cleaned, written) {
+            // The cleaner could not make its segment durable, and
+            // write-back answers with what follows from that: it installs
+            // no table checkpoint. The cleaner's error is the one that
+            // names the segment, and has what the file layer said where
+            // the cleaner's own call met the refusal.
+            (
+                Err(cause @ CleanerError::SegmentNotDurable { .. }),
+                Err(FlushError::SegmentsNotDurable),
+            ) => Err(DbError::Clean(cause)),
+            (cleaned, written) => {
+                written?;
+                cleaned.map_err(DbError::Clean)
+            }
+        }
     }
 
     /// The directory of the database.

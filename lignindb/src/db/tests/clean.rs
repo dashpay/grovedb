@@ -155,40 +155,7 @@ fn the_cleaner_moves_what_lives_beside_what_a_drop_left_dead() {
     };
     let db = Db::open(dir.path(), &cleaning).expect("a new database");
     halt_background(&db);
-    let wide = || Merk::sized(b'w', 120, 30);
-    let long = || Merk::sized(b'k', 12, 1500);
-    let (stays, goes) = ([subtree(1), subtree(3)], [subtree(2), subtree(4)]);
-    Writes {
-        enter: (stays.iter().chain(&goes))
-            .map(|subtree| (*subtree, None))
-            .collect(),
-        merks: vec![
-            (stays[0], wide()),
-            (stays[1], long()),
-            (goes[0], wide()),
-            (goes[1], long()),
-        ],
-        ..Writes::default()
-    }
-    .commit(&db);
-    written_back(&db);
-    Writes {
-        drop: goes.to_vec(),
-        ..Writes::default()
-    }
-    .commit(&db);
-    for _ in 0..1_000 {
-        if db.reclaim().waiting == 0 {
-            break;
-        }
-    }
-    let stats = db.stats();
-    assert_eq!(
-        (stats.reclaimed.merks, stats.reclaimed.waiting),
-        (2, 0),
-        "{stats}"
-    );
-    written_back(&db);
+    let (stays, goes) = half_dead(&db);
 
     let mut turns = 0;
     loop {
@@ -210,18 +177,271 @@ fn the_cleaner_moves_what_lives_beside_what_a_drop_left_dead() {
     assert_eq!(stats.cleaner.errors, 0, "{stats}");
     assert_eq!(stats.background, Background::default());
 
-    let whole = |db: &Db| {
-        let snapshot = db.snapshot();
-        let operation = snapshot.operation();
-        assert_eq!(items_of(&operation, stays[0]), Some(wide().items()));
-        assert_eq!(items_of(&operation, stays[1]), Some(long().items()));
-        for gone in goes {
-            assert_eq!(items_of(&operation, gone), None);
-        }
-    };
-    whole(&db);
+    whole_of(&db, stays, goes);
     drop(db);
     let db = Db::open(dir.path(), &options()).expect("the database is opened again");
-    whole(&db);
+    whole_of(&db, stays, goes);
     db.close().expect("the session ends");
+}
+
+/// The two Merks of a pair in the layout of [`half_dead`]: one of several
+/// pages, and one with values out of line.
+fn wide() -> Merk {
+    Merk::sized(b'w', 120, 30)
+}
+
+fn long() -> Merk {
+    Merk::sized(b'k', 12, 1500)
+}
+
+/// Makes the layout that the cleaner has something to move in, in a
+/// database whose background work is at rest: two pairs of Merks in one
+/// segment and one file of the value log, of which the second pair is
+/// dropped and reclaimed. Returns the pair that stays and the pair that
+/// went.
+fn half_dead(db: &Db) -> ([Subtree; 2], [Subtree; 2]) {
+    let (stays, goes) = ([subtree(1), subtree(3)], [subtree(2), subtree(4)]);
+    Writes {
+        enter: (stays.iter().chain(&goes))
+            .map(|subtree| (*subtree, None))
+            .collect(),
+        merks: vec![
+            (stays[0], wide()),
+            (stays[1], long()),
+            (goes[0], wide()),
+            (goes[1], long()),
+        ],
+        ..Writes::default()
+    }
+    .commit(db);
+    written_back(db);
+    Writes {
+        drop: goes.to_vec(),
+        ..Writes::default()
+    }
+    .commit(db);
+    for _ in 0..1_000 {
+        if db.reclaim().waiting == 0 {
+            break;
+        }
+    }
+    let stats = db.stats();
+    assert_eq!(
+        (stats.reclaimed.merks, stats.reclaimed.waiting),
+        (2, 0),
+        "{stats}"
+    );
+    written_back(db);
+    (stays, goes)
+}
+
+/// A reader finds every key and value of the pair that stays in the
+/// layout of [`half_dead`], and nothing of the pair that went.
+fn whole_of(db: &Db, stays: [Subtree; 2], goes: [Subtree; 2]) {
+    let snapshot = db.snapshot();
+    let operation = snapshot.operation();
+    assert_eq!(items_of(&operation, stays[0]), Some(wide().items()));
+    assert_eq!(items_of(&operation, stays[1]), Some(long().items()));
+    for gone in goes {
+        assert_eq!(items_of(&operation, gone), None);
+    }
+}
+
+/// A database on a simulated device, with its background work at rest,
+/// in which the cleaner has moved one block and has more to move: the
+/// layout of [`half_dead`], and passes that end after the first block
+/// they moved. The cleaner's segment is open. Returns the device, the
+/// database, the pair that stays and the pair that went, and the path of
+/// the cleaner's segment.
+struct Moving {
+    fs: lignin_io::sim::SimVfs,
+    options: Options,
+    db: Db,
+    stays: [Subtree; 2],
+    goes: [Subtree; 2],
+    segment: String,
+}
+
+impl Moving {
+    fn new(seed: u64) -> Self {
+        use std::collections::BTreeSet;
+
+        use lignin_io::sim::{Event, OpKind, SimConfig, SimVfs};
+
+        let fs = SimVfs::new(SimConfig {
+            trace_ops: true,
+            ..SimConfig::new(seed)
+        });
+        let options = Options {
+            vfs: Arc::new(fs.clone()),
+            cleaner: Some(CleanerConfig {
+                max_pass_bytes: 1,
+                ..policy()
+            }),
+            ..options()
+        };
+        let db = open_at_rest("/db", &options).expect("a new database");
+        let (stays, goes) = half_dead(&db);
+        let segments = || -> BTreeSet<String> {
+            let appended = fs.trace().into_iter().filter_map(|event| match event {
+                Event::Op(op) if op.kind == OpKind::Append && op.path.contains("/seg/") => {
+                    Some(op.path)
+                }
+                _ => None,
+            });
+            appended.collect()
+        };
+        let mut turns = 0;
+        let segment = loop {
+            let before = segments();
+            let moved = crate::db::with_cleaner(&db.shared, |cleaner, _| cleaner.pass());
+            let moved = moved.expect("a pass on a device with room");
+            if moved.blocks_moved > 0 {
+                assert!(moved.more, "the pass left blocks to move: {moved:?}");
+                let after = segments();
+                let mut taken = after.difference(&before).cloned();
+                let (Some(segment), None) = (taken.next(), taken.next()) else {
+                    panic!("the pass appended to one new segment: {before:?} {after:?}");
+                };
+                break segment;
+            }
+            written_back(&db);
+            turns += 1;
+            assert!(turns < 20, "{moved:?}\n{}", db.stats());
+        };
+        Self {
+            fs,
+            options,
+            db,
+            stays,
+            goes,
+            segment,
+        }
+    }
+
+    /// From here on the device refuses the operations `ops` on the
+    /// cleaner's segment, for room.
+    fn refuse_the_segment(&self, ops: lignin_io::sim::OpSet) {
+        use lignin_io::sim::{Fault, FaultRule};
+
+        let rule = FaultRule::new(Fault::Enospc).on(ops);
+        self.fs.add_rule(rule.at(&self.segment).forever());
+    }
+
+    /// Closes the session as the close of a session does: the handle,
+    /// whose background work was at rest, is given threads to end.
+    fn close(
+        self,
+    ) -> (
+        Result<(), crate::db::DbError>,
+        Options,
+        [Subtree; 2],
+        [Subtree; 2],
+    ) {
+        let ended = || thread::spawn(|| {});
+        *crate::db::store::lock(&self.db.threads) = Some(crate::db::Threads {
+            write_back: ended(),
+            reclaim: ended(),
+            cleaner: ended(),
+        });
+        (self.db.close(), self.options, self.stays, self.goes)
+    }
+}
+
+/// A sync of the cleaner's segment that the device refused ends the
+/// session, as a sync of write-back's segment does
+/// (`docs/lignindb/disk-full-and-backup.md`, DF8). The cleaner's thread
+/// is at rest and each pass is made here as that thread makes it. The
+/// device refuses every write and every sync of the cleaner's segment,
+/// for room: the next pass is refused its append, and the sync of what
+/// the segment holds. The device has room again right after.
+///
+/// The copies in that segment cannot be made durable any more, and links
+/// point to them, so no table checkpoint is installed until the store is
+/// opened again. The session says that it has ended to whoever asks next,
+/// before write-back or a close has met the segment. Nothing that was
+/// published is lost: readers read on, and the next session has it all.
+#[test]
+fn a_sync_of_a_segment_that_the_cleaner_was_refused_ends_the_session() {
+    use lignin_io::sim::OpSet;
+    use lignin_store::{cleaner::CleanerError, flush::FlushError};
+
+    use crate::{
+        db::{DbError, Reopen},
+        space::out_of_space,
+    };
+
+    let moving = Moving::new(47);
+    moving.refuse_the_segment(OpSet::WRITES | OpSet::SYNCS);
+    let db = &moving.db;
+    let refused = crate::db::with_cleaner(&db.shared, |cleaner, _| cleaner.pass());
+    let refused = refused.expect_err("the append and the sync are refused");
+    assert!(
+        matches!(refused, CleanerError::SegmentNotDurable { .. }),
+        "{refused}"
+    );
+    assert!(out_of_space(&refused), "{refused}");
+    moving.fs.clear_rules();
+
+    assert_eq!(db.reopen(), Some(Reopen::SegmentsNotDurable));
+    assert_eq!(db.stats().reopen, Some(Reopen::SegmentsNotDurable));
+    // With room, a table checkpoint is answered with what stays failed.
+    let again = db.shared.write_back().checkpoint();
+    let again = again.expect_err("no table checkpoint is installed");
+    assert!(matches!(again, FlushError::SegmentsNotDurable), "{again}");
+    whole_of(db, moving.stays, moving.goes);
+    let flushed = db.flush().expect("the log is synced");
+    assert_eq!(flushed.version, db.version());
+
+    // The close says the same, as the close of a session that
+    // write-back's segment ended does.
+    let (closed, options, stays, goes) = moving.close();
+    let closed = closed.expect_err("the close of a session that has ended");
+    assert!(
+        matches!(closed, DbError::Flush(FlushError::SegmentsNotDurable)),
+        "{closed}"
+    );
+    let db = open_at_rest("/db", &options).expect("the database is opened again");
+    assert_eq!(db.reopen(), None);
+    whole_of(&db, stays, goes);
+}
+
+/// The device fills while nothing of a session is being written, and
+/// the close is the first to meet it: the cleaner seals the segment it
+/// was moving blocks into, and the device refuses that. On one device
+/// here it refuses every write and every sync of the segment, so the
+/// sealing is refused its append and then the sync of what the segment
+/// holds. On the other it refuses the syncs alone, so the sealing's own
+/// sync is the one that fails. Write-back, which closes its files after the cleaner,
+/// then installs no table checkpoint and says only that. The session had
+/// not ended when the close began, so the close fails for room (DF8): it
+/// answers with the cleaner's error, which has the device's refusal as
+/// its cause. The next session has everything that was published.
+#[test]
+fn a_close_that_cannot_make_the_cleaners_segment_durable_fails_for_room() {
+    use lignin_io::sim::OpSet;
+    use lignin_store::cleaner::CleanerError;
+
+    use crate::{db::DbError, space::out_of_space};
+
+    for refused in [OpSet::WRITES | OpSet::SYNCS, OpSet::SYNCS] {
+        let moving = Moving::new(48);
+        moving.refuse_the_segment(refused);
+        assert_eq!(moving.db.reopen(), None);
+        let fs = moving.fs.clone();
+        let (closed, options, stays, goes) = moving.close();
+        let closed = closed.expect_err("the cleaner's segment is not sealed");
+        assert!(
+            matches!(
+                closed,
+                DbError::Clean(CleanerError::SegmentNotDurable { .. })
+            ),
+            "{refused:?}: {closed}"
+        );
+        assert!(out_of_space(&closed), "{refused:?}: {closed}");
+        fs.clear_rules();
+        let db = open_at_rest("/db", &options).expect("the database is opened again");
+        assert_eq!(db.reopen(), None);
+        whole_of(&db, stays, goes);
+    }
 }
