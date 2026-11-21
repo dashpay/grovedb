@@ -10,11 +10,16 @@
 //! fetch of a node by a walk, where [`with_one_failed_fetch`] arms it,
 //! which in an insert is the walk of its write or of the read that
 //! observes the old value before it; and a move of a cursor over the
-//! nodes of a subtree, or the read of the record a move comes to, where
-//! [`with_one_refused_move`] and [`with_one_unread_record`] arm them, which
-//! are the reads inside a scan.
+//! nodes of a subtree, the read of the record under the key it stands on,
+//! or its pointing at another subtree, where [`with_one_refused_move`],
+//! [`with_one_unread_record`] and [`with_one_refused_retarget`] arm them,
+//! which are the reads inside a scan and inside a page that is read by
+//! count.
 
-use std::{cell::RefCell, path::Path};
+use std::{
+    cell::{Cell, RefCell},
+    path::Path,
+};
 
 use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, CostContext, CostResult, CostsExt,
@@ -151,13 +156,22 @@ pub(crate) fn with_one_failed_fetch<T>(key: &[u8], body: impl FnOnce() -> T) -> 
     )
 }
 
-/// Which move of a cursor fails, and how.
+/// What of a cursor fails.
+#[derive(Clone, Copy, PartialEq)]
+enum CursorFault {
+    /// A move, which is not made.
+    Move,
+    /// The read of the record under the key the cursor stands on.
+    Record,
+    /// The pointing of the cursor at another subtree.
+    Retarget,
+}
+
+/// Which read of a cursor fails.
 struct ArmedMove {
-    /// Moves let through before the one that fails.
+    what: CursorFault,
+    /// Reads of the kind of `what` let through before the one that fails.
     passes_left: usize,
-    /// Whether the move is made and the record it comes to is withheld,
-    /// where otherwise the move itself is refused.
-    withholds: bool,
     /// Whether the fault was injected. It is injected once.
     fired: bool,
 }
@@ -174,20 +188,32 @@ thread_local! {
 /// is sought again ([`RefusedMoves`]). Also returns whether `body` got as
 /// far as the refused move.
 pub(crate) fn with_one_refused_move<T>(passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
-    with_armed_move(passes, false, body)
+    with_cursor_fault(CursorFault::Move, passes, body)
 }
 
 /// Runs `body` with the record under one key withheld from a cursor: the
-/// key that the first move after `passes` moves comes to, of the moves
-/// that come to a key, counted as [`with_one_refused_move`] counts them.
-/// The cursor stands on the key and shows no record under it, and its
-/// status is the injected failure, until it is moved again. Also returns
-/// whether `body` got as far as that key.
+/// record that is asked for after `passes` records were read, counted over
+/// the same cursors. A record is read when a cursor that stands on a key
+/// is first asked for the value under it, and asking again at that key is
+/// no other read. The cursor stays on the key and shows no record under
+/// it, and from that call on its status is the injected failure, until
+/// its next move: the way of a cursor that reads a record when it is
+/// asked for it. Also returns whether `body` asked for that record.
 pub(crate) fn with_one_unread_record<T>(passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
-    with_armed_move(passes, true, body)
+    with_cursor_fault(CursorFault::Record, passes, body)
 }
 
-fn with_armed_move<T>(passes: usize, withholds: bool, body: impl FnOnce() -> T) -> (T, bool) {
+/// Runs `body` with one cursor not pointed at the subtree it is to be
+/// pointed at (`Engine::retarget_cursor`): the pointing after `passes` of
+/// them went through, counted over the same cursors. That cursor stands
+/// on no record from then on, whatever moves it, and its status is the
+/// injected failure. Also returns whether `body` got as far as that
+/// pointing.
+pub(crate) fn with_one_refused_retarget<T>(passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
+    with_cursor_fault(CursorFault::Retarget, passes, body)
+}
+
+fn with_cursor_fault<T>(what: CursorFault, passes: usize, body: impl FnOnce() -> T) -> (T, bool) {
     struct Disarm(Option<ArmedMove>);
 
     impl Drop for Disarm {
@@ -197,8 +223,8 @@ fn with_armed_move<T>(passes: usize, withholds: bool, body: impl FnOnce() -> T) 
     }
 
     let armed = ArmedMove {
+        what,
         passes_left: passes,
-        withholds,
         fired: false,
     };
     let outer = Disarm(ARMED_MOVE.with(|slot| slot.replace(Some(armed))));
@@ -208,43 +234,42 @@ fn with_armed_move<T>(passes: usize, withholds: bool, body: impl FnOnce() -> T) 
     (result, fired)
 }
 
+/// Whether the read of the kind `what` that is about to be made is the
+/// armed one, which fails. It is counted either way.
+fn due(what: CursorFault) -> bool {
+    ARMED_MOVE.with(|armed| {
+        let mut armed = armed.borrow_mut();
+        let Some(armed) = (armed.as_mut()).filter(|armed| armed.what == what && !armed.fired)
+        else {
+            return false;
+        };
+        match armed.passes_left.checked_sub(1) {
+            Some(left) => armed.passes_left = left,
+            None => armed.fired = true,
+        }
+        armed.fired
+    })
+}
+
 /// The cursor of a [`FaultableReads`] handle over the nodes of its
 /// subtree: the cursor it wraps, except for the one fault that
-/// [`with_one_refused_move`] or [`with_one_unread_record`] arms.
+/// [`with_one_refused_move`], [`with_one_unread_record`] or
+/// [`with_one_refused_retarget`] arms.
 ///
 /// A refused move is charged as a move and leaves the cursor as a cursor
 /// of an engine that refused it: on no record, with nothing to show and
 /// the refusal as its status. A step from there goes nowhere, and a seek
 /// starts again. A record that is withheld leaves the cursor on its key,
-/// with no value and the failure as its status, until the next move.
+/// with no value and, once the value was asked for, the failure as its
+/// status, until the next move. A cursor that was not pointed at another
+/// subtree shows nothing from then on, and no move starts it again.
 pub(crate) struct RefusedMoves<C> {
     cursor: C,
     refused: bool,
-    unread: bool,
-}
-
-/// What is armed for the move that is about to be made: nothing, a refusal
-/// of the move, or the withholding of the record it comes to.
-fn armed_for_this_move() -> Option<bool> {
-    ARMED_MOVE.with(|armed| {
-        let mut armed = armed.borrow_mut();
-        let armed = armed.as_mut().filter(|armed| !armed.fired)?;
-        match armed.passes_left.checked_sub(1) {
-            Some(left) => {
-                armed.passes_left = left;
-                None
-            }
-            None => Some(armed.withholds),
-        }
-    })
-}
-
-fn fire() {
-    ARMED_MOVE.with(|armed| {
-        if let Some(armed) = armed.borrow_mut().as_mut() {
-            armed.fired = true;
-        }
-    });
+    lost: bool,
+    /// Whether the record under the key the cursor stands on was asked
+    /// for, and whether it was withheld then.
+    asked: Cell<Option<bool>>,
 }
 
 impl<C: RawIterator> RefusedMoves<C> {
@@ -252,39 +277,52 @@ impl<C: RawIterator> RefusedMoves<C> {
         Self {
             cursor,
             refused: false,
-            unread: false,
+            lost: false,
+            asked: Cell::new(None),
         }
     }
 
     /// Makes the move `go`, unless it is the armed one, or a step of a
-    /// cursor whose move was refused.
+    /// cursor whose move was refused, or a move of a cursor that was not
+    /// pointed at its subtree.
     fn go(&mut self, seeks: bool, go: impl FnOnce(&mut C) -> CostContext<()>) -> CostContext<()> {
-        let armed = armed_for_this_move();
-        self.unread = false;
-        self.refused = match armed {
-            Some(false) => {
-                fire();
-                true
-            }
-            _ => self.refused && !seeks,
-        };
-        if self.refused {
+        self.asked.set(None);
+        self.refused = due(CursorFault::Move) || (self.refused && !seeks);
+        if self.refused || self.lost {
             return ().wrap_with_cost(OperationCost::with_seek_count(1));
         }
-        let moved = go(&mut self.cursor);
-        // A record is withheld under a key: a move that comes to none
-        // leaves the fault armed for the next one.
-        if armed == Some(true) && self.cursor.valid().value {
-            fire();
-            self.unread = true;
-        }
-        moved
+        go(&mut self.cursor)
     }
 
     /// Hands the wrapped cursor to `retarget`, which points it at another
-    /// subtree. A cursor that is pointed elsewhere has no failure to show.
+    /// subtree, unless this pointing is the armed one. A cursor that is
+    /// pointed elsewhere has no failure of a move or of a record to show.
     fn retargeted(self, retarget: impl FnOnce(C) -> C) -> Self {
+        if self.lost || due(CursorFault::Retarget) {
+            return Self {
+                lost: true,
+                ..Self::new(self.cursor)
+            };
+        }
         Self::new(retarget(self.cursor))
+    }
+
+    /// Whether the record under the key the cursor stands on is withheld.
+    /// The first call at a key is the read of its record.
+    fn withheld(&self) -> bool {
+        if let Some(withheld) = self.asked.get() {
+            return withheld;
+        }
+        if !self.cursor.valid().value {
+            return false;
+        }
+        let withheld = due(CursorFault::Record);
+        self.asked.set(Some(withheld));
+        withheld
+    }
+
+    fn shows_nothing(&self) -> bool {
+        self.refused || self.lost
     }
 }
 
@@ -314,28 +352,28 @@ impl<C: RawIterator> RawIterator for RefusedMoves<C> {
     }
 
     fn value(&self) -> CostContext<Option<&[u8]>> {
-        match self.refused || self.unread {
+        match self.shows_nothing() || self.withheld() {
             true => None.wrap_with_cost(OperationCost::default()),
             false => self.cursor.value(),
         }
     }
 
     fn key(&self) -> CostContext<Option<&[u8]>> {
-        match self.refused {
+        match self.shows_nothing() {
             true => None.wrap_with_cost(OperationCost::default()),
             false => self.cursor.key(),
         }
     }
 
     fn valid(&self) -> CostContext<bool> {
-        match self.refused {
+        match self.shows_nothing() {
             true => false.wrap_with_cost(OperationCost::default()),
             false => self.cursor.valid(),
         }
     }
 
     fn status(&self) -> Result<(), StorageError> {
-        match self.refused || self.unread {
+        match self.shows_nothing() || self.asked.get() == Some(true) {
             true => Err(StorageError::StorageError(INJECTED_READ_FAILURE.to_owned())),
             false => self.cursor.status(),
         }
@@ -343,7 +381,7 @@ impl<C: RawIterator> RawIterator for RefusedMoves<C> {
 }
 
 /// A subtree handle that is the one it wraps, except that a node read of an
-/// armed key fails, and that an armed move of its cursor over the nodes
+/// armed key fails, and that an armed read of its cursor over the nodes
 /// fails.
 pub(crate) struct FaultableReads<S>(pub(crate) S);
 

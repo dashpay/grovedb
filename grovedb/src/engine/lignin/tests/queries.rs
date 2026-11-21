@@ -25,7 +25,8 @@
 //!   on what follows the subtree in its column family. Every such range
 //!   here ends at or below the last key of the subtrees it is read in.
 //! - **A walk over the records of a tree that keeps its data flat.**
-//! - **An indexed tree**, into which the engine refuses a write.
+//! - **An indexed tree**, whose reads have a history of their own
+//!   (`axes.rs`).
 
 use std::{collections::BTreeMap, path::Path};
 
@@ -235,6 +236,25 @@ fn direction(left_to_right: bool) -> &'static str {
     }
 }
 
+/// The name of the query that reads a page of its own in each group whose
+/// tree commits to its count: the second and the third element of each,
+/// from either end.
+const PAGE_OF_EACH: &str = "a page of each counting group";
+/// The groups of [`PAGE_OF_EACH`], by their kinds.
+const COUNTING_GROUPS: [usize; 3] = [5, 6, 8];
+/// The call under which the rows of such a page are noted by their keys.
+const ROWS_OF_THE_PAGE: &str = "rows of the page";
+
+/// The rows of an answer by the keys they are under, in their order.
+fn rows_at(rows: &QueryResultElements) -> String {
+    let rows = rows.elements.iter().map(|row| match row {
+        QueryResultElement::PathKeyElementTrioResultItem((at, key, _)) => at_key(at, key),
+        QueryResultElement::KeyElementPairResultItem((key, _)) => at_key(&[], key),
+        QueryResultElement::ElementResultItem(_) => "an element".to_owned(),
+    });
+    rows.collect::<Vec<_>>().join(", ")
+}
+
 /// The path queries of this module that select rows, each with a name.
 fn row_queries(version: &GroveVersion) -> Vec<(String, PathQuery)> {
     let made = made_by(version);
@@ -420,12 +440,12 @@ fn row_queries(version: &GroveVersion) -> Vec<(String, PathQuery)> {
         page.offset = Some(1);
         page.limit = Some(2);
         let mut pages = Query::new_with_direction(left_to_right);
-        for kind in [5, 6, 8] {
+        for kind in COUNTING_GROUPS {
             pages.insert_key(group(kind));
         }
         pages.set_subquery(page.clone());
         queries.push((
-            format!("a page of each counting group {}", direction(left_to_right)),
+            format!("{PAGE_OF_EACH} {}", direction(left_to_right)),
             sized(&[GROUPS], pages, None, None),
         ));
         let mut of_every = one(QueryItem::RangeFull(..), left_to_right);
@@ -600,9 +620,11 @@ fn sum_walks(version: &GroveVersion) -> Vec<(String, AggregateSumPathQuery)> {
     walks
 }
 
-/// The elements that are read by their keys: every key of the plain tree
-/// and of the two odd ones, a row and the reference of every group, the
-/// trees of the root, and what is not there.
+/// The elements that are read by their keys: four rows, the references
+/// and the trees of the plain tree, keys of a tree two deep in it and of
+/// the tree of odd elements, a row and the reference of every group, the
+/// group itself, the trees of the root, the elements that are linked both
+/// ways, and what is not there.
 fn keys(version: &GroveVersion) -> Vec<(Vec<Vec<u8>>, Vec<u8>)> {
     let mut keys: Vec<(Vec<Vec<u8>>, Vec<u8>)> = Vec::new();
     for n in [0, 3, 9, 13] {
@@ -840,21 +862,22 @@ fn read_queries<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) 
                 version,
             ),
         );
-        log.answer(
-            named(phase, "query raw", &name),
-            exact(
-                db.query_raw(
-                    &query,
-                    true,
-                    true,
-                    true,
-                    QueryPathKeyElementTrioResultType,
-                    through,
-                    version,
-                ),
-                version,
-            ),
+        let raw = db.query_raw(
+            &query,
+            true,
+            true,
+            true,
+            QueryPathKeyElementTrioResultType,
+            through,
+            version,
         );
+        // The rows of a page of each counting group, by their keys, which
+        // `reads_and_proofs_on_grove_v5` holds to the rows the history
+        // wrote.
+        if let (true, Ok((rows, _))) = (name.starts_with(PAGE_OF_EACH), &raw.value) {
+            note(log, named(phase, ROWS_OF_THE_PAGE, &name), rows_at(rows));
+        }
+        log.answer(named(phase, "query raw", &name), exact(raw, version));
         log.answer(
             named(phase, "item values", &name),
             db.query_item_value(&query, true, true, true, through, version),
@@ -974,16 +997,42 @@ pub(super) fn note(log: &mut Log, name: String, answer: String) {
 pub(super) type Verified = Result<([u8; 32], String), crate::Error>;
 
 /// Whether the verifier took a proof and came to `root` by it: the call
-/// the outcome is noted under, and the outcome as text.
+/// the outcome is noted under, and the outcome as text. A proof the
+/// verifier refused ([`NOT_VERIFIED`]) and a proof by which it came to
+/// another root hash ([`ANOTHER_ROOT`]) are two outcomes.
 pub(super) fn verification(verified: Verified, root: &[u8; 32]) -> (&'static str, String) {
     match verified {
         Ok((verified_root, answer)) if verified_root == *root => {
             ("verified", format!("Ok({answer})"))
         }
-        Ok((_, answer)) => (NOT_VERIFIED, format!("another root: {answer}")),
+        Ok((_, answer)) => (ANOTHER_ROOT, answer),
         Err(error) => (NOT_VERIFIED, error.to_string()),
     }
 }
+
+/// Notes what the verifier made of a proof under the call of its outcome,
+/// which for a proof that was not made by `prove_query` with the default
+/// options ends in `of`.
+fn note_verified(
+    log: &mut Log,
+    phase: &str,
+    of: &str,
+    name: &str,
+    verified: Verified,
+    root: &[u8; 32],
+) {
+    let (call, verified) = verification(verified, root);
+    note(log, named(phase, &format!("{call}{of}"), name), verified);
+}
+
+/// The ending of the call under which the verifier's outcome is noted for
+/// the proof that a read answered with.
+const READ_PROVED: &str = ", read proved";
+/// The same for a proof made with the other setting of the prover's
+/// option.
+const UNCOUNTED: &str = ", empty trees uncounted";
+/// The same for the proof of two queries as one.
+const MANY: &str = ", many";
 
 /// Has the verifier check the proof of a path query: the verifier of any
 /// shape of query, and for a sum over a tree that sums in 128 bits the
@@ -1008,15 +1057,21 @@ fn verify(proof: &[u8], query: &PathQuery, version: &GroveVersion) -> Verified {
     })
 }
 
-/// The call under which a proof is noted that the verifier refused, or by
-/// which it came to another root hash than the committed one.
+/// The call under which a proof is noted that the verifier refused.
 pub(super) const NOT_VERIFIED: &str = "not verified";
 
+/// The call under which a proof is noted that the verifier took and by
+/// which it came to another root hash than the committed one. No history
+/// may hold one.
+pub(super) const ANOTHER_ROOT: &str = "another root";
+
 /// Proves every path query of this module from the committed state, and
-/// has the verifier check each proof that was made. What it made of the
-/// proof is noted as an answer of its own.
-/// [`assert_verified`] then holds every proof to the root hash of the
-/// committed state.
+/// has the verifier check each proof that was made: of a query, of a read
+/// that answers with a proof, with the other setting of the prover's
+/// option, and of two queries as one, which is checked against the two
+/// queries merged. What the verifier made of a proof is noted as an answer
+/// of its own. [`assert_verified`] then holds the proofs to the root hash
+/// of the committed state.
 fn prove<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
     let (db, version) = (recorder.db, recorder.version);
     let root = db.root_hash(None, version).unwrap().expect("a root hash");
@@ -1025,35 +1080,52 @@ fn prove<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &str) {
     for (at, (name, query)) in queries.iter().enumerate() {
         let proved = db.prove_query(query, None, version);
         if let Ok(proof) = &proved.value {
-            let (call, verified) = verification(verify(proof, query, version), &root);
-            note(recorder.log, named(phase, call, name), verified);
+            let verified = verify(proof, query, version);
+            note_verified(recorder.log, phase, "", name, verified, &root);
         }
         recorder.log.answer(named(phase, "prove", name), proved);
-        // The read that answers with a proof, for some of the queries: it
-        // takes no transaction, and is the prover otherwise.
+        // The read that answers with a proof, for some of the queries,
+        // with no transaction and with a write transaction that has
+        // written nothing.
         if at % 16 == 0 {
             let transaction = db.start_transaction();
             for through in [None, Some(&transaction)] {
-                recorder.log.answer(
-                    named(phase, "read proved", name),
-                    db.get_proved_path_query(query, None, through, version),
-                );
+                let proved = db.get_proved_path_query(query, None, through, version);
+                if let Ok(proof) = &proved.value {
+                    let verified = verify(proof, query, version);
+                    note_verified(recorder.log, phase, READ_PROVED, name, verified, &root);
+                }
+                recorder
+                    .log
+                    .answer(named(phase, "read proved", name), proved);
             }
         }
         // The other setting of the one option a prover is given, where
-        // it can matter: a query with a limit and a subquery.
+        // it can matter: a query with a limit and a subquery. The
+        // verifier is given no option: a proof of version 0 carries the
+        // prover's, and for a proof of version 1 the verifier counts
+        // empty trees whatever the prover did.
         if query.query.limit.is_some() && query.query.query.has_subquery() {
             let options = ProveOptions {
                 decrease_limit_on_empty_sub_query_result: false,
             };
-            recorder.log.answer(
-                named(phase, "prove, empty trees uncounted", name),
-                db.prove_query(query, Some(options), version),
-            );
+            let proved = db.prove_query(query, Some(options), version);
+            if let Ok(proof) = &proved.value {
+                let verified = verify(proof, query, version);
+                note_verified(recorder.log, phase, UNCOUNTED, name, verified, &root);
+            }
+            recorder
+                .log
+                .answer(named(phase, "prove, empty trees uncounted", name), proved);
         }
     }
     for (name, first, second) in pairs(version) {
         let proved = db.prove_query_many(vec![&first, &second], None, version);
+        if let Ok(proof) = &proved.value {
+            let merged = PathQuery::merge(vec![&first, &second], version);
+            let verified = merged.and_then(|merged| verify(proof, &merged, version));
+            note_verified(recorder.log, phase, MANY, &name, verified, &root);
+        }
         recorder
             .log
             .answer(named(phase, "prove many", &name), proved);
@@ -1396,8 +1468,9 @@ fn no_operation_keeps_a_version_pinned_once_it_has_returned() {
 /// A move of a cursor that is refused inside a scan fails the operation,
 /// on both engines alike: the histories of
 /// [`refused_scans`](crate::tests::refused_scans::refused_scans), which
-/// refuse each move of each scan in turn, give the same answers at the
-/// same costs.
+/// refuse each move of each scan in turn and withhold each record it
+/// reads, give the same answers, at the same costs where the operation
+/// returns its cost.
 #[test]
 fn a_move_refused_inside_a_scan_fails_the_operation_as_on_rocksdb() {
     use crate::tests::refused_scans::refused_scans;
@@ -1418,6 +1491,28 @@ fn a_move_refused_inside_a_scan_fails_the_operation_as_on_rocksdb() {
             log.len()
         );
     }
+}
+
+/// A read of a cursor that fails inside a page that is read by count
+/// fails the operation on both engines alike: a move, the read of a
+/// record, and the pointing of the cursor at the tree of the page
+/// ([`refused_reads_of_a_page_by_count`](crate::tests::refused_scans::refused_reads_of_a_page_by_count)).
+#[test]
+fn a_read_refused_inside_a_page_by_count_fails_the_operation_as_on_rocksdb() {
+    use crate::tests::refused_scans::refused_reads_of_a_page_by_count;
+
+    let version = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    let log = refused_reads_of_a_page_by_count::<LigninEngine>(dir.path(), version);
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let dir = tempfile::tempdir().expect("a directory");
+        let on_rocksdb =
+            refused_reads_of_a_page_by_count::<crate::RocksDbEngine>(dir.path(), version);
+        assert_same_calls(&log, &on_rocksdb);
+    }
+    check(dir.path(), version);
+    assert!(log.len() > 40, "{} calls", log.len());
 }
 
 /// The kind of a call, from its name, and whether it was answered.
@@ -1443,7 +1538,10 @@ pub(super) fn tally(log: &Log) -> BTreeMap<String, (usize, usize)> {
 /// Every call of the two histories gave the same answer at the same
 /// cost. Lists the calls that did not, the first of them in full.
 #[cfg_attr(not(feature = "rocksdb_storage"), allow(dead_code))]
-pub(super) fn assert_same_calls(lignin: &[Answer], rocksdb: &[Answer]) {
+pub(super) fn assert_same_calls<C: PartialEq + std::fmt::Debug>(
+    lignin: &[(String, C, String)],
+    rocksdb: &[(String, C, String)],
+) {
     let short = |text: &str| -> String { text.chars().take(600).collect() };
     let mut different = Vec::new();
     for (call, (lignin, rocksdb)) in lignin.iter().zip(rocksdb).enumerate() {
@@ -1486,27 +1584,40 @@ fn refused_by_the_verifier(version: &GroveVersion) -> Vec<&'static str> {
     refused
 }
 
-/// Every proof that was made was taken by the verifier and led it to the
-/// root hash of the committed state, but those of
-/// [`refused_by_the_verifier`], each of which it refused in both rounds
-/// of proofs.
+/// No proof led the verifier to another root hash than that of the
+/// committed state. The verifier took every proof that was made, but
+/// those of [`refused_by_the_verifier`]: each of them it refused, with an
+/// error, in both rounds of proofs, and refused as well wherever a read
+/// answered with it or it was one of two queries proven as one. A proof
+/// made with the other setting of the prover's option is held to the
+/// same.
 fn assert_verified(log: &Log, version: &GroveVersion) {
-    let refused = (log.answers.iter()).filter(|answer| kind_of(answer).0 == NOT_VERIFIED);
-    let mut refused: Vec<String> = refused
-        .map(|answer| format!("{}: {}", answer.0, answer.2))
-        .collect();
+    let allowed = refused_by_the_verifier(version);
+    let mut refused: Vec<String> = Vec::new();
+    for answer in &log.answers {
+        let kind = kind_of(answer).0;
+        assert!(!kind.starts_with(ANOTHER_ROOT), "{answer:#?}");
+        if !kind.starts_with(NOT_VERIFIED) {
+            continue;
+        }
+        let name = answer.0.split(" | ").nth(2).unwrap_or_default();
+        assert!(
+            allowed.iter().any(|allowed| name.contains(allowed)),
+            "{answer:#?}"
+        );
+        if kind == NOT_VERIFIED {
+            refused.push(answer.0.clone());
+        }
+    }
     refused.sort();
     let mut expected: Vec<String> = Vec::new();
-    for name in refused_by_the_verifier(version) {
+    for name in allowed {
         for phase in ["committed", "committed again"] {
             expected.push(named(phase, NOT_VERIFIED, name));
         }
     }
     expected.sort();
-    let names: Vec<&str> = (refused.iter())
-        .map(|refused| refused.split(": ").next().unwrap_or_default())
-        .collect();
-    assert_eq!(names, expected, "{refused:#?}");
+    assert_eq!(refused, expected);
 }
 
 /// Runs the history on LigninDB, and where the RocksDB engine is compiled
@@ -1561,7 +1672,7 @@ fn assert_answered(log: &Log, calls: &[&str]) {
     }
 }
 
-const ON_EVERY_VERSION: [&str; 23] = [
+const ON_EVERY_VERSION: [&str; 26] = [
     "get",
     "get with no cache",
     "get raw",
@@ -1585,6 +1696,9 @@ const ON_EVERY_VERSION: [&str; 23] = [
     "prove, empty trees uncounted",
     "read proved",
     "verified",
+    "verified, read proved",
+    "verified, empty trees uncounted",
+    "verified, many",
 ];
 
 #[test]
@@ -1608,9 +1722,11 @@ fn reads_and_proofs_on_grove_v4() {
 }
 
 /// The newest version also answers every aggregate, proves trunks and
-/// branches, and reads a page of its own for each group through a write
-/// transaction of the caller's, which the engine refused before it could
-/// point a cursor of such a transaction at another subtree.
+/// branches, and reads a page of its own for each group that counts, with
+/// no transaction, through a snapshot and through a write transaction of
+/// the caller's, which the engine refused before it could point a cursor
+/// of such a transaction at another subtree: the rows of each page are
+/// those the history wrote.
 #[test]
 fn reads_and_proofs_on_grove_v5() {
     let log = on_both_engines(&GROVE_VERSIONS[4]);
@@ -1627,23 +1743,38 @@ fn reads_and_proofs_on_grove_v5() {
             "prove a branch",
         ],
     );
-    let pages = |phase: &str| {
-        let of_phase = log.answers.iter().filter(move |answer| {
-            answer.0.starts_with(&format!("{phase} | "))
-                && answer.0.contains("a page of each counting group")
-                && ["query raw", "run"].contains(&kind_of(answer).0.as_str())
-        });
-        of_phase
-            .map(|answer| answer.2.starts_with("Ok"))
-            .collect::<Vec<bool>>()
-    };
-    for phase in [
-        "committed",
-        "snapshot",
-        "transaction",
-        "transaction, after a commit beside it",
-    ] {
-        assert_eq!(pages(phase), [true; 4], "{phase}");
+    // The page of each group holds the second and the third element of
+    // the group from the end the query starts at, as the history has
+    // written the group by then: `both`, the rows and `to row 03`, with
+    // the rows that each round of writes added and removed.
+    let last_two = [
+        ("committed", [8, 7]),
+        ("snapshot", [8, 7]),
+        ("transaction", [22, 21]),
+        ("transaction, after a commit beside it", [22, 21]),
+        ("committed again", [21, 8]),
+    ];
+    for (phase, last_two) in last_two {
+        for left_to_right in [true, false] {
+            let name = format!("{PAGE_OF_EACH} {}", direction(left_to_right));
+            let named = named(phase, ROWS_OF_THE_PAGE, &name);
+            let noted = log.answers.iter().filter(|answer| answer.0 == named);
+            let noted: Vec<&str> = noted.map(|answer| answer.2.as_str()).collect();
+            let mut groups = COUNTING_GROUPS.to_vec();
+            let rows = match left_to_right {
+                true => [0, 1],
+                false => {
+                    groups.reverse();
+                    last_two
+                }
+            };
+            let expected = groups.iter().flat_map(|kind| {
+                let at = path(&[GROUPS, &group(*kind)]);
+                rows.map(|n| at_key(&at, &row(n)))
+            });
+            let expected = expected.collect::<Vec<_>>().join(", ");
+            assert_eq!(noted, [expected.as_str()], "{named}");
+        }
     }
     // A page by count is proven as well, of each group and of one tree,
     // and the verifier takes the proof.

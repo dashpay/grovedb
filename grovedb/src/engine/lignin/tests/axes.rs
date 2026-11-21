@@ -7,7 +7,8 @@
 //! is a tree with elements of its own. Every axis of the kind is read as a
 //! ranking from both ends with and without an offset, as a band of
 //! values, as the rank of a key, as a fold over a band, as keys alone, and
-//! across the owners' trees at once. The reads are made with no
+//! across the owners' trees at once from both ends. The reads are made
+//! with no
 //! transaction, through a snapshot that later commits do not show, and
 //! through a write transaction that has moved rows of every axis and not
 //! committed, before and after a commit beside it. A ranking with an
@@ -31,12 +32,14 @@ use super::{
     indexed::{BigSum, Count, CountBigSum, CountSum, Indexed, Sum, SumAndAverage},
     nested::{check, open, segments, Log, Recorder},
     queries::{
-        assert_same_calls, exact, kind_of, named, note, path, tally, verification, NOT_VERIFIED,
+        assert_same_calls, exact, kind_of, named, note, path, tally, verification, ANOTHER_ROOT,
+        NOT_VERIFIED,
     },
     LigninEngine,
 };
 use crate::{
-    engine::Engine, query_result_type::QueryResultType, Element, GroveDb, PathQuery, Query,
+    engine::Engine, query_result_type::QueryResultType, Element, GroveDb, PathQuery, PathQueryRun,
+    Query,
 };
 
 const IDX: &[u8] = b"idx";
@@ -120,22 +123,42 @@ fn change<T: Indexed, E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, salt: u
     }
 }
 
-/// The rankings of a tree that are read by their place: with no offset,
-/// and from a place the read has to count to.
-const RANKINGS: [&str; 4] = [
-    "the first five",
-    "three from the third, ascending",
-    "two from the seventh",
-    "a page past the end",
+/// The rankings of a tree that are read by their place, each with the
+/// rows it asks for, the place it starts at and whether it is read from
+/// the highest value down: from either end with no offset, and from a
+/// place the read has to count to.
+const RANKINGS: [(&str, u16, u64, bool); 5] = [
+    ("the first five", 5, 0, true),
+    ("the first four, ascending", 4, 0, false),
+    ("three from the third, ascending", 3, 2, false),
+    ("two from the seventh", 2, 6, true),
+    ("a page past the end", 4, 40, true),
 ];
+
+/// The indexed trees whose axes are read one tree at a time, each with
+/// the number of its children, which no round of writes changes: a round
+/// adds a leaf and deletes one.
+const READ_ALONE: [(&str, usize); 2] = [("root", 10), ("owned", 7)];
+
+/// The writes of a history into its indexed trees, by the names of their
+/// calls.
+const WRITES: [&str; 4] = [
+    "insert a leaf",
+    "insert a branch",
+    "replace a leaf",
+    "delete a leaf",
+];
+
+/// The call under which the size of a page of an axis is noted.
+const PAGE: &str = "page";
 
 /// The reads of the axes of a kind of indexed tree, each with a name.
 fn axis_queries<T: Indexed>() -> Vec<(String, PathQuery)> {
     let mut queries = Vec::new();
     for axis in T::axes() {
         for (tree, at) in [
-            ("root", path(&[IDX])),
-            ("owned", path(&[OWNERS, b"a", IDX])),
+            (READ_ALONE[0].0, path(&[IDX])),
+            (READ_ALONE[1].0, path(&[OWNERS, b"a", IDX])),
         ] {
             let mut push = |what: &str, query: PathQuery| {
                 queries.push((format!("{axis:?} of the {tree} tree: {what}"), query));
@@ -144,10 +167,9 @@ fn axis_queries<T: Indexed>() -> Vec<(String, PathQuery)> {
             let ranking = |k, offset, descending| {
                 PathQuery::new_axis_top_k(at(), axis, k, offset, descending)
             };
-            push(RANKINGS[0], ranking(5, 0, true));
-            push(RANKINGS[1], ranking(3, 2, false));
-            push(RANKINGS[2], ranking(2, 6, true));
-            push(RANKINGS[3], ranking(4, 40, true));
+            for (name, k, offset, descending) in RANKINGS {
+                push(name, ranking(k, offset, descending));
+            }
             let band =
                 |lo, hi, limit| PathQuery::new_axis_bounded(at(), axis, lo, hi, limit, false);
             push("a band", band(-30, 30, 6));
@@ -179,14 +201,18 @@ fn axis_queries<T: Indexed>() -> Vec<(String, PathQuery)> {
         }
         // The tree of each owner at once: of two that have one, of one
         // that has none, and of one that is not there.
-        for offset in [0, 1] {
+        for (offset, descending) in [(0, true), (1, true), (0, false), (1, false)] {
+            let end = match descending {
+                true => "",
+                false => ", ascending",
+            };
             queries.push((
-                format!("{axis:?} of each owner's tree, from {offset}"),
+                format!("{axis:?} of each owner's tree, from {offset}{end}"),
                 PathQuery::new_branched_axis(
                     path(&[OWNERS]),
                     path(&[b"a", b"b", b"c", b"nobody"]),
                     path(&[IDX]),
-                    AxisQuery::top_k(axis, 2, offset, true),
+                    AxisQuery::top_k(axis, 2, offset, descending),
                 ),
             ));
         }
@@ -217,6 +243,12 @@ fn read<T: Indexed, E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, phase: &s
     let rows = QueryResultType::QueryPathKeyElementTrioResultType;
     for (name, query) in axis_queries::<T>() {
         let run = db.run_path_query(&query, true, true, true, rows, through, version);
+        // The size of a page of entries, which `on_both_engines` holds to
+        // the children the history wrote.
+        if let Ok(PathQueryRun::AxisEntries { entries, skipped }) = &run.value {
+            let size = format!("{} rows, skipped {skipped:?}", entries.len());
+            note(recorder.log, named(phase, PAGE, &name), size);
+        }
         recorder
             .log
             .answer(named(phase, "run", &name), exact(run, version));
@@ -327,35 +359,57 @@ fn on_both_engines<T: Indexed>(has_kind: impl Fn(usize) -> bool) {
             of("prove"),
             of("verified"),
         );
-        // The verifier took every proof that was made.
+        // The verifier took every proof that was made, and came to the
+        // committed root hash by it.
         let refused: Vec<_> = (log.answers.iter())
-            .filter(|answer| kind_of(answer).0 == NOT_VERIFIED)
+            .filter(|answer| [NOT_VERIFIED, ANOTHER_ROOT].contains(&kind_of(answer).0.as_str()))
             .collect();
         assert!(refused.is_empty(), "{refused:#?}");
         assert_eq!(of("verified").0, of("prove").1);
-        // The reads of an axis are of grove version 4. From there on, a
-        // version that makes the kind answers every ranking of every axis
-        // in every round, the rankings with an offset among them, and
-        // proves each in both rounds of proofs.
-        if !has_kind(number) || number < 4 {
+        if !has_kind(number) {
             continue;
         }
-        let axes = T::axes().len();
+        // A version that makes the kind takes every write of the history
+        // into its indexed trees.
+        for write in WRITES {
+            let made = log.answers.iter().filter(|answer| answer.0 == write);
+            let (made, refused): (Vec<_>, Vec<_>) =
+                made.partition(|answer| answer.2.starts_with("Ok"));
+            assert!(
+                !made.is_empty() && refused.is_empty(),
+                "{write}: {refused:#?}"
+            );
+        }
+        // The reads of an axis are of grove version 4. From there on, a
+        // version that makes the kind answers every ranking of every axis
+        // in every round with the rows and the skip that the children of
+        // its tree give, the rankings with an offset among them, and
+        // proves each in both rounds of proofs.
+        if number < 4 {
+            continue;
+        }
+        let axes = T::axes();
         for phase in PHASES {
-            for ranking in RANKINGS {
-                let answered = log.answers.iter().filter(|answer| {
-                    answer.0.starts_with(&format!("{phase} | run | "))
-                        && answer.0.ends_with(&format!(" tree: {ranking}"))
-                        && answer.2.starts_with("Ok")
-                });
-                assert_eq!(answered.count(), 2 * axes, "{phase}: {ranking}");
+            for (ranking, k, offset, _) in RANKINGS {
+                for (tree, children) in READ_ALONE {
+                    let skipped = (offset as usize).min(children);
+                    let rows = usize::from(k).min(children - skipped);
+                    let expected = format!("{rows} rows, skipped Some({skipped})");
+                    for axis in &axes {
+                        let name = format!("{axis:?} of the {tree} tree: {ranking}");
+                        let page = named(phase, PAGE, &name);
+                        let noted = log.answers.iter().filter(|answer| answer.0 == page);
+                        let noted: Vec<&str> = noted.map(|answer| answer.2.as_str()).collect();
+                        assert_eq!(noted, [expected.as_str()], "{page}");
+                    }
+                }
             }
         }
         let proven = log.answers.iter().filter(|answer| {
             kind_of(answer) == ("prove".to_owned(), true)
-                && RANKINGS.iter().any(|ranking| answer.0.ends_with(ranking))
+                && (RANKINGS.iter()).any(|ranking| answer.0.ends_with(&format!(": {}", ranking.0)))
         });
-        assert_eq!(proven.count(), 2 * 2 * axes * RANKINGS.len());
+        assert_eq!(proven.count(), 2 * 2 * axes.len() * RANKINGS.len());
     }
 }
 
