@@ -631,6 +631,13 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
             &*(tx as *const _)
         };
 
+        // The restore writes this subtree through immediate handles: an
+        // engine that keeps a record of its subtrees is told before the
+        // first write (`Engine::adopt_restored_subtrees`).
+        self.db
+            .db
+            .adopt_restored_subtrees(path.clone(), transaction_ref)?;
+
         if let Ok((merk, root_key, tree_type, element)) =
             self.db
                 .open_merk_for_replication(path.clone(), transaction_ref, grove_version)
@@ -972,6 +979,11 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
 
         let subtree_path: Vec<&[u8]> = path.iter().map(|vec| vec.as_slice()).collect();
         let path_ref: &[&[u8]] = &subtree_path;
+        // The primary and the secondaries of the element are written by
+        // this restore: see `add_subtree_sync_info`.
+        self.db
+            .db
+            .adopt_restored_subtrees(path_ref.into(), transaction_ref)?;
         let (merk, root_key, tree_type, _element) = self
             .db
             .open_merk_for_replication(path_ref.into(), transaction_ref, grove_version)
@@ -1421,6 +1433,8 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
                 // for indexed-group members (the joint verification uses
                 // these, never the wire header's claims).
                 let mut completed_member_root: Option<CryptoHash> = None;
+                // Whether the restore handed a Merk with nodes to the store.
+                let mut handed_over = false;
                 if let Some(prefix_data) = current_prefixes.remove(&chunk_prefix) {
                     match prefix_data.restorer {
                         SubtreeRestorer::Merk(restorer) => {
@@ -1466,6 +1480,7 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
                                 match restorer.finalize_with_grovedb_elements(grove_version) {
                                     Ok(merk) => {
                                         completed_member_root = Some(merk.root_hash().unwrap());
+                                        handed_over = true;
                                     }
                                     Err(err) => {
                                         return Err(Error::InternalError(format!(
@@ -1501,6 +1516,27 @@ impl<'db, E: Engine> MultiStateSyncSession<'db, E> {
                         "Prefix {:?} does not exist in current_prefixes",
                         chunk_prefix
                     )));
+                }
+
+                // A Merk was handed over: the engine is told again, with
+                // the path of the element that hosts it, which for an axis
+                // secondary is the path of its primary. It is read BEFORE
+                // the group bookkeeping below, which un-registers the
+                // group's members once the group resolves.
+                if handed_over {
+                    let hosted_at = match self.secondary_owner.get(&chunk_prefix) {
+                        None => completed_path.clone(),
+                        Some((primary_prefix, _)) => (self.indexed_groups.get(primary_prefix))
+                            .map(|group| group.path.clone())
+                            .ok_or_else(|| {
+                                Error::InternalError(
+                                    "indexed secondary has no registered group".to_string(),
+                                )
+                            })?,
+                    };
+                    let segments: Vec<&[u8]> = hosted_at.iter().map(Vec::as_slice).collect();
+                    db.db
+                        .adopt_restored_subtrees(segments.as_slice().into(), transaction_ref)?;
                 }
 
                 // Whether this prefix is an axis secondary must be read

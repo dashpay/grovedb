@@ -57,6 +57,7 @@
 
 mod enter;
 mod error;
+mod restore;
 #[cfg(test)]
 mod tests;
 
@@ -715,6 +716,17 @@ impl Engine for LigninEngine {
         let view = transaction.view();
         let subtree = named_by_prefix(prefix, Some(view));
         LigninNodeStore::immediate(view, subtree).wrap_with_cost(OperationCost::default())
+    }
+
+    fn adopt_restored_subtrees<'b, B>(
+        &self,
+        path: SubtreePath<'b, B>,
+        transaction: &LigninTransaction<'_>,
+    ) -> Result<(), Error>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        restore::adopt(transaction.view(), path)
     }
 
     fn settle_batch(
