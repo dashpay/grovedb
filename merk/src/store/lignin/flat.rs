@@ -165,7 +165,8 @@ impl FlatWalk for WriterRecords<'_, '_, '_> {
     }
 
     /// Asked of a cursor of the scope that is opened for the question, as
-    /// one is for each move: at the committed state of this moment.
+    /// one is for each move: at the committed state of this moment, with
+    /// the scope's writes.
     fn beside(&mut self, back: bool, limit: usize) -> Result<usize, Error> {
         let scope = self.writer.scope();
         let mut cursor = scope.cursor(self.unit);

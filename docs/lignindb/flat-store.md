@@ -79,17 +79,17 @@ The `roots` column family has no cursor.
 
 **The moves.** A cursor stands on a record of its line, or nowhere.
 
-- `seek(k)` goes to the first record of the line at or after `prefix ‖ k`, and `seek_to_first()` to the first at or after `prefix`. `seek_for_prev(k)` goes to the last record at or before `prefix ‖ k`, and `seek_to_last()` to the last record before the next prefix. Where the line has no such record the cursor stands nowhere.
+- `seek(k)` goes to the first record of the line at or after `prefix ‖ k`, and `seek_to_first()` to the first at or after `prefix`. `seek_for_prev(k)` goes to the last record at or before `prefix ‖ k`, and `seek_to_last()` to the last record at or before the 32 bytes that follow the prefix in order. Where the line has no such record the cursor stands nowhere.
 - `next()` and `prev()` go one record along the line from the record the cursor stands on, whichever subtree that record is of, and off the end of the line to nowhere. **From nowhere a step does nothing.** A cursor that was never sought stands nowhere.
 
 So a cursor that has left the keys of its subtree is on the nearest record of another subtree that way, if the line has one, and nowhere if it has none:
 
 | The cursor left its subtree's keys by | The line has a record of another subtree on that side | It has none |
 | --- | --- | --- |
-| `seek(k)` with every key of the subtree before `k`; `next()` from the last key; `seek_to_first()` in a subtree with no record | It stands on the first record after the subtree. `prev()` goes to the subtree's last key. `next()` goes one record further from the subtree, and `prev()` then comes back by one. | It stands nowhere: `prev()` and `next()` do nothing. |
-| `seek_for_prev(k)` with every key of the subtree after `k`; `prev()` from the first key; `seek_to_last()` in a subtree with no record | It stands on the last record before the subtree. `next()` goes to the subtree's first key. `prev()` goes one record further from the subtree, and `next()` then comes back by one. | It stands nowhere: `next()` and `prev()` do nothing. |
+| `seek(k)` with every key of the subtree before `k`; `next()` from the last key | It stands on the first record after the subtree. `prev()` goes to the subtree's last key. `next()` goes one record further from the subtree, and `prev()` then comes back by one. | It stands nowhere: `prev()` and `next()` do nothing. |
+| `seek_for_prev(k)` with every key of the subtree after `k`; `prev()` from the first key | It stands on the last record before the subtree. `next()` goes to the subtree's first key. `prev()` goes one record further from the subtree, and `next()` then comes back by one. | It stands nowhere: `next()` and `prev()` do nothing. |
 
-A step into a subtree that has no record goes over it, to the nearest record on its other side or to nowhere.
+**A subtree with no record** has no key to come back to, and the line runs straight over the place where its records would be. Every seek that looks forward (`seek`, `seek_to_first`) leaves the cursor on the first record after that place, and every seek that looks back (`seek_for_prev`, `seek_to_last`) on the last record before it, or nowhere where the line has none that way. A step from the first record after the place goes back to the last record before it, and a step from that one goes forward to the first after it: the cursor is valid after none of these moves.
 
 Which subtree is before or after another is the order of their prefixes, which are hashes of their paths. So the same read of the same tree answers its rows in one grove and nothing in another: a descending read of `..end` with `end` past the last key, of a tree that has rows, answers nothing exactly when the tree's subtree is the last of its column family that holds a record. LigninDB reproduces this on the existing GroveVersions.
 
@@ -103,7 +103,7 @@ Of the line itself, these are not reproduced:
 
 - `seek_to_last()` on RocksDB seeks back from the 32 bytes that follow the prefix in order. If another subtree has exactly those bytes as its prefix and a record under the empty key, the iterator stands on that record, and the cursor is invalid although its subtree has records. On LigninDB it stands on the subtree's last key. Prefixes are Blake3 hashes, so two of them are consecutive with probability 2^-256 for each pair, as for the prefix of all `0xFF` bytes that `seek_to_last` of the RocksDB engine already leaves out.
 - A cursor that is pointed at another subtree (`Engine::retarget_cursor`, [engine.md](engine.md)) keeps its place on the line on RocksDB. On LigninDB it stands nowhere. Every caller seeks such a cursor before it reads or steps it.
-- A flat drop leaves the records of the dropped subtree in their column families until its ranges are deleted ([Pending prefix drops](#pending-prefix-drops)), and until then they are records of the line on RocksDB. GROVE-05 decides when LigninDB takes them off it; no drop of a subtree that holds records is made through the LigninDB engine before that task.
+- A flat drop leaves the records of the dropped subtree in their column families until its ranges are deleted ([Pending prefix drops](#pending-prefix-drops)), and until then they are records of the line on RocksDB. On LigninDB a subtree that is dropped through the store (`LigninBatch::drop_subtree`) is off the line from the drop on, in the transaction that drops it and for every reader from its commit, whatever its pages still hold. That is what RocksDB shows for a delete that removes the subtree's records with its element, and not for a flat drop before its drain. The LigninDB engine makes no flat drop yet: `delete_prefix_ranges` is refused ([engine.md](engine.md#the-lignindb-engine)), and GROVE-05, which builds the drop and its drain, decides how long the records of a flat-dropped subtree stay on the line.
 
 ## Transactions and visibility
 
