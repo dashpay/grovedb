@@ -335,9 +335,8 @@
 //!
 //! An error of any of them changes nothing that is committed. It is counted
 //! and kept as text ([`DbStats::background`]). After a turn that failed,
-//! each of the three waits before its next turn, whoever wakes it: its
-//! idle time, and longer after each further failed turn in a row, up to a
-//! second (`disk-full-and-backup.md` DF12).
+//! each of the three waits before its next turn, whoever wakes it
+//! (`disk-full-and-backup.md`, DF12).
 //!
 //! **Closing waits for a reclaiming that holds cells.** From the moment
 //! the record of a dropped Merk is out of the directory, the cells that

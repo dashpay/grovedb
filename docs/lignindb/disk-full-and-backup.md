@@ -143,6 +143,7 @@ opened again, whatever the device does later:
 | --- | --- | --- |
 | a sync of the log | A sync that fails cannot be made good (`lignin_io::vfs`): what was not durable is unknown from then on, so the log makes nothing durable any more, and the cut that a failed append waits for is never made (`lignin_store::wal`). | `Reopen::NotDurable`, or `Reopen::Stopped` where a commit was left unsettled by it |
 | a sync of a segment | The blocks that were not durable cannot be made durable, and chains point to them. No table checkpoint is installed any more, so the log keeps every commit from then on (`lignin_store::flush`, "When something fails"). | `Reopen::SegmentsNotDurable` |
+| a sync of a value-log file | Nothing. A cell is given a pointer to a value only once a sync has made the value durable and a manifest covers it, so no cell points to a value that the refused sync was for. The file is closed at the length that was durable before and is not synced again, and the values behind that length are placed in another file (DF11, D-246). | nothing: the session goes on |
 
 The step that meets one need not be a commit or a `flush()`. A turn of
 write-back does, a table checkpoint, the creation of a checkpoint of the
@@ -298,70 +299,97 @@ the database's until the reserve is wired into `Db` (section 8, item 3).
 **A file that write-back gave up is the cleaner's in the same session**
 (D-209). Where the device filled while write-back was appending to the
 value-log file it fills, write-back gives the file up and the next value
-goes to another file. The file's writer syncs what the file holds and is
-dropped after that sync has returned, and the file is closed where it
-ends. The cleaner takes closed files, so step 4 finds the dead bytes of
-this one with no close and no open of the database in between.
+goes to another file (`FlushStats::value_files_given_up`). The file's
+writer syncs what the file holds, through the handle that appended it,
+and is dropped after that sync has returned. The file is then closed
+where it ends. The cleaner takes closed files, so step 4 finds the dead
+bytes of this one with no close and no open of the database in between.
 
 - If that sync is refused as well, the file is closed at the length that
-  was durable, and the values behind it are appended to another file by a
-  later pass. No cell points behind that length: a cell is given its
-  pointer only behind a manifest that covers the value. It is no sync of
-  the log or of a segment, and the session goes on (DF7).
-- The cleaner's own value-log file is given up in the same way when a
-  cleaning that wrote to it failed.
-- A segment that write-back or the cleaner gives up after a refused
-  append had its sync already: what it holds is synced by its writer, the
-  writer is dropped, and a segment with no writer is one the cleaner
-  moves blocks out of. A refused sync there ends the session (DF8).
+  the last sync that succeeded had made durable, and in this session it
+  is neither appended to nor synced again: a sync that succeeded later
+  would say nothing of the bytes the refused one was for. The values
+  behind that length are given up, and a later pass appends them to
+  another file. No manifest covers them, and a cell is given its pointer
+  only behind a manifest that covers the value, so no cell points behind
+  that length. The session goes on (D-246; the table of DF8).
+- The cleaner gives up the value-log file of its own copies in the same
+  way when a cleaning into it failed
+  (`CleanerStats::value_files_given_up`). It keeps the file after the one
+  failure that says nothing against the file: an owner of a copy that
+  was not found.
+- A segment that write-back or the cleaner gives up, after a refused
+  append or a refused sealing, is synced at once, through the handle the
+  segment store syncs by (`sync-handles.md`, S2). Where that sync
+  succeeds the writer is dropped, and a segment with no writer is one
+  the cleaner chooses from. Where it is refused the writer is
+  kept, so that the blocks behind what is durable stay readable, and the
+  session ends (DF8).
 
-**DF12. On a device that stays full the background work waits between
-its turns, and a turn in vain uses up no log file id** (D-204). Three
-threads work behind a session: write-back's loop, the reclaimer's and the
-cleaner's. Each of them counts a turn that failed and goes on, and:
+**DF12. A background loop waits after a turn that failed, and a refused
+creation uses up no log file id** (D-204). Three threads work behind a
+session: write-back's loop, the reclaimer's and the cleaner's. Each
+counts what failed and goes on (`DbStats::background`). In this rule a
+turn is one turn of write-back's loop, one round of the reclaimer's
+thread, or one turn of the cleaner's loop, which makes two passes, and a
+turn has failed if anything in it did.
 
-- **After a turn that failed the loop waits before the next, whoever asks
-  for a turn.** The wait is the loop's idle time after the first failed
-  turn (50 ms for write-back, 100 ms for the two others, as they are
-  configured by default), and twice as long after each further failed
-  turn in a row, up to one second (`FlushConfig::max_failed_wait`). From
-  there a loop whose turns fail makes one turn a second.
-- **Nothing but the end of the session ends that wait.** A commit's wake
-  and a committer that waits for room bring the next turn forward after
-  a turn that did not fail, as before. After a turn that failed the turn
-  they ask for is the one at the end of the wait, and
-  `FlushStats::turns_put_off` counts the waits in which a turn was asked
-  for.
-- **The first turn that does not fail puts the wait back.** The loop
-  sleeps its idle time again and is woken as before. For write-back a
-  turn that failed and moved something on is the first of its row: the
-  wait after it is the idle time. So a session with one page that cannot
-  be written (section 7.2), which fails every turn, is not brought to a
-  turn a second while its turns write other pages.
-- **With room again nothing is to be done.** The turn at the end of the
-  wait that is running is made a second later at most, and DF7 holds
-  from there. The cut of the log does not wait for it: the thread of the
-  next commit makes the cut itself before it takes the commit lock.
+- **After a turn that failed, the loop waits before its next turn,
+  whoever asks for one.** The wait is the loop's idle time after the
+  first turn of a row of failed turns and twice as long after each
+  further one, up to `FlushConfig::max_failed_wait`, and never shorter
+  than the idle time. As a session is configured by default, the idle
+  time is 50 ms for write-back and 100 ms for the two others, and the
+  bound is one second for all three.
+- **Write-back's row is of turns that failed and moved nothing on.** A
+  failed turn has moved something on if its pass did what no later turn
+  has to do again: it wrote a page version to a segment, gave a value
+  its place, or kept a superseded version for its readers and took it
+  off what is owed. A log that was rolled, a file that was made, and a
+  value that was appended and has no place yet do not count: a turn can
+  do each of them in vain. After a failed turn that moved something on
+  the wait is the idle time, and the row begins anew. So a session with
+  one page that cannot be written (section 7.2), which fails every turn,
+  goes on writing its other pages. The reclaimer's row and the cleaner's
+  are of turns that failed, whatever else they did.
+- **Nothing but the end of the session ends that wait.** After a turn
+  that did not fail a loop is woken as before this rule, and a round of
+  the reclaimer that left work at its bound of calls is followed by the
+  next at once. After a turn that failed, whoever asks for a turn is
+  given the one at the end of the wait. `FlushStats::turns_put_off`
+  counts the waits of write-back's loop in which a turn was asked for.
+- **The first turn that does not fail ends the row.** The loop sleeps
+  and is woken as before it.
+- **With room again nothing is to be done.** The wait that is running
+  ends by itself, and the turn after it is made on a device with room.
+  The cut of the log does not wait for that turn: the thread of the next
+  commit makes the cut itself before it takes the commit lock (DF7).
 
-What a turn in vain leaves:
+The rule paces turns that fail. A turn that does not fail is as it was:
+on a full device the rounds of a reclaimer that has nothing to reclaim
+write nothing, do not fail, and go on at its idle time.
 
-| | On a device that refuses | Each hour at one turn a second |
+**What a failed turn of write-back leaves**, in the state in which its
+loop did not wait before this rule: a value waits for its page step, the
+log takes no record until it is rolled, and the device takes no new log
+file.
+
+| The device | Log file ids | Names that no sync of a directory has covered |
 | --- | --- | --- |
-| Log file ids | none. An id is used up by a file that entered the log, which a manifest names, and by a file that a creation found under its name. A creation that the device refused takes no id, and neither does a file that was made and given up before a manifest named it: the next creation asks for a file under the same id. | none |
-| Changes of names that no sync of the directory has covered | two for each failed turn of write-back on a device with no free byte, which makes the log's next file, is refused its header and takes the file away again, under the same id each time | 7,200, all of one name |
-| Ids of segments, value-log files and table checkpoints | one for each creation that was refused, as before this rule | bounded by the turns |
+| refuses the creation of the file | None. An id is used up by a file that entered the log, which a manifest names, and by a file that a creation found under its name. A creation that was refused takes no id, and neither does a file that was made and given up before a manifest named it: the next creation asks for a file under the same id. | none |
+| makes the file, refuses its header and takes the file away again: a device with no free byte | none, for the same reason | one creation and one removal of that one name for each failed turn. At the bound of the wait that is one of each a second, for as long as the device stays full. |
+| makes the file, refuses its header and does not take the file away | One for every two creations: the next creation finds the file under the id, which is then that file's, and the one after it asks under the next id. At one failed turn a second, 1,800 an hour. | one file for each of those ids, which the next open removes |
+| takes the bytes of each record of the log and answers that it has no room | The log finds the start record of its next file whole in that file and turns to it, to a file that takes no item and is one of the log's. A roll makes six turns at most, and a roll whose last turn ends so has failed. So a failed turn of write-back uses six ids at most: at one turn a second, 21,600 an hour. A commit that is refused on such a device rolls the log itself (DF7), which this rule does not pace. | none |
 
-A device that refuses an append and keeps its bytes is another matter:
-there a roll turns the log to a file that takes no item, that file is one
-of the log's, and its id is used. The rolls of one turn are bounded, and
-the wait bounds the turns.
+Segments, value-log files and table checkpoints take an id for each
+creation that was refused, as before this rule.
 
-**The log's ids do not begin again.** After the last id (2³² − 1) the
+**The log's ids do not begin again.** After the last id (2³² − 2) the
 log is given no further file (`LogError::FileIdsExhausted`), and the
-session ends with a reason of its own (`Reopen::LogFileIdsUsedUp`): reads
-go on, every commit is refused, and a close answers as for any session
-that has ended (DF8). The next open begins a log file as every open does
-(DF9) and fails for the same reason. A log that is given a file a second
+session ends with a reason of its own (`Reopen::LogFileIdsUsedUp`):
+reads go on and every commit is refused. Where a manifest has recorded
+the last id as used, the next open fails for the same reason, since
+every open begins a log file (DF9). A log that is given a file a second
 comes there in 136 years.
 
 ### 5.3 How much room is a little
@@ -572,8 +600,8 @@ short. `delete` finishes it.
 **What is seen.** Commits fail, and their error says that the device is
 full (`lignindb::space::out_of_space`): the node stops at a block. Reads
 are answered. `DbStats::background` counts turns of write-back that failed
-and keeps the last error as text. While the device stays full the
-background work makes a turn a second and no more (DF12).
+and keeps the last error as text. While turns of the background work
+fail, each loop waits between them (DF12).
 
 **What is true then.** Nothing that was made durable is lost, nothing
 that was committed is damaged (DF1), and nothing needs a repair. No file
@@ -864,9 +892,9 @@ At each of the 3,269 operations:
 | `lignin-io`: `sim::tests::budget` | the capacity: what is counted, what is refused, what a refused operation leaves, a hole, a file that only a lock holds |
 | `lignin-store`: `wal::tests::faults::the_log_says_that_a_sync_failed_and_makes_none_to_say_so` | the accessor says what is and makes no operation |
 | `lignin-store`: `flush::tests::faults::a_manifest_in_doubt_is_settled_when_write_back_is_asked` | the settling, where it works and where the device still refuses |
-| `db::tests::pacing` | DF12 on a session whose three threads run: after a commit that was refused its append, on a device that goes on refusing writes and names, write-back's failed turns in 400 ms are those its waits allow and its file operations a few for each, no log file id is used, the session has not ended, and with room it takes the next commit; the reclaimer's wait after a failed round, which a wake does not end; a log whose ids are used up ends the session and says why |
-| `lignin-store`: `flush::tests::pacing` | the waits of write-back's loop turn by turn (the idle time, doubling to the bound), one file operation for each failed turn, no id used and no name changed where names are refused, two changes of one name at most for each failed turn on a device with no free byte; a call for a turn ends no wait after a failed turn |
+| `db::tests::pacing` | DF12 on a session whose three threads run: after a commit that was refused its append, on a device that goes on refusing writes and names, write-back's failed turns in 400 ms are those its waits allow, the log's next file is asked for once in each of them and once by each checkpoint the cleaner asks for, no log file id is used, the session has not ended, and with room it takes the next commit; in the same state no wake reaches the reclaimer's thread, no round of it fails, and it makes a round each idle time; the reclaimer's wait after a failed round, which a wake does not end; a log whose ids are used up ends the session and says why |
+| `lignin-store`: `flush::tests::pacing` | the waits of write-back's loop turn by turn (the idle time, doubling to the bound; from a millisecond where the idle time is nothing), one file operation for each failed turn, no id used and no name changed where names are refused, two changes of one name for each failed turn on a device with no free byte; on a device that keeps the records it refuses, a roll whose turns end in a file that takes no item is a failed turn with the device's answer, with its wait and six log files at most; a call for a turn ends no wait after a failed turn |
 | `lignin-store`: `cleaner::tests::errors` (two of its tests) | the same wait for the cleaner's loop |
 | `lignin-store`: `wal::tests::faults` (three of its tests) | a creation that is refused again and again uses up no log file id; an id is used up by a file that is found under it; the ids end at the largest one and do not begin again |
-| `lignin-store`: `flush::tests::values`, `cleaner::tests::values` (three tests) | a value-log file that is given up after a refused append is closed in the session, with the values before the refused one placed in it; the cleaner cleans and drops it with no open in between; with the sync of the giving up refused too, the file is closed where it was durable, its values go to another file, a table checkpoint is installed, and the cleaner drops the file |
+| `lignin-store`: `flush::tests::values`, `cleaner::tests::values` (five tests) | a value-log file that is given up after a refused append is synced through the handle that appended and closed in the session, with the values before the refused one placed in it; the cleaner cleans and drops it with no open in between; with the sync of the giving up refused too, the file is closed at the length an earlier sync had covered and is neither appended to nor synced again, the values behind that length are in no cell and go to another file, a table checkpoint is installed, and the cleaner drops the file; the cleaner's own file is given up in the same way |
 | `lignin-store`: `flush::tests::checkpoint::a_checkpoint_that_rolls_its_log_in_vain_fails_with_what_the_device_answered` | a table checkpoint that cannot be given a log file for its mark fails with the device's refusal by name |
