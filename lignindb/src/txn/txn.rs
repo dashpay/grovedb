@@ -2818,6 +2818,11 @@ impl<'s> WriteTxn<'s> {
         shown.map(Some)
     }
 
+    /// [`WriteSet::written_beside`], of the write set as it is now.
+    pub(crate) fn written_beside(&self, from: &Subtree, back: bool) -> Option<Subtree> {
+        self.lock().set.written_beside(from, back)
+    }
+
     /// Whether the transaction's newest write of the record key hides or
     /// replaces the committed record, and with what.
     pub(crate) fn with_set<R>(

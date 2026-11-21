@@ -14,7 +14,7 @@ use lignin_tree::{
 use super::{
     error::TxnError,
     frames::stored_key,
-    key::{Subtree, Unit},
+    key::{Column, Subtree, Unit},
     opened::Opened,
     pages::{child_keys, find},
     path::{FlatReader, Idle, WritePath, IDLE},
@@ -119,6 +119,21 @@ impl fmt::Debug for FlatSide<'_> {
 }
 
 impl<'s> FlatSide<'s> {
+    /// The flat records of `unit` at the version `at`, which the caller
+    /// keeps pinned.
+    fn of(path: WritePath<'s>, at: CommitVersion, unit: Unit) -> Self {
+        let tree = path.keyspaces().of(unit.column);
+        Self {
+            path,
+            at,
+            pages: None,
+            cursor: tree.cursor_within(unit.subtree.as_bytes()),
+            tree,
+            unit,
+            key: Vec::new(),
+        }
+    }
+
     /// Runs one call with the committed pages under `guard`, the guard of
     /// the operation the call is made in.
     fn read<'g, R>(
@@ -239,18 +254,8 @@ impl<'s> UnlinkedSide<'s> {
     /// The unlinked records that the version `at` has under `subtree`,
     /// which stands nowhere yet.
     fn over(path: WritePath<'s>, at: CommitVersion, subtree: Subtree) -> Self {
-        let unit = Unit::data(subtree);
-        let tree = path.keyspaces().of(unit.column);
         Self {
-            records: FlatSide {
-                path,
-                at,
-                pages: None,
-                cursor: tree.cursor_within(subtree.as_bytes()),
-                tree,
-                unit,
-                key: Vec::new(),
-            },
+            records: FlatSide::of(path, at, Unit::data(subtree)),
             back: false,
         }
     }
@@ -266,6 +271,39 @@ impl fmt::Debug for MerkSide<'_> {
 }
 
 impl<'s> MerkSide<'s> {
+    /// The Merk that the version `at` has under `subtree`, read under
+    /// `guard` through the directory in `opened`: its nodes from the root
+    /// that version has, and its unlinked records where it holds any. The
+    /// caller keeps `at` pinned.
+    fn of(
+        txn: &WriteTxn<'s>,
+        guard: &OperationGuard<'s>,
+        at: CommitVersion,
+        lease: Lease,
+        opened: &mut Option<Opened>,
+        subtree: Subtree,
+    ) -> Result<Self, TxnError> {
+        let path = *txn.path();
+        let directory = Opened::at(opened, &path, guard, at)?;
+        let entered = directory.root(&path, guard, &subtree)?;
+        let root = entered.flatten();
+        // Whether the version holds unlinked records under the subtree
+        // is asked once, and of the transaction, which may know. No record
+        // is read under a subtree that is not entered.
+        let records = entered.is_some() && holds_unlinked(txn, directory, guard, at, &subtree)?;
+        let unlinked = records.then(|| UnlinkedSide::over(path, at, subtree));
+        let reader = NodeReader::new(path.loader, guard, lease, at);
+        Ok(Self {
+            path,
+            at,
+            lease,
+            cursor: tree::Cursor::open(&reader, root),
+            under: subtree,
+            buffers: LoadBuffers::new(),
+            unlinked,
+        })
+    }
+
     /// The reader of the side's version for the operation that holds
     /// `guard`.
     fn reader<'g>(&self, guard: &'g OperationGuard<'s>) -> NodeReader<'g, OperationGuard<'s>> {
@@ -546,7 +584,12 @@ pub struct Cursor<'t, 's, C = FlatSide<'s>> {
     txn: &'t WriteTxn<'s>,
     who: Who,
     unit: Unit,
-    pin: VersionPin<'s>,
+    /// The version of the committed side.
+    at: CommitVersion,
+    /// The pin of that version. A cursor that another makes for the
+    /// length of one of its own calls has none: the pin of the other
+    /// holds the version for it ([`Self::beside`]).
+    _pin: Option<VersionPin<'s>>,
     side: C,
     /// The subtree directory of the cursor's version, through which the
     /// cursor opens its subtree.
@@ -574,16 +617,7 @@ impl<'t, 's> Cursor<'t, 's> {
         // cursor's first step on, each under the guard of its operation
         // (PN5).
         let pin = path.versions().pin();
-        let tree = path.keyspaces().of(unit.column);
-        let side = FlatSide {
-            path,
-            at: pin.version(),
-            pages: None,
-            cursor: tree.cursor_within(unit.subtree.as_bytes()),
-            tree,
-            unit,
-            key: Vec::new(),
-        };
+        let side = FlatSide::of(path, pin.version(), unit);
         Self::over(txn, who, unit, pin, side)
     }
 
@@ -604,7 +638,7 @@ impl<'t, 's> Cursor<'t, 's> {
         let pinned = Pinned {
             opened: &mut self.opened,
             guard: &guard,
-            at: self.pin.version(),
+            at: self.at,
             seen: self.seen,
             lease: None,
         };
@@ -625,7 +659,6 @@ impl<'t, 's> MerkCursor<'t, 's> {
         who: Who,
         subtree: Subtree,
     ) -> Result<Self, TxnError> {
-        let path = *txn.path();
         // The root is the one the pinned version has, read under a guard
         // (PN5). The lease is the cursor's own (PN1). The transaction pins
         // the version, and dates the lease with it: a write may keep the
@@ -634,26 +667,8 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let (guard, pin) = txn.pin_shown(lease);
         let at = pin.version();
         let mut opened = None;
-        let directory = Opened::at(&mut opened, &path, &guard, at)?;
-        let entered = directory.root(&path, &guard, &subtree)?;
-        let root = entered.flatten();
-        // Whether the version holds unlinked records under the subtree
-        // is asked once, and of the transaction, which may know. No record
-        // is read under a subtree that is not entered.
-        let unit = Unit::data(subtree);
-        let records = entered.is_some() && holds_unlinked(txn, directory, &guard, at, &subtree)?;
-        let unlinked = records.then(|| UnlinkedSide::over(path, at, subtree));
-        let reader = NodeReader::new(path.loader, &guard, lease, at);
-        let side = MerkSide {
-            path,
-            at,
-            lease,
-            cursor: tree::Cursor::open(&reader, root),
-            under: subtree,
-            buffers: LoadBuffers::new(),
-            unlinked,
-        };
-        let mut cursor = Self::over(txn, who, unit, pin, side);
+        let side = MerkSide::of(txn, &guard, at, lease, &mut opened, subtree)?;
+        let mut cursor = Self::over(txn, who, Unit::data(subtree), pin, side);
         cursor.opened = opened;
         Ok(cursor)
     }
@@ -755,7 +770,7 @@ impl<'t, 's> MerkCursor<'t, 's> {
         let pinned = Pinned {
             opened: &mut self.opened,
             guard: &guard,
-            at: self.pin.version(),
+            at: self.at,
             seen: self.seen,
             lease: Some(self.side.lease),
         };
@@ -929,6 +944,11 @@ impl<'s, C: CommittedSide<'s>> Resumed<'_, '_, 's, C> {
     pub fn prev(&mut self) -> Result<(), TxnError> {
         self.cursor.prev()
     }
+
+    /// [`Cursor::beside`].
+    pub fn beside(&mut self, back: bool, limit: usize) -> Result<usize, TxnError> {
+        self.cursor.beside(back, limit)
+    }
 }
 
 #[cfg(test)]
@@ -976,11 +996,24 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         pin: VersionPin<'s>,
         side: C,
     ) -> Self {
+        let at = pin.version();
+        Self::at(txn, who, unit, at, Some(pin), side)
+    }
+
+    fn at(
+        txn: &'t WriteTxn<'s>,
+        who: Who,
+        unit: Unit,
+        at: CommitVersion,
+        pin: Option<VersionPin<'s>>,
+        side: C,
+    ) -> Self {
         Self {
             txn,
             who,
             unit,
-            pin,
+            at,
+            _pin: pin,
             side,
             opened: None,
             seen: None,
@@ -1005,6 +1038,114 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     #[cfg(test)]
     pub(crate) fn refuse_place(&mut self) {
         self.refuse_place = true;
+    }
+
+    /// How many records the cursor's column holds in the subtrees after
+    /// the cursor's own in the order of their prefixes, or with `back` in
+    /// those before it, counted from the nearest subtree on and up to
+    /// `limit`. The nodes of a Merk and the flat records of the data
+    /// column are both records of that column (`transactions.md` ST1).
+    ///
+    /// They are the records that a cursor of each of those subtrees shows,
+    /// opened at this cursor's version: the committed records of that
+    /// version, with the transaction's writes as they are now (RD6). The
+    /// cursor stays where it is.
+    ///
+    /// It is what tells where a step from past the end of a subtree leads
+    /// on an engine that keeps the records of every subtree of a column
+    /// in one keyspace (`flat-store.md`, rule 6).
+    ///
+    /// For each subtree it comes to, the call seeks once in the column's
+    /// tree, which finds the nearest subtree the version stores a record
+    /// under. For the data column it also walks the entries of the
+    /// subtree directory to the nearest Merk with a node, and no further
+    /// than the subtree the seek found or one the transaction wrote
+    /// ([`Directory::rooted_beside`](lignin_tree::directory::Directory::rooted_beside)).
+    /// It then steps over the records of the nearest of these until it
+    /// has counted `limit`. A subtree that holds records which nobody is
+    /// shown (those a drop left, and those the transaction deleted) is
+    /// passed, at the same cost.
+    ///
+    /// Each subtree is read as a cursor of this cursor's scope and
+    /// version reads it, and is refused where such a cursor is: with
+    /// [`TxnError::ScopeOverlap`] where another open scope holds that
+    /// subtree's unit for writing (SC3).
+    pub fn beside(&mut self, back: bool, limit: usize) -> Result<usize, TxnError> {
+        let column = self.unit.column;
+        let (mut from, mut found) = (self.unit.subtree, 0);
+        while found < limit {
+            let Some(next) = self.neighbour(&from, back)? else {
+                break;
+            };
+            found += self.count(Unit::new(column, next), limit - found)?;
+            from = next;
+        }
+        Ok(found)
+    }
+
+    /// The nearest subtree after `from`, or with `back` before it, that
+    /// may hold a record of the cursor's column in the cursor's view: one
+    /// the cursor's version stores a record under, one the transaction
+    /// has written or moved, and for the data column one whose Merk has a
+    /// node at that version.
+    fn neighbour(&mut self, from: &Subtree, back: bool) -> Result<Option<Subtree>, TxnError> {
+        let (path, column) = (*self.txn.path(), self.unit.column);
+        let nearest = |found: [Option<Subtree>; 2]| {
+            let found = found.into_iter().flatten();
+            match back {
+                false => found.min(),
+                true => found.max(),
+            }
+        };
+        let guard = path.versions().guard();
+        let pages = path.committed(&guard, self.at);
+        let stored = (path.keyspaces()).stored_beside(&pages, column, from, back)?;
+        let near = nearest([stored, self.txn.written_beside(from, back)]);
+        if column != Column::Data {
+            return Ok(near);
+        }
+        let directory = Opened::at(&mut self.opened, &path, &guard, self.at)?;
+        let rooted = directory.rooted_beside(&path, &guard, from, near.as_ref(), back)?;
+        Ok(nearest([near, rooted]))
+    }
+
+    /// How many records of `unit` a cursor of this cursor's version shows,
+    /// up to `limit`: for the data column a cursor over the nodes of a
+    /// Merk, which shows the flat records of that column among them.
+    fn count(&mut self, unit: Unit, limit: usize) -> Result<usize, TxnError> {
+        let (txn, who, at) = (self.txn, self.who, self.at);
+        let path = *txn.path();
+        if unit.column != Column::Data {
+            let side = FlatSide::of(path, at, unit);
+            let mut records = Cursor::at(txn, who, unit, at, None, side);
+            records.opened = self.opened.take();
+            let counted = records.count_keys(limit);
+            self.opened = records.opened.take();
+            return counted;
+        }
+        let guard = path.versions().guard();
+        let lease = Lease::take();
+        let side = MerkSide::of(txn, &guard, at, lease, &mut self.opened, unit.subtree)?;
+        drop(guard);
+        let mut nodes = Cursor::at(txn, who, unit, at, None, side);
+        nodes.opened = self.opened.take();
+        let counted = nodes.count_keys(limit);
+        self.opened = nodes.opened.take();
+        counted
+    }
+
+    /// Walks the cursor from its first key and counts the keys, up to
+    /// `limit`.
+    fn count_keys(&mut self, limit: usize) -> Result<usize, TxnError> {
+        let mut found = 0;
+        self.seek_to_first()?;
+        while self.key.is_some() && found < limit {
+            found += 1;
+            if found < limit {
+                self.next()?;
+            }
+        }
+        Ok(found)
     }
 
     /// Whether the committed side is read: the cursor's version has the
@@ -1034,7 +1175,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
         let pinned = Pinned {
             opened: &mut self.opened,
             guard,
-            at: self.pin.version(),
+            at: self.at,
             seen: self.seen,
             lease: None,
         };
@@ -1053,7 +1194,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
                 return Err(TxnError::Damaged("a change of prefix that a test refuses"));
             }
             let path = *self.txn.path();
-            let kept = Opened::at(&mut self.opened, &path, guard, self.pin.version())?;
+            let kept = Opened::at(&mut self.opened, &path, guard, self.at)?;
             let txn = self.txn;
             self.side.point_asking(Asked { txn, kept }, guard, under)?;
         }
@@ -1071,7 +1212,7 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
     /// The committed version the cursor reads beside the transaction's
     /// writes.
     pub fn version(&self) -> CommitVersion {
-        self.pin.version()
+        self.at
     }
 
     /// Whether the cursor stands on a key.
@@ -1250,7 +1391,7 @@ impl<C: fmt::Debug> fmt::Debug for Cursor<'_, '_, C> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cursor")
             .field("unit", &self.unit)
-            .field("version", &self.pin.version())
+            .field("version", &self.at)
             .field("key", &self.key)
             .field("side", &self.side)
             .finish_non_exhaustive()

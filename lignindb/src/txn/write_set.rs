@@ -1568,6 +1568,18 @@ impl WriteSet {
         subtrees.into_iter()
     }
 
+    /// The nearest subtree after `from` in the order of the prefixes, or
+    /// with `back` the nearest before it, that the transaction has an
+    /// entry under, in any column, or that a move of it names.
+    pub(crate) fn written_beside(&self, from: &Subtree, back: bool) -> Option<Subtree> {
+        let written = self.units.keys().map(|unit| unit.subtree);
+        let written = written.chain(self.moved_names());
+        match back {
+            false => written.filter(|subtree| subtree > from).min(),
+            true => written.filter(|subtree| subtree < from).max(),
+        }
+    }
+
     /// The subtree of the element that the last enter of `subtree` among
     /// `entries` states as its host, of either kind: `Some(None)` for an
     /// enter with no host.

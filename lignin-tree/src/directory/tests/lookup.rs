@@ -255,7 +255,7 @@ fn the_merk_with_a_node_beside_a_prefix_is_the_nearest_in_use() {
 
     let beside = |from: &Prefix, back: bool| {
         (grove.directory)
-            .rooted_beside(&grove.pages, from, back)
+            .rooted_beside(&grove.pages, from, None, back)
             .expect("a walk")
     };
     // From every prefix of the grove, entered or dropped, with a root or

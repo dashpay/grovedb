@@ -94,15 +94,18 @@ impl Directory {
 
     /// The nearest Merk with a node after `prefix` in the order of the
     /// prefixes, or with `back` the nearest before it: a Merk in use whose
-    /// entry names a root. `None` if there is none that way.
+    /// entry names a root. `None` if there is none that way, or none
+    /// before the walk comes to `until` or passes it.
     ///
     /// It is one seek among the entries and a step for each entry it
     /// passes: that of a Merk with no node, of a tree that keeps its data
-    /// elsewhere, and one that a drop left.
+    /// elsewhere, and one that a drop left. With `until`, which is a
+    /// prefix on the side the walk goes to, it passes no entry beyond it.
     pub fn rooted_beside<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         prefix: &Prefix,
+        until: Option<&Prefix>,
         back: bool,
     ) -> Result<Option<Prefix>, DirectoryError> {
         let within = [RecordKind::Entry.code()];
@@ -118,6 +121,13 @@ impl Directory {
             };
             let damaged = |what: Malformed| damaged(&[&within[..], key].concat(), what.0);
             let beside = decode_prefix(key).map_err(damaged)?;
+            let beyond = until.is_some_and(|until| match back {
+                false => beside >= *until,
+                true => beside <= *until,
+            });
+            if beyond {
+                return Ok(None);
+            }
             value.clear();
             // A record that a page step took out under the walk is passed.
             if beside != *prefix && cursor.value(pages, &mut value)? {

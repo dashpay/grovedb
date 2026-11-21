@@ -359,6 +359,7 @@ impl<'s> World<'s> {
         }
         let met = tx.model.borrow().met();
         assert_eq!(tx.txn.stats().overlapped, met, "the overlap set");
+        self.check_beside(tx);
     }
 
     /// [`Self::check`], of the records of `unit` alone.
@@ -432,6 +433,78 @@ impl<'s> World<'s> {
         }
     }
 
+    /// How many records each unit that `tx` reads holds, in the order of
+    /// the units of each column.
+    fn sizes(&self, tx: &Tx<'s>) -> BTreeMap<Unit, usize> {
+        let model = tx.model.borrow();
+        let size = |unit: Unit| (unit, model.view(&self.model.records, unit).len());
+        self.units(tx).into_iter().map(size).collect()
+    }
+
+    /// Checks what a cursor of `tx` says lies beside its subtree in its
+    /// column ([`Cursor::beside`]) against the model: the records of the
+    /// units after it, or before it, in the order of their subtrees. Up to
+    /// one and two records from every unit, and all of them from each
+    /// end of a column.
+    fn check_beside(&self, tx: &Tx<'s>) {
+        let sizes = self.sizes(tx);
+        for (at, unit) in sizes.keys().enumerate() {
+            for back in [false, true] {
+                let total = records_beside(&sizes, unit, back);
+                // An end of its column: every other unit of the column
+                // lies that way.
+                let in_column = sizes.keys().filter(|other| other.column == unit.column);
+                let at_end = in_column
+                    .filter(|other| *other != unit)
+                    .all(|other| lies_beside(unit, other, back));
+                let mut limits = vec![1, 2];
+                if at_end || at % 7 == 0 {
+                    limits.push(usize::MAX);
+                }
+                for limit in limits {
+                    let expected = total.min(limit);
+                    let found = tx.txn.cursor(*unit).beside(back, limit);
+                    let found = found.expect("the records beside a subtree are counted");
+                    assert_eq!(
+                        found, expected,
+                        "beside {unit}, back: {back}, up to {limit}"
+                    );
+                    if unit.column == Column::Data {
+                        let mut cursor = tx.txn.merk_cursor(unit.subtree).expect("a cursor");
+                        let found = cursor.beside(back, limit).expect("they are counted");
+                        assert_eq!(found, expected, "beside the Merk {unit}, back: {back}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// Checks what a reader of the latest version says lies beside each
+    /// subtree ([`Operation::beside`](crate::snapshot::Operation::beside))
+    /// against the model, and from a subtree that holds nothing.
+    fn check_beside_for_a_reader(&self) {
+        let sizes = self.sizes(&self.begin());
+        let reads = self.db.reads(self.versions);
+        let snapshot = reads.snapshot();
+        let operation = snapshot.operation();
+        let mut from: BTreeSet<Unit> = sizes.keys().copied().collect();
+        for column in Column::ALL {
+            from.extend(
+                [[0; 32], [0x77; 32], [0xff; 32]].map(|at| Unit::new(column, Subtree::new(at))),
+            );
+        }
+        for unit in from {
+            for back in [false, true] {
+                let total = records_beside(&sizes, &unit, back);
+                for limit in [1, 2, usize::MAX] {
+                    let found = operation.beside(unit.column, unit.subtree, back, limit);
+                    let found = found.expect("the records beside a subtree are counted");
+                    assert_eq!(found, total.min(limit), "beside {unit}, back: {back}");
+                }
+            }
+        }
+    }
+
     /// Checks the committed state against the model: every record as a
     /// transaction that has written nothing reads it, and the tree pages.
     pub(crate) fn check_committed(&self) {
@@ -444,6 +517,7 @@ impl<'s> World<'s> {
     pub(crate) fn check_committed_but(&self, unlinked: impl Fn(&[u8]) -> bool) {
         let reader = self.begin();
         self.check(&reader);
+        self.check_beside_for_a_reader();
         let keys = self.db.check_trees(self.versions, self.latest());
         let mut expected: BTreeMap<Subtree, Vec<Vec<u8>>> = BTreeMap::new();
         for ((unit, key), value) in &self.model.records {
@@ -453,6 +527,24 @@ impl<'s> World<'s> {
         }
         assert_eq!(keys, expected, "the keys of the committed Merks");
     }
+}
+
+/// Whether `other` is a unit of the column of `unit` after it in the order
+/// of the subtrees, or with `back` before it.
+fn lies_beside(unit: &Unit, other: &Unit, back: bool) -> bool {
+    other.column == unit.column
+        && match back {
+            false => other.subtree > unit.subtree,
+            true => other.subtree < unit.subtree,
+        }
+}
+
+/// How many records the units that lie beside `unit` hold.
+fn records_beside(sizes: &BTreeMap<Unit, usize>, unit: &Unit, back: bool) -> usize {
+    let beside = sizes
+        .iter()
+        .filter(|(other, _)| lies_beside(unit, other, back));
+    beside.map(|(_, size)| size).sum()
 }
 
 /// Every record a cursor shows from one end to the other.
