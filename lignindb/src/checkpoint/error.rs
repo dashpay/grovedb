@@ -45,8 +45,8 @@ pub enum CheckpointError {
     },
     /// The directory is one that a creation builds a checkpoint in
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), and its lock is
-    /// held, as by a creation that is building in it now. Nothing in it
-    /// was removed.
+    /// held, as by a creation that is building in it now. The call did
+    /// nothing more once it found the lock held.
     Creating {
         /// The directory that is being built in.
         dir: PathBuf,
@@ -70,9 +70,9 @@ pub enum CheckpointError {
     /// none there. It lists something under that name that is not a file,
     /// such as a link or a directory; or it lists nothing under it, and
     /// the call found that the name leads to something all the same. The
-    /// lock of the directory was not taken, so a creation does not build
-    /// in it and [`delete`](super::delete) does not remove it, and
-    /// nothing in it was removed.
+    /// lock of the directory was not taken, and the call went no further:
+    /// a creation does not build in such a directory, and
+    /// [`delete`](super::delete) does not go on to remove it.
     NotALock {
         /// The path of the lock file.
         path: PathBuf,
@@ -206,8 +206,7 @@ impl fmt::Display for CheckpointError {
             ),
             Self::Creating { dir } => write!(
                 f,
-                "{} is locked, as a directory that a checkpoint is being built in, and nothing \
-                 in it was removed",
+                "{} is locked, as a directory that a checkpoint is being built in",
                 dir.display()
             ),
             Self::Replaced { dir } => write!(

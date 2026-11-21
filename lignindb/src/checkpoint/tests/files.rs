@@ -1281,7 +1281,8 @@ fn a_directory_that_is_changed_while_a_checkpoint_is_built_in_it_gets_no_name() 
 }
 
 /// What a creation left has listed its lock file, a file, when somebody
-/// puts a link in its place, right before the lock is taken in that file.
+/// moves that directory away and puts a link in its place, right before
+/// the call that takes the lock (`lock_existing`).
 /// Where the link leads to a directory with no lock file, the taking
 /// fails and makes none. Where it leads to one with a lock file, that
 /// lock is taken, and the look under the lock does not find the directory

@@ -67,7 +67,7 @@
 //! | --- | --- | --- |
 //! | 1 | A session that takes no commit any more is refused, and so is a target that is there, or whose name is one that checkpoints are built under, with nothing touched (P-14). | nothing |
 //! | 2 | If write-back holds more log than the checkpoint is to leave for its first open, it catches up: a pass and a table checkpoint, as its own loop takes them (CK6). Then write-back is asked for the settled manifest: one that a replacement left in doubt, the catch-up's own among them, is opened again (`lignin_store::flush::WriteBack::settle_manifest`). If write-back answers an error to that, the creation fails with no directory made ([`CheckpointError::Settle`]). | nothing of the checkpoint's |
-//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. Of one whose lock is held nothing is removed, and the creation fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
+//! | 3 | The directory the checkpoint is built in is made beside the target, under the target's name with [`CREATING_SUFFIX`] added, and its lock is taken, as for any database directory that is written. A directory that is there under that name, and is found to be one that a creation can lock, is taken for what an earlier creation left: the directory above is synced, and then everything in it goes but its lock file. Where its lock is found held, the creation goes no further and fails, as it does where the looks before and under the lock refuse what is there ("Durability, and a creation that fails"). | the lock of that directory, to the end |
 //! | 4 | **The sample** (CK2): the latest version *vc*, where the checkpoint's log ends, and the durable manifest. The log ends where the live log ends, or, if the live log is durable through *vc* already, where it is durable to. A session whose log holds a commit it has not published is refused. The version is pinned and the whole log is held, and the value-log files are held as soon as the commit lock is given back (CK3). | the commit lock and the lock on the manifest, which is the file-set lock |
 //! | 5 | The table checkpoint, the segments and the value-log files that the sampled manifest names are linked into the directory, and so are the files the engine has the checkpoint carry. | the lock on the manifest; the pin; the holds |
 //! | 6 | The log is made durable, by the log itself, through the sampled end, unless it is. *vc* is durable in the live database from here (CK4, DU1). | the pin; the holds |
@@ -325,8 +325,8 @@
 //! is the caller's to keep outside these names ([`CREATING_SUFFIX`]).
 //! Only a directory that the directory above lists under that name, byte
 //! for byte, with a lock file of its own or none, is taken for one, and
-//! of one whose lock is held nothing is removed: what is looked at for
-//! that comes below.
+//! a call that finds the lock of one held goes no further: what is looked
+//! at for that comes below.
 //!
 //! **The name of the target is the caller's to keep free.** A target that
 //! is there is refused before anything is done, and again right before
@@ -360,11 +360,12 @@
 //!   Where the directory lists one, under that name byte for byte, it
 //!   has to be a file, and none is made. Where it lists none, the call
 //!   looks whether the name leads to something all the same, by a rename
-//!   of the name onto itself, which changes nothing and follows no link
-//!   at that name. A lock file is made, by the call that takes the lock,
-//!   only once that look finds nothing. Where the look finds something
-//!   twice, and the directory lists no lock file after either, it is not
-//!   locked ([`CheckpointError::NotALock`]).
+//!   of the path of the lock file to that same path, which follows no
+//!   link at that name. A lock file is made, by the call that takes the
+//!   lock, only once that look answers that nothing has the name. Where
+//!   the look finds something twice, and the directory lists no lock
+//!   file after either, it is not locked
+//!   ([`CheckpointError::NotALock`]).
 //! - It looks again under the lock, and so does a creation in the
 //!   directory it has just made: the lock file at the path has to be the
 //!   one that was locked, the directory has to list it as a file, and
@@ -390,7 +391,13 @@
 //!   depends on the call: a removal and a rename act on the entry itself.
 //!   So of what a call removes after its look, some, all or none can be
 //!   removed where a changed directory leads, and a rename renames what
-//!   its path names when it is made.
+//!   its path names when it is made. The rename that looks for a lock
+//!   file is given one path twice. Where nothing on that path is changed
+//!   while it runs, it leaves what is there as it is. The system's file
+//!   layer resolves the path once for each side, though: where a
+//!   directory on that path is replaced between the two, that rename can
+//!   move an entry from the one directory into the other, and replace an
+//!   entry there.
 //! - **Where a lock file is made.** `lignin_io::Vfs::lock` makes the
 //!   lock file where there is none, where its path leads at that moment:
 //!   through a link at the name of the lock file too. A creation calls

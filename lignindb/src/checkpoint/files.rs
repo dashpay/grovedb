@@ -36,15 +36,16 @@ pub const DELETING_FILE_NAME: &str = "MANIFEST.deleting";
 /// for byte, is a creation's, with everything in it, and its callers open
 /// none as a database.** Nothing in the engine's open knows the name: it
 /// would take an empty one, or one with a lock file alone, for a place to
-/// make a database in. One whose lock is held is taken for one that is
-/// being built, and nothing in it is removed. One whose lock is had is
-/// taken for what a creation that was cut short left, a part of a
+/// make a database in. One whose lock is found held is taken for one
+/// that is being built, and the call goes no further. One whose lock is
+/// had is taken for what a creation that was cut short left, a part of a
 /// checkpoint or a whole one that did not get its name: the next creation
 /// that builds under that name empties it and builds in it, and
 /// [`delete`] removes it. One that lists something else than a file under
-/// the name of its lock file, or lists nothing under it though a look
-/// finds that the name leads to something, is refused
-/// ([`CheckpointError::NotALock`]).
+/// the name of its lock file is refused
+/// ([`CheckpointError::NotALock`]). So is one that lists nothing under
+/// that name, where two looks each find that the name leads to something
+/// all the same and the listing after each has no lock file still.
 ///
 /// A target that is given a name that ends so, whatever the case of its
 /// ASCII letters, is refused ([`CheckpointError::ReservedName`]). **The
@@ -130,15 +131,18 @@ fn kind_of(
 ///
 /// Where it lists none, the call looks whether the name leads to
 /// something all the same, as it can where a file system takes several
-/// spellings for one name: by a rename of the name onto itself, which
-/// changes nothing, follows no link at that name, and fails with
-/// `NotFound` where nothing has the name. Where it fails so, the lock is
-/// taken by `lignin_io::Vfs::lock`, which makes the lock file where there
-/// is none. Where it succeeds, the directory is listed again, and if it
-/// still lists no lock file, the same is done once more. A directory for
-/// which it succeeds both times, and which lists no lock file after
-/// either, is refused ([`CheckpointError::NotALock`]), with no lock file
-/// made. Another error of it is returned.
+/// spellings for one name: by a rename of the path of the lock file to
+/// that same path. That rename follows no link at the name, and it
+/// leaves what is there as it is where nothing on its path is changed
+/// while it runs; what it can do otherwise is in the
+/// [module documentation](super) ("A change after a look"). Where it
+/// answers `NotFound`, the lock is taken by `lignin_io::Vfs::lock`, which
+/// makes the lock file where there is none. Where it answers no error,
+/// the directory is listed again, and if it still lists no lock file,
+/// the same is done once more. A directory for which it answers no error
+/// both times, and which lists no lock file after either, is refused
+/// ([`CheckpointError::NotALock`]), with no lock file made. Another error
+/// of it is returned.
 fn lock_what_is_there(vfs: &dyn Vfs, building: &Path) -> Result<Box<dyn VfsLock>, CheckpointError> {
     let lock_path = building.join(LOCK_FILE_NAME);
     let refused = |error: std::io::Error| match error.kind() {
@@ -346,7 +350,8 @@ impl Target {
     /// for byte, as a directory: anything else that the name leads to is
     /// refused ([`CheckpointError::NotADirectory`]). Its lock is taken in
     /// a lock file of its own ([`lock_what_is_there`]). Where the lock is
-    /// held, nothing in it is removed ([`CheckpointError::Creating`]).
+    /// found held, the call goes no further
+    /// ([`CheckpointError::Creating`]).
     /// Where the lock is had, it is taken for what an earlier creation
     /// left ([`take_over`]): everything in it goes but the lock file, and
     /// this creation builds in it.
@@ -816,10 +821,10 @@ fn take_over(vfs: &dyn Vfs, parent: &Path, building: &Path) -> Result<(), Checkp
 /// whether there was such a directory: `false` where the directory
 /// `parent` above does not list it, under that name byte for byte, as a
 /// directory. Its lock is taken in a lock file of its own
-/// ([`lock_what_is_there`]), and of one whose lock is held nothing is
-/// removed ([`CheckpointError::Creating`]). Under the lock it is looked
-/// at again ([`held_at`]), and nothing is removed unless the directory
-/// whose lock was taken is found at the path
+/// ([`lock_what_is_there`]), and where the lock is found held the call
+/// goes no further ([`CheckpointError::Creating`]). Under the lock it is
+/// looked at again ([`held_at`]), and nothing more is done unless the
+/// directory whose lock was taken is found at the path
 /// ([`CheckpointError::Replaced`]). What these looks do not tell is in
 /// the [module documentation](super) ("Durability, and a creation that
 /// fails").
@@ -943,8 +948,8 @@ fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), Checkpo
 /// [`CheckpointError::Replaced`]).
 ///
 /// - Where `dir` was deleted, it goes afterwards. An error of its removal
-///   is then returned though `dir` is gone. One whose lock is held is not
-///   removed, with no error: if a creation is building in it, a
+///   is then returned though `dir` is gone. One whose lock is found held
+///   is left, with no error: if a creation is building in it, a
 ///   checkpoint can get the name of `dir` again.
 /// - Where the directory above lists nothing under the name of `dir`, the
 ///   call finds out whether the name leads to something all the same, as
@@ -953,8 +958,8 @@ fn remove_all_in(vfs: &dyn Vfs, dir: &Path, kept: &[&str]) -> Result<(), Checkpo
 ///   name. If nothing is there, the call returns `Ok` if there was such
 ///   a directory beside it and it was removed,
 ///   [`CheckpointError::NotADirectory`] if there was none,
-///   [`CheckpointError::Creating`] for one whose lock is held, and the
-///   error of the look that refused one. An empty directory that is
+///   [`CheckpointError::Creating`] for one whose lock is found held, and
+///   the error of the look that refused one. An empty directory that is
 ///   there is removed by that, as any empty directory is, and the call
 ///   goes on as after a deletion. A file, a link or a directory with
 ///   entries there refuses the call
