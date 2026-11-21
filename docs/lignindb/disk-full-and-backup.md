@@ -457,15 +457,17 @@ the same version.
 
 **BK11. A directory with no `MANIFEST` is no database, no checkpoint and
 no backup.** A copy writes the manifest last. One that is cut short by
-the power, or that fails and cannot take away what it made, leaves its
-target without one: empty, with its `LOCK` file alone, or with some of its
-files.
+the power can leave no target, a target without a manifest (empty, with
+its `LOCK` file alone, or with some of its files), or the whole copy. One
+that fails and cannot take away what it made can leave a target without a
+manifest as well.
 
 A creation of a checkpoint leaves no such target. It builds the checkpoint
 beside the target, in a directory of the target's name with `.creating`
 added, and gives that directory the name of the target only once
 everything in it is durable (`lignindb::checkpoint`, "Durability, and a
-creation that fails"). A part of a checkpoint that a creation leaves, when
+creation that fails"). So a creation that the power cuts leaves nothing at
+the target, or the whole checkpoint. A part of a checkpoint that a creation leaves, when
 it is cut short or when it fails and cannot take away what it made, is
 under that other name. A directory of that name is not to be opened as a
 database: the engine's open has no rule for the name. It is for a later
@@ -479,11 +481,10 @@ durable. For a creation, the directory was given the name of the target,
 and that could not be made durable; then the name could not be taken back,
 or the power was cut before that was durable. Every file that the manifest
 names was durable before, so that target is the whole checkpoint or the
-whole copy, and never a manifest with a file missing. The call answered an
-error all the same: the target is removed like the others, and the call is
-made again. The same goes for the whole target that a power cut leaves
-right after a creation gave the directory its name, before the call
-returned.
+whole copy, and never a manifest with a file missing. A call that failed
+answered an error all the same, and a call that the power cut answered
+nothing: either way the target is removed like the others, and the call
+is made again.
 
 - Nothing opens such a directory as the database it was to be. An open
   that may create a database makes a new and empty one in a directory that

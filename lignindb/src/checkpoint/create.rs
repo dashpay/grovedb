@@ -46,7 +46,9 @@ pub struct CheckpointOptions {
     /// holds more log than this many bytes: the log from the oldest commit
     /// that no table checkpoint covers
     /// ([`WriteBack::log_held`]), which is what the first open of the
-    /// checkpoint would replay. `None` never waits for write-back.
+    /// checkpoint would replay. `None` leaves the catch-up out. The
+    /// settling of a manifest in doubt is asked of write-back all the
+    /// same.
     pub catch_up_above: Option<u64>,
 }
 
@@ -316,12 +318,13 @@ impl<'s> Checkpointer<'s> {
     /// lock is given back: none of them is deleted but under the lock on
     /// the manifest, and the hold looks at every file the value log has.
     ///
-    /// **No commit waits for the manifest.** Write-back holds that lock
-    /// over a sync when it replaces a manifest, and another creation holds
-    /// it while it links. So the manifest is only tried under the commit
+    /// **The sample never waits for the manifest while it holds the
+    /// commit lock.** Write-back holds the lock on the manifest over a
+    /// sync when it replaces a manifest, and another creation holds it
+    /// while it links. So the manifest is only tried under the commit
     /// lock: where it is taken, the commit lock is given back, the
-    /// manifest is waited for, and both are taken anew. A commit so waits
-    /// for the reads below and for nothing else (CK5, CM8). The tries are
+    /// manifest is waited for, and both are taken anew. Behind the sample
+    /// a commit so waits for the reads below (CK5, CM8). The tries are
     /// not counted: each one that fails has waited for a holder of the
     /// manifest that has finished, and a bound would have to wait for the
     /// manifest under the commit lock again.

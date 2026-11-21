@@ -14,7 +14,10 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     io,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use lignin_format::{
@@ -457,6 +460,9 @@ pub(super) fn bytes_of(vfs: &dyn Vfs, path: &Path) -> Vec<u8> {
     bytes
 }
 
+/// Locks that a test holds, or that are taken for it.
+pub(super) type Locks = Arc<Mutex<Vec<Box<dyn VfsLock>>>>;
+
 /// What a test has done right before an operation on a path. An error is
 /// what the operation then fails with, undone.
 pub(super) type Before = Box<dyn Fn(&Path) -> io::Result<()> + Send + Sync>;
@@ -510,6 +516,22 @@ pub(super) struct Meddling {
     /// with [`ONE_LETTER`] is listed with [`TWO_LETTERS`], and either
     /// spelling names the same entry.
     pub(super) respelled: Option<PathBuf>,
+    /// Whether the listings under [`Self::respelled`] are in the other
+    /// spelling now: a test turns it on at a moment of its choice, as if
+    /// somebody had renamed what is there to the other spelling then.
+    pub(super) respelling: Arc<AtomicBool>,
+    /// Under this directory the file system does not tell capital letters
+    /// from small ones, as far as the making of a new file goes: none is
+    /// made where its directory holds a name that differs from its name
+    /// in case alone, and the call fails as for a name that is taken.
+    pub(super) folds: Option<PathBuf>,
+    /// What the listing of the directory above it leaves out, though it
+    /// is there: a name that the file system finds and does not list so.
+    pub(super) unlisted: Option<PathBuf>,
+    /// Somebody else locks each new lock file as soon as it is made: the
+    /// call that made it fails as for a file that is busy, and the locks
+    /// are kept here.
+    pub(super) taken_at_once: Option<Locks>,
     /// How many syncs each set had that was asked for
     /// ([`Vfs::sync_together`]).
     pub(super) sets: Mutex<Vec<usize>>,
@@ -526,6 +548,10 @@ impl Meddling {
             before_list: None,
             before_create_dir: None,
             respelled: None,
+            respelling: Arc::new(AtomicBool::new(true)),
+            folds: None,
+            unlisted: None,
+            taken_at_once: None,
             sets: Mutex::default(),
         }
     }
@@ -537,6 +563,45 @@ impl Meddling {
             respelled: Some(under),
             ..Self::plain(inner)
         }
+    }
+
+    /// `inner`, with no new file made under the directory `under` where a
+    /// name is there that differs from its name in case alone.
+    pub(super) fn folding(inner: Arc<dyn Vfs>, under: PathBuf) -> Self {
+        Self {
+            folds: Some(under),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// `inner`, with `path` left out of the listing of the directory
+    /// above it.
+    pub(super) fn not_listing(inner: Arc<dyn Vfs>, path: PathBuf) -> Self {
+        Self {
+            unlisted: Some(path),
+            ..Self::plain(inner)
+        }
+    }
+
+    /// Whether a new file at `path` meets a name that is taken, as a file
+    /// system finds one that takes the spellings of a name for one.
+    fn is_taken(&self, path: &Path, mode: OpenMode) -> io::Result<bool> {
+        let new = matches!(
+            mode,
+            OpenMode::Write(lignin_io::Create::New) | OpenMode::Append(lignin_io::Create::New)
+        );
+        let (Some(under), Some(dir), Some(name)) = (&self.folds, path.parent(), path.file_name())
+        else {
+            return Ok(false);
+        };
+        if !new || !path.starts_with(under) {
+            return Ok(false);
+        }
+        let folded = |name: &std::ffi::OsStr| name.to_string_lossy().to_lowercase();
+        let beside = self.inner.read_dir(dir)?;
+        Ok(beside
+            .iter()
+            .any(|entry| folded(&entry.name) == folded(name)))
     }
 
     /// `path` as `inner` is given it.
@@ -632,7 +697,18 @@ impl Meddling {
 
 impl Vfs for Meddling {
     fn open(&self, path: &Path, mode: OpenMode) -> io::Result<Box<dyn VfsFile>> {
-        self.inner.open(&self.kept(path), mode)
+        if self.is_taken(path, mode)? {
+            return Err(io::ErrorKind::AlreadyExists.into());
+        }
+        let new = matches!(mode, OpenMode::Write(lignin_io::Create::New));
+        match &self.taken_at_once {
+            Some(taken) if new && path.ends_with("LOCK") => {
+                drop(self.inner.open(path, mode)?);
+                (taken.lock().expect("the locks")).push(self.inner.lock(path)?);
+                Err(io::ErrorKind::ResourceBusy.into())
+            }
+            _ => self.inner.open(&self.kept(path), mode),
+        }
     }
 
     fn rename(&self, from: &Path, to: &Path) -> io::Result<()> {
@@ -669,7 +745,14 @@ impl Vfs for Meddling {
             before(path)?;
         }
         let mut entries = self.inner.read_dir(&self.kept(path))?;
-        if (self.respelled.as_deref()).is_some_and(|under| path.starts_with(under)) {
+        if let Some(unlisted) = &self.unlisted
+            && unlisted.parent() == Some(path)
+        {
+            entries.retain(|entry| Some(&*entry.name) != unlisted.file_name());
+        }
+        if (self.respelled.as_deref()).is_some_and(|under| path.starts_with(under))
+            && self.respelling.load(Ordering::SeqCst)
+        {
             for entry in &mut entries {
                 let name = entry.name.to_str().expect("a name of the tests");
                 entry.name = name.replace(ONE_LETTER, TWO_LETTERS).into();

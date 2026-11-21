@@ -534,10 +534,10 @@ fn an_existing_target_is_refused_and_left_untouched() {
     world.check_committed();
 }
 
-/// A catch-up of write-back leaves the manifest in doubt, by a
-/// replacement of its own that fails, and the manifest can be opened
-/// again: the creation has it settled after the catch-up, and the
-/// checkpoint is made. The catch-up's error is reported.
+/// A catch-up of write-back leaves the manifest in doubt, by replacements
+/// of its own that fail, every one, and the manifest can be opened again:
+/// the creation has it settled after the catch-up, and the checkpoint is
+/// made. The catch-up's error is reported.
 #[test]
 fn a_catch_up_that_leaves_the_manifest_in_doubt_is_settled() {
     use lignin_io::sim::{Fault, FaultRule, OpKind, OpSet};
@@ -555,11 +555,17 @@ fn a_catch_up_that_leaves_the_manifest_in_doubt_is_settled() {
         catch_up_above: Some(0),
     };
     let maker = checkpointer(&db, &versions).with_options(options);
-    // The rename of the manifest that the catch-up's table checkpoint
-    // installs fails.
+    // Every rename of a manifest of the live database fails, so the
+    // last replacement that the catch-up tries leaves it in doubt.
+    // Opening the manifest again renames nothing.
     let renames = OpSet::of(&[OpKind::Rename]);
     let manifest = Path::new(DIR).join(ManifestStore::FILE_NAME);
-    fs.add_rule(FaultRule::new(Fault::Eio).on(renames).at(manifest));
+    fs.add_rule(
+        FaultRule::new(Fault::Eio)
+            .on(renames)
+            .at(manifest)
+            .forever(),
+    );
     let created = maker.create(&target).expect("a checkpoint");
     fs.clear_rules();
     assert!(
@@ -618,8 +624,8 @@ fn a_manifest_in_doubt_is_settled_before_it_is_sampled() {
     }
     leave_in_doubt();
 
-    // The manifest cannot be opened again: its open syncs the directory
-    // first.
+    // Opening the manifest again reads it and then syncs its directory.
+    // That sync is refused, so the manifest in memory is not replaced.
     let target = checkpoints.join("1");
     let syncs = OpSet::of(&[OpKind::SyncDir]);
     fs.add_rule(FaultRule::new(Fault::Enospc).on(syncs).forever());

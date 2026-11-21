@@ -3,7 +3,7 @@
 //! carry, and the deletion of a checkpoint.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     io::ErrorKind,
     os::unix::fs::MetadataExt,
     path::{Path, PathBuf},
@@ -23,7 +23,7 @@ use lignin_store::{
 
 use super::{
     block, building, checkpointer, checkpoints_in, everything_in, names_of, open, open_on, sim,
-    store_files, store_on, store_with_log, turn, write_file, Before, Meddling, ONE_LETTER,
+    store_files, store_on, store_with_log, turn, write_file, Before, Locks, Meddling, ONE_LETTER,
     TWO_LETTERS,
 };
 use crate::{
@@ -902,13 +902,17 @@ fn what_a_creation_left_is_emptied_by_the_next_and_removed_by_a_deletion() {
     std::fs::remove_file(&target).expect("the file is removed");
     checkpoint::delete(&StdVfs, &built).expect("what was left is deleted");
 
-    // No checkpoint is made at a name that creations build under.
-    let refused = checkpointer(&db, &versions).create(&built);
-    assert!(
-        matches!(&refused, Err(CheckpointError::ReservedName { target }) if *target == built),
-        "{refused:?}"
-    );
-    assert!(!built.exists() && !building(&built).exists());
+    // No checkpoint is made at a name that creations build under, in
+    // whatever case of its letters.
+    let in_capitals = checkpoints.join("1.CREATING");
+    for reserved in [&built, &in_capitals, &checkpoints.join("1.Creating")] {
+        let refused = checkpointer(&db, &versions).create(reserved);
+        assert!(
+            matches!(&refused, Err(CheckpointError::ReservedName { target }) if target == reserved),
+            "{refused:?}"
+        );
+        assert!(!reserved.exists() && !building(reserved).exists());
+    }
     assert_eq!(versions.pins_held(), 0);
     world.check_committed();
 }
@@ -1277,19 +1281,16 @@ fn a_directory_that_is_changed_while_a_checkpoint_is_built_in_it_gets_no_name() 
 }
 
 /// What a creation left is looked at again under its lock, by a deletion
-/// and by the next creation: where somebody puts a link in its place
-/// between the first look and the lock, the look under the lock does not
-/// find the directory whose lock was taken, and nothing that the link
-/// leads to is removed. An empty lock file is made there, by the call
-/// that takes the lock at that path.
+/// and by the next creation. Somebody puts a link in its place between
+/// the first look and the lock. Where the link leads to a directory with
+/// no lock file, no lock is taken and none is made there. Where it leads
+/// to one with a lock file, that lock is taken, and the look under the
+/// lock does not find the directory whose lock it is. Nothing that the
+/// link leads to is removed or made.
 #[test]
 fn a_link_that_is_put_where_a_creation_left_a_directory_is_not_followed() {
     let outside = tempfile::tempdir().expect("a directory");
     let theirs = outside.path().join("theirs");
-    let with_the_lock_file = BTreeMap::from([
-        (PathBuf::from("LOCK"), Some(Vec::new())),
-        (PathBuf::from("kept"), Some(b"as it was".to_vec())),
-    ]);
     let swapped = Arc::new(AtomicBool::new(false));
     // Before the first lock in a directory that a checkpoint is built in,
     // that directory is moved away and a link to theirs is put there.
@@ -1304,62 +1305,94 @@ fn a_link_that_is_put_where_a_creation_left_a_directory_is_not_followed() {
             Ok(())
         })
     };
-    let leave = |built: &Path| {
+    let leave = |built: &Path, with_a_lock_file: bool| {
         let _ = std::fs::remove_dir_all(&theirs);
         std::fs::create_dir(&theirs).expect("a directory");
         std::fs::write(theirs.join("kept"), b"as it was").expect("a file");
+        if with_a_lock_file {
+            std::fs::write(theirs.join("LOCK"), b"theirs").expect("a file");
+        }
         std::fs::create_dir(built).expect("a directory");
         std::fs::write(built.join("LOCK"), b"").expect("a file");
         std::fs::write(built.join("left"), b"what a creation left").expect("a file");
     };
+    let as_it_was = |with_a_lock_file: bool| {
+        let mut theirs = BTreeMap::from([(PathBuf::from("kept"), Some(b"as it was".to_vec()))]);
+        if with_a_lock_file {
+            theirs.insert(PathBuf::from("LOCK"), Some(b"theirs".to_vec()));
+        }
+        theirs
+    };
+    let is_refused = |refused: &Result<(), CheckpointError>, built: &Path, with_a_lock_file| {
+        let lock = built.join("LOCK");
+        match (refused, with_a_lock_file) {
+            (Err(CheckpointError::Replaced { dir }), true) => dir == built,
+            (
+                Err(CheckpointError::Io {
+                    action,
+                    path,
+                    source,
+                }),
+                false,
+            ) => *action == "lock" && *path == lock && source.kind() == ErrorKind::NotFound,
+            _ => false,
+        }
+    };
 
-    // A deletion, of the directory itself and of the target beside it.
-    let dir = tempfile::tempdir().expect("a directory");
-    let target = dir.path().join("1");
-    let built = building(&target);
-    for (index, given) in [&built, &target].into_iter().enumerate() {
-        let away = outside.path().join(format!("away-{index}"));
-        leave(&built);
+    for with_a_lock_file in [false, true] {
+        // A deletion, of the directory itself and of the target beside it.
+        let dir = tempfile::tempdir().expect("a directory");
+        let target = dir.path().join("1");
+        let built = building(&target);
+        for (index, given) in [&built, &target].into_iter().enumerate() {
+            let away = outside
+                .path()
+                .join(format!("away-{with_a_lock_file}-{index}"));
+            leave(&built, with_a_lock_file);
+            swapped.store(false, Ordering::SeqCst);
+            let hook = swap(theirs.clone(), away.clone(), swapped.clone());
+            let meddling = Meddling::before_lock(Arc::new(StdVfs), hook);
+            let refused = checkpoint::delete(&meddling, given);
+            assert!(
+                is_refused(&refused, &built, with_a_lock_file),
+                "{refused:?}"
+            );
+            assert!(swapped.load(Ordering::SeqCst) && built.is_symlink());
+            assert_eq!(everything_in(&StdVfs, &theirs), as_it_was(with_a_lock_file));
+            assert!(
+                away.join("left").exists(),
+                "what was moved away is as it was"
+            );
+            std::fs::remove_file(&built).expect("the link is removed");
+        }
+
+        // The next creation at the target.
+        let away = outside
+            .path()
+            .join(format!("away-{with_a_lock_file}-creation"));
+        swapped.store(true, Ordering::SeqCst);
+        let (db, versions) =
+            store_with_locks_met(swap(theirs.clone(), away.clone(), swapped.clone()));
+        let mut world = World::new(&db, &versions);
+        block(&mut world, &mut Rng::new(80), 0, 10);
+        let target = checkpoints_in(&db).join("1");
+        let built = building(&target);
+        leave(&built, with_a_lock_file);
         swapped.store(false, Ordering::SeqCst);
-        let hook = swap(theirs.clone(), away.clone(), swapped.clone());
-        let meddling = Meddling::before_lock(Arc::new(StdVfs), hook);
-        let refused = checkpoint::delete(&meddling, given);
+        let refused = checkpointer(&db, &versions).create(&target).map(drop);
         assert!(
-            matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == built),
+            is_refused(&refused, &built, with_a_lock_file),
             "{refused:?}"
         );
-        assert!(swapped.load(Ordering::SeqCst) && built.is_symlink());
-        assert_eq!(everything_in(&StdVfs, &theirs), with_the_lock_file);
+        assert!(swapped.load(Ordering::SeqCst) && built.is_symlink() && !target.exists());
+        assert_eq!(everything_in(&StdVfs, &theirs), as_it_was(with_a_lock_file));
         assert!(
             away.join("left").exists(),
             "what was moved away is as it was"
         );
-        std::fs::remove_file(&built).expect("the link is removed");
+        assert_eq!(versions.pins_held(), 0);
+        world.check_committed();
     }
-
-    // The next creation at the target.
-    let away = outside.path().join("away-creation");
-    swapped.store(true, Ordering::SeqCst);
-    let (db, versions) = store_with_locks_met(swap(theirs.clone(), away.clone(), swapped.clone()));
-    let mut world = World::new(&db, &versions);
-    block(&mut world, &mut Rng::new(80), 0, 10);
-    let target = checkpoints_in(&db).join("1");
-    let built = building(&target);
-    leave(&built);
-    swapped.store(false, Ordering::SeqCst);
-    let refused = checkpointer(&db, &versions).create(&target);
-    assert!(
-        matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == built),
-        "{refused:?}"
-    );
-    assert!(swapped.load(Ordering::SeqCst) && built.is_symlink() && !target.exists());
-    assert_eq!(everything_in(&StdVfs, &theirs), with_the_lock_file);
-    assert!(
-        away.join("left").exists(),
-        "what was moved away is as it was"
-    );
-    assert_eq!(versions.pins_held(), 0);
-    world.check_committed();
 }
 
 /// The look under the lock is for the directory whose lock was taken, and
@@ -1471,11 +1504,13 @@ fn a_directory_that_is_put_where_a_lock_was_taken_is_not_emptied() {
 }
 
 /// A directory under the name that a creation builds under is not locked
-/// where something else than a file has the name of its lock file, or a
-/// name that a file system may take for it: the lock would be taken, and
-/// where a link leads nowhere a file would be made, at the end of the
-/// link. A creation and a deletion refuse it and touch nothing, also
-/// where the link leads to the name of the target.
+/// where it has no lock file of its own. It lists something else than a
+/// file under the name of the lock file; or it lists nothing under that
+/// name, and the file system finds the name taken all the same when a new
+/// lock file is to be made, as one does that does not tell capital
+/// letters from small ones and finds a link there. A creation and a
+/// deletion refuse it and touch nothing, also where the link leads to the
+/// name of the target: nothing is made there.
 #[test]
 fn a_lock_file_that_is_no_file_is_not_locked() {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1484,7 +1519,7 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
         LinkToTheTarget,
         Directory,
     }
-    let (db, versions) = store_with_log(24 << 10, 128);
+    let (db, versions) = store_on_meddling(Meddling::folding);
     let mut world = World::new(&db, &versions);
     block(&mut world, &mut Rng::new(82), 0, 10);
     let checkpoints = checkpoints_in(&db);
@@ -1495,9 +1530,9 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
     for (index, (name, is)) in [
         ("LOCK", Is::LinkToAFile),
         ("LOCK", Is::LinkToTheTarget),
+        ("LOCK", Is::Directory),
         ("lock", Is::LinkToTheTarget),
         ("Lock", Is::LinkToAFile),
-        ("LOCK", Is::Directory),
         ("LOC\u{212a}", Is::LinkToTheTarget),
     ]
     .into_iter()
@@ -1506,17 +1541,18 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
         let context = format!("{name}: {is:?}");
         let target = checkpoints.join(format!("linked-{index}"));
         let built = building(&target);
-        let lock = built.join(name);
+        let lock = built.join("LOCK");
+        let theirs = built.join(name);
         std::fs::create_dir(&built).expect("a directory");
         match is {
-            Is::LinkToAFile => std::os::unix::fs::symlink(&their_file, &lock).expect("a link"),
-            Is::LinkToTheTarget => std::os::unix::fs::symlink(&target, &lock).expect("a link"),
-            Is::Directory => std::fs::create_dir(&lock).expect("a directory"),
+            Is::LinkToAFile => std::os::unix::fs::symlink(&their_file, &theirs).expect("a link"),
+            Is::LinkToTheTarget => std::os::unix::fs::symlink(&target, &theirs).expect("a link"),
+            Is::Directory => std::fs::create_dir(&theirs).expect("a directory"),
         }
         std::fs::write(built.join("left"), b"what was left").expect("a file");
         let untouched = || {
-            assert_eq!(lock.is_symlink(), is != Is::Directory, "{context}");
-            assert!(std::fs::symlink_metadata(&lock).is_ok(), "{context}");
+            assert_eq!(theirs.is_symlink(), is != Is::Directory, "{context}");
+            assert!(std::fs::symlink_metadata(&theirs).is_ok(), "{context}");
             assert!(std::fs::symlink_metadata(&target).is_err(), "{context}");
             let left = std::fs::read_dir(&built).expect("the directory").count();
             assert_eq!(left, 2, "{context}");
@@ -1545,8 +1581,8 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
 
         // Without it, the directory is what a creation left.
         match is {
-            Is::Directory => std::fs::remove_dir(&lock).expect("the directory is removed"),
-            _ => std::fs::remove_file(&lock).expect("the link is removed"),
+            Is::Directory => std::fs::remove_dir(&theirs).expect("the directory is removed"),
+            _ => std::fs::remove_file(&theirs).expect("the link is removed"),
         }
         (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
         assert!(!built.exists(), "{context}");
@@ -1555,12 +1591,189 @@ fn a_lock_file_that_is_no_file_is_not_locked() {
     world.check_committed();
 }
 
+/// What a creation left with no lock file in it gets one, and is taken
+/// over and removed, with what else it holds: a link, a directory, a name
+/// that no file system takes for the lock file's.
+#[test]
+fn what_a_creation_left_without_a_lock_file_gets_one() {
+    let (db, versions) = store_with_log(24 << 10, 128);
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(84), 0, 10);
+    let checkpoints = checkpoints_in(&db);
+    let outside = tempfile::tempdir().expect("a directory");
+    let their_file = outside.path().join("theirs");
+    std::fs::write(&their_file, b"as it was").expect("a file");
+    let leave = |built: &Path| {
+        std::fs::create_dir(built).expect("a directory");
+        std::fs::create_dir(built.join("r\u{e9}sum\u{e9}")).expect("a directory");
+        std::os::unix::fs::symlink(&their_file, built.join("old-lock\u{e9}")).expect("a link");
+        std::fs::write(built.join("left"), b"what was left").expect("a file");
+    };
+
+    let target = checkpoints.join("1");
+    leave(&building(&target));
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    assert!(!building(&target).exists());
+    open(&db, &target).check(&world.model);
+
+    let second = checkpoints.join("2");
+    for given in [&second, &building(&second)] {
+        leave(&building(&second));
+        checkpoint::delete(&*db.vfs, given).expect("what was left is removed");
+        assert!(!building(&second).exists() && !second.exists());
+    }
+    assert_eq!(std::fs::read(&their_file).expect("the file"), b"as it was");
+    world.check_committed();
+}
+
+/// The lock file that is made in what a creation left can be locked by
+/// somebody else before the call that made it has it: the call then finds
+/// the lock held, as it does where the lock file was there, and removes
+/// nothing.
+#[test]
+fn a_new_lock_file_that_somebody_else_locks_first_is_theirs() {
+    let taken = Locks::default();
+    let (db, versions) = store_on_meddling(|plain, _| Meddling {
+        taken_at_once: Some(taken.clone()),
+        ..Meddling::plain(plain)
+    });
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(86), 0, 10);
+    let target = checkpoints_in(&db).join("1");
+    let built = building(&target);
+    std::fs::create_dir(&built).expect("a directory");
+    std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+    let is_theirs = |refused: Result<(), CheckpointError>| {
+        assert!(
+            matches!(&refused, Err(CheckpointError::Creating { dir }) if *dir == built),
+            "{refused:?}"
+        );
+        assert!(built.join("left").exists() && built.join("LOCK").exists());
+    };
+
+    is_theirs(checkpointer(&db, &versions).create(&target).map(drop));
+    assert_eq!(taken.lock().expect("the locks").len(), 1);
+    assert_eq!(versions.pins_held(), 0);
+    is_theirs(checkpoint::delete(&*db.vfs, &built));
+    // Nothing is at the target, and the lock of what is beside it is held.
+    is_theirs(checkpoint::delete(&*db.vfs, &target));
+    assert!(!target.exists());
+
+    // Once they give the lock back, it is what a creation left.
+    taken.lock().expect("the locks").clear();
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    assert!(!built.exists());
+    open(&db, &target).check(&world.model);
+    world.check_committed();
+}
+
+/// The name of the lock file is taken when a new one is to be made in
+/// what a creation left, and free once the directory has been listed
+/// again, as where a deletion that had made a lock file there has just
+/// removed it: the making is tried once more, and the directory is taken
+/// over.
+#[test]
+fn a_lock_file_is_made_at_the_second_try() {
+    let listings = Arc::new(AtomicUsize::new(0));
+    let (db, versions) = store_on_meddling(|plain, checkpoints| {
+        let listings = listings.clone();
+        let before_list: Before = Box::new(move |listed: &Path| {
+            let is_built = listed.to_string_lossy().ends_with(CREATING_SUFFIX);
+            if is_built && listings.fetch_add(1, Ordering::SeqCst) == 1 {
+                std::fs::remove_file(listed.join("lock"))?;
+            }
+            Ok(())
+        });
+        Meddling {
+            before_list: Some(before_list),
+            ..Meddling::folding(plain, checkpoints)
+        }
+    });
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(87), 0, 10);
+    let outside = tempfile::tempdir().expect("a directory");
+    let their_file = outside.path().join("theirs");
+    std::fs::write(&their_file, b"as it was").expect("a file");
+    let target = checkpoints_in(&db).join("1");
+    let built = building(&target);
+    std::fs::create_dir(&built).expect("a directory");
+    std::os::unix::fs::symlink(&their_file, built.join("lock")).expect("a link");
+    std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+
+    (checkpointer(&db, &versions).create(&target)).expect("a checkpoint");
+    assert!(listings.load(Ordering::SeqCst) >= 2 && !built.exists());
+    assert_eq!(std::fs::read(&their_file).expect("the file"), b"as it was");
+    open(&db, &target).check(&world.model);
+    world.check_committed();
+}
+
+/// A deletion of a target that the directory above does not list finds
+/// out, by a removal that follows no link, whether the name leads to
+/// something all the same. A link that leads nowhere, a file and a
+/// directory with something in it refuse the call, and what a creation
+/// left beside the target stays. An empty directory is removed, as any
+/// empty directory is, and what is beside it then goes too.
+#[test]
+fn a_target_that_is_there_and_not_listed_keeps_what_is_beside_it() {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum Is {
+        LinkToNowhere,
+        File,
+        FullDirectory,
+        EmptyDirectory,
+    }
+    let dir = tempfile::tempdir().expect("a directory");
+    for (index, is) in [
+        Is::LinkToNowhere,
+        Is::File,
+        Is::FullDirectory,
+        Is::EmptyDirectory,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let target = dir.path().join(format!("{index}"));
+        let built = building(&target);
+        match is {
+            Is::LinkToNowhere => {
+                std::os::unix::fs::symlink(dir.path().join("nowhere"), &target).expect("a link")
+            }
+            Is::File => std::fs::write(&target, b"theirs").expect("a file"),
+            Is::FullDirectory | Is::EmptyDirectory => {
+                std::fs::create_dir(&target).expect("a directory")
+            }
+        }
+        if is == Is::FullDirectory {
+            std::fs::write(target.join("theirs"), b"theirs").expect("a file");
+        }
+        std::fs::create_dir(&built).expect("a directory");
+        std::fs::write(built.join("LOCK"), b"").expect("a file");
+        std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+
+        let vfs = Meddling::not_listing(Arc::new(StdVfs), target.clone());
+        let deleted = checkpoint::delete(&vfs, &target);
+        if is == Is::EmptyDirectory {
+            deleted.expect("the empty directory and what was beside it are removed");
+            assert!(std::fs::symlink_metadata(&target).is_err() && !built.exists());
+            continue;
+        }
+        assert!(
+            matches!(&deleted, Err(CheckpointError::NotADirectory { dir }) if *dir == target),
+            "{is:?}: {deleted:?}"
+        );
+        assert!(std::fs::symlink_metadata(&target).is_ok(), "{is:?}");
+        assert!(built.join("left").exists(), "{is:?}");
+    }
+}
+
 /// A file system may keep a name in another spelling than it was given
 /// in, and list it so. A checkpoint is made at a target with such a name
-/// all the same, with a carried file of such a name, what a creation left
-/// under such a name is taken over and removed, and a link under such a
-/// name is refused under the lock, where the directory is known by its
-/// lock file.
+/// all the same, with a carried file of such a name: the directory that
+/// the creation made is known by its lock file. Not where a link to it is
+/// beside it. What was there before is found only under the spelling that
+/// is listed: a deletion of the checkpoint, and the taking over and the
+/// removal of what a creation left. Under the other spelling they are
+/// refused, and nothing is locked, made or removed.
 #[test]
 fn a_name_that_is_listed_in_another_spelling_is_built_under() {
     let (db, versions) = store_on_meddling(Meddling::respelled);
@@ -1580,98 +1793,174 @@ fn a_name_that_is_listed_in_another_spelling_is_built_under() {
             .map(|entry| entry.name.into_string().expect("a name of the tests"))
             .collect()
     };
+    let given = |name: &str| checkpoints.join(format!("{ONE_LETTER}{name}"));
+    let as_listed = |name: &str| checkpoints.join(format!("{TWO_LETTERS}{name}"));
 
     // The directory above lists neither the directory that is built in
     // nor the checkpoint under the name that was given.
-    let target = checkpoints.join(format!("caf{ONE_LETTER}"));
+    let target = given("-1");
     let during = |step: Step| {
         if step == Step::Settled {
             assert_eq!(
                 listed(&checkpoints),
-                [format!("caf{TWO_LETTERS}{CREATING_SUFFIX}")]
+                [format!("{TWO_LETTERS}-1{CREATING_SUFFIX}")]
             );
         }
     };
     (maker.pausing(&during).create(&target)).expect("a checkpoint");
-    assert_eq!(listed(&checkpoints), [format!("caf{TWO_LETTERS}")]);
+    assert_eq!(listed(&checkpoints), [format!("{TWO_LETTERS}-1")]);
     assert!(listed(&target).contains(&format!("{TWO_LETTERS}.engine")));
     assert_eq!(
         std::fs::read(target.join(&carried_name)).expect("the carried file"),
         b"what the engine keeps"
     );
-    let leave = |built: &Path| {
-        std::fs::create_dir(built).expect("a directory");
-        std::fs::write(built.join("LOCK"), b"").expect("a file");
-        std::fs::write(built.join("left"), b"what a creation left").expect("a file");
-    };
-
-    // A deletion looks for the checkpoint under the name it is given,
-    // and does not find it listed so: it refuses, and removes nothing
-    // beside it either.
-    leave(&building(&target));
-    let refused = checkpoint::delete(&*db.vfs, &target);
-    assert!(
-        matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if *dir == target),
-        "{refused:?}"
-    );
-    assert!(building(&target).join("left").exists());
-    checkpoint::delete(&*db.vfs, &building(&target)).expect("what was left is removed");
     open(&db, &target).check(&world.model);
 
-    // What a creation left under such a name: a creation takes it over,
-    // and a deletion removes it. Not while a link to it is beside it: the
-    // directory is known by its lock file, which is then found through
-    // the link too.
-    let second = checkpoints.join(format!("{ONE_LETTER}-2"));
-    leave(&building(&second));
+    // A link to the directory that is built in, beside it: the lock file
+    // is then found through the link too, and the directory is not known
+    // by it. Nothing gets the name of the target.
+    let second = given("-2");
     let alias = checkpoints.join("alias");
-    std::os::unix::fs::symlink(building(&second), &alias).expect("a link");
-    let refused = maker.create(&second);
+    let link = |step: Step| {
+        if step == Step::Settled {
+            std::os::unix::fs::symlink(building(&second), &alias).expect("a link");
+        }
+    };
+    let refused = maker.pausing(&link).create(&second);
     assert!(
         matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == building(&second)),
         "{refused:?}"
     );
-    assert!(building(&second).join("left").exists() && !second.exists());
+    assert!(!second.exists() && building(&second).join("MANIFEST").exists());
     std::fs::remove_file(&alias).expect("the link is removed");
-    maker.create(&second).expect("a checkpoint");
-    assert!(!building(&second).exists() && !second.join("left").exists());
-    open(&db, &second).check(&world.model);
-    let third = checkpoints.join(format!("{ONE_LETTER}-3"));
-    for given in [&third, &building(&third)] {
-        leave(&building(&third));
-        checkpoint::delete(&*db.vfs, given).expect("what was left is removed");
-        assert!(!building(&third).exists());
-    }
 
-    // A link under such a name is not known for one before the lock. It
-    // is under the lock: nothing where it leads is removed, and nothing
-    // gets the name of the target. The lock file was made there.
+    // What that creation left, and the checkpoint: under the spelling
+    // that was given they are not found, and nothing of them goes.
+    let left = BTreeSet::from([
+        format!("{TWO_LETTERS}-1"),
+        format!("{TWO_LETTERS}-2.creating"),
+    ]);
+    let refused = maker.create(&second);
+    assert!(
+        matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if *dir == building(&second)),
+        "{refused:?}"
+    );
+    for (deleted, said) in [
+        (&second, &second),
+        (&building(&second), &building(&second)),
+        (&target, &target),
+    ] {
+        let refused = checkpoint::delete(&*db.vfs, deleted);
+        assert!(
+            matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if dir == said),
+            "{refused:?}"
+        );
+    }
+    assert_eq!(BTreeSet::from_iter(listed(&checkpoints)), left);
+    assert!(building(&second).join("MANIFEST").exists());
+    open(&db, &target).check(&world.model);
+    assert_eq!(versions.pins_held(), 0);
+
+    // Under the spelling that is listed, what was left is taken over by
+    // a creation, and removed by a deletion, and the checkpoint is
+    // deleted.
+    maker.create(&as_listed("-2")).expect("a checkpoint");
+    assert_eq!(
+        BTreeSet::from_iter(listed(&checkpoints)),
+        BTreeSet::from([format!("{TWO_LETTERS}-1"), format!("{TWO_LETTERS}-2")])
+    );
+    open(&db, &second).check(&world.model);
+    for deleted in [as_listed("-3"), building(&as_listed("-3"))] {
+        let built = building(&given("-3"));
+        std::fs::create_dir(&built).expect("a directory");
+        std::fs::write(built.join("LOCK"), b"").expect("a file");
+        std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+        checkpoint::delete(&*db.vfs, &deleted).expect("what was left is removed");
+        assert!(!built.exists());
+    }
+    checkpoint::delete(&*db.vfs, &as_listed("-1")).expect("the checkpoint is deleted");
+    assert_eq!(listed(&checkpoints), [format!("{TWO_LETTERS}-2")]);
+
+    // A link under such a name is no directory that was there: it is
+    // refused before a lock is taken, and nothing is made where it leads.
     let outside = tempfile::tempdir().expect("a directory");
     let theirs = outside.path().join("theirs");
     std::fs::create_dir(&theirs).expect("a directory");
     std::fs::write(theirs.join("kept"), b"as it was").expect("a file");
-    let with_the_lock_file = BTreeMap::from([
-        (PathBuf::from("LOCK"), Some(Vec::new())),
-        (PathBuf::from("kept"), Some(b"as it was".to_vec())),
-    ]);
-    let fourth = checkpoints.join(format!("{ONE_LETTER}-4"));
+    let as_it_was = BTreeMap::from([(PathBuf::from("kept"), Some(b"as it was".to_vec()))]);
+    let fourth = given("-4");
     let built = building(&fourth);
     std::os::unix::fs::symlink(&theirs, &built).expect("a link");
     let refused = maker.create(&fourth);
     assert!(
-        matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == built),
+        matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if *dir == built),
         "{refused:?}"
     );
-    for given in [&fourth, &built] {
-        let refused = checkpoint::delete(&*db.vfs, given);
+    for (deleted, said) in [(&fourth, &fourth), (&built, &built)] {
+        let refused = checkpoint::delete(&*db.vfs, deleted);
         assert!(
-            matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == built),
+            matches!(&refused, Err(CheckpointError::NotADirectory { dir }) if dir == said),
             "{refused:?}"
         );
     }
     assert!(built.is_symlink() && !fourth.exists());
-    assert_eq!(everything_in(&StdVfs, &theirs), with_the_lock_file);
+    assert_eq!(everything_in(&StdVfs, &theirs), as_it_was);
     assert_eq!(versions.pins_held(), 0);
+    world.check_committed();
+}
+
+/// What a creation left is found under the name that the directory above
+/// lists, and by nothing else. Once its lock is taken, that directory
+/// lists it in another spelling, as it would had somebody renamed it so
+/// meanwhile: it is not known by its lock file, as a directory is that
+/// the creation made itself, and nothing in it is removed.
+#[test]
+fn what_was_there_is_not_known_by_its_lock_file_alone() {
+    let respelling = Arc::new(AtomicBool::new(false));
+    let (db, versions) = store_on_meddling(|plain, checkpoints| {
+        let from_the_lock = respelling.clone();
+        let among = checkpoints.clone();
+        let before_lock: Before = Box::new(move |lock: &Path| {
+            if lock.starts_with(&among) {
+                from_the_lock.store(true, Ordering::SeqCst);
+            }
+            Ok(())
+        });
+        Meddling {
+            respelling: respelling.clone(),
+            before_lock: Some(before_lock),
+            ..Meddling::respelled(plain, checkpoints)
+        }
+    });
+    let mut world = World::new(&db, &versions);
+    block(&mut world, &mut Rng::new(85), 0, 10);
+    let checkpoints = checkpoints_in(&db);
+    let target = checkpoints.join(format!("{ONE_LETTER}-1"));
+    let built = building(&target);
+    std::fs::create_dir(&built).expect("a directory");
+    std::fs::write(built.join("LOCK"), b"").expect("a file");
+    std::fs::write(built.join("left"), b"what a creation left").expect("a file");
+    let is_left = |refused: Result<(), CheckpointError>| {
+        assert!(
+            matches!(&refused, Err(CheckpointError::Replaced { dir }) if *dir == built),
+            "{refused:?}"
+        );
+        assert!(
+            respelling.swap(false, Ordering::SeqCst),
+            "the lock was taken"
+        );
+        assert_eq!(
+            std::fs::read(built.join("left")).expect("the file"),
+            b"what a creation left"
+        );
+        assert!(built.join("LOCK").exists() && !target.exists());
+    };
+
+    is_left(checkpointer(&db, &versions).create(&target).map(drop));
+    assert_eq!(versions.pins_held(), 0);
+    for given in [&built, &target] {
+        is_left(checkpoint::delete(&*db.vfs, given));
+    }
     world.check_committed();
 }
 
@@ -1918,7 +2207,7 @@ fn the_errors_say_what_happened() {
             CheckpointError::NotALock {
                 path: PathBuf::from("/c/1.creating/LOCK"),
             },
-            "/c/1.creating/LOCK is not a file of its own",
+            "/c/1.creating/LOCK is no lock file of its directory's own",
             false,
         ),
         (

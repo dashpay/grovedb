@@ -37,17 +37,16 @@ pub enum CheckpointError {
         target: PathBuf,
     },
     /// The target has a name that a creation builds under
-    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)): a directory of such
-    /// a name is emptied by the next creation beside it, so no checkpoint
-    /// is made at one. Nothing was touched.
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), in whatever case of
+    /// its letters, so no checkpoint is made at it. Nothing was touched.
     ReservedName {
         /// The target.
         target: PathBuf,
     },
     /// The directory is one that a creation builds a checkpoint in
     /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)), and its lock is
-    /// held, as by a creation that is building in it now. Nothing of it
-    /// was touched.
+    /// held, as by a creation that is building in it now. Nothing in it
+    /// was removed.
     Creating {
         /// The directory that is being built in.
         dir: PathBuf,
@@ -66,14 +65,16 @@ pub enum CheckpointError {
         dir: PathBuf,
     },
     /// A directory that checkpoints are built in
-    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) holds, under the
-    /// name of its lock file or under a name that a file system may take
-    /// for it, something that is not a file of its own, such as a link or
-    /// a directory. Its lock is not taken, so a creation does not build
-    /// in it and [`delete`](super::delete) does not remove it. Nothing of
-    /// it was touched.
+    /// ([`CREATING_SUFFIX`](super::CREATING_SUFFIX)) has no lock file of
+    /// its own to take the lock in. It lists, under the name of its lock
+    /// file, something that is not a file, such as a link or a directory;
+    /// or it lists nothing under that name, and a new lock file could not
+    /// be made there because the file system finds the name taken all the
+    /// same. Its lock is not taken, so a creation does not build in it
+    /// and [`delete`](super::delete) does not remove it. Nothing of it
+    /// was touched.
     NotALock {
-        /// The path of what is there and is no file.
+        /// The path of the lock file.
         path: PathBuf,
     },
     /// A file that the checkpoint was to carry beside the store's own is
@@ -206,7 +207,7 @@ impl fmt::Display for CheckpointError {
             Self::Creating { dir } => write!(
                 f,
                 "{} is locked, as a directory that a checkpoint is being built in, and nothing \
-                 of it was touched",
+                 in it was removed",
                 dir.display()
             ),
             Self::Replaced { dir } => write!(
@@ -217,7 +218,8 @@ impl fmt::Display for CheckpointError {
             ),
             Self::NotALock { path } => write!(
                 f,
-                "{} is not a file of its own, and the lock of its directory was not taken",
+                "{} is no lock file of its directory's own, and the lock of the directory was \
+                 not taken",
                 path.display()
             ),
             Self::CarriedName { name } => write!(
