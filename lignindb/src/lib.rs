@@ -85,6 +85,7 @@
 //! | read the latest version, pinning nothing | [`Db::read`] | one [`Operation`](snapshot::Operation) |
 //! | make commits durable | [`Db::flush`] | the version every later crash recovers at least ([`db::Flushed`]) |
 //! | empty the database | [`Db::wipe`] | one commit that leaves no record |
+//! | make a checkpoint | [`Db::checkpoint`] with a new directory and [`CheckpointOptions`](checkpoint::CheckpointOptions) | the database of one version, durable, in a directory that [`Db::open`] opens ([`checkpoint::Created`]) |
 //! | look at the engine | [`Db::stats`], [`Db::keyspaces`], [`Db::reopen`] | every count, the flat keyspaces, why writes are refused |
 //!
 //! ## What a caller does not reach around

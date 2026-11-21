@@ -35,7 +35,7 @@ use super::{
 };
 use crate::{
     backup::tests::world::{commit, first, next},
-    checkpoint::{CheckpointError, Checkpointer},
+    checkpoint::{CheckpointError, CheckpointOptions},
     commit::CommitError,
     db::{DbError, Reopen, WriteError},
     space::out_of_space,
@@ -161,9 +161,8 @@ fn a_checkpoint_whose_sync_of_the_log_was_refused_ends_the_session() {
     session
         .fs
         .add_rule(FaultRule::new(Fault::Enospc).on(OpSet::SYNCS).at(&log));
-    let committer = db.shared.committer();
-    let error = Checkpointer::new(&committer)
-        .create(Path::new("/checkpoint"))
+    let error = db
+        .checkpoint(Path::new("/checkpoint"), CheckpointOptions::default())
         .expect_err("the sync is refused");
     assert!(matches!(&error, CheckpointError::Sync(_)), "{error}");
     assert!(out_of_space(&error) && stays_failed(&error), "{error}");
@@ -174,8 +173,8 @@ fn a_checkpoint_whose_sync_of_the_log_was_refused_ends_the_session() {
     assert!(matches!(&said, Reopen::NotDurable { version, .. } if *version == db.version()));
     // A second creation is refused before it makes anything: the reason
     // is in the commit path's record, which a creation reads.
-    let again = Checkpointer::new(&committer)
-        .create(Path::new("/checkpoint"))
+    let again = db
+        .checkpoint(Path::new("/checkpoint"), CheckpointOptions::default())
         .expect_err("the session has ended");
     assert!(matches!(&again, CheckpointError::Stopped(_)), "{again}");
     assert!(gone(&session, "/checkpoint"));
@@ -470,9 +469,7 @@ fn a_manifest_in_doubt_is_settled_and_ends_no_session() {
         assert_eq!(session.told.latest, published + 1, "{kind}");
         let db = session.db.as_ref().expect("the session goes on");
         assert_eq!(db.reopen(), None, "{kind}");
-        let committer = db.shared.committer();
-        Checkpointer::new(&committer)
-            .create(Path::new("/checkpoint"))
+        db.checkpoint(Path::new("/checkpoint"), CheckpointOptions::default())
             .unwrap_or_else(|error| panic!("{kind}: {error}"));
         assert!(!session.ticks("t"));
         session.flush();
@@ -518,10 +515,9 @@ fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
     session
         .fs
         .add_rule(FaultRule::new(Fault::Enospc).on(OpKind::SyncDir).forever());
-    let committer = db.shared.committer();
     let before = session.fs.trace().len();
-    let refused = Checkpointer::new(&committer)
-        .create(Path::new("/checkpoint"))
+    let refused = db
+        .checkpoint(Path::new("/checkpoint"), CheckpointOptions::default())
         .expect_err("no manifest is opened");
     assert!(matches!(&refused, CheckpointError::Settle(_)), "{refused}");
     assert!(out_of_space(&refused), "{refused}");
@@ -544,8 +540,7 @@ fn a_creation_of_a_checkpoint_settles_the_manifest_first() {
     assert_eq!(db.reopen(), None);
 
     session.fs.clear_rules();
-    Checkpointer::new(&committer)
-        .create(Path::new("/checkpoint"))
+    db.checkpoint(Path::new("/checkpoint"), CheckpointOptions::default())
         .unwrap_or_else(|error| panic!("{error}"));
     assert!(!in_doubt());
     assert!(gone(&session, "/checkpoint.creating"));

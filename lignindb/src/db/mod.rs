@@ -17,6 +17,7 @@
 //! | [`Db::read`] | One operation that pins no version and reads the latest one ([`Operation`]). | RD4 |
 //! | [`Db::flush`] | Makes every commit that was published when it was called durable. | DU1a, P-05 |
 //! | [`Db::wipe`], [`Db::wipe_entering`] | Removes every record of every keyspace, in one commit, in which the second enters the subtrees its caller names. | CV3, CF5, P-23 |
+//! | [`Db::checkpoint`] | Makes a checkpoint of the database in a new directory, which is opened as a database of its own ([`crate::checkpoint`]). | CK1 to CK10 |
 //! | [`Db::stats`] | Every count the engine keeps ([`DbStats`]). | |
 //! | [`Db::keyspaces`] | The flat keyspace of each column. | |
 //!
@@ -123,6 +124,7 @@
 //!
 //! | The directory | The open |
 //! | --- | --- |
+//! | is given by a path whose last name ends in `.creating`, in any case of its ASCII letters, whatever is there | [`OpenError::Creating`] |
 //! | is not there, or holds nothing of any engine | makes the database, or fails with [`OpenError::NoDatabase`] if [`Options::create_if_missing`] is off |
 //! | has an entry named `MANIFEST.deleting`, whatever else it holds | [`OpenError::Deleting`] |
 //! | has an entry that RocksDB makes (`CURRENT`, `IDENTITY`, `MANIFEST-…`, `OPTIONS-…`, an `.sst` file), or a `MANIFEST` that is no LigninDB file | [`OpenError::OtherEngine`] |
@@ -132,11 +134,12 @@
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
-//! Each of these is found with no file made
-//! ([`OpenError::left_untouched`]): by reading alone before the lock, or
-//! under the lock of a lock file that was there. A `MANIFEST` that is too
-//! short to have a header is reported as a manifest that cannot be read
-//! ([`OpenError::Manifest`]), and nothing is written for it either.
+//! For each refusal in the table, the open makes no file
+//! ([`OpenError::left_untouched`]): it checks the supplied name, reads
+//! before taking the lock, or checks under a lock on an existing lock
+//! file. A `MANIFEST` that is too short to have a header is reported as
+//! a manifest that cannot be read ([`OpenError::Manifest`]), and nothing
+//! is written for it either.
 //!
 //! **Whom the guarantee is for** (D-129). The byte-for-byte guarantee is
 //! for a directory that nobody else changes while it is being opened, and
@@ -171,7 +174,8 @@
 //! the path of a database that is being opened or is open, as with the
 //! close below.
 //!
-//! **Where a database is made** ([`Options::create_if_missing`]): in a
+//! **Where a database is made** ([`Options::create_if_missing`]): at a
+//! path whose last name does not end in `.creating` (below), in a
 //! directory that is not there, and in one that holds none of these: an
 //! entry named `MANIFEST.deleting`, an entry that RocksDB makes, a
 //! `MANIFEST`, and an entry with the name of a directory of a store's
@@ -185,18 +189,19 @@
 //! `lignindb::checkpoint::delete` does with it). Once the mark is gone
 //! the directory is looked at as any other, by the table above: what a
 //! removal leaves that was cut short after its mark went and before the
-//! directory itself did is a place. What a creation of a
-//! checkpoint left with a directory of a store's files in it is looked
-//! at by the same table, its rows in their order: where no row before
-//! refuses it, it gets no database while it has no manifest
-//! ([`OpenError::NoManifest`]), and with its manifest it is a database,
-//! and is opened. What such a creation left
-//! empty, or with its lock file alone, the open cannot tell from a place
-//! and makes a database in: a checkpoint is to be built under another
-//! name and renamed into place, so that a cut creation leaves nothing
-//! under the name it was for (D-128 B). Until it is, whoever makes
-//! checkpoints removes a target that a failed or cut creation left before
-//! anything opens it.
+//! directory itself did is a place.
+//!
+//! A path whose last name ends in `.creating`, in any case of its ASCII
+//! letters, is not opened and gets no database
+//! ([`OpenError::Creating`]). A checkpoint is built beside its target by
+//! appending this suffix to the target's name (`lignindb::checkpoint`,
+//! D-128 B): a directory that a creation built in can hold nothing, a
+//! lock file alone, a part of a checkpoint or a whole one, and the first
+//! two the open could not tell from a place. The open goes by the name
+//! it is given, before it makes a call to the file layer, so this row of
+//! the table comes before every other. What a creation leaves at its
+//! target, and what becomes of the directory it built in, is said there
+//! ("Durability, and a creation that fails").
 //!
 //! # A new database
 //!
@@ -521,6 +526,7 @@ pub use self::{
     reclaim::{ReclaimStats, Round},
 };
 use crate::{
+    checkpoint::{CheckpointError, CheckpointOptions, Checkpointer, Created},
     commit::{CommitError, CommitStats, Committed, Committer, NoStaleHashes, Published},
     options::Options,
     snapshot::{LatestLease, Operation, Snapshot},
@@ -753,7 +759,8 @@ impl Db {
     /// Opens the database in the directory `dir`, and makes one there if
     /// the directory has none and [`Options::create_if_missing`] is on.
     /// The directory is created with every directory above it that is
-    /// missing.
+    /// missing. A path whose last name ends in `.creating` is refused
+    /// whatever is there, with nothing made ([`OpenError::Creating`]).
     ///
     /// The directory's lock is held from here until the handle is dropped.
     /// The store is recovered to the last commit whose group its log holds
@@ -1327,6 +1334,53 @@ impl Db {
                 Err(DbError::Flush(error))
             }
         }
+    }
+
+    /// Makes a checkpoint of the database in the new directory `target`,
+    /// which is opened as a database of its own ([`Db::open`]). This is
+    /// [`Checkpointer::create`] with `options`, on the commit path of this
+    /// database: the documentation of that call is the contract of this
+    /// one, and [`crate::checkpoint`] says what a checkpoint is, what its
+    /// creation holds of the live database and for how long, and what a
+    /// creation leaves that fails or that the power cuts.
+    ///
+    /// The call borrows the handle: it is made from any thread, beside
+    /// commits, readers, the background work and other calls of it. A
+    /// close takes the handle, so no call of this is made beside one.
+    ///
+    /// **The call asks the commit path whether the session takes
+    /// commits, and not [`Self::reopen`].**
+    ///
+    /// - A call that finds the commit path stopped when it begins is
+    ///   refused with [`CheckpointError::Stopped`], which has the commit
+    ///   path's reason, and has made no call to the file layer. The
+    ///   commit path has stopped in every session of which
+    ///   [`Self::reopen`] says [`Reopen::NotDurable`] or
+    ///   [`Reopen::Stopped`].
+    /// - A call that finds it not stopped goes on as in any session. A
+    ///   session of which [`Self::reopen`] says
+    ///   [`Reopen::SegmentsNotDurable`] can be one whose commit path has
+    ///   not stopped.
+    /// - A call whose own sync of the log fails returns
+    ///   [`CheckpointError::Sync`]. A failed WAL file sync stays failed
+    ///   for this session. An otherwise active session ends for that
+    ///   failure; if the session already reported a reason for ending, it
+    ///   keeps that reason ("A session that takes no write any more" in
+    ///   the [module documentation](self)).
+    ///
+    /// [`DbStats`] has no count of the checkpoints that this call makes.
+    /// An error of this call is returned to its caller, and the call does
+    /// not count it among the errors of the background work
+    /// ([`DbStats::background`]).
+    pub fn checkpoint(
+        &self,
+        target: &Path,
+        options: CheckpointOptions,
+    ) -> Result<Created, CheckpointError> {
+        let committer = self.shared.committer();
+        Checkpointer::new(&committer)
+            .with_options(options)
+            .create(target)
     }
 
     /// Removes every record of every keyspace: the nodes of every Merk,

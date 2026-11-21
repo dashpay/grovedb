@@ -5,6 +5,7 @@
 mod backup;
 mod beside;
 mod check;
+mod checkpoints;
 mod clean;
 mod ended;
 mod enters;

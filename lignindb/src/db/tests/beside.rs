@@ -6,7 +6,7 @@
 use std::sync::atomic::AtomicU32;
 
 use super::*;
-use crate::checkpoint::Checkpointer;
+use crate::checkpoint::CheckpointOptions;
 
 /// **A checkpoint opens while the live database appends to the log file
 /// the two share.** Bytes appended to a shared file past the length the
@@ -30,11 +30,9 @@ fn a_checkpoint_opens_while_the_live_database_appends_to_the_log_they_share() {
     halt_background(&live);
     plant(&live, subtree(1), Merk::sized(b'k', 10, 20));
     let target = dir.path().join("checkpoint");
-    let created = {
-        let committer = live.shared.committer();
-        let created = Checkpointer::new(&committer).create(&target);
-        created.unwrap_or_else(|error| panic!("the checkpoint: {error}"))
-    };
+    let created = live
+        .checkpoint(&target, CheckpointOptions::default())
+        .unwrap_or_else(|error| panic!("the checkpoint: {error}"));
     assert_eq!(created.version, live.version());
     assert!(created.linked > 0 && created.copied == 0, "{created:?}");
 

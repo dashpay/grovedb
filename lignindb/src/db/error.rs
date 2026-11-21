@@ -125,6 +125,30 @@ pub enum OpenError {
         /// The directory.
         dir: PathBuf,
     },
+    /// The last component of the supplied path has the suffix reserved
+    /// for checkpoint creation: `.creating`, matched without regard to
+    /// ASCII case (`Path::file_name`,
+    /// `lignindb::checkpoint::CREATING_SUFFIX`). The open answers this
+    /// before it makes a call to the file layer: it opens nothing and
+    /// makes nothing, whatever is at the path and whatever
+    /// [`Options::create_if_missing`](crate::Options::create_if_missing)
+    /// says.
+    ///
+    /// **It is the name that is refused, as it was given, and not a
+    /// directory.** A path whose last name does not end so is looked at
+    /// as any other path is, also where it leads to such a directory or
+    /// into one: a link to it, a path with no last name, a path that
+    /// goes on below it, and a spelling that a file system takes for the
+    /// same name and that differs from it in more than the case of ASCII
+    /// letters.
+    ///
+    /// What a creation of a checkpoint left under such a name is for the
+    /// next creation at its target to take over, or for
+    /// `lignindb::checkpoint::delete` to remove.
+    Creating {
+        /// The path that was given.
+        dir: PathBuf,
+    },
     /// A look of this open found a database of this engine in the
     /// directory, and there was no lock file to lock, before that look
     /// and after it. A database has its `LOCK` from the open that made
@@ -219,8 +243,9 @@ impl OpenError {
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
     /// lost its manifest or its lock file, it holds an entry with the
-    /// name of a removal's mark, its pages are of another size, or it was
-    /// removed or put in the place of another while it was
+    /// name of a removal's mark, its final file name has the suffix
+    /// reserved for checkpoint creation, its pages are of another size,
+    /// or it was removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
     /// was there. That holds for a directory that nobody else changes
@@ -239,6 +264,7 @@ impl OpenError {
                 | Self::NoManifest { .. }
                 | Self::NoLockFile { .. }
                 | Self::Deleting { .. }
+                | Self::Creating { .. }
                 | Self::Replaced { .. }
                 | Self::PageSize { .. }
         )
@@ -278,6 +304,12 @@ impl fmt::Display for OpenError {
                 f,
                 "{} holds an entry named MANIFEST.deleting, the name a removal gives the manifest \
                  of what it removes: no database is opened or made beside it",
+                dir.display()
+            ),
+            Self::Creating { dir } => write!(
+                f,
+                "{} has a final file name with the suffix reserved for checkpoint creation \
+                 (.creating, ignoring ASCII case): no database was opened or made",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
@@ -333,6 +365,7 @@ impl Error for OpenError {
             Self::Catalog { source, .. } => source.as_deref().map(|source| source as _),
             Self::NoLockFile { .. }
             | Self::Deleting { .. }
+            | Self::Creating { .. }
             | Self::Replaced { .. }
             | Self::Changed { .. } => None,
             Self::NoDatabase { .. }

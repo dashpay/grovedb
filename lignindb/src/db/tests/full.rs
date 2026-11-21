@@ -68,7 +68,7 @@ use crate::{
         },
         Backup,
     },
-    checkpoint::{CheckpointError, Checkpointer},
+    checkpoint::{CheckpointError, CheckpointOptions},
     commit::CommitError,
     db::{DbError, OpenError, Reopen, WriteError},
     space::out_of_space,
@@ -640,8 +640,7 @@ impl Session {
             return;
         }
         let state = self.told.state().clone();
-        let committer = db.shared.committer();
-        match Checkpointer::new(&committer).create(Path::new(CHECKPOINT)) {
+        match db.checkpoint(Path::new(CHECKPOINT), CheckpointOptions::default()) {
             Ok(created) => {
                 assert_eq!(created.version.get(), self.told.latest);
                 self.told.durable = self.told.latest;

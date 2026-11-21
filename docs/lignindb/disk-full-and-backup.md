@@ -100,7 +100,7 @@ whose cause was the file layer's "no space left".
 | `Db::flush` | `DbError::Flush` | takes no write any more (`Reopen::NotDurable`): after a sync that failed the log makes nothing durable in this session |
 | `Db::snapshot`, `Db::read`, every read through a transaction | what it reads at any other time | as before |
 | `Db::rollback` | `Ok`: a rollback writes to no file | as before |
-| `Checkpointer::create` | `CheckpointError`, with nothing put at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, under its name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where the settling it asks for after the catch-up answers an error, it fails with `CheckpointError::Settle`, and where the manifest is in doubt again when the creation reads it, with `CheckpointError::Manifest`. Either can be made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
+| `Db::checkpoint`, which is `Checkpointer::create` on an open database | `CheckpointError`, with nothing put at the target, or the whole target (section 6.4). A part of a checkpoint that could not be taken away is beside the target, under its name with `.creating` added. What a creation leaves of the live database is said in `lignindb::checkpoint` ("Durability, and a creation that fails"). A creation has a manifest in doubt settled before it makes a directory: where the settling it asks for after the catch-up answers an error, it fails with `CheckpointError::Settle`, and where the manifest is in doubt again when the creation reads it, with `CheckpointError::Manifest`. Either can be made again (DF8a). | goes on, unless a sync of the log or of a segment was refused, the log's own (`CheckpointError::Sync`) or one of write-back's catch-up: then it has ended (DF8) |
 | `Backup::copy` | `BackupError`, with nothing left of the target, or a target without a manifest, or the whole target (section 6.4). The source is as it was. | no session is involved |
 | `Db::close` | `DbError`. The handle is closed all the same, and the next open replays what the close did not cover. | has ended |
 | the background work: write-back, the reclaiming of what drops left, the cleaner | nothing is answered to anyone. The turn that was refused is counted, its error is kept as text (`DbStats::background`), and it is made again at the next turn. | goes on, unless what was refused was a sync of the log or of a segment: then it has ended (DF8) |
@@ -379,10 +379,10 @@ of it.
 
 ### 6.2 The procedure
 
-1. **Make a checkpoint for the backup**, in a directory of its own
-   (`Checkpointer::create`; through GroveDB, `create_checkpoint`). Do not
-   open it. A node that opens every checkpoint it makes (P-15) makes one
-   more for the backup.
+1. **Make a checkpoint for the backup** in a directory of its own with
+   `Db::checkpoint`. The GroveDB LigninEngine adapter does not yet
+   implement `create_checkpoint`. Do not open it. A node that opens every
+   checkpoint it makes (P-15) makes one more for the backup.
 2. **Copy the checkpoint's directory to where the backup is kept**, with
    `lignindb::backup::Backup::copy`, or with any tool that copies a
    directory with its `LOCK` file (`cp -a`, `rsync -a`, `tar`).
@@ -470,8 +470,9 @@ creation that fails"). So a creation that the power cuts leaves nothing at
 the target, or the whole checkpoint. A part of a checkpoint that a creation leaves, when
 it is cut short or when it fails and cannot take away what it made, is
 under that other name. A directory of that name is not to be opened as a
-database: the engine's open has no rule for the name. It is for a later
-creation at the same target to take over, or for
+database: the engine's open refuses a path whose last name ends in
+`.creating`, in any case of its ASCII letters (`OpenError::Creating`). It
+is for a later creation at the same target to take over, or for
 `lignindb::checkpoint::delete` to remove: that module says when each does.
 
 One failure leaves the whole target instead. For a copy, the manifest was
