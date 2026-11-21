@@ -579,7 +579,11 @@ impl Marks {
         match self.written.get_mut(&named.prefix) {
             Some(known) if known.host.is_some() && named.host.is_none() => {}
             Some(known) => {
-                if known.host.is_some() && known.host != named.host {
+                let element = |named: &LigninSubtree| {
+                    let host = named.host.as_ref()?;
+                    Some((host.subtree, host.key.clone()))
+                };
+                if known.host.is_some() && element(known) != element(&named) {
                     self.two_hosts.insert(named.prefix);
                 }
                 *known = named;

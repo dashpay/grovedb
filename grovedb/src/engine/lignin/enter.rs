@@ -33,17 +33,21 @@
 //! - **The Merks of an indexed tree are entered together**, by a group
 //!   that holds a write for one of them while none is entered, each at its
 //!   position under the element: the primary as a tree of the element's
-//!   type, a secondary as a tree of the type its axis keeps. The batch of
-//!   the group they are entered with is the one the rule above gives a
-//!   subtree under that element.
+//!   type, a secondary as a tree of the type its axis keeps. They are
+//!   entered with the batch of the group that enters the subtree the
+//!   element is in, and with the first batch of the group where that
+//!   subtree is entered already.
 //! - **The element's node names all of them** in every batch of such a
 //!   group that puts it, whichever of them the batch writes.
-//! - **A secondary is written through a handle that names its element**
-//!   ([`Engine::subtree_beside`](crate::Engine::subtree_beside)). A write
-//!   through such a handle under an element that hosts no subtree with
-//!   the handle's prefix once the group is applied is refused with
-//!   `Error::NotSupported`, and so are writes through handles that name
-//!   two elements for one subtree.
+//! - **A handle that names an element says whose subtree it writes**:
+//!   a handle by path, of the subtree of its path, and a handle beside
+//!   that subtree ([`Engine::subtree_beside`](crate::Engine::subtree_beside)),
+//!   of the subtree with its prefix. A write through a handle that names
+//!   an element which hosts no subtree with the handle's prefix once the
+//!   group is applied is refused with `Error::NotSupported`, and so are
+//!   writes into one subtree through handles that name two elements. A
+//!   handle that names no element, by prefix or beside the path of the
+//!   root, is not held to an element.
 //! - **The directory has all of them where the element names them, or
 //!   none.** A subtree is not dropped when its element goes (GROVE-05),
 //!   and a conversion does not move the subtrees of its element
@@ -131,6 +135,11 @@ fn beside_nothing(host: &LigninHost) -> Error {
         "a write into a subtree beside the one of the key {key}, whose element hosts no such \
          subtree"
     ))
+}
+
+/// Whether two hosts are one element: the same key of the same Merk.
+fn same_element(one: &LigninHost, other: &LigninHost) -> bool {
+    (one.subtree, &one.key) == (other.subtree, &other.key)
 }
 
 fn named_twice() -> Error {
@@ -250,12 +259,18 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
     let mut written: BTreeMap<_, &LigninSubtree> = BTreeMap::new();
     for subtree in parts.iter().flat_map(LigninSettled::written) {
         match written.get(&subtree.prefix) {
-            Some(known) if known.host.is_some() && subtree.host.is_some() => {
-                if known.host != subtree.host {
+            Some(LigninSubtree {
+                host: Some(known), ..
+            }) => {
+                if subtree
+                    .host
+                    .as_ref()
+                    .is_some_and(|host| !same_element(known, host))
+                {
                     return Err(named_twice());
                 }
             }
-            Some(known) if known.host.is_some() || subtree.host.is_none() => {}
+            Some(_) if subtree.host.is_none() => {}
             _ => {
                 written.insert(subtree.prefix, subtree);
             }
@@ -282,12 +297,13 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
         // The subtree of the element's own path: the one a handle by path
         // is of, and the one a handle beside it names.
         let own = host.hosted.first().copied().unwrap_or(prefix);
-        if owed
-            .hosts
-            .iter()
-            .any(|known| known.hosted.contains(&prefix))
-        {
-            continue;
+        // A subtree of an element that was worked out for another of its
+        // subtrees: its handle has to name that element.
+        if let Some(known) = (owed.hosts.iter()).find(|known| known.hosted.contains(&prefix)) {
+            match same_element(known, host) {
+                true => continue,
+                false => return Err(beside_nothing(host)),
+            }
         }
         match hosting_of(view, parts, host, own)? {
             Hosting::Many(hosted) => {

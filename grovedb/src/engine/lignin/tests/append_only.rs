@@ -26,7 +26,7 @@ use crate::{
     batch::QualifiedGroveDbOp,
     engine::Engine,
     operations::delete::DeleteOptions,
-    query_result_type::{QueryResultElements, QueryResultType},
+    query_result_type::{QueryResultElement, QueryResultElements, QueryResultType},
     Element, Error, GroveDb, PathQuery, TransactionArg,
 };
 
@@ -80,10 +80,13 @@ impl<'db, E: Engine> History<'db, E> {
         self.read(
             name,
             answer.map_ok(|(elements, skipped)| {
-                let pairs = elements.to_key_elements().into_iter();
-                let read: Vec<_> = pairs
-                    .map(|(key, element)| (key, lossless(element, v)))
-                    .collect();
+                let pair = |result| match result {
+                    QueryResultElement::KeyElementPairResultItem((key, element)) => {
+                        (key, lossless(element, v))
+                    }
+                    other => panic!("a result that is no pair of a key and an element: {other}"),
+                };
+                let read: Vec<_> = elements.elements.into_iter().map(pair).collect();
                 (read, skipped)
             }),
         );
@@ -207,8 +210,9 @@ trait Appended {
     /// boundary of its own (a full chunk, a new peak).
     const DIRECT: usize;
 
-    /// The calls that [`Self::reads`] records, by the name of each.
-    const READS: &'static [&'static str];
+    /// How many of the calls that [`Self::reads`] records are answered
+    /// in a history on the grove version `number`, by the name of each.
+    fn answered(number: usize) -> Vec<(&'static str, usize)>;
 
     /// The element of an empty tree.
     fn empty(flags: Option<Vec<u8>>) -> Element;
@@ -253,7 +257,11 @@ struct Mmr;
 impl Appended for Mmr {
     const DIRECT: usize = 19;
     const NAME: &'static str = "mmr";
-    const READS: &'static [&'static str] = &["root hash", "count", "value"];
+
+    fn answered(number: usize) -> Vec<(&'static str, usize)> {
+        let hashes = if number <= 3 { 23 } else { 25 };
+        vec![("root hash", hashes), ("count", 25), ("value", 100)]
+    }
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_mmr_tree_with_flags(flags)
@@ -305,8 +313,22 @@ const CHUNK_POWER: u8 = 2;
 impl Appended for Bulk {
     const DIRECT: usize = 14;
     const NAME: &'static str = "bulk";
-    const READS: &'static [&'static str] =
-        &["count", "chunks", "buffer", "value", "chunk", "range"];
+
+    fn answered(number: usize) -> Vec<(&'static str, usize)> {
+        let (buffers, values, chunks) = if number <= 3 {
+            (22, 88, 68)
+        } else {
+            (24, 96, 72)
+        };
+        vec![
+            ("count", 24),
+            ("chunks", 24),
+            ("buffer", buffers),
+            ("value", values),
+            ("chunk", chunks),
+            ("range", values),
+        ]
+    }
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_bulk_append_tree_with_flags(CHUNK_POWER, flags).expect("a chunk power")
@@ -364,7 +386,11 @@ const DENSE_HEIGHT: u8 = 5;
 impl Appended for Dense {
     const DIRECT: usize = 9;
     const NAME: &'static str = "dense";
-    const READS: &'static [&'static str] = &["root hash", "count", "value"];
+
+    fn answered(number: usize) -> Vec<(&'static str, usize)> {
+        let hashes = if number <= 3 { 20 } else { 22 };
+        vec![("root hash", hashes), ("count", 22), ("value", 110)]
+    }
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_dense_tree_with_flags(DENSE_HEIGHT, flags)
@@ -435,7 +461,16 @@ fn ciphertext(n: usize) -> TransmittedNoteCiphertext<DashMemo> {
 impl Appended for Commitment {
     const DIRECT: usize = 11;
     const NAME: &'static str = "commitment";
-    const READS: &'static [&'static str] = &["anchor", "count", "value", "range"];
+
+    fn answered(number: usize) -> Vec<(&'static str, usize)> {
+        let (anchors, values) = if number <= 3 { (21, 84) } else { (23, 92) };
+        vec![
+            ("anchor", anchors),
+            ("count", 23),
+            ("value", values),
+            ("range", values),
+        ]
+    }
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_commitment_tree_with_flags(CHUNK_POWER, flags).expect("a chunk power")
@@ -505,7 +540,12 @@ const ENTRY_SIZE: u32 = 16;
 impl Appended for Private {
     const DIRECT: usize = 11;
     const NAME: &'static str = "private";
-    const READS: &'static [&'static str] = &["count", "value", "range"];
+
+    /// The pages of a store are read from grove version 5 on.
+    fn answered(number: usize) -> Vec<(&'static str, usize)> {
+        let pages = if number <= 4 { 0 } else { 92 };
+        vec![("count", 23), ("value", 92), ("range", pages)]
+    }
 
     fn empty(flags: Option<Vec<u8>>) -> Element {
         Element::empty_private_document_store_with_flags(ENTRY_SIZE, CHUNK_POWER, flags)
@@ -846,29 +886,37 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
             .filter(|(call, ..)| call == "verified")
             .map(|(.., found)| found == "Ok([])")
             .collect();
-        // On the latest version, which has every read of every kind: a
-        // history reads a tree at many stages, three of them under a key
-        // that holds no such tree. Every other read of the tree's file is
-        // answered, and among the answers are a value that is there, a
-        // position past the end, and for a kind with pages a page of
-        // values.
-        if number == GROVE_VERSIONS.len() {
-            let all = |call: &str| answers.iter().filter(|(named, ..)| named == call).count();
-            let answered = |call: &str, start: &str| {
-                let is = |(named, _, answer): &&Answer| named == call && answer.contains(start);
+        // Which reads of the tree's file are answered. A history reads
+        // a tree at many stages, three of them under a key that holds no
+        // such tree, and up to grove version 3 two more of a tree whose
+        // clear left its element as it was. Among the answers are a
+        // value that is there and a position past the end, and for a
+        // kind that has them a page of values and an empty one, a chunk
+        // that is full and one that is not there, and a buffer that
+        // holds values.
+        if has_tree(number) {
+            let answered = |call: &str, with: &str| {
+                let is = |(named, _, answer): &&Answer| named == call && answer.contains(with);
                 answers.iter().filter(is).count()
             };
-            let stages = all("count");
-            for call in T::READS {
-                let each = all(call) / stages;
-                assert_eq!(all(call), each * stages, "{} reads {call}", T::NAME);
-                assert_eq!(count(call), each * (stages - 3), "{} reads {call}", T::NAME);
-            }
-            assert!(answered("value", "Ok(Some([") > stages, "{}", T::NAME);
-            assert!(answered("value", "Ok(None)") > 3, "{}", T::NAME);
-            if T::READS.contains(&"range") {
-                assert!(answered("range", "entries: [(") > stages, "{}", T::NAME);
-                assert!(answered("range", "entries: []") > 3, "{}", T::NAME);
+            let seen: Vec<_> = (T::answered(number).iter())
+                .map(|(call, _)| (*call, count(call)))
+                .collect();
+            assert_eq!(seen, T::answered(number), "{} on version {number}", T::NAME);
+            let has = |call: &str| {
+                seen.iter()
+                    .any(|(named, taken)| *named == call && *taken > 0)
+            };
+            let needles: [(&str, &[&str]); 4] = [
+                ("value", &["Ok(Some([", "Ok(None)"]),
+                ("range", &["entries: [(", "entries: []"]),
+                ("chunk", &["Ok(Some([", "Ok(None)"]),
+                ("buffer", &["Ok([["]),
+            ];
+            for (call, with) in needles.into_iter().filter(|(call, _)| has(call)) {
+                for with in with {
+                    assert!(answered(call, with) > 0, "{} {call} {with}", T::NAME);
+                }
             }
         }
         let stale = has_tree(number) && number <= 3;

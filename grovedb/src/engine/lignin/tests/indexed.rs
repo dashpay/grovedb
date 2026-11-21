@@ -26,8 +26,11 @@ use super::{
     Lignin, LigninEngine,
 };
 use crate::{
-    batch::QualifiedGroveDbOp, engine::Engine, query_result_type::QueryResultType, Element, Error,
-    GroveDb, PathQuery, TransactionArg,
+    batch::QualifiedGroveDbOp,
+    engine::Engine,
+    operations::proof::indexed_axis::AxisEntries,
+    query_result_type::{IndexedAxisEntry, QueryResultType},
+    Element, Error, GroveDb, PathQuery, PathQueryRun, TransactionArg,
 };
 
 const ROOT: &[&[u8]] = &[];
@@ -346,11 +349,38 @@ fn owned(path: &[&[u8]]) -> Vec<Vec<u8>> {
 /// and of one that is not, the two folds over a band, and the proofs of
 /// a ranking and of a rank.
 fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
+    axis_reads_of::<T, E>(h, path, "");
+}
+
+/// The bytes of the element in each row that a read of an axis gave.
+fn row_bytes(run: &PathQueryRun, v: &GroveVersion) -> Vec<Vec<u8>> {
+    fn of<T>(rows: &[IndexedAxisEntry<T>], v: &GroveVersion) -> Vec<Vec<u8>> {
+        let bytes = |row: &IndexedAxisEntry<T>| row.value.serialize(v).expect("an element");
+        rows.iter().map(bytes).collect()
+    }
+    match run {
+        PathQueryRun::AxisEntries { entries, .. } => match entries {
+            AxisEntries::Count(rows) => of(rows, v),
+            AxisEntries::Sum(rows) => of(rows, v),
+            AxisEntries::Avg(rows) | AxisEntries::BigSum(rows) => of(rows, v),
+        },
+        _ => Vec::new(),
+    }
+}
+
+/// [`axis_reads`], with `of` after the name of each call.
+fn axis_reads_of<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]], of: &str) {
     let (db, v) = (h.db, h.v);
     let mut run = |name: &str, axis: IndexAxis, query: PathQuery| {
         let pairs = QueryResultType::QueryKeyElementPairResultType;
         let answer = db.run_path_query(&query, true, true, true, pairs, None, v);
-        h.read(format!("{name} {axis:?}"), answer);
+        // A row with the bytes of its element: the text of an element
+        // leaves out what two elements can differ in.
+        let answer = answer.map_ok(|run| {
+            let bytes = row_bytes(&run, v);
+            (run, bytes)
+        });
+        h.read(format!("{name} {axis:?}{of}"), answer);
     };
     for axis in T::axes() {
         let at = || owned(path);
@@ -372,6 +402,11 @@ fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
         let band = |lo, hi, limit| PathQuery::new_axis_bounded(at(), axis, lo, hi, limit, false);
         run("band", axis, band(-30, 30, 6));
         run("band", axis, band(0, i128::from(i64::MAX), 3));
+        // An average is a fixed-point number: a band of small values
+        // holds none, and this one holds every one.
+        if axis == IndexAxis::Avg {
+            run("whole band", axis, band(i128::MIN, i128::MAX, 4));
+        }
         let rank = |key: &[u8]| PathQuery::new_axis_rank_of_key(at(), axis, key.to_vec(), true);
         run("rank", axis, rank(b"leaf02"));
         run("rank", axis, rank(b"missing"));
@@ -385,7 +420,7 @@ fn axis_reads<T: Indexed, E: Engine>(h: &mut History<'_, E>, path: &[&[u8]]) {
     let children = PathQuery::new_unsized(owned(path), Query::new_range_full());
     let pairs = QueryResultType::QueryKeyElementPairResultType;
     h.elements(
-        "children",
+        format!("children{of}"),
         db.query_raw(&children, true, true, true, pairs, None, v),
     );
     for axis in T::axes() {
@@ -586,12 +621,7 @@ fn told<T: Indexed>(has_kind: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usiz
         // axis but the average, and its total for the axes with a 64-bit
         // value. The folds of the other axes are refused before a read.
         if has_kind(number) && number >= 4 {
-            let rows = |call: &str| {
-                let with = |(named, _, answer): &&Answer| {
-                    named == call && answer.starts_with("Ok(") && answer.contains("primary_key")
-                };
-                answers.iter().filter(with).count()
-            };
+            let rows = |call: &str| with_rows(answers, call);
             for axis in &axes {
                 let of = |call: &str| format!("{call} {axis:?}");
                 let (average, wide) = (*axis == IndexAxis::Avg, *axis == IndexAxis::BigSum);
@@ -616,6 +646,22 @@ fn told<T: Indexed>(has_kind: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usiz
                     if average || wide { 0 } else { 10 },
                 ];
                 assert_eq!(seen, expected, "{name}, {axis:?}, on version {number}");
+                // A fold that is not answered is refused as a fold the
+                // axis does not have, and by no other error.
+                for fold in [of("fold Population"), of("fold Total")] {
+                    let refused = refused_folds(answers, &fold);
+                    assert_eq!(
+                        count(&fold) + refused,
+                        10,
+                        "{name}, {fold}, on version {number}"
+                    );
+                }
+                // Every average is in the whole band, at each of the
+                // nine stages that have a child.
+                if average {
+                    let whole = [count(&of("whole band")), rows(&of("whole band"))];
+                    assert_eq!(whole, [10, 9], "{name} on version {number}");
+                }
             }
             assert_eq!(count("children"), 10, "{name} on version {number}");
         }
@@ -688,15 +734,38 @@ fn nested<T: Indexed, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answe
     h.write("delete", T::delete(db, inner, &leaf_key(1), None, v));
     h.element("element", db.get(ROOT, b"idx", None, v));
     h.element("child", db.get(top, b"inner", None, v));
-    axis_reads::<T, E>(&mut h, top);
-    axis_reads::<T, E>(&mut h, inner);
+    axis_reads_of::<T, E>(&mut h, top, " outer");
+    axis_reads_of::<T, E>(&mut h, inner, " inner");
     verified(&mut h);
     h.answers
 }
 
-/// On a grove version from `since` on, the inner tree is made and every
-/// write into it is taken.
-fn nested_told(since: usize) -> impl Fn(&[Answer], usize) {
+/// How many of `answers` are of a call named `call` that gave rows.
+fn with_rows(answers: &[Answer], call: &str) -> usize {
+    let rows = |(named, _, answer): &&Answer| {
+        named == call && answer.starts_with("Ok(") && answer.contains("primary_key")
+    };
+    answers.iter().filter(rows).count()
+}
+
+/// The text that the refusal of a fold opens with: a fold that the axis
+/// does not have is refused where the query is validated, before a read.
+const FOLD_REFUSED: &str = "Err(InvalidQuery(";
+
+/// How many of `answers` are of a call named `call` that was refused as
+/// a fold the axis does not have.
+fn refused_folds(answers: &[Answer], call: &str) -> usize {
+    let refused = |(named, _, answer): &&Answer| named == call && answer.starts_with(FOLD_REFUSED);
+    answers.iter().filter(refused).count()
+}
+
+/// On every grove version the inner tree is made and every write into it
+/// is taken. From grove version 4 on, which has the reads of an axis,
+/// each axis of the outer and of the inner tree is read: its three
+/// rankings and two bands are answered, a ranking and a band of each with
+/// rows, the whole band of the averages with rows, the rank of a key the
+/// inner tree holds, and the folds each axis has.
+fn nested_told<T: Indexed>() -> impl Fn(&[Answer], usize) {
     move |answers, number| {
         assert!(sound(answers), "version {number}");
         let count = |call: &str| taken(answers, call);
@@ -706,20 +775,53 @@ fn nested_told(since: usize) -> impl Fn(&[Answer], usize) {
             count("insert"),
             count("delete"),
         ];
-        if number >= since {
-            assert_eq!(seen, [1, 1, 5, 1], "version {number}");
+        assert_eq!(seen, [1, 1, 5, 1], "version {number}");
+        if number < 4 {
+            return;
+        }
+        for tree in ["outer", "inner"] {
+            for axis in T::axes() {
+                let of = |call: &str| format!("{call} {axis:?} {tree}");
+                let average = axis == IndexAxis::Avg;
+                let folds = [of("fold Population"), of("fold Total")];
+                let seen = [
+                    count(&of("top")),
+                    count(&of("band")),
+                    count(&folds[0]) + refused_folds(answers, &folds[0]),
+                    count(&folds[1]) + refused_folds(answers, &folds[1]),
+                    count(&folds[0]),
+                    count(&folds[1]),
+                ];
+                let has = usize::from(!average);
+                assert_eq!(
+                    seen,
+                    [3, 2, 1, 1, has, has],
+                    "{axis:?} of {tree}, version {number}"
+                );
+                assert!(with_rows(answers, &of("top")) >= 1, "{axis:?} of {tree}");
+                let band = if average { "whole band" } else { "band" };
+                assert!(with_rows(answers, &of(band)) >= 1, "{axis:?} of {tree}");
+            }
+            assert_eq!(count(&format!("children {tree}")), 1, "version {number}");
+        }
+        for axis in T::axes() {
+            assert_eq!(
+                count(&format!("rank {axis:?} inner")),
+                1,
+                "version {number}"
+            );
         }
     }
 }
 
 #[test]
 fn a_sum_indexed_tree_in_a_sum_indexed_tree_answers_on_lignindb_as_on_rocksdb() {
-    on_both_engines!(nested::<Sum, _>, nested_told(1));
+    on_both_engines!(nested::<Sum, _>, nested_told::<Sum>());
 }
 
 #[test]
 fn a_count_and_sum_indexed_tree_in_another_answers_on_lignindb_as_on_rocksdb() {
-    on_both_engines!(nested::<CountSum, _>, nested_told(1));
+    on_both_engines!(nested::<CountSum, _>, nested_told::<CountSum>());
 }
 
 fn entry(db: &Lignin, prefix: [u8; 32]) -> Option<LigninEntry> {
@@ -1079,6 +1181,23 @@ fn handles_that_name_two_elements_for_one_subtree_are_refused() {
     for key in [b"x", b"y"] {
         assert_eq!(read.aux().get(key).unwrap().expect("a read"), None);
     }
+
+    // A handle beside the tree with the prefix of the secondary, in a
+    // batch that writes the primary through its own handle: whichever of
+    // the two subtrees the engine comes to first, the secondary is no
+    // subtree of the tree.
+    let batch = <LigninEngine as Engine>::Batch::default();
+    let primary = engine.subtree(idx.into(), Some(&batch), &tx).unwrap();
+    (primary.aux().put(b"p", b"v", None).unwrap()).expect("staging");
+    drop(primary);
+    stage(&batch, tree, b"y");
+    let refused = (engine.apply_batch(batch, &tx).unwrap()).expect_err("the wrong element");
+    assert!(
+        matches!(&refused, StorageError::NotSupported(words) if words.contains("beside")),
+        "{refused}"
+    );
+    let read = engine.subtree_by_prefix(own, None, &tx).unwrap();
+    assert_eq!(read.aux().get(b"p").unwrap().expect("a read"), None);
 
     // The right handle alone writes.
     let batch = <LigninEngine as Engine>::Batch::default();

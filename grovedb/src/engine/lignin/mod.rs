@@ -34,12 +34,14 @@
 //! and reads as the empty tree it is.
 //!
 //! An indexed tree hosts more than one Merk: its primary, at the path of
-//! its element, and a secondary for each of its axes. The handle that
-//! writes a secondary is opened beside the primary and names the element
+//! its element, and a secondary for each of its axes. A deferred handle
+//! that is opened with a batch beside the subtree of a path that has a
+//! last segment names the element under that segment
 //! ([`Engine::subtree_beside`]). Where a group of batches is applied that
-//! holds a write for one of these Merks, the engine reads what the
-//! element hosts, enters all of its Merks if none is entered, and says to
-//! the store which Merks the element's node names ([`enter`]).
+//! holds a write for one of these Merks through a handle that names the
+//! element, the engine reads what the element hosts, enters all of its
+//! Merks if none is entered, and says to the store which Merks the
+//! element's node names ([`enter`]).
 //!
 //! # What it does not do yet
 //!
