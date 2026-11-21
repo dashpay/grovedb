@@ -4,6 +4,9 @@ use std::{
     panic::{catch_unwind, AssertUnwindSafe},
     path::PathBuf,
     process::{Child, Command, Stdio},
+    sync::mpsc,
+    thread,
+    time::Duration,
 };
 
 use tempfile::TempDir;
@@ -282,6 +285,69 @@ fn read_dir_does_not_follow_symbolic_links() {
     assert_eq!(entries.len(), 2);
     assert_eq!(entries[0].kind, EntryKind::Dir);
     assert_eq!(entries[1].kind, EntryKind::Other);
+}
+
+/// Whether the system is one on which a directory is opened with
+/// `O_DIRECTORY`, so that the system itself refuses what is none.
+const THE_SYSTEM_REFUSES: bool = cfg!(all(
+    not(miri),
+    any(
+        target_os = "macos",
+        all(
+            target_os = "linux",
+            any(target_arch = "x86_64", target_arch = "aarch64")
+        )
+    )
+));
+
+#[test]
+#[cfg_attr(miri, ignore = "spawns processes")]
+fn a_directory_sync_refuses_a_fifo_without_waiting_for_a_writer() {
+    if !THE_SYSTEM_REFUSES {
+        eprintln!("skipped: on this system the open of a FIFO waits for a writer");
+        return;
+    }
+    let (vfs, root, _dir) = setup();
+    let fifo = root.join("fifo");
+    let made = Command::new("mkfifo").arg(&fifo).status().unwrap();
+    assert!(made.success());
+
+    let (done, results) = mpsc::channel();
+    let syncing = thread::spawn(move || {
+        let alone = vfs.sync_dir(&fifo);
+        let in_a_set = vfs.sync_together(&[SyncItem::Dir(&fifo)]);
+        done.send([alone, in_a_set]).unwrap();
+    });
+    let Ok(results) = results.recv_timeout(Duration::from_secs(60)) else {
+        panic!("the open of a FIFO that has no writer has not returned in a minute");
+    };
+    syncing.join().unwrap();
+    for result in results {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotADirectory);
+        assert!(error.raw_os_error().is_some(), "{error}");
+    }
+}
+
+#[test]
+fn a_file_is_not_opened_as_a_directory() {
+    let (vfs, root, _dir) = setup();
+    let file = root.join("file");
+    fs::write(&file, b"content").unwrap();
+
+    for result in [
+        vfs.sync_dir(&file),
+        vfs.sync_together(&[SyncItem::Dir(&file)]),
+    ] {
+        let error = result.unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::NotADirectory);
+        assert_eq!(
+            error.raw_os_error().is_some(),
+            THE_SYSTEM_REFUSES,
+            "{error}"
+        );
+    }
+    drop(open_dir(&root).unwrap());
 }
 
 #[cfg(target_os = "linux")]

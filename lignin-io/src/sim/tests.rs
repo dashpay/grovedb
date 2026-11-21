@@ -25,6 +25,31 @@ mod trace;
 
 type Tree = BTreeMap<String, Option<Vec<u8>>>;
 
+/// The stack, in bytes, of the thread on which a test runs what must not
+/// call itself once for each of [`DEEP`] things.
+const SMALL_STACK: usize = 256 * 1024;
+
+/// How many directories one in the other, or changes of one file, such a
+/// test makes. A call that makes a call keeps at least the address it
+/// returns to on the stack, so outside Miri this many calls, each made by
+/// the one before it, do not fit in [`SMALL_STACK`]. Miri is given fewer,
+/// and has no stack to overflow.
+const DEEP: usize = if cfg!(miri) { 200 } else { 100_000 };
+
+const _: () = assert!(cfg!(miri) || DEEP * size_of::<usize>() > SMALL_STACK);
+
+/// Runs `test` on a thread whose stack has [`SMALL_STACK`] bytes, and
+/// panics as it panics.
+fn on_a_small_stack(test: impl FnOnce() + Send + 'static) {
+    let thread = std::thread::Builder::new()
+        .stack_size(SMALL_STACK)
+        .spawn(test)
+        .unwrap();
+    if let Err(panic) = thread.join() {
+        std::panic::resume_unwind(panic);
+    }
+}
+
 fn sim(seed: u64) -> SimVfs {
     SimVfs::new(SimConfig::new(seed))
 }

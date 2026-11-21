@@ -2,6 +2,7 @@
 //! or not at all, with everything in the directory as durable as it was.
 
 use super::*;
+use crate::sim::trace::Fnv;
 
 /// What a crash can leave of the names, whatever it does to the files.
 fn states(fs: &SimVfs) -> BTreeSet<Tree> {
@@ -46,6 +47,124 @@ fn a_directory_rename_is_whole_and_needs_both_parents_synced() {
     fs.sync_dir(p("/from")).unwrap();
     assert_eq!(states(&fs), BTreeSet::from([done]));
     check(&fs);
+}
+
+#[test]
+fn the_fingerprint_tells_in_which_directory_a_name_is() {
+    let trees = [["/a/b", "/a/c"], ["/a/b", "/c"], ["/b", "/c"]];
+    let fingerprints = trees.map(|files| {
+        let fs = sim(46);
+        fs.create_dir(p("/a")).unwrap();
+        for (file, content) in files.into_iter().zip([b"b", b"c"]) {
+            drop(create(&fs, file, content));
+        }
+        fs.fingerprint()
+    });
+    assert_eq!(BTreeSet::from(fingerprints).len(), 3);
+}
+
+/// `/a` with the file `b`, the directory `d` that holds the file `g`, and
+/// `e`, which is a second name of the file `/c`. The directory comes before
+/// a file in the root, and so does `d` in `/a`.
+fn two_levels_and_a_link() -> SimVfs {
+    let fs = sim(48);
+    fs.create_dir(p("/a")).unwrap();
+    fs.create_dir(p("/a/d")).unwrap();
+    for (file, content) in [("/c", b"y"), ("/a/d/g", b"z"), ("/a/b", b"x")] {
+        drop(create(&fs, file, content));
+    }
+    fs.hard_link(p("/c"), p("/a/e")).unwrap();
+    fs
+}
+
+#[test]
+fn the_fingerprint_is_of_each_directory_whole_where_its_name_stands() {
+    let mut expected = Fnv::new();
+    let name = |hasher: &mut Fnv, name: &str| {
+        hasher.u64(name.len() as u64);
+        hasher.bytes(name.as_bytes());
+    };
+    let content = |hasher: &mut Fnv, content: &[u8]| {
+        hasher.u64(4);
+        hasher.u64(content.len() as u64);
+        hasher.bytes(content);
+    };
+    let (dir_begins, dir_ends, file_seen) = (1, 2, 3);
+    name(&mut expected, "a");
+    expected.u64(dir_begins);
+    {
+        name(&mut expected, "b");
+        content(&mut expected, b"x");
+        name(&mut expected, "d");
+        expected.u64(dir_begins);
+        {
+            name(&mut expected, "g");
+            content(&mut expected, b"z");
+        }
+        expected.u64(dir_ends);
+        name(&mut expected, "e");
+        content(&mut expected, b"y");
+    }
+    expected.u64(dir_ends);
+    name(&mut expected, "c");
+    expected.u64(file_seen);
+    expected.u64(2);
+
+    assert_eq!(two_levels_and_a_link().fingerprint(), expected.0);
+}
+
+#[test]
+fn a_recovered_file_system_numbers_each_directory_whole_where_its_name_stands() {
+    let fs = two_levels_and_a_link();
+    let image = fs.crash_image();
+    let recovered = recover(&image, &image.keep_all());
+    assert_eq!(tree(&recovered), tree(&fs));
+
+    for (len, file) in (2..).zip(["/a/b", "/a/d/g", "/c", "/a/e"]) {
+        let mode = OpenMode::Write(Create::Never);
+        recovered.open(p(file), mode).unwrap().set_len(len).unwrap();
+    }
+    let image = recovered.crash_image();
+    let numbers: Vec<u64> = image.changes().iter().map(|change| change.file).collect();
+    assert_eq!(numbers, [2, 4, 5, 5]);
+}
+
+#[test]
+fn a_tree_far_deeper_than_a_stack_is_fingerprinted_and_survives_a_crash() {
+    on_a_small_stack(|| {
+        let fs = sim(47);
+        fs.create_dir(p("/tree")).unwrap();
+        drop(create_durable(&fs, "/tree/leaf", b"leaf"));
+        fs.sync_dir(p("/")).unwrap();
+        for _ in 1..DEEP {
+            fs.create_dir(p("/above")).unwrap();
+            fs.rename(p("/tree"), p("/above/tree")).unwrap();
+            fs.rename(p("/above"), p("/tree")).unwrap();
+            fs.sync_dir(p("/")).unwrap();
+        }
+        let image = fs.crash_image();
+        assert!(image.names().is_empty() && image.changes().is_empty());
+        let deepest = PathBuf::from("/tree".repeat(DEEP));
+        let (leaf, below) = (deepest.join("leaf"), deepest.join("below"));
+        assert_eq!(read(&fs, &leaf), b"leaf");
+        let durable = fs.fingerprint();
+
+        let file = fs.open(&leaf, OpenMode::Write(Create::Never)).unwrap();
+        file.write_at(b"LEAF", 0).unwrap();
+        fs.create_dir(&below).unwrap();
+        assert_ne!(fs.fingerprint(), durable);
+
+        let image = fs.crash_image();
+        let lost = recover(&image, &image.lose_all());
+        assert_eq!(lost.fingerprint(), durable);
+        assert_eq!(read(&lost, &leaf), b"leaf");
+        assert_eq!(kind(lost.read_dir(&below)), ErrorKind::NotFound);
+        let kept = recover(&image, &image.keep_all());
+        assert_eq!(kept.fingerprint(), fs.fingerprint());
+        assert_eq!(read(&kept, &leaf), b"LEAF");
+        assert!(kept.read_dir(&below).unwrap().is_empty());
+        check(&fs);
+    });
 }
 
 #[test]

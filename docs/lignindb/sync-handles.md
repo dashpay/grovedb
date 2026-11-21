@@ -123,12 +123,19 @@ On an APFS volume the flush of Q1's set is asked through its last item, which is
 
 **A backup copies such bytes too.** Of a file that the source's manifest names open, `Backup::copy` takes all the file has (`lignindb/src/backup/mod.rs:488-489`), measured and read through new handles (`:476`, `:613`). The copy makes them durable (L5), and the version of the copy is where its log ends (`:651`). So after a write-back that failed in the source, a copy can end at an earlier commit than the source's session published, with no power cut.
 
-Sentences of the engine's documents that say more than that, and that hold absent a failed write-back:
+Three sentences of `disk-full-and-backup.md` about the open that follows such a failure say it with this limit (lines at `7cc55fbc`):
+
+| Where | The sentence |
+| --- | --- |
+| `disk-full-and-backup.md:53-61` (DF1) | "With no power cut since, it is the latest version that was published after a close that returned `Ok`, and also after a close that answered an error, unless the operating system failed to write to the device something that the session wrote to its files. A sync that the device refused is such a failure, and what the system keeps in memory of the bytes it could not write is not promised (`sync-handles.md`, section 6): the open can then land on an earlier version with no power cut, and never on one before the newest that was made durable." |
+| `disk-full-and-backup.md:168-171` | "the next open recovers the database at a version that DF1 allows. A refused sync is a failure of the kind that DF1 names: also with no power cut, the open can land before the latest version that was published." |
+| `disk-full-and-backup.md:500-506` | "Nothing that was made durable is lost by it. A commit that was published after the newest durable version is in the next open if the system still has the log whole up to it, which it does not promise after a sync that was refused (DF1): the open can land on an earlier commit than the last one with no power cut, and `Db::version` says where it landed." |
+
+Two sentences of the same document say more than that. They hold absent a failed write-back, and the second with no power cut:
 
 | Where | The sentence | Whose |
 | --- | --- | --- |
-| `disk-full-and-backup.md:53-55` (DF1) | "After a close, also one that answered an error, and with no power cut since, it is the latest version that was published." | OPS-08 |
-| `disk-full-and-backup.md:162-163` | "the next open recovers the database at the latest version that was published, or, after a power cut, at one that DF1 allows." | OPS-08 |
-| `disk-full-and-backup.md:491-494` | "A sync of the log or of a segment was refused while the device was full, and that stays failed for the session. Nothing that was published is lost by it. Without a power cut the next open has every commit". A sync that the device refused is a write-back that failed, and what the system keeps in memory of the refused bytes is not promised. | OPS-08 |
+| `disk-full-and-backup.md:68-70` (DF2) | "A commit that was answered `CommitError::NotDurable` is published: the next open has it unless a power cut loses it." That answer is given where the sync of the log at the commit was refused (DF4), which is a failure of the kind that DF1 names. | OPS-08 |
+| `disk-full-and-backup.md:183-185` (DF8) | "A commit that was waiting for the lock when a failed sync of a segment was recorded is still taken: it is in the log like any other, and the next open has it." | OPS-08 |
 
 `lignin-store/src/wal/mod.rs:302-312` already gives the reason for S6 in these terms: a session "may have had a sync of it fail and ended with no crash".

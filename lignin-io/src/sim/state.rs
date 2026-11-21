@@ -1279,14 +1279,21 @@ impl State {
         }
     }
 
+    /// A number for what operations see: the names from the root down, each
+    /// directory's before the next name of the directory above it, and the
+    /// content of the files.
     pub(super) fn fingerprint(&self) -> u64 {
         let mut hasher = Fnv::new();
-        self.hash_dir(ROOT, &mut hasher, &mut BTreeMap::new());
-        hasher.0
-    }
-
-    fn hash_dir(&self, dir: DirId, hasher: &mut Fnv, seen: &mut BTreeMap<FileId, u64>) {
-        for (name, cell) in &self.dirs[&dir].cells {
+        let mut seen = BTreeMap::new();
+        let mut open = vec![self.dirs[&ROOT].cells.iter()];
+        while let Some(cells) = open.last_mut() {
+            let Some((name, cell)) = cells.next() else {
+                open.pop();
+                if !open.is_empty() {
+                    hasher.u64(2);
+                }
+                continue;
+            };
             let Some(node) = cell.now else {
                 continue;
             };
@@ -1295,8 +1302,8 @@ impl State {
             match node {
                 Node::Dir(dir) => {
                     hasher.u64(1);
-                    self.hash_dir(dir, hasher, seen);
-                    hasher.u64(2);
+                    check_one_more_fits(open.len(), &self.dirs);
+                    open.push(self.dirs[&dir].cells.iter());
                 }
                 Node::File(file) => {
                     let label = seen.len() as u64;
@@ -1313,6 +1320,7 @@ impl State {
                 }
             }
         }
+        hasher.0
     }
 
     /// The buffers of the file at `path`: what operations see, and what is
@@ -1404,6 +1412,19 @@ impl State {
     }
 }
 
+/// Checks a walk down from the root that has `open` directories open, one
+/// in the other, and is about to open the next one below them. The
+/// directories form a tree, so a walk never has more of them open than there
+/// are. A state in which one of them is below itself is a fault of the
+/// simulator, and the walk panics there instead of going round for ever.
+pub(super) fn check_one_more_fits(open: usize, dirs: &BTreeMap<DirId, Dir>) {
+    assert!(
+        open < dirs.len(),
+        "the simulator's directories form a cycle: a walk down from the root has all {open} of \
+         them open and found one more below them"
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1449,5 +1470,28 @@ mod tests {
     fn what_a_directory_is_within_is_not_asked_for_ever_of_a_cycle() {
         let (state, d) = with_a_cycle();
         state.is_within(d, ROOT);
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the simulator's directories form a cycle: a walk down from the root has all 3 of them open and found one more below them"
+    )]
+    fn the_fingerprint_is_not_taken_for_ever_of_a_cycle() {
+        let (state, _) = with_a_cycle();
+        state.fingerprint();
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "the simulator's directories form a cycle: a walk down from the root has all 3 of them open and found one more below them"
+    )]
+    fn a_crash_state_is_not_built_for_ever_of_a_cycle() {
+        let (mut state, d) = with_a_cycle();
+        let d_name = OsStr::new("d");
+        let e = state.dir_at(&[d_name, OsStr::new("e")], "/d/e").unwrap();
+        let d_in_e = state.dir_mut(e).cells.get_mut(d_name).unwrap();
+        d_in_e.durable = Some(Node::Dir(d));
+        let image = state.image();
+        let _ = image.recover(&image.keep_all());
     }
 }

@@ -11,7 +11,9 @@ use std::{
 
 use super::{
     rng::{stream, Chance, SimRng},
-    state::{with_what_they_build_on, Dir, DirId, FileId, NameOp, Node, State, ROOT},
+    state::{
+        check_one_more_fits, with_what_they_build_on, Dir, DirId, FileId, NameOp, Node, State, ROOT,
+    },
     trace::{ChangeFate, CrashRecord, Event, Fate, NameFate},
     SimConfig, SimVfs,
 };
@@ -745,6 +747,9 @@ impl CrashImage {
 
         let mut orders = Vec::new();
         let limit = limit / names.len() as u64;
+        if ways.len() >= 64 || 1 << ways.len() > limit {
+            return None;
+        }
         every_order(&ways, &mut Vec::new(), &mut orders, limit).then_some(())?;
         let mut plans = Vec::with_capacity(names.len() * orders.len());
         for names in names {
@@ -787,21 +792,26 @@ impl CrashImage {
             ..self.config.clone()
         });
         state.trace.push(Event::Crash(self.record(plan, &kept)));
-        let mut files = BTreeMap::new();
-        self.rebuild(ROOT, ROOT, &kept, &survivors, &mut state, &mut files);
+        self.rebuild(&kept, &survivors, &mut state);
         Ok(SimVfs::from_state(state))
     }
 
+    /// Gives `state` the names the crash leaves, from the root down: each
+    /// directory's before the next name of the directory above it.
     fn rebuild(
         &self,
-        from: DirId,
-        into: DirId,
         kept: &BTreeSet<u64>,
         survivors: &BTreeMap<FileId, Vec<&Survivor>>,
         state: &mut State,
-        files: &mut BTreeMap<FileId, FileId>,
     ) {
-        for (name, cell) in &self.dirs[&from].cells {
+        let mut files = BTreeMap::new();
+        let mut open = vec![(ROOT, self.dirs[&ROOT].cells.iter())];
+        while let Some((into, cells)) = open.last_mut() {
+            let into = *into;
+            let Some((name, cell)) = cells.next() else {
+                open.pop();
+                continue;
+            };
             let surviving = cell
                 .pending
                 .iter()
@@ -817,7 +827,8 @@ impl CrashImage {
                 Some(Node::Dir(dir)) => {
                     let new = state.add_dir(into, name);
                     state.place(into, name, Node::Dir(new));
-                    self.rebuild(dir, new, kept, survivors, state, files);
+                    check_one_more_fits(open.len(), &self.dirs);
+                    open.push((new, self.dirs[&dir].cells.iter()));
                 }
             }
         }
@@ -941,6 +952,11 @@ impl CrashImage {
 /// Adds to `orders` every choice of changes, each in one of its `ways` to
 /// survive, in every order, on top of `current`. Says whether they fit in
 /// `limit`.
+///
+/// It calls itself once for each change of an order. The caller gives it
+/// `ways` only if the choices of changes alone fit in `limit`, each kept or
+/// not: two to the power of their number. So an order has fewer than 64
+/// changes.
 fn every_order(
     ways: &[Vec<Option<Tear>>],
     current: &mut Vec<Survivor>,
