@@ -20,6 +20,8 @@
 //!   root hashes and the proofs are the same. `where_a_tree_was` holds
 //!   the reads that are not, which `GROVE-03-F1` is to make RocksDB's
 //!   (D-227).
+//! - `over_flat_trees`: the same with trees that keep their data flat,
+//!   by a partial batch, and for a tree with a tree in it.
 //! - `wrong_hashes`: a grove with wrong hashes planted at several depths,
 //!   and what `verify_grovedb` reports of it on each engine.
 //! - `bidirectional`: batches that write elements which take backward
@@ -1226,6 +1228,115 @@ fn another_element_over_a_tree_on_grove_v4() {
 #[test]
 fn another_element_over_a_tree_on_grove_v5() {
     written_over_a_tree_on(&GROVE_VERSIONS[4]);
+}
+
+/// Trees that keep their data flat among what is written over and what
+/// takes the place of a tree, a partial batch that writes over a tree, and
+/// a batch that writes over a tree and over a tree in it.
+fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
+    let db = open::<E>(dir);
+    let made = made_by(version);
+    let mut log = Log::default();
+    let mut calls = Calls::new(&db, version, None, &mut log);
+    let item = || Element::new_item(vec![0x5a; 9]);
+    let root: &[&[u8]] = &[];
+    // A leaf appended to the tree under `key`, and what the tree answers.
+    let append = |calls: &mut Calls<'_, '_, '_, E>, key: &[u8], leaf: u8| {
+        let appended = db.mmr_tree_append(root, key, vec![leaf; 40], None, version);
+        calls.log.answer("append".to_owned(), appended);
+        calls.root();
+        let count = db.mmr_tree_leaf_count(root, key, None, version);
+        calls.log.answer("count".to_owned(), count);
+        let hash = db.mmr_tree_root_hash(root, key, None, version);
+        calls.log.answer("root of the leaves".to_owned(), hash);
+    };
+    for key in [b"m1".as_slice(), b"m2", b"m3", b"m4"] {
+        calls.batch("a tree of leaves", vec![insert(&[], key, Element::empty_mmr_tree())]);
+        for leaf in 1..=3 {
+            append(&mut calls, key, leaf);
+        }
+    }
+    for key in [b"t1".as_slice(), b"t2", b"t3"] {
+        calls.batch("filled", filled(&[], key, 0, made));
+    }
+
+    // An item over a tree of leaves, a tree over the item, and an element
+    // in it.
+    calls.batch("an item over leaves", vec![insert(&[], b"m1", item())]);
+    calls.get(&[], b"m1");
+    let ops = vec![
+        insert(&[], b"m1", Element::empty_tree()),
+        insert(&[b"m1"], b"x", item()),
+    ];
+    calls.batch("a tree over the item, written", ops);
+    calls.get(&[b"m1"], b"x");
+    calls.proven(&[b"m1"]);
+    // A tree over a tree of leaves, alone, and an element in it later.
+    calls.batch("a tree over leaves", vec![insert(&[], b"m2", Element::empty_count_tree())]);
+    calls.batch("into it", vec![insert(&[b"m2"], b"x", item())]);
+    calls.get(&[], b"m2");
+    calls.proven(&[b"m2"]);
+    // A tree of leaves over a tree with elements, and leaves in it later.
+    calls.batch("leaves over a tree", vec![insert(&[], b"t1", Element::empty_mmr_tree())]);
+    calls.get(&[], b"t1");
+    for leaf in 4..=5 {
+        append(&mut calls, b"t1", leaf);
+    }
+    // A tree of leaves over a tree of leaves: nothing tells the new one
+    // from the old, and its records stay on both engines.
+    calls.batch("leaves over leaves", vec![insert(&[], b"m3", Element::empty_mmr_tree())]);
+    append(&mut calls, b"m3", 6);
+    // A tree that sums over a tree of leaves, with a number in it.
+    let ops = vec![
+        insert(&[], b"m4", Element::empty_sum_tree()),
+        insert(&[b"m4"], b"five", Element::new_sum_item(5)),
+    ];
+    calls.batch("a sum tree over leaves, written", ops);
+    calls.get(&[], b"m4");
+    calls.get(&[b"m4"], b"five");
+    calls.proven(&[b"m4"]);
+
+    // A partial batch writes an item over a tree: its two segments are
+    // one group.
+    calls.partial("an item over a tree", vec![insert(&[], b"t2", item())], None, |_| Ok(Vec::new()));
+    calls.get(&[], b"t2");
+    calls.refused(|calls| calls.get(&[b"t2"], b"item"));
+    // One batch writes an item over a tree and an item over a tree in it.
+    let options = BatchApplyOptions {
+        disable_operation_consistency_check: true,
+        ..Default::default()
+    };
+    let ops = vec![
+        insert(&[b"t3"], b"nested", item()),
+        insert(&[], b"t3", item()),
+    ];
+    calls.refused(|calls| {
+        calls.batch_with("an item over a tree and over a tree in it", ops, Some(options));
+    });
+    calls.get(&[], b"t3");
+    calls.batch("after it all", vec![insert(&[b"m1"], b"y", item()), insert(&[b"m2"], b"y", item())]);
+    db.flush().expect("a flush");
+    log
+}
+
+/// The history of `over_flat_trees` on every grove version: the same
+/// answers, costs and root hashes on both engines and a sound LigninDB
+/// database. Every append is taken. The batch that writes over a tree
+/// and over a tree in it is refused by GroveDB on both engines, so no
+/// group names two trees, one in the other, as written over.
+#[test]
+fn trees_that_keep_their_data_flat_are_written_over_and_written_over_trees() {
+    for version in GROVE_VERSIONS.iter() {
+        let log = on_both_engines!(over_flat_trees, version);
+        let appended = log.answers.iter().filter(|(call, ..)| call == "append");
+        let appended: Vec<bool> = appended.map(|(.., answer)| answer.starts_with("Ok")).collect();
+        assert_eq!(appended, [true; 15]);
+        let batches = log.answers.iter().filter(|(call, ..)| call.starts_with("batch "));
+        let taken: Vec<bool> = batches.map(|(.., answer)| answer.starts_with("Ok")).collect();
+        let mut expected = [true; 16];
+        expected[14] = false;
+        assert_eq!(taken, expected);
+    }
 }
 
 /// What the two engines answer differently once a tree was written over
