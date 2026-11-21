@@ -664,6 +664,9 @@ impl<'s> WriteTxn<'s> {
         scopes: &Scopes,
         loaded: &mut Loaded,
     ) -> Result<Parked<'s>, TxnError> {
+        // No cell of the frames that are made here holds a value that a
+        // load appended for the frames before.
+        loaded.begin_layout();
         let mut frames = Frames::new(path, guard, at)?;
         frames.tree.behind_keys = (scopes.ever_marked().into_iter())
             .map(|(_, key)| key)

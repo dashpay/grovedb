@@ -9,7 +9,7 @@ use lignin_tree::hash::Stale;
 use super::{
     error::{BatchError, WholeFault},
     key::{Column, Subtree, Unit},
-    load::load_order,
+    load::{is_load, load_order},
     write::{Batch, Entering, Hosted, MerkWrite, RecordWrite, RootPut, SubtreeWrite, ValuePut},
 };
 
@@ -29,8 +29,8 @@ const MAX_TREE_TYPE: usize = u8::MAX as usize;
 /// a Merk, holds no key or value that is too long, enters no subtree
 /// twice, by either kind of enter, drops or clears none twice, and states
 /// none anew twice or beside its enter, its drop or its clear. A change set
-/// that says it is the whole Merk is one the bulk loader can lay out
-/// ([`whole`]).
+/// that says it is the whole Merk and has a node is one the bulk loader
+/// can lay out ([`whole`], [`load_order`]).
 ///
 /// Of its moves: that no prefix is named twice as one a subtree is taken
 /// from, and none twice as one a subtree is brought to; that the batch
@@ -184,8 +184,8 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
             }
         }
     }
-    if batch.merks.iter().any(|merk| merk.whole) {
-        for merk in batch.merks.iter().filter(|merk| merk.whole) {
+    if batch.merks.iter().any(is_load) {
+        for merk in batch.merks.iter().filter(|merk| is_load(merk)) {
             whole(merk)?;
         }
         load_order(batch)?;
@@ -210,19 +210,14 @@ pub(crate) fn check(batch: &Batch<'_>) -> Result<(), BatchError> {
     Ok(())
 }
 
-/// Checks that `merk`, which says it is the whole Merk, is one tree handed
-/// over a child before its parent, with every value stated and every hash
-/// made, and that its root is the root of that tree
-/// ([`MerkWrite::whole`]). A change set with no node loads nothing and is
-/// taken as any other.
+/// Checks that the load `merk` is one tree handed over a child before its
+/// parent, with every value stated and every hash made, and that its root
+/// is the root of that tree ([`MerkWrite::whole`]).
 fn whole(merk: &MerkWrite<'_>) -> Result<(), BatchError> {
     let subtree = merk.subtree;
     let refused = |fault| Err(BatchError::NotWhole { subtree, fault });
     if !merk.removed.is_empty() {
         return refused(WholeFault::Removes);
-    }
-    if merk.nodes.is_empty() {
-        return Ok(());
     }
     let RootPut::Set(Some(root)) = merk.root else {
         return refused(WholeFault::NoRoot);

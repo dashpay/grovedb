@@ -587,3 +587,65 @@ fn no_commit_is_taken_while_the_cut_cannot_be_made() {
     session.check_reads();
     session.check_recovery("after the cut could be made");
 }
+
+/// A load whose commit is unsettled keeps the files of its values for as
+/// long as the session lasts: its group names them, and a crash can bring
+/// the group back (CM9). A load that is rolled back holds none, and the
+/// file its values went to is taken out of the store once it is closed.
+#[test]
+fn a_load_whose_commit_is_unsettled_keeps_its_values_for_the_session() {
+    use crate::txn::tests::{
+        load::{batch_of, items, whole},
+        model,
+        store::Rng,
+    };
+
+    // Whether the file that the values of a load went to is taken out of
+    // the store once it is closed and nothing of the latest version points
+    // into it.
+    let goes = |unsettled: bool| {
+        let session = Session::new(700, SyncPolicy::Never);
+        session.commit();
+        let committer = session.committer();
+        let txn = committer.path().begin();
+        let scope = txn.scope().expect("a scope");
+        let merk = items(&mut Rng::new(3), b'u', 60, 2);
+        let batch = batch_of(vec![whole(1, &merk)]);
+        let loaded = batch.loading(&[model::subtree(1)], |batch| scope.apply(batch));
+        assert!(loaded.expect("a load").load.is_some());
+        scope.merge();
+        let files = session.db.values.files_named().expect("the files");
+        let [file] = &files[..] else {
+            panic!("the values of the load are in one file: {files:?}");
+        };
+        let file = file.id();
+        if unsettled {
+            // A manifest covers the values while the files can be synced.
+            txn.prepare_loads().expect("the values are covered");
+            let taken_back = FaultRule::new(Fault::Eio)
+                .on(OpKind::Append)
+                .torn_append(false);
+            session.fs.add_rule(taken_back);
+            session
+                .fs
+                .add_rule(FaultRule::new(Fault::Eio).on(OpSet::SYNCS).forever());
+            let ended = committer.commit(&txn, &mut NoStaleHashes);
+            assert!(
+                matches!(ended, Err(CommitError::Unsettled { .. })),
+                "{ended:?}"
+            );
+            session.fs.clear_rules();
+        } else {
+            committer.rollback(&txn).expect("no scope is open");
+        }
+        let closed = session.db.load_files.close(file);
+        assert!(closed.expect("the file is closed"), "the loads fill it");
+        assert!(!session.db.load_files.close(file).expect("no file"));
+        let values = &session.db.values;
+        let retired = values.retire(session.versions.latest());
+        let dropped = values.drop_empty(retired).expect("what is empty goes");
+        dropped.contains(&file)
+    };
+    assert!(goes(false), "the file of a load that was rolled back");
+    assert!(!goes(true), "the file of a load whose commit is unsettled");
+}

@@ -12,7 +12,7 @@ mod errors;
 mod handles;
 mod hashes;
 mod histories;
-mod load;
+pub(crate) mod load;
 mod moves;
 mod parked;
 pub(crate) mod random;

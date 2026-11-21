@@ -374,8 +374,8 @@ pub enum BatchError {
 /// ([`BatchError::NotWhole`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WholeFault {
-    /// The Merk has a root before the operation. A load is the whole of a
-    /// Merk that had none.
+    /// The Merk has a root once the drops and the clears of the batch are
+    /// made. A load is the whole of a Merk that had none.
     HasRoot,
     /// It removes a key. A Merk that had no root has no node to remove.
     Removes,
@@ -386,11 +386,13 @@ pub enum WholeFault {
     /// A node leaves a hash stale. The cells of a load are written once,
     /// with every hash in them.
     StaleHash,
-    /// It does not set the root to one of its nodes.
+    /// It does not set the root, or sets it to a key that is not the one
+    /// node of it that no link names.
     NoRoot,
-    /// A link names a node that does not stand before its parent in the
-    /// change set: the order is not a child before its parent, or the
-    /// node is in no tree, or is the child of two.
+    /// A link names a key that no node before its parent in the change
+    /// set has, or one that an earlier link has named: the order is not a
+    /// child before its parent, the child is not in the change set, or it
+    /// is the child of two.
     ChildLater,
     /// A node is not below the root: the change set holds more than one
     /// tree.
@@ -398,8 +400,11 @@ pub enum WholeFault {
     /// A node hosts a Merk that another change set of the batch writes,
     /// and that change set is no load.
     HostsWritten,
-    /// Two loads of the batch host each other.
+    /// Loads of the batch host each other, in a cycle of one or more.
     HostsItself,
+    /// A node hosts a Merk that another node of the batch hosts, or hosts
+    /// it twice. A Merk has one host.
+    HostedTwice,
 }
 
 impl fmt::Display for WholeFault {
@@ -409,11 +414,12 @@ impl fmt::Display for WholeFault {
             Self::Removes => "it removes a key",
             Self::KeepsValue => "a node keeps its value",
             Self::StaleHash => "a node leaves a hash stale",
-            Self::NoRoot => "its root is none of its nodes",
-            Self::ChildLater => "a link names a node that does not stand before its parent",
+            Self::NoRoot => "its root is not the one node that no link names",
+            Self::ChildLater => "a link names no node that stands before its parent unlinked",
             Self::NotBelowRoot => "a node is not below the root",
             Self::HostsWritten => "a node hosts a Merk that the batch writes node by node",
             Self::HostsItself => "it hosts a Merk that hosts it",
+            Self::HostedTwice => "a node hosts a Merk that has a host in the batch",
         })
     }
 }

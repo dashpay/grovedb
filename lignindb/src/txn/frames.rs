@@ -7,7 +7,7 @@ use std::{
 };
 
 use lignin_format::{
-    tree_page::{Hash, HashField, Side},
+    tree_page::{HashField, Side},
     CellAddress, CommitVersion,
 };
 use lignin_store::alloc::PageAllocator;
@@ -25,13 +25,16 @@ use lignin_tree::{
     },
     hash::{Hashes, Stale},
     node::{Lease, NodeError, NodeHandle},
-    value::{TreeValues, ValueBuf, ValueSource},
+    value::{read_placed, TreeValues, ValueBuf, ValueSource},
 };
 
 use super::{
     error::{BatchError, Differs, HostName, TxnError, WholeFault},
     key::{Column, Subtree},
-    load::{is_load, load_error, load_order, LoadPages, Loaded, Placing, Stated, StoredValue},
+    load::{
+        entry_firsts, is_load, load_error, load_order, stated_hashes, LoadPages, Loaded, Placing,
+        Stated, StoredValue,
+    },
     pages::{find, follow, NodePages, TreePages},
     path::{FlatWriter, Idle, WritePath, IDLE},
     unlinked,
@@ -251,9 +254,6 @@ pub(crate) struct Frames<'s: 'g, 'g, G: lignin_tree::OperationGuard> {
     /// into the value log, each by the place of its node among the entries
     /// of the batch's change sets, in ascending order.
     stored: Vec<(u32, StoredValue)>,
-    /// Whether a load of the batch that is being applied has started a
-    /// page: a refusal after that leaves a part of the batch in the frames.
-    laden: bool,
 }
 
 /// The most cells a search by key passes before the pages are taken for
@@ -587,6 +587,13 @@ struct Resolver<'a> {
 }
 
 impl Resolver<'_> {
+    /// The place in the batch of the change set of `subtree`, if the batch
+    /// loads that Merk.
+    fn load(&self, subtree: &Subtree) -> Option<usize> {
+        let merk = self.by_subtree.get(subtree).copied();
+        merk.filter(|merk| is_load(&self.merks[*merk]))
+    }
+
     /// The node under `key` in the Merk `merk`: a node of the batch, or a
     /// cell that is there.
     fn node(
@@ -640,6 +647,18 @@ impl Resolver<'_> {
             aggregate: link.aggregate,
         })
     }
+}
+
+/// What the loads of one batch need before a page is started
+/// ([`Frames::plan_load`]).
+struct LoadPlan {
+    /// The loads, by their place in the batch, a hosted one before its
+    /// host.
+    order: Vec<usize>,
+    /// The root of each Merk that a node of a load hosts and that the
+    /// batch does not load.
+    outside: HashMap<Subtree, Option<CellAddress>>,
+    loader: Loader,
 }
 
 /// What the loads of one batch came to ([`Frames::load`]).
@@ -700,7 +719,6 @@ impl<'s: 'g, 'g, G: lignin_tree::OperationGuard> Frames<'s, 'g, G> {
             left: self.left,
             renewed: self.renewed,
             stored: self.stored,
-            laden: self.laden,
         }
     }
 }
@@ -739,7 +757,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             left: Vec::new(),
             renewed: HashMap::new(),
             stored: Vec::new(),
-            laden: false,
             base: at,
         })
     }
@@ -1129,25 +1146,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ///
     /// The change sets that are whole Merks are laid out first, by the
     /// loader, in pages of their own ([`Self::load`]), and `loaded` is
-    /// told the values they put into the value log. A refusal after a
-    /// load has started a page leaves a part of the batch in the frames.
+    /// told the values they put into the value log. A refusal after that
+    /// leaves a part of the batch in the frames.
     pub(crate) fn apply(
-        &mut self,
-        path: &WritePath<'s>,
-        batch: &Batch<'_>,
-        again: Option<Again<'_>>,
-        loaded: &mut Loaded,
-    ) -> Result<Applied, Refused> {
-        self.laden = false;
-        let applied = self.apply_parts(path, batch, again, loaded);
-        let laden = std::mem::take(&mut self.laden);
-        applied.map_err(|refused| Refused {
-            dirty: refused.dirty || laden,
-            ..refused
-        })
-    }
-
-    fn apply_parts(
         &mut self,
         path: &WritePath<'s>,
         batch: &Batch<'_>,
@@ -1498,16 +1499,20 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let mut load = None;
         if merks.iter().any(is_load) {
             let stored = again.map_or(&[][..], |again| again.stored);
-            let done = self.load(path, batch, view, &resolver, stored, loaded);
-            let done = done.map_err(|error| match self.laden {
-                true => Refused::dirty(error),
-                false => {
+            let plan = match self.plan_load(path, batch, view, &resolver) {
+                Ok(plan) => plan,
+                Err(error) => {
                     self.tree.set_lease(lease);
-                    Refused::clean(error)
+                    return Err(Refused::clean(error));
                 }
-            })?;
+            };
+            let done = self.load(path, batch, &resolver, plan, stored, loaded);
+            let done = done.map_err(Refused::dirty)?;
             (resolver.loaded, handles, load) = (done.roots, done.handles, Some(done.counters));
         }
+        // A refusal from here on leaves the pages of the loads in the
+        // frames, whatever else it changed.
+        let laden = load.is_some();
         let mut held = Vec::new();
         let resolved = self.resolve(view, &resolver, &reach, &loose.relinked, &mut held);
         let ResolvedBatch {
@@ -1521,7 +1526,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             Err(error) => {
                 self.forget(&held);
                 self.tree.set_lease(lease);
-                return Err(Refused::clean(error));
+                return Err(Refused {
+                    dirty: laden,
+                    ..Refused::clean(error)
+                });
             }
         };
         // The nodes of the tree write: those the trees reach, but for the
@@ -1607,7 +1615,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             )) => {
                 self.forget(&held);
                 self.tree.set_lease(lease);
-                return Err(Refused::clean(error));
+                return Err(Refused {
+                    dirty: laden,
+                    ..Refused::clean(error)
+                });
             }
             Err(error) => return Err(Refused::dropping(error)),
         };
@@ -1767,6 +1778,44 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok((applied, loose))
     }
 
+    /// What the loads of `batch` need that is found before a page is
+    /// started: the order they are laid out in, the roots of the Merks
+    /// their nodes host that the batch does not load, and a loader. It
+    /// changes nothing.
+    fn plan_load(
+        &self,
+        path: &WritePath<'s>,
+        batch: &Batch<'_>,
+        view: &Subtrees,
+        resolver: &Resolver<'_>,
+    ) -> Result<LoadPlan, TxnError> {
+        let merks = batch.merks;
+        let order = load_order(batch)?;
+        let mut outside = HashMap::new();
+        for &merk in &order {
+            let sets = merks[merk]
+                .nodes
+                .iter()
+                .filter_map(|node| match node.hosted {
+                    Hosted::Set(hosted) => Some(hosted),
+                    Hosted::Keep => None,
+                });
+            for subtree in sets.flatten() {
+                if resolver.load(subtree).is_none() && !outside.contains_key(subtree) {
+                    let root = self.entered(view, subtree)?.flatten();
+                    outside.insert(*subtree, root);
+                }
+            }
+        }
+        let first = merks[*order.first().expect("a batch with a load")].subtree;
+        let loader = Loader::new(path.layout, LoadParams::DEFAULT);
+        Ok(LoadPlan {
+            order,
+            outside,
+            loader: loader.map_err(|error| load_error(error, None, first))?,
+        })
+    }
+
     /// Lays out the loads of `batch`: its change sets that are whole
     /// Merks, each a Merk that had no root (`crate::txn`, "A load").
     ///
@@ -1790,90 +1839,44 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
     ///   root, and none is laid out inside its host: the cells of one
     ///   write of the loader are of one Merk ([`LoadPages`]).
     ///
-    /// [`Self::laden`] is set before the first page can be started.
+    /// Whatever it returns, the frames may hold pages of the loads.
     fn load(
         &mut self,
         path: &WritePath<'s>,
         batch: &Batch<'_>,
-        view: &Subtrees,
         resolver: &Resolver<'_>,
+        plan: LoadPlan,
         again: &[(u32, StoredValue)],
         loaded: &mut Loaded,
     ) -> Result<Load, TxnError> {
         let merks = batch.merks;
-        let order = load_order(batch)?;
-        let loads = |subtree: &Subtree| {
-            let merk = resolver.by_subtree.get(subtree);
-            merk.copied().filter(|merk| is_load(&merks[*merk]))
-        };
-        // The roots of the hosted Merks that the batch does not load are
-        // read before a page is started.
-        let mut outside: HashMap<Subtree, Option<CellAddress>> = HashMap::new();
-        for &merk in &order {
-            for node in merks[merk].nodes {
-                let Hosted::Set(hosted) = node.hosted else {
-                    continue;
-                };
-                for subtree in hosted {
-                    if loads(subtree).is_none() && !outside.contains_key(subtree) {
-                        let root = self.entered(view, subtree)?.flatten();
-                        outside.insert(*subtree, root);
-                    }
-                }
-            }
-        }
-        // The place of the first node of each change set among the entries
-        // the write set makes of the batch's change sets.
-        let mut firsts = Vec::with_capacity(merks.len());
-        let mut entries = 0;
-        for merk in merks {
-            firsts.push(entries);
-            entries += (merk.nodes.len() + merk.removed.len()) as u32;
-        }
-
+        let LoadPlan {
+            order,
+            outside,
+            mut loader,
+        } = plan;
+        let firsts = entry_firsts(merks);
         let not_whole = |subtree, fault| TxnError::from(BatchError::NotWhole { subtree, fault });
-        let first = merks[*order.first().expect("a batch with a load")].subtree;
-        let mut loader = Loader::new(path.layout, LoadParams::DEFAULT)
-            .map_err(|error| load_error(error, None, first))?;
-        let mut placing = Placing::new(
-            path.values,
-            path.manifest,
-            path.load_files,
-            loaded,
-            path.inline,
-        );
-        let none = HashMap::new();
-        let mut pages = LoadPages::new(&mut self.tree, &none);
+        let mut placing = Placing::new(path, loaded);
+        let mut pages = LoadPages::new(&mut self.tree);
         let mut roots = vec![None; merks.len()];
-        let mut handles: Vec<Vec<Option<NodeHandle>>> = vec![Vec::new(); merks.len()];
-        let (mut records, mut joined) = (Vec::new(), Vec::new());
+        let mut handles: Vec<Vec<NodeHandle>> = vec![Vec::new(); merks.len()];
+        let mut buf = ValueBuf::new();
         let mut hosted_roots = Vec::new();
-        let mut before = None;
-        self.laden = true;
         for &merk in &order {
             let write = &merks[merk];
             let subtree = write.subtree;
             let keys = &resolver.written[merk];
-            let done = pages.next_merk(keys);
-            if let Some(before) = before.replace(merk) {
-                handles[before] = done;
-            }
-            // The hash of each node, as the link of its parent states it.
-            let mut hashes: Vec<Option<&Hash>> = vec![None; write.nodes.len()];
-            for link in (write.nodes.iter()).flat_map(|node| [&node.left, &node.right]) {
-                if let Some(child) = link.as_ref().and_then(|link| keys.get(link.key)) {
-                    hashes[*child] = link.as_ref().map(|link| link.hash);
-                }
-            }
+            pages.start(keys);
+            let hashes = stated_hashes(write, keys);
             let mut subtrees = vec![None; write.nodes.len()];
             for (at, node) in write.nodes.iter().enumerate() {
                 let entry = firsts[merk] + at as u32;
                 let stored = again.binary_search_by_key(&entry, |(place, _)| *place);
                 let value = match (stored, node.value) {
                     (Ok(stored), _) => {
-                        again[stored]
-                            .1
-                            .read(path.values, &mut records, &mut joined)?
+                        let stored = again[stored].1;
+                        read_placed(path.values, stored.pointer, stored.owner, &mut buf)?
                     }
                     (Err(_), ValuePut::Value(value)) => value,
                     (Err(_), ValuePut::Keep) => {
@@ -1896,7 +1899,7 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
                 hosted_roots.clear();
                 if let Hosted::Set(hosted) = node.hosted {
                     hosted_roots.extend(hosted.iter().map(|subtree| {
-                        let root = match loads(subtree) {
+                        let root = match resolver.load(subtree) {
                             Some(merk) => roots[merk],
                             None => outside.get(subtree).copied().flatten(),
                         };
@@ -1930,11 +1933,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let root = loader.root(&mut pages, &mut placing, top);
             let root = root.map_err(|error| load_error(error, placing.failed.take(), subtree))?;
             roots[merk] = Some(root.address);
+            // The root is placed, so every cell of the Merk is in a page.
+            let in_no_page = TxnError::Damaged("a node of a load is in no page");
+            handles[merk] = pages.take_handles().ok_or(in_no_page)?;
         }
-        let done = pages.next_merk(&none);
-        if let Some(before) = before {
-            handles[before] = done;
-        }
+        let first = merks[order[0]].subtree;
         let report = (loader.finish()).map_err(|error| load_error(error, None, first))?;
         for page in &report.pages {
             self.fragments.hints_mut().note(page.page, page.used);
@@ -1942,13 +1945,9 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let mut stored = placing.stored;
         stored.sort_unstable_by_key(|(entry, _)| *entry);
         self.stored = stored;
-        let in_no_page = TxnError::Damaged("a node of a load is in no page");
-        let handles: Option<Vec<Vec<NodeHandle>>> = (handles.into_iter())
-            .map(|handles| handles.into_iter().collect())
-            .collect();
         Ok(Load {
             roots,
-            handles: handles.ok_or(in_no_page)?,
+            handles,
             counters: report.counters,
         })
     }
@@ -2272,7 +2271,18 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             let subtree = write.subtree;
             let offset = resolver.offsets[merk];
             if resolver.loaded[merk].is_some() {
-                // The nodes of a load are in their pages.
+                // The nodes of a load are in their pages, and those that
+                // host a Merk of the batch hold the pointer to its root:
+                // it is no pointer that the directory alone holds.
+                let sets = write.nodes.iter().filter_map(|node| match node.hosted {
+                    Hosted::Set(hosted) => Some(hosted),
+                    Hosted::Keep => None,
+                });
+                for hosted in sets.flatten() {
+                    if let Some(&hosted) = resolver.by_subtree.get(hosted) {
+                        hosted_here[hosted] = true;
+                    }
+                }
                 continue;
             }
             for (node, put) in write.nodes.iter().enumerate() {

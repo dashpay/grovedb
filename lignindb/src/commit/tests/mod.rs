@@ -204,6 +204,8 @@ pub(super) struct Group {
     pub(super) flat_runs: Vec<u32>,
     pub(super) freed: Vec<u32>,
     pub(super) released: usize,
+    /// The pointers the group acquires: those of a load's commit.
+    pub(super) acquired: usize,
 }
 
 /// Every group of the log of the store in `dir` of `vfs`, as a recovery
@@ -240,7 +242,7 @@ pub(super) fn read_groups(
                         Entry::Flat(run) => said.flat_runs.push(run.page().get()),
                         Entry::Freed(page) => said.freed.push(page.get()),
                         Entry::Released(_) => said.released += 1,
-                        Entry::Acquired(_) => panic!("a commit acquires no pointer"),
+                        Entry::Acquired(_) => said.acquired += 1,
                     }
                 }
                 Some(said)

@@ -15,7 +15,7 @@ use crate::commit::{CommitError, Published};
 const LONG: usize = lignin_tree::value::InlinePolicy::DEFAULT_THRESHOLD + 1;
 
 /// The keys and values of one Merk.
-type Items = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(crate) type Items = BTreeMap<Vec<u8>, Vec<u8>>;
 
 /// The key `index` of the keys that begin with `lead`. The bytes after
 /// the lead are mixed, so that the tree the model makes of such keys, by a
@@ -28,7 +28,7 @@ fn key(lead: u8, index: usize) -> Vec<u8> {
 
 /// `count` items whose keys begin with `lead`. One value in `long` is out
 /// of line, and the others are short.
-fn items(rng: &mut Rng, lead: u8, count: usize, long: usize) -> Items {
+pub(crate) fn items(rng: &mut Rng, lead: u8, count: usize, long: usize) -> Items {
     let item = |index: usize| {
         let len = match index % long {
             0 => LONG + rng.below(300),
@@ -46,7 +46,7 @@ fn long_values(items: &Items) -> usize {
 
 /// The change set that hands the Merk of `items` over whole: every node
 /// once, a child before its parent, with its value stated, and the root.
-fn whole(name: u8, items: &Items) -> OwnedMerk {
+pub(crate) fn whole(name: u8, items: &Items) -> OwnedMerk {
     fn below(
         key: &[u8],
         records: &mut BTreeMap<Vec<u8>, NodeRec>,
@@ -77,7 +77,7 @@ fn whole(name: u8, items: &Items) -> OwnedMerk {
 
 /// A batch of `merks`, each with the record that a change of its root
 /// writes beside it.
-fn batch_of(merks: Vec<OwnedMerk>) -> OwnedBatch {
+pub(crate) fn batch_of(merks: Vec<OwnedMerk>) -> OwnedBatch {
     let records = merks.iter().filter_map(World::root_record).collect();
     OwnedBatch {
         merks,
@@ -460,19 +460,50 @@ fn the_nodes_of_a_load_host_merks() {
     });
     over.hosted.insert(host(under), vec![model::subtree(under)]);
     over.anchored = true;
-    let mut batch = batch_of(vec![over, whole(under, &items(&mut rng, b'u', 150, 2))]);
-    batch.subtrees = vec![enter];
-    load(&world, &tx, &batch, &[under]).expect("a load below a node that is written");
+    // And a node of that load hosts a load in turn: the root of the
+    // innermost is named by the cell of its host, which the write to the
+    // tree pages does not hold.
+    let deep = ENTERED + 5;
+    let enter_deep = OwnedSubtree::Enter(
+        model::subtree(deep),
+        Some((model::subtree(under), host(deep), 0)),
+    );
+    let mut middle = items(&mut rng, b'u', 150, 2);
+    middle.insert(host(deep), b"tree".to_vec());
+    let mut middle = whole(under, &middle);
+    middle.hosted.insert(host(deep), vec![model::subtree(deep)]);
+    let innermost = whole(deep, &items(&mut rng, b'd', 90, 2));
+    let mut batch = batch_of(vec![over, middle, innermost]);
+    batch.subtrees = vec![enter, enter_deep];
+    load(&world, &tx, &batch, &[under, deep]).expect("loads below a node that is written");
+    world.check(&tx);
+    // A write after it gives the innermost Merk more nodes and another
+    // root, and writes the node that hosts it, a cell of a load, which
+    // names it again. The Merk of that node stops below its own host, so
+    // its root stays in its page (`tree-layout.md` T3).
+    let grown = world.merk(&tx, deep, |items| {
+        items.extend(items_of(&mut rng, b'e', 200));
+    });
+    assert!(grown.root.is_some(), "the innermost Merk has another root");
+    let mut above = world.merk(&tx, under, |items| {
+        items.insert(host(deep), b"tree, grown".to_vec());
+    });
+    assert!(above.root.is_none(), "the root is the node it was");
+    above.hosted.insert(host(deep), vec![model::subtree(deep)]);
+    above.anchored = true;
+    world
+        .apply(&tx, &batch_of(vec![above, grown]))
+        .expect("a write to two Merks that were loaded");
     world.check(&tx);
 
     // The checker follows each host to the root it names, and compares
-    // it with the directory: the three Merks with a node, and not the one
+    // it with the directory: the four Merks with a node, and not the one
     // with none.
     commit(&mut world, tx);
     world.check_committed();
     let report = db.verify_still();
     assert!(db.unsound(&report).is_empty(), "{report}");
-    assert_eq!(report.census.hosted_roots, 3, "{report}");
+    assert_eq!(report.census.hosted_roots, 4, "{report}");
 }
 
 fn items_of(rng: &mut Rng, lead: u8, count: usize) -> Items {
@@ -545,11 +576,52 @@ fn a_change_set_that_is_no_whole_merk_is_refused() {
         refused(vec![hosts.clone(), other.clone()], &[1]),
         (one, WholeFault::HostsWritten)
     );
-    // Two loads that host each other.
-    let mut back = other;
+    // Two loads that host each other, and one that hosts itself.
+    let mut back = other.clone();
     back.hosted.insert(back.nodes[0].0.clone(), vec![one]);
-    let (_, fault) = refused(vec![hosts, back], &[1, 2]);
+    let (_, fault) = refused(vec![hosts.clone(), back], &[1, 2]);
     assert_eq!(fault, WholeFault::HostsItself);
+    let mut own = good();
+    own.hosted.insert(own.nodes[0].0.clone(), vec![one]);
+    assert_eq!(refused(vec![own], &[1]), (one, WholeFault::HostsItself));
+
+    // A Merk has one host. A node of a load that hosts a Merk twice, two
+    // nodes of a load, two loads, and a load beside a node that is written
+    // as any other: none of these cells is among those the write to the
+    // tree pages holds, which would refuse the second host.
+    let (two, three) = (model::subtree(2), model::subtree(3));
+    let mut twice = good();
+    twice
+        .hosted
+        .insert(twice.nodes[0].0.clone(), vec![two, two]);
+    assert_eq!(refused(vec![twice], &[1]), (one, WholeFault::HostedTwice));
+    let mut nodes = hosts.clone();
+    nodes.hosted.insert(nodes.nodes[1].0.clone(), vec![two]);
+    assert_eq!(refused(vec![nodes], &[1]), (one, WholeFault::HostedTwice));
+    let mut second = whole(3, &merk);
+    second.hosted.insert(second.nodes[0].0.clone(), vec![two]);
+    assert_eq!(
+        refused(vec![hosts.clone(), second], &[1, 3]),
+        (three, WholeFault::HostedTwice)
+    );
+    let mut written = world.merk(&tx, 4, |items| {
+        items.insert(b"host".to_vec(), b"tree".to_vec());
+    });
+    written.hosted.insert(b"host".to_vec(), vec![two]);
+    assert_eq!(
+        refused(vec![written, other, hosts], &[2, 1]),
+        (one, WholeFault::HostedTwice)
+    );
+
+    // A change set with no node loads nothing, whatever it says and
+    // whatever it removes: it is taken as any other.
+    let mut removes = good();
+    (removes.nodes, removes.root) = (Vec::new(), None);
+    removes.removed.push(b"no such key".to_vec());
+    let applied = load(&world, &tx, &batch_of(vec![removes]), &[1]).expect("a delete");
+    assert_eq!(applied.load, None);
+    tx.txn.rollback().expect("no scope is open");
+    tx.forget();
 
     // A Merk that has a root is no Merk to load, before and after the
     // transaction's own write of it.

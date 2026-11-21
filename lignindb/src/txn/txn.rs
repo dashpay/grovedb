@@ -15,7 +15,7 @@ use lignin_tree::{
     directory::{Directory, DirectoryError, MerkId},
     fragment::FragmentError,
     node::{Lease, NodeError, NodeHandle},
-    value::{read_value, ValueBuf},
+    value::{read_placed, read_value, ValueBuf},
 };
 
 use super::{
@@ -90,10 +90,10 @@ struct State<'s> {
     base: Option<VersionPin<'s>>,
     /// The private frames, as they are kept between two operations.
     frames: Option<Parked<'s>>,
-    /// The values that the transaction's loads put into the value log:
-    /// the hold on their files, from the first of them until the commit
-    /// has counted those its cells hold, or until the write set is empty
-    /// again (`super::load`).
+    /// The values that the transaction's loads put into the value log,
+    /// with the hold on their files (`super::load`): from the first of
+    /// them until the write set is empty again, or until the commit takes
+    /// them with the frames.
     loaded: Loaded,
     /// The watch on the key sets of the commits: from the transaction's
     /// first write or the first node it is shown, whichever comes first,
@@ -1741,9 +1741,9 @@ impl<'s> WriteTxn<'s> {
                         Some(NodeValue::Bytes(value)) => Some(value.to_vec()),
                         // A value that a load put into the value log.
                         Some(NodeValue::Stored(stored)) => {
-                            let (mut records, mut joined) = (Vec::new(), Vec::new());
-                            let value = stored.read(path.values, &mut records, &mut joined)?;
-                            Some(value.to_vec())
+                            let (values, mut buf) = (path.values, ValueBuf::new());
+                            let value = read_placed(values, stored.pointer, stored.owner, &mut buf);
+                            Some(value?.to_vec())
                         }
                         // The node is one of the frames, which hold its
                         // value: the batch is one that is not laid out.
@@ -2541,6 +2541,9 @@ impl<'s> WriteTxn<'s> {
         }
         taken?;
         let op = self.begin(state, false)?;
+        // The values of its loads are covered before the frames are taken:
+        // a refusal leaves the transaction as it was.
+        self.cover(state)?;
         let Some(frames) = state.frames.take() else {
             if state.set.met() > 0 {
                 // A commit was published since: the caller does not hold
@@ -2585,13 +2588,33 @@ impl<'s> WriteTxn<'s> {
         })))
     }
 
-    /// Has a durable manifest cover the values that the transaction's
-    /// loads put into the value log, if it has any that none covers: the
-    /// part of a load's commit that syncs a file and replaces the
-    /// manifest, made before the commit lock is taken ([`cover`]).
-    pub(crate) fn cover_loaded(&self) -> Result<(), TxnError> {
-        let state = self.lock();
-        cover(&self.path, &state.loaded)
+    /// Makes a transaction that holds a load ready for its commit, before
+    /// the commit lock is taken: its frames are made over the latest
+    /// version, which lays its loads out again if a commit of another
+    /// landed since its last operation, and a durable manifest covers the
+    /// values they put into the value log ([`cover`]). A transaction with
+    /// no load is left as it is.
+    ///
+    /// The commit does the same under the commit lock ([`Self::seal`]),
+    /// and finds it done unless a commit landed in between.
+    pub(crate) fn prepare_loads(&self) -> Result<(), TxnError> {
+        let mut state = self.lock();
+        let state = &mut *state;
+        if !state.set.has_loads() {
+            return Ok(());
+        }
+        self.begin(state, false)?;
+        self.cover(state)
+    }
+
+    /// Has a durable manifest cover the values that the loads of the
+    /// transaction appended for its frames. With no frames nothing is
+    /// covered: the values are appended when the frames are made.
+    fn cover(&self, state: &State<'s>) -> Result<(), TxnError> {
+        if state.frames.is_none() {
+            return Ok(());
+        }
+        Ok(cover(&self.path, &state.loaded)?)
     }
 
     /// How many stretches of value-log files hold the values of the

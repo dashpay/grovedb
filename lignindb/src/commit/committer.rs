@@ -3,6 +3,7 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     fmt,
+    mem::ManuallyDrop,
 };
 
 use lignin_format::{
@@ -34,9 +35,8 @@ use super::{
 use crate::{
     snapshot::OperationGuard,
     txn::{
-        load::{cover, Loaded},
-        Batch, FlatFrames, KeySet, Parts, Sealed, TreeCopy, TreePages, TxnError, WritePath,
-        WriteTxn,
+        load::Loaded, Batch, FlatFrames, KeySet, Parts, Sealed, TreeCopy, TreePages, TxnError,
+        WritePath, WriteTxn,
     },
 };
 
@@ -201,7 +201,9 @@ impl<'s> Committer<'s> {
     /// It waits for the commit lock and for the lock on the counts of live
     /// values, and for nothing else of the store (CM8): not for a reader,
     /// and not for another open write transaction. The commit writes to no
-    /// file but the log, and makes one append to it (CM7). The cut that an
+    /// file but the log, and makes one append to it (CM7). The commit of a
+    /// load is the exception to both (module documentation, "The commit of
+    /// a load"). The cut that an
     /// earlier failed append left to make comes before it, and the thread's
     /// turn for write-back after it: neither is under the commit lock (see
     /// the module documentation).
@@ -251,10 +253,10 @@ impl<'s> Committer<'s> {
             return Err(CommitError::Stopped(stopped));
         }
         self.look_at_log(true)?;
-        // The commit of a load: the values its loads put into the value
-        // log are made durable, under a manifest that covers them, before
-        // the commit lock is taken (`log-format.md` LG16).
-        txn.cover_loaded().map_err(CommitError::Refused)?;
+        // A transaction that holds a load is made ready before the commit
+        // lock is taken: what that syncs, and its replacement of the
+        // manifest, no other commit waits for.
+        txn.prepare_loads().map_err(CommitError::Refused)?;
         let mut untold = None;
         let committed = self.commit_locked(txn, &path, rules, also, |_| Ok(()), &mut untold);
         // No lock is held here: whoever is told may call the store.
@@ -434,7 +436,7 @@ impl<'s> Committer<'s> {
     ///
     /// The transaction is the commit's own, so whatever the error nothing
     /// of it is left: a write that `write` refuses is
-    /// [`CommitError::Refused`], and nothing was written.
+    /// [`CommitError::Refused`], and none of its writes is committed.
     pub(crate) fn commit_alone<R: HashRules>(
         &self,
         rules: &mut R,
@@ -541,25 +543,26 @@ impl<'s> Committer<'s> {
         }
 
         // The values of the transaction's loads that cells of its pages
-        // hold are acquired by this commit (`log-format.md` LG16): a
-        // durable manifest covers each before the group names it. It does
-        // already, unless the frames were made again under the commit
-        // lock, after a commit of another: the values were appended anew
-        // then, and the file is synced and the manifest replaced here.
+        // hold are acquired by this commit (`log-format.md` LG16). A
+        // durable manifest covers each: the transaction was not handed
+        // over before one did.
         let acquired = match loaded.is_empty() {
             true => Vec::new(),
             false => Self::acquired(&tree, &loaded).map_err(|failure| self.failed(failure))?,
         };
-        let covered = |acquired: &[ValuePointer]| {
-            (acquired.iter()).all(|pointer| path.values.covers(*pointer))
-        };
-        if !covered(&acquired) {
-            cover(path, &loaded).map_err(|error| self.failed(error.into()))?;
-            if !covered(&acquired) {
-                let lost = TxnError::Damaged("a value of a load is covered by no manifest");
-                return Err(self.failed(lost.into()));
-            }
+        if !(acquired.iter()).all(|pointer| path.values.covers(*pointer)) {
+            let lost = TxnError::Damaged("a value of a load is covered by no manifest");
+            return Err(self.failed(lost.into()));
         }
+        // From here on the hold on the files of those values is given up
+        // only where the group is known not to be in the log, and once
+        // the values are counted. A commit that ends in any other way
+        // keeps it for the session: where it cannot be settled, where its
+        // install is refused, and where it panics. A recovery that keeps
+        // the group finds cells that point into those files, and no count
+        // of this session says so.
+        let loaded = ManuallyDrop::new(loaded);
+        let release = |loaded: ManuallyDrop<Loaded>| drop(ManuallyDrop::into_inner(loaded));
 
         // Step 6. The lock on the counts is taken before the log is asked
         // for the place of the group, and held until the commit is counted
@@ -571,7 +574,10 @@ impl<'s> Committer<'s> {
         let (appended, logged) = loop {
             let at = match self.log.next_group() {
                 Ok(at) => at,
-                Err(error) => return Err(self.not_appended(counts, version, error)),
+                Err(error) => {
+                    release(loaded);
+                    return Err(self.not_appended(counts, version, error));
+                }
             };
             if at.version() != version {
                 // The log holds a group that this session did not publish,
@@ -586,21 +592,37 @@ impl<'s> Committer<'s> {
                     version,
                     reason: gap.to_string(),
                 });
+                release(loaded);
                 return Err(self.failed(gap));
             }
             let group = &mut lock.scratch.group;
-            let own = (&loaded, &acquired[..]);
+            let own = (&*loaded, &acquired[..]);
             let logged =
-                Self::write_group(group, &at, &mut tree, &mut values, &source, &mut flat, own)
-                    .map_err(|failure| self.failed(failure))?;
+                Self::write_group(group, &at, &mut tree, &mut values, &source, &mut flat, own);
+            let logged = match logged {
+                Ok(logged) => logged,
+                Err(failure) => {
+                    release(loaded);
+                    return Err(self.failed(failure));
+                }
+            };
             match self.log.append_group(&at, &lock.scratch.group) {
                 Ok(appended) => break (appended, logged),
                 Err(LogError::PlaceTaken { .. }) if places < MAX_PLACES => {
                     places += 1;
                     self.state.count(Counted::Rewritten);
                 }
-                Err(LogError::PlaceTaken { .. }) => return Err(self.failed(Failure::PlaceLost)),
-                Err(error) => return Err(self.not_appended(counts, version, error)),
+                Err(LogError::PlaceTaken { .. }) => {
+                    release(loaded);
+                    return Err(self.failed(Failure::PlaceLost));
+                }
+                Err(error) => {
+                    let ended = self.not_appended(counts, version, error);
+                    if !matches!(ended, CommitError::Unsettled { .. }) {
+                        release(loaded);
+                    }
+                    return Err(ended);
+                }
             }
         };
         let group_len = lock.scratch.group.len() as u64;
@@ -633,7 +655,7 @@ impl<'s> Committer<'s> {
         let miscounted = counts.apply(&change, version).err();
         // The values of the loads are counted: the hold on their files
         // ends here. What no cell holds of them is dead space.
-        drop(loaded);
+        release(loaded);
 
         // The fsync of the commit, if the sync policy asks for one (CM7):
         // before anything is published, and under no lock but the commit

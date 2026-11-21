@@ -207,7 +207,7 @@ pub struct Db {
     directory: OnceLock<FlatTree>,
     flat_drops: OnceLock<FlatDrops>,
     /// The value-log file the loads of the store append to.
-    load_files: crate::txn::LoadFiles,
+    pub load_files: crate::txn::LoadFiles,
     used: Mutex<BTreeSet<PageId>>,
     /// Whether the store is left out of the check that its drop makes.
     unchecked: AtomicBool,

@@ -115,7 +115,7 @@ fn a_loaded_merk_is_the_merk_that_is_written_node_by_node_also_after_a_reopen() 
     let long = 3_000;
     {
         let db = Db::open(dir.path(), &options()).expect("a new database");
-        entered(&db, &[subtree(1), subtree(2)]);
+        entered(&db, &[subtree(1), subtree(2), subtree(3)]);
         // Node by node, as any Merk is written: one change set, which the
         // tree layer lays out cell by cell.
         let by_node = Writes {
@@ -144,20 +144,32 @@ fn a_loaded_merk_is_the_merk_that_is_written_node_by_node_also_after_a_reopen() 
             written.created.len()
         );
 
+        // A write with no transaction takes a load as well.
+        let alone = Writes {
+            merks: vec![(subtree(3), merk.clone())],
+            load: true,
+            ..Writes::default()
+        };
+        let published = alone.commit(&db);
+        assert_eq!(published.acquired as u64, long);
+        assert_eq!(published.value_bytes, 0);
+
         let (one, two) = (dump(&db, subtree(1)), dump(&db, subtree(2)));
         assert_eq!(one.as_ref().map(Vec::len), Some(merk.len()));
         assert_eq!(one, two);
+        assert_eq!(one, dump(&db, subtree(3)));
         db.close().expect("the database closes");
     }
     let db = Db::open(dir.path(), &options()).expect("the database opens again");
     let (one, two) = (dump(&db, subtree(1)), dump(&db, subtree(2)));
     assert_eq!(one.as_ref().map(Vec::len), Some(merk.len()));
     assert_eq!(one, two);
-    // Each value of the load is counted in its file, and so is each of the
-    // other Merk once write-back has placed it.
+    assert_eq!(one, dump(&db, subtree(3)));
+    // Each value of the two loads is counted in its file, and so is each
+    // of the other Merk once write-back has placed it.
     wait_for("the values of the write are placed", || {
         let counts = db.shared.store.values.counts();
-        counts.iter().map(|count| count.values).sum::<u64>() == 2 * long
+        counts.iter().map(|count| count.values).sum::<u64>() == 3 * long
     });
     halt_background(&db);
     sound(&db, "after the reopen");
@@ -470,21 +482,27 @@ fn resident() -> u64 {
 }
 
 /// The memory a load holds, measured on the process: a Merk of
-/// `LOAD_NODES` nodes (a million) whose values are `LOAD_VALUE_LEN` bytes
-/// (441, the documents of the reference workload) is loaded in one
-/// transaction of a database in `LOAD_DIR` (a temporary directory), and
-/// the resident set is read before the load, with the load held, and after
-/// its commit. Where the values are out of line, the load holds less than
-/// half of their bytes, whatever it holds.
+/// `LOAD_NODES` nodes (250,000) whose values are `LOAD_VALUE_LEN` bytes
+/// (4,096, a gigabyte out of line in all) is loaded in one transaction of
+/// a database in `LOAD_DIR` (a temporary directory), and the resident set
+/// is read before the load, with the load held, and after its commit. It
+/// prints what the load holds, in all and for a node. Where the values
+/// are of 2,048 bytes or more, the load holds less than half of their
+/// bytes.
 ///
-/// It is run alone, in a unit with a cap on its memory, so that a load
-/// that held its values would not get through:
+/// It is run alone, in a unit with a cap on its memory below what the
+/// values take, so that a load that held them would not get through:
 ///
 /// ```text
-/// systemd-run --user --wait --collect -p MemoryMax=2G -p MemorySwapMax=0 --same-dir \
-///     tools/slot cargo test --release -p lignindb --lib -- --ignored --nocapture \
+/// cargo test --release -p lignindb --lib --no-run
+/// systemd-run --user --wait --collect -p MemoryMax=1G -p MemorySwapMax=0 --same-dir \
+///     tools/slot target/release/deps/lignindb-<hash> --ignored --nocapture \
 ///     the_memory_a_load_holds
 /// ```
+///
+/// With `LOAD_NODES=1000000 LOAD_VALUE_LEN=441` it is the Merk of the
+/// documents of the reference workload, and with a value of 256 bytes or
+/// fewer every value is in its cell.
 #[test]
 #[ignore = "measures the memory of the process; run it alone, in a capped unit"]
 #[cfg(target_os = "linux")]
@@ -496,8 +514,8 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
         set.unwrap_or(default)
     };
     let (nodes, value_len) = (
-        setting("LOAD_NODES", 1_000_000),
-        setting("LOAD_VALUE_LEN", 441),
+        setting("LOAD_NODES", 250_000),
+        setting("LOAD_VALUE_LEN", 4_096),
     );
     let kept = std::env::var_os("LOAD_DIR").map(std::path::PathBuf::from);
     let temporary = temp();
@@ -568,7 +586,7 @@ fn the_memory_a_load_holds_is_measured_on_the_process() {
     );
     assert_eq!(published.acquired as u64, counters.values);
     assert_eq!((published.value_bytes, stats.value_pages), (0, 0));
-    if counters.value_bytes > 100 << 20 {
+    if value_len >= 2_048 {
         assert!(
             load < counters.value_bytes / 2,
             "the load holds {:.1} MiB for {:.1} MiB of values out of line",

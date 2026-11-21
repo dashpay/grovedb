@@ -1074,6 +1074,12 @@ impl WriteSet {
         )
     }
 
+    /// Whether an operation of the set holds a load: a change set with a
+    /// node that said it is the whole Merk.
+    pub(crate) fn has_loads(&self) -> bool {
+        self.merks.iter().any(|merk| merk.whole && merk.nodes > 0)
+    }
+
     /// The values of the operation `op` that a load put into the value
     /// log, each by the place of its node among the entries of the
     /// operation's change sets ([`Again::stored`]).
