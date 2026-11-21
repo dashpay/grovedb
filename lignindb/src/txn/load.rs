@@ -404,8 +404,8 @@ pub(crate) fn spill(
                 continue;
             }
             checked_value_len(value.len())?;
-            let appended = (path.load_files).append(path, &mut loaded.hold, NO_PAGE, value);
-            let (pointer, owner) = (appended?, NO_PAGE);
+            let pointer = (path.load_files).append(path, &mut loaded.hold, NO_PAGE, value)?;
+            let owner = NO_PAGE;
             stored.push((firsts[merk] + at as u32, StoredValue { pointer, owner }));
         }
     }
@@ -576,6 +576,22 @@ impl<'a, 's, 'b> Placing<'a, 's, 'b> {
         self.node = Some((entry, source));
     }
 
+    /// Appends the value at `source` to the value log, for a cell of
+    /// `page`.
+    fn append_held(&mut self, source: Source<'b>, page: PageId) -> Result<ValuePointer, TxnError> {
+        let value = match source {
+            Source::Batch(value) => value,
+            Source::Stored(stored) => read_placed(
+                self.path.values,
+                stored.pointer,
+                stored.owner,
+                &mut self.buf,
+            )?,
+        };
+        let hold = &mut self.loaded.hold;
+        Ok((self.path.load_files).append(self.path, hold, page, value)?)
+    }
+
     fn refuse(&mut self, error: impl Into<TxnError>) -> Refusal {
         let error = error.into();
         let said = error.to_string();
@@ -624,20 +640,7 @@ impl LoadValues for Placing<'_, '_, '_> {
         let Some((entry, source)) = self.held.remove(&pending.id()) else {
             return Err(self.refuse(TxnError::Damaged("a load placed a value it was not given")));
         };
-        let mut buf = std::mem::take(&mut self.buf);
-        let value = match source {
-            Source::Batch(value) => Ok(value),
-            Source::Stored(stored) => {
-                let read = read_placed(self.path.values, stored.pointer, stored.owner, &mut buf);
-                read.map_err(TxnError::from)
-            }
-        };
-        let appended = value.and_then(|value| {
-            let hold = &mut self.loaded.hold;
-            let appended = (self.path.load_files).append(self.path, hold, page, value);
-            appended.map_err(TxnError::from)
-        });
-        self.buf = buf;
+        let appended = self.append_held(source, page);
         let pointer = appended.map_err(|error| self.refuse(error))?;
         self.loaded.note(pointer);
         let stored = StoredValue {

@@ -675,9 +675,6 @@ struct Load {
     /// The handles of the nodes of each load, in the order of its change
     /// set.
     handles: Vec<Vec<NodeHandle>>,
-    /// The root of each Merk that a node of a load hosts and that the
-    /// batch does not load, with the load whose node hosts it.
-    adopted: HashMap<CellAddress, Subtree>,
     counters: LoadCounters,
 }
 
@@ -1510,17 +1507,17 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let mut load = None;
         if merks.iter().any(is_load) {
             let stored = again.map_or(&[][..], |again| again.stored);
-            let plan = match self.plan_load(path, batch, view, &resolver) {
+            let mut plan = match self.plan_load(path, batch, view, &resolver) {
                 Ok(plan) => plan,
                 Err(error) => {
                     self.tree.set_lease(lease);
                     return Err(Refused::clean(error));
                 }
             };
+            resolver.adopted = std::mem::take(&mut plan.adopted);
             let done = self.load(path, batch, &resolver, plan, stored, loaded);
             let done = done.map_err(Refused::dirty)?;
-            (resolver.loaded, resolver.adopted) = (done.roots, done.adopted);
-            (handles, load) = (done.handles, Some(done.counters));
+            (resolver.loaded, handles, load) = (done.roots, done.handles, Some(done.counters));
         }
         // A refusal from here on leaves the pages of the loads in the
         // frames, whatever else it changed.
@@ -1867,8 +1864,8 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let LoadPlan {
             order,
             outside,
-            adopted,
             mut loader,
+            ..
         } = plan;
         let firsts = entry_firsts(merks);
         let not_whole = |subtree, fault| TxnError::from(BatchError::NotWhole { subtree, fault });
@@ -1965,7 +1962,6 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         Ok(Load {
             roots,
             handles,
-            adopted,
             counters: report.counters,
         })
     }
@@ -1990,11 +1986,10 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let (roots, adopted) = (&resolver.roots, &resolver.adopted);
         let kept = self.tree.page(host.page(), |page| {
             let node = page.node(host.slot())?;
-            let twice = (node.hosted_roots().flatten()).find_map(|root| adopted.get(&root));
-            let pointers = node.hosted_roots();
-            let written =
-                (pointers.flatten()).find_map(|root| roots.iter().position(|at| *at == Some(root)));
-            Some((twice.copied(), written))
+            let hosted = || node.hosted_roots().flatten();
+            let twice = hosted().find_map(|root| adopted.get(&root).copied());
+            let written = hosted().find_map(|root| roots.iter().position(|at| *at == Some(root)));
+            Some((twice, written))
         })?;
         let (twice, hosted) = kept.ok_or(NodeError::NoNode { address: host })?;
         if let Some(subtree) = twice {

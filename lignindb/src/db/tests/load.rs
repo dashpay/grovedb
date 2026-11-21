@@ -534,6 +534,77 @@ fn what_a_load_holds_does_not_grow_with_the_bytes_of_its_values_out_of_line() {
     );
 }
 
+/// Write-back leaves the values of a load where the load put them. A
+/// load appends the values of a fragment in the order a scan reads them
+/// (`lignin_tree::bulk`), so the pass that writes the first images of the
+/// loaded pages finds next to nothing to regroup
+/// (`lignin_store::flush`, "Regrouping"), and the value log holds each
+/// value once.
+#[test]
+fn write_back_regroups_next_to_no_value_of_a_load() {
+    use lignin_store::flush::{Stores, WriteBack};
+    use lignin_tree::value::{RegroupPolicy, Regrouping};
+
+    let dir = temp();
+    let db = Db::open(dir.path(), &options()).expect("a new database");
+    halt_background(&db);
+    let merk = Uniform::new(12_000, 600);
+    let txn = db.begin();
+    let scope = txn.scope().expect("a scope");
+    let applied = merk
+        .with(subtree(1), |batch| scope.apply(batch))
+        .expect("a load");
+    scope.merge();
+    let counters = applied.load.expect("the loader laid the Merk out");
+    assert_eq!(counters.values, 12_000);
+    match db.commit(&txn, &mut NoStaleHashes) {
+        Ok(Committed::Published(published)) => assert_eq!(published.acquired, 12_000),
+        other => panic!("the load is committed, and not {other:?}"),
+    }
+
+    // Write-back as the background loop of the database makes it: with
+    // the tree layer's word on the values of a page.
+    let (shared, store) = (&db.shared, &*db.shared.store);
+    let regrouping = Regrouping::new(
+        store.loader(),
+        &store.pool,
+        &store.values,
+        store.page_size,
+        shared.steps(),
+        RegroupPolicy::default(),
+    );
+    let stores = Stores {
+        page_values: Some(&regrouping),
+        ..shared.write_back().stores()
+    };
+    let write_back = WriteBack::new(stores, &store.flush, store.page_size);
+    let write_back = write_back.expect("a pool of the store's page size");
+    write_back.pass().expect("a pass");
+    write_back.checkpoint().expect("a table checkpoint");
+
+    let stats = db.stats().store;
+    assert_eq!(stats.watch.unwritten, 0, "every page is written back");
+    assert!(
+        stats.flush.base_blocks >= counters.pages,
+        "{:?}",
+        stats.flush
+    );
+    assert!(
+        stats.flush.values_regrouped * 20 < counters.values,
+        "{} of {} values were appended again",
+        stats.flush.values_regrouped,
+        counters.values
+    );
+    let files = store.values.files_named().expect("the files");
+    let appended: u64 = files.iter().map(|file| file.valid_len()).sum();
+    assert!(
+        appended < counters.value_bytes * 5 / 4,
+        "{appended} bytes hold {} bytes of values",
+        counters.value_bytes
+    );
+    sound(&db, "after write-back");
+}
+
 /// What the system counts as the memory of this process, in bytes: now,
 /// and the most it has been.
 #[cfg(target_os = "linux")]

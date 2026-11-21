@@ -1087,6 +1087,10 @@ struct StatedMerk {
     root: Vec<u8>,
 }
 
+/// The host of a Merk: the subtree of the Merk its node is in, and the
+/// node's key.
+type Host = (Subtree, Vec<u8>);
+
 /// What the loads of the engine came to.
 #[derive(Debug, Default)]
 struct Handed {
@@ -1110,7 +1114,7 @@ struct EngineWalk<'db, 'e> {
     db: Option<&'e Db>,
     /// The subtrees to enter with the next batch, a host before what it
     /// hosts.
-    enters: Vec<(Subtree, Option<(Subtree, Vec<u8>)>)>,
+    enters: Vec<(Subtree, Option<Host>)>,
     merks: Vec<StatedMerk>,
     held: usize,
     nodes: u64,
@@ -1125,7 +1129,7 @@ impl<'db> EngineWalk<'db, '_> {
     fn merk(
         &mut self,
         path: &mut Vec<Vec<u8>>,
-        host: Option<(Subtree, Vec<u8>)>,
+        host: Option<Host>,
         root_key: Option<&[u8]>,
     ) -> Subtree {
         let subtree = subtree_of(path);

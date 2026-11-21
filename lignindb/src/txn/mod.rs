@@ -166,10 +166,12 @@
 //! - **A value out of line goes into the value log when its cell gets its
 //!   page**, into the file that the loads of the store append to
 //!   ([`LoadFiles`]), and the cell is written with the pointer (LD2). The
-//!   write set keeps where the value is in the place of its bytes (LD3),
-//!   and the frames keep nothing of it. Where the loads have no file that
-//!   takes the value, one is created and the manifest is replaced so that
-//!   it names it, in the operation that appends the value.
+//!   values of one fragment are appended in the order a scan reads them,
+//!   as write-back would regroup them. The write set keeps where the
+//!   value is in the place of its bytes (LD3), and the frames keep
+//!   nothing of it. Where the loads have no file that takes the value,
+//!   one is created and the manifest is replaced so that it names it, in
+//!   the operation that appends the value.
 //! - **The commit takes the values over** ([`crate::commit`], "The commit
 //!   of a load").
 //!

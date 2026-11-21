@@ -1168,13 +1168,15 @@ this document that is about records holds for it unchanged.
 too long for their cells are in the value log before the commit.** This is
 the exception to WT4 and FL7. Such a value is appended to a value-log file
 when its cell gets its page, for that page, and the cell holds the pointer
-from its first write on. The append can create the file and replace the
-manifest so that it names the file. Where the file cannot be named, the
-append is refused and the file is kept: for as long as it is the file that
-loads fill, each append first tries to name it, and creates no other. A
-manifest that an earlier replacement left in doubt is settled first, here
-and in LD5, as write-back settles it (`lignin_store::flush`). Until *T*
-commits:
+from its first write on. A load appends the values of one fragment in the
+order a scan reads them (`tree-layout.md`, section 4), which is the order
+a regrouping at consolidation would give them (TREE-08). The append can
+create the file and replace the manifest so that it names the file. Where
+the file cannot be named, the append is refused and the file is kept: for
+as long as it is the file that loads fill, each append first tries to name
+it, and creates no other. A manifest that an earlier replacement left in
+doubt is settled first, here and in LD5, as write-back settles it
+(`lignin_store::flush`). Until *T* commits:
 
 - no count of live values includes the value (PV6)
 - *T* holds the file, as background work holds the file of a value it
