@@ -611,3 +611,68 @@ fn a_checkpoint_whose_log_turn_is_refused_its_start_record_answers_with_what_the
         "{whole} runs left the whole record and {cut} less"
     );
 }
+
+/// A device that keeps what it refuses: it writes the start record of
+/// each file the log turns to, and every item, and answers that it has no
+/// room. The log finds each start record whole in its file, so each turn
+/// is made, to a file that takes no item, and no roll fails. A table
+/// checkpoint rolls such a log before its mark, in vain each time, and
+/// then fails with what the device answered, by name: nobody is told
+/// only that the log has no file that takes items.
+#[test]
+fn a_checkpoint_that_rolls_its_log_in_vain_fails_with_what_the_device_answered() {
+    use std::error::Error;
+
+    use crate::{
+        segment::tests::sim::{db_dir, shared, sim_fs},
+        wal::{
+            tests::faults::{Lies, Swapping},
+            LogError,
+        },
+    };
+
+    let fs = sim_fs(SimConfig::new(61));
+    let lies = Arc::new(Lies::default());
+    let vfs: Arc<dyn Vfs> = Arc::new(Swapping {
+        inner: shared(&fs),
+        lies: lies.clone(),
+    });
+    let db = Db::create(
+        vfs,
+        db_dir(),
+        FlushConfig::new(Db::SIZE),
+        LogOptions::default(),
+    );
+    db.commit(&[insert((1, 1), b"a", inline(b"one"))]);
+    installed(db.wb().checkpoint().expect("a first checkpoint"));
+    db.commit(&[hash((1, 1), 1)]);
+    assert_eq!(db.log.refusal().map(|error| error.to_string()), None);
+
+    *lies.kept_and_refused.lock().expect("the lie") = true;
+    let error = db
+        .wb()
+        .checkpoint()
+        .expect_err("a mark in a log that takes no item");
+    assert!(
+        matches!(error, FlushError::Log(LogError::NoActiveFileSince { .. })),
+        "{error}"
+    );
+    let mut cause: &dyn Error = &error;
+    while let Some(next) = cause.source() {
+        cause = next;
+    }
+    let cause = cause
+        .downcast_ref::<std::io::Error>()
+        .expect("the file layer's error");
+    assert_eq!(cause.kind(), std::io::ErrorKind::StorageFull, "{error}");
+    assert!(error.to_string().contains("no room"), "{error}");
+    assert!(db.log.refusal().is_some());
+
+    // With a device that takes what it is given, the next checkpoint
+    // rolls the log and is installed, and the log keeps no refusal.
+    *lies.kept_and_refused.lock().expect("the lie") = false;
+    let (covers, ..) = installed(db.wb().checkpoint().expect("a checkpoint"));
+    assert_eq!(covers, db.latest());
+    assert_eq!(db.log.refusal().map(|error| error.to_string()), None);
+    db.check_cold();
+}

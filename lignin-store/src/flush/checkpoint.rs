@@ -246,9 +246,9 @@ impl<'s> WriteBack<'s> {
     /// append can fail again before the lock is held again, and a roll
     /// can end with a file that takes no item where a start record was
     /// refused and kept each time. A log that has no file after the last
-    /// roll is left so: the mark then fails with
-    /// [`LogError::NoActiveFile`], which names no cause, and whoever keeps
-    /// the log rolls it at its next turn.
+    /// roll is left so, and the checkpoint fails with what the file layer
+    /// answered the append that left it so ([`LogError::NoActiveFileSince`]).
+    /// Whoever keeps the log rolls it at its next turn.
     ///
     /// While the log has a file that takes items this makes no operation
     /// on a file.
@@ -258,10 +258,15 @@ impl<'s> WriteBack<'s> {
         loop {
             let step = values.step()?;
             let takes_items = !matches!(log.next_group(), Err(LogError::NoActiveFile));
-            if takes_items || rolls == MARK_ROLLS {
+            if takes_items {
                 return Ok(step);
             }
             drop(step);
+            if rolls == MARK_ROLLS {
+                let error = log.refusal().unwrap_or(LogError::NoActiveFile);
+                self.append_failed(&error);
+                return Err(error.into());
+            }
             self.roll_log()?;
             rolls += 1;
         }

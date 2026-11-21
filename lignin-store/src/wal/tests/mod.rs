@@ -1,7 +1,7 @@
 mod checkpoint;
 mod crash;
 mod errors;
-mod faults;
+pub(crate) mod faults;
 mod reader;
 mod shared;
 mod store;

@@ -148,10 +148,11 @@ fn a_checkpoint_is_taken_where_the_log_is_when_no_file_can_be_made_for_its_turn(
         assert!(!db.log.has_file_ready());
         assert_eq!(on_disk(&db), files, "{failed}: the file is not left behind");
 
-        // The file after it can be made, and the next checkpoint turns.
+        // The next attempt makes the file, under the id that the failed
+        // one had asked for, and the next checkpoint turns to it.
         db.commit(&[hash((1, 1), 4)]);
         let (_, place, dropped) = installed(wb.checkpoint().expect("a checkpoint"));
-        assert_eq!(place.file(), FileId::new(4).expect("an id"), "{failed}");
+        assert_eq!(place.file(), FileId::new(3).expect("an id"), "{failed}");
         assert_eq!(dropped, 1);
         db.check_cold();
     }

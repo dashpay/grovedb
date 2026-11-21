@@ -1123,6 +1123,7 @@ fn epilogue(session: &mut Session, baseline: &[Change]) -> String {
             session.told.note(match reason {
                 Reopen::NotDurable { .. } => "reopen:log-sync",
                 Reopen::SegmentsNotDurable => "reopen:segment-sync",
+                Reopen::LogFileIdsUsedUp => "reopen:log-file-ids",
                 Reopen::Stopped(_) => "reopen:stopped",
             });
             session.close();

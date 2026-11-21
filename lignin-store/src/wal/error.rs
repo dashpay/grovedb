@@ -148,6 +148,17 @@ pub enum LogError {
     /// The log has no file that takes items: it has not turned to its first
     /// file yet, or an append to its file failed. Turn to the next file.
     NoActiveFile,
+    /// The log has no file that takes items, and this is what the file
+    /// layer answered the append that left it so
+    /// ([`LogStore::refusal`](super::LogStore::refusal)). It is what
+    /// [`Self::NoActiveFile`] says, with the cause, for whoever has
+    /// turned the log in vain.
+    NoActiveFileSince {
+        /// The file the append was made to.
+        path: PathBuf,
+        /// What the file layer answered, by its kind and its text.
+        source: io::Error,
+    },
     /// The log no longer ends where the group was written for, so the group
     /// was not appended. Ask for the place again and write the group for it.
     PlaceTaken {
@@ -313,6 +324,7 @@ impl LogError {
             Self::Io { source, .. }
             | Self::NotDeleted { source, .. }
             | Self::NotAppended { source, .. }
+            | Self::NoActiveFileSince { source, .. }
             | Self::TakenBack { source, .. }
             | Self::Unsettled { source, .. }
             | Self::SyncFailed { source, .. } => Some(source),
@@ -468,6 +480,11 @@ impl fmt::Display for LogError {
                 "an append to {} failed, and the item is not in the log: {source}",
                 path.display()
             ),
+            Self::NoActiveFileSince { path, source } => write!(
+                f,
+                "the log has no file that takes items since an append to {} failed: {source}",
+                path.display()
+            ),
             Self::TakenBack { path, source } => write!(
                 f,
                 "an append to {} failed and left the file as long as it was, and a crash can \
@@ -545,6 +562,7 @@ impl std::error::Error for LogError {
             Self::Io { source, .. }
             | Self::NotDeleted { source, .. }
             | Self::NotAppended { source, .. }
+            | Self::NoActiveFileSince { source, .. }
             | Self::TakenBack { source, .. }
             | Self::Unsettled { source, .. }
             | Self::SyncFailed { source, .. } => Some(source),

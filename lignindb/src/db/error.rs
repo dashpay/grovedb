@@ -416,6 +416,15 @@ pub enum Reopen {
     /// [`flush`](super::Db::flush) still makes the log durable, and the
     /// next open replays it.
     SegmentsNotDurable,
+    /// The log has used the last id a log file can have, so it can be
+    /// given no file after the one it ends in (`lignin_store::wal`).
+    ///
+    /// Nothing that was published is lost by it, and a
+    /// [`flush`](super::Db::flush) still makes it durable. Unlike the
+    /// other reasons this one is not over at the next open: a session
+    /// begins a log file of its own, and there is no id for it. An engine
+    /// that makes a log file a second uses the ids up in 136 years.
+    LogFileIdsUsedUp,
     /// The commit path stopped the session
     /// ([`Stopped`]): whether a commit is in the log
     /// could not be found out, or a commit is in the log and could not be
@@ -442,6 +451,9 @@ impl fmt::Display for Reopen {
             ),
             Self::SegmentsNotDurable => f.write_str(
                 "a sync of a segment failed, and no table checkpoint is installed until then",
+            ),
+            Self::LogFileIdsUsedUp => f.write_str(
+                "every log file id has been used, and the log can be given no further file",
             ),
             Self::Stopped(stopped) => write!(f, "{stopped}"),
         }

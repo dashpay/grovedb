@@ -292,6 +292,7 @@ impl Store {
                 None
             }
             Failed::Segments => Some(Reopen::SegmentsNotDurable),
+            Failed::LogFileIds => Some(Reopen::LogFileIdsUsedUp),
         };
         #[cfg(test)]
         if let Some(change) = BEFORE_A_REASON_IS_KEPT.with(|hook| hook.borrow_mut().take()) {
@@ -342,7 +343,10 @@ impl Store {
         if let Some(failed) = self.log.sync_failed() {
             return Some(Failed::Log(failed));
         }
-        (self.flush.segments_not_durable()).then_some(Failed::Segments)
+        if self.flush.segments_not_durable() {
+            return Some(Failed::Segments);
+        }
+        (self.log.file_ids_used_up()).then_some(Failed::LogFileIds)
     }
 
     /// Whether a replacement of the manifest left it in doubt, as far as
@@ -378,6 +382,8 @@ enum Failed {
     Log(LogError),
     /// A sync of a segment.
     Segments,
+    /// The log has used its last file id.
+    LogFileIds,
 }
 
 /// What the reclaimers of a store do when the oldest pin may have moved
