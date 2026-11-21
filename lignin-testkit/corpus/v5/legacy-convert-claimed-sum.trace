@@ -1,0 +1,109 @@
+lignin-golden-trace 1
+name legacy-convert-claimed-sum
+seed 0x0
+grove-version 5
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-convert-claimed-sum
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c884cr7bfd
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 117, 109, 115], element: sum_tree: None 9 })
+  cost seeks=5 loaded=150 added=124 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 4f09c4e20c91d81c5a5c99ab69e3d3a2d6f7ee1fcfede43a3162a14d5ce55c6b
+c69e1rd9ff
+  step 2
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 101, 100], element: count_sum_tree: Nonecount: 2, sum 9 })
+  cost seeks=7 loaded=226 added=139 replaced=164 removed=- hashes=11 sinsemilla=0
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+cb7ddrd9ff
+  step 3
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+ce2afe72a5rd9ff
+  step 4
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [115, 117, 109, 115], own_transaction: false })
+  # failed: invalid input: the tree's element does not record the root key, count and sum its tree has: the conversion would change them
+  cost seeks=3 loaded=278 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidInput
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+c3cd8e72a5rd9ff
+  step 5
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 101, 100], own_transaction: false })
+  # failed: invalid input: the tree's element does not record the root key, count and sum its tree has: the conversion would change them
+  cost seeks=4 loaded=362 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidInput
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+cb7ddrd9ff
+  step 6
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+ce2afe72a5rd9ff
+  step 7
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [115, 117, 109, 115], own_transaction: true })
+  # failed: invalid input: the tree's element does not record the root key, count and sum its tree has: the conversion would change them
+  cost seeks=3 loaded=278 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidInput
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+c3bffv4671
+  step 8
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=2 loaded=191 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 04001200
+c3cd8e72a5rd9ff
+  step 9
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 101, 100], own_transaction: true })
+  # failed: invalid input: the tree's element does not record the root key, count and sum its tree has: the conversion would change them
+  cost seeks=4 loaded=362 added=0 replaced=0 removed=- hashes=3 sinsemilla=0
+  failed InvalidInput
+  root 4ed4b0f244d72394b8e2f03828cb4f23487f254b4e23b6c29088146d458c7677
+cfc44ve64e
+  step 10
+  # Read(Get { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 101, 100] })
+  cost seeks=3 loaded=263 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 0700021200
+c8951re652
+  step 11
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], element: sum_item: 4 })
+  cost seeks=8 loaded=356 added=164 replaced=164 removed=- hashes=15 sinsemilla=0
+  root 6a75a5c4ae1eed36e4be52a86324ec14bc4a5d2492df4570ccac9d53209cdf1d
+c8cf4r0380
+  step 12
+  # Write(Insert { path: [[116, 111, 112], [99, 111, 117, 110, 116, 101, 100]], key: [97], element: sum_item: 4 })
+  cost seeks=11 loaded=514 added=180 replaced=263 removed=- hashes=17 sinsemilla=0
+  root 47386891fa25b7a4d7049e73fe5d834b667dde9fa3402b09a4542868011a39d2
+cbc3ar13dc
+  step 13
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [115, 117, 109, 115], own_transaction: false })
+  cost seeks=9 loaded=429 added=23 replaced=294 removed=- hashes=15 sinsemilla=0
+  root 3dbfeb2aebeeae45f864413bc69b1a5509144e7dc0f7524e0d31e9ffe0a812df
+cb7ddr13dc
+  step 14
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 3dbfeb2aebeeae45f864413bc69b1a5509144e7dc0f7524e0d31e9ffe0a812df
+cd697r1219
+  step 15
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 101, 100], own_transaction: true })
+  cost seeks=12 loaded=590 added=23 replaced=416 removed=- hashes=17 sinsemilla=0
+  root 3408c71ba234b6bf3979601f46b062faf67bbf28c7cc028581054b5b24738704
+c6f62vc331q0a35p6e0e
+  step 16
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112]], query: SizedQuery { query: Query { items: [RangeFull(..)], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: None, limit: None, offset: None }, limit: None, offset: None } }, proven: true })
+  cost seeks=5 loaded=778 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  result elements
+  rows 2
+  row 746f70 636f756e746564 1e010161010800
+  row 746f70 73756d73 050101610800
+  skipped 0
+  prove-cost seeks=9 loaded=718 added=0 replaced=0 removed=- hashes=9 sinsemilla=0
+  proof 221 01002f0403746f70000802010473756d7300741cfa7724a4f3f67f78296b130fafb364263bf6ebd32cae33a47db9ddf2d0150103746f7000a31c07636f756e74656400071e010161010800a73549cf878b97c809128c404820db7a463daeb424af1ce9bbf6e7367885713300140a9de194bde11d0d1761ae3bb6c669e98fba2c0719e569e53f5e1eac33c9681c0473756d730006050101610800ea8c47e7e12b0d76ebd6315d9abc25b0500fc991439f376311d1ca5e3d836b9800140a9de194bde11d0d1761ae3bb6c669e98fba2c0719e569e53f5e1eac33c9681000
+  verification verified
+stream 17 23b30ec378fcab3a5bf8422840cc1970ba4ff1e0b0ed9fafe332f81cf0275dbd
+tally failed=4 unproved=0 unverified=0
+end 17 b9b673681242cc6dbce9c36ce27f6763132f0260474e340967493182e89852a0

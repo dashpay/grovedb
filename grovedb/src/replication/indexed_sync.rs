@@ -57,7 +57,7 @@ use grovedb_merk::{
     tree_type::TreeType,
     ChunkProducer,
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
+use grovedb_storage::prefix::secondary_prefix_for;
 
 use crate::{
     operations::indexed_tree::{axis_secondary_tree_type, axis_storage_tag},
@@ -65,7 +65,7 @@ use crate::{
         served_merk_root_hash,
         utils::{encode_vec_ops, pack_nested_bytes},
     },
-    Element, Error, GroveDb, SubtreePrefix, Transaction,
+    Element, Engine, Error, GroveDb, SubtreePrefix, Transaction,
 };
 
 /// Marker byte opening an [`IndexedHeaderRequest`] local chunk id.
@@ -254,7 +254,7 @@ pub(crate) fn verify_indexed_binding(
 
 // ── Source side ─────────────────────────────────────────────────────────
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Serve the header page for an indexed primary: the
     /// [`IndexedHeader`] plus the primary's root chunk, packed as
     /// `pack([header, root_chunk_ops])` (`root_chunk_ops` is empty for an
@@ -266,13 +266,13 @@ impl GroveDb {
     /// target's joint verification will reject. So is `tree_type`: naming
     /// an indexed type for a subtree whose nodes belong to another family
     /// is refused before the primary is hashed.
-    pub(crate) fn serve_indexed_header_page(
-        &self,
+    pub(crate) fn serve_indexed_header_page<'db>(
+        &'db self,
         chunk_prefix: SubtreePrefix,
         root_key: Option<Vec<u8>>,
         tree_type: TreeType,
         request_bytes: &[u8],
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         grove_version: &grovedb_version::version::GroveVersion,
     ) -> Result<Vec<u8>, Error> {
         let request = IndexedHeaderRequest::decode(request_bytes)?;
@@ -305,8 +305,7 @@ impl GroveDb {
                 Error::CorruptedData(format!("invalid axis tag in indexed header request: {e}"))
             })?;
             let secondary_prefix =
-                RocksDbStorage::secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis))
-                    .unwrap();
+                secondary_prefix_for(&chunk_prefix, axis_storage_tag(axis)).unwrap();
             let secondary_merk = self
                 .open_transactional_merk_by_prefix(
                     secondary_prefix,

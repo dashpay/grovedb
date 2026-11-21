@@ -1,0 +1,2686 @@
+//! Flat pages: B+tree leaf and branch page images with prefix-compressed
+//! keys, for ordered data that is not part of a Merk tree.
+//!
+//! See `docs/lignindb/flat-page.md`.
+//!
+//! ```text
+//! offset  size  field
+//!      0     1  page kind: 1 leaf, 2 branch
+//!      1     1  level: 0 in a leaf, 1 to 255 in a branch
+//!      2     2  image length
+//!      4     4  page id: the page's own id
+//!      8     2  entry count
+//!     10     2  prefix length
+//!     12     4  first child page id (branch only)
+//!   then        the prefix, the slot directory, the cells
+//! ```
+//!
+//! An image has no checksum of its own. The record that holds it has one: a
+//! segment block or a log record. [`FlatPage::decode`] checks structure and
+//! must be given bytes from a record that was verified.
+
+use std::{cmp::Ordering, fmt, iter::FusedIterator, ops::Range};
+
+use crate::{error::FormatError, header::FormatVersion, ids::PageId, value_log::ValuePlace};
+
+const COMMON_HEADER_LEN: usize = 12;
+const LEN_AT: usize = 2;
+const PAGE_ID_AT: usize = 4;
+const COUNT_AT: usize = 8;
+const PREFIX_LEN_AT: usize = 10;
+const FIRST_CHILD_AT: usize = 12;
+const OUT_OF_LINE: u8 = 1;
+
+/// Why a byte string is not a flat page image, or why a page cannot be built.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlatPageError {
+    /// The image length field is smaller than the page's own header.
+    ImageTooShort {
+        /// The image length.
+        len: usize,
+        /// The header length of the page kind.
+        header_len: usize,
+    },
+    /// The level is not 0 in a leaf, or is 0 in a branch.
+    InvalidLevel {
+        /// The page kind.
+        kind: FlatPageKind,
+        /// The level found.
+        level: u8,
+    },
+    /// The prefix and the slot directory do not fit in the image.
+    DirectoryOutOfBounds {
+        /// The offset at which the cells would start.
+        needed: usize,
+        /// The image length.
+        len: usize,
+    },
+    /// A slot's cell ends before it starts or after the image does, or is
+    /// too short for what the slot says it holds.
+    InvalidSlot {
+        /// The slot's position.
+        slot: usize,
+    },
+    /// An out-of-line value is not as long as a value pointer.
+    PointerLength {
+        /// The slot's position.
+        slot: usize,
+        /// The length of the value bytes.
+        len: usize,
+    },
+    /// A key is not greater than the key before it.
+    KeysOutOfOrder {
+        /// The position of the key that is out of order.
+        slot: usize,
+    },
+    /// The last cell ends before the image does.
+    UnusedBytes {
+        /// The offset at which the cells end.
+        used: usize,
+        /// The image length.
+        len: usize,
+    },
+    /// A page was asked for with a capacity above [`FlatPage::MAX_LEN`].
+    CapacityOutOfRange {
+        /// The capacity asked for.
+        capacity: usize,
+    },
+    /// A key does not start with the page's prefix.
+    KeyOutsidePrefix,
+    /// The page has no room for what was added. The page is unchanged.
+    PageFull {
+        /// The image length the addition would give.
+        needed: usize,
+        /// The capacity the page was created with.
+        capacity: usize,
+    },
+}
+
+impl fmt::Display for FlatPageError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ImageTooShort { len, header_len } => write!(
+                f,
+                "image length {len} is below the {header_len}-byte header"
+            ),
+            Self::InvalidLevel { kind, level } => write!(f, "{kind:?} page with level {level}"),
+            Self::DirectoryOutOfBounds { needed, len } => write!(
+                f,
+                "prefix and slot directory end at {needed}, past the image length {len}"
+            ),
+            Self::InvalidSlot { slot } => write!(f, "slot {slot} does not describe a cell"),
+            Self::PointerLength { slot, len } => write!(
+                f,
+                "out-of-line value {slot} is {len} bytes long, not the {} of a value pointer",
+                ValuePlace::ENCODED_LEN
+            ),
+            Self::KeysOutOfOrder { slot } => {
+                write!(f, "key {slot} is not greater than the key before it")
+            }
+            Self::UnusedBytes { used, len } => {
+                write!(f, "cells end at {used}, before the image length {len}")
+            }
+            Self::CapacityOutOfRange { capacity } => write!(
+                f,
+                "capacity {capacity} exceeds the maximum of {}",
+                FlatPage::MAX_LEN
+            ),
+            Self::KeyOutsidePrefix => write!(f, "key does not start with the page prefix"),
+            Self::PageFull { needed, capacity } => {
+                write!(f, "page full: need {needed} bytes, capacity is {capacity}")
+            }
+        }
+    }
+}
+
+impl From<FlatPageError> for FormatError {
+    fn from(error: FlatPageError) -> Self {
+        Self::FlatPage(error)
+    }
+}
+
+/// Whether a flat page holds values or children. The code is the first byte
+/// of the image.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum FlatPageKind {
+    /// Keys with their values.
+    Leaf = 1,
+    /// Separator keys with the pages below them.
+    Branch = 2,
+}
+
+impl FlatPageKind {
+    /// Every flat page kind of the current format version.
+    pub const ALL: [Self; 2] = [Self::Leaf, Self::Branch];
+
+    /// The kind with this code in a file of format `version`.
+    pub const fn from_code(code: u8, version: FormatVersion) -> Result<Self, FormatError> {
+        match version {
+            FormatVersion::V1 => match code {
+                1 => Ok(Self::Leaf),
+                2 => Ok(Self::Branch),
+                code => Err(FormatError::UnknownRecordKind { code: code as u32 }),
+            },
+        }
+    }
+
+    /// The code stored in the image.
+    pub const fn code(self) -> u8 {
+        self as u8
+    }
+
+    /// Bytes of the image before the prefix.
+    pub const fn header_len(self) -> usize {
+        match self {
+            Self::Leaf => COMMON_HEADER_LEN,
+            Self::Branch => COMMON_HEADER_LEN + PageId::ENCODED_LEN,
+        }
+    }
+
+    /// Bytes an entry takes on top of its key suffix and, in a leaf, its
+    /// value.
+    pub const fn entry_overhead(self) -> usize {
+        match self {
+            Self::Leaf => self.slot_len(),
+            Self::Branch => self.slot_len() + PageId::ENCODED_LEN,
+        }
+    }
+
+    const fn slot_len(self) -> usize {
+        match self {
+            Self::Leaf => 5,
+            Self::Branch => 2,
+        }
+    }
+}
+
+/// A key in a flat page: the page's prefix followed by the key's own suffix.
+///
+/// The two parts are borrowed from the image. Two keys are equal when their
+/// bytes are, wherever each page splits them.
+#[derive(Debug, Clone, Copy)]
+pub struct FlatKey<'a> {
+    prefix: &'a [u8],
+    suffix: &'a [u8],
+}
+
+impl<'a> FlatKey<'a> {
+    const fn whole(key: &'a [u8]) -> Self {
+        Self {
+            prefix: key,
+            suffix: &[],
+        }
+    }
+
+    /// The leading bytes, which every key of the page shares.
+    pub const fn prefix(&self) -> &'a [u8] {
+        self.prefix
+    }
+
+    /// The bytes after the prefix.
+    pub const fn suffix(&self) -> &'a [u8] {
+        self.suffix
+    }
+
+    /// The key's length in bytes.
+    pub const fn len(&self) -> usize {
+        self.prefix.len() + self.suffix.len()
+    }
+
+    /// Whether the key is the empty byte string.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Compares the key with `other`, byte by byte.
+    pub fn cmp_bytes(&self, other: &[u8]) -> Ordering {
+        let (head, tail) = other.split_at(self.prefix.len().min(other.len()));
+        self.prefix.cmp(head).then_with(|| self.suffix.cmp(tail))
+    }
+
+    /// Appends the key's bytes to `out`.
+    pub fn append_to(&self, out: &mut Vec<u8>) {
+        out.reserve(self.len());
+        out.extend_from_slice(self.prefix);
+        out.extend_from_slice(self.suffix);
+    }
+
+    /// The key's bytes in one allocation.
+    pub fn to_vec(&self) -> Vec<u8> {
+        let mut key = Vec::new();
+        self.append_to(&mut key);
+        key
+    }
+
+    fn bytes(&self) -> impl Iterator<Item = &'a u8> + use<'a> {
+        self.prefix.iter().chain(self.suffix)
+    }
+
+    fn strip_prefix(&self, prefix: &[u8]) -> Option<Self> {
+        let (prefix, suffix) = match prefix.split_at_checked(self.prefix.len()) {
+            None => (self.prefix.strip_prefix(prefix)?, self.suffix),
+            Some((head, tail)) if head == self.prefix => (&[][..], self.suffix.strip_prefix(tail)?),
+            Some(_) => return None,
+        };
+        Some(Self { prefix, suffix })
+    }
+}
+
+impl PartialEq for FlatKey<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.bytes().eq(other.bytes())
+    }
+}
+
+impl Eq for FlatKey<'_> {}
+
+impl PartialOrd for FlatKey<'_> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for FlatKey<'_> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.bytes().cmp(other.bytes())
+    }
+}
+
+impl PartialEq<[u8]> for FlatKey<'_> {
+    fn eq(&self, other: &[u8]) -> bool {
+        self.cmp_bytes(other) == Ordering::Equal
+    }
+}
+
+/// What a leaf stores for a key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FlatValue<'a> {
+    /// The value itself.
+    Inline(&'a [u8]),
+    /// The 16 bytes of the place of a value stored outside the page: a
+    /// value pointer, or what stands for a value that is not in the value
+    /// log yet. [`ValuePlace::decode`] reads them.
+    OutOfLine(&'a [u8]),
+}
+
+impl<'a> FlatValue<'a> {
+    /// The bytes stored in the page: the value, or the pointer to it.
+    pub const fn bytes(&self) -> &'a [u8] {
+        match *self {
+            Self::Inline(bytes) | Self::OutOfLine(bytes) => bytes,
+        }
+    }
+
+    /// Whether the stored bytes are the value itself.
+    pub const fn is_inline(&self) -> bool {
+        matches!(self, Self::Inline(_))
+    }
+
+    /// Whether the value is out of line and not in the value log yet: its
+    /// place names no file.
+    pub fn is_pending(&self) -> bool {
+        match self {
+            Self::Inline(_) => false,
+            Self::OutOfLine(place) => ValuePlace::names_no_file(place),
+        }
+    }
+
+    const fn flags(&self) -> u8 {
+        match self {
+            Self::Inline(_) => 0,
+            Self::OutOfLine(_) => OUT_OF_LINE,
+        }
+    }
+}
+
+fn u16_at(bytes: &[u8], at: usize) -> Option<usize> {
+    let field: &[u8; 2] = bytes.get(at..)?.first_chunk()?;
+    Some(usize::from(u16::from_le_bytes(*field)))
+}
+
+fn page_id_at(bytes: &[u8], at: usize) -> Option<PageId> {
+    PageId::decode(*bytes.get(at..)?.first_chunk()?)
+}
+
+fn le16(value: usize) -> [u8; 2] {
+    debug_assert!(value <= FlatPage::MAX_LEN);
+    (value as u16).to_le_bytes()
+}
+
+fn image_at_start(bytes: &[u8]) -> Result<&[u8], FormatError> {
+    let truncated = |needed| FormatError::Truncated {
+        needed,
+        available: bytes.len(),
+    };
+    let Some(&[_, _, len_low, len_high, ..]) = bytes.first_chunk::<COMMON_HEADER_LEN>() else {
+        return Err(truncated(COMMON_HEADER_LEN));
+    };
+    let len = usize::from(u16::from_le_bytes([len_low, len_high]));
+    let header_len = FlatPageKind::Leaf.header_len();
+    if len < header_len {
+        return Err(FlatPageError::ImageTooShort { len, header_len }.into());
+    }
+    bytes.get(..len).ok_or(truncated(len))
+}
+
+fn check_pointer(bytes: &[u8], slot: usize) -> Result<(), FormatError> {
+    let Ok(pointer) = bytes.try_into() else {
+        return Err(FlatPageError::PointerLength {
+            slot,
+            len: bytes.len(),
+        }
+        .into());
+    };
+    ValuePlace::decode(pointer).map(|_| ())
+}
+
+#[derive(Debug, Clone, Copy)]
+struct View<'a> {
+    image: &'a [u8],
+    kind: FlatPageKind,
+    level: u8,
+    id: PageId,
+    prefix: &'a [u8],
+    slots: &'a [u8],
+    count: usize,
+    cells_at: usize,
+}
+
+impl<'a> View<'a> {
+    fn open(image: &'a [u8], version: FormatVersion) -> Result<Self, FormatError> {
+        let too_short = |header_len| FlatPageError::ImageTooShort {
+            len: image.len(),
+            header_len,
+        };
+        let &[code, level] = image.first_chunk().ok_or(too_short(2))?;
+        let kind = FlatPageKind::from_code(code, version)?;
+        if (level == 0) != (kind == FlatPageKind::Leaf) {
+            return Err(FlatPageError::InvalidLevel { kind, level }.into());
+        }
+        let header_len = kind.header_len();
+        let header = image.get(..header_len).ok_or(too_short(header_len))?;
+        let (Some(count), Some(prefix_len)) =
+            (u16_at(header, COUNT_AT), u16_at(header, PREFIX_LEN_AT))
+        else {
+            return Err(too_short(header_len).into());
+        };
+        let id = page_id_at(header, PAGE_ID_AT).ok_or(FormatError::MissingId)?;
+        if kind == FlatPageKind::Branch && page_id_at(header, FIRST_CHILD_AT).is_none() {
+            return Err(FormatError::MissingId);
+        }
+        let slots_at = header_len.saturating_add(prefix_len);
+        let cells_at = slots_at.saturating_add(count.saturating_mul(kind.slot_len()));
+        let (Some(prefix), Some(slots)) = (
+            image.get(header_len..slots_at),
+            image.get(slots_at..cells_at),
+        ) else {
+            return Err(FlatPageError::DirectoryOutOfBounds {
+                needed: cells_at,
+                len: image.len(),
+            }
+            .into());
+        };
+        Ok(Self {
+            image,
+            kind,
+            level,
+            id,
+            prefix,
+            slots,
+            count,
+            cells_at,
+        })
+    }
+
+    fn validate(&self) -> Result<(), FormatError> {
+        let mut start = self.cells_at;
+        let mut previous: Option<&[u8]> = None;
+        for slot in 0..self.count {
+            let invalid = FlatPageError::InvalidSlot { slot };
+            let end = self.cell_end(slot).ok_or(invalid)?;
+            let cell = self.image.get(start..end).ok_or(invalid)?;
+            let suffix = match self.kind {
+                FlatPageKind::Leaf => {
+                    let (suffix, value) = self
+                        .key_len(slot)
+                        .and_then(|key_len| cell.split_at_checked(key_len))
+                        .ok_or(invalid)?;
+                    let flags = self.flags(slot).ok_or(invalid)?;
+                    if flags & !OUT_OF_LINE != 0 {
+                        return Err(FormatError::NonZeroReserved);
+                    }
+                    if flags & OUT_OF_LINE != 0 {
+                        check_pointer(value, slot)?;
+                    }
+                    suffix
+                }
+                FlatPageKind::Branch => {
+                    let (suffix, child) = cell.split_last_chunk().ok_or(invalid)?;
+                    PageId::decode(*child).ok_or(FormatError::MissingId)?;
+                    suffix
+                }
+            };
+            if previous.is_some_and(|previous| previous >= suffix) {
+                return Err(FlatPageError::KeysOutOfOrder { slot }.into());
+            }
+            previous = Some(suffix);
+            start = end;
+        }
+        if start != self.image.len() {
+            return Err(FlatPageError::UnusedBytes {
+                used: start,
+                len: self.image.len(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    fn slot(&self, slot: usize) -> Option<&'a [u8]> {
+        let len = self.kind.slot_len();
+        let at = slot.checked_mul(len)?;
+        self.slots.get(at..at.checked_add(len)?)
+    }
+
+    fn cell_end(&self, slot: usize) -> Option<usize> {
+        u16_at(self.slot(slot)?, 0)
+    }
+
+    fn key_len(&self, slot: usize) -> Option<usize> {
+        u16_at(self.slot(slot)?, 2)
+    }
+
+    fn flags(&self, slot: usize) -> Option<u8> {
+        self.slot(slot)?.get(4).copied()
+    }
+
+    fn cell(&self, slot: usize) -> Option<&'a [u8]> {
+        let start = match slot.checked_sub(1) {
+            Some(before) => self.cell_end(before)?,
+            None => self.cells_at,
+        };
+        self.image.get(start..self.cell_end(slot)?)
+    }
+
+    fn split_cell(&self, slot: usize) -> Option<(&'a [u8], &'a [u8])> {
+        let cell = self.cell(slot)?;
+        let key_len = match self.kind {
+            FlatPageKind::Leaf => self.key_len(slot)?,
+            FlatPageKind::Branch => cell.len().checked_sub(PageId::ENCODED_LEN)?,
+        };
+        cell.split_at_checked(key_len)
+    }
+
+    fn key(&self, slot: usize) -> Option<FlatKey<'a>> {
+        let (suffix, _) = self.split_cell(slot)?;
+        Some(FlatKey {
+            prefix: self.prefix,
+            suffix,
+        })
+    }
+
+    fn search(&self, key: &[u8]) -> Result<usize, usize> {
+        let count = self.count;
+        let needle = match key.split_at_checked(self.prefix.len()) {
+            Some((head, tail)) => match head.cmp(self.prefix) {
+                Ordering::Less => return Err(0),
+                Ordering::Greater => return Err(count),
+                Ordering::Equal => tail,
+            },
+            None => return Err(if key > self.prefix { count } else { 0 }),
+        };
+        let (mut low, mut high) = (0, count);
+        while low < high {
+            let middle = low + (high - low) / 2;
+            let Some((suffix, _)) = self.split_cell(middle) else {
+                return Err(low);
+            };
+            match suffix.cmp(needle) {
+                Ordering::Less => low = middle + 1,
+                Ordering::Greater => high = middle,
+                Ordering::Equal => return Ok(middle),
+            }
+        }
+        Err(low)
+    }
+}
+
+/// A flat page image, borrowed.
+#[derive(Debug, Clone, Copy)]
+pub enum FlatPage<'a> {
+    /// A page of keys and values.
+    Leaf(FlatLeaf<'a>),
+    /// A page of separator keys and children.
+    Branch(FlatBranch<'a>),
+}
+
+impl<'a> FlatPage<'a> {
+    /// The longest image, in bytes. Offsets inside a page are 16 bits.
+    pub const MAX_LEN: usize = u16::MAX as usize;
+
+    /// Reads and fully checks the image at the start of `bytes`, written in
+    /// format `version`.
+    ///
+    /// The image says how long it is, and later bytes are ignored, so `bytes`
+    /// may be a whole frame. The checks run in a fixed order: length, kind,
+    /// level, header, page id, directory, then each slot in turn.
+    ///
+    /// An image has no checksum. These checks find an image that is not
+    /// well formed, not one whose keys or values were changed: `bytes` must
+    /// come from a record whose checksum was verified.
+    pub fn decode(bytes: &'a [u8], version: FormatVersion) -> Result<Self, FormatError> {
+        let image = image_at_start(bytes)?;
+        let view = View::open(image, version)?;
+        view.validate()?;
+        Ok(Self::from_view(view))
+    }
+
+    /// Borrows an image that [`Self::decode`] has already accepted, in
+    /// constant time.
+    ///
+    /// Only the header is checked: not the slots, the value pointers or the
+    /// key order. On bytes `decode` would reject, the accessors stay in bounds
+    /// and do not panic, but what they return is not meaningful.
+    pub fn from_validated(bytes: &'a [u8], version: FormatVersion) -> Result<Self, FormatError> {
+        View::open(image_at_start(bytes)?, version).map(Self::from_view)
+    }
+
+    fn from_view(view: View<'a>) -> Self {
+        match view.kind {
+            FlatPageKind::Leaf => Self::Leaf(FlatLeaf(view)),
+            FlatPageKind::Branch => Self::Branch(FlatBranch(view)),
+        }
+    }
+
+    const fn view(&self) -> &View<'a> {
+        match self {
+            Self::Leaf(FlatLeaf(view)) | Self::Branch(FlatBranch(view)) => view,
+        }
+    }
+
+    /// Whether the page is a leaf or a branch.
+    pub const fn kind(&self) -> FlatPageKind {
+        self.view().kind
+    }
+
+    /// The page's own id, as its header holds it. A reader that asked for a
+    /// page compares this with the id it asked for.
+    pub const fn id(&self) -> PageId {
+        self.view().id
+    }
+
+    /// The page's distance from the leaves: 0 for a leaf.
+    pub const fn level(&self) -> u8 {
+        self.view().level
+    }
+
+    /// The image, at its exact length.
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.view().image
+    }
+
+    /// The bytes every key of the page starts with.
+    pub const fn prefix(&self) -> &'a [u8] {
+        self.view().prefix
+    }
+
+    /// The number of keys in the page.
+    pub const fn len(&self) -> usize {
+        self.view().count
+    }
+
+    /// Whether the page has no key.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// Whether the page is a leaf with a pending value. A branch has no
+    /// values.
+    pub fn has_pending_value(&self) -> bool {
+        match self {
+            Self::Leaf(leaf) => leaf.has_pending_value(),
+            Self::Branch(_) => false,
+        }
+    }
+
+    /// The page as a leaf, if it is one.
+    pub const fn leaf(self) -> Option<FlatLeaf<'a>> {
+        match self {
+            Self::Leaf(leaf) => Some(leaf),
+            Self::Branch(_) => None,
+        }
+    }
+
+    /// The page as a branch, if it is one.
+    pub const fn branch(self) -> Option<FlatBranch<'a>> {
+        match self {
+            Self::Leaf(_) => None,
+            Self::Branch(branch) => Some(branch),
+        }
+    }
+}
+
+/// A leaf page image, borrowed: keys in ascending order, each with a value.
+///
+/// No accessor allocates.
+#[derive(Debug, Clone, Copy)]
+pub struct FlatLeaf<'a>(View<'a>);
+
+impl<'a> FlatLeaf<'a> {
+    /// Bytes of the image before the prefix.
+    pub const HEADER_LEN: usize = FlatPageKind::Leaf.header_len();
+    /// Bytes an entry takes on top of its key suffix and value.
+    pub const ENTRY_OVERHEAD: usize = FlatPageKind::Leaf.entry_overhead();
+
+    /// Bytes an entry adds to the image.
+    pub const fn entry_len(key_suffix_len: usize, value_len: usize) -> usize {
+        Self::ENTRY_OVERHEAD
+            .saturating_add(key_suffix_len)
+            .saturating_add(value_len)
+    }
+
+    /// The page's own id.
+    pub const fn id(&self) -> PageId {
+        self.0.id
+    }
+
+    /// The image, at its exact length.
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0.image
+    }
+
+    /// The bytes every key of the page starts with.
+    pub const fn prefix(&self) -> &'a [u8] {
+        self.0.prefix
+    }
+
+    /// The number of entries.
+    pub const fn len(&self) -> usize {
+        self.0.count
+    }
+
+    /// Whether the leaf has no entry.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The key at position `slot`, counting from 0 in key order.
+    pub fn key(&self, slot: usize) -> Option<FlatKey<'a>> {
+        self.0.key(slot)
+    }
+
+    /// The value at position `slot`.
+    pub fn value(&self, slot: usize) -> Option<FlatValue<'a>> {
+        let (_, value) = self.0.split_cell(slot)?;
+        Some(if self.0.flags(slot)? & OUT_OF_LINE == 0 {
+            FlatValue::Inline(value)
+        } else {
+            FlatValue::OutOfLine(value)
+        })
+    }
+
+    /// Whether an entry of the leaf has a pending value: one that is out of
+    /// line and not in the value log yet.
+    ///
+    /// A leaf image that a segment makes durable has none (P15 of
+    /// `docs/lignindb/flat-page.md`).
+    pub fn has_pending_value(&self) -> bool {
+        (0..self.len()).any(|slot| self.value(slot).is_some_and(|value| value.is_pending()))
+    }
+
+    /// The key and value at position `slot`.
+    pub fn entry(&self, slot: usize) -> Option<(FlatKey<'a>, FlatValue<'a>)> {
+        Some((self.key(slot)?, self.value(slot)?))
+    }
+
+    /// Binary search for `key`.
+    ///
+    /// `Ok` holds the position of the entry with that key. `Err` holds the
+    /// position at which the key would be inserted: the number of entries
+    /// with a smaller key.
+    pub fn search(&self, key: &[u8]) -> Result<usize, usize> {
+        self.0.search(key)
+    }
+
+    /// The value stored for `key`.
+    pub fn get(&self, key: &[u8]) -> Option<FlatValue<'a>> {
+        self.value(self.search(key).ok()?)
+    }
+
+    /// The entries in key order.
+    pub fn iter(&self) -> FlatLeafIter<'a> {
+        FlatLeafIter {
+            leaf: *self,
+            slots: 0..self.len(),
+        }
+    }
+}
+
+impl<'a> IntoIterator for FlatLeaf<'a> {
+    type IntoIter = FlatLeafIter<'a>;
+    type Item = (FlatKey<'a>, FlatValue<'a>);
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
+/// The entries of a leaf, in key order.
+#[derive(Debug, Clone)]
+pub struct FlatLeafIter<'a> {
+    leaf: FlatLeaf<'a>,
+    slots: Range<usize>,
+}
+
+impl<'a> Iterator for FlatLeafIter<'a> {
+    type Item = (FlatKey<'a>, FlatValue<'a>);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let entry = self.leaf.entry(self.slots.next()?);
+        self.stop_unless(entry)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.slots.size_hint()
+    }
+}
+
+impl DoubleEndedIterator for FlatLeafIter<'_> {
+    fn next_back(&mut self) -> Option<Self::Item> {
+        let entry = self.leaf.entry(self.slots.next_back()?);
+        self.stop_unless(entry)
+    }
+}
+
+impl ExactSizeIterator for FlatLeafIter<'_> {}
+
+impl FusedIterator for FlatLeafIter<'_> {}
+
+impl<'a> FlatLeafIter<'a> {
+    fn stop_unless<T>(&mut self, entry: Option<T>) -> Option<T> {
+        if entry.is_none() {
+            self.slots = 0..0;
+        }
+        entry
+    }
+}
+
+/// A branch page image, borrowed: separator keys in ascending order between
+/// one more child than there are separators.
+///
+/// Child 0 is the first child. Child `i + 1` is the one stored with separator
+/// `i`, and holds the keys that are greater than or equal to that separator
+/// and less than the next one. No accessor allocates.
+#[derive(Debug, Clone, Copy)]
+pub struct FlatBranch<'a>(View<'a>);
+
+impl<'a> FlatBranch<'a> {
+    /// Bytes of the image before the prefix.
+    pub const HEADER_LEN: usize = FlatPageKind::Branch.header_len();
+    /// Bytes an entry takes on top of its separator suffix.
+    pub const ENTRY_OVERHEAD: usize = FlatPageKind::Branch.entry_overhead();
+
+    /// Bytes an entry adds to the image.
+    pub const fn entry_len(separator_suffix_len: usize) -> usize {
+        Self::ENTRY_OVERHEAD.saturating_add(separator_suffix_len)
+    }
+
+    /// The page's own id.
+    pub const fn id(&self) -> PageId {
+        self.0.id
+    }
+
+    /// The image, at its exact length.
+    pub const fn as_bytes(&self) -> &'a [u8] {
+        self.0.image
+    }
+
+    /// The bytes every separator of the page starts with.
+    pub const fn prefix(&self) -> &'a [u8] {
+        self.0.prefix
+    }
+
+    /// The page's distance from the leaves, at least 1.
+    pub const fn level(&self) -> u8 {
+        self.0.level
+    }
+
+    /// The number of separators. There is one more child.
+    pub const fn len(&self) -> usize {
+        self.0.count
+    }
+
+    /// Whether the branch has no separator, and so a single child.
+    pub const fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The separator at position `slot`, counting from 0 in key order.
+    pub fn separator(&self, slot: usize) -> Option<FlatKey<'a>> {
+        self.0.key(slot)
+    }
+
+    /// The child at position `index`, from 0 to [`Self::len`] inclusive.
+    pub fn child(&self, index: usize) -> Option<PageId> {
+        match index.checked_sub(1) {
+            Some(slot) => {
+                let (_, child) = self.0.split_cell(slot)?;
+                page_id_at(child, 0)
+            }
+            None => page_id_at(self.0.image, FIRST_CHILD_AT),
+        }
+    }
+
+    /// The position of the child whose range holds `key`: the number of
+    /// separators less than or equal to `key`, found by binary search.
+    pub fn child_index(&self, key: &[u8]) -> usize {
+        match self.0.search(key) {
+            Ok(slot) => slot + 1,
+            Err(slot) => slot,
+        }
+    }
+
+    /// The child whose range holds `key`.
+    pub fn child_for(&self, key: &[u8]) -> Option<PageId> {
+        self.child(self.child_index(key))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct BuilderSlot {
+    end: usize,
+    key_len: usize,
+    flags: u8,
+}
+
+#[derive(Debug, Clone)]
+struct Builder {
+    kind: FlatPageKind,
+    capacity: usize,
+    image: Vec<u8>,
+    slots: Vec<BuilderSlot>,
+    cells: Vec<u8>,
+    last_suffix: Range<usize>,
+}
+
+impl Builder {
+    fn new(
+        kind: FlatPageKind,
+        page: PageId,
+        level: u8,
+        first_child: Option<PageId>,
+        prefix: &[u8],
+        capacity: usize,
+    ) -> Result<Self, FormatError> {
+        if capacity > FlatPage::MAX_LEN {
+            return Err(FlatPageError::CapacityOutOfRange { capacity }.into());
+        }
+        let needed = kind.header_len().saturating_add(prefix.len());
+        if needed > capacity {
+            return Err(FlatPageError::PageFull { needed, capacity }.into());
+        }
+        let mut image = Vec::with_capacity(needed);
+        image.extend_from_slice(&[kind.code(), level, 0, 0]);
+        image.extend_from_slice(&page.encode());
+        image.extend_from_slice(&[0, 0]);
+        image.extend_from_slice(&le16(prefix.len()));
+        if let Some(first_child) = first_child {
+            image.extend_from_slice(&first_child.encode());
+        }
+        image.extend_from_slice(prefix);
+        Ok(Self {
+            kind,
+            capacity,
+            image,
+            slots: Vec::new(),
+            cells: Vec::new(),
+            last_suffix: 0..0,
+        })
+    }
+
+    fn prefix(&self) -> &[u8] {
+        self.image.get(self.kind.header_len()..).unwrap_or_default()
+    }
+
+    fn encoded_len(&self) -> usize {
+        self.image.len() + self.slots.len() * self.kind.slot_len() + self.cells.len()
+    }
+
+    fn push(&mut self, key: FlatKey<'_>, flags: u8, tail: &[u8]) -> Result<(), FormatError> {
+        let suffix = key
+            .strip_prefix(self.prefix())
+            .ok_or(FlatPageError::KeyOutsidePrefix)?;
+        let slot = self.slots.len();
+        let last = self.cells.get(self.last_suffix.clone());
+        if slot > 0 && last.is_none_or(|last| suffix.cmp_bytes(last) != Ordering::Greater) {
+            return Err(FlatPageError::KeysOutOfOrder { slot }.into());
+        }
+        let needed = self
+            .encoded_len()
+            .saturating_add(self.kind.slot_len())
+            .saturating_add(suffix.len())
+            .saturating_add(tail.len());
+        if needed > self.capacity {
+            return Err(FlatPageError::PageFull {
+                needed,
+                capacity: self.capacity,
+            }
+            .into());
+        }
+        let start = self.cells.len();
+        suffix.append_to(&mut self.cells);
+        self.last_suffix = start..self.cells.len();
+        self.cells.extend_from_slice(tail);
+        self.slots.push(BuilderSlot {
+            end: self.cells.len(),
+            key_len: suffix.len(),
+            flags,
+        });
+        Ok(())
+    }
+
+    fn finish(self) -> Vec<u8> {
+        let len = self.encoded_len();
+        let cells_at = len - self.cells.len();
+        let mut image = self.image;
+        image.reserve_exact(len - image.len());
+        for slot in &self.slots {
+            image.extend_from_slice(&le16(cells_at + slot.end));
+            if self.kind == FlatPageKind::Leaf {
+                image.extend_from_slice(&le16(slot.key_len));
+                image.push(slot.flags);
+            }
+        }
+        image.extend_from_slice(&self.cells);
+        image[LEN_AT..PAGE_ID_AT].copy_from_slice(&le16(len));
+        image[COUNT_AT..PREFIX_LEN_AT].copy_from_slice(&le16(self.slots.len()));
+        image
+    }
+}
+
+/// Builds a leaf page image in the current format version.
+///
+/// Entries are added in ascending key order. The image never grows past the
+/// capacity the builder was created with.
+#[derive(Debug, Clone)]
+pub struct FlatLeafBuilder(Builder);
+
+impl FlatLeafBuilder {
+    /// An empty leaf with the page id `page` whose keys all start with
+    /// `prefix`, in an image of at most `capacity` bytes.
+    pub fn new(page: PageId, prefix: &[u8], capacity: usize) -> Result<Self, FormatError> {
+        Builder::new(FlatPageKind::Leaf, page, 0, None, prefix, capacity).map(Self)
+    }
+
+    /// Adds an entry. `key` is the whole key, prefix included, and must be
+    /// greater than the key added before it. An out-of-line value must be
+    /// the 16 bytes of a valid [`ValuePlace`]: a value pointer, or a pending
+    /// value.
+    ///
+    /// On any error the builder is unchanged. [`FlatPageError::PageFull`]
+    /// means the entry belongs on another page.
+    pub fn push(&mut self, key: &[u8], value: FlatValue<'_>) -> Result<(), FormatError> {
+        self.push_key(FlatKey::whole(key), value)
+    }
+
+    /// Adds an entry whose key is borrowed from another page, as
+    /// [`Self::push`] does, without joining the key's two parts first.
+    pub fn push_key(&mut self, key: FlatKey<'_>, value: FlatValue<'_>) -> Result<(), FormatError> {
+        if let FlatValue::OutOfLine(pointer) = value {
+            check_pointer(pointer, self.len())?;
+        }
+        self.0.push(key, value.flags(), value.bytes())
+    }
+
+    /// The number of entries added.
+    pub fn len(&self) -> usize {
+        self.0.slots.len()
+    }
+
+    /// Whether no entry has been added.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The length the image has if it is finished now.
+    pub fn encoded_len(&self) -> usize {
+        self.0.encoded_len()
+    }
+
+    /// The image.
+    pub fn finish(self) -> Vec<u8> {
+        self.0.finish()
+    }
+}
+
+/// Builds a branch page image in the current format version.
+///
+/// Separators are added in ascending order, each with the child to its
+/// right. The image never grows past the capacity the builder was created
+/// with.
+#[derive(Debug, Clone)]
+pub struct FlatBranchBuilder(Builder);
+
+impl FlatBranchBuilder {
+    /// A branch with the page id `page`, `level` levels above the leaves,
+    /// with the single child `first_child`, whose separators all start with
+    /// `prefix`, in an image of at most `capacity` bytes.
+    pub fn new(
+        page: PageId,
+        prefix: &[u8],
+        capacity: usize,
+        level: u8,
+        first_child: PageId,
+    ) -> Result<Self, FormatError> {
+        let kind = FlatPageKind::Branch;
+        if level == 0 {
+            return Err(FlatPageError::InvalidLevel { kind, level }.into());
+        }
+        Builder::new(kind, page, level, Some(first_child), prefix, capacity).map(Self)
+    }
+
+    /// Adds a separator and the child that holds the keys from it upward.
+    /// `separator` is the whole key, prefix included, and must be greater
+    /// than the separator added before it.
+    ///
+    /// On any error the builder is unchanged. [`FlatPageError::PageFull`]
+    /// means the entry belongs on another page.
+    pub fn push(&mut self, separator: &[u8], child: PageId) -> Result<(), FormatError> {
+        self.push_key(FlatKey::whole(separator), child)
+    }
+
+    /// Adds a separator borrowed from another page, as [`Self::push`] does,
+    /// without joining the key's two parts first.
+    pub fn push_key(&mut self, separator: FlatKey<'_>, child: PageId) -> Result<(), FormatError> {
+        self.0.push(separator, 0, &child.encode())
+    }
+
+    /// The number of separators added.
+    pub fn len(&self) -> usize {
+        self.0.slots.len()
+    }
+
+    /// Whether no separator has been added.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The length the image has if it is finished now.
+    pub fn encoded_len(&self) -> usize {
+        self.0.encoded_len()
+    }
+
+    /// The image.
+    pub fn finish(self) -> Vec<u8> {
+        self.0.finish()
+    }
+}
+
+/// The number of leading bytes `a` and `b` share.
+///
+/// The longest prefix a page can use is what its smallest and largest key
+/// share.
+pub fn common_prefix_len(a: &[u8], b: &[u8]) -> usize {
+    a.iter().zip(b).take_while(|(a, b)| a == b).count()
+}
+
+/// The shortest separator between two neighbouring keys: the shortest byte
+/// string that is greater than `left` and not greater than `right`.
+///
+/// It is a prefix of `right`. `left` must be less than `right`; otherwise
+/// the result is not a separator.
+pub fn shortest_separator<'a>(left: &[u8], right: &'a [u8]) -> &'a [u8] {
+    right
+        .get(..=common_prefix_len(left, right))
+        .unwrap_or(right)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use super::*;
+    use crate::{
+        ids::FileId,
+        segment::{self, Block, BlockContent, Compression},
+        test_util::SplitMix64,
+        value_log::{ValueLogError, ValuePointer},
+    };
+
+    const V1: FormatVersion = FormatVersion::V1;
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum Contents {
+        Leaf {
+            page: PageId,
+            prefix: Vec<u8>,
+            entries: Vec<(Vec<u8>, bool, Vec<u8>)>,
+        },
+        Branch {
+            page: PageId,
+            prefix: Vec<u8>,
+            level: u8,
+            first_child: PageId,
+            entries: Vec<(Vec<u8>, PageId)>,
+        },
+    }
+
+    impl Contents {
+        fn encode(&self, capacity: usize) -> Result<Vec<u8>, FormatError> {
+            match self {
+                Self::Leaf {
+                    page,
+                    prefix,
+                    entries,
+                } => {
+                    let mut builder = FlatLeafBuilder::new(*page, prefix, capacity)?;
+                    for (key, out_of_line, value) in entries {
+                        builder.push(key, value_of(*out_of_line, value))?;
+                    }
+                    assert_eq!(builder.len(), entries.len());
+                    assert_eq!(builder.is_empty(), entries.is_empty());
+                    assert_eq!(builder.encoded_len(), self.encoded_len());
+                    Ok(builder.finish())
+                }
+                Self::Branch {
+                    page,
+                    prefix,
+                    level,
+                    first_child,
+                    entries,
+                } => {
+                    let mut builder =
+                        FlatBranchBuilder::new(*page, prefix, capacity, *level, *first_child)?;
+                    for (separator, child) in entries {
+                        builder.push(separator, *child)?;
+                    }
+                    assert_eq!(builder.len(), entries.len());
+                    assert_eq!(builder.is_empty(), entries.is_empty());
+                    assert_eq!(builder.encoded_len(), self.encoded_len());
+                    Ok(builder.finish())
+                }
+            }
+        }
+
+        fn image(&self) -> Vec<u8> {
+            self.encode(FlatPage::MAX_LEN).expect("fits")
+        }
+
+        fn encoded_len(&self) -> usize {
+            match self {
+                Self::Leaf {
+                    prefix, entries, ..
+                } => {
+                    12 + prefix.len()
+                        + entries
+                            .iter()
+                            .map(|(key, _, value)| 5 + key.len() - prefix.len() + value.len())
+                            .sum::<usize>()
+                }
+                Self::Branch {
+                    prefix, entries, ..
+                } => {
+                    16 + prefix.len()
+                        + entries
+                            .iter()
+                            .map(|(key, _)| 6 + key.len() - prefix.len())
+                            .sum::<usize>()
+                }
+            }
+        }
+
+        fn read(page: FlatPage<'_>) -> Self {
+            match page {
+                FlatPage::Leaf(leaf) => Self::Leaf {
+                    page: leaf.id(),
+                    prefix: leaf.prefix().to_vec(),
+                    entries: (0..leaf.len())
+                        .map(|slot| owned_entry(leaf.entry(slot).expect("in range")))
+                        .collect(),
+                },
+                FlatPage::Branch(branch) => Self::Branch {
+                    page: branch.id(),
+                    prefix: branch.prefix().to_vec(),
+                    level: branch.level(),
+                    first_child: branch.child(0).expect("first child"),
+                    entries: (0..branch.len())
+                        .map(|slot| {
+                            (
+                                branch.separator(slot).expect("in range").to_vec(),
+                                branch.child(slot + 1).expect("in range"),
+                            )
+                        })
+                        .collect(),
+                },
+            }
+        }
+
+        fn with_prefix(&self, prefix: &[u8]) -> Self {
+            let mut contents = self.clone();
+            match &mut contents {
+                Self::Leaf { prefix: stored, .. } | Self::Branch { prefix: stored, .. } => {
+                    *stored = prefix.to_vec();
+                }
+            }
+            contents
+        }
+
+        fn keys(&self) -> Vec<&[u8]> {
+            match self {
+                Self::Leaf { entries, .. } => entries.iter().map(|e| e.0.as_slice()).collect(),
+                Self::Branch { entries, .. } => entries.iter().map(|e| e.0.as_slice()).collect(),
+            }
+        }
+
+        fn prefix(&self) -> &[u8] {
+            match self {
+                Self::Leaf { prefix, .. } | Self::Branch { prefix, .. } => prefix,
+            }
+        }
+
+        fn page(&self) -> PageId {
+            match self {
+                Self::Leaf { page, .. } | Self::Branch { page, .. } => *page,
+            }
+        }
+    }
+
+    fn value_of(out_of_line: bool, bytes: &[u8]) -> FlatValue<'_> {
+        if out_of_line {
+            FlatValue::OutOfLine(bytes)
+        } else {
+            FlatValue::Inline(bytes)
+        }
+    }
+
+    fn owned_entry((key, value): (FlatKey<'_>, FlatValue<'_>)) -> (Vec<u8>, bool, Vec<u8>) {
+        (key.to_vec(), !value.is_inline(), value.bytes().to_vec())
+    }
+
+    fn decode_leaf(image: &[u8]) -> FlatLeaf<'_> {
+        FlatPage::decode(image, V1)
+            .expect("valid")
+            .leaf()
+            .expect("leaf")
+    }
+
+    fn decode_branch(image: &[u8]) -> FlatBranch<'_> {
+        FlatPage::decode(image, V1)
+            .expect("valid")
+            .branch()
+            .expect("branch")
+    }
+
+    fn assert_encodes_back(page: FlatPage<'_>) {
+        assert_eq!(Contents::read(page).image(), page.as_bytes());
+    }
+
+    fn page_id(raw: u32) -> PageId {
+        PageId::new(raw).expect("non-zero")
+    }
+
+    fn pointer(file: u32, offset: u64, value_len: u32) -> [u8; 16] {
+        let mut bytes = [0; 16];
+        bytes[..4].copy_from_slice(&file.to_le_bytes());
+        bytes[4..12].copy_from_slice(&offset.to_le_bytes());
+        bytes[12..].copy_from_slice(&value_len.to_le_bytes());
+        bytes
+    }
+
+    fn random_pointer(rng: &mut SplitMix64) -> [u8; 16] {
+        let file = FileId::new(rng.next_u64() as u32 | 1).expect("non-zero");
+        let offset = 20 + (rng.next_u64() >> (2 + rng.next_u64() % 60));
+        let value_len = (rng.next_u64() >> 33) as u32 | 1;
+        ValuePointer::new(file, offset, value_len)
+            .expect("valid")
+            .encode()
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+
+    fn below(rng: &mut SplitMix64, bound: usize) -> usize {
+        (rng.next_u64() % bound as u64) as usize
+    }
+
+    fn random_keys(rng: &mut SplitMix64, prefix: &[u8], count: usize) -> Vec<Vec<u8>> {
+        const ALPHABET: [u8; 5] = [0x00, 0x01, 0x7F, 0x80, 0xFF];
+        let mut keys = BTreeSet::new();
+        while keys.len() < count {
+            let suffix: Vec<u8> = if below(rng, 8) == 0 {
+                let len = below(rng, 40);
+                rng.bytes(len)
+            } else {
+                (0..below(rng, 7))
+                    .map(|_| ALPHABET[below(rng, ALPHABET.len())])
+                    .collect()
+            };
+            keys.insert([prefix, &suffix].concat());
+        }
+        keys.into_iter().collect()
+    }
+
+    fn random_page_id(rng: &mut SplitMix64) -> PageId {
+        match below(rng, 8) {
+            0 => PageId::MIN,
+            1 => PageId::MAX,
+            _ => page_id(rng.next_u64() as u32 | 1),
+        }
+    }
+
+    fn random_contents(rng: &mut SplitMix64, leaf: bool) -> Contents {
+        let prefix_len = [0, 0, 1, 5, 32, 40][below(rng, 6)];
+        let prefix = rng.bytes(prefix_len);
+        let count = [0, 1, 2, 3, 17, 60][below(rng, 6)];
+        let keys = random_keys(rng, &prefix, count);
+        if leaf {
+            let entries = keys
+                .into_iter()
+                .map(|key| {
+                    if below(rng, 4) == 0 {
+                        (key, true, random_pointer(rng).to_vec())
+                    } else {
+                        let len = below(rng, 40);
+                        (key, false, rng.bytes(len))
+                    }
+                })
+                .collect();
+            Contents::Leaf {
+                page: random_page_id(rng),
+                prefix,
+                entries,
+            }
+        } else {
+            let entries = keys
+                .into_iter()
+                .map(|key| (key, page_id(rng.next_u64() as u32 | 1)))
+                .collect();
+            Contents::Branch {
+                page: random_page_id(rng),
+                prefix,
+                level: 1 + below(rng, 255) as u8,
+                first_child: page_id(rng.next_u64() as u32 | 1),
+                entries,
+            }
+        }
+    }
+
+    fn random_pages(seed: u64, count: usize) -> Vec<Contents> {
+        let mut rng = SplitMix64::new(seed);
+        (0..count)
+            .map(|index| random_contents(&mut rng, index % 2 == 0))
+            .collect()
+    }
+
+    fn probes(rng: &mut SplitMix64, contents: &Contents) -> Vec<Vec<u8>> {
+        let prefix = contents.prefix();
+        let mut probes = vec![Vec::new(), prefix.to_vec(), vec![0xFF; 48]];
+        for cut in 0..prefix.len() {
+            probes.push(prefix[..cut].to_vec());
+            let mut bumped = prefix[..=cut].to_vec();
+            bumped[cut] = bumped[cut].wrapping_add(1);
+            probes.push(bumped.clone());
+            bumped[cut] = bumped[cut].wrapping_sub(2);
+            probes.push(bumped);
+        }
+        for key in contents.keys() {
+            probes.push(key.to_vec());
+            probes.push([key, &[0]].concat());
+            if let Some((&last, head)) = key.split_last() {
+                probes.push(head.to_vec());
+                probes.push([head, &[last.wrapping_add(1)]].concat());
+                probes.push([head, &[last.wrapping_sub(1)]].concat());
+            }
+        }
+        probes.extend(random_keys(rng, prefix, 20));
+        probes.extend((0..20).map(|_| {
+            let len = below(rng, 50);
+            rng.bytes(len)
+        }));
+        probes
+    }
+
+    const RAW_PAGE: u32 = 5;
+
+    fn raw(kind: u8, level: u8, count: u16, prefix_len: u16, rest: &[u8]) -> Vec<u8> {
+        raw_page(RAW_PAGE, kind, level, count, prefix_len, rest)
+    }
+
+    fn raw_page(
+        page: u32,
+        kind: u8,
+        level: u8,
+        count: u16,
+        prefix_len: u16,
+        rest: &[u8],
+    ) -> Vec<u8> {
+        let len = (12 + rest.len()) as u16;
+        let mut image = vec![kind, level];
+        image.extend_from_slice(&len.to_le_bytes());
+        image.extend_from_slice(&page.to_le_bytes());
+        image.extend_from_slice(&count.to_le_bytes());
+        image.extend_from_slice(&prefix_len.to_le_bytes());
+        image.extend_from_slice(rest);
+        image
+    }
+
+    fn raw_leaf(prefix: &[u8], slots: &[(u16, u16, u8)], cells: &[u8]) -> Vec<u8> {
+        let mut rest = prefix.to_vec();
+        for &(end, key_len, flags) in slots {
+            rest.extend_from_slice(&end.to_le_bytes());
+            rest.extend_from_slice(&key_len.to_le_bytes());
+            rest.push(flags);
+        }
+        rest.extend_from_slice(cells);
+        raw(1, 0, slots.len() as u16, prefix.len() as u16, &rest)
+    }
+
+    fn raw_branch(first_child: u32, ends: &[u16], cells: &[u8]) -> Vec<u8> {
+        let mut rest = first_child.to_le_bytes().to_vec();
+        for end in ends {
+            rest.extend_from_slice(&end.to_le_bytes());
+        }
+        rest.extend_from_slice(cells);
+        raw(2, 1, ends.len() as u16, 0, &rest)
+    }
+
+    fn decode_error(bytes: &[u8]) -> FormatError {
+        let error = FlatPage::decode(bytes, V1).expect_err("not a flat page");
+        exercise(bytes);
+        error
+    }
+
+    fn flat(error: FlatPageError) -> FormatError {
+        FormatError::FlatPage(error)
+    }
+
+    fn exercise(bytes: &[u8]) {
+        let pages = [
+            FlatPage::decode(bytes, V1),
+            FlatPage::from_validated(bytes, V1),
+        ];
+        for page in pages.into_iter().flatten() {
+            let probes: [&[u8]; 4] = [b"", page.prefix(), &[0xFF; 40], bytes];
+            let positions = (0..page.len() + 2).chain([usize::MAX / 5, usize::MAX]);
+            assert!(page.as_bytes().len() <= bytes.len());
+            let _ = page.has_pending_value();
+            match page {
+                FlatPage::Leaf(leaf) => {
+                    for slot in positions {
+                        let _ = leaf.key(slot).map(|key| (key.to_vec(), key.is_empty()));
+                        let _ = leaf.value(slot).map(|value| value.bytes().len());
+                    }
+                    assert!(leaf.iter().count() <= leaf.len());
+                    assert!(leaf.iter().rev().count() <= leaf.len());
+                    for probe in probes {
+                        let slot = leaf.search(probe).unwrap_or_else(|slot| slot);
+                        assert!(slot <= leaf.len());
+                        let _ = leaf.get(probe);
+                    }
+                }
+                FlatPage::Branch(branch) => {
+                    for index in positions {
+                        let _ = branch.child(index);
+                        let _ = branch.separator(index).map(|key| key.to_vec());
+                    }
+                    for probe in probes {
+                        assert!(branch.child_index(probe) <= branch.len());
+                        let _ = branch.child_for(probe);
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn kinds_and_sizes_are_part_of_the_format() {
+        assert_eq!(FlatPageKind::ALL.map(FlatPageKind::code), [1, 2]);
+        assert_eq!(FlatPageKind::ALL.map(FlatPageKind::header_len), [12, 16]);
+        assert_eq!(FlatPageKind::ALL.map(FlatPageKind::entry_overhead), [5, 6]);
+        assert_eq!(FlatPage::MAX_LEN, 65_535);
+        assert_eq!(FlatLeaf::HEADER_LEN, 12);
+        assert_eq!(FlatLeaf::entry_len(3, 4), 12);
+        assert_eq!(FlatBranch::HEADER_LEN, 16);
+        assert_eq!(FlatBranch::entry_len(3), 9);
+        let mut known = 0;
+        for code in 0..=u8::MAX {
+            match FlatPageKind::from_code(code, V1) {
+                Ok(kind) => {
+                    assert_eq!(kind.code(), code);
+                    known += 1;
+                }
+                Err(error) => assert_eq!(
+                    error,
+                    FormatError::UnknownRecordKind {
+                        code: u32::from(code)
+                    }
+                ),
+            }
+        }
+        assert_eq!(known, FlatPageKind::ALL.len());
+    }
+
+    #[test]
+    fn pages_match_the_golden_bytes() {
+        let leaf = Contents::Leaf {
+            page: page_id(9),
+            prefix: b"user/".to_vec(),
+            entries: vec![
+                (b"user/alice".to_vec(), false, b"A1".to_vec()),
+                (b"user/bob".to_vec(), true, pointer(3, 20, 70_000).to_vec()),
+                (b"user/carol".to_vec(), false, Vec::new()),
+            ],
+        };
+        let branch = Contents::Branch {
+            page: page_id(3),
+            prefix: b"user/".to_vec(),
+            level: 1,
+            first_child: page_id(7),
+            entries: vec![
+                (b"user/b".to_vec(), page_id(9)),
+                (b"user/carol".to_vec(), page_id(12)),
+            ],
+        };
+        let empty_leaf = Contents::Leaf {
+            page: PageId::MIN,
+            prefix: Vec::new(),
+            entries: Vec::new(),
+        };
+        let single_child = Contents::Branch {
+            page: page_id(0x0102_0304),
+            prefix: Vec::new(),
+            level: 255,
+            first_child: PageId::MAX,
+            entries: Vec::new(),
+        };
+        let golden = [
+            (
+                leaf,
+                "01003f000900000003000500757365722f27000500003a000300013f00050000\
+                 616c6963654131626f62030000001400000000000000701101006361726f6c",
+            ),
+            (
+                branch,
+                "0201270003000000020005000700000075736572\
+                 2f1e00270062090000006361726f6c0c000000",
+            ),
+            (empty_leaf, "01000c000100000000000000"),
+            (single_child, "02ff10000403020100000000ffffffff"),
+        ];
+        for (contents, image) in golden {
+            let encoded = contents.image();
+            assert_eq!(hex(&encoded), image);
+            assert_eq!(
+                Contents::read(FlatPage::decode(&encoded, V1).expect("valid")),
+                contents
+            );
+        }
+    }
+
+    #[test]
+    fn random_pages_round_trip_in_both_directions() {
+        let mut rng = SplitMix64::new(0xF1A7);
+        for contents in random_pages(0x04, 2000) {
+            let image = contents.image();
+            assert_eq!(image.len(), contents.encoded_len());
+
+            let page = FlatPage::decode(&image, V1).expect("valid");
+            assert_eq!(page.as_bytes(), image);
+            assert_eq!(page.prefix(), contents.prefix());
+            assert_eq!(page.id(), contents.page());
+            assert_eq!(image[4..8], contents.page().encode());
+            assert_eq!(page.len(), contents.keys().len());
+            assert_eq!(page.is_empty(), contents.keys().is_empty());
+            assert_eq!(page.leaf().is_some(), page.kind() == FlatPageKind::Leaf);
+            assert_eq!(page.branch().is_some(), page.kind() == FlatPageKind::Branch);
+            assert_eq!(page.level() == 0, page.kind() == FlatPageKind::Leaf);
+            assert_eq!(Contents::read(page), contents);
+            assert_eq!(
+                Contents::read(page).encode(image.len()).expect("fits"),
+                image
+            );
+
+            let trusted = FlatPage::from_validated(&image, V1).expect("valid");
+            assert_eq!(trusted.id(), contents.page());
+            assert_eq!(Contents::read(trusted), contents);
+
+            let mut frame = image.clone();
+            let slack = 1 + below(&mut rng, 64);
+            frame.extend(rng.bytes(slack));
+            let framed = FlatPage::decode(&frame, V1).expect("valid");
+            assert_eq!(framed.as_bytes(), image);
+            exercise(&frame);
+        }
+    }
+
+    #[test]
+    fn leaf_search_agrees_with_a_sorted_model() {
+        let mut rng = SplitMix64::new(0x5EA2C4);
+        for contents in random_pages(0x1EAF, 600).into_iter().step_by(2) {
+            let Contents::Leaf { entries, .. } = &contents else {
+                panic!("even pages are leaves");
+            };
+            let model: BTreeMap<&[u8], (bool, &[u8])> = entries
+                .iter()
+                .map(|(key, out_of_line, value)| (key.as_slice(), (*out_of_line, value.as_slice())))
+                .collect();
+            let keys = contents.keys();
+            let image = contents.image();
+            let leaf = decode_leaf(&image);
+            for probe in probes(&mut rng, &contents) {
+                assert_eq!(
+                    leaf.search(&probe),
+                    keys.binary_search(&probe.as_slice()),
+                    "probe {probe:?} in {keys:?}"
+                );
+                assert_eq!(
+                    leaf.get(&probe),
+                    model
+                        .get(probe.as_slice())
+                        .map(|&(out_of_line, value)| value_of(out_of_line, value))
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn branch_routes_each_key_to_the_child_a_model_picks() {
+        let mut rng = SplitMix64::new(0xB2A4C4);
+        for contents in random_pages(0xB2A, 600).into_iter().skip(1).step_by(2) {
+            let Contents::Branch {
+                first_child,
+                entries,
+                ..
+            } = &contents
+            else {
+                panic!("odd pages are branches");
+            };
+            let image = contents.image();
+            let branch = decode_branch(&image);
+            assert_eq!(branch.child(entries.len() + 1), None);
+            assert_eq!(branch.separator(entries.len()), None);
+            for probe in probes(&mut rng, &contents) {
+                let index = entries.partition_point(|(separator, _)| separator <= &probe);
+                let child = match index.checked_sub(1) {
+                    Some(slot) => entries[slot].1,
+                    None => *first_child,
+                };
+                assert_eq!(branch.child_index(&probe), index, "probe {probe:?}");
+                assert_eq!(branch.child_for(&probe), Some(child));
+            }
+        }
+    }
+
+    #[test]
+    fn leaf_iteration_runs_both_ways_and_knows_its_length() {
+        for contents in random_pages(0x17E2, 200).into_iter().step_by(2) {
+            let Contents::Leaf { entries, .. } = &contents else {
+                panic!("even pages are leaves");
+            };
+            let image = contents.image();
+            let leaf = decode_leaf(&image);
+            assert_eq!(leaf.iter().len(), entries.len());
+            assert_eq!(leaf.is_empty(), entries.is_empty());
+            assert_eq!(&leaf.iter().map(owned_entry).collect::<Vec<_>>(), entries);
+            let mut backward: Vec<_> = leaf.into_iter().rev().map(owned_entry).collect();
+            backward.reverse();
+            assert_eq!(&backward, entries);
+            assert_eq!(leaf.entry(entries.len()), None);
+            assert!(leaf.iter().is_sorted_by(|a, b| a.0 < b.0));
+        }
+    }
+
+    #[test]
+    fn keys_compare_by_their_bytes_wherever_the_prefix_ends() {
+        let mut rng = SplitMix64::new(0xC0A7);
+        let keys = random_keys(&mut rng, b"shared/", 40);
+        let page = |prefix_len: usize| {
+            let mut builder =
+                FlatLeafBuilder::new(page_id(5), &b"shared/"[..prefix_len], 4096).expect("fits");
+            for key in &keys {
+                builder.push(key, FlatValue::Inline(b"")).expect("fits");
+            }
+            builder.finish()
+        };
+        let (long, short) = (page(7), page(2));
+        let long = decode_leaf(&long);
+        let short = decode_leaf(&short);
+        for (a, key_a) in keys.iter().enumerate() {
+            let in_long = long.key(a).expect("in range");
+            assert_eq!(in_long.prefix(), b"shared/");
+            assert_eq!([in_long.prefix(), in_long.suffix()].concat(), *key_a);
+            assert_eq!(in_long.len(), key_a.len());
+            assert!(in_long == **key_a);
+            let mut appended = vec![0xAA];
+            in_long.append_to(&mut appended);
+            assert_eq!(appended[1..], **key_a);
+            for (b, key_b) in keys.iter().enumerate() {
+                let in_short = short.key(b).expect("in range");
+                assert_eq!(in_long.cmp(&in_short), key_a.cmp(key_b));
+                assert_eq!(in_long == in_short, a == b);
+                assert_eq!(in_long.cmp_bytes(key_b), key_a.cmp(key_b));
+                assert_eq!(in_short.cmp_bytes(key_a), key_b.cmp(key_a));
+            }
+            for cut in 0..key_a.len() {
+                assert_eq!(in_long.cmp_bytes(&key_a[..cut]), Ordering::Greater);
+            }
+        }
+    }
+
+    #[test]
+    fn every_shorter_input_is_truncated() {
+        for contents in random_pages(0x7214, 40) {
+            let image = contents.image();
+            for available in 0..image.len() {
+                let needed = if available < 12 { 12 } else { image.len() };
+                let truncated = FormatError::Truncated { needed, available };
+                assert_eq!(decode_error(&image[..available]), truncated);
+                assert_eq!(
+                    FlatPage::from_validated(&image[..available], V1).expect_err("truncated"),
+                    truncated
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_changed_image_decodes_only_to_what_encodes_back() {
+        let mut rng = SplitMix64::new(0xDA3A6E);
+        let (mut accepted, mut rejected) = (0, 0);
+        for contents in random_pages(0x5EA1, 400) {
+            let image = contents.image();
+            for round in 0..200 {
+                let mut damaged = image.clone();
+                if round < 100 {
+                    let bit = below(&mut rng, damaged.len() * 8);
+                    damaged[bit / 8] ^= 1 << (bit % 8);
+                } else {
+                    for _ in 0..1 + below(&mut rng, 3) {
+                        let at = below(&mut rng, damaged.len());
+                        damaged[at] = match below(&mut rng, 3) {
+                            0 => rng.next_u64() as u8,
+                            1 => damaged[at].wrapping_add(1),
+                            _ => damaged[at].wrapping_sub(1),
+                        };
+                    }
+                }
+                exercise(&damaged);
+                match FlatPage::decode(&damaged, V1) {
+                    Ok(page) => {
+                        assert_encodes_back(page);
+                        accepted += 1;
+                    }
+                    Err(_) => rejected += 1,
+                }
+            }
+        }
+        assert!(accepted > 1000, "accepted {accepted}");
+        assert!(rejected > 1000, "rejected {rejected}");
+    }
+
+    #[test]
+    fn the_block_that_holds_an_image_detects_every_changed_bit() {
+        let mut undetected_by_the_page = 0;
+        for contents in random_pages(0xF11B, 24) {
+            let image = contents.image();
+            for compression in [Compression::Raw, Compression::Lz4] {
+                let mut block = Vec::new();
+                segment::write_block(BlockContent::Base, compression, &image, &mut block)
+                    .expect("fits");
+                let stored = Block::decode(V1, &block, image.len()).expect("a block");
+                assert_eq!(stored.payload().expect("the image"), image.as_slice());
+                for bit in 0..block.len() * 8 {
+                    let mut damaged = block.clone();
+                    damaged[bit / 8] ^= 1 << (bit % 8);
+                    assert!(
+                        Block::decode(V1, &damaged, image.len()).is_err(),
+                        "bit {bit} of a block"
+                    );
+                }
+            }
+            for bit in 0..image.len() * 8 {
+                let mut damaged = image.clone();
+                damaged[bit / 8] ^= 1 << (bit % 8);
+                undetected_by_the_page += usize::from(FlatPage::decode(&damaged, V1).is_ok());
+            }
+        }
+        assert!(undetected_by_the_page > 1000, "{undetected_by_the_page}");
+    }
+
+    #[test]
+    fn arbitrary_bytes_never_panic() {
+        let mut rng = SplitMix64::new(0xA2B1);
+        let (mut opened, mut decoded) = (0, 0);
+        for round in 0..200_000 {
+            let len = below(&mut rng, 120);
+            let mut bytes = rng.bytes(len);
+            if round % 4 != 0 && len >= 12 {
+                bytes[0] = 1 + (round % 2) as u8;
+                bytes[1] = if bytes[0] == 1 { 0 } else { bytes[1] | 1 };
+                let image_len = 12 + below(&mut rng, len - 11);
+                bytes[2..4].copy_from_slice(&(image_len as u16).to_le_bytes());
+                if round % 3 == 0 {
+                    bytes[8..12].copy_from_slice(&[(round % 5) as u8, 0, (round % 7) as u8, 0]);
+                }
+                if round % 11 == 0 {
+                    bytes[4..8].fill(0);
+                }
+            }
+            exercise(&bytes);
+            opened += usize::from(FlatPage::from_validated(&bytes, V1).is_ok());
+            if let Ok(page) = FlatPage::decode(&bytes, V1) {
+                assert_encodes_back(page);
+                decoded += 1;
+            }
+        }
+        assert!(opened > 10_000, "opened {opened}");
+        assert!(decoded > 100, "decoded {decoded}");
+    }
+
+    #[test]
+    fn zero_filled_bytes_are_not_a_page() {
+        for len in 12..64 {
+            assert_eq!(
+                decode_error(&vec![0; len]),
+                flat(FlatPageError::ImageTooShort {
+                    len: 0,
+                    header_len: 12
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn the_header_is_checked_in_order() {
+        let mut short = raw(1, 0, 0, 0, &[]);
+        short[2] = 11;
+        assert_eq!(
+            decode_error(&short),
+            flat(FlatPageError::ImageTooShort {
+                len: 11,
+                header_len: 12
+            })
+        );
+        assert_eq!(
+            decode_error(&[9, 7, 11, 0, 0, 0, 0, 0, 1, 0, 0, 0]),
+            flat(FlatPageError::ImageTooShort {
+                len: 11,
+                header_len: 12
+            })
+        );
+
+        for code in (0..=u8::MAX).filter(|code| !(1..=2).contains(code)) {
+            assert_eq!(
+                decode_error(&raw_page(0, code, 7, 1, 0, &[])),
+                FormatError::UnknownRecordKind {
+                    code: u32::from(code)
+                }
+            );
+        }
+
+        for level in 1..=u8::MAX {
+            assert_eq!(
+                decode_error(&raw_page(0, 1, level, 9, 9, &[])),
+                flat(FlatPageError::InvalidLevel {
+                    kind: FlatPageKind::Leaf,
+                    level
+                })
+            );
+        }
+        assert_eq!(
+            decode_error(&raw_page(0, 2, 0, 9, 9, &[0; 4])),
+            flat(FlatPageError::InvalidLevel {
+                kind: FlatPageKind::Branch,
+                level: 0
+            })
+        );
+
+        for extra in 0..4 {
+            assert_eq!(
+                decode_error(&raw_page(0, 2, 1, 0, 0, &[1, 0, 0, 0][..extra])),
+                flat(FlatPageError::ImageTooShort {
+                    len: 12 + extra,
+                    header_len: 16
+                })
+            );
+        }
+
+        // The page's own id, before the first child and the directory.
+        for image in [
+            raw_page(0, 1, 0, 0, 0, &[]),
+            raw_page(0, 1, 0, 9, 9, &[]),
+            raw_page(0, 2, 1, 0, 0, &[7, 0, 0, 0]),
+            raw_page(0, 2, 1, 9, 9, &[0; 4]),
+        ] {
+            assert_eq!(decode_error(&image), FormatError::MissingId);
+            assert_eq!(
+                FlatPage::from_validated(&image, V1).expect_err("no page id"),
+                FormatError::MissingId
+            );
+        }
+
+        assert_eq!(
+            decode_error(&raw(2, 1, 9, 9, &[0; 4])),
+            FormatError::MissingId
+        );
+
+        assert_eq!(
+            decode_error(&raw(1, 0, 1, 0, &[])),
+            flat(FlatPageError::DirectoryOutOfBounds {
+                needed: 17,
+                len: 12
+            })
+        );
+        assert_eq!(
+            decode_error(&raw(1, 0, 0, 3, b"ab")),
+            flat(FlatPageError::DirectoryOutOfBounds {
+                needed: 15,
+                len: 14
+            })
+        );
+        assert_eq!(
+            decode_error(&raw(2, 1, 2, 1, &[7, 0, 0, 0, b'p', 0, 0, 0])),
+            flat(FlatPageError::DirectoryOutOfBounds {
+                needed: 21,
+                len: 20
+            })
+        );
+        assert_eq!(
+            decode_error(&raw(1, 0, u16::MAX, u16::MAX, &[0; 40])),
+            flat(FlatPageError::DirectoryOutOfBounds {
+                needed: 12 + 65_535 + 65_535 * 5,
+                len: 52
+            })
+        );
+    }
+
+    #[test]
+    fn each_leaf_slot_must_describe_its_cell() {
+        let cells = [b"aaXb".as_slice(), &pointer(3, 20, 9)].concat();
+        let with_slots = |slots: &[(u16, u16, u8)]| raw_leaf(b"p", slots, &cells);
+        let valid = with_slots(&[(26, 2, 0), (43, 1, 1)]);
+        let leaf = decode_leaf(&valid);
+        assert_eq!(leaf.get(b"paa"), Some(FlatValue::Inline(b"X")));
+        assert_eq!(
+            leaf.get(b"pb"),
+            Some(FlatValue::OutOfLine(&pointer(3, 20, 9)))
+        );
+
+        let invalid = |slot| flat(FlatPageError::InvalidSlot { slot });
+        let cases = [
+            (
+                raw_leaf(b"p", &[(26, 2, 0), (30, 2, 4)], b"aaXaaYY"),
+                FormatError::NonZeroReserved,
+            ),
+            (with_slots(&[(22, 2, 0), (43, 1, 0)]), invalid(0)),
+            (with_slots(&[(44, 2, 0), (43, 1, 0)]), invalid(0)),
+            (with_slots(&[(26, 4, 0), (43, 1, 0)]), invalid(0)),
+            (with_slots(&[(26, 2, 0), (25, 1, 0)]), invalid(1)),
+            (with_slots(&[(26, 2, 0), (44, 1, 0)]), invalid(1)),
+            (with_slots(&[(26, 2, 0), (43, 18, 0)]), invalid(1)),
+            (
+                with_slots(&[(26, 2, 2), (43, 1, 0)]),
+                FormatError::NonZeroReserved,
+            ),
+            (
+                with_slots(&[(26, 2, 0), (43, 1, 0x81)]),
+                FormatError::NonZeroReserved,
+            ),
+            (
+                raw_leaf(b"p", &[(26, 2, 0), (30, 2, 0)], b"aaXaaYY"),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+            (
+                raw_leaf(b"p", &[(26, 2, 0), (30, 1, 0)], b"aaXaYYY"),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+            (
+                raw_leaf(b"p", &[(23, 0, 0), (23, 0, 0)], b""),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+            (
+                with_slots(&[(26, 2, 0), (42, 1, 0)]),
+                flat(FlatPageError::UnusedBytes { used: 42, len: 43 }),
+            ),
+            (
+                raw_leaf(b"p", &[], b"x"),
+                flat(FlatPageError::UnusedBytes { used: 13, len: 14 }),
+            ),
+            (with_slots(&[(26, 4, 2), (20, 1, 0)]), invalid(0)),
+            (
+                with_slots(&[(26, 2, 2), (20, 1, 0)]),
+                FormatError::NonZeroReserved,
+            ),
+        ];
+        for (image, error) in cases {
+            assert_eq!(decode_error(&image), error, "{}", hex(&image));
+        }
+    }
+
+    #[test]
+    fn an_out_of_line_value_is_a_value_pointer() {
+        let leaf_with = |flags: [u8; 2], second_key: &[u8], value: &[u8]| {
+            let cells = [b"aaX".as_slice(), second_key, value].concat();
+            let end = (23 + cells.len()) as u16;
+            let slots = [(26, 2, flags[0]), (end, second_key.len() as u16, flags[1])];
+            raw_leaf(b"p", &slots, &cells)
+        };
+        let good = pointer(3, 20, 9);
+        let image = leaf_with([0, 1], b"b", &good);
+        assert_eq!(
+            decode_leaf(&image).get(b"pb"),
+            Some(FlatValue::OutOfLine(&good))
+        );
+        for bytes in [
+            pointer(1, 20, 1),
+            pointer(u32::MAX - 1, (1 << 63) - 1, u32::MAX),
+        ] {
+            let image = leaf_with([0, 1], b"b", &bytes);
+            let value = decode_leaf(&image).get(b"pb").expect("the entry");
+            assert_eq!(value, FlatValue::OutOfLine(&bytes));
+            assert!(ValuePointer::decode(bytes).is_ok());
+        }
+        assert!(FlatPage::decode(&leaf_with([0, 0], b"b", &pointer(0, 0, 0)), V1).is_ok());
+
+        let length = |slot, len| flat(FlatPageError::PointerLength { slot, len });
+        let offset = |offset| FormatError::ValueLog(ValueLogError::InvalidOffset { offset });
+        let cases = [
+            (leaf_with([0, 1], b"b", &good[..15]), length(1, 15)),
+            (
+                leaf_with([0, 1], b"b", &[&good[..], b"Z"].concat()),
+                length(1, 17),
+            ),
+            (leaf_with([0, 1], b"b", b""), length(1, 0)),
+            (leaf_with([1, 1], b"b", &good), length(0, 1)),
+            (
+                leaf_with([0, 1], b"b", &pointer(0, 20, 9)),
+                FormatError::MissingId,
+            ),
+            (leaf_with([0, 1], b"b", &pointer(3, 19, 9)), offset(19)),
+            (leaf_with([0, 1], b"b", &pointer(3, 0, 9)), offset(0)),
+            (
+                leaf_with([0, 1], b"b", &pointer(3, 1 << 63, 9)),
+                offset(1 << 63),
+            ),
+            (
+                leaf_with([0, 1], b"b", &pointer(3, 20, 0)),
+                FormatError::ValueLog(ValueLogError::EmptyValue),
+            ),
+            (leaf_with([0, 1], b"b", &[0; 16]), FormatError::MissingId),
+            (
+                leaf_with([0, 3], b"b", &good[..15]),
+                FormatError::NonZeroReserved,
+            ),
+            (leaf_with([0, 1], b"aa", &good[..15]), length(1, 15)),
+            (
+                leaf_with([0, 1], b"a", &pointer(0, 20, 9)),
+                FormatError::MissingId,
+            ),
+            (
+                leaf_with([0, 1], b"a", &good),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+        ];
+        for (image, error) in cases {
+            assert_eq!(decode_error(&image), error, "{}", hex(&image));
+            let unchecked = FlatPage::from_validated(&image, V1).expect("a valid header");
+            assert_eq!(unchecked.len(), 2);
+        }
+
+        let mut builder = FlatLeafBuilder::new(page_id(5), b"p", 4096).expect("fits");
+        builder.push(b"paa", FlatValue::Inline(b"X")).expect("fits");
+        let before = builder.clone().finish();
+        let refused: [(&[u8], FormatError); 6] = [
+            (&good[..15], length(1, 15)),
+            (b"", length(1, 0)),
+            (&[0; 17], length(1, 17)),
+            (&pointer(0, 20, 9), FormatError::MissingId),
+            (&pointer(3, 19, 9), offset(19)),
+            (
+                &pointer(3, 20, 0),
+                FormatError::ValueLog(ValueLogError::EmptyValue),
+            ),
+        ];
+        let source = leaf_with([0, 0], b"b", b"");
+        let borrowed = decode_leaf(&source).key(1).expect("in range");
+        for (bytes, error) in refused {
+            let value = FlatValue::OutOfLine(bytes);
+            assert_eq!(builder.push(b"pb", value).expect_err("no pointer"), error);
+            assert_eq!(
+                builder.push_key(borrowed, value).expect_err("no pointer"),
+                error
+            );
+            assert_eq!(builder.clone().finish(), before);
+            builder
+                .push(b"pb", FlatValue::Inline(bytes))
+                .expect("an inline value is any bytes");
+            builder = FlatLeafBuilder::new(page_id(5), b"p", 4096).expect("fits");
+            builder.push(b"paa", FlatValue::Inline(b"X")).expect("fits");
+        }
+        builder
+            .push(b"pb", FlatValue::OutOfLine(&good))
+            .expect("fits");
+        assert_eq!(builder.finish(), image);
+    }
+
+    /// The out-of-line value of a leaf entry may be a value that is not in
+    /// the value log yet: the sixteen bytes of a place that names no file.
+    #[test]
+    fn a_pending_value_stands_where_a_pointer_does() {
+        let waiting = pointer(u32::MAX, 0x0102_0304_0506_0708, 70_000);
+        let placed = pointer(3, 20, 70_000);
+        let build = |second: &[u8; 16]| {
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"user/", 4096).expect("fits");
+            builder
+                .push(b"user/alice", FlatValue::Inline(&waiting))
+                .expect("fits");
+            builder
+                .push(b"user/bob", FlatValue::OutOfLine(second))
+                .expect("fits");
+            builder
+                .push(b"user/carol", FlatValue::Inline(b""))
+                .expect("fits");
+            builder.finish()
+        };
+
+        // Written by hand: the header of page 9, the prefix, three slots,
+        // then "alice" with 16 bytes that are its value, "bob" with the
+        // pending place, and "carol".
+        let image = build(&waiting);
+        let golden = "01004d000900000003000500757365722f\
+                      350005000048000300014d00050000\
+                      616c696365ffffffff0807060504030201 70110100\
+                      626f62ffffffff0807060504030201 70110100\
+                      6361726f6c"
+            .replace(' ', "");
+        assert_eq!(hex(&image), golden);
+        assert_eq!(image.len(), 77);
+
+        let page = FlatPage::decode(&image, V1).expect("valid");
+        let leaf = page.leaf().expect("leaf");
+        let value = leaf.get(b"user/bob").expect("the entry");
+        assert_eq!(value, FlatValue::OutOfLine(&waiting));
+        assert!(value.is_pending() && !value.is_inline());
+        let place = ValuePlace::decode(waiting).expect("a place");
+        assert!(place.is_pending());
+        assert_eq!(place.value_len(), 70_000);
+        assert_eq!(
+            ValuePointer::decode(waiting),
+            Err(FormatError::ReservedFileId)
+        );
+        // The same bytes as a value in the page are a value, not a place.
+        let inline = leaf.get(b"user/alice").expect("the entry");
+        assert_eq!(inline, FlatValue::Inline(&waiting));
+        assert!(!inline.is_pending());
+        assert!(!leaf.get(b"user/carol").expect("the entry").is_pending());
+        assert!(leaf.has_pending_value() && page.has_pending_value());
+        assert!(FlatPage::from_validated(&image, V1)
+            .expect("valid")
+            .has_pending_value());
+        assert_encodes_back(page);
+
+        // Placed, the leaf differs in the twelve bytes of the place only,
+        // and no longer has a pending value.
+        let after = build(&placed);
+        assert_eq!(after.len(), image.len());
+        let differing: Vec<usize> = (0..image.len())
+            .filter(|&at| image[at] != after[at])
+            .collect();
+        assert_eq!(differing, (56..68).collect::<Vec<_>>());
+        let page = FlatPage::decode(&after, V1).expect("valid");
+        assert!(!page.has_pending_value());
+        assert!(!page.leaf().expect("leaf").has_pending_value());
+
+        // A branch has no values, and an empty leaf has none pending.
+        let branch = FlatBranchBuilder::new(page_id(3), b"", 4096, 1, page_id(u32::MAX))
+            .expect("fits")
+            .finish();
+        assert!(!FlatPage::decode(&branch, V1)
+            .expect("valid")
+            .has_pending_value());
+        let empty = FlatLeafBuilder::new(page_id(9), b"", 4096)
+            .expect("fits")
+            .finish();
+        assert!(!FlatPage::decode(&empty, V1)
+            .expect("valid")
+            .has_pending_value());
+
+        // A pending value has an id and a length, for the decoder and for
+        // the builder alike.
+        let refused: [([u8; 16], FormatError); 3] = [
+            (pointer(u32::MAX, 0, 70_000), FormatError::MissingId),
+            (pointer(u32::MAX, 0, 0), FormatError::MissingId),
+            (
+                pointer(u32::MAX, 7, 0),
+                FormatError::ValueLog(ValueLogError::EmptyValue),
+            ),
+        ];
+        for (bytes, error) in refused {
+            let mut damaged = image.clone();
+            damaged[56..72].copy_from_slice(&bytes);
+            assert_eq!(decode_error(&damaged), error);
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"user/", 4096).expect("fits");
+            assert_eq!(
+                builder
+                    .push(b"user/bob", FlatValue::OutOfLine(&bytes))
+                    .expect_err("not a place"),
+                error
+            );
+            assert!(builder.is_empty());
+            // Unchecked bytes still say whether they name no file.
+            let unchecked = FlatPage::from_validated(&damaged, V1).expect("a valid header");
+            assert!(unchecked.has_pending_value());
+        }
+        // An id is not an offset: every non-zero id is one.
+        for id in [1, 19, 1 << 63, u64::MAX] {
+            let mut builder = FlatLeafBuilder::new(page_id(9), b"", 4096).expect("fits");
+            let bytes = pointer(u32::MAX, id, 1);
+            builder
+                .push(b"k", FlatValue::OutOfLine(&bytes))
+                .expect("fits");
+            assert!(FlatPage::decode(&builder.finish(), V1)
+                .expect("valid")
+                .has_pending_value());
+        }
+        // A value out of line that is too short to be a place is not
+        // pending, whatever its bytes.
+        assert!(!FlatValue::OutOfLine(&[0xFF; 3]).is_pending());
+        assert!(FlatValue::OutOfLine(&[0xFF; 4]).is_pending());
+        assert!(!FlatValue::Inline(&[0xFF; 16]).is_pending());
+    }
+
+    #[test]
+    fn each_branch_slot_must_describe_its_cell() {
+        let cells = [b"a".as_slice(), &[9, 0, 0, 0], b"bb", &[12, 0, 0, 0]].concat();
+        let valid = raw_branch(7, &[25, 31], &cells);
+        let branch = decode_branch(&valid);
+        assert_eq!(branch.child_for(b""), Some(page_id(7)));
+        assert_eq!(branch.child_for(b"a"), Some(page_id(9)));
+        assert_eq!(branch.child_for(b"bb"), Some(page_id(12)));
+
+        let invalid = |slot| flat(FlatPageError::InvalidSlot { slot });
+        let no_child = [b"a".as_slice(), &[0; 4], b"bb", &[12, 0, 0, 0]].concat();
+        let no_child_and_unordered = [b"b".as_slice(), &[9, 0, 0, 0], b"a", &[0; 4]].concat();
+        let same = [b"a".as_slice(), &[9, 0, 0, 0], b"a", &[12, 0, 0, 0], b"x"].concat();
+        let cases = [
+            (raw_branch(7, &[19, 31], &cells), invalid(0)),
+            (raw_branch(7, &[23, 31], &cells), invalid(0)),
+            (raw_branch(7, &[25, 28], &cells), invalid(1)),
+            (raw_branch(7, &[25, 32], &cells), invalid(1)),
+            (raw_branch(7, &[25, 31], &no_child), FormatError::MissingId),
+            (
+                raw_branch(7, &[25, 30], &no_child_and_unordered),
+                FormatError::MissingId,
+            ),
+            (
+                raw_branch(7, &[25, 30], &same),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+            (
+                raw_branch(7, &[24, 28], &[[9, 0, 0, 0], [12, 0, 0, 0]].concat()),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 }),
+            ),
+            (
+                raw_branch(7, &[25, 30], &cells),
+                flat(FlatPageError::UnusedBytes { used: 30, len: 31 }),
+            ),
+            (
+                raw_branch(7, &[], b"x"),
+                flat(FlatPageError::UnusedBytes { used: 16, len: 17 }),
+            ),
+        ];
+        for (image, error) in cases {
+            assert_eq!(decode_error(&image), error, "{}", hex(&image));
+        }
+    }
+
+    #[test]
+    fn iteration_stops_at_a_slot_that_describes_no_cell() {
+        let image = raw_leaf(b"p", &[(31, 2, 0), (20, 1, 0), (33, 1, 0)], b"aaXbY");
+        assert_eq!(
+            decode_error(&image),
+            flat(FlatPageError::InvalidSlot { slot: 1 })
+        );
+        let leaf = FlatPage::from_validated(&image, V1)
+            .expect("valid header")
+            .leaf()
+            .expect("leaf");
+        assert!(leaf.entry(0).is_some() && leaf.entry(1).is_none() && leaf.entry(2).is_some());
+
+        let mut forward = leaf.iter();
+        assert_eq!(forward.len(), 3);
+        assert!(forward.next().is_some());
+        assert!(forward.next().is_none());
+        assert_eq!(forward.len(), 0);
+        assert!(forward.next().is_none() && forward.next_back().is_none());
+
+        let mut backward = leaf.iter();
+        assert!(backward.next_back().is_some());
+        assert!(backward.next_back().is_none());
+        assert!(backward.next_back().is_none() && backward.next().is_none());
+    }
+
+    #[test]
+    fn borrowed_keys_build_the_same_page_as_whole_keys() {
+        for contents in random_pages(0x2EB1, 600) {
+            let image = contents.image();
+            let page = FlatPage::decode(&image, V1).expect("valid");
+            let keys = contents.keys();
+            let (base, shared) = match (keys.first(), keys.last()) {
+                (Some(&first), Some(last)) => (first, common_prefix_len(first, last)),
+                _ => (contents.prefix(), contents.prefix().len()),
+            };
+            let stored = contents.prefix().len();
+            for prefix_len in [0, stored / 2, stored, shared] {
+                let prefix = &base[..prefix_len];
+                let rebuilt = match page {
+                    FlatPage::Leaf(leaf) => {
+                        let mut builder =
+                            FlatLeafBuilder::new(leaf.id(), prefix, FlatPage::MAX_LEN)
+                                .expect("fits");
+                        for (key, value) in leaf {
+                            builder.push_key(key, value).expect("fits");
+                        }
+                        builder.finish()
+                    }
+                    FlatPage::Branch(branch) => {
+                        let first_child = branch.child(0).expect("first child");
+                        let mut builder = FlatBranchBuilder::new(
+                            branch.id(),
+                            prefix,
+                            FlatPage::MAX_LEN,
+                            branch.level(),
+                            first_child,
+                        )
+                        .expect("fits");
+                        for slot in 0..branch.len() {
+                            let separator = branch.separator(slot).expect("in range");
+                            let child = branch.child(slot + 1).expect("in range");
+                            builder.push_key(separator, child).expect("fits");
+                        }
+                        builder.finish()
+                    }
+                };
+                assert_eq!(rebuilt, contents.with_prefix(prefix).image());
+            }
+        }
+    }
+
+    #[test]
+    fn a_builder_checks_borrowed_keys_as_it_checks_whole_ones() {
+        let mut source = FlatLeafBuilder::new(page_id(5), b"abc", 4096).expect("fits");
+        for key in [b"abcd".as_slice(), b"abcx"] {
+            source.push(key, FlatValue::Inline(b"v")).expect("fits");
+        }
+        let image = source.finish();
+        let leaf = decode_leaf(&image);
+        let (first, value) = leaf.entry(0).expect("in range");
+        let (second, _) = leaf.entry(1).expect("in range");
+
+        for outside in [b"x".as_slice(), b"abd", b"abce", b"abcd\0", b"abcde"] {
+            let mut builder = FlatLeafBuilder::new(page_id(5), outside, 4096).expect("fits");
+            assert_eq!(
+                builder.push_key(first, value).expect_err("outside"),
+                flat(FlatPageError::KeyOutsidePrefix),
+                "{outside:?}"
+            );
+            assert!(builder.is_empty());
+        }
+
+        for prefix in [b"".as_slice(), b"a", b"abc"] {
+            let mut builder = FlatLeafBuilder::new(page_id(5), prefix, 4096).expect("fits");
+            builder.push_key(second, value).expect("fits");
+            for not_greater in [first, second] {
+                assert_eq!(
+                    builder.push_key(not_greater, value).expect_err("order"),
+                    flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+                );
+            }
+            assert_eq!(builder.len(), 1);
+        }
+
+        let mut exact = FlatLeafBuilder::new(page_id(5), b"abcd", 4096).expect("fits");
+        exact.push_key(first, value).expect("fits");
+        let image = exact.finish();
+        let leaf = decode_leaf(&image);
+        assert_eq!(leaf.key(0).expect("in range").suffix(), b"");
+        assert_eq!(leaf.get(b"abcd"), Some(value));
+
+        let first_child = page_id(1);
+        let mut branch =
+            FlatBranchBuilder::new(page_id(5), b"abcx", 4096, 1, first_child).expect("fits");
+        assert_eq!(
+            branch.push_key(first, page_id(2)).expect_err("outside"),
+            flat(FlatPageError::KeyOutsidePrefix)
+        );
+        branch.push_key(second, page_id(2)).expect("fits");
+        assert_eq!(
+            branch.push_key(second, page_id(3)).expect_err("order"),
+            flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+        );
+        let image = branch.finish();
+        assert_eq!(decode_branch(&image).child_for(b"abcx"), Some(page_id(2)));
+    }
+
+    #[test]
+    fn a_builder_rejects_what_is_not_a_page() {
+        assert_eq!(
+            FlatLeafBuilder::new(page_id(5), b"", 65_536).expect_err("too large"),
+            flat(FlatPageError::CapacityOutOfRange { capacity: 65_536 })
+        );
+        assert_eq!(
+            FlatBranchBuilder::new(page_id(5), b"", usize::MAX, 1, page_id(1))
+                .expect_err("too large"),
+            flat(FlatPageError::CapacityOutOfRange {
+                capacity: usize::MAX
+            })
+        );
+        assert_eq!(
+            FlatLeafBuilder::new(page_id(5), b"", 11).expect_err("no room"),
+            flat(FlatPageError::PageFull {
+                needed: 12,
+                capacity: 11
+            })
+        );
+        assert_eq!(
+            FlatBranchBuilder::new(page_id(5), b"abc", 18, 1, page_id(1)).expect_err("no room"),
+            flat(FlatPageError::PageFull {
+                needed: 19,
+                capacity: 18
+            })
+        );
+        assert_eq!(
+            FlatBranchBuilder::new(page_id(5), b"", 4096, 0, page_id(1)).expect_err("level"),
+            flat(FlatPageError::InvalidLevel {
+                kind: FlatPageKind::Branch,
+                level: 0
+            })
+        );
+
+        let mut leaf = FlatLeafBuilder::new(page_id(5), b"ab", 4096).expect("fits");
+        let value = FlatValue::Inline(b"v");
+        for outside in [b"".as_slice(), b"a", b"ac", b"b", b"aab"] {
+            assert_eq!(
+                leaf.push(outside, value).expect_err("outside"),
+                flat(FlatPageError::KeyOutsidePrefix)
+            );
+        }
+        leaf.push(b"abm", value).expect("fits");
+        for not_greater in [b"ab".as_slice(), b"abl", b"abm"] {
+            assert_eq!(
+                leaf.push(not_greater, value).expect_err("order"),
+                flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+            );
+        }
+        leaf.push(b"abm\0", value).expect("fits");
+        assert_eq!(leaf.len(), 2);
+
+        let mut branch =
+            FlatBranchBuilder::new(page_id(5), b"", 4096, 3, page_id(1)).expect("fits");
+        branch.push(b"", page_id(2)).expect("fits");
+        assert_eq!(
+            branch.push(b"", page_id(3)).expect_err("order"),
+            flat(FlatPageError::KeysOutOfOrder { slot: 1 })
+        );
+        assert_eq!(branch.len(), 1);
+    }
+
+    #[test]
+    fn a_full_page_refuses_an_entry_and_stays_as_it_was() {
+        for capacity in [12, 13, 64, 512, 4096, 16_384, FlatPage::MAX_LEN] {
+            let mut rng = SplitMix64::new(capacity as u64);
+            let mut leaf = FlatLeafBuilder::new(page_id(5), b"", capacity).expect("fits");
+            let mut refused = 0;
+            for index in 0u32..20_000 {
+                let key = index.to_be_bytes();
+                let len = below(&mut rng, 300);
+                let value = rng.bytes(len);
+                let before = leaf.clone().finish();
+                let needed = before.len() + FlatLeaf::entry_len(key.len(), value.len());
+                match leaf.push(&key, FlatValue::Inline(&value)) {
+                    Ok(()) => assert_eq!(leaf.encoded_len(), needed),
+                    Err(error) => {
+                        assert!(needed > capacity);
+                        assert_eq!(error, flat(FlatPageError::PageFull { needed, capacity }));
+                        assert_eq!(leaf.clone().finish(), before);
+                        refused += 1;
+                    }
+                }
+            }
+            assert!(refused > 0);
+            let image = leaf.finish();
+            assert!(image.len() <= capacity);
+            assert!(FlatPage::decode(&image, V1).is_ok());
+        }
+
+        let mut branch = FlatBranchBuilder::new(page_id(5), b"k", 31, 1, page_id(1)).expect("fits");
+        branch.push(b"k1", page_id(2)).expect("fits");
+        let before = branch.clone().finish();
+        assert_eq!(
+            branch.push(b"k22", page_id(3)).expect_err("full"),
+            flat(FlatPageError::PageFull {
+                needed: 32,
+                capacity: 31
+            })
+        );
+        assert_eq!(branch.clone().finish(), before);
+        branch.push(b"k2", page_id(3)).expect("fits");
+        assert_eq!(branch.encoded_len(), 31);
+        assert!(FlatPage::decode(&branch.finish(), V1).is_ok());
+    }
+
+    #[test]
+    fn the_largest_image_is_65535_bytes() {
+        let value =
+            vec![0x5A; FlatPage::MAX_LEN - FlatLeaf::HEADER_LEN - FlatLeaf::entry_len(1, 0)];
+        let mut leaf = FlatLeafBuilder::new(page_id(5), b"", FlatPage::MAX_LEN).expect("fits");
+        assert_eq!(
+            leaf.push(b"kk", FlatValue::Inline(&value))
+                .expect_err("full"),
+            flat(FlatPageError::PageFull {
+                needed: 65_536,
+                capacity: 65_535
+            })
+        );
+        leaf.push(b"k", FlatValue::Inline(&value)).expect("fits");
+        let image = leaf.finish();
+        assert_eq!(image.len(), FlatPage::MAX_LEN);
+        let page = FlatPage::decode(&image, V1).expect("valid");
+        assert_eq!(
+            page.leaf().expect("leaf").get(b"k"),
+            Some(FlatValue::Inline(&value))
+        );
+
+        let prefix = vec![0xEE; FlatPage::MAX_LEN - FlatBranch::HEADER_LEN];
+        let branch = FlatBranchBuilder::new(page_id(5), &prefix, FlatPage::MAX_LEN, 1, page_id(1))
+            .expect("fits")
+            .finish();
+        assert_eq!(branch.len(), FlatPage::MAX_LEN);
+        let page = FlatPage::decode(&branch, V1).expect("valid");
+        assert_eq!(page.prefix(), prefix);
+        assert_eq!(
+            page.branch().expect("branch").child_for(&prefix),
+            Some(page_id(1))
+        );
+
+        let mut many = FlatLeafBuilder::new(page_id(5), b"", FlatPage::MAX_LEN).expect("fits");
+        let mut count = 0u16;
+        while many
+            .push(&count.to_be_bytes(), FlatValue::Inline(b""))
+            .is_ok()
+        {
+            count += 1;
+        }
+        assert_eq!(usize::from(count), (FlatPage::MAX_LEN - 12) / 7);
+        let image = many.finish();
+        let leaf = decode_leaf(&image);
+        assert_eq!(leaf.len(), usize::from(count));
+        assert_eq!(leaf.search(&(count - 1).to_be_bytes()), Ok(leaf.len() - 1));
+    }
+
+    #[test]
+    fn prefix_and_separator_helpers() {
+        assert_eq!(common_prefix_len(b"", b""), 0);
+        assert_eq!(common_prefix_len(b"abc", b"abd"), 2);
+        assert_eq!(common_prefix_len(b"abc", b"abcd"), 3);
+        assert_eq!(common_prefix_len(b"abc", b"xbc"), 0);
+        assert_eq!(shortest_separator(b"apple", b"banana"), b"b");
+        assert_eq!(shortest_separator(b"car", b"cart"), b"cart");
+        assert_eq!(shortest_separator(b"", b"\0"), b"\0");
+        assert_eq!(shortest_separator(b"b", b"a"), b"a");
+        assert_eq!(shortest_separator(b"same", b"same"), b"same");
+
+        let mut rng = SplitMix64::new(0x5E9A);
+        let keys = random_keys(&mut rng, b"", 400);
+        for pair in keys.windows(2) {
+            let (left, right) = (pair[0].as_slice(), pair[1].as_slice());
+            let separator = shortest_separator(left, right);
+            assert!(right.starts_with(separator));
+            assert!(left < separator && separator <= right);
+            assert!(right[..separator.len() - 1] <= *left);
+            assert_eq!(
+                common_prefix_len(left, right),
+                separator.len() - 1,
+                "{left:?} {right:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn errors_say_what_is_wrong() {
+        let errors = [
+            FlatPageError::ImageTooShort {
+                len: 3,
+                header_len: 8,
+            },
+            FlatPageError::InvalidLevel {
+                kind: FlatPageKind::Leaf,
+                level: 4,
+            },
+            FlatPageError::DirectoryOutOfBounds {
+                needed: 40,
+                len: 30,
+            },
+            FlatPageError::InvalidSlot { slot: 6 },
+            FlatPageError::PointerLength { slot: 6, len: 15 },
+            FlatPageError::KeysOutOfOrder { slot: 7 },
+            FlatPageError::UnusedBytes { used: 80, len: 90 },
+            FlatPageError::CapacityOutOfRange { capacity: 70_000 },
+            FlatPageError::KeyOutsidePrefix,
+            FlatPageError::PageFull {
+                needed: 4100,
+                capacity: 4096,
+            },
+        ];
+        let messages: BTreeSet<String> = errors
+            .iter()
+            .map(|&error| FormatError::from(error).to_string())
+            .collect();
+        assert_eq!(messages.len(), errors.len());
+        assert!(messages
+            .iter()
+            .all(|message| message.starts_with("flat page: ")));
+    }
+}

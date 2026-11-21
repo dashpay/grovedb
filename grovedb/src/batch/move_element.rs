@@ -40,23 +40,22 @@ use grovedb_costs::{
 use grovedb_element::{reference_path::ReferencePathType, ElementType};
 use grovedb_merk::{
     element::{costs::ElementCostExtensions, tree_type::ElementTreeTypeExtensions},
+    store::NodeStore,
     tree::{combine_hash, value_hash, TreeNode},
     CryptoHash, Merk, Op,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    RawIterator, Storage, StorageBatch, StorageContext,
-};
+use grovedb_storage::prefix::{build_prefix, secondary_prefix_for};
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
 
 use super::{GroveOp, KeyInfoPath, QualifiedGroveDbOp};
 use crate::{
     element::MaxReferenceHop,
+    engine::SubtreeMove,
     operations::indexed_tree::{axis_storage_tag, indexed_element_axes},
     util::{check_v1_slot_enabled, subtree_path_with_key, MAX_KEY_LENGTH},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
 /// A tree a batch moved, whose storage [`GroveDb::move_subtree_storage`]
@@ -495,7 +494,7 @@ impl PlannedMoves {
 /// Merk's state before this level applies. A target must be absent unless
 /// another move at this level frees it. Both reads retain the nodes they
 /// fetch, which applying the moves walks again.
-pub(super) fn plan_level_moves<'db, S: StorageContext<'db>>(
+pub(super) fn plan_level_moves<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     path: &[Vec<u8>],
     moves: Vec<(Vec<u8>, Vec<u8>)>,
@@ -624,67 +623,13 @@ fn moved_record_cost(prefixed_key_len: u32, value_len: u32) -> KeyValueStorageCo
     }
 }
 
-/// Copy the record `iter` is at, if any, and step past it: hand it to
-/// `inspect`, then to `land` (with the cost a moved record is billed, its
-/// prefixed key `prefix_len + key` bytes long) and to `clear`, and return
-/// what `inspect` found. `None` once the records run out. Fails rather than
-/// end early when the iterator stopped on an error, which `valid` reports
-/// like the end of its records: a move must not commit a partial copy.
-fn copy_next_record<I: RawIterator, T>(
-    iter: &mut I,
-    prefix_len: usize,
-    inspect: impl FnOnce(&[u8], &[u8]) -> Result<T, Error>,
-    land: impl FnOnce(&[u8], &[u8], KeyValueStorageCost) -> CostResult<(), Error>,
-    clear: impl FnOnce(&[u8]) -> CostResult<(), Error>,
-) -> CostResult<Option<T>, Error> {
-    let mut cost = OperationCost::default();
-    if !iter.valid().unwrap_add_cost(&mut cost) {
-        cost_return_on_error_no_add!(cost, iter.status().map_err(Error::StorageError));
-        return Ok(None).wrap_with_cost(cost);
-    }
-    let (Some(key), Some(value)) = (
-        iter.key().unwrap_add_cost(&mut cost),
-        iter.value().unwrap_add_cost(&mut cost),
-    ) else {
-        return Err(Error::CorruptedData(
-            "a raw iterator at a record returned no key or value".to_owned(),
-        ))
-        .wrap_with_cost(cost);
-    };
-    let found = cost_return_on_error_no_add!(cost, inspect(key, value));
-    let prefixed_key_len = (prefix_len + key.len()) as u32;
-    cost_return_on_error!(
-        &mut cost,
-        land(
-            key,
-            value,
-            moved_record_cost(prefixed_key_len, value.len() as u32)
-        )
-    );
-    cost_return_on_error!(&mut cost, clear(key));
-    iter.next().unwrap_add_cost(&mut cost);
-    Ok(Some(found)).wrap_with_cost(cost)
-}
+/// The length of the subtree prefix a stored key starts with.
+const PREFIX_LENGTH: usize = std::mem::size_of::<crate::SubtreePrefix>();
 
-/// [`copy_next_record`] for every record of `iter`, from the first.
-fn copy_records<I: RawIterator>(
-    iter: &mut I,
-    prefix_len: usize,
-    mut inspect: impl FnMut(&[u8], &[u8]) -> Result<(), Error>,
-    mut land: impl FnMut(&[u8], &[u8], KeyValueStorageCost) -> CostResult<(), Error>,
-    mut clear: impl FnMut(&[u8]) -> CostResult<(), Error>,
-) -> CostResult<(), Error> {
-    let mut cost = OperationCost::default();
-    iter.seek_to_first().unwrap_add_cost(&mut cost);
-    loop {
-        let copied = cost_return_on_error!(
-            &mut cost,
-            copy_next_record(iter, prefix_len, &mut inspect, &mut land, &mut clear)
-        );
-        if copied.is_none() {
-            return Ok(()).wrap_with_cost(cost);
-        }
-    }
+/// What the record under `key` is billed where it lands, at its stored
+/// size: its key behind the 32 bytes of the subtree prefix.
+fn moved_record_bill(key: &[u8], value: &[u8]) -> KeyValueStorageCost {
+    moved_record_cost((PREFIX_LENGTH + key.len()) as u32, value.len() as u32)
 }
 
 /// A record under a moved tree that cannot be decoded, at `key` in the
@@ -734,15 +679,12 @@ fn classify_moved_record(
 /// The open scan of a tree the copy moves: whether its records are Merk
 /// nodes, and the scan of its namespace. Its paths are the walk's current
 /// ones (see [`GroveDb::move_subtree_storage`]).
-struct TreeScan<'db> {
+struct TreeScan<'db, E: Engine> {
     is_merk: bool,
-    prefix_len: usize,
-    source: PrefixedRocksDbTransactionContext<'db>,
-    destination: PrefixedRocksDbTransactionContext<'db>,
-    iter: <PrefixedRocksDbTransactionContext<'db> as StorageContext<'db>>::RawIterator,
+    records: E::SubtreeMove<'db>,
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Copy every record of a tree a batch moved from the storage prefixes
     /// under its old path to the ones under its new path, and clear the old
     /// ones: its own namespace, an indexed tree's configured secondary
@@ -761,11 +703,11 @@ impl GroveDb {
     ///
     /// Reads go through the transaction and see the state from before the
     /// batch; writes stream into `batch` (see the module docs).
-    pub(crate) fn move_subtree_storage(
-        &self,
+    pub(crate) fn move_subtree_storage<'db>(
+        &'db self,
         moved: &MovedSubtree,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
@@ -784,22 +726,13 @@ impl GroveDb {
         loop {
             // The first scan is the moved element's own namespace.
             let directly_under = scans.len() == 1;
-            let Some(TreeScan {
-                is_merk,
-                prefix_len,
-                source,
-                destination,
-                iter,
-            }) = scans.last_mut()
-            else {
+            let Some(TreeScan { is_merk, records }) = scans.last_mut() else {
                 return Ok(()).wrap_with_cost(cost);
             };
             let is_merk = *is_merk;
             let copied = cost_return_on_error!(
                 &mut cost,
-                copy_next_record(
-                    iter,
-                    *prefix_len,
+                records.move_next(
                     |key, value| {
                         if is_merk {
                             classify_moved_record(&from, directly_under, key, value, grove_version)
@@ -807,18 +740,7 @@ impl GroveDb {
                             Ok(None)
                         }
                     },
-                    |key, value, record_cost| {
-                        destination
-                            .put(key, value, None, Some(record_cost))
-                            .map_err(Into::into)
-                    },
-                    // Billed where it lands. In a swap the other move's put of
-                    // the same record wins over this delete.
-                    |key| {
-                        source
-                            .delete(key, Some(KeyValueStorageCost::default()))
-                            .map_err(Into::into)
-                    },
+                    moved_record_bill,
                 )
             );
             match copied {
@@ -852,14 +774,14 @@ impl GroveDb {
     /// Start copying the tree `element`, at `from` before the move and `to`
     /// after it: copy its configured secondary namespaces, and open the scan
     /// of its own namespace unless its element shows it empty.
-    fn start_tree_copy<'db>(
+    fn start_tree_copy<'a, 'db: 'a>(
         &'db self,
         from: &[Vec<u8>],
         to: &[Vec<u8>],
         element: &Element,
-        transaction: &'db Transaction<'db>,
-        batch: &'db StorageBatch,
-    ) -> CostResult<Option<TreeScan<'db>>, Error> {
+        transaction: &'a Transaction<'db, E>,
+        batch: &'a E::Batch,
+    ) -> CostResult<Option<TreeScan<'a, E>>, Error> {
         let mut cost = OperationCost::default();
         let is_merk = !element.uses_non_merk_data_storage();
         // A Merk without a root key holds no records; a non-Merk tree's data
@@ -881,17 +803,13 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let from_prefix =
-            RocksDbStorage::build_prefix(SubtreePath::from(from)).unwrap_add_cost(&mut cost);
-        let to_prefix =
-            RocksDbStorage::build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
+        let from_prefix = build_prefix(SubtreePath::from(from)).unwrap_add_cost(&mut cost);
+        let to_prefix = build_prefix(SubtreePath::from(to)).unwrap_add_cost(&mut cost);
         for axis in secondary_axes {
-            let from_secondary =
-                RocksDbStorage::secondary_prefix_for(&from_prefix, axis_storage_tag(axis))
-                    .unwrap_add_cost(&mut cost);
+            let from_secondary = secondary_prefix_for(&from_prefix, axis_storage_tag(axis))
+                .unwrap_add_cost(&mut cost);
             let to_secondary =
-                RocksDbStorage::secondary_prefix_for(&to_prefix, axis_storage_tag(axis))
-                    .unwrap_add_cost(&mut cost);
+                secondary_prefix_for(&to_prefix, axis_storage_tag(axis)).unwrap_add_cost(&mut cost);
             cost_return_on_error!(
                 &mut cost,
                 self.move_namespace(from_secondary, to_secondary, transaction, batch)
@@ -901,230 +819,56 @@ impl GroveDb {
             return Ok(None).wrap_with_cost(cost);
         }
 
-        let source = self
+        let records = self
             .db
-            .get_transactional_storage_context_by_subtree_prefix(
-                from_prefix,
-                Some(batch),
-                transaction,
-            )
+            .move_subtree(from_prefix, to_prefix, batch, transaction)
             .unwrap_add_cost(&mut cost);
-        let destination = self
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(
-                to_prefix,
-                Some(batch),
-                transaction,
-            )
-            .unwrap_add_cost(&mut cost);
-        let mut iter = source.raw_iter();
-        iter.seek_to_first().unwrap_add_cost(&mut cost);
-        Ok(Some(TreeScan {
-            is_merk,
-            prefix_len: to_prefix.len(),
-            source,
-            destination,
-            iter,
-        }))
-        .wrap_with_cost(cost)
+        Ok(Some(TreeScan { is_merk, records })).wrap_with_cost(cost)
     }
 
     /// Stream every record of the `from` namespace into the `to` namespace
     /// and delete it from `from`; for namespaces whose records hold nothing
     /// the copy has to look at (indexed secondaries).
-    fn move_namespace(
-        &self,
+    fn move_namespace<'db>(
+        &'db self,
         from: crate::SubtreePrefix,
         to: crate::SubtreePrefix,
-        transaction: &Transaction,
-        batch: &StorageBatch,
+        transaction: &Transaction<'db, E>,
+        batch: &E::Batch,
     ) -> CostResult<(), Error> {
         let mut cost = OperationCost::default();
-        let source = self
+        let mut records = self
             .db
-            .get_transactional_storage_context_by_subtree_prefix(from, Some(batch), transaction)
+            .move_subtree(from, to, batch, transaction)
             .unwrap_add_cost(&mut cost);
-        let destination = self
-            .db
-            .get_transactional_storage_context_by_subtree_prefix(to, Some(batch), transaction)
-            .unwrap_add_cost(&mut cost);
-
-        let mut iter = source.raw_iter();
-        copy_records(
-            &mut iter,
-            to.len(),
-            |_, _| Ok(()),
-            |key, value, record_cost| {
-                destination
-                    .put(key, value, None, Some(record_cost))
-                    .map_err(Into::into)
-            },
-            // Billed where it lands. In a swap the other move's put of the
-            // same record wins over this delete.
-            |key| {
-                source
-                    .delete(key, Some(KeyValueStorageCost::default()))
-                    .map_err(Into::into)
-            },
-        )
-        .add_cost(cost)
+        loop {
+            let moved = cost_return_on_error!(
+                &mut cost,
+                records.move_next(|_, _| Ok(()), moved_record_bill)
+            );
+            if moved.is_none() {
+                return Ok(()).wrap_with_cost(cost);
+            }
+        }
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
-    use std::cell::Cell;
-
     use grovedb_costs::{
         storage_cost::{removal::StorageRemovedBytes::NoStorageRemoval, StorageCost},
-        CostContext, CostsExt, OperationCost,
+        OperationCost,
     };
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::RocksDbStorage, RawIterator, Storage, StorageBatch, StorageContext,
-    };
+    use grovedb_storage::{RawIterator, Storage, StorageBatch, StorageContext};
     use grovedb_version::version::GroveVersion;
     use integer_encoding::VarInt;
 
-    use super::{copy_records, MovedSubtree};
+    use super::MovedSubtree;
     use crate::{
         tests::{make_test_grovedb, TEST_LEAF},
-        Element, Error,
+        Element,
     };
-
-    /// An iterator over in-memory records that can stop on an error once
-    /// they run out, or claim a record it does not hand over. It charges one
-    /// seek per positioning call and nothing else.
-    struct ScriptedIterator {
-        records: Vec<(Vec<u8>, Vec<u8>)>,
-        position: usize,
-        fails_after_last: bool,
-        withholds_records: bool,
-    }
-
-    impl ScriptedIterator {
-        fn record(&self) -> Option<&(Vec<u8>, Vec<u8>)> {
-            if self.withholds_records {
-                None
-            } else {
-                self.records.get(self.position)
-            }
-        }
-    }
-
-    impl RawIterator for ScriptedIterator {
-        fn seek_to_first(&mut self) -> CostContext<()> {
-            self.position = 0;
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn seek_to_last(&mut self) -> CostContext<()> {
-            self.position = self.records.len().saturating_sub(1);
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn seek<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn seek_for_prev<K: AsRef<[u8]>>(&mut self, _key: K) -> CostContext<()> {
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn next(&mut self) -> CostContext<()> {
-            self.position += 1;
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn prev(&mut self) -> CostContext<()> {
-            self.position = self.position.saturating_sub(1);
-            ().wrap_with_cost(OperationCost::with_seek_count(1))
-        }
-
-        fn value(&self) -> CostContext<Option<&[u8]>> {
-            self.record()
-                .map(|(_, value)| value.as_slice())
-                .wrap_with_cost(OperationCost::default())
-        }
-
-        fn key(&self) -> CostContext<Option<&[u8]>> {
-            self.record()
-                .map(|(key, _)| key.as_slice())
-                .wrap_with_cost(OperationCost::default())
-        }
-
-        fn valid(&self) -> CostContext<bool> {
-            (self.position < self.records.len()).wrap_with_cost(OperationCost::default())
-        }
-
-        fn status(&self) -> Result<(), grovedb_storage::error::Error> {
-            if self.fails_after_last && self.position >= self.records.len() {
-                Err(grovedb_storage::error::Error::StorageError(
-                    "injected read failure".to_owned(),
-                ))
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn scripted(fails_after_last: bool, withholds_records: bool) -> ScriptedIterator {
-        ScriptedIterator {
-            records: vec![(b"a".to_vec(), vec![1; 10]), (b"b".to_vec(), vec![2; 20])],
-            position: 0,
-            fails_after_last,
-            withholds_records,
-        }
-    }
-
-    /// Run `copy_records` over `iter`, counting the records it lands and
-    /// clears.
-    fn copy(iter: &mut ScriptedIterator) -> (CostContext<Result<(), Error>>, usize, usize) {
-        let (landed, cleared) = (Cell::new(0), Cell::new(0));
-        let result = copy_records(
-            iter,
-            32,
-            |_, _| Ok(()),
-            |_, _, _| {
-                landed.set(landed.get() + 1);
-                Ok(()).wrap_with_cost(OperationCost::default())
-            },
-            |_| {
-                cleared.set(cleared.get() + 1);
-                Ok(()).wrap_with_cost(OperationCost::default())
-            },
-        );
-        (result, landed.get(), cleared.get())
-    }
-
-    #[test]
-    fn a_read_error_after_staged_records_fails_the_copy() {
-        let (result, landed, cleared) = copy(&mut scripted(true, false));
-        // Both records were staged into the batch before the error, which
-        // the batch then discards with everything else.
-        assert_eq!((landed, cleared), (2, 2));
-        // One seek to start, one to step past each record.
-        assert_eq!(result.cost.seek_count, 3);
-        assert!(
-            matches!(&result.value, Err(Error::StorageError(e)) if e.to_string().contains("injected read failure")),
-            "got {:?}",
-            result.value
-        );
-
-        let (result, ..) = copy(&mut scripted(false, false));
-        assert!(result.value.is_ok());
-    }
-
-    #[test]
-    fn a_valid_iterator_without_a_record_fails_the_copy() {
-        let (result, landed, cleared) = copy(&mut scripted(false, true));
-        assert_eq!((landed, cleared), (0, 0));
-        assert!(
-            matches!(&result.value, Err(Error::CorruptedData(_))),
-            "got {:?}",
-            result.value
-        );
-    }
 
     #[test]
     fn a_fresh_target_is_checked_on_the_path_the_move_walks() {
@@ -1164,6 +908,7 @@ mod tests {
         planned.value.expect("plan");
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_moved_record_is_billed_exactly() {
         let grove_version = GroveVersion::latest();
@@ -1198,6 +943,7 @@ mod tests {
         let records: Vec<(u32, u32)> = {
             let source = db
                 .db
+                .storage()
                 .get_transactional_storage_context(SubtreePath::from(from.as_slice()), None, &tx)
                 .unwrap();
             let mut iter = source.raw_iter();
@@ -1234,12 +980,13 @@ mod tests {
             grove_version,
         );
         copy.value.expect("copy");
-        let prefix_hashes = RocksDbStorage::build_prefix(SubtreePath::from(from.as_slice()))
-            .cost
-            .hash_node_calls
-            + RocksDbStorage::build_prefix(SubtreePath::from(to.as_slice()))
+        let prefix_hashes =
+            grovedb_storage::prefix::build_prefix(SubtreePath::from(from.as_slice()))
                 .cost
-                .hash_node_calls;
+                .hash_node_calls
+                + grovedb_storage::prefix::build_prefix(SubtreePath::from(to.as_slice()))
+                    .cost
+                    .hash_node_calls;
         // A seek to start and one per record; the prefixed key is loaded by
         // `valid`, `key` and `value` alike, the value once, and the scan ends
         // on the fixed 288-byte boundary charge.
@@ -1260,7 +1007,7 @@ mod tests {
         // Each record is billed as replaced at its stored size, key and value
         // with their length prefixes; its delete from the old prefix bills
         // nothing but the write.
-        let commit = db.db.commit_multi_context_batch(batch, Some(&tx));
+        let commit = db.db.storage().commit_multi_context_batch(batch, Some(&tx));
         commit.value.expect("commit");
         assert_eq!(commit.cost.seek_count, 2 * records.len() as u32);
         assert_eq!(

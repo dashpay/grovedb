@@ -4,7 +4,7 @@
 //! replacement is charged for those bytes
 //! (`merk_versions.tree.just_in_time_value_update`).
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use grovedb_costs::{
         storage_cost::{

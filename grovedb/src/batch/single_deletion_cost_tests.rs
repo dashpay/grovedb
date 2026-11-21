@@ -1,6 +1,6 @@
 //! Tests
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
 
     use grovedb_costs::storage_cost::removal::{

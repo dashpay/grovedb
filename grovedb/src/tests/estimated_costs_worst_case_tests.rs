@@ -8,7 +8,6 @@ use grovedb_costs::OperationCost;
 use grovedb_merk::{
     estimated_costs::worst_case_costs::WorstCaseLayerInformation, tree_type::TreeType,
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
 use crate::{
@@ -430,7 +429,7 @@ fn test_add_worst_case_get_merk_at_path() {
     ]);
     let mut cost = OperationCost::default();
 
-    GroveDb::add_worst_case_get_merk_at_path::<RocksDbStorage>(
+    GroveDb::add_worst_case_get_merk_at_path_engine_free(
         &mut cost,
         &path,
         TreeType::NormalTree,
@@ -459,7 +458,7 @@ fn test_add_worst_case_has_raw_cost() {
     let key = KnownKey(b"check_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+    GroveDb::add_worst_case_has_raw_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -487,7 +486,7 @@ fn test_add_worst_case_get_raw_cost() {
     let key = KnownKey(b"raw_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_worst_case_get_raw_cost::<RocksDbStorage>(
+    GroveDb::add_worst_case_get_raw_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -515,7 +514,7 @@ fn test_add_worst_case_get_cost_no_references() {
     let key = KnownKey(b"get_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
+    GroveDb::add_worst_case_get_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -543,7 +542,7 @@ fn test_add_worst_case_get_cost_with_references() {
     let key = KnownKey(b"ref_key".to_vec());
     let mut cost = OperationCost::default();
 
-    GroveDb::add_worst_case_get_cost::<RocksDbStorage>(
+    GroveDb::add_worst_case_get_cost_engine_free(
         &mut cost,
         &path,
         &key,
@@ -576,7 +575,7 @@ fn test_worst_case_has_raw_greater_than_or_equal_average_case() {
     let element_size = 100_u32;
 
     let mut avg_cost = OperationCost::default();
-    GroveDb::add_average_case_has_raw_cost::<RocksDbStorage>(
+    GroveDb::add_average_case_has_raw_cost_engine_free(
         &mut avg_cost,
         &path,
         &key,
@@ -587,7 +586,7 @@ fn test_worst_case_has_raw_greater_than_or_equal_average_case() {
     .expect("average case should succeed");
 
     let mut worst_cost = OperationCost::default();
-    GroveDb::add_worst_case_has_raw_cost::<RocksDbStorage>(
+    GroveDb::add_worst_case_has_raw_cost_engine_free(
         &mut worst_cost,
         &path,
         &key,

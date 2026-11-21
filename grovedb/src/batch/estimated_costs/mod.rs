@@ -1,24 +1,24 @@
 //! Estimated costs
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use std::collections::HashMap;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{
     storage_cost::{removal::StorageRemovedBytes, StorageCost},
     OperationCost,
 };
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::estimated_costs::{
     average_case_costs::EstimatedLayerInformation, worst_case_costs::WorstCaseLayerInformation,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::batch::KeyInfoPath;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod average_case_costs;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub mod worst_case_costs;
 
 /// Cost-overhead in serialized bytes when a tree element will be
@@ -27,7 +27,7 @@ pub mod worst_case_costs;
 /// discriminant byte to the on-disk payload. The three wrappers are
 /// mutually exclusive on any element, so at most one of the input
 /// flags is ever true.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[inline]
 pub(in crate::batch) fn wrapper_overhead_for(
     non_counted: bool,
@@ -98,7 +98,7 @@ pub(in crate::batch) fn wrapper_overhead_for(
 /// Worst-case number of derived node rewrites (or cascade deletions) an
 /// overwrite/delete of a backward-references ITEM can trigger: every entry
 /// heads a referrer chain bounded by the component hop budget.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT: u32 =
     grovedb_element::MAX_BACKWARD_REFERENCES as u32
         * crate::operations::get::MAX_REFERENCE_HOPS as u32;
@@ -107,35 +107,35 @@ pub(in crate::batch) const BACKWARD_REFERENCES_WORST_ITEM_FAN_OUT: u32 =
 /// insertion can trigger: the registration on the new target, the
 /// registration removal on the old target, and the upstream propagation
 /// along the reference's single referrer chain.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_WORST_REFERENCE_FAN_OUT: u32 =
     2 + (crate::operations::get::MAX_REFERENCE_HOPS as u32 - 1);
 
 /// Worst-case number of chain-resolution element loads a
 /// bidirectional-reference insertion performs (the new and the old forward
 /// chains, each bounded by the hop budget).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_WORST_REFERENCE_RESOLUTION_LOADS: u32 =
     2 * crate::operations::get::MAX_REFERENCE_HOPS as u32;
 
 /// Average-case derived rewrites for an ITEM overwrite/delete: one
 /// referrer chain of two.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ITEM_FAN_OUT: u32 = 2;
 
 /// Average-case derived rewrites for a reference insertion: the
 /// registration, one superseded-registration removal, one propagation.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_FAN_OUT: u32 = 3;
 
 /// Average-case chain-resolution loads for a reference insertion.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_REFERENCE_RESOLUTION_LOADS: u32 = 4;
 
 /// Average-case ancestor levels a derived foreign-subtree propagation
 /// walks (worst case charges the full
 /// `MAX_BACKWARD_REFERENCES_GROVE_DEPTH` registration bound).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
 
 /// Hash calls charged per derived family rewrite: a fixed allowance that
@@ -145,7 +145,7 @@ pub(in crate::batch) const BACKWARD_REFERENCES_AVERAGE_ANCESTOR_LEVELS: u32 = 2;
 /// combine, the end-hash combine, the kv digest and the node hash. The
 /// list hash and its combine are no longer computed; the allowance is kept
 /// so estimates are unchanged.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) const BACKWARD_REFERENCES_REWRITE_HASH_CALLS: u32 = 6;
 
 /// Merge `unit × times` into `cost` with saturating arithmetic. The
@@ -154,7 +154,7 @@ pub(in crate::batch) const BACKWARD_REFERENCES_REWRITE_HASH_CALLS: u32 = 6;
 /// biggest-node in-Merk propagation); any REAL batch's actual cost must
 /// itself fit that domain, so a saturated estimate still dominates every
 /// actual — while ordinary `+=` would panic on overflow in debug builds.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn add_saturating_scaled(
     cost: &mut OperationCost,
     unit: &OperationCost,
@@ -180,7 +180,7 @@ pub(in crate::batch) fn add_saturating_scaled(
 /// The derived fan-out shape of a batch op under the backward-references
 /// flag: how many derived node rewrites, chain-resolution loads, and
 /// subtree propagations to charge.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 #[derive(Clone, Copy)]
 pub(in crate::batch) struct BackwardReferencesFanOut {
     /// Derived node rewrites (registrations, propagation rewrites, cascade
@@ -199,7 +199,7 @@ pub(in crate::batch) struct BackwardReferencesFanOut {
     pub registration_added_bytes: u32,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl BackwardReferencesFanOut {
     /// The worst-case fan-out of any overwrite-capable op (or delete)
     /// under the flag. The estimator cannot see the STORED element the op
@@ -309,20 +309,20 @@ impl BackwardReferencesFanOut {
 /// `NOTE_COMMITMENT_TREE_DEPTH`, 32). All frontier-related bounds are
 /// derived from this so a depth change cannot silently reintroduce an
 /// estimation gap.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 const FRONTIER_DEPTH: u32 = grovedb_commitment_tree::NOTE_COMMITMENT_TREE_DEPTH as u32;
 
 /// Upper bound on Sinsemilla hash calls for a single append:
 /// `FRONTIER_DEPTH` for the leaf-to-root walk plus up to
 /// `FRONTIER_DEPTH` ommer merges (`trailing_ones(position)`, maximal at
 /// positions `2^k - 1`).
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub const MAX_SINSEMILLA_HASHES_PER_APPEND: u32 = FRONTIER_DEPTH + FRONTIER_DEPTH;
 
 /// Upper bound on the serialized frontier size:
 /// 1 (flag) + 8 (position) + 32 (leaf) + 1 (ommer count) + 32 bytes per
 /// ommer, with at most `FRONTIER_DEPTH` ommers.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub const MAX_FRONTIER_SIZE: u32 = 1 + 8 + 32 + 1 + FRONTIER_DEPTH * 32;
 
 /// Physical ceiling on `chunk_power`: the dense buffer's `u16` count
@@ -332,13 +332,13 @@ pub const MAX_FRONTIER_SIZE: u32 = 1 + 8 + 32 + 1 + FRONTIER_DEPTH * 32;
 /// the tree's declared shape) charges this ceiling, and declared chunk
 /// powers are clamped here to keep the `1 << chunk_power` epoch
 /// arithmetic in range.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub const PHYSICAL_MAX_CHUNK_POWER: u8 = 16;
 
 /// Per-put storage overhead charged on data-storage writes: the 32-byte
 /// blake3 path prefix, the logical key (dense positions, MMR indices,
 /// `__ct_data__`), and the key/value varint length prefixes.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 const PER_PUT_OVERHEAD: u32 = 50;
 
 /// The dense buffer's fixed per-insert root-maintenance charge under
@@ -354,7 +354,7 @@ const PER_PUT_OVERHEAD: u32 = 50;
 /// A buffer filled under GROVE_V1..V3 is caught up from its values by its
 /// first V4 inserts; that work is real but billed the same model, so no
 /// estimator needs a full-buffer walk any more.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) struct DenseBufferModel {
     /// The model: record reads (seeks + loaded bytes) and blake3 calls.
     pub cost: OperationCost,
@@ -363,7 +363,7 @@ pub(in crate::batch) struct DenseBufferModel {
     pub record_len: u32,
 }
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn dense_buffer_model(height: u8) -> DenseBufferModel {
     use grovedb_dense_fixed_sized_merkle_tree::V1InsertModel;
     let model = V1InsertModel::for_height(height.clamp(1, PHYSICAL_MAX_CHUNK_POWER));
@@ -380,7 +380,7 @@ pub(in crate::batch) fn dense_buffer_model(height: u8) -> DenseBufferModel {
 /// are bounded separately via `element_flags_load_bound`. The
 /// `BulkAppendTree` and `PrivateDocumentStore` elements are no larger
 /// (the store adds a 4-byte entry size), so their arms reuse it.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 const CT_ELEMENT_LOAD_BASE: u32 = 256;
 
 /// Upper-bound cost of the append work a single `CommitmentTreeInsert`
@@ -416,7 +416,7 @@ const CT_ELEMENT_LOAD_BASE: u32 = 256;
 /// and the MMR nodes, amortized — while the dense buffer (slot and path
 /// record, a fixed per-tree scratch area rewritten every epoch) and the
 /// frontier are churn, reported as REPLACED bytes only.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn commitment_tree_insert_op_cost(
     payload_len: u32,
     chunk_power: u8,
@@ -516,7 +516,7 @@ pub(in crate::batch) fn commitment_tree_insert_op_cost(
 /// Storage follows the GROVE_V4 accounting: the entry's added bytes are its
 /// long-term footprint (its chunk-blob share, the blob framing and MMR nodes
 /// amortized); the buffer slot and path record are churn, replaced only.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn private_document_store_insert_op_cost(
     entry_size: u32,
     chunk_power: u8,
@@ -590,7 +590,7 @@ pub(in crate::batch) fn private_document_store_insert_op_cost(
 /// `height` is the tree's declared height (`TreeType::DenseAppendOnlyFixedSizeTree(height)`
 /// on the tree's own layer, average case) or [`PHYSICAL_MAX_CHUNK_POWER`]
 /// (worst case, and when undeclared); clamped to the constructor's range.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn dense_tree_insert_op_cost(value_size: u32, height: u8) -> OperationCost {
     let buffer = dense_buffer_model(height);
     let record_put = buffer.record_len.saturating_add(PER_PUT_OVERHEAD);
@@ -619,13 +619,13 @@ pub(in crate::batch) fn dense_tree_insert_op_cost(value_size: u32, height: u8) -
 /// epoch grows, so the ceiling epoch is NOT the bound here. (The hash and
 /// seek shares have the same property; see
 /// `grovedb_bulk_append_tree::max_amortized_compaction_{hashes,seeks}`.)
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub(in crate::batch) fn max_amortized_compaction_added_bytes() -> u32 {
     grovedb_bulk_append_tree::amortized_compaction_added_bytes(2)
 }
 
 /// Estimated costs types
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 pub enum EstimatedCostsType {
     /// Average cast estimated costs type
     AverageCaseCostsType(HashMap<KeyInfoPath, EstimatedLayerInformation>),

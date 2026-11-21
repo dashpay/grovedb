@@ -4,7 +4,7 @@ use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_dense_fixed_sized_merkle_tree::DenseTreeProof;
 use grovedb_merkle_mountain_range::{leaf_to_pos, MmrKeySize, MmrStore, MMR};
 use grovedb_query::Query;
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 
 use super::{BulkAppendTree, RangePage};
 use crate::{chunk::deserialize_chunk_blob, BulkAppendError};
@@ -30,7 +30,7 @@ pub struct ChunkQueryResult {
     pub mmr_root: [u8; 32],
 }
 
-impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
+impl<S: FlatStore> BulkAppendTree<S> {
     // ── Buffer operations (dense fixed-sized Merkle tree) ────────────
 
     /// Get a single value from the dense tree buffer by its buffer-local

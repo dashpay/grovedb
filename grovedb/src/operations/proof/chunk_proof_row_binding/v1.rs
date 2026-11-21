@@ -26,58 +26,22 @@
 //! returned. Those are why it cannot apply to the released versions; see the
 //! module docs in [`super`][`mod@super`].
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
+use crate::Engine;
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::Op;
 use grovedb_merk::{
     proofs::Node,
     tree::{combine_hash, value_hash},
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Transaction;
 use crate::{Element, Error, GroveDb, PathQuery, Query};
 
 impl GroveDb {
-    /// `bind_chunk_proof_rows` v1 — see the module documentation.
-    #[cfg(feature = "minimal")]
-    pub(crate) fn bind_chunk_proof_rows_v1(
-        &self,
-        ops: &mut [Op],
-        target_path: &[&[u8]],
-        tx: &Transaction,
-        grove_version: &grovedb_version::version::GroveVersion,
-    ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-
-        #[cfg(test)]
-        super::super::prove_test_hooks::BEFORE_CHUNK_ROW_BINDING.with(|hook| {
-            if let Some(hook) = hook.borrow_mut().take() {
-                hook();
-            }
-        });
-
-        for op in ops.iter_mut() {
-            let node = match op {
-                Op::Push(node) | Op::PushInverted(node) => node,
-                _ => continue,
-            };
-            cost_return_on_error!(
-                &mut cost,
-                self.bind_composite_row(
-                    node,
-                    target_path,
-                    tx,
-                    grove_version,
-                    "trunk/branch chunk proof: the row",
-                )
-            );
-        }
-
-        Ok(()).wrap_with_cost(cost)
-    }
-
     /// `check_chunk_proof_row` v1 — see the module documentation.
     pub(crate) fn check_chunk_proof_row_v1(
         node: &Node,
@@ -181,5 +145,46 @@ impl GroveDb {
                 Ok(())
             }
         }
+    }
+}
+
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
+    /// `bind_chunk_proof_rows` v1 — see the module documentation.
+    #[cfg(feature = "engine_generic")]
+    pub(crate) fn bind_chunk_proof_rows_v1<'db>(
+        &'db self,
+        ops: &mut [Op],
+        target_path: &[&[u8]],
+        tx: &Transaction<'db, E>,
+        grove_version: &grovedb_version::version::GroveVersion,
+    ) -> CostResult<(), Error> {
+        let mut cost = OperationCost::default();
+
+        #[cfg(test)]
+        super::super::prove_test_hooks::BEFORE_CHUNK_ROW_BINDING.with(|hook| {
+            if let Some(hook) = hook.borrow_mut().take() {
+                hook();
+            }
+        });
+
+        for op in ops.iter_mut() {
+            let node = match op {
+                Op::Push(node) | Op::PushInverted(node) => node,
+                _ => continue,
+            };
+            cost_return_on_error!(
+                &mut cost,
+                self.bind_composite_row(
+                    node,
+                    target_path,
+                    tx,
+                    grove_version,
+                    "trunk/branch chunk proof: the row",
+                )
+            );
+        }
+
+        Ok(()).wrap_with_cost(cost)
     }
 }

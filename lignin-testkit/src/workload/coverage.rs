@@ -1,0 +1,1276 @@
+//! Which element variants, tree types, reference path types and operations
+//! a stream produced.
+//!
+//! The variant lists below are written once and expand into two things: an
+//! exhaustive `match` naming each variant, and the list of names a stream is
+//! checked against. A variant added to GroveDB therefore stops this file
+//! compiling until it is named here, and once it is named, the coverage test
+//! fails until a workload produces it. Nothing has to be kept in step by
+//! hand.
+//!
+//! [`Operation`] lists what a stream makes GroveDB do: the writes, batches
+//! and reads every workload is made of, the operations that reach storage
+//! in a way of their own, and the remaining ones that charge a cost of
+//! their own, in the groups the plan names for these generators. They are
+//! not the variants of one GroveDB type, so that list is written here; the
+//! coverage test fails when the suite stops producing one of them.
+//! [`super::surface`] names the public GroveDB method behind each.
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use grovedb::{
+    element::reference_path::ReferencePathType, AggregateKind, AxisQuery, AxisTraversal, Element,
+    PathQuery, PathQueryShape, Query, TreeType,
+};
+use grovedb_merk::{element::tree_type::ElementTreeTypeExtensions, proofs::query::IndexAxis};
+
+use super::{
+    build::child,
+    flags::{Histories, Update},
+    op::{
+        AppendEntry, BatchOp, ChunkIds, Fetch, IndexedTree, Op, Path, Prove, Read, TransactionOp,
+        TreeRead, Write,
+    },
+    Features,
+};
+
+macro_rules! named_variants {
+    (
+        $(#[$list_doc:meta])* $list:ident,
+        $(#[$name_doc:meta])* $name:ident($ty:ident):
+        $($variant:ident),+ $(,)?
+    ) => {
+        $(#[$list_doc])*
+        pub const $list: &[&str] = &[$(stringify!($variant)),+];
+
+        $(#[$name_doc])*
+        pub fn $name(value: &$ty) -> &'static str {
+            match value {
+                $($ty::$variant { .. } => stringify!($variant)),+
+            }
+        }
+    };
+}
+
+named_variants! {
+    /// The name of every `Element` variant.
+    ELEMENT_VARIANTS,
+    /// The name of an element's outermost variant.
+    element_variant(Element):
+    Item,
+    Reference,
+    Tree,
+    SumItem,
+    SumTree,
+    BigSumTree,
+    CountTree,
+    CountSumTree,
+    ProvableCountTree,
+    ItemWithSumItem,
+    ProvableCountSumTree,
+    CommitmentTree,
+    MmrTree,
+    BulkAppendTree,
+    DenseAppendOnlyFixedSizeTree,
+    NonCounted,
+    NotSummed,
+    NotCountedOrSummed,
+    ReferenceWithSumItem,
+    ProvableSumTree,
+    ProvableCountProvableSumTree,
+    ProvableSumIndexedTree,
+    ProvableCountIndexedTree,
+    ProvableCountProvableSumIndexedTree,
+    PrivateDocumentStore,
+    BidirectionalReference,
+    ItemWithBackwardsReferences,
+    SumItemWithBackwardsReferences,
+    ItemWithSumItemWithBackwardsReferences,
+    ProvableCountProvableBigSumTree,
+    CountBigSumTree,
+    ProvableBigSumTree,
+    ProvableBigSumIndexedTree,
+    ProvableCountProvableBigSumIndexedTree,
+}
+
+named_variants! {
+    /// The name of every `TreeType` variant.
+    TREE_TYPES,
+    /// The name of a tree type's variant.
+    tree_type_variant(TreeType):
+    NormalTree,
+    SumTree,
+    BigSumTree,
+    CountTree,
+    CountSumTree,
+    ProvableCountTree,
+    ProvableCountSumTree,
+    CommitmentTree,
+    MmrTree,
+    BulkAppendTree,
+    DenseAppendOnlyFixedSizeTree,
+    ProvableSumTree,
+    ProvableCountProvableSumTree,
+    ProvableSumIndexedTree,
+    ProvableCountIndexedTree,
+    ProvableCountProvableSumIndexedTree,
+    PrivateDocumentStore,
+    ProvableCountProvableBigSumTree,
+    CountBigSumTree,
+    ProvableBigSumTree,
+    ProvableBigSumIndexedTree,
+    ProvableCountProvableBigSumIndexedTree,
+}
+
+named_variants! {
+    /// The name of every `ReferencePathType` variant.
+    REFERENCE_PATH_TYPES,
+    /// The name of a reference path's variant.
+    reference_path_variant(ReferencePathType):
+    AbsolutePathReference,
+    UpstreamRootHeightReference,
+    UpstreamRootHeightWithParentPathAdditionReference,
+    UpstreamFromElementHeightReference,
+    CousinReference,
+    RemovedCousinReference,
+    SiblingReference,
+}
+
+macro_rules! operations {
+    ($($group:literal: $($variant:ident = $doc:literal),+;)+) => {
+        /// Something a stream makes GroveDB do.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        pub enum Operation {
+            $($(#[doc = $doc] $variant,)+)+
+        }
+
+        impl Operation {
+            /// Every operation, in the order of the plan's list.
+            pub const ALL: &'static [Operation] = &[$($(Operation::$variant),+),+];
+
+            /// The name of the operation.
+            pub fn name(self) -> &'static str {
+                match self {
+                    $($(Operation::$variant => stringify!($variant),)+)+
+                }
+            }
+
+            /// The entry of the plan's list the operation belongs to.
+            pub fn group(self) -> &'static str {
+                match self {
+                    $($(Operation::$variant)|+ => $group,)+
+                }
+            }
+        }
+
+        /// The groups of operations, in the order of the plan's list.
+        pub const OPERATION_GROUPS: &[&str] = &[$($group),+];
+    };
+}
+
+operations! {
+    "writes, batches and reads":
+        Insert = "`GroveDb::insert`.",
+        Delete = "`GroveDb::delete`.",
+        ClearSubtree = "`GroveDb::clear_subtree`.",
+        MmrAppend = "`GroveDb::mmr_tree_append`.",
+        BulkAppend = "`GroveDb::bulk_append`.",
+        DenseInsert = "`GroveDb::dense_tree_insert`.",
+        PrivateDocumentInsert = "`GroveDb::private_document_store_insert`.",
+        Batch = "`GroveDb::apply_batch`.",
+        Get = "`GroveDb::get`.",
+        Query = "`GroveDb::query`.",
+        QueryRaw = "`GroveDb::query_raw`.",
+        PathQueryRun = "`GroveDb::run_path_query`.",
+        Commit = "The end of a block: the transaction is committed.";
+    "patch":
+        Patch = "A batch `Patch`.";
+    "move":
+        Move = "A batch `Move`.";
+    "partial batches":
+        PartialBatch = "`GroveDb::apply_partial_batch`.";
+    "aux records":
+        AuxPut = "`GroveDb::put_aux`.",
+        AuxDelete = "`GroveDb::delete_aux`.",
+        AuxGet = "`GroveDb::get_aux`.",
+        AuxByPrefix = "`GroveDb::get_aux_by_key_prefix`.";
+    "meta records":
+        FlatDrop = "`GroveDb::drop_flat_subtree`, which writes a pending-drop record.",
+        FlatDropInBatch = "A batch `DeleteTree` that drops flat, which writes the same record.",
+        PendingDropsFlush = "`GroveDb::flush_pending_prefix_drops`, which reads and removes them.";
+    "query offsets":
+        QueryOffset = "A query that skips rows by reading past them.",
+        CountOffsetPage = "A proven page of a tree that commits its count, skipped by count.",
+        InstanceOffset = "`Query::offset`: a page by count for each subquery.";
+    "conditional subqueries":
+        ConditionalSubquery = "A query with a subquery of its own for some keys.",
+        InstanceLimit = "`Query::limit`: a limit of its own for each subquery.";
+    "aggregate queries":
+        AggregateCount = "The count of a key range.",
+        AggregateSum = "The sum of a key range.",
+        AggregateCountAndSum = "The count and the sum of a key range.",
+        AggregateCountPerKey = "The count of a key range for each selected key.",
+        AggregateSumPerKey = "The sum of a key range for each selected key.",
+        AggregateCountAndSumPerKey = "The count and the sum of a key range for each selected key.",
+        SumBudget = "`GroveDb::query_aggregate_sums`: a walk that stops at a running total.",
+        SumBudgetWindow = "The same walk as a query read mode, which is proven.",
+        AxisRankedPage = "A page of an indexed tree in the order of an aggregate.",
+        AxisBounded = "The entries of an indexed tree whose aggregate is in a range.",
+        AxisRankOfKey = "The rank of a key in an indexed tree.",
+        AxisAggregate = "An aggregate over the entries whose aggregate is in a range.",
+        BranchedAxisRead = "One axis read for each of several indexed trees.";
+    "conditional inserts and deletes":
+        InsertIfNotExists = "`GroveDb::insert_if_not_exists`.",
+        InsertIfNotExistsReturnExisting =
+            "`GroveDb::insert_if_not_exists_return_existing_element`.",
+        InsertIfChanged = "`GroveDb::insert_if_changed_value`.",
+        DeleteIfEmptyTree = "`GroveDb::delete_if_empty_tree`.",
+        DeleteUpTree = "`GroveDb::delete_up_tree_while_empty`.",
+        DeleteUpTreeBuilt =
+            "`GroveDb::delete_operations_for_delete_up_tree_while_empty`, applied as a batch.",
+        DeleteBuilt = "`GroveDb::delete_operation_for_delete_internal`, applied as a batch.";
+    "raw existence checks":
+        HasRaw = "`GroveDb::has_raw`.",
+        IsEmptyTree = "`GroveDb::is_empty_tree`.",
+        GetRaw = "`GroveDb::get_raw`.",
+        GetRawOptional = "`GroveDb::get_raw_optional`.",
+        GetUncached = "`GroveDb::get_caching_optional` without the cache.",
+        GetRawUncached = "`GroveDb::get_raw_caching_optional` without the cache.",
+        GetRawOptionalUncached =
+            "`GroveDb::get_raw_optional_caching_optional` without the cache.",
+        BlockRead = "A read inside the open transaction, which sees its writes.";
+    "direct writes to indexed trees":
+        IndexedInsertCount = "`GroveDb::insert_into_count_indexed_tree`.",
+        IndexedInsertSum = "`GroveDb::insert_into_provable_sum_indexed_tree`.",
+        IndexedInsertCountSum =
+            "`GroveDb::insert_into_provable_count_provable_sum_indexed_tree`.",
+        IndexedDeleteCount = "`GroveDb::delete_from_count_indexed_tree`.",
+        IndexedDeleteSum = "`GroveDb::delete_from_provable_sum_indexed_tree`.",
+        IndexedDeleteCountSum =
+            "`GroveDb::delete_from_provable_count_provable_sum_indexed_tree`.",
+        IndexedReconcile = "`GroveDb::reconcile_indexed_tree_secondaries`.";
+    "typed reads of the append-only trees":
+        MmrValue = "`GroveDb::mmr_tree_get_value`.",
+        MmrRootHash = "`GroveDb::mmr_tree_root_hash`.",
+        MmrLeafCount = "`GroveDb::mmr_tree_leaf_count`.",
+        BulkValue = "`GroveDb::bulk_get_value`.",
+        BulkRange = "`GroveDb::bulk_get_range`.",
+        BulkChunk = "`GroveDb::bulk_get_chunk`.",
+        BulkBuffer = "`GroveDb::bulk_get_buffer`.",
+        BulkCount = "`GroveDb::bulk_count`.",
+        BulkChunkCount = "`GroveDb::bulk_chunk_count`.",
+        DenseValue = "`GroveDb::dense_tree_get`.",
+        DenseRootHash = "`GroveDb::dense_tree_root_hash`.",
+        DenseCount = "`GroveDb::dense_tree_count`.",
+        CommitmentValue = "`GroveDb::commitment_tree_get_value`.",
+        CommitmentRange = "`GroveDb::commitment_tree_get_range`.",
+        CommitmentAnchor = "`GroveDb::commitment_tree_anchor`.",
+        CommitmentCount = "`GroveDb::commitment_tree_count`.",
+        PrivateDocumentValue = "`GroveDb::private_document_store_get_value`.",
+        PrivateDocumentRange = "`GroveDb::private_document_store_get_range`.",
+        PrivateDocumentCount = "`GroveDb::private_document_store_count`.",
+        CommitmentInsert = "`GroveDb::commitment_tree_insert`, the typed write.";
+    "chunk proofs":
+        TrunkChunk = "`GroveDb::prove_trunk_chunk`.",
+        BranchChunk = "`GroveDb::prove_branch_chunk`.",
+        RootChunk = "`GroveDb::fetch_chunk` of the root tree, asked for by the root hash.",
+        RootTreeChunk = "`GroveDb::fetch_chunk` of the root tree, asked for by chunk id.",
+        MerkChunk = "`GroveDb::fetch_chunk` of the chunk at the root of a Merk tree.",
+        MerkChunkBelowRoot = "`GroveDb::fetch_chunk` of chunks below the root of a Merk tree.",
+        EntriesChunk = "`GroveDb::fetch_chunk` of a page of an append-only tree.";
+    "remaining query entry points":
+        KeysOptional = "`GroveDb::query_keys_optional`.",
+        RawKeysOptional = "`GroveDb::query_raw_keys_optional`.",
+        AbsenceProof = "A proof that some of the keys asked for are not stored.",
+        ItemValues = "`GroveDb::query_item_value`.",
+        ItemValuesOrSums = "`GroveDb::query_item_value_or_sum`.",
+        SumValues = "`GroveDb::query_sums`.",
+        ManyRaw = "`GroveDb::query_many_raw`.",
+        ProveMany = "`GroveDb::prove_query_many`.",
+        ProvedPathQuery = "`GroveDb::get_proved_path_query`.",
+        BigSum = "`GroveDb::query_aggregate_big_sum`.",
+        CountAndBigSum = "`GroveDb::query_aggregate_count_and_big_sum`.",
+        BigSumPerKey = "`GroveDb::query_aggregate_big_sum_per_key`.",
+        CountAndBigSumPerKey = "`GroveDb::query_aggregate_count_and_big_sum_per_key`.",
+        BulkPositionRangeProof = "`GroveDb::prove_bulk_position_range`.";
+    "rollbacks and savepoints":
+        Rollback = "`GroveDb::rollback_transaction`.",
+        Abandon = "A transaction dropped without a commit.",
+        Savepoint = "`GroveDb::set_savepoint`.",
+        SavepointRollback = "`GroveDb::rollback_to_savepoint`.",
+        NestedSavepoint = "A savepoint set while another is on the stack.",
+        SavepointKept = "A savepoint still on the stack when its transaction commits.",
+        SnapshotRead = "A read through `GroveDb::start_snapshot_read_transaction`.",
+        SnapshotReadAfterCommit = "A read through a snapshot older than the last commit.";
+    "storage-flag callbacks":
+        FlagsBatch = "`GroveDb::apply_batch_with_element_flags_update`, with Drive's callbacks.",
+        FlagsPartialBatch =
+            "`GroveDb::apply_partial_batch_with_element_flags_update`, with Drive's callbacks.",
+        SectionalDelete = "`GroveDb::delete_with_sectional_storage_function`.",
+        SectionalDeleteUpTree =
+            "`GroveDb::delete_up_tree_while_empty_with_sectional_storage`.",
+        FlagsHandoverBatch =
+            "`GroveDb::apply_batch_with_element_flags_update`, with the callback Drive passes \
+             with a batch that updates a document.",
+        FlagsHandover =
+            "An update in such a batch whose flags name another owner, who is stored.",
+        FlagsFullHandover =
+            "The same between two owners of whom one is a gas sponsor: the update is accounted \
+             as a replacement.",
+        FlagsGrowth = "An update that makes an element longer in a later epoch than its first.",
+        FlagsShrinkAcrossEpochs =
+            "An update that frees every byte one epoch added and bytes of an earlier one.",
+        FlagsSameSize = "An update in a later epoch that keeps the length, and the stored flags.",
+        FlagsOwnerChange = "An update whose flags name another owner than the stored ones.",
+        FlagsRemoved = "An element without flags stored over one with flags.",
+        FlagsDelete = "A delete of an element whose flags hold several epochs.",
+        PartialFlagsGrowth = "The same growth in a partial batch.",
+        PartialFlagsShrinkAcrossEpochs = "The same shrinking in a partial batch.",
+        PartialFlagsSameSize =
+            "An update in a partial batch that keeps the length, and stores the flags written.",
+        PartialFlagsOwnerChange =
+            "An update in a partial batch whose flags name another owner, where it accepts \
+             one: it keeps the length, or shortens an element whose flags hold one epoch.",
+        PartialFlagsHistoryDropped =
+            "The same update over flags of several epochs, whose history the flags written \
+             replace.",
+        PartialFlagsDelete = "A delete in a partial batch of an element whose flags hold several \
+                              epochs.";
+    "deletes of filled trees":
+        TreeDeleteFilledInTransaction =
+            "A tree deleted with what it holds by the transaction that created and filled it.",
+        TreeDeleteRewrittenInTransaction =
+            "A tree deleted with what it holds by a transaction that wrote into it first.",
+        TreeDeleteCommitted = "A tree deleted with what it holds as it was committed.";
+    "indexed trees with a 128-bit sum":
+        IndexedInsertBigSum = "`GroveDb::insert_into_provable_big_sum_indexed_tree`.",
+        IndexedInsertCountBigSum =
+            "`GroveDb::insert_into_provable_count_provable_big_sum_indexed_tree`.",
+        IndexedDeleteBigSum = "`GroveDb::delete_from_provable_big_sum_indexed_tree`.",
+        IndexedDeleteCountBigSum =
+            "`GroveDb::delete_from_provable_count_provable_big_sum_indexed_tree`.",
+        BigSumAxisRankedPage = "A page of an indexed tree in the order of its 128-bit sums.",
+        BigSumAxisBounded = "The entries of an indexed tree whose 128-bit sum is in a range.",
+        BigSumAxisRankOfKey = "The rank of a key among the 128-bit sums of an indexed tree.",
+        BigSumAxisPopulation = "How many entries have a 128-bit sum in a range.",
+        BranchedBigSumAxisRead =
+            "One read in the order of the 128-bit sums for each of several indexed trees.";
+    "limits over subqueries":
+        CappedLayer =
+            "`Query::limit` on a query node that has subqueries: a limit in force on the layer \
+             the node walks.",
+        InheritedCap =
+            "A layer with subqueries and no limit of its own under the limit of a query node \
+             above it.",
+        CappedLayerInBranch =
+            "A capped layer on one branch of a query, which is what `PathQuery::merge` makes \
+             of a page.";
+    "trees a batch creates and fills":
+        FilledTreeBatch = "A batch that inserts a tree and writes into it.";
+    "conversions to a 128-bit sum":
+        ConvertSumTree = "`GroveDb::convert_to_big_sum_tree` of a `SumTree`.",
+        ConvertCountSumTree = "The conversion of a `CountSumTree`.",
+        ConvertProvableSumTree = "The conversion of a `ProvableSumTree`.",
+        ConvertProvableCountSumTree =
+            "The conversion of a `ProvableCountSumTree`, whose sum enters its node hashes.",
+        ConvertProvableCountProvableSumTree =
+            "The conversion of a `ProvableCountProvableSumTree`.",
+        ConvertProvableSumIndexedTree =
+            "The conversion of a `ProvableSumIndexedTree`, whose rows move to the big sum axis.",
+        ConvertProvableCountProvableSumIndexedTree =
+            "The conversion of a `ProvableCountProvableSumIndexedTree`.",
+        ConvertInBlock = "A conversion in the transaction of the block, among its writes.",
+        ConvertInOwnTransaction =
+            "A conversion given no transaction, which GroveDB runs in one of its own.";
+}
+
+impl Features {
+    /// Whether a stream generated for these features can hold `operation`.
+    pub fn supports(&self, operation: Operation) -> bool {
+        match operation {
+            Operation::Move => self.move_element,
+            Operation::FlatDrop | Operation::FlatDropInBatch | Operation::PendingDropsFlush => {
+                self.flat_drop
+            }
+            Operation::CountOffsetPage => self.v1_proofs,
+            Operation::InstanceOffset => self.instance_offsets,
+            Operation::InstanceLimit
+            | Operation::CappedLayer
+            | Operation::InheritedCap
+            | Operation::CappedLayerInBranch => self.instance_limits,
+            Operation::IndexedInsertBigSum
+            | Operation::IndexedInsertCountBigSum
+            | Operation::IndexedDeleteBigSum
+            | Operation::IndexedDeleteCountBigSum => self.big_sum_tree_twins,
+            Operation::ConvertSumTree
+            | Operation::ConvertCountSumTree
+            | Operation::ConvertProvableSumTree
+            | Operation::ConvertProvableCountSumTree
+            | Operation::ConvertProvableCountProvableSumTree
+            | Operation::ConvertProvableSumIndexedTree
+            | Operation::ConvertProvableCountProvableSumIndexedTree
+            | Operation::ConvertInBlock
+            | Operation::ConvertInOwnTransaction => self.convert_to_big_sum_tree,
+            Operation::BigSumAxisRankedPage
+            | Operation::BigSumAxisBounded
+            | Operation::BigSumAxisRankOfKey
+            | Operation::BigSumAxisPopulation
+            | Operation::BranchedBigSumAxisRead => self.big_sum_axis,
+            Operation::SumBudgetWindow
+            | Operation::AxisRankedPage
+            | Operation::AxisBounded
+            | Operation::AxisRankOfKey
+            | Operation::AxisAggregate
+            | Operation::BranchedAxisRead => self.read_modes,
+            Operation::Patch
+            | Operation::PartialBatch
+            | Operation::AuxPut
+            | Operation::AuxDelete
+            | Operation::AuxGet
+            | Operation::AuxByPrefix
+            | Operation::QueryOffset
+            | Operation::ConditionalSubquery
+            | Operation::AggregateCount
+            | Operation::AggregateSum
+            | Operation::AggregateCountAndSum
+            | Operation::AggregateCountPerKey
+            | Operation::AggregateSumPerKey
+            | Operation::AggregateCountAndSumPerKey
+            | Operation::SumBudget => true,
+            Operation::PrivateDocumentInsert
+            | Operation::PrivateDocumentValue
+            | Operation::PrivateDocumentCount => self.private_document_store,
+            Operation::PrivateDocumentRange => self.private_document_ranges,
+            Operation::BigSum
+            | Operation::CountAndBigSum
+            | Operation::BigSumPerKey
+            | Operation::CountAndBigSumPerKey => self.provable_count_provable_big_sum_tree,
+            Operation::BulkPositionRangeProof => self.v1_proofs,
+            Operation::Insert
+            | Operation::Delete
+            | Operation::ClearSubtree
+            | Operation::MmrAppend
+            | Operation::BulkAppend
+            | Operation::DenseInsert
+            | Operation::Batch
+            | Operation::Get
+            | Operation::Query
+            | Operation::QueryRaw
+            | Operation::PathQueryRun
+            | Operation::Commit
+            | Operation::InsertIfNotExists
+            | Operation::InsertIfNotExistsReturnExisting
+            | Operation::InsertIfChanged
+            | Operation::DeleteIfEmptyTree
+            | Operation::DeleteUpTree
+            | Operation::DeleteUpTreeBuilt
+            | Operation::DeleteBuilt
+            | Operation::HasRaw
+            | Operation::IsEmptyTree
+            | Operation::GetRaw
+            | Operation::GetRawOptional
+            | Operation::GetUncached
+            | Operation::GetRawUncached
+            | Operation::GetRawOptionalUncached
+            | Operation::BlockRead
+            | Operation::IndexedInsertCount
+            | Operation::IndexedInsertSum
+            | Operation::IndexedInsertCountSum
+            | Operation::IndexedDeleteCount
+            | Operation::IndexedDeleteSum
+            | Operation::IndexedDeleteCountSum
+            | Operation::IndexedReconcile
+            | Operation::MmrValue
+            | Operation::MmrRootHash
+            | Operation::MmrLeafCount
+            | Operation::BulkValue
+            | Operation::BulkRange
+            | Operation::BulkChunk
+            | Operation::BulkBuffer
+            | Operation::BulkCount
+            | Operation::BulkChunkCount
+            | Operation::DenseValue
+            | Operation::DenseRootHash
+            | Operation::DenseCount
+            | Operation::CommitmentValue
+            | Operation::CommitmentRange
+            | Operation::CommitmentAnchor
+            | Operation::CommitmentCount
+            | Operation::CommitmentInsert
+            | Operation::TrunkChunk
+            | Operation::BranchChunk
+            | Operation::RootChunk
+            | Operation::RootTreeChunk
+            | Operation::MerkChunk
+            | Operation::MerkChunkBelowRoot
+            | Operation::EntriesChunk
+            | Operation::KeysOptional
+            | Operation::RawKeysOptional
+            | Operation::AbsenceProof
+            | Operation::ItemValues
+            | Operation::ItemValuesOrSums
+            | Operation::SumValues
+            | Operation::ManyRaw
+            | Operation::ProveMany
+            | Operation::ProvedPathQuery
+            | Operation::Rollback
+            | Operation::Abandon
+            | Operation::Savepoint
+            | Operation::SavepointRollback
+            | Operation::NestedSavepoint
+            | Operation::SavepointKept
+            | Operation::SnapshotRead
+            | Operation::SnapshotReadAfterCommit
+            | Operation::FlagsBatch
+            | Operation::FlagsPartialBatch
+            | Operation::SectionalDelete
+            | Operation::SectionalDeleteUpTree
+            | Operation::FlagsGrowth
+            | Operation::FlagsShrinkAcrossEpochs
+            | Operation::FlagsSameSize
+            | Operation::FlagsOwnerChange
+            | Operation::FlagsDelete
+            | Operation::PartialFlagsGrowth
+            | Operation::PartialFlagsShrinkAcrossEpochs
+            | Operation::PartialFlagsSameSize
+            | Operation::PartialFlagsOwnerChange
+            | Operation::PartialFlagsDelete
+            | Operation::TreeDeleteFilledInTransaction
+            | Operation::TreeDeleteRewrittenInTransaction
+            | Operation::TreeDeleteCommitted
+            | Operation::FlagsHandoverBatch
+            | Operation::FlagsHandover
+            | Operation::FilledTreeBatch => true,
+            Operation::FlagsRemoved | Operation::PartialFlagsHistoryDropped => {
+                self.flag_length_changes
+            }
+            Operation::FlagsFullHandover => self.full_handovers,
+        }
+    }
+}
+
+/// What a stream has produced so far.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Coverage {
+    elements: BTreeSet<&'static str>,
+    tree_types: BTreeSet<&'static str>,
+    reference_paths: BTreeSet<&'static str>,
+    operations: BTreeSet<Operation>,
+    /// How many savepoints are on the stack of the open transaction.
+    savepoints: u32,
+    /// How many blocks were committed since the open snapshot was opened.
+    commits_under_snapshot: Option<u32>,
+    /// What the flags of the elements written under Drive's callbacks hold.
+    histories: Histories,
+    /// The subtrees a key was written into and that no operation has
+    /// deleted since.
+    filled: BTreeSet<Path>,
+    /// The subtrees the open transaction wrote a key into or deleted one
+    /// from.
+    written: BTreeSet<Path>,
+    /// The trees the open transaction created.
+    created: BTreeSet<Path>,
+    /// The trees written as one of the seven types that convert to a tree
+    /// with a 128-bit sum, by their paths, each with that type.
+    narrow: BTreeMap<Path, TreeType>,
+}
+
+impl Coverage {
+    /// Nothing produced yet.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The coverage of a whole stream.
+    pub fn of<'a>(ops: impl IntoIterator<Item = &'a Op>) -> Self {
+        let mut coverage = Self::new();
+        for op in ops {
+            coverage.record(op);
+        }
+        coverage
+    }
+
+    /// Counts what one operation stores and does.
+    ///
+    /// An element counts under its outermost variant. A tree counts under
+    /// the type of the subtree it creates, looked up through a wrapper. The
+    /// operations that depend on what came before, such as a savepoint set
+    /// inside another or an update of an element stored in an earlier
+    /// epoch, are counted as the stream is recorded in order.
+    pub fn record(&mut self, op: &Op) {
+        self.record_flags(op);
+        self.record_tree_deletes(op);
+        self.record_conversions(op);
+        for element in op.elements() {
+            self.elements.insert(element_variant(element));
+            if let Some(tree_type) = element.tree_type() {
+                self.tree_types.insert(tree_type_variant(&tree_type));
+            }
+            match element.underlying() {
+                Element::Reference(path, ..) | Element::ReferenceWithSumItem(path, ..) => {
+                    self.reference_paths.insert(reference_path_variant(path));
+                }
+                Element::BidirectionalReference(reference, _) => {
+                    self.reference_paths
+                        .insert(reference_path_variant(&reference.forward_reference_path));
+                }
+                _ => {}
+            }
+        }
+        for batch_op in op.batch_ops() {
+            match batch_op {
+                BatchOp::RefreshReference { reference, .. } => {
+                    self.reference_paths
+                        .insert(reference_path_variant(reference));
+                }
+                BatchOp::Patch { .. } => {
+                    self.operations.insert(Operation::Patch);
+                }
+                BatchOp::Move { .. } => {
+                    self.operations.insert(Operation::Move);
+                }
+                BatchOp::DropFlat { .. } => {
+                    self.operations.insert(Operation::FlatDropInBatch);
+                }
+                BatchOp::InsertOrReplace { .. }
+                | BatchOp::InsertOnly { .. }
+                | BatchOp::InsertIfNotExists { .. }
+                | BatchOp::Replace { .. }
+                | BatchOp::Delete { .. }
+                | BatchOp::DeleteTree { .. }
+                | BatchOp::Append { .. } => {}
+            }
+        }
+        if fills_a_tree_it_creates(op) {
+            self.produced(Operation::FilledTreeBatch);
+        }
+        match op {
+            Op::PartialBatch(_) => self.produced(Operation::PartialBatch),
+            Op::FlagsBatch(_) => self.produced(Operation::FlagsBatch),
+            Op::FlagsPartialBatch(_) => self.produced(Operation::FlagsPartialBatch),
+            Op::FlagsHandoverBatch(_) => self.produced(Operation::FlagsHandoverBatch),
+            Op::FlushPendingDrops => self.produced(Operation::PendingDropsFlush),
+            Op::Batch(_) => self.produced(Operation::Batch),
+            Op::Write(write) => self.produced(write_operation(write)),
+            Op::Read(read) => self.operations.extend(read_operations(read)),
+            Op::Commit => {
+                self.produced(Operation::Commit);
+                if self.savepoints > 0 {
+                    self.produced(Operation::SavepointKept);
+                }
+                self.savepoints = 0;
+                if let Some(commits) = &mut self.commits_under_snapshot {
+                    *commits += 1;
+                }
+            }
+            Op::Transaction(step) => self.record_transaction_op(step),
+        }
+    }
+
+    fn produced(&mut self, operation: Operation) {
+        self.operations.insert(operation);
+    }
+
+    /// Counts the trees an operation deletes with what they hold, by what
+    /// the open transaction did to them before. A tree counts as holding
+    /// something once something was written into it, whatever was deleted
+    /// from it since, and a rollback is not followed: what it undid counts
+    /// as written.
+    fn record_tree_deletes(&mut self, op: &Op) {
+        match op {
+            Op::Write(
+                Write::Insert { path, key, element }
+                | Write::InsertIfNotExists {
+                    path, key, element, ..
+                }
+                | Write::InsertIfChanged { path, key, element },
+            ) => self.put(path, key, element),
+            Op::Write(Write::Delete { path, key } | Write::SectionalDelete { path, key }) => {
+                self.delete(path, key, true);
+            }
+            Op::Write(Write::DropFlat { path, key }) => self.delete(path, key, false),
+            Op::Write(_)
+            | Op::Read(_)
+            | Op::Commit
+            | Op::FlushPendingDrops
+            | Op::Transaction(_) => {}
+            Op::Batch(_)
+            | Op::PartialBatch(_)
+            | Op::FlagsBatch(_)
+            | Op::FlagsPartialBatch(_)
+            | Op::FlagsHandoverBatch(_) => {
+                for batch_op in op.batch_ops() {
+                    match batch_op {
+                        BatchOp::InsertOrReplace { path, key, element }
+                        | BatchOp::InsertOnly { path, key, element }
+                        | BatchOp::InsertIfNotExists { path, key, element }
+                        | BatchOp::Replace { path, key, element }
+                        | BatchOp::Patch {
+                            path, key, element, ..
+                        } => self.put(path, key, element),
+                        BatchOp::Delete { path, key } | BatchOp::DeleteTree { path, key, .. } => {
+                            self.delete(path, key, true);
+                        }
+                        BatchOp::DropFlat { path, key, .. } => self.delete(path, key, false),
+                        BatchOp::RefreshReference { .. }
+                        | BatchOp::Append { .. }
+                        | BatchOp::Move { .. } => {}
+                    }
+                }
+            }
+        }
+        if op.ends_transaction() {
+            self.written.clear();
+            self.created.clear();
+        }
+    }
+
+    /// Counts a conversion under the type of the tree it converts: the
+    /// type the tree was last written as. A conversion, a rollback and a
+    /// delete are not followed, and a stream converts a tree a second time
+    /// only where the first conversion was rolled back.
+    fn record_conversions(&mut self, op: &Op) {
+        match op {
+            Op::Write(Write::IndexedInsert {
+                path, key, element, ..
+            }) => self.follow_narrow(path, key, element),
+            Op::Write(Write::ConvertToBigSumTree { path, key, .. }) => {
+                let converted = self.narrow.get(&child(path, key)).copied();
+                if let Some(operation) = converted.and_then(conversion_of) {
+                    self.produced(operation);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Notes whether the element stored at `key` in the subtree at `path`
+    /// is a tree a conversion applies to.
+    fn follow_narrow(&mut self, path: &Path, key: &[u8], element: &Element) {
+        let tree = child(path, key);
+        match element
+            .tree_type()
+            .filter(|tree_type| tree_type.big_sum_counterpart().is_some())
+        {
+            Some(tree_type) => self.narrow.insert(tree, tree_type),
+            None => self.narrow.remove(&tree),
+        };
+    }
+
+    /// An element stored at `key` in the subtree at `path`.
+    fn put(&mut self, path: &Path, key: &[u8], element: &Element) {
+        self.follow_narrow(path, key, element);
+        self.filled.insert(path.clone());
+        self.written.insert(path.clone());
+        if element.is_any_tree() {
+            let mut tree = path.clone();
+            tree.push(key.to_vec());
+            if !self.filled.contains(&tree) {
+                self.created.insert(tree);
+            }
+        }
+    }
+
+    /// The key deleted from the subtree at `path`. Where it held a tree
+    /// that something was written into, the tree goes with what it holds,
+    /// which counts when `walked` is set: a tree dropped flat is not
+    /// walked, and its records are reclaimed later.
+    fn delete(&mut self, path: &Path, key: &[u8], walked: bool) {
+        let mut tree = path.clone();
+        tree.push(key.to_vec());
+        if self.filled.contains(&tree) {
+            if walked {
+                self.produced(if self.created.contains(&tree) {
+                    Operation::TreeDeleteFilledInTransaction
+                } else if self.written.contains(&tree) {
+                    Operation::TreeDeleteRewrittenInTransaction
+                } else {
+                    Operation::TreeDeleteCommitted
+                });
+            }
+            for subtrees in [&mut self.filled, &mut self.written, &mut self.created] {
+                // The tree and what is under it sort next to each other.
+                let under: Vec<Path> = subtrees
+                    .range::<Path, _>(&tree..)
+                    .take_while(|subtree| subtree.starts_with(&tree))
+                    .cloned()
+                    .collect();
+                for subtree in under {
+                    subtrees.remove(&subtree);
+                }
+            }
+        }
+        self.written.insert(path.clone());
+    }
+
+    /// Counts what an operation that runs Drive's callbacks does to the
+    /// flags of the elements it replaces and deletes.
+    fn record_flags(&mut self, op: &Op) {
+        let seen = self.histories.record(op);
+        let partial = matches!(op, Op::FlagsPartialBatch(_));
+        let handover = matches!(op, Op::FlagsHandoverBatch(_));
+        let Update {
+            grew_in_later_epoch,
+            shrank_across_epochs,
+            kept_size,
+            named_another_owner,
+            dropped_history,
+            removed_flags,
+            replaced,
+        } = seen.update;
+        // What was seen, and the operation it is in a batch and in a
+        // partial batch.
+        use Operation::*;
+        let cases = [
+            (grew_in_later_epoch, FlagsGrowth, PartialFlagsGrowth),
+            (
+                shrank_across_epochs,
+                FlagsShrinkAcrossEpochs,
+                PartialFlagsShrinkAcrossEpochs,
+            ),
+            (kept_size, FlagsSameSize, PartialFlagsSameSize),
+            (
+                named_another_owner && !handover,
+                FlagsOwnerChange,
+                PartialFlagsOwnerChange,
+            ),
+            (
+                named_another_owner && handover && !replaced,
+                FlagsHandover,
+                FlagsHandover,
+            ),
+            (replaced, FlagsFullHandover, FlagsFullHandover),
+            (
+                dropped_history,
+                PartialFlagsHistoryDropped,
+                PartialFlagsHistoryDropped,
+            ),
+            (removed_flags, FlagsRemoved, FlagsRemoved),
+            (seen.deleted_several_epochs, FlagsDelete, PartialFlagsDelete),
+        ];
+        for (seen, whole, in_segments) in cases {
+            if seen {
+                self.produced(if partial { in_segments } else { whole });
+            }
+        }
+    }
+
+    fn record_transaction_op(&mut self, step: &TransactionOp) {
+        match step {
+            TransactionOp::Rollback => {
+                self.produced(Operation::Rollback);
+                self.savepoints = 0;
+            }
+            TransactionOp::Abandon => {
+                self.produced(Operation::Abandon);
+                self.savepoints = 0;
+            }
+            TransactionOp::SetSavepoint => {
+                self.produced(Operation::Savepoint);
+                if self.savepoints > 0 {
+                    self.produced(Operation::NestedSavepoint);
+                }
+                self.savepoints += 1;
+            }
+            TransactionOp::RollbackToSavepoint => {
+                self.produced(Operation::SavepointRollback);
+                self.savepoints = self.savepoints.saturating_sub(1);
+            }
+            TransactionOp::OpenSnapshot => self.commits_under_snapshot = Some(0),
+            TransactionOp::CloseSnapshot => self.commits_under_snapshot = None,
+            TransactionOp::SnapshotRead(read) => {
+                self.produced(Operation::SnapshotRead);
+                if self
+                    .commits_under_snapshot
+                    .is_some_and(|commits| commits > 0)
+                {
+                    self.produced(Operation::SnapshotReadAfterCommit);
+                }
+                self.operations.extend(unproven(read));
+            }
+            TransactionOp::BlockRead(read) => {
+                self.produced(Operation::BlockRead);
+                self.operations.extend(unproven(read));
+            }
+        }
+    }
+
+    /// The element variants produced.
+    pub fn elements(&self) -> &BTreeSet<&'static str> {
+        &self.elements
+    }
+
+    /// The tree types produced.
+    pub fn tree_types(&self) -> &BTreeSet<&'static str> {
+        &self.tree_types
+    }
+
+    /// The reference path types produced.
+    pub fn reference_paths(&self) -> &BTreeSet<&'static str> {
+        &self.reference_paths
+    }
+
+    /// The operations produced.
+    pub fn operations(&self) -> &BTreeSet<Operation> {
+        &self.operations
+    }
+
+    /// The operations not produced yet.
+    pub fn missing_operations(&self) -> Vec<Operation> {
+        Operation::ALL
+            .iter()
+            .copied()
+            .filter(|operation| !self.operations.contains(operation))
+            .collect()
+    }
+
+    /// The element variants not produced yet.
+    pub fn missing_elements(&self) -> Vec<&'static str> {
+        missing(ELEMENT_VARIANTS, &self.elements)
+    }
+
+    /// The tree types not produced yet.
+    pub fn missing_tree_types(&self) -> Vec<&'static str> {
+        missing(TREE_TYPES, &self.tree_types)
+    }
+
+    /// The reference path types not produced yet.
+    pub fn missing_reference_paths(&self) -> Vec<&'static str> {
+        missing(REFERENCE_PATH_TYPES, &self.reference_paths)
+    }
+}
+
+fn missing(all: &[&'static str], seen: &BTreeSet<&'static str>) -> Vec<&'static str> {
+    all.iter()
+        .copied()
+        .filter(|name| !seen.contains(name))
+        .collect()
+}
+
+/// The conversion of a tree of `tree_type`, for the seven types that
+/// convert.
+fn conversion_of(tree_type: TreeType) -> Option<Operation> {
+    Some(match tree_type {
+        TreeType::SumTree => Operation::ConvertSumTree,
+        TreeType::CountSumTree => Operation::ConvertCountSumTree,
+        TreeType::ProvableSumTree => Operation::ConvertProvableSumTree,
+        TreeType::ProvableCountSumTree => Operation::ConvertProvableCountSumTree,
+        TreeType::ProvableCountProvableSumTree => Operation::ConvertProvableCountProvableSumTree,
+        TreeType::ProvableSumIndexedTree => Operation::ConvertProvableSumIndexedTree,
+        TreeType::ProvableCountProvableSumIndexedTree => {
+            Operation::ConvertProvableCountProvableSumIndexedTree
+        }
+        _ => return None,
+    })
+}
+
+/// The operation a direct write is.
+fn write_operation(write: &Write) -> Operation {
+    match write {
+        Write::Insert { .. } => Operation::Insert,
+        Write::Delete { .. } => Operation::Delete,
+        Write::ClearSubtree { .. } => Operation::ClearSubtree,
+        Write::Append { entry, .. } => match entry {
+            AppendEntry::Mmr(_) => Operation::MmrAppend,
+            AppendEntry::Bulk(_) => Operation::BulkAppend,
+            AppendEntry::Dense(_) => Operation::DenseInsert,
+            AppendEntry::PrivateDocument(_) => Operation::PrivateDocumentInsert,
+            AppendEntry::Commitment { .. } => Operation::Batch,
+        },
+        Write::PutAux { .. } => Operation::AuxPut,
+        Write::DeleteAux { .. } => Operation::AuxDelete,
+        Write::DropFlat { .. } => Operation::FlatDrop,
+        Write::InsertIfNotExists {
+            return_existing, ..
+        } => {
+            if *return_existing {
+                Operation::InsertIfNotExistsReturnExisting
+            } else {
+                Operation::InsertIfNotExists
+            }
+        }
+        Write::InsertIfChanged { .. } => Operation::InsertIfChanged,
+        Write::DeleteIfEmptyTree { .. } => Operation::DeleteIfEmptyTree,
+        Write::DeleteUpTree { built, .. } => {
+            if *built {
+                Operation::DeleteUpTreeBuilt
+            } else {
+                Operation::DeleteUpTree
+            }
+        }
+        Write::DeleteBuilt { .. } => Operation::DeleteBuilt,
+        Write::IndexedInsert { tree, .. } => match tree {
+            IndexedTree::Count => Operation::IndexedInsertCount,
+            IndexedTree::Sum => Operation::IndexedInsertSum,
+            IndexedTree::CountSum => Operation::IndexedInsertCountSum,
+            IndexedTree::BigSum => Operation::IndexedInsertBigSum,
+            IndexedTree::CountBigSum => Operation::IndexedInsertCountBigSum,
+        },
+        Write::IndexedDelete { tree, .. } => match tree {
+            IndexedTree::Count => Operation::IndexedDeleteCount,
+            IndexedTree::Sum => Operation::IndexedDeleteSum,
+            IndexedTree::CountSum => Operation::IndexedDeleteCountSum,
+            IndexedTree::BigSum => Operation::IndexedDeleteBigSum,
+            IndexedTree::CountBigSum => Operation::IndexedDeleteCountBigSum,
+        },
+        Write::ReconcileIndexed { .. } => Operation::IndexedReconcile,
+        Write::ConvertToBigSumTree {
+            own_transaction, ..
+        } => {
+            if *own_transaction {
+                Operation::ConvertInOwnTransaction
+            } else {
+                Operation::ConvertInBlock
+            }
+        }
+        Write::CommitmentInsert { .. } => Operation::CommitmentInsert,
+        Write::SectionalDelete { .. } => Operation::SectionalDelete,
+        Write::SectionalDeleteUpTree { .. } => Operation::SectionalDeleteUpTree,
+    }
+}
+
+/// The operations a read stands for when it runs through a snapshot or
+/// inside a block, where nothing is proved.
+fn unproven(read: &Read) -> impl Iterator<Item = Operation> {
+    read_operations(read)
+        .into_iter()
+        .filter(|operation| *operation != Operation::AbsenceProof)
+}
+
+/// The operations a read of committed state stands for.
+fn read_operations(read: &Read) -> Vec<Operation> {
+    let rows_reader = |raw: bool| {
+        if raw {
+            Operation::QueryRaw
+        } else {
+            Operation::Query
+        }
+    };
+    match read {
+        Read::Get { .. } => vec![Operation::Get],
+        Read::Query(query) => vec![rows_reader(query.raw)],
+        Read::PathQuery { query, proven } => query_operations(query, *proven),
+        Read::Rows { query, raw } => {
+            let mut operations = selection_operations(query);
+            operations.push(rows_reader(*raw));
+            operations
+        }
+        Read::SumBudget { .. } => vec![Operation::SumBudget],
+        Read::GetAux { .. } => vec![Operation::AuxGet],
+        Read::AuxByPrefix { .. } => vec![Operation::AuxByPrefix],
+        Read::HasRaw { .. } => vec![Operation::HasRaw],
+        Read::IsEmptyTree { .. } => vec![Operation::IsEmptyTree],
+        Read::Fetch { fetch, cache, .. } => vec![match (fetch, cache) {
+            (Fetch::Resolved, true) => Operation::Get,
+            (Fetch::Resolved, false) => Operation::GetUncached,
+            (Fetch::Raw, true) => Operation::GetRaw,
+            (Fetch::Raw, false) => Operation::GetRawUncached,
+            (Fetch::RawOptional, true) => Operation::GetRawOptional,
+            (Fetch::RawOptional, false) => Operation::GetRawOptionalUncached,
+        }],
+        Read::Tree { read, .. } => vec![tree_read_operation(*read)],
+        Read::KeysOptional { raw, .. } => vec![
+            if *raw {
+                Operation::RawKeysOptional
+            } else {
+                Operation::KeysOptional
+            },
+            Operation::AbsenceProof,
+        ],
+        Read::ItemValues { or_sums, .. } => vec![if *or_sums {
+            Operation::ItemValuesOrSums
+        } else {
+            Operation::ItemValues
+        }],
+        Read::SumValues { .. } => vec![Operation::SumValues],
+        Read::Many { .. } => vec![Operation::ManyRaw],
+        Read::BigSum {
+            with_count,
+            per_key,
+            ..
+        } => vec![match (with_count, per_key) {
+            (false, false) => Operation::BigSum,
+            (true, false) => Operation::CountAndBigSum,
+            (false, true) => Operation::BigSumPerKey,
+            (true, true) => Operation::CountAndBigSumPerKey,
+        }],
+        Read::Prove(prove) => vec![match prove {
+            Prove::PathQuery(_) => Operation::ProvedPathQuery,
+            Prove::Many(_) => Operation::ProveMany,
+            Prove::BulkPositionRange { .. } => Operation::BulkPositionRangeProof,
+            Prove::TrunkChunk { .. } => Operation::TrunkChunk,
+            Prove::BranchChunk { .. } => Operation::BranchChunk,
+            Prove::Chunk { path, ids } => match ids {
+                ChunkIds::Entries { .. } => Operation::EntriesChunk,
+                ChunkIds::Merk(ids) if path.is_empty() && ids.is_empty() => Operation::RootChunk,
+                ChunkIds::Merk(_) if path.is_empty() => Operation::RootTreeChunk,
+                ChunkIds::Merk(ids) if ids.iter().any(|id| !id.is_empty()) => {
+                    Operation::MerkChunkBelowRoot
+                }
+                ChunkIds::Merk(_) => Operation::MerkChunk,
+            },
+        }],
+    }
+}
+
+fn tree_read_operation(read: TreeRead) -> Operation {
+    match read {
+        TreeRead::MmrValue(_) => Operation::MmrValue,
+        TreeRead::MmrRootHash => Operation::MmrRootHash,
+        TreeRead::MmrLeafCount => Operation::MmrLeafCount,
+        TreeRead::BulkValue(_) => Operation::BulkValue,
+        TreeRead::BulkRange { .. } => Operation::BulkRange,
+        TreeRead::BulkChunk(_) => Operation::BulkChunk,
+        TreeRead::BulkBuffer => Operation::BulkBuffer,
+        TreeRead::BulkCount => Operation::BulkCount,
+        TreeRead::BulkChunkCount => Operation::BulkChunkCount,
+        TreeRead::DenseValue(_) => Operation::DenseValue,
+        TreeRead::DenseRootHash => Operation::DenseRootHash,
+        TreeRead::DenseCount => Operation::DenseCount,
+        TreeRead::CommitmentValue(_) => Operation::CommitmentValue,
+        TreeRead::CommitmentRange { .. } => Operation::CommitmentRange,
+        TreeRead::CommitmentAnchor => Operation::CommitmentAnchor,
+        TreeRead::CommitmentCount => Operation::CommitmentCount,
+        TreeRead::PrivateDocumentValue(_) => Operation::PrivateDocumentValue,
+        TreeRead::PrivateDocumentRange { .. } => Operation::PrivateDocumentRange,
+        TreeRead::PrivateDocumentCount => Operation::PrivateDocumentCount,
+    }
+}
+
+/// The operations a query stands for when it selects rows: what a
+/// [`Read::Rows`] is, whose readers take an offset with any query.
+fn selection_operations(path_query: &PathQuery) -> Vec<Operation> {
+    let mut operations = Vec::new();
+    let query = &path_query.query.query;
+    if has_conditional_subquery(query) {
+        operations.push(Operation::ConditionalSubquery);
+    }
+    if query.has_instance_limit_anywhere() {
+        operations.push(Operation::InstanceLimit);
+    }
+    capped_layers(query, false, false, &mut operations);
+    if query.has_instance_offset_anywhere() {
+        operations.push(Operation::InstanceOffset);
+    }
+    if path_query.query.offset.is_some_and(|offset| offset > 0) {
+        operations.push(Operation::QueryOffset);
+    }
+    operations
+}
+
+/// The operations a [`Read::PathQuery`] stands for.
+///
+/// A query GroveDB's grammar refuses stands for none: no workload produces
+/// one.
+fn query_operations(path_query: &PathQuery, proven: bool) -> Vec<Operation> {
+    let Ok(shape) = path_query.classify() else {
+        return Vec::new();
+    };
+    let mut operations = selection_operations(path_query);
+    operations.push(Operation::PathQueryRun);
+    if proven && matches!(shape, PathQueryShape::CountOffsetPaginated { .. }) {
+        for operation in &mut operations {
+            if *operation == Operation::QueryOffset {
+                *operation = Operation::CountOffsetPage;
+            }
+        }
+    }
+    let axis_operation = |axis: &AxisQuery| match (&axis.traversal, axis.axis) {
+        (AxisTraversal::RankedPage { .. }, IndexAxis::BigSum) => Operation::BigSumAxisRankedPage,
+        (AxisTraversal::Bounded { .. }, IndexAxis::BigSum) => Operation::BigSumAxisBounded,
+        (AxisTraversal::RankOfKey { .. }, IndexAxis::BigSum) => Operation::BigSumAxisRankOfKey,
+        (AxisTraversal::AggregateOverValueRange { .. }, IndexAxis::BigSum) => {
+            Operation::BigSumAxisPopulation
+        }
+        (AxisTraversal::RankedPage { .. }, _) => Operation::AxisRankedPage,
+        (AxisTraversal::Bounded { .. }, _) => Operation::AxisBounded,
+        (AxisTraversal::RankOfKey { .. }, _) => Operation::AxisRankOfKey,
+        (AxisTraversal::AggregateOverValueRange { .. }, _) => Operation::AxisAggregate,
+    };
+    match shape {
+        PathQueryShape::AggregateLeaf { kind, .. } => operations.push(match kind {
+            AggregateKind::Count => Operation::AggregateCount,
+            AggregateKind::Sum => Operation::AggregateSum,
+            AggregateKind::CountAndSum => Operation::AggregateCountAndSum,
+        }),
+        PathQueryShape::AggregateCarrier { kind, .. } => operations.push(match kind {
+            AggregateKind::Count => Operation::AggregateCountPerKey,
+            AggregateKind::Sum => Operation::AggregateSumPerKey,
+            AggregateKind::CountAndSum => Operation::AggregateCountAndSumPerKey,
+        }),
+        PathQueryShape::AxisRead { axis } => {
+            operations.push(axis_operation(axis));
+        }
+        PathQueryShape::BranchedAxisRead { axis, .. } => {
+            operations.push(match axis.axis {
+                IndexAxis::BigSum => Operation::BranchedBigSumAxisRead,
+                _ => Operation::BranchedAxisRead,
+            });
+            operations.push(axis_operation(axis));
+        }
+        PathQueryShape::SumBudget { .. } => operations.push(Operation::SumBudgetWindow),
+        PathQueryShape::KeySelection | PathQueryShape::CountOffsetPaginated { .. } => {}
+    }
+    operations
+}
+
+/// The limits of query nodes that are in force on a layer with subqueries.
+///
+/// `inherited` says that a node above `query` has a limit, and `in_branch`
+/// that `query` is reached through a conditional branch.
+fn capped_layers(query: &Query, inherited: bool, in_branch: bool, operations: &mut Vec<Operation>) {
+    let capped = query.limit.is_some();
+    if query.has_subquery() {
+        if capped {
+            operations.push(Operation::CappedLayer);
+            if in_branch {
+                operations.push(Operation::CappedLayerInBranch);
+            }
+        } else if inherited {
+            operations.push(Operation::InheritedCap);
+        }
+    }
+    let inherited = inherited || capped;
+    if let Some(subquery) = query.default_subquery_branch.subquery.as_deref() {
+        capped_layers(subquery, inherited, in_branch, operations);
+    }
+    let branches = query.conditional_subquery_branches.iter().flatten();
+    for subquery in branches.filter_map(|(_, branch)| branch.subquery.as_deref()) {
+        capped_layers(subquery, inherited, true, operations);
+    }
+}
+
+/// Whether a batch inserts a tree and has another operation at or below
+/// the path of that tree.
+fn fills_a_tree_it_creates(op: &Op) -> bool {
+    let created: Vec<Path> = op
+        .batch_ops()
+        .filter_map(|op| match op {
+            BatchOp::InsertOrReplace { path, key, element }
+            | BatchOp::InsertOnly { path, key, element }
+            | BatchOp::InsertIfNotExists { path, key, element }
+            | BatchOp::Replace { path, key, element }
+                if element.is_any_tree() =>
+            {
+                let mut tree = path.clone();
+                tree.push(key.clone());
+                Some(tree)
+            }
+            _ => None,
+        })
+        .collect();
+    op.batch_ops()
+        .map(BatchOp::path)
+        .any(|path| created.iter().any(|tree| path.starts_with(tree)))
+}
+
+fn has_conditional_subquery(query: &Query) -> bool {
+    let branches = query.conditional_subquery_branches.as_ref();
+    branches.is_some_and(|branches| !branches.is_empty())
+        || branches
+            .into_iter()
+            .flat_map(|branches| branches.values())
+            .chain([&query.default_subquery_branch])
+            .filter_map(|branch| branch.subquery.as_deref())
+            .any(has_conditional_subquery)
+}

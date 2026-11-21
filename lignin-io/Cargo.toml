@@ -1,0 +1,17 @@
+[package]
+name = "lignin-io"
+description = "LigninDB file layer: the Vfs trait, the std backend and the fault-injecting backend"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rustix = { version = "1", features = ["fs"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

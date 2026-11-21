@@ -83,11 +83,9 @@ use grovedb_merk::{
     CryptoHash, Merk,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::{rocksdb_storage::PrefixedRocksDbTransactionContext, StorageBatch};
 use grovedb_version::version::GroveVersion;
 
-pub(super) type PreparedMerks<'db> =
-    HashMap<Vec<Vec<u8>>, Merk<PrefixedRocksDbTransactionContext<'db>>>;
+pub(super) type PreparedMerks<'db, E> = HashMap<Vec<Vec<u8>>, Merk<<E as Engine>::Subtree<'db>>>;
 
 use super::{
     just_in_time_value_update::predict_provided_value_hash_put, key_info::KeyInfo, GroveOp,
@@ -100,7 +98,7 @@ use crate::{
     },
     operations::get::MAX_REFERENCE_HOPS,
     reference_path::{path_from_reference_path_type, ReferencePathType},
-    Element, ElementFlags, Error, GroveDb, Transaction,
+    Element, ElementFlags, Engine, Error, GroveDb, Transaction,
 };
 
 /// Rounds the end-hash settling pass may take. A round re-predicts only the
@@ -123,15 +121,15 @@ pub(super) type LandedItems = HashMap<Vec<Vec<u8>>, Element>;
 /// hold) falling back to the database at the batch's transaction snapshot.
 /// Logical hashes come from the observed element bytes, avoiding a separate
 /// value-hash lookup. Observed Merks remain cached for execution.
-pub(super) struct OverlayChainStore<'db, 'g> {
-    db: &'db GroveDb,
-    batch: &'db StorageBatch,
-    merks: RefCell<PreparedMerks<'db>>,
+pub(super) struct OverlayChainStore<'db, 'tx: 'db, 'g, E: Engine> {
+    db: &'tx GroveDb<E>,
+    batch: &'db E::Batch,
+    merks: RefCell<PreparedMerks<'db, E>>,
     /// Committed (pre-batch) state read so far.
     observed: RefCell<HashMap<Position, Option<Element>>>,
     /// The exact stored bytes of every committed element in `observed`.
     observed_bytes: RefCell<HashMap<Position, Vec<u8>>>,
-    tx: &'db Transaction<'db>,
+    tx: &'db Transaction<'tx, E>,
     version: &'g GroveVersion,
     /// Staged pending state: `Some(element)` = the batch writes this,
     /// `None` = the batch deletes the position. Absent = untouched.
@@ -151,11 +149,11 @@ pub(super) struct OverlayChainStore<'db, 'g> {
     pending_references: RefCell<HashMap<Position, (ReferencePathType, Option<u8>)>>,
 }
 
-impl<'db, 'g> OverlayChainStore<'db, 'g> {
+impl<'db, 'tx: 'db, 'g, E: Engine> OverlayChainStore<'db, 'tx, 'g, E> {
     fn new(
-        db: &'db GroveDb,
-        tx: &'db Transaction<'db>,
-        batch: &'db StorageBatch,
+        db: &'tx GroveDb<E>,
+        tx: &'db Transaction<'tx, E>,
+        batch: &'db E::Batch,
         version: &'g GroveVersion,
     ) -> Self {
         Self {
@@ -312,7 +310,7 @@ impl<'db, 'g> OverlayChainStore<'db, 'g> {
     }
 }
 
-impl<'db, 'g> ChainStore for OverlayChainStore<'db, 'g> {
+impl<'db, 'tx: 'db, 'g, E: Engine> ChainStore for OverlayChainStore<'db, 'tx, 'g, E> {
     fn element_at(&self, path: &[Vec<u8>], key: &[u8]) -> CostResult<Option<Element>, Error> {
         if let Some(staged) = self
             .overlay
@@ -467,8 +465,8 @@ fn derived_node_value_hash(
 /// The expansion state: the user ops (slots emptied when an op is dropped
 /// or converted), the derived ops keyed by position, and the overlay store
 /// everything is planned against.
-struct Expansion<'db, 'g> {
-    store: OverlayChainStore<'db, 'g>,
+struct Expansion<'db, 'tx: 'db, 'g, E: Engine> {
+    store: OverlayChainStore<'db, 'tx, 'g, E>,
     /// User ops; a slot becomes `None` when the op is dropped (an inert
     /// insert, an identical-edge no-op) or converted into a derived op.
     ops: Vec<Option<QualifiedGroveDbOp>>,
@@ -483,13 +481,7 @@ struct Expansion<'db, 'g> {
     validate_insertion_does_not_override: bool,
 }
 
-impl<'db, 'g> Expansion<'db, 'g> {
-    fn op_position(op: &QualifiedGroveDbOp) -> Option<Position> {
-        op.key
-            .as_ref()
-            .map(|key| (op.path.to_path(), key.get_key_clone()))
-    }
-
+impl<'db, 'tx: 'db, 'g, E: Engine> Expansion<'db, 'tx, 'g, E> {
     /// Apply a plan's mutations: stage each into the overlay and merge it
     /// into the batch per the M4 conflict rules. `current_index` is the
     /// position in the canonical sequential order of the op whose plan
@@ -701,7 +693,7 @@ impl<'db, 'g> Expansion<'db, 'g> {
     }
 }
 
-impl<'db, 'g> Expansion<'db, 'g> {
+impl<'db, 'tx: 'db, 'g, E: Engine> Expansion<'db, 'tx, 'g, E> {
     /// Settle every referrer's end hash against the bytes its terminal item
     /// will actually store, and return those bytes for every item that the
     /// update may rewrite (see [`LandedItems`]).
@@ -868,16 +860,16 @@ impl<'db, 'g> Expansion<'db, 'g> {
 /// [`Expansion::settle_end_hashes`]) and returns those predictions for the
 /// apply.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn expand_backward_references_ops<'db, G, SR>(
-    db: &'db GroveDb,
-    tx: &'db Transaction<'db>,
-    batch: &'db StorageBatch,
+pub(super) fn expand_backward_references_ops<'db, 'tx: 'db, G, SR, E: Engine>(
+    db: &'tx GroveDb<E>,
+    tx: &'db Transaction<'tx, E>,
+    batch: &'db E::Batch,
     ops: Vec<QualifiedGroveDbOp>,
     validate_insertion_does_not_override: bool,
     flags_update: &mut G,
     split_removal_bytes: &mut SR,
     grove_version: &GroveVersion,
-) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db>, LandedItems), Error>
+) -> CostResult<(Vec<QualifiedGroveDbOp>, PreparedMerks<'db, E>, LandedItems), Error>
 where
     G: FnMut(
         &StorageCost,
@@ -925,7 +917,7 @@ where
             | GroveOp::InsertWithKnownToNotAlreadyExist { element }
                 if element.is_any_tree() =>
             {
-                Expansion::op_position(op)
+                op_position(op)
             }
             _ => None,
         })
@@ -963,10 +955,10 @@ where
                     | GroveOp::DeleteTreeDontCheckForBackwardsReferences(..)
             )
         })
-        .filter_map(Expansion::op_position)
+        .filter_map(op_position)
         .collect();
     for op in expansion.ops.iter().flatten() {
-        let Some((path, key)) = Expansion::op_position(op) else {
+        let Some((path, key)) = op_position(op) else {
             continue;
         };
         let new_element = match &op.op {
@@ -1064,7 +1056,7 @@ where
     }
 
     for (index, op) in expansion.ops.iter().flatten().enumerate() {
-        if let Some(position) = Expansion::op_position(op) {
+        if let Some(position) = op_position(op) {
             // Consistency checking has already rejected duplicate
             // positions; a stray duplicate would silently lose an op here,
             // so refuse it outright.
@@ -1494,6 +1486,13 @@ where
     Ok((expanded, expansion.store.merks.into_inner(), landed_items)).wrap_with_cost(cost)
 }
 
+/// The position a keyed op writes.
+fn op_position(op: &QualifiedGroveDbOp) -> Option<Position> {
+    op.key
+        .as_ref()
+        .map(|key| (op.path.to_path(), key.get_key_clone()))
+}
+
 /// The qualified position of a reference's first hop, when the path type is
 /// resolvable syntactically. `None` falls back to plan-time resolution
 /// errors.
@@ -1521,7 +1520,7 @@ fn order_reference_ops_targets_first(
         let Some(op) = ops[index].as_ref() else {
             continue;
         };
-        let Some(position) = Expansion::op_position(op) else {
+        let Some(position) = op_position(op) else {
             continue;
         };
         let reference = match &op.op {

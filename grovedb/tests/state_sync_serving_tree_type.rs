@@ -14,7 +14,7 @@
 //! and the request is `pack([global_id])`. The serving path is not
 //! version-gated, so the checks run under `GROVE_V3` as well as the latest
 //! version.
-#![cfg(feature = "minimal")]
+#![cfg(feature = "rocksdb_storage")]
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 

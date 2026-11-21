@@ -805,6 +805,7 @@ mod tests {
         // This simulates byte-level tampering of a leaf value (e.g. a
         // SumItem) that leaves the stored value_hash stale. The
         // verifier's value_hash check is expected to catch it.
+        #[cfg(grovedb_test_engine = "rocksdb")]
         fn tamper_value_no_hash_update(
             db: &crate::GroveDb,
             path: &[&[u8]],
@@ -815,6 +816,7 @@ mod tests {
             let tx = db.start_transaction();
             let storage_ctx = db
                 .db
+                .storage()
                 .get_immediate_storage_context(path.into(), &tx)
                 .unwrap();
 
@@ -889,6 +891,7 @@ mod tests {
         //
         //   This matches what `KV::new_with_layered_value_hash` produces
         //   on a real insert (see `merk/src/tree/kv.rs`).
+        #[cfg(grovedb_test_engine = "rocksdb")]
         fn tamper_parent_element_with_consistent_hashes(
             db: &crate::GroveDb,
             path: &[&[u8]],
@@ -900,6 +903,7 @@ mod tests {
             let tx = db.start_transaction();
             let storage_ctx = db
                 .db
+                .storage()
                 .get_immediate_storage_context(path.into(), &tx)
                 .unwrap();
 
@@ -951,6 +955,7 @@ mod tests {
         // Test 1: cryptographic tampering of an inner SumItem is
         // caught by verify_grovedb.
         // ==============================================================
+        #[cfg(grovedb_test_engine = "rocksdb")]
         #[test]
         fn verify_grovedb_catches_inner_sum_item_value_tamper() {
             let grove_version = GroveVersion::latest();
@@ -1025,6 +1030,7 @@ mod tests {
         // is a sanity check that hashes — not lengths — are what get
         // verified).
         // ==============================================================
+        #[cfg(grovedb_test_engine = "rocksdb")]
         #[test]
         fn verify_grovedb_catches_inner_sum_item_same_length_tamper() {
             let grove_version = GroveVersion::latest();
@@ -1084,6 +1090,7 @@ mod tests {
         // actual aggregate, even though the cryptographic binding is
         // still consistent.
         // ==============================================================
+        #[cfg(grovedb_test_engine = "rocksdb")]
         #[test]
         fn verify_grovedb_catches_parent_aggregate_mismatch_provable_sum_tree() {
             let grove_version = GroveVersion::latest();
@@ -1252,6 +1259,7 @@ mod tests {
             );
         }
 
+        #[cfg(grovedb_test_engine = "rocksdb")]
         #[test]
         fn verify_grovedb_catches_parent_aggregate_mismatch_provable_count_tree() {
             let grove_version = GroveVersion::latest();

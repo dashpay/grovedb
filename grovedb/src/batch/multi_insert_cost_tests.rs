@@ -1,6 +1,6 @@
 //! Multi insert cost tests
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use std::{ops::Add, option::Option::None};
 

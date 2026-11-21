@@ -42,7 +42,7 @@ use crate::{
     rocksdb_storage::storage::{
         Db, RawTx, SubtreePrefix, Tx, AUX_CF_NAME, META_CF_NAME, ROOTS_CF_NAME,
     },
-    StorageContext,
+    StorageContext, COST_MODEL,
 };
 
 /// Storage context with a prefix applied to be used in a subtree to be used in
@@ -60,6 +60,15 @@ impl<'db> PrefixedRocksDbImmediateStorageContext<'db> {
             storage,
             transaction,
             prefix,
+        }
+    }
+
+    /// Get raw iterator over metadata storage, scoped to this context's
+    /// prefix like [`StorageContext::raw_iter`].
+    pub fn raw_iter_meta(&self) -> <Self as StorageContext<'db>>::RawIterator {
+        PrefixedRocksDbRawIterator {
+            prefix: self.prefix,
+            raw_iterator: self.transaction.raw_iterator_cf(self.cf_meta()),
         }
     }
 }
@@ -103,7 +112,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         // put/delete below.
         self.transaction
             .put(make_prefixed_key(&self.prefix, &key), value)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn put_aux<K: AsRef<[u8]>>(
@@ -114,7 +123,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_aux(), make_prefixed_key(&self.prefix, &key), value)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn put_root<K: AsRef<[u8]>>(
@@ -129,7 +138,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
                 make_prefixed_key(&self.prefix, &key),
                 value,
             )
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn put_meta<K: AsRef<[u8]>>(
@@ -140,7 +149,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .put_cf(self.cf_meta(), make_prefixed_key(&self.prefix, &key), value)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn delete<K: AsRef<[u8]>>(
@@ -150,7 +159,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete(make_prefixed_key(&self.prefix, key))
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn delete_aux<K: AsRef<[u8]>>(
@@ -160,7 +169,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn delete_root<K: AsRef<[u8]>>(
@@ -170,7 +179,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn delete_meta<K: AsRef<[u8]>>(
@@ -180,7 +189,7 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
     ) -> CostResult<(), Error> {
         self.transaction
             .delete_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.write_immediate())
     }
 
     fn get<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
@@ -190,28 +199,28 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
         self.transaction
             .get(make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.read_immediate())
     }
 
     fn get_aux<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_aux(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.read_immediate())
     }
 
     fn get_root<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_roots(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.read_immediate())
     }
 
     fn get_meta<K: AsRef<[u8]>>(&self, key: K) -> CostResult<Option<Vec<u8>>, Error> {
         self.transaction
             .get_cf(self.cf_meta(), make_prefixed_key(&self.prefix, key))
             .map_err(RocksDBError)
-            .wrap_with_cost(Default::default())
+            .wrap_with_cost(COST_MODEL.read_immediate())
     }
 
     fn new_batch(&self) -> Self::Batch {
@@ -220,14 +229,14 @@ impl<'db> StorageContext<'db> for PrefixedRocksDbImmediateStorageContext<'db> {
             batch: WriteBatchWithTransaction::<true>::default(),
             cf_aux: self.cf_aux(),
             cf_roots: self.cf_roots(),
-            cost_acc: Default::default(),
+            cost_acc: COST_MODEL.immediate_batch(),
         }
     }
 
     fn commit_batch(&self, batch: Self::Batch) -> CostResult<(), Error> {
         self.transaction
             .rebuild_from_writebatch(&batch.batch)
-            .wrap_with_cost(batch.cost_acc)
+            .wrap_with_cost(batch.cost_acc.finish())
     }
 
     fn raw_iter(&self) -> Self::RawIterator {

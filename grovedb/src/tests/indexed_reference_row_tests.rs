@@ -25,7 +25,7 @@ mod tests {
 
     use crate::{
         operations::indexed_tree::make_axis_secondary_key,
-        tests::{make_test_grovedb, TEST_LEAF},
+        tests::{make_test_grovedb, SuiteBatch, TEST_LEAF},
         Element, GroveDb,
     };
 
@@ -59,6 +59,7 @@ mod tests {
     /// bound to `target_hash`. Passing the honest target hash isolates a
     /// row-CONTENT change; passing a different one isolates a
     /// COMMITMENT change.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn overwrite_row(
         db: &GroveDb,
         secondary_key: &[u8],
@@ -131,6 +132,7 @@ mod tests {
         }
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit");
@@ -139,6 +141,7 @@ mod tests {
 
     /// The sentinel path `verify_grovedb` files an issue under for the
     /// count axis of the PCIT built above.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn sentinel_path(kind: &str) -> Vec<Vec<u8>> {
         vec![
             TEST_LEAF.to_vec(),
@@ -148,6 +151,7 @@ mod tests {
         ]
     }
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_only_issue(db: &GroveDb, kind: &str, grove_version: &GroveVersion) {
         let issues = db.verify_grovedb(None, false, true, grove_version).unwrap();
         let want = sentinel_path(kind);
@@ -198,7 +202,7 @@ mod tests {
         assert!(issues.is_empty(), "healthy tree reported: {issues:?}");
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let path_segments: [&[u8]; 2] = [TEST_LEAF, b"cidx".as_ref()];
         let secondary_root_key = {
             let parent_merk = db
@@ -249,6 +253,7 @@ mod tests {
 
     /// A legacy placeholder row — the representation this change
     /// replaced — must be rejected, not silently accepted.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_legacy_placeholder_row_is_reported_as_non_canonical() {
         let grove_version = GroveVersion::latest();
@@ -260,6 +265,7 @@ mod tests {
 
     /// A plain `Reference` folds to `(1, 0)` in a PCPS secondary, which
     /// would silently zero the band Total. It is not canonical.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_plain_reference_row_is_reported_as_non_canonical() {
         let grove_version = GroveVersion::latest();
@@ -277,6 +283,7 @@ mod tests {
 
     /// A non-sibling reference type would make row size grow with grove
     /// depth and breaks the logical-origin rule.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_non_sibling_reference_row_is_reported_as_non_canonical() {
         let grove_version = GroveVersion::latest();
@@ -303,6 +310,7 @@ mod tests {
     /// The hop budget is part of the binding rule: one hop means the row
     /// binds the IMMEDIATE primary node. A different budget is a
     /// different binding and must not be accepted as canonical.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_multi_hop_row_is_reported_as_non_canonical() {
         let grove_version = GroveVersion::latest();
@@ -325,6 +333,7 @@ mod tests {
     /// Canonical shape, but pointing at a different primary key than the
     /// secondary-key suffix encodes. The suffix and the reference are two
     /// independent encodings of the same fact and must agree.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_row_referencing_the_wrong_primary_key_is_reported() {
         let grove_version = GroveVersion::latest();
@@ -348,6 +357,7 @@ mod tests {
     /// the payload sum is the COUNT, so a wrong one corrupts band totals
     /// while leaving the sort position — and therefore every key-only
     /// check — looking correct.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_row_with_the_wrong_payload_sum_is_reported() {
         let grove_version = GroveVersion::latest();
@@ -372,6 +382,7 @@ mod tests {
     /// stale. This is what a value-only primary update produces if the
     /// mirror fails to refresh, and it is invisible to any check that
     /// compares serialized rows alone.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_row_bound_to_a_stale_target_hash_is_reported() {
         let grove_version = GroveVersion::latest();
@@ -516,6 +527,7 @@ mod tests {
     /// row — both are correct refusals, and asserting on "rejected"
     /// rather than on one message keeps the test from pinning which guard
     /// happens to fire first.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn an_axis_proof_over_a_mistargeted_row_is_rejected() {
         let grove_version = GroveVersion::latest();

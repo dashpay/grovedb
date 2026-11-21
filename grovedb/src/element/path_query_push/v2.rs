@@ -54,12 +54,12 @@ use crate::{
             QueryPathKeyElementTrioResultType,
         },
     },
-    Error, PathQuery, SizedQuery,
+    Engine, Error, PathQuery, SizedQuery,
 };
 
 /// `path_query_push` v2: see the module documentation.
-pub(crate) fn path_query_push_v2(
-    args: PathQueryPushArgs,
+pub(crate) fn path_query_push_v2<E: Engine>(
+    args: PathQueryPushArgs<'_, '_, '_, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     use crate::util::{compat, TxRef};
@@ -82,7 +82,7 @@ pub(crate) fn path_query_push_v2(
         budget,
     } = args;
 
-    let tx = TxRef::new(storage, transaction);
+    let tx = TxRef::for_read(storage, transaction);
 
     let QueryOptions {
         allow_get_raw,

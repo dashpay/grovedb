@@ -5,22 +5,21 @@ use grovedb_merk::proofs::{
     query::{Path, SubqueryBranch},
     Query,
 };
-use grovedb_storage::rocksdb_storage::RocksDbStorage;
 
 use crate::{
     element::{query_budget::QueryBudget, query_options::QueryOptions},
     operations::proof::util::hex_to_ascii,
     query_result_type::{QueryResultElement, QueryResultType},
-    TransactionArg,
+    Engine, TransactionArg,
 };
 
 /// Path query push arguments
-pub struct PathQueryPushArgs<'db, 'ctx, 'a>
+pub struct PathQueryPushArgs<'db, 'ctx, 'a, E: Engine>
 where
     'db: 'ctx,
 {
-    pub storage: &'db RocksDbStorage,
-    pub transaction: TransactionArg<'db, 'ctx>,
+    pub storage: &'db E,
+    pub transaction: TransactionArg<'db, 'ctx, E>,
     pub key: Option<&'a [u8]>,
     pub element: Element,
     pub path: &'a [&'a [u8]],
@@ -91,7 +90,7 @@ fn format_subquery_branch(branch: &SubqueryBranch, indent: usize) -> String {
     output
 }
 
-impl<'db, 'ctx> fmt::Display for PathQueryPushArgs<'db, 'ctx, '_>
+impl<'db, 'ctx, E: Engine> fmt::Display for PathQueryPushArgs<'db, 'ctx, '_, E>
 where
     'db: 'ctx,
 {

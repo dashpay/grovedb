@@ -43,24 +43,24 @@ use grovedb_merk::{
 };
 use grovedb_path::SubtreePath;
 use grovedb_storage::{
-    rocksdb_storage::{PrefixedRocksDbTransactionContext, RocksDbStorage},
-    Storage, StorageBatch,
+    prefix::{build_prefix, secondary_prefix_for},
+    FlatStore,
 };
 use grovedb_version::version::GroveVersion;
 
 use super::super::DeleteOptions;
-use crate::{Element, Error, GroveDb, Transaction};
+use crate::{Element, Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Legacy delete on a transaction — reopens the parent layer labeled
     /// with the deleted child's tree type when deleting a non-empty child
     /// tree. Frozen for `GROVE_V1`..`GROVE_V3`; see the module docs.
-    pub(crate) fn delete_internal_on_transaction_v0<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn delete_internal_on_transaction_v0<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -69,7 +69,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         let mut cost = OperationCost::default();
@@ -166,23 +166,18 @@ impl GroveDb {
             // also clears these same namespaces for the target prefix,
             // but both clears are idempotent so the redundancy is fine.
             if tree_type.is_indexed_primary() {
-                let primary_prefix = RocksDbStorage::build_prefix(subtree_merk_path_ref.clone())
-                    .unwrap_add_cost(&mut cost);
+                let primary_prefix =
+                    build_prefix(subtree_merk_path_ref.clone()).unwrap_add_cost(&mut cost);
                 for axis in [
                     grovedb_element::indexed::IndexAxis::Count,
                     grovedb_element::indexed::IndexAxis::Sum,
                     grovedb_element::indexed::IndexAxis::Avg,
                 ] {
-                    let secondary_prefix =
-                        RocksDbStorage::secondary_prefix_for(&primary_prefix, axis.tag())
-                            .unwrap_add_cost(&mut cost);
-                    let mut secondary_storage = self
+                    let secondary_prefix = secondary_prefix_for(&primary_prefix, axis.tag())
+                        .unwrap_add_cost(&mut cost);
+                    let secondary_storage = self
                         .db
-                        .get_transactional_storage_context_by_subtree_prefix(
-                            secondary_prefix,
-                            Some(batch),
-                            transaction,
-                        )
+                        .subtree_by_prefix(secondary_prefix, Some(batch), transaction)
                         .unwrap_add_cost(&mut cost);
                     cost_return_on_error!(
                         &mut cost,
@@ -202,13 +197,9 @@ impl GroveDb {
                     // Non-Merk data trees: clear the subtree storage directly.
                     // These trees never contain child subtrees so we only need
                     // to clear the one storage context.
-                    let mut storage = self
+                    let storage = self
                         .db
-                        .get_transactional_storage_context(
-                            subtree_merk_path_ref.clone(),
-                            Some(batch),
-                            transaction,
-                        )
+                        .subtree(subtree_merk_path_ref.clone(), Some(batch), transaction)
                         .unwrap_add_cost(&mut cost);
                     cost_return_on_error!(
                         &mut cost,
@@ -244,7 +235,7 @@ impl GroveDb {
                 // before deleting the tree element.
                 let storage = self
                     .db
-                    .get_transactional_storage_context(path.clone(), Some(batch), transaction)
+                    .subtree(path.clone(), Some(batch), transaction)
                     .unwrap_add_cost(&mut cost);
 
                 // The merk reopened here is the PARENT merk (at `path`), but
@@ -291,10 +282,8 @@ impl GroveDb {
                         grove_version,
                     )
                 );
-                let mut merk_cache: HashMap<
-                    SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
-                > = HashMap::default();
+                let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> =
+                    HashMap::default();
                 merk_cache.insert(path.clone(), merk_to_delete_tree_from);
                 cost_return_on_error!(
                     &mut cost,
@@ -320,10 +309,8 @@ impl GroveDb {
                         grove_version,
                     )
                 );
-                let mut merk_cache: HashMap<
-                    SubtreePath<B>,
-                    Merk<PrefixedRocksDbTransactionContext>,
-                > = HashMap::default();
+                let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> =
+                    HashMap::default();
                 merk_cache.insert(path.clone(), subtree_to_delete_from);
                 cost_return_on_error!(
                     &mut cost,
@@ -349,8 +336,7 @@ impl GroveDb {
                     grove_version,
                 )
             );
-            let mut merk_cache: HashMap<SubtreePath<B>, Merk<PrefixedRocksDbTransactionContext>> =
-                HashMap::default();
+            let mut merk_cache: HashMap<SubtreePath<B>, Merk<E::Subtree<'_>>> = HashMap::default();
             merk_cache.insert(path.clone(), subtree_to_delete_from);
             cost_return_on_error!(
                 &mut cost,

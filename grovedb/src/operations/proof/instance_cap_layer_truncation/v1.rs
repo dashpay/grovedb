@@ -20,31 +20,32 @@
 //! the global budget ran out keeps the shape v0 gives it, which the global
 //! limit already bounds.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::{
     proofs::{query::QueryItem, Op},
+    store::NodeStore,
     Merk, ProofWithoutEncodingResult,
 };
-#[cfg(feature = "minimal")]
-use grovedb_storage::StorageContext;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_version::version::GroveVersion;
 
+#[cfg(feature = "engine_generic")]
+use crate::Engine;
 use crate::{Error, GroveDb, PathQuery};
 
-impl GroveDb {
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
     /// `truncate_instance_capped_layer` v1: see the module documentation.
     ///
     /// Kept out of line: the V1 prover recurses once per subtree level, and
     /// this is a self-contained section of it.
-    #[cfg(feature = "minimal")]
     #[inline(never)]
     pub(super) fn truncate_instance_capped_layer_v1<'a, S>(
         &self,
-        subtree: &'a Merk<S>,
+        subtree: &Merk<S>,
         query_items: &[QueryItem],
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
@@ -52,7 +53,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
-        S: StorageContext<'a> + 'a,
+        S: NodeStore<'a> + 'a,
     {
         let mut cost = OperationCost::default();
 
@@ -149,7 +150,9 @@ impl GroveDb {
         *merk_proof = truncated;
         Ok(()).wrap_with_cost(cost)
     }
+}
 
+impl GroveDb {
     /// `instance_capped_layer_limit_mode` v1: a gap-free prefix of the layer
     /// query, which may stop before the limit it is read at.
     pub(super) fn instance_capped_layer_limit_mode_v1() -> ProofLimitMode {

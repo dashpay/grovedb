@@ -24,15 +24,14 @@
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::{error::Error as GrovedbMerkError, Merk};
 use grovedb_path::SubtreePath;
-use grovedb_storage::rocksdb_storage::PrefixedRocksDbTransactionContext;
 use grovedb_version::version::GroveVersion;
 
 use crate::{
-    query_result_type::QueryResultType, Error, GroveDb, PathQuery, QueryItem, SizedQuery,
+    query_result_type::QueryResultType, Engine, Error, GroveDb, PathQuery, QueryItem, SizedQuery,
     Transaction, TransactionArg,
 };
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Shared carrier walk behind the three `query_aggregate_*_per_key`
     /// entry points.
     ///
@@ -66,26 +65,23 @@ impl GroveDb {
     /// `tx` is supplied by the caller rather than opened here so that
     /// `'db` stays a single *named* lifetime. `Merk`'s storage context
     /// carries its lifetime inside a type parameter, and a higher-ranked
-    /// `for<'a> Fn(&Merk<PrefixedRocksDbTransactionContext<'a>>, ..)`
+    /// `for<'a> Fn(&Merk<E::Subtree<'a>>, ..)`
     /// bound cannot be satisfied by a function item — so naming the
     /// lifetime is what lets callers pass the three merk methods
     /// directly instead of wrapping each in a closure.
-    pub(super) fn query_aggregate_carrier_per_key<'db, T, WalkFn>(
+    pub(super) fn query_aggregate_carrier_per_key<'a, 'db: 'a, T, WalkFn>(
         &'db self,
         path_query: &PathQuery,
         inner_range: &QueryItem,
         non_tree_match_error: &'static str,
         merk_walk: WalkFn,
-        tx: &'db Transaction,
-        transaction: TransactionArg,
+        tx: &'a Transaction<'db, E>,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<(Vec<u8>, T)>, Error>
     where
-        WalkFn: Fn(
-            &Merk<PrefixedRocksDbTransactionContext<'db>>,
-            &QueryItem,
-            &GroveVersion,
-        ) -> CostResult<T, GrovedbMerkError>,
+        WalkFn:
+            Fn(&Merk<E::Subtree<'a>>, &QueryItem, &GroveVersion) -> CostResult<T, GrovedbMerkError>,
     {
         let mut cost = OperationCost::default();
 

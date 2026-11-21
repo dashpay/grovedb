@@ -9,23 +9,23 @@ use grovedb_version::version::GroveVersion;
 use crate::Element;
 
 /// A collection of proved key-value pairs.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub type ProvedKeyValues = Vec<ProvedKeyValue>;
 
 /// A collection of proved key-value pairs where values are optional.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub type ProvedKeyOptionalValues = Vec<ProvedKeyOptionalValue>;
 
 /// A collection of proved path-key-value triples.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub type ProvedPathKeyValues = Vec<ProvedPathKeyValue>;
 
 /// A collection of proved path-key-value triples where values are optional.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub type ProvedPathKeyOptionalValues = Vec<ProvedPathKeyOptionalValue>;
 
 /// Proved path-key-value
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProvedPathKeyOptionalValue {
     /// Path
@@ -38,7 +38,7 @@ pub struct ProvedPathKeyOptionalValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyOptionalValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProvedPathKeyValue {{")?;
@@ -63,7 +63,7 @@ impl fmt::Display for ProvedPathKeyOptionalValue {
 }
 
 /// Proved path-key-value
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProvedPathKeyValue {
     /// Path
@@ -76,7 +76,7 @@ pub struct ProvedPathKeyValue {
     pub proof: CryptoHash,
 }
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 impl fmt::Display for ProvedPathKeyValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "ProvedPathKeyValue {{")?;

@@ -43,52 +43,20 @@
 mod v0;
 mod v1;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
+use crate::Engine;
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::Node;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::Op;
 use grovedb_version::version::GroveVersion;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use crate::Transaction;
 use crate::{Element, Error, GroveDb};
 
 impl GroveDb {
-    /// Bind every composite row of a trunk / branch chunk proof to the
-    /// `value_hash` its Merk commits to, if the grove version calls for it.
-    ///
-    /// `ops` are the chunk ops as the merk `trunk_query` / `branch_query`
-    /// emitted them; `target_path` is the path of the Merk they were taken
-    /// from, so a tree row's own data lives one level below under the row's
-    /// key.
-    #[cfg(feature = "minimal")]
-    pub(crate) fn bind_chunk_proof_rows(
-        &self,
-        ops: &mut [Op],
-        target_path: &[&[u8]],
-        tx: &Transaction,
-        grove_version: &GroveVersion,
-    ) -> CostResult<(), Error> {
-        match grove_version
-            .grovedb_versions
-            .operations
-            .proof
-            .chunk_proof_row_binding
-        {
-            0 => Self::bind_chunk_proof_rows_v0(ops),
-            1 => self.bind_chunk_proof_rows_v1(ops, target_path, tx, grove_version),
-            version => Err(Error::VersionError(
-                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
-                    method: "bind_chunk_proof_rows".to_string(),
-                    known_versions: vec![0, 1],
-                    received: version,
-                },
-            ))
-            .wrap_with_cost(OperationCost::default()),
-        }
-    }
-
     /// Decide whether a trunk / branch chunk-proof row binds the element
     /// bytes it carries, per the grove version.
     ///
@@ -109,8 +77,8 @@ impl GroveDb {
             .proof
             .chunk_proof_row_binding
         {
-            0 => Self::check_chunk_proof_row_v0(node, key, value, element),
-            1 => Self::check_chunk_proof_row_v1(node, key, value, element),
+            0 => GroveDb::check_chunk_proof_row_v0(node, key, value, element),
+            1 => GroveDb::check_chunk_proof_row_v1(node, key, value, element),
             version => Err(Error::VersionError(
                 grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
                     method: "check_chunk_proof_row".to_string(),
@@ -118,6 +86,43 @@ impl GroveDb {
                     received: version,
                 },
             )),
+        }
+    }
+}
+
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
+    /// Bind every composite row of a trunk / branch chunk proof to the
+    /// `value_hash` its Merk commits to, if the grove version calls for it.
+    ///
+    /// `ops` are the chunk ops as the merk `trunk_query` / `branch_query`
+    /// emitted them; `target_path` is the path of the Merk they were taken
+    /// from, so a tree row's own data lives one level below under the row's
+    /// key.
+    #[cfg(feature = "engine_generic")]
+    pub(crate) fn bind_chunk_proof_rows<'db>(
+        &'db self,
+        ops: &mut [Op],
+        target_path: &[&[u8]],
+        tx: &Transaction<'db, E>,
+        grove_version: &GroveVersion,
+    ) -> CostResult<(), Error> {
+        match grove_version
+            .grovedb_versions
+            .operations
+            .proof
+            .chunk_proof_row_binding
+        {
+            0 => GroveDb::bind_chunk_proof_rows_v0(ops),
+            1 => self.bind_chunk_proof_rows_v1(ops, target_path, tx, grove_version),
+            version => Err(Error::VersionError(
+                grovedb_version::error::GroveVersionError::UnknownVersionMismatch {
+                    method: "bind_chunk_proof_rows".to_string(),
+                    known_versions: vec![0, 1],
+                    received: version,
+                },
+            ))
+            .wrap_with_cost(OperationCost::default()),
         }
     }
 }

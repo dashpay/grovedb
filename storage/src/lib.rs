@@ -31,12 +31,20 @@
 #![deny(missing_docs)]
 
 pub mod error;
+pub mod flat;
+pub mod prefix;
 #[cfg(feature = "rocksdb_storage")]
 pub mod rocksdb_storage;
 mod storage;
 pub mod worst_case_costs;
 
+/// The cost rules a storage call is charged by where the call is given no
+/// grove version: the derivation of a prefix, and the RocksDB engine.
+pub(crate) const COST_MODEL: grovedb_costs::cost_model::StorageCostModel =
+    grovedb_costs::cost_model::StorageCostModel::V0;
+
 pub use crate::{
     error::Error,
+    flat::FlatStore,
     storage::{Batch, ChildrenSizes, RawIterator, Storage, StorageBatch, StorageContext},
 };

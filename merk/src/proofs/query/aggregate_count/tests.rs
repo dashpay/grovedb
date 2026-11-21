@@ -233,7 +233,7 @@ fn encode_proof(ops: &LinkedList<ProofOp>) -> Vec<u8> {
 /// assert the recovered root hash matches and the recovered count matches
 /// `expected_count`.
 fn round_trip(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl crate::store::NodeStore<'static>>,
     expected_root: [u8; 32],
     inner_range: QueryItem,
     expected_count: u64,
@@ -472,7 +472,7 @@ fn integration_count_forgery_is_rejected() {
 /// returned by `prove_aggregate_count_on_range` agree for the given
 /// range, and that both equal `expected_count`.
 fn no_proof_matches_prover(
-    merk: &Merk<impl grovedb_storage::StorageContext<'static>>,
+    merk: &Merk<impl crate::store::NodeStore<'static>>,
     inner_range: QueryItem,
     expected_count: u64,
     grove_version: &GroveVersion,

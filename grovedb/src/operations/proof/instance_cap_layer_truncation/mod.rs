@@ -71,15 +71,15 @@
 mod v0;
 mod v1;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_merk::proofs::query::ProofLimitMode;
-#[cfg(feature = "minimal")]
-use grovedb_merk::{proofs::query::QueryItem, Merk, ProofWithoutEncodingResult};
-#[cfg(feature = "minimal")]
-use grovedb_storage::StorageContext;
+#[cfg(feature = "engine_generic")]
+use grovedb_merk::{proofs::query::QueryItem, store::NodeStore, Merk, ProofWithoutEncodingResult};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
+#[cfg(feature = "engine_generic")]
+use crate::Engine;
 use crate::{Error, GroveDb, PathQuery};
 
 fn unknown_version(received: u16) -> Error {
@@ -90,7 +90,8 @@ fn unknown_version(received: u16) -> Error {
     })
 }
 
-impl GroveDb {
+#[cfg(feature = "engine_generic")]
+impl<E: Engine> GroveDb<E> {
     /// Prover side. Called once the walk of a layer with subquery branches
     /// under a per-instance cap has run its descents.
     ///
@@ -101,10 +102,9 @@ impl GroveDb {
     /// outlasted the layer or the global budget ended the walk first. From v1
     /// the layer is replaced by one that reveals nothing after the last row
     /// within the budget.
-    #[cfg(feature = "minimal")]
     pub(crate) fn truncate_instance_capped_layer<'a, S>(
         &self,
-        subtree: &'a Merk<S>,
+        subtree: &Merk<S>,
         query_items: &[QueryItem],
         left_to_right: bool,
         merk_proof: &mut ProofWithoutEncodingResult,
@@ -112,7 +112,7 @@ impl GroveDb {
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
-        S: StorageContext<'a> + 'a,
+        S: NodeStore<'a> + 'a,
     {
         match grove_version
             .grovedb_versions
@@ -120,7 +120,7 @@ impl GroveDb {
             .proof
             .instance_cap_layer_truncation
         {
-            0 => Self::truncate_instance_capped_layer_v0(),
+            0 => GroveDb::truncate_instance_capped_layer_v0(),
             1 => self.truncate_instance_capped_layer_v1(
                 subtree,
                 query_items,
@@ -132,7 +132,9 @@ impl GroveDb {
             version => Err(unknown_version(version)).wrap_with_cost(OperationCost::default()),
         }
     }
+}
 
+impl GroveDb {
     /// Verifier side. How the Merk proof of a layer with subquery branches
     /// under a per-instance cap is read: at exactly the layer's limit (v0),
     /// or as a gap-free prefix that may stop before it (v1).

@@ -1,0 +1,221 @@
+lignin-golden-trace 1
+name moves
+seed 0x1
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload moves
+cfb3br4e2f
+  step 0
+  # Write(Insert { path: [], key: [109, 111, 118, 101, 115], element: tree: None })
+  cost seeks=3 loaded=0 added=117 replaced=0 removed=- hashes=3 sinsemilla=0
+  root f9895a0aa72bb3ad91e3801aadb8c90d8fe8fb58ca8f2e5bd12275daf36657a3
+c3f91r5b8c
+cec70r7db3
+cd367r99f4
+c4f15r9c5e
+c0825r5294
+c6674r6ed7
+c1d07r48cd
+cbbb1r2303
+c9f87r3fff
+c7442rbb11
+cfb07r46e8
+ca9ecr080c
+c7c40refd3
+cadaer7459
+c07ear7448
+cf794r78d0
+  step 16
+  # Batch([InsertOnly { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115]], key: [97, 58, 116, 114, 101, 101], element: tree: None }, InsertOnly { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115]], key: [97, 58, 115, 117, 109], element: sum_tree: None 0 }, InsertOnly { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115]], key: [97, 58, 98, 105, 103, 45, 115, 117, 109], ele… (3061 characters)
+  cost seeks=29 loaded=672 added=2280 replaced=325 removed=- hashes=118 sinsemilla=0
+  root 7a5d5a398ebcbc2675900ac8720f199577a894525113825eaa82830da5a86aca
+cb7ddr78d0
+  step 17
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 7a5d5a398ebcbc2675900ac8720f199577a894525113825eaa82830da5a86aca
+cc15ar0f17
+cb2edr494f
+c5d76r2725
+c93c9r3ba0
+c16a5r737e
+c817arf699
+cfc66r5477
+c107ara449
+cfdb3r4868
+c01c5r3c82
+cbc68rfa35
+c7233r06a4
+c7610v2c1ar1486
+  step 30
+  # Write(Append { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115], [97, 58, 109, 109, 114]], entry: Mmr([215, 196, 87, 178, 195, 60, 2, 53, 239, 174, 6, 101, 110, 75, 151, 49, 61, 33, 137, 158, 111, 254, 120, 91]) })
+  cost seeks=18 loaded=1166 added=103 replaced=412 removed=- hashes=24 sinsemilla=0
+  result appended
+  root 0x2b9225cc762ee2242c823c33244c9e8d08817d23a3c3d84416b7ad9f106d2214
+  position 0
+  root 92ae8cd83e55e82b71e6fc18d8d8e8b512e195d369a05d399f65085ef40b29f9
+c4f3avdffer7451
+c201fv3eder0183
+c6c2dvf5afrcb6b
+c16afv63dfrb249
+cfcf7vacd2r62d5
+c8418v1264r2312
+c46favd518re5b2
+cb6a4v07a0r730f
+c6607r5f72
+c8308r3b66
+c2fc9ree50
+cb7ddree50
+cecb6r44b0
+cb7ddr44b0
+c15b1v803er5ae4
+ca614v8638r216e
+c5edfv28d6rc5f3
+cb7ddrc5f3
+cb7ddrc5f3
+c1762vca43
+  step 50
+  # Read(Get { path: [[109, 111, 118, 101, 115], [118, 97, 108, 117, 101, 115]], key: [105, 116, 101, 109] })
+  cost seeks=2 loaded=285 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 0027cd90e078aadc37c33b7e98d93402f858754f4a60450b58e8bb111fe7161ad79d613cb1e95d85cb00
+c8554v02e9
+c9d13va5de
+cb7ddrc5f3
+cf835va5de
+c9e10v7c98
+cedfbvb181
+cb7ddrc5f3
+ccf75va5de
+cf250v8d54
+c27ffvc327
+cb7ddrc5f3
+cc18fv35ddq6383pddc6
+  step 62
+  # Read(Query(Query { path: [[109, 111, 118, 101, 115], [116, 114, 101, 101, 115], [97, 58, 116, 114, 101, 101]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: Some(5), left_to_right: true, raw: true }))
+  cost seeks=7 loaded=1009 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 3
+  row 6d6f766573/7472656573/613a74726565 7230 000a7c5e8cfeca5196962f3f00
+  row 6d6f766573/7472656573/613a74726565 7231 000ba59bc436e7c309385c119f00
+  row 6d6f766573/7472656573/613a74726565 7232 0006a7d9d28ec37c00
+  prove-cost seeks=15 loaded=1610 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 540 003104056d6f766573000802010473756d7300aca1bb8819eb505f36e899bc8d85a04ba79dc30ebaa5a7e874e3d9dcb8ab6b3a01056d6f76657398014c38340fc1695e23789b5cc32d406cad7f25ed05773a169a0d2abd74ee386cba0251a2a3af4e3e49b6f16d4d98e2f7ab7802b2b3bd0a0c731920cf7469960ed41d10040574726565730009020105613a6d6d7200c6f23407a75c2e5da890ad3acfb4c254ef2b856cebfa45183685cdf48e96a23002f7b975e019f2f45da8c0c2ed518a9419aa341d5c925827eff7efd64eed7c10f2101101057472656573fb00fc01688c54553959349197ba197b9a2d59d653cba769f2a6ca89d2465d6c7bbb8e14026632ee575ff42d38ba50af1152c6f8e799b15bb0a86378f28899f343f900f2531001e31dd4101ee3f55a319349b23fc545822b9c7ddbc52a16c3ab3cfca893c0d4890273ea49ab46a9f49127c9056fce6977df638a3e05f49b9d43df71657d550eafbd1001d22df91b4a56a344196c802b8265a5815469c62157193b733052a526b6dbe9a0025e370bd31e35090d1beafb219974e0c0b6f6e7dade6878fe8f0811655cc5c542100406613a7472656500060201027231006ba411dca4c2e0bfd3bea34f03efe8729a8841f2d34244876589dd5771e529431111110106613a747265653803027230000d000a7c5e8cfeca5196962f3f0003027231000e000ba59bc436e7c309385c119f00100302723200090006a7d9d28ec37c00110001
+  verification verified
+cc18fv13acq0879pc18e
+c624ev435bq94a6pdac1
+cb7ddrc5f3
+c454fvc289q0fccpa910
+c0e8fvb134q09e8pafdb
+c7331vdb3fqcb64p4c8e
+cb7ddrc5f3
+c991av4434
+cc18fv4149q8d8ap3cb7
+c1dd9v329d
+cb7ddrc5f3
+c10dcvd2ba
+c8554v1370
+ce93bv0100
+cb7ddrc5f3
+c05c5v1c81
+ca6a1v477e
+c26cdv8cb9
+cb7ddrc5f3
+ca91av7af7
+c528fva8a8q4c4cpbcb8
+cb7ddrc5f3
+c9d13va5de
+cf835va5de
+cb7ddrc5f3
+c9e10v7c98
+cedfbvb181
+cb7ddrc5f3
+cc18fv35ddq6383pddc6
+cc18fv13acq0879pc18e
+cb7ddrc5f3
+c624ev435bq94a6pdac1
+c454fvc289q0fccpa910
+cb7ddrc5f3
+c0e8fvb134q09e8pafdb
+c7331vdb3fqcb64p4c8e
+cb7ddrc5f3
+c991av4434
+cc18fv4149q8d8ap3cb7
+cb7ddrc5f3
+c1dd9v329d
+c10dcvd2ba
+cb7ddrc5f3
+c8554v1370
+ce93bv0100
+cb7ddrc5f3
+c05c5v1c81
+ca6a1v477e
+cb7ddrc5f3
+c26cdv8cb9
+ca91av7af7
+cb7ddrc5f3
+c1762vca43
+c8554v02e9
+c9d13va5de
+cb7ddrc5f3
+cf835va5de
+c9e10v7c98
+cedfbvb181
+cb7ddrc5f3
+ccf75va5de
+cf250v8d54
+c27ffvc327
+cb7ddrc5f3
+cc18fv35ddq6383pddc6
+cc18fv13acq0879pc18e
+c624ev435bq94a6pdac1
+cb7ddrc5f3
+c454fvc289q0fccpa910
+c0e8fvb134q09e8pafdb
+c7331vdb3fqcb64p4c8e
+cb7ddrc5f3
+c991av4434
+cc18fv4149q8d8ap3cb7
+c1dd9v329d
+cb7ddrc5f3
+c10dcvd2ba
+c8554v1370
+ce93bv0100
+cb7ddrc5f3
+c05c5v1c81
+ca6a1v477e
+c26cdv8cb9
+cb7ddrc5f3
+ca91av7af7
+c528fva8a8q4c4cpbcb8
+cb7ddrc5f3
+c9d13va5de
+cf835va5de
+cb7ddrc5f3
+c9e10v7c98
+cedfbvb181
+cb7ddrc5f3
+cc18fv35ddq6383pddc6
+cc18fv13acq0879pc18e
+cb7ddrc5f3
+c624ev435bq94a6pdac1
+c454fvc289q0fccpa910
+cb7ddrc5f3
+c0e8fvb134q09e8pafdb
+c7331vdb3fqcb64p4c8e
+cb7ddrc5f3
+c991av4434
+cc18fv4149q8d8ap3cb7
+cb7ddrc5f3
+c1dd9v329d
+c10dcvd2ba
+cb7ddrc5f3
+c8554v1370
+ce93bv0100
+cb7ddrc5f3
+c05c5v1c81
+ca6a1v477e
+cb7ddrc5f3
+c26cdv8cb9
+ca91av7af7
+stream 179 9b98c5bfc0a58c798b0dcc4a7a3f8c275135dc82a5bcfd762f5273dec9767150
+tally failed=0 unproved=0 unverified=0
+end 179 1a97936963e22212967c92f3588644afd8047107aa35cae6105971741aca7079

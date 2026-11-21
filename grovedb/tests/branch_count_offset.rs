@@ -1,4 +1,4 @@
-#![cfg(feature = "minimal")]
+#![cfg(feature = "rocksdb_storage")]
 
 use grovedb_version::version::GroveVersion;
 

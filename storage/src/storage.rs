@@ -36,12 +36,13 @@ use std::{
 
 use grovedb_costs::{
     storage_cost::key_value_cost::KeyValueStorageCost, ChildrenSizesWithIsSumTree, CostContext,
-    CostResult, OperationCost,
+    CostResult,
 };
 use grovedb_path::SubtreePath;
 use grovedb_visualize::visualize_to_vec;
 
-use crate::{worst_case_costs::WorstKeyLength, Error};
+use crate::Error;
+/// The 32-byte identifier of a subtree's storage namespace.
 pub type SubtreePrefix = [u8; 32];
 
 /// Top-level storage abstraction.
@@ -135,9 +136,6 @@ pub trait Storage<'db> {
 
     /// Creates a database checkpoint in a specified path
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error>;
-
-    /// Return worst case cost for storage context creation.
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost;
 }
 
 pub use grovedb_costs::ChildrenSizes;

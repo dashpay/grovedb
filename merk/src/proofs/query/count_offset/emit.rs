@@ -347,6 +347,7 @@ where
             )))
             .wrap_with_cost(cost);
         }
+        cost_return_on_error!(&mut cost, walker.load_value());
         let value_bytes = walker.tree().value_as_slice();
         match Element::deserialize(value_bytes, grove_version) {
             Ok(elem) => {

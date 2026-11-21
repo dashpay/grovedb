@@ -31,14 +31,15 @@ mod tests {
     use crate::IndexedAxisEntrySliceExt;
 
     use crate::{
-        tests::{common::EMPTY_PATH, make_test_grovedb, TempGroveDb, TEST_LEAF},
-        Element, Error,
+        tests::{common::EMPTY_PATH, make_test_grovedb, SuiteBatch, TempGroveDb, TEST_LEAF},
+        Element, Engine, Error,
     };
 
     // -----------------------------------------------------------------
     // Helpers
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn secondary_key(count: u64, item_key: &[u8]) -> Vec<u8> {
         let mut k = Vec::with_capacity(8 + item_key.len());
         k.extend_from_slice(&count.to_be_bytes());
@@ -89,7 +90,7 @@ mod tests {
         gv: &GroveVersion,
     ) -> Option<Vec<u8>> {
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let owned: Vec<&[u8]> = pcit_path.to_vec();
         let path: SubtreePath<&[u8]> = owned.as_slice().into();
         let (parent_path, pcit_key) = path.derive_parent().expect("non-root PCIT");
@@ -117,6 +118,7 @@ mod tests {
     /// from a stale root, find nothing, and leave the row behind. What reconcile
     /// is specified to fix is a *coherent* secondary carrying the wrong content,
     /// which is what this produces.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn drift_secondary(
         db: &TempGroveDb,
         pcit_path: &[&[u8]],
@@ -218,6 +220,7 @@ mod tests {
             .expect("propagate rebind");
 
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit secondary drift");
@@ -281,6 +284,7 @@ mod tests {
     /// rather than whatever shape the incremental inserts happened to leave
     /// behind. `reconcile_is_shape_deterministic_regardless_of_how_the_index_drifted`
     /// pins that canonical shape directly.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_deletes_a_secondary_orphan() {
         let gv = GroveVersion::latest();
@@ -349,6 +353,7 @@ mod tests {
 
     /// A primary entry with no secondary row (`__cidx_primary_orphan__`) must be
     /// re-indexed by reconcile at the count the primary actually records.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_reinserts_a_missing_secondary_row() {
         let gv = GroveVersion::latest();
@@ -407,6 +412,7 @@ mod tests {
     /// for `a` is at the wrong count, so reconcile must delete `(7, "a")` *and*
     /// insert `(1, "a")`. Pins that the deletion set and the insertion set are
     /// computed independently rather than one being derived from the other.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_moves_a_row_that_sits_at_the_wrong_count() {
         let gv = GroveVersion::latest();
@@ -470,6 +476,7 @@ mod tests {
     /// and end up with identical bytes; a hashed iteration order in step 6 would
     /// break it. Three databases with the same primary but three unrelated kinds
     /// of drift must reconcile to one root hash.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_is_shape_deterministic_regardless_of_how_the_index_drifted() {
         let gv = GroveVersion::latest();
@@ -527,6 +534,7 @@ mod tests {
     /// every entry contributes 1. A PCIT whose children are `ProvableCountTree`
     /// subtrees carries their descendant counts, and the repaired secondary must
     /// rank by those.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_uses_the_primary_aggregate_count_for_each_row() {
         let gv = GroveVersion::latest();
@@ -673,6 +681,7 @@ mod tests {
     /// door refuses such a key, so reaching it means the primary was written by
     /// something that bypassed the check — reconcile must fail closed rather
     /// than synthesize an oversize secondary key.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_refuses_a_primary_key_over_the_cidx_ceiling() {
         let gv = GroveVersion::latest();
@@ -724,6 +733,7 @@ mod tests {
                     .expect("raw primary insert");
             }
             db.db
+                .storage()
                 .commit_multi_context_batch(batch, Some(&tx))
                 .unwrap()
                 .expect("commit");
@@ -794,6 +804,7 @@ mod tests {
     // Malformed secondary rows must surface, not be silently dropped
     // -----------------------------------------------------------------
 
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn assert_short_key_corruption(err: Error, context: &str) {
         match err {
             Error::CorruptedData(message) => assert!(
@@ -816,6 +827,7 @@ mod tests {
     /// `offset > 0` skips by counted descent and decodes only *returned* rows,
     /// so its skip phase deliberately does not error — that contract is
     /// asserted here too.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_short_secondary_key_is_reported_by_every_shape_that_decodes_it() {
         let gv = GroveVersion::latest();
@@ -1079,7 +1091,7 @@ mod tests {
         use grovedb_merk::element::reconstruct::ElementReconstructExtensions;
 
         let tx = db.start_transaction();
-        let batch = StorageBatch::new();
+        let batch = SuiteBatch::default();
         let owned: Vec<&[u8]> = indexed_path.to_vec();
         let path: SubtreePath<&[u8]> = owned.as_slice().into();
         let (parent_path, indexed_key) = path.derive_parent().expect("non-root indexed tree");
@@ -1210,10 +1222,10 @@ mod tests {
             .unwrap()
             .expect("propagate rebind");
         db.db
-            .commit_multi_context_batch(batch, Some(&tx))
+            .apply_batch(batch, &tx)
             .unwrap()
             .expect("commit axis drift");
-        tx.commit().expect("tx commit");
+        db.commit_transaction(tx).unwrap().expect("tx commit");
     }
 
     /// Rebind a PCIT's parent element so its `secondary_root_key` names a
@@ -1221,6 +1233,7 @@ mod tests {
     /// and hash otherwise intact. Produces the state a counted read must
     /// treat as corruption: the element is readable and valid, but the
     /// root it names resolves to nothing.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn rebind_count_secondary_root_key_to(
         db: &TempGroveDb,
         pcit_path: &[&[u8]],
@@ -1297,6 +1310,7 @@ mod tests {
             .unwrap()
             .expect("propagate rebind");
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(&tx))
             .unwrap()
             .expect("commit rebind");
@@ -1310,6 +1324,7 @@ mod tests {
     /// an empty or truncated page. The offset-0 iterator path, which
     /// never consults the root key, still reads the physical rows: the
     /// contrast is the two-views posture the design doc records.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_dangling_secondary_root_key_fails_loud_through_the_counted_path() {
         let gv = GroveVersion::latest();
@@ -1349,6 +1364,7 @@ mod tests {
     /// PSIT: an orphan row in the sum secondary is removed and the root
     /// returns to the pristine twin's — the repair covers the sum axis, not
     /// just count.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_repairs_a_psit_orphan_row() {
         let gv = GroveVersion::latest();
@@ -1391,6 +1407,7 @@ mod tests {
     /// damage is an IN-PLACE overwrite (no delete), so the tree shape is
     /// untouched and pristine-equality is the correct expectation per the
     /// shape caveat on the repair API.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_rewrites_a_payload_damaged_avg_row() {
         let gv = GroveVersion::latest();
@@ -1434,6 +1451,7 @@ mod tests {
     /// deleted row on the avg axis) must both reconcile back to the pristine
     /// twin's root — canonical content repair across axes, with damage whose
     /// undo restores the previous shape.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_pcpsit_is_canonical_regardless_of_which_axis_drifted() {
         let gv = GroveVersion::latest();
@@ -1530,8 +1548,7 @@ mod tests {
         axis: IndexAxis,
         gv: &GroveVersion,
     ) -> Vec<(Vec<u8>, Vec<u8>)> {
-        use grovedb_merk::{merk::KVIterator, proofs::Query};
-        use grovedb_storage::StorageContext;
+        use grovedb_merk::{merk::KVIterator, proofs::Query, store::NodeStore};
 
         let tx = db.start_transaction();
         let path: SubtreePath<&[u8]> = indexed_path.into();
@@ -1541,7 +1558,7 @@ mod tests {
             .expect("open the secondary's storage");
         let mut all = Query::new();
         all.insert_all();
-        let mut rows = KVIterator::new(secondary.storage.raw_iter(), &all).unwrap();
+        let mut rows = KVIterator::new(NodeStore::cursor(&secondary.storage), &all).unwrap();
         let mut stored = Vec::new();
         while let Some(row) = rows.next_kv().unwrap() {
             stored.push(row);
@@ -1563,6 +1580,7 @@ mod tests {
 
     /// Writes a record straight into an axis's secondary storage, inside
     /// `tx`, where no Merk links it.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     fn store_unlinked_row(
         db: &TempGroveDb,
         indexed_path: &[&[u8]],
@@ -1588,6 +1606,7 @@ mod tests {
                 .expect("store the record");
         }
         db.db
+            .storage()
             .commit_multi_context_batch(batch, Some(tx))
             .unwrap()
             .expect("commit the record");
@@ -1798,6 +1817,7 @@ mod tests {
     /// no tree: a read by key finds it and its bytes match. The repair must
     /// treat it as the missing row it is to the tree, or the ranking reads
     /// return a row the root hash and the proofs do not have.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn reconcile_links_a_row_that_is_only_in_storage() {
         let gv = GroveVersion::latest();
@@ -1900,6 +1920,7 @@ mod tests {
     /// A stray row no Merk links is removed from storage directly, and
     /// billed by the record the repair read, which a transaction that wrote
     /// the record itself holds and the committed state does not.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_stray_row_is_billed_by_what_the_transaction_holds() {
         use integer_encoding::VarInt;
@@ -1951,6 +1972,7 @@ mod tests {
     /// the tree a conversion starts from, and must be no part of what it
     /// builds: two databases with the same trees convert to the same root,
     /// whatever else their storage holds.
+    #[cfg(grovedb_test_engine = "rocksdb")]
     #[test]
     fn a_record_no_tree_links_does_not_change_the_converted_root() {
         let gv = GroveVersion::latest();

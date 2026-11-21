@@ -3,7 +3,7 @@
 //! and its bytes sectioned to its owner as a deletion sections them, and the
 //! new element is inserted and charged to the writer.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod tests {
     use std::collections::BTreeMap;
 

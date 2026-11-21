@@ -560,20 +560,13 @@ fn test_private_document_store_delete() {
     // The store's non-Merk data namespace (buffer entries, chunk blobs, MMR
     // nodes) must be reclaimed by the delete — not just the parent element.
     {
-        use grovedb_storage::{RawIterator, Storage, StorageContext};
-        let tx = db.start_transaction();
-        let ctx = db
-            .db
-            .get_transactional_storage_context(
-                grovedb_path::SubtreePath::from([b"root".as_slice(), b"docs".as_slice()].as_ref()),
-                None,
-                &tx,
-            )
-            .unwrap();
-        let mut iter = ctx.raw_iter();
-        iter.seek_to_first().unwrap();
-        assert!(
-            !iter.valid().unwrap(),
+        let prefix = grovedb_storage::prefix::build_prefix(grovedb_path::SubtreePath::from(
+            [b"root".as_slice(), b"docs".as_slice()].as_ref(),
+        ))
+        .unwrap();
+        assert_eq!(
+            crate::tests::data_keyspace_len(&db, prefix, None),
+            0,
             "deleted store left orphaned rows in its data namespace"
         );
     }

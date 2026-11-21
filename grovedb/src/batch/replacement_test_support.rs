@@ -3,7 +3,7 @@
 //! (merging, or replacing on an owner change) and removal callback, and the
 //! element at `[tree]/key1`.
 
-#![cfg(feature = "minimal")]
+#![cfg(feature = "engine_generic")]
 
 use grovedb_costs::{
     storage_cost::{removal::StorageRemovedBytes, transition::ElementFlagsUpdate, StorageCost},

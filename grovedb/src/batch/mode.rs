@@ -11,7 +11,7 @@ use grovedb_merk::estimated_costs::{
 #[cfg(feature = "estimated_costs")]
 use crate::batch::KeyInfoPath;
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 /// Batch Running Mode
 #[derive(Clone, PartialEq, Eq)]
 #[allow(dead_code)] // Used by TreeCache trait implementations

@@ -2,11 +2,11 @@
 // grovedb_merk::proofs::query::*
 pub use grovedb_query::*;
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod limit_cut_bound_tests;
 #[cfg(test)]
 mod merk_integration_tests;
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod wide_tree_aggregate_tests;
 
 #[cfg(any(feature = "minimal", feature = "verify"))]
@@ -446,6 +446,7 @@ where
         let (proof_query_items, proof_params) =
             ProofItems::new_with_query_items(query, left_to_right);
         let proof_status = ProofStatus::new_with_limit(limit);
+        self.values_on_demand();
         self.create_proof_internal(
             &proof_query_items,
             &proof_params,
@@ -665,6 +666,7 @@ where
         };
 
         let proof_op = if found_item {
+            cost_return_on_error!(&mut cost, self.load_value());
             // For query proofs, we need to include the actual key/value data.
             // The node type depends on the element type stored in the value:
             // - Items (simple hash): use KV or KVCount (verifier computes hash -

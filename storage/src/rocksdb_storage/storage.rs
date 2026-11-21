@@ -36,12 +36,11 @@ use std::{
 
 use error::Error;
 use grovedb_costs::{
-    cost_return_on_error, cost_return_on_error_no_add,
-    storage_cost::removal::StorageRemovedBytes::BasicStorageRemoval, CostContext, CostResult,
-    CostsExt, OperationCost,
+    cost_model::{BatchCharge, Keyspace},
+    storage_cost::key_value_cost::KeyValueStorageCost,
+    CostContext, CostResult, CostsExt, OperationCost,
 };
 use grovedb_path::SubtreePath;
-use integer_encoding::VarInt;
 use lazy_static::lazy_static;
 #[cfg(feature = "unsafe-dump-load")]
 use rocksdb::IngestExternalFileOptions;
@@ -55,21 +54,12 @@ use super::{PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbTransactionCo
 use crate::{
     error,
     error::Error::{CostError, RocksDBError},
+    flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord, PendingPrefixDrops},
     storage::AbstractBatchOperation,
-    worst_case_costs::WorstKeyLength,
-    Storage, StorageBatch,
+    Storage, StorageBatch, COST_MODEL,
 };
 
-const BLAKE_BLOCK_LEN: usize = 64;
 pub type SubtreePrefix = [u8; 32];
-
-fn blake_block_count(len: usize) -> usize {
-    if len == 0 {
-        1
-    } else {
-        1 + (len - 1) / BLAKE_BLOCK_LEN
-    }
-}
 
 /// Name of column family used to store auxiliary data
 pub(crate) const AUX_CF_NAME: &str = "aux";
@@ -403,92 +393,24 @@ impl RocksDbStorage {
         Ok(RocksDbStorage { db })
     }
 
-    fn build_prefix_body<B>(path: SubtreePath<B>) -> (Vec<u8>, usize)
-    where
-        B: AsRef<[u8]>,
-    {
-        let segments_iter = path.into_reverse_iter();
-        let mut segments_count: usize = 0;
-        let mut res = Vec::new();
-        let mut lengths = Vec::new();
-
-        for s in segments_iter {
-            segments_count += 1;
-            res.extend_from_slice(s);
-            lengths.push(u8::try_from(s.len()).expect(
-                "path segment length must not exceed 255 bytes; \
-                 this is enforced at insert time via validate_key_length",
-            ));
-        }
-
-        // Note: this uses native-endian encoding. Changing to big-endian would
-        // be a breaking change since the output is hashed with Blake3 to produce
-        // subtree prefixes stored in RocksDB — existing databases would become
-        // unreadable. In practice GroveDB only targets little-endian platforms
-        // (x86_64, aarch64), so this is not a portability concern.
-        res.extend(segments_count.to_ne_bytes());
-        res.extend(lengths);
-        (res, segments_count)
-    }
-
     /// A helper method to build a prefix to rocksdb keys or identify a subtree
-    /// in `subtrees` map by tree path;
+    /// in `subtrees` map by tree path. It is [`crate::prefix::build_prefix`],
+    /// which names no engine.
     pub fn build_prefix<B>(path: SubtreePath<B>) -> CostContext<SubtreePrefix>
     where
         B: AsRef<[u8]>,
     {
-        let (body, segments_count) = Self::build_prefix_body(path);
-        if segments_count == 0 {
-            SubtreePrefix::default().wrap_with_cost(OperationCost::default())
-        } else {
-            let blocks_count = blake_block_count(body.len());
-            SubtreePrefix::from(blake3::hash(&body))
-                .wrap_with_cost(OperationCost::with_hash_node_calls(blocks_count as u32))
-        }
+        crate::prefix::build_prefix(path)
     }
 
-    /// Derive the per-axis secondary `SubtreePrefix` for any indexed-tree
-    /// element (`ProvableSumIndexedTree`, `ProvableCountIndexedTree`, or
-    /// `ProvableCountProvableSumIndexedTree`) whose primary prefix is
-    /// given and whose axis is identified by `axis_tag`.
-    ///
-    /// Per S2-B (generalized): `secondary_prefix = Blake3(primary_prefix ‖
-    /// axis_tag)`. The axis tag byte is the `IndexAxis` value carried by
-    /// `grovedb-element::indexed::IndexAxis` (`0 = count`, `1 = sum`,
-    /// `2 = avg`). PCPSIT carries 1..=3 secondaries — one per axis — and
-    /// each lives at a distinct prefix derived via this function.
-    ///
-    /// Three useful properties hold:
-    /// - **Primary parity with `Tree`.** The primary prefix is unchanged
-    ///   from `build_prefix` for the same path, so an indexed-tree's
-    ///   primary Merk lives where a `Tree` would.
-    /// - **Collision-free secondary.** The secondary's Blake3 input is a
-    ///   33-byte block (prefix ‖ axis_tag) that no path-derived prefix can
-    ///   produce — `build_prefix_body` always ends with per-segment length
-    ///   bytes, never a single tag byte after a 32-byte block.
-    /// - **Per-axis isolation.** Different `axis_tag` values map the same
-    ///   primary to different storage namespaces, so a PCPSIT's count /
-    ///   sum / avg secondaries do not collide with each other.
-    ///
-    /// Cost: one Blake3 call (33 bytes fits in a single 64-byte block).
+    /// Derive the per-axis secondary `SubtreePrefix` of an indexed-tree
+    /// element from its primary prefix and its axis tag. It is
+    /// [`crate::prefix::secondary_prefix_for`], which names no engine.
     pub fn secondary_prefix_for(
         primary_prefix: &SubtreePrefix,
         axis_tag: u8,
     ) -> CostContext<SubtreePrefix> {
-        // 33 bytes (prefix + tag) fits within one Blake3 block.
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(primary_prefix);
-        hasher.update(&[axis_tag]);
-        SubtreePrefix::from(hasher.finalize())
-            .wrap_with_cost(OperationCost::with_hash_node_calls(1))
-    }
-
-    fn worst_case_body_size<L: WorstKeyLength>(path: &[L]) -> usize {
-        // body = segment_bytes + segments_count.to_ne_bytes() + lengths
-        // segments_count.to_ne_bytes() contributes size_of::<usize>() bytes
-        path.iter().map(|a| a.max_length() as usize).sum::<usize>()
-            + std::mem::size_of::<usize>()
-            + path.len()
+        crate::prefix::secondary_prefix_for(primary_prefix, axis_tag)
     }
 
     /// Returns the write batch, with costs and pending costs
@@ -543,11 +465,22 @@ impl RocksDbStorage {
         db_batch: &mut WriteBatchWithTransaction<true>,
         storage_batch: StorageBatch,
     ) -> CostResult<OperationCost, Error> {
-        let mut cost = OperationCost::default();
-        // Until batch is committed these costs are pending (should not be added in case
-        // of early termination).
-        let mut pending_costs = OperationCost::default();
+        let mut charge = COST_MODEL.batch();
+        match self.fill_write_batch(db_batch, storage_batch, &mut charge) {
+            Ok(()) => {
+                let (at_once, on_success) = charge.into_parts();
+                Ok(on_success).wrap_with_cost(at_once)
+            }
+            Err(error) => Err(error).wrap_with_cost(charge.finish(false)),
+        }
+    }
 
+    fn fill_write_batch(
+        &self,
+        db_batch: &mut WriteBatchWithTransaction<true>,
+        storage_batch: StorageBatch,
+        charge: &mut BatchCharge,
+    ) -> Result<(), Error> {
         for op in storage_batch.into_iter() {
             match op {
                 AbstractBatchOperation::Put {
@@ -557,24 +490,15 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put(&key, &value);
-                    // A fully prepaid put (`KeyValueStorageCost::prepaid`)
-                    // was billed by its owner in advance, the write
-                    // included: no seek here. Only the append-only family's
-                    // GROVE_V4 accounting issues such puts.
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                children_sizes,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(
+                            Keyspace::Data,
+                            key.len(),
+                            value.len(),
+                            children_sizes,
+                            cost_info,
+                        )
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutAux {
                     key,
@@ -582,20 +506,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_aux(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                None,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(Keyspace::Aux, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutRoot {
                     key,
@@ -603,23 +516,9 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_roots(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    // We only add costs for put root if they are set, otherwise it is free
-                    if cost_info.is_some() {
-                        cost_return_on_error_no_add!(
-                            cost,
-                            pending_costs
-                                .add_key_value_storage_costs(
-                                    key.len() as u32,
-                                    value.len() as u32,
-                                    None,
-                                    cost_info
-                                )
-                                .map_err(CostError)
-                        );
-                    }
+                    charge
+                        .put(Keyspace::Roots, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::PutMeta {
                     key,
@@ -627,141 +526,35 @@ impl RocksDbStorage {
                     cost_info,
                 } => {
                     db_batch.put_cf(cf_meta(&self.db), &key, &value);
-                    if !cost_info.as_ref().is_some_and(|c| c.is_prepaid()) {
-                        cost.seek_count += 1;
-                    }
-                    cost_return_on_error_no_add!(
-                        cost,
-                        pending_costs
-                            .add_key_value_storage_costs(
-                                key.len() as u32,
-                                value.len() as u32,
-                                None,
-                                cost_info
-                            )
-                            .map_err(CostError)
-                    );
+                    charge
+                        .put(Keyspace::Meta, key.len(), value.len(), None, cost_info)
+                        .map_err(CostError)?;
                 }
                 AbstractBatchOperation::Delete { key, cost_info } => {
                     db_batch.delete(&key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        // lets get the values
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db.get(&key).map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || self.db.get(&key))?;
                 }
                 AbstractBatchOperation::DeleteAux { key, cost_info } => {
                     db_batch.delete_cf(cf_aux(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db.get_cf(cf_aux(&self.db), &key).map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_aux(&self.db), &key)
+                    })?;
                 }
                 AbstractBatchOperation::DeleteRoot { key, cost_info } => {
                     db_batch.delete_cf(cf_roots(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db
-                                .get_cf(cf_roots(&self.db), &key)
-                                .map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_roots(&self.db), &key)
+                    })?;
                 }
                 AbstractBatchOperation::DeleteMeta { key, cost_info } => {
                     db_batch.delete_cf(cf_meta(&self.db), &key);
-
-                    // Non-atomic freed-size fallback: reads committed state.
-                    // See method-level doc comment for rationale.
-                    if let Some(key_value_removed_bytes) = cost_info {
-                        cost.seek_count += 1;
-                        pending_costs.storage_cost.removed_bytes +=
-                            key_value_removed_bytes.combined_removed_bytes();
-                    } else {
-                        cost.seek_count += 2;
-                        let value_len = cost_return_on_error_no_add!(
-                            cost,
-                            self.db
-                                .get_cf(cf_meta(&self.db), &key)
-                                .map_err(RocksDBError)
-                        )
-                        .map(|x| x.len() as u32)
-                        .unwrap_or(0);
-                        cost.storage_loaded_bytes += value_len as u64;
-
-                        let key_len = key.len() as u32;
-                        pending_costs.storage_cost.removed_bytes += BasicStorageRemoval(
-                            key_len
-                                + value_len
-                                + key_len.required_space() as u32
-                                + value_len.required_space() as u32,
-                        );
-                    }
+                    charge_delete(charge, &key, cost_info, || {
+                        self.db.get_cf(cf_meta(&self.db), &key)
+                    })?;
                 }
             }
         }
-        Ok(pending_costs).wrap_with_cost(cost)
+        Ok(())
     }
 
     /// Commits a write batch
@@ -771,16 +564,20 @@ impl RocksDbStorage {
         pending_costs: OperationCost,
         transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
     ) -> CostResult<(), Error> {
-        let result = match transaction {
+        let result = self.write_db_batch(db_batch, transaction);
+        let written = result.is_ok();
+        result.wrap_with_cost(COST_MODEL.batch_written(pending_costs, written))
+    }
+
+    fn write_db_batch(
+        &self,
+        db_batch: WriteBatchWithTransaction<true>,
+        transaction: Option<&<RocksDbStorage as Storage>::Transaction>,
+    ) -> Result<(), Error> {
+        match transaction {
             None => self.db.write(db_batch).map_err(RocksDBError),
             // Refused with a typed error on a snapshot read transaction.
             Some(transaction) => transaction.rebuild_from_writebatch(&db_batch),
-        };
-
-        if result.is_ok() {
-            result.wrap_with_cost(pending_costs)
-        } else {
-            result.wrap_with_cost(OperationCost::default())
         }
     }
 
@@ -1005,126 +802,20 @@ impl RocksDbStorage {
     }
 }
 
-/// The reserved 32-byte namespace under which pending-prefix-drop redo
-/// records live in the meta column family. Records are keyed
-/// `namespace ‖ primary_prefix`.
-///
-/// The value is `Blake3("grovedb_pending_prefix_drops_v0")`. It cannot
-/// collide with any path-derived prefix (`build_prefix`), axis-derived
-/// secondary prefix (`secondary_prefix_for`), or the root prefix
-/// (`[0u8; 32]`) without a Blake3 preimage/collision, and the meta column
-/// family carries no production data outside this namespace.
-pub fn pending_prefix_drops_namespace() -> &'static SubtreePrefix {
-    static NAMESPACE: std::sync::OnceLock<SubtreePrefix> = std::sync::OnceLock::new();
-    NAMESPACE.get_or_init(|| *blake3::hash(b"grovedb_pending_prefix_drops_v0").as_bytes())
-}
-
-/// A durable redo record for one flat-subtree drop: the storage prefixes
-/// that became unreachable when the subtree's element was deleted from its
-/// parent Merk, plus the subtree's full path for the drain-time liveness
-/// guard.
-///
-/// The record is written in the same atomic commit as the parent-Merk
-/// delete and erased once every doomed prefix has been range-tombstoned,
-/// making reclamation crash-safe and idempotent.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingPrefixDropRecord {
-    /// The dropped subtree's own path-derived prefix; also the record's key
-    /// suffix within the namespace.
-    pub primary_prefix: SubtreePrefix,
-    /// Full path of the dropped subtree (parent path segments plus its key
-    /// as the last segment). Used by the drain to verify the path does not
-    /// resolve to a live element before tombstoning.
-    pub path: Vec<Vec<u8>>,
-    /// Every prefix to range-delete: the primary prefix plus, for indexed
-    /// primaries, the per-axis secondary prefixes.
-    pub doomed_prefixes: Vec<SubtreePrefix>,
-}
-
-impl PendingPrefixDropRecord {
-    /// Wire version byte of the record value encoding.
-    const ENCODING_VERSION: u8 = 0;
-
-    /// Encode the record value:
-    /// `[version(1)] [doomed_count(1)] [doomed_count × 32] [segment_count(1)]
-    /// ([segment_len(1)] [segment_bytes])*`.
-    ///
-    /// Both counts and every segment length must fit in a `u8`; path
-    /// segments are already capped at 255 bytes by `build_prefix`, and the
-    /// doomed set is at most 1 + one prefix per index axis.
-    pub fn encode(&self) -> Result<Vec<u8>, Error> {
-        let doomed_count: u8 = self.doomed_prefixes.len().try_into().map_err(|_| {
-            Error::StorageError("pending-prefix-drop record: too many doomed prefixes".to_string())
-        })?;
-        let segment_count: u8 = self.path.len().try_into().map_err(|_| {
-            Error::StorageError("pending-prefix-drop record: path too deep".to_string())
-        })?;
-        let mut out = Vec::with_capacity(
-            3 + 32 * self.doomed_prefixes.len()
-                + self.path.iter().map(|s| 1 + s.len()).sum::<usize>(),
-        );
-        out.push(Self::ENCODING_VERSION);
-        out.push(doomed_count);
-        for prefix in &self.doomed_prefixes {
-            out.extend_from_slice(prefix);
-        }
-        out.push(segment_count);
-        for segment in &self.path {
-            let len: u8 = segment.len().try_into().map_err(|_| {
-                Error::StorageError(
-                    "pending-prefix-drop record: path segment over 255 bytes".to_string(),
-                )
-            })?;
-            out.push(len);
-            out.extend_from_slice(segment);
-        }
-        Ok(out)
+impl PendingPrefixDrops for RocksDbStorage {
+    fn pending_prefix_drop_records(&self) -> Result<Vec<PendingPrefixDropRecord>, Error> {
+        RocksDbStorage::pending_prefix_drop_records(self)
     }
 
-    /// Decode a record from its key suffix (the primary prefix) and value.
-    pub fn decode(key_suffix: &[u8], value: &[u8]) -> Result<Self, Error> {
-        let corrupt =
-            |what: &str| Error::StorageError(format!("corrupt pending-prefix-drop record: {what}"));
-        let primary_prefix: SubtreePrefix = key_suffix
-            .try_into()
-            .map_err(|_| corrupt("key suffix is not 32 bytes"))?;
-        fn take<'v>(rest: &mut &'v [u8], n: usize, what: &str) -> Result<&'v [u8], Error> {
-            if rest.len() < n {
-                return Err(Error::StorageError(format!(
-                    "corrupt pending-prefix-drop record: {what}"
-                )));
-            }
-            let (head, tail) = rest.split_at(n);
-            *rest = tail;
-            Ok(head)
-        }
-        let mut rest = value;
-        let version = take(&mut rest, 1, "missing version byte")?[0];
-        if version != Self::ENCODING_VERSION {
-            return Err(corrupt("unknown encoding version"));
-        }
-        let doomed_count = take(&mut rest, 1, "missing doomed count")?[0] as usize;
-        let mut doomed_prefixes = Vec::with_capacity(doomed_count);
-        for _ in 0..doomed_count {
-            let prefix: SubtreePrefix = take(&mut rest, 32, "truncated doomed prefix")?
-                .try_into()
-                .expect("split_at returned exactly 32 bytes");
-            doomed_prefixes.push(prefix);
-        }
-        let segment_count = take(&mut rest, 1, "missing segment count")?[0] as usize;
-        let mut path = Vec::with_capacity(segment_count);
-        for _ in 0..segment_count {
-            let len = take(&mut rest, 1, "missing segment length")?[0] as usize;
-            path.push(take(&mut rest, len, "truncated path segment")?.to_vec());
-        }
-        if !rest.is_empty() {
-            return Err(corrupt("trailing bytes"));
-        }
-        Ok(Self {
-            primary_prefix,
-            path,
-            doomed_prefixes,
-        })
+    fn delete_prefix_ranges(&self, prefixes: &[SubtreePrefix]) -> Result<(), Error> {
+        RocksDbStorage::delete_prefix_ranges(self, prefixes)
+    }
+
+    fn remove_pending_prefix_drop_record(
+        &self,
+        primary_prefix: &SubtreePrefix,
+    ) -> Result<(), Error> {
+        RocksDbStorage::remove_pending_prefix_drop_record(self, primary_prefix)
     }
 }
 
@@ -1143,7 +834,9 @@ impl<'db> Storage<'db> for RocksDbStorage {
         // validation and may return a Busy or TryAgain error if another
         // transaction modified the same keys concurrently. A snapshot
         // read transaction is refused with a typed error.
-        transaction.commit().wrap_with_cost(Default::default())
+        transaction
+            .commit()
+            .wrap_with_cost(COST_MODEL.transaction_commit())
     }
 
     fn rollback_transaction(&self, transaction: &Self::Transaction) -> Result<(), Error> {
@@ -1187,7 +880,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::BatchTransactionalStorageContext> {
         PrefixedRocksDbTransactionContext::new(&self.db, transaction, prefix, batch)
-            .wrap_with_cost(OperationCost::default())
+            .wrap_with_cost(COST_MODEL.open_by_prefix())
     }
 
     fn get_immediate_storage_context<'b, B>(
@@ -1209,7 +902,7 @@ impl<'db> Storage<'db> for RocksDbStorage {
         transaction: &'db Self::Transaction,
     ) -> CostContext<Self::ImmediateStorageContext> {
         PrefixedRocksDbImmediateStorageContext::new(&self.db, transaction, prefix)
-            .wrap_with_cost(OperationCost::default())
+            .wrap_with_cost(COST_MODEL.open_by_prefix())
     }
 
     fn commit_multi_context_batch(
@@ -1217,23 +910,13 @@ impl<'db> Storage<'db> for RocksDbStorage {
         batch: StorageBatch,
         transaction: Option<&'db Self::Transaction>,
     ) -> CostResult<(), Error> {
-        let mut cost = OperationCost::default();
-        let (db_batch, pending_costs) =
-            cost_return_on_error!(&mut cost, self.build_write_batch(batch));
-
-        self.commit_db_write_batch(db_batch, pending_costs, transaction)
-            .add_cost(cost)
-    }
-
-    fn get_storage_context_cost<L: WorstKeyLength>(path: &[L]) -> OperationCost {
-        if path.is_empty() {
-            OperationCost::default()
-        } else {
-            let body_size = Self::worst_case_body_size(path);
-            // the block size of blake3 is 64
-            let blocks_num = blake_block_count(body_size) as u32;
-            OperationCost::with_hash_node_calls(blocks_num)
-        }
+        let mut db_batch = WriteBatchWithTransaction::<true>::default();
+        let mut charge = COST_MODEL.batch();
+        let result = self
+            .fill_write_batch(&mut db_batch, batch, &mut charge)
+            .and_then(|()| self.write_db_batch(db_batch, transaction));
+        let written = result.is_ok();
+        result.wrap_with_cost(charge.finish(written))
     }
 
     fn create_checkpoint<P: AsRef<Path>>(&self, path: P) -> Result<(), Error> {
@@ -1242,6 +925,26 @@ impl<'db> Storage<'db> for RocksDbStorage {
                 x.create_checkpoint_with_log_size(path, DEFAULT_LOG_SIZE_FOR_CHECKPOINT_FLUSH)
             })
             .map_err(RocksDBError)
+    }
+}
+
+fn charge_delete(
+    charge: &mut BatchCharge,
+    stored_key: &[u8],
+    cost_info: Option<KeyValueStorageCost>,
+    committed_value: impl FnOnce() -> Result<Option<Vec<u8>>, rocksdb::Error>,
+) -> Result<(), Error> {
+    match cost_info {
+        Some(cost_info) => {
+            charge.delete(cost_info);
+            Ok(())
+        }
+        None => charge.delete_uncosted(
+            stored_key.len(),
+            committed_value()
+                .map(|value| value.map(|value| value.len()))
+                .map_err(RocksDBError),
+        ),
     }
 }
 
@@ -1423,129 +1126,6 @@ mod tests {
                 "column family '{name}' was not flushed: {entries} entries still in the memtable",
             );
         }
-    }
-
-    #[test]
-    fn test_build_prefix() {
-        let path_a = [b"aa".as_ref(), b"b"];
-        let path_b = [b"a".as_ref(), b"ab"];
-        assert_ne!(
-            RocksDbStorage::build_prefix(path_a.as_ref().into()),
-            RocksDbStorage::build_prefix(path_b.as_ref().into()),
-        );
-        assert_eq!(
-            RocksDbStorage::build_prefix(path_a.as_ref().into()),
-            RocksDbStorage::build_prefix(path_a.as_ref().into()),
-        );
-    }
-
-    #[test]
-    #[should_panic(expected = "path segment length must not exceed 255 bytes")]
-    fn test_build_prefix_rejects_oversized_segment() {
-        let oversized_key = vec![0xABu8; 256];
-        let path: &[&[u8]] = &[&oversized_key];
-        // Previously this would silently truncate the length to 0 (256 as u8 == 0),
-        // causing different paths to hash to the same prefix (collision).
-        let _ = RocksDbStorage::build_prefix(path.as_ref().into());
-    }
-
-    #[test]
-    fn secondary_prefix_for_is_deterministic_and_distinct_from_primary() {
-        let primary =
-            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
-
-        let s1 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-        let s2 = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-        assert_eq!(s1, s2, "secondary prefix derivation must be deterministic");
-        assert_ne!(primary, s1, "secondary prefix must differ from its primary");
-    }
-
-    #[test]
-    fn secondary_prefix_for_distinguishes_different_primaries() {
-        let primary_a =
-            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
-        let primary_b =
-            RocksDbStorage::build_prefix([b"foo".as_ref(), b"baz"].as_ref().into()).unwrap();
-
-        let s_a = RocksDbStorage::secondary_prefix_for(&primary_a, 0).unwrap();
-        let s_b = RocksDbStorage::secondary_prefix_for(&primary_b, 0).unwrap();
-        assert_ne!(
-            s_a, s_b,
-            "different primaries must produce different secondaries"
-        );
-    }
-
-    #[test]
-    fn secondary_prefix_for_handles_empty_path_root_prefix() {
-        // A root-level indexed tree has primary_prefix = all-zero default.
-        // The derivation must still yield a well-defined 32-byte hash.
-        let primary = SubtreePrefix::default();
-        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-        assert_ne!(secondary, SubtreePrefix::default());
-        // And the derivation is stable.
-        let secondary_again = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-        assert_eq!(secondary, secondary_again);
-    }
-
-    #[test]
-    fn secondary_prefix_for_distinguishes_different_axes() {
-        // The axis tag byte enters the Blake3 input — different axes for
-        // the SAME primary must produce different secondary prefixes so
-        // PCPSIT's count / sum / avg secondaries do not collide.
-        let primary =
-            RocksDbStorage::build_prefix([b"foo".as_ref(), b"bar"].as_ref().into()).unwrap();
-        let s_count = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-        let s_sum = RocksDbStorage::secondary_prefix_for(&primary, 1).unwrap();
-        let s_avg = RocksDbStorage::secondary_prefix_for(&primary, 2).unwrap();
-        assert_ne!(s_count, s_sum, "count and sum axes must be distinct");
-        assert_ne!(s_count, s_avg, "count and avg axes must be distinct");
-        assert_ne!(s_sum, s_avg, "sum and avg axes must be distinct");
-    }
-
-    #[test]
-    fn secondary_prefix_for_does_not_collide_with_path_derived_prefix() {
-        // The secondary's Blake3 input is `primary || axis_tag` (33 bytes).
-        // Path-derived prefixes hash a variable-length `path_body` that
-        // always ends with per-segment-length bytes followed by a single
-        // segment-count word — never a single tag byte after a 32-byte
-        // block. So a collision would require Blake3 output collision
-        // (infeasible) AND is structurally impossible to construct via
-        // build_prefix. This test sanity-checks that a few path-derived
-        // prefixes do not happen to collide with secondaries.
-        let primary = RocksDbStorage::build_prefix([b"a".as_ref(), b"b"].as_ref().into()).unwrap();
-        let secondary = RocksDbStorage::secondary_prefix_for(&primary, 0).unwrap();
-
-        for path in [
-            [b"a".as_ref(), b"b"].as_ref(),
-            [b"x".as_ref(), b"y"].as_ref(),
-            [b"foo".as_ref(), b"bar", b"baz"].as_ref(),
-            [].as_ref(),
-        ] {
-            let p = RocksDbStorage::build_prefix(path.into()).unwrap();
-            assert_ne!(p, secondary);
-        }
-    }
-
-    #[test]
-    fn test_build_prefix_for_root_and_storage_context_cost() {
-        struct TestKeyLen(u8);
-        impl WorstKeyLength for TestKeyLen {
-            fn max_length(&self) -> u8 {
-                self.0
-            }
-        }
-
-        assert_eq!(
-            RocksDbStorage::build_prefix(SubtreePath::empty()).unwrap(),
-            SubtreePrefix::default()
-        );
-        assert_eq!(
-            RocksDbStorage::get_storage_context_cost::<TestKeyLen>(&[]),
-            OperationCost::default()
-        );
-
-        let cost = RocksDbStorage::get_storage_context_cost(&[TestKeyLen(70)]);
-        assert_eq!(cost.hash_node_calls, 2);
     }
 
     #[test]

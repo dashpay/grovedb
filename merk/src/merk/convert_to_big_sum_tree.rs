@@ -3,11 +3,11 @@ use std::collections::{BTreeSet, LinkedList};
 use grovedb_costs::{
     cost_return_on_error, cost_return_on_error_no_add, CostResult, CostsExt, OperationCost,
 };
-use grovedb_storage::StorageContext;
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use crate::{
     merk::KeyUpdates,
+    store::NodeStore,
     tree::{kv::ValueDefinedCostType, AuxMerkBatch, Fetch, TreeNode},
     tree_type::TreeType,
     Error, Link, Merk, TreeFeatureType,
@@ -48,7 +48,7 @@ fn widened_feature_type(feature_type: TreeFeatureType) -> Option<TreeFeatureType
 
 impl<'db, S> Merk<S>
 where
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Rewrites this tree, which keeps a 64-bit sum, as the tree type that
     /// holds the same nodes with the sum in 128 bits
@@ -198,7 +198,7 @@ where
                 node.load(left, source, value_defined_cost_fn, grove_version)
             );
         }
-        let Some(link) = node.slot_mut(left).take() else {
+        let Some(link) = node.take_link(left, false) else {
             continue;
         };
         let mut child = match link {
@@ -223,7 +223,7 @@ where
                 grove_version,
             )
         );
-        *node.slot_mut(left) = Link::maybe_from_modified_tree(Some(child));
+        node.set_link(left, Link::maybe_from_modified_tree(Some(child)));
     }
 
     // The commit bills a node against its old value. A node this handle
@@ -238,17 +238,11 @@ where
     Ok(()).wrap_with_cost(cost)
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use grovedb_costs::OperationCost;
     use grovedb_element::Element;
     use grovedb_path::SubtreePath;
-    use grovedb_storage::{
-        rocksdb_storage::{
-            test_utils::TempStorage, PrefixedRocksDbImmediateStorageContext, RocksDbStorage,
-        },
-        Storage,
-    };
     use grovedb_version::version::{v4::GROVE_V4, GroveVersion};
 
     use crate::{
@@ -256,15 +250,15 @@ mod tests {
             costs::ElementCostExtensions, insert::ElementInsertToStorageExtensions,
             tree_type::ElementTreeTypeExtensions,
         },
+        test_utils::{SuiteImmediateSubtree, SuiteTransaction, TempEngine, TestEngine},
         tree::{kv::ValueDefinedCostType, AggregateData},
         tree_type::TreeType,
         CryptoHash, Error, Merk, Op, TreeFeatureType,
     };
 
-    type Transaction<'a> = <RocksDbStorage as Storage<'a>>::Transaction;
     /// A Merk that writes as it commits, so that the cost of a call is the
     /// cost the call returns.
-    type ImmediateMerk<'a> = Merk<PrefixedRocksDbImmediateStorageContext<'a>>;
+    type ImmediateMerk<'a> = Merk<SuiteImmediateSubtree<'a>>;
 
     const PAIRS: [(TreeType, TreeType); 7] = [
         (TreeType::SumTree, TreeType::BigSumTree),
@@ -289,15 +283,13 @@ mod tests {
     ];
 
     fn open<'a>(
-        storage: &'a TempStorage,
-        tx: &'a Transaction<'a>,
+        storage: &'a TempEngine,
+        tx: &'a SuiteTransaction<'_>,
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> ImmediateMerk<'a> {
         Merk::open_base(
-            storage
-                .get_immediate_storage_context(SubtreePath::empty(), tx)
-                .unwrap(),
+            storage.immediate_subtree(SubtreePath::empty(), tx).unwrap(),
             tree_type,
             Some(&Element::value_defined_cost_for_serialized_value),
             grove_version,
@@ -365,7 +357,7 @@ mod tests {
     /// The root hash and aggregate a tree of `tree_type` has when it is
     /// written with [`fill`].
     fn built(tree_type: TreeType, grove_version: &GroveVersion) -> (CryptoHash, AggregateData) {
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut merk = open(&storage, &tx, tree_type, grove_version);
         fill(&mut merk, grove_version);
@@ -379,7 +371,7 @@ mod tests {
     fn a_converted_merk_is_the_merk_built_wide() {
         let grove_version = GroveVersion::latest();
         for (narrow, wide) in PAIRS {
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let mut merk = open(&storage, &tx, narrow, grove_version);
             fill(&mut merk, grove_version);
@@ -410,7 +402,7 @@ mod tests {
     #[test]
     fn an_empty_merk_only_changes_its_type() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let merk = open(&storage, &tx, TreeType::SumTree, grove_version);
         let converted = convert(merk, grove_version).0.expect("convert");
@@ -430,7 +422,7 @@ mod tests {
             TreeType::CountTree,
             TreeType::ProvableCountTree,
         ] {
-            let storage = TempStorage::new();
+            let storage = TempEngine::new();
             let tx = storage.start_transaction();
             let merk = open(&storage, &tx, tree_type, grove_version);
             let result = convert(merk, grove_version).0;
@@ -448,7 +440,7 @@ mod tests {
     #[test]
     fn a_node_keeps_the_contribution_it_was_stored_with() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut merk = open(&storage, &tx, TreeType::CountSumTree, grove_version);
         let batch: Vec<(Vec<u8>, Op)> = (0u8..9)
@@ -492,7 +484,7 @@ mod tests {
     #[test]
     fn a_refused_conversion_writes_nothing() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut merk = open(&storage, &tx, TreeType::ProvableSumTree, grove_version);
         fill(&mut merk, grove_version);
@@ -527,7 +519,7 @@ mod tests {
 
     #[test]
     fn the_conversion_is_gated_to_the_version_that_introduces_it() {
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut merk = open(&storage, &tx, TreeType::CountSumTree, &GROVE_V4);
         fill(&mut merk, &GROVE_V4);
@@ -562,7 +554,7 @@ mod tests {
             }
         };
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut retained = open(&storage, &tx, TreeType::SumTree, grove_version);
         write(&mut retained);
@@ -572,7 +564,7 @@ mod tests {
             .root_hash()
             .unwrap();
 
-        let storage = TempStorage::new();
+        let storage = TempEngine::new();
         let tx = storage.start_transaction();
         let mut writer = open(&storage, &tx, TreeType::SumTree, grove_version);
         write(&mut writer);

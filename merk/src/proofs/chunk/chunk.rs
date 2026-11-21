@@ -66,6 +66,7 @@ where
         // build the proof vector
         let mut proof = vec![];
 
+        self.values_on_demand();
         cost_return_on_error!(
             &mut cost,
             self.create_chunk_internal(&mut proof, depth, tree_type, false, grove_version)
@@ -139,6 +140,8 @@ where
                 )
             );
         }
+
+        cost_return_on_error!(&mut cost, self.load_value());
 
         // Determine the correct node type based on element type and tree type
         // Restoration must preserve features omitted by query proof nodes,
@@ -264,6 +267,7 @@ where
         tree_type: TreeType,
         grove_version: &GroveVersion,
     ) -> CostResult<Vec<Op>, Error> {
+        self.values_on_demand();
         self.traverse_and_build_chunk_with_features(
             instructions,
             depth,

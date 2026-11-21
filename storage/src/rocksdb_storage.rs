@@ -33,12 +33,13 @@ pub mod test_utils;
 #[cfg(test)]
 mod tests;
 
-pub use rocksdb::{Error, WriteBatchWithTransaction};
+pub use rocksdb::{Error, ErrorKind, WriteBatchWithTransaction};
+#[cfg(feature = "unsafe-dump-load")]
+pub use rocksdb::{Options, SstFileWriter};
 pub use storage_context::{
-    PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext, PrefixedRocksDbRawIterator,
-    PrefixedRocksDbTransactionContext,
+    AuxKeyspace, MetaKeyspace, PrefixedRocksDbBatch, PrefixedRocksDbImmediateStorageContext,
+    PrefixedRocksDbRawIterator, PrefixedRocksDbTransactionContext,
 };
 
-pub use self::storage::{
-    pending_prefix_drops_namespace, PendingPrefixDropRecord, RocksDbStorage, Tx,
-};
+pub use self::storage::{RocksDbStorage, Tx};
+pub use crate::flat::{pending_prefix_drops_namespace, PendingPrefixDropRecord};

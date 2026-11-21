@@ -1,0 +1,950 @@
+//! A model of what the segment store must do, and a seeded workload that
+//! drives a store and the model together.
+//!
+//! The model is written from the rules, not from the store: it holds the
+//! bytes every segment must have, how much of each is durable, and the
+//! manifest that must be on disk. A run stops at the first error, which is
+//! how a power loss ends it, and what is then on the file system is checked
+//! against the model by [`check_recovered`].
+
+use std::collections::{BTreeMap, BTreeSet};
+
+use lignin_format::segment::{write_block, write_footer, IndexEntry, DATA_START};
+use lignin_io::OpenMode;
+
+use super::*;
+
+pub(super) struct Rng(u64);
+
+impl Rng {
+    pub(super) fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        (self.next() % bound as u64) as usize
+    }
+
+    fn pick<T: Copy>(&mut self, from: &[T]) -> Option<T> {
+        (!from.is_empty()).then(|| from[self.below(from.len())])
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Phase {
+    Created,
+    Open,
+    Closed,
+    Sealed,
+}
+
+#[derive(Clone, Debug)]
+struct SegmentModel {
+    phase: Phase,
+    blocks: Vec<Appended>,
+    index: Vec<IndexEntry>,
+    bytes: Vec<u8>,
+    blocks_end: u64,
+    durable_len: u64,
+    has_writer: bool,
+    /// A sync of the segment failed.
+    failed: bool,
+}
+
+impl SegmentModel {
+    fn created(raw_id: u32) -> Self {
+        Self {
+            phase: Phase::Created,
+            blocks: Vec::new(),
+            index: Vec::new(),
+            bytes: header(FileKind::Segment, raw_id).to_vec(),
+            blocks_end: DATA_START,
+            durable_len: DATA_START,
+            has_writer: true,
+            failed: false,
+        }
+    }
+
+    /// The segment ends at what is durable of it.
+    fn cut(&mut self) {
+        let kept = self.blocks_below(self.durable_len).len();
+        self.blocks.truncate(kept);
+        self.index.truncate(kept);
+        self.blocks_end = self.durable_len;
+        self.phase = Phase::Closed;
+    }
+
+    fn named(&self, raw_id: u32) -> LiveFile {
+        let state = match self.phase {
+            Phase::Created | Phase::Open => FileState::Open,
+            Phase::Closed => FileState::Closed,
+            Phase::Sealed => FileState::Sealed,
+        };
+        segment(raw_id, state, self.durable_len)
+    }
+
+    fn blocks_below(&self, len: u64) -> &[Appended] {
+        let count = self
+            .blocks
+            .iter()
+            .take_while(|block| block.location.offset + u64::from(block.location.len) <= len)
+            .count();
+        &self.blocks[..count]
+    }
+}
+
+/// What must be true of a database directory.
+#[derive(Clone, Debug)]
+pub(super) struct Model {
+    /// The manifest of the last replacement that returned, or `None` before
+    /// the first.
+    pub(super) acked: Option<Manifest>,
+    /// The manifest a replacement in progress is installing.
+    pub(super) pending: Option<Manifest>,
+    live: BTreeMap<u32, SegmentModel>,
+    dropped: BTreeMap<u32, SegmentModel>,
+    /// The highest id of a segment the store has had, which a manifest
+    /// records.
+    last_id: u32,
+    /// The highest id a creation has taken, whether or not it gave a
+    /// segment.
+    last_taken: u32,
+}
+
+impl Model {
+    fn new() -> Self {
+        Self {
+            acked: None,
+            pending: None,
+            live: BTreeMap::new(),
+            dropped: BTreeMap::new(),
+            last_id: 0,
+            last_taken: 0,
+        }
+    }
+
+    fn acked(&self) -> &Manifest {
+        self.acked.as_ref().expect("a first manifest")
+    }
+
+    fn segment(&self, id: u32) -> &SegmentModel {
+        self.live
+            .get(&id)
+            .or_else(|| self.dropped.get(&id))
+            .expect("a named segment is known")
+    }
+
+    fn describe(&self) -> Manifest {
+        let base = self.acked();
+        let mut files: Vec<_> = base
+            .files()
+            .iter()
+            .filter(|file| file.kind() != FileKind::Segment)
+            .copied()
+            .collect();
+        files.extend(self.live.iter().map(|(id, segment)| segment.named(*id)));
+        let mut last = base.last_file_ids();
+        last.segment = last.segment.max(FileId::new(self.last_id));
+        Manifest::new(base.page_size(), last, base.table_checkpoint(), files)
+            .expect("a valid manifest")
+    }
+
+    fn replaced(&mut self) {
+        let acked = self.pending.take().expect("a replacement in progress");
+        let named: BTreeSet<u32> = segments_of(&acked).map(|file| file.id().get()).collect();
+        for (id, segment) in &mut self.live {
+            if segment.phase == Phase::Created && named.contains(id) {
+                segment.phase = Phase::Open;
+            }
+        }
+        self.dropped.retain(|id, _| named.contains(id));
+        self.acked = Some(acked);
+    }
+
+    fn restarted(&mut self) {
+        let acked = self.acked().clone();
+        let mut live = BTreeMap::new();
+        for named in segments_of(&acked) {
+            let id = named.id().get();
+            let mut segment = self
+                .live
+                .remove(&id)
+                .or_else(|| self.dropped.remove(&id))
+                .expect("a named segment is known");
+            let valid_len = named.valid_len();
+            segment.durable_len = valid_len;
+            if named.state() == FileState::Sealed {
+                segment.phase = Phase::Sealed;
+            } else {
+                segment.cut();
+            }
+            segment.has_writer = false;
+            live.insert(id, segment);
+        }
+        self.live = live;
+        self.dropped.clear();
+        self.last_id = acked.last_file_ids().segment.map_or(0, FileId::get);
+        self.last_taken = self.last_id;
+    }
+
+    /// The session ended in a crash that left `found` as the manifest.
+    fn crashed(&mut self, found: Option<Manifest>) {
+        self.pending = None;
+        match found {
+            Some(found) => {
+                self.acked = Some(found);
+                self.restarted();
+            }
+            None => assert!(self.acked.is_none(), "the manifest is gone"),
+        }
+    }
+}
+
+fn segments_of(manifest: &Manifest) -> impl Iterator<Item = &LiveFile> {
+    manifest
+        .files()
+        .iter()
+        .filter(|file| file.kind() == FileKind::Segment)
+}
+
+pub(super) fn first_manifest() -> Manifest {
+    manifest_of(
+        [3, 0, 2, 1],
+        Some(table(1, 100, 5)),
+        vec![
+            live(FileKind::Wal, 3, FileState::Open, 20),
+            live(FileKind::ValueLog, 2, FileState::Closed, 64),
+        ],
+    )
+}
+
+pub(super) fn with_another_log(manifest: &Manifest) -> Manifest {
+    let mut last = manifest.last_file_ids();
+    let next = last.wal.map_or(1, |id| id.get() + 1);
+    last.wal = FileId::new(next);
+    let mut files: Vec<_> = manifest
+        .files()
+        .iter()
+        .map(|file| match (file.kind(), file.state()) {
+            (FileKind::Wal, FileState::Open) => {
+                live(FileKind::Wal, file.id().get(), FileState::Closed, 20)
+            }
+            _ => *file,
+        })
+        .collect();
+    files.push(live(FileKind::Wal, next, FileState::Open, 20));
+    Manifest::new(
+        manifest.page_size(),
+        last,
+        manifest.table_checkpoint(),
+        files,
+    )
+    .expect("a valid manifest")
+}
+
+/// One step of a workload. A number is the id of the segment the step is
+/// taken on. In a script it counts the segments the script has created, from
+/// 1, which is the segment's id as long as no creation has failed.
+#[derive(Clone, Copy, Debug)]
+pub(super) enum Step {
+    Create,
+    Commit,
+    AnotherLog,
+    /// One to four blocks of drawn sizes.
+    Append(u32),
+    /// One block whose payload has this many bytes and does not compress.
+    Block(u32, usize),
+    SyncOne(u32),
+    SyncAll,
+    Seal(u32),
+    DropWriter(u32),
+    DropSegment(u32),
+    /// Every block of the segment is read, and its footer if it has one.
+    ReadBack(u32),
+    Restart,
+}
+
+/// Every step in the life of a segment: created, named, appended to, read,
+/// synced, sealed, dropped and deleted, in one session and across a restart.
+/// The blocks are small enough for every state of every crash to be counted.
+pub(super) const SEGMENT_LIFE: [Step; 29] = [
+    Step::Create,
+    Step::Commit,
+    Step::Block(1, 60),
+    Step::Block(1, 700),
+    Step::ReadBack(1),
+    Step::SyncOne(1),
+    Step::Commit,
+    Step::Block(1, 9),
+    Step::Block(1, 1200),
+    Step::Seal(1),
+    Step::Commit,
+    Step::ReadBack(1),
+    Step::DropWriter(1),
+    Step::Create,
+    Step::Commit,
+    Step::Block(2, 300),
+    Step::SyncAll,
+    Step::Block(2, 40),
+    Step::DropWriter(2),
+    Step::DropSegment(1),
+    Step::Commit,
+    Step::Restart,
+    Step::ReadBack(2),
+    Step::Create,
+    Step::AnotherLog,
+    Step::Commit,
+    Step::Block(3, 100),
+    Step::Seal(3),
+    Step::Commit,
+];
+
+struct Session {
+    manifest: ManifestStore,
+    segments: SegmentStore,
+    writers: BTreeMap<u32, SegmentWriter>,
+}
+
+/// One run of the workload on one file system.
+pub(super) struct Run {
+    pub(super) model: Model,
+    vfs: Arc<dyn Vfs>,
+    dir: PathBuf,
+    rng: Rng,
+    session: Option<Session>,
+    /// The manifest of a session whose segments did not open.
+    half_open: Option<ManifestStore>,
+    /// The ids of the segments created, in order.
+    created: Vec<u32>,
+    pub(super) steps: usize,
+    /// How often each kind of step was taken.
+    pub(super) taken: BTreeMap<&'static str, usize>,
+}
+
+impl Run {
+    pub(super) fn new(vfs: Arc<dyn Vfs>, dir: &Path, seed: u64) -> Self {
+        Self {
+            model: Model::new(),
+            vfs,
+            dir: dir.to_path_buf(),
+            rng: Rng::new(seed),
+            session: None,
+            half_open: None,
+            created: Vec::new(),
+            steps: 0,
+            taken: BTreeMap::new(),
+        }
+    }
+
+    /// Takes drawn steps until `steps` have been taken or one fails.
+    pub(super) fn run(&mut self, steps: usize) -> Result<(), SegmentStoreError> {
+        while self.steps < steps {
+            let kind = match self.draw() {
+                Some(step) => self.take(step)?,
+                None => {
+                    self.open()?;
+                    "open"
+                }
+            };
+            *self.taken.entry(kind).or_default() += 1;
+            self.steps += 1;
+        }
+        Ok(())
+    }
+
+    /// Takes the steps of `script`, until one fails.
+    pub(super) fn script(&mut self, script: &[Step]) -> Result<(), SegmentStoreError> {
+        for step in script {
+            if self.session.is_none() {
+                self.open()?;
+            }
+            self.take(self.in_script(*step))?;
+            self.steps += 1;
+        }
+        Ok(())
+    }
+
+    /// A step of a script, on the segment it means.
+    fn in_script(&self, step: Step) -> Step {
+        let id = |nth: u32| self.created[nth as usize - 1];
+        match step {
+            Step::Append(nth) => Step::Append(id(nth)),
+            Step::Block(nth, len) => Step::Block(id(nth), len),
+            Step::SyncOne(nth) => Step::SyncOne(id(nth)),
+            Step::Seal(nth) => Step::Seal(id(nth)),
+            Step::DropWriter(nth) => Step::DropWriter(id(nth)),
+            Step::DropSegment(nth) => Step::DropSegment(id(nth)),
+            Step::ReadBack(nth) => Step::ReadBack(id(nth)),
+            Step::Create | Step::Commit | Step::AnotherLog | Step::SyncAll | Step::Restart => step,
+        }
+    }
+
+    /// Ends the session, as a process that exits does.
+    pub(super) fn end_session(&mut self) {
+        self.session = None;
+        self.half_open = None;
+    }
+
+    /// Takes the steps of `script` and goes on after one that fails, as a
+    /// caller of the store would: it opens again what did not open, settles
+    /// a manifest in doubt, and creates a segment or replaces the manifest
+    /// again. Any other step that failed is left at that. Stops at an error
+    /// that `ends_the_run` accepts, which is how a power loss ends it.
+    /// Returns how many calls failed.
+    pub(super) fn script_through_failures(
+        &mut self,
+        script: &[Step],
+        ends_the_run: &dyn Fn(&SegmentStoreError) -> bool,
+    ) -> Result<usize, SegmentStoreError> {
+        let mut failures = 0;
+        for step in script {
+            let made_again = matches!(step, Step::Create | Step::Commit | Step::AnotherLog);
+            let mut attempts = 0;
+            loop {
+                let is_open = self.session.is_some();
+                let result = if is_open {
+                    self.take(self.in_script(*step)).map(drop)
+                } else {
+                    self.open()
+                };
+                match result {
+                    Ok(()) if is_open => break,
+                    Ok(()) => {}
+                    Err(error) if ends_the_run(&error) => return Err(error),
+                    Err(error) => {
+                        failures += 1;
+                        attempts += 1;
+                        assert!(attempts < 4, "{step:?} keeps failing: {error}");
+                        if self.session.is_some() {
+                            self.failed(*step, &error)?;
+                            if !made_again {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            self.steps += 1;
+        }
+        Ok(failures)
+    }
+
+    /// Follows a step that failed: the model takes what the module
+    /// documentation says the failure leaves, and a manifest in doubt is
+    /// opened again.
+    fn failed(&mut self, step: Step, error: &SegmentStoreError) -> Result<(), SegmentStoreError> {
+        let sync_failed = matches!(error, SegmentStoreError::Io { op: "sync", .. });
+        let already_failed = matches!(error, SegmentStoreError::SegmentFailed { .. });
+        let model = &mut self.model;
+        match step {
+            Step::Create => model.last_taken += 1,
+            Step::Commit | Step::AnotherLog => return self.settle_manifest(),
+            Step::Append(_) | Step::Block(..) | Step::ReadBack(_) | Step::Restart => {}
+            Step::SyncOne(id) | Step::Seal(id) => {
+                let segment = model.live.get_mut(&id).expect("a segment");
+                assert_eq!(already_failed, segment.failed, "{error}");
+                segment.failed |= sync_failed;
+            }
+            Step::SyncAll => {
+                for (id, segment) in &mut model.live {
+                    let path = FileNames::SEGMENT.path(&self.dir, super::id(*id));
+                    let is_written = matches!(segment.phase, Phase::Created | Phase::Open);
+                    if !is_written || segment.failed {
+                        continue;
+                    }
+                    match error {
+                        SegmentStoreError::Io { path: failed, .. } if *failed == path => {
+                            assert!(sync_failed, "{error}");
+                            segment.failed = true;
+                            if !segment.has_writer {
+                                segment.cut();
+                            }
+                        }
+                        _ => segment.durable_len = segment.blocks_end,
+                    }
+                }
+            }
+            Step::DropWriter(_) | Step::DropSegment(_) => {
+                panic!("{step:?} makes no call that can fail: {error}")
+            }
+        }
+        Ok(())
+    }
+
+    /// After a replacement that failed: opens the manifest again if it is in
+    /// doubt, takes the manifest in force into the model, and tells the
+    /// segment store.
+    fn settle_manifest(&mut self) -> Result<(), SegmentStoreError> {
+        let session = self.session.as_mut().expect("a session");
+        if session.manifest.manifest().is_err() {
+            session.manifest = ManifestStore::open(self.vfs.clone(), &self.dir)?;
+        }
+        let in_force = session.manifest.manifest()?;
+        if self.model.pending.as_ref() == Some(in_force) {
+            self.model.replaced();
+        } else {
+            assert_eq!(self.model.acked.as_ref(), Some(in_force));
+            self.model.pending = None;
+        }
+        session.segments.manifest_replaced(&session.manifest)
+    }
+
+    /// Goes on after a crash, on the file system `vfs` that the crash left
+    /// with the manifest `found`.
+    pub(super) fn crashed(&mut self, vfs: Arc<dyn Vfs>, found: Option<Manifest>) {
+        self.end_session();
+        self.vfs = vfs;
+        self.model.crashed(found);
+    }
+
+    /// The next step of the drawn workload, or `None` while no session is
+    /// open.
+    fn draw(&mut self) -> Option<Step> {
+        let session = self.session.as_ref()?;
+        let (model, rng) = (&self.model, &mut self.rng);
+        let writable: Vec<u32> = session
+            .writers
+            .keys()
+            .copied()
+            .filter(|id| model.live[id].phase == Phase::Open)
+            .collect();
+        let idle: Vec<u32> = model
+            .live
+            .iter()
+            .filter(|(_, segment)| !segment.has_writer)
+            .map(|(id, _)| *id)
+            .collect();
+        let writers: Vec<u32> = session.writers.keys().copied().collect();
+        let live: Vec<u32> = model.live.keys().copied().collect();
+        let otherwise = if writers.len() < 3 {
+            Step::Create
+        } else {
+            Step::Commit
+        };
+        Some(match rng.below(100) {
+            0..7 => otherwise,
+            7..22 => Step::Commit,
+            22..27 => Step::AnotherLog,
+            27..66 => rng.pick(&writable).map_or(otherwise, Step::Append),
+            66..72 => rng.pick(&writable).map_or(otherwise, Step::SyncOne),
+            72..77 => Step::SyncAll,
+            77..83 => rng.pick(&writable).map_or(otherwise, Step::Seal),
+            83..87 => rng.pick(&writers).map_or(otherwise, Step::DropWriter),
+            87..92 => rng.pick(&idle).map_or(otherwise, Step::DropSegment),
+            92..96 => rng.pick(&live).map_or(otherwise, Step::ReadBack),
+            _ => Step::Restart,
+        })
+    }
+
+    fn take(&mut self, step: Step) -> Result<&'static str, SegmentStoreError> {
+        let session = self.session.as_mut().expect("a session");
+        let (model, rng) = (&mut self.model, &mut self.rng);
+        match step {
+            Step::Create => {
+                let writer = session.segments.create()?;
+                let id = writer.file_id().get();
+                assert_eq!(id, model.last_taken + 1);
+                self.created.push(id);
+                model.last_taken = id;
+                model.last_id = id;
+                model.live.insert(id, SegmentModel::created(id));
+                session.writers.insert(id, writer);
+                Ok("create")
+            }
+            Step::Commit => {
+                model.pending = Some(model.describe());
+                session.segments.commit(&mut session.manifest)?;
+                model.replaced();
+                Ok("commit")
+            }
+            Step::AnotherLog => {
+                model.pending = Some(with_another_log(model.acked()));
+                session
+                    .manifest
+                    .update(|current| Ok::<_, SegmentStoreError>(with_another_log(current)))?;
+                session.segments.manifest_replaced(&session.manifest)?;
+                model.replaced();
+                Ok("another log")
+            }
+            Step::Append(id) => {
+                for _ in 0..1 + rng.below(4) {
+                    let len = [0, 1, 9, 60, 200, 700, 3000][rng.below(7)];
+                    let compresses = rng.below(2) == 0;
+                    append(session, model, rng, id, len, compresses)?;
+                }
+                Ok("append")
+            }
+            Step::Block(id, len) => {
+                append(session, model, rng, id, len, false)?;
+                Ok("append")
+            }
+            Step::SyncOne(id) => {
+                let synced = session.writers.get_mut(&id).expect("a writer").sync()?;
+                let segment = model.live.get_mut(&id).expect("a segment");
+                assert_eq!(synced, segment.blocks_end);
+                segment.durable_len = synced;
+                Ok("sync a segment")
+            }
+            Step::SyncAll => {
+                session.segments.sync()?;
+                for segment in model.live.values_mut() {
+                    if matches!(segment.phase, Phase::Created | Phase::Open) {
+                        segment.durable_len = segment.blocks_end;
+                    }
+                }
+                Ok("sync all")
+            }
+            Step::Seal(id) => {
+                let sealed_len = session.writers.get_mut(&id).expect("a writer").seal()?;
+                let segment = model.live.get_mut(&id).expect("a segment");
+                write_footer(&segment.index, segment.blocks_end, &mut segment.bytes)
+                    .expect("a footer");
+                assert_eq!(sealed_len, segment.bytes.len() as u64);
+                segment.phase = Phase::Sealed;
+                segment.durable_len = sealed_len;
+                Ok("seal")
+            }
+            Step::DropWriter(id) => {
+                session.writers.remove(&id);
+                let segment = model.live.get_mut(&id).expect("a segment");
+                segment.has_writer = false;
+                if segment.failed && segment.phase == Phase::Open {
+                    segment.cut();
+                }
+                Ok("drop a writer")
+            }
+            Step::DropSegment(id) => {
+                session.segments.drop_segment(super::id(id))?;
+                let segment = model.live.remove(&id).expect("a segment");
+                model.dropped.insert(id, segment);
+                Ok("drop a segment")
+            }
+            Step::ReadBack(id) => {
+                let segment = &model.live[&id];
+                check_blocks(&session.segments, id, segment, segment.blocks_end)?;
+                Ok("read back")
+            }
+            Step::Restart => {
+                self.end_session();
+                self.model.restarted();
+                self.open()?;
+                Ok("restart")
+            }
+        }
+    }
+
+    /// Opens the database, and writes its first manifest if it has none. If
+    /// the segments do not open, the manifest stays open for the next try.
+    fn open(&mut self) -> Result<(), SegmentStoreError> {
+        let manifest = match self.half_open.take() {
+            Some(manifest) => manifest,
+            None => self.open_manifest()?,
+        };
+        match SegmentStore::open(&manifest) {
+            Ok(segments) => {
+                self.session = Some(Session {
+                    manifest,
+                    segments,
+                    writers: BTreeMap::new(),
+                });
+                Ok(())
+            }
+            Err(error) => {
+                self.half_open = Some(manifest);
+                Err(error)
+            }
+        }
+    }
+
+    fn open_manifest(&mut self) -> Result<ManifestStore, SegmentStoreError> {
+        let manifest = match ManifestStore::open(self.vfs.clone(), &self.dir) {
+            Err(SegmentStoreError::NoManifest { .. }) => {
+                assert!(self.model.acked.is_none(), "the manifest is gone");
+                self.model.pending = Some(first_manifest());
+                ManifestStore::create(self.vfs.clone(), &self.dir, first_manifest())?
+            }
+            opened => opened?,
+        };
+        if self.model.acked.is_none() {
+            assert_eq!(manifest.manifest()?, &first_manifest());
+            self.model.pending = Some(first_manifest());
+            self.model.replaced();
+        }
+        Ok(manifest)
+    }
+
+    /// Checks the running store against the model.
+    pub(super) fn check_session(&self) {
+        let Some(session) = &self.session else {
+            return;
+        };
+        let model = &self.model;
+        let named: Vec<_> = model
+            .live
+            .iter()
+            .map(|(id, segment)| segment.named(*id))
+            .collect();
+        assert_eq!(session.segments.segments_named().unwrap(), named);
+        assert_eq!(session.manifest.manifest().unwrap(), model.acked());
+        assert_eq!(
+            &read_manifest(&*self.vfs, &self.dir).unwrap(),
+            model.acked()
+        );
+        for (id, segment) in &model.live {
+            check_blocks(&session.segments, *id, segment, segment.blocks_end).unwrap();
+        }
+        for id in model.dropped.keys() {
+            let gone = session.segments.walk(super::id(*id), MAX);
+            assert!(matches!(
+                gone.err().unwrap(),
+                SegmentStoreError::UnknownSegment { .. }
+            ));
+        }
+    }
+}
+
+fn append(
+    session: &mut Session,
+    model: &mut Model,
+    rng: &mut Rng,
+    id: u32,
+    len: usize,
+    compresses: bool,
+) -> Result<(), SegmentStoreError> {
+    let payload = if compresses {
+        repetitive(len, rng.next())
+    } else {
+        random(len, rng.next())
+    };
+    let content = [BlockContent::Base, BlockContent::Delta][rng.below(2)];
+    let compression = [Compression::Raw, Compression::Lz4][rng.below(2)];
+    let page = page(1 + rng.below(20) as u32);
+
+    let writer = session.writers.get_mut(&id).expect("a writer");
+    let location = writer.append(page, content, compression, &payload)?;
+
+    let segment = model.live.get_mut(&id).expect("a segment");
+    let offset = segment.bytes.len() as u64;
+    let tag = write_block(content, compression, &payload, &mut segment.bytes).expect("a block");
+    let expected = BlockLocation {
+        file: super::id(id),
+        offset,
+        len: tag.block_len() as u32,
+    };
+    assert_eq!(location, expected);
+    segment.index.push(IndexEntry { page, tag });
+    segment.blocks_end = segment.bytes.len() as u64;
+    segment.blocks.push(Appended {
+        location,
+        page,
+        content,
+        payload,
+    });
+    Ok(())
+}
+
+/// Reads the segment through the store and checks that it holds the model's
+/// blocks below `readable` and no others. Fails only if the store does.
+fn check_blocks(
+    segments: &SegmentStore,
+    raw_id: u32,
+    model: &SegmentModel,
+    readable: u64,
+) -> Result<(), SegmentStoreError> {
+    let expected = model.blocks_below(readable);
+    let mut walk = segments.walk(id(raw_id), MAX)?;
+    let mut buf = Vec::new();
+    for block in expected {
+        let (location, walked) = walk.next_block()?.expect("another block");
+        assert_eq!(location, block.location);
+        assert_eq!(walked.content(), block.content);
+        assert_eq!(walked.payload().unwrap(), block.payload.as_slice());
+        let read = segments.read(block.location, MAX, &mut buf)?;
+        assert_eq!(read.payload().unwrap(), block.payload.as_slice());
+    }
+    assert!(walk.next_block()?.is_none());
+    for block in &model.blocks[expected.len()..] {
+        assert!(matches!(
+            segments.read(block.location, MAX, &mut buf).unwrap_err(),
+            SegmentStoreError::OutOfBounds { .. }
+        ));
+    }
+    if model.phase == Phase::Sealed {
+        let index = segments.index(id(raw_id), &mut buf)?;
+        let listed: Vec<_> = index
+            .blocks()
+            .map(|block| (block.page, block.offset))
+            .collect();
+        let appended: Vec<_> = model
+            .blocks
+            .iter()
+            .map(|block| (block.page, block.location.offset))
+            .collect();
+        assert_eq!(listed, appended);
+    }
+    Ok(())
+}
+
+fn read_file(vfs: &dyn Vfs, path: &Path) -> Option<Vec<u8>> {
+    let file = vfs.open(path, OpenMode::Read).ok()?;
+    let mut bytes = vec![0; file.len().unwrap() as usize];
+    file.read_exact_at(&mut bytes, 0).unwrap();
+    Some(bytes)
+}
+
+fn file_names(vfs: &dyn Vfs, dir: &Path) -> Vec<String> {
+    vfs.read_dir(dir)
+        .unwrap()
+        .into_iter()
+        .map(|entry| entry.name.to_string_lossy().into_owned())
+        .collect()
+}
+
+/// Checks what a stopped run left on `vfs`, which is the file system the run
+/// was on or one a crash made of it, and then that the database can be used
+/// again. Returns which manifest it found: `false` for the last one a
+/// replacement returned, `true` for the one that was being installed.
+pub(super) fn check_recovered(vfs: Arc<dyn Vfs>, dir: &Path, model: &Model) -> bool {
+    let read = read_manifest(&*vfs, dir);
+    if let Ok(read) = &read {
+        let untouched = SegmentStore::open_read_only(vfs.clone(), dir, read);
+        untouched.expect("the segments open as the crash left them");
+    }
+    for (id, segment) in &model.live {
+        let path = FileNames::SEGMENT.path(dir, super::id(*id));
+        let bytes = read_file(&*vfs, &path).expect("a created segment keeps its name");
+        let durable = segment.durable_len as usize;
+        assert!(bytes.len() >= durable, "segment {id} lost synced bytes");
+        assert!(
+            bytes[..durable] == segment.bytes[..durable],
+            "segment {id} has other bytes than the ones synced"
+        );
+    }
+
+    let manifest = match ManifestStore::open(vfs.clone(), dir) {
+        Ok(manifest) => manifest,
+        Err(SegmentStoreError::NoManifest { .. }) => {
+            assert!(model.acked.is_none(), "the manifest is gone");
+            let created = ManifestStore::create(vfs.clone(), dir, first_manifest());
+            assert_eq!(created.unwrap().manifest().unwrap(), &first_manifest());
+            return false;
+        }
+        Err(error) => panic!("the manifest does not open: {error}"),
+    };
+    let found = manifest.manifest().unwrap().clone();
+    assert_eq!(read.unwrap(), found);
+    let is_pending = model.pending.as_ref() == Some(&found);
+    assert!(
+        is_pending || model.acked.as_ref() == Some(&found),
+        "the manifest is neither the old one nor the new one: {found:?}"
+    );
+    assert!(!file_names(&*vfs, dir).contains(&ManifestStore::TEMP_FILE_NAME.to_owned()));
+
+    let segments = SegmentStore::open(&manifest).expect("the segments open");
+    let mut named = Vec::new();
+    for file in segments_of(&found) {
+        let id = file.id().get();
+        let segment = model.segment(id);
+        let bytes = read_file(&*vfs, &FileNames::SEGMENT.path(dir, file.id())).unwrap();
+        let valid = file.valid_len() as usize;
+        assert!(bytes[..valid] == segment.bytes[..valid]);
+        let adopted = SegmentModel {
+            phase: if file.state() == FileState::Sealed {
+                Phase::Sealed
+            } else {
+                Phase::Closed
+            },
+            ..segment.clone()
+        };
+        check_blocks(&segments, id, &adopted, file.valid_len()).expect("the segment is read");
+        named.push(FileNames::SEGMENT.file_name(file.id()));
+    }
+    assert_eq!(file_names(&*vfs, &FileNames::SEGMENT.dir(dir)), named);
+
+    go_on(manifest, segments, &found);
+    let again = ManifestStore::open(vfs, dir).expect("the manifest opens again");
+    SegmentStore::open(&again).expect("the segments open again");
+    is_pending
+}
+
+fn go_on(mut manifest: ManifestStore, segments: SegmentStore, found: &Manifest) {
+    let mut writer = segments.create().expect("a new segment");
+    let next_id = found.last_file_ids().segment.map_or(1, |id| id.get() + 1);
+    assert_eq!(writer.file_id(), id(next_id));
+    segments
+        .commit(&mut manifest)
+        .expect("the manifest names it");
+    let blocks = append_blocks(&mut writer, 5, u64::from(next_id));
+    let sealed_len = writer.seal().expect("the segment is sealed");
+    segments
+        .commit(&mut manifest)
+        .expect("the manifest names it sealed");
+
+    let named = manifest.manifest().unwrap();
+    assert!(named
+        .files()
+        .contains(&segment(next_id, FileState::Sealed, sealed_len)));
+    assert!(segments_of(named)
+        .all(|file| file.id().get() == next_id || file.state() != FileState::Open));
+    let mut buf = Vec::new();
+    for block in &blocks {
+        let read = segments.read(block.location, MAX, &mut buf).unwrap();
+        assert_eq!(read.payload().unwrap(), block.payload.as_slice());
+    }
+}
+
+pub(super) const STEP_KINDS: [&str; 12] = [
+    "open",
+    "create",
+    "commit",
+    "another log",
+    "append",
+    "sync a segment",
+    "sync all",
+    "seal",
+    "drop a writer",
+    "drop a segment",
+    "read back",
+    "restart",
+];
+
+#[test]
+fn a_random_workload_with_restarts_keeps_to_the_model() {
+    let mut taken = BTreeMap::new();
+    for seed in 0..12 {
+        let dir = tempfile::tempdir().unwrap();
+        let vfs: Arc<dyn Vfs> = Arc::new(FaultyVfs::without_syncs(Arc::new(StdVfs)));
+        let mut run = Run::new(vfs.clone(), dir.path(), seed);
+        for _ in 0..20 {
+            let target = run.steps + 25;
+            run.run(target).unwrap();
+            run.check_session();
+        }
+        let Run {
+            model,
+            session,
+            taken: steps,
+            ..
+        } = run;
+        drop(session);
+        assert!(!check_recovered(vfs, dir.path(), &model), "seed {seed}");
+        for (kind, count) in steps {
+            *taken.entry(kind).or_insert(0) += count;
+        }
+    }
+    assert_eq!(taken["open"], 12);
+    for kind in STEP_KINDS {
+        assert!(
+            taken.get(kind).is_some_and(|count| *count >= 12),
+            "{kind}: {taken:?}"
+        );
+    }
+}

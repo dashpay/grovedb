@@ -25,9 +25,9 @@
 //! does not need, so the dispatch in [`super`][`mod@super`] stays a plain
 //! version match.
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 use grovedb_merk::proofs::Op;
 use grovedb_merk::{
     proofs::Node,
@@ -38,7 +38,7 @@ use crate::{Element, Error, GroveDb, PathQuery, Query};
 
 impl GroveDb {
     /// `bind_chunk_proof_rows` v0 — see the module documentation.
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     pub(crate) fn bind_chunk_proof_rows_v0(_ops: &mut [Op]) -> CostResult<(), Error> {
         Ok(()).wrap_with_cost(OperationCost::default())
     }

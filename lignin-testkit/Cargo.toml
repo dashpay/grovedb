@@ -1,0 +1,35 @@
+[package]
+name = "lignin-testkit"
+description = "LigninDB test kit: workloads, golden corpus, differential fuzzer, crash simulation and benchmarks"
+version = "6.1.1"
+edition = "2024"
+license = "MIT"
+homepage = "https://www.grovedb.org"
+repository = "https://github.com/dashpay/grovedb"
+publish = false
+
+[dependencies]
+grovedb = { version = "6.1.1", path = "../grovedb", features = ["unsafe-dump-load"] }
+grovedb-commitment-tree = { version = "6.1.1", path = "../grovedb-commitment-tree" }
+grovedb-costs = { version = "6.1.1", path = "../costs" }
+grovedb-epoch-based-storage-flags = { version = "6.1.1", path = "../grovedb-epoch-based-storage-flags" }
+grovedb-merk = { version = "6.1.1", path = "../merk" }
+grovedb-path = { version = "6.1.1", path = "../path" }
+grovedb-storage = { version = "6.1.1", path = "../storage", features = ["rocksdb_storage"] }
+grovedb-version = { version = "6.1.1", path = "../grovedb-version" }
+blake3 = { workspace = true }
+hex = { workspace = true }
+lignin-format = { version = "6.1.1", path = "../lignin-format" }
+lignin-io = { version = "6.1.1", path = "../lignin-io" }
+lignin-store = { version = "6.1.1", path = "../lignin-store" }
+lignin-tree = { version = "6.1.1", path = "../lignin-tree" }
+lignindb = { version = "6.1.1", path = "../lignindb" }
+serde = { workspace = true }
+serde_json = { version = "1", features = ["float_roundtrip"] }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+grovedb-merk = { version = "6.1.1", path = "../merk", features = ["lignin_storage"] }
+lignindb = { version = "6.1.1", path = "../lignindb", features = ["testing"] }
+rustix = { version = "1", features = ["fs"] }
+syn = { version = "2", features = ["full", "visit"] }

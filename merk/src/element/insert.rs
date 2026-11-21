@@ -7,9 +7,9 @@ use grovedb_costs::{
     OperationCost,
 };
 use grovedb_element::Element;
-use grovedb_storage::StorageContext;
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
+use crate::store::NodeStore;
 use crate::{
     element::{
         costs::ElementCostExtensions, exists::ElementExistsInStorageExtensions,
@@ -87,7 +87,7 @@ pub trait ElementInsertToStorageExtensions {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -110,7 +110,7 @@ pub trait ElementInsertToStorageExtensions {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+    fn insert_if_not_exists<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -120,7 +120,7 @@ pub trait ElementInsertToStorageExtensions {
 
     /// Adds a "Put" op to batch operations with the element and key if it
     /// doesn't exist yet. Returns CostResult.
-    fn insert_if_not_exists_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
+    fn insert_if_not_exists_into_batch_operations<'db, S: NodeStore<'db>, K: AsRef<[u8]>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -136,7 +136,7 @@ pub trait ElementInsertToStorageExtensions {
     /// will be committed on the transaction commit.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+    fn insert_if_changed_value<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -148,7 +148,7 @@ pub trait ElementInsertToStorageExtensions {
     /// value is different from what already exists; Returns CostResult.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    fn insert_if_changed_value_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
+    fn insert_if_changed_value_into_batch_operations<'db, S: NodeStore<'db>, K: AsRef<[u8]>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -162,7 +162,7 @@ pub trait ElementInsertToStorageExtensions {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_reference<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -176,7 +176,7 @@ pub trait ElementInsertToStorageExtensions {
     /// value through the Merk tree (so uncommitted in-memory state is
     /// seen), and performs the same validations and write as
     /// [`Self::insert_reference`] when a write is needed.
-    fn insert_reference_if_changed_value<'db, S: StorageContext<'db>>(
+    fn insert_reference_if_changed_value<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -190,7 +190,7 @@ pub trait ElementInsertToStorageExtensions {
     /// through the Merk tree (so uncommitted in-memory state is seen), and
     /// performs the same validations and write as [`Self::insert_subtree`]
     /// when a write is needed.
-    fn insert_subtree_if_changed<'db, S: StorageContext<'db>>(
+    fn insert_subtree_if_changed<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -215,7 +215,7 @@ pub trait ElementInsertToStorageExtensions {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -251,7 +251,7 @@ pub trait ElementInsertToStorageExtensions {
     ///
     /// In both cases the resulting `combined_value_hash` is
     /// `combine_hash_three(value_hash, primary_root_hash, second_hash)`.
-    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -318,7 +318,7 @@ impl ElementInsertToStorageExtensions for Element {
         Ok(())
     }
 
-    fn insert<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -443,7 +443,7 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_if_not_exists<'db, S: StorageContext<'db>>(
+    fn insert_if_not_exists<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -470,7 +470,7 @@ impl ElementInsertToStorageExtensions for Element {
 
     /// Adds a "Put" op to batch operations with the element and key if it
     /// doesn't exist yet. Returns CostResult.
-    fn insert_if_not_exists_into_batch_operations<'db, S: StorageContext<'db>, K: AsRef<[u8]>>(
+    fn insert_if_not_exists_into_batch_operations<'db, S: NodeStore<'db>, K: AsRef<[u8]>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -514,7 +514,7 @@ impl ElementInsertToStorageExtensions for Element {
     /// will be committed on the transaction commit.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    fn insert_if_changed_value<'db, S: StorageContext<'db>>(
+    fn insert_if_changed_value<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -557,11 +557,7 @@ impl ElementInsertToStorageExtensions for Element {
     /// value is different from what already exists; Returns CostResult.
     /// The bool represents if we indeed inserted.
     /// If the value changed we return the old element.
-    fn insert_if_changed_value_into_batch_operations<
-        'db,
-        S: StorageContext<'db>,
-        K: AsRef<[u8]>,
-    >(
+    fn insert_if_changed_value_into_batch_operations<'db, S: NodeStore<'db>, K: AsRef<[u8]>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -607,7 +603,7 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_reference<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_reference<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -733,7 +729,7 @@ impl ElementInsertToStorageExtensions for Element {
         .map_err(|e| Error::CorruptedData(e.to_string()))
     }
 
-    fn insert_reference_if_changed_value<'db, S: StorageContext<'db>>(
+    fn insert_reference_if_changed_value<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -790,7 +786,7 @@ impl ElementInsertToStorageExtensions for Element {
         Ok(delta).wrap_with_cost(cost)
     }
 
-    fn insert_subtree_if_changed<'db, S: StorageContext<'db>>(
+    fn insert_subtree_if_changed<'db, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: &[u8],
@@ -894,7 +890,7 @@ impl ElementInsertToStorageExtensions for Element {
     /// If transaction is not passed, the batch will be written immediately.
     /// If transaction is passed, the operation will be committed on the
     /// transaction commit.
-    fn insert_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -1028,7 +1024,7 @@ impl ElementInsertToStorageExtensions for Element {
         Ok(()).wrap_with_cost(Default::default())
     }
 
-    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: StorageContext<'db>>(
+    fn insert_count_indexed_subtree<'db, K: AsRef<[u8]>, S: NodeStore<'db>>(
         &self,
         merk: &mut Merk<S>,
         key: K,
@@ -1215,15 +1211,12 @@ impl ElementInsertToStorageExtensions for Element {
     }
 }
 
-#[cfg(all(feature = "minimal", feature = "test_utils"))]
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
-    use grovedb_storage::{rocksdb_storage::test_utils::TempStorage, Storage, StorageBatch};
-
     use super::*;
     use crate::{
         element::get::ElementFetchFromStorageExtensions,
-        test_utils::{empty_path_merk, empty_path_merk_read_only, TempMerk},
+        test_utils::{root_merk, SuiteBatch, TempEngine, TempMerk, TestEngine},
         TreeType,
     };
 
@@ -1389,10 +1382,10 @@ mod tests {
     #[test]
     fn test_insert_if_changed_value_inserts_when_value_changed() {
         let grove_version = GroveVersion::latest();
-        let storage = TempStorage::new();
-        let batch = StorageBatch::new();
+        let storage = TempEngine::new();
+        let batch = SuiteBatch::default();
         let transaction = storage.start_transaction();
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let mut merk = root_merk(&*storage, &transaction, Some(&batch), grove_version);
 
         Element::empty_tree()
             .insert(&mut merk, b"mykey", None, grove_version)
@@ -1403,13 +1396,10 @@ mod tests {
             .unwrap()
             .expect("expected successful insertion 2");
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
 
-        let batch = StorageBatch::new();
-        let mut merk = empty_path_merk(&*storage, &transaction, &batch, grove_version);
+        let batch = SuiteBatch::default();
+        let mut merk = root_merk(&*storage, &transaction, Some(&batch), grove_version);
         let element = Element::new_item(b"value2".to_vec());
         let delta = element
             .insert_if_changed_value(&mut merk, b"another-key", None, grove_version)
@@ -1419,11 +1409,8 @@ mod tests {
         assert!(delta.has_changed());
         assert_eq!(delta.old, Some(Element::new_item(b"value".to_vec())),);
 
-        storage
-            .commit_multi_context_batch(batch, None)
-            .unwrap()
-            .unwrap();
-        let merk = empty_path_merk_read_only(&*storage, &transaction, grove_version);
+        storage.apply_batch(batch, &transaction).unwrap().unwrap();
+        let merk = root_merk(&*storage, &transaction, None, grove_version);
 
         assert_eq!(
             Element::get(&merk, b"another-key", true, grove_version)

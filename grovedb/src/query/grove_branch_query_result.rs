@@ -19,7 +19,7 @@ use crate::Element;
 /// Unlike `BranchQueryResult` which contains raw proof ops, this struct
 /// contains deserialized GroveDB Elements and provides the leaf keys
 /// needed for subsequent branch queries to explore deeper levels.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, Clone)]
 pub struct GroveBranchQueryResult {
     /// The elements from the branch proof, keyed by their key.

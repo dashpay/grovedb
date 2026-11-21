@@ -17,8 +17,7 @@ mod v0;
 mod v1;
 
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
-use grovedb_merk::Merk;
-use grovedb_storage::StorageContext;
+use grovedb_merk::{store::NodeStore, Merk};
 use grovedb_version::{error::GroveVersionError, version::GroveVersion};
 
 use super::TreeCacheMerkByPath;
@@ -31,7 +30,7 @@ where
         &[Vec<u8>],
         Option<&Element>,
     ) -> CostResult<Vec<(grovedb_element::indexed::IndexAxis, Merk<S>)>, Error>,
-    S: StorageContext<'db>,
+    S: NodeStore<'db>,
 {
     /// Whether the pending `InsertIfNotExists` of `element` at
     /// `qualified_path` leaves the element already stored there in place, so

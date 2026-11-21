@@ -19,10 +19,35 @@ use crate::{
     Error, GroveDb,
 };
 
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 impl GroveDb {
-    /// Worst case costs for delete operations for delete up tree while empty
+    /// The estimate of [`Self::worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
     pub fn worst_case_delete_operations_for_delete_up_tree_while_empty<'db, S: Storage<'db>>(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        stop_path_height: Option<u16>,
+        validate: bool,
+        intermediate_tree_info: IntMap<u64, (TreeType, u32)>,
+        max_element_size: u32,
+        backwards_references: BackwardsReferences,
+        grove_version: &GroveVersion,
+    ) -> CostResult<Vec<QualifiedGroveDbOp>, Error> {
+        Self::worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
+            path,
+            key,
+            stop_path_height,
+            validate,
+            intermediate_tree_info,
+            max_element_size,
+            backwards_references,
+            grove_version,
+        )
+    }
+
+    /// Worst case costs for delete operations for delete up tree while empty
+    pub fn worst_case_delete_operations_for_delete_up_tree_while_empty_engine_free(
         path: &KeyInfoPath,
         key: &KeyInfo,
         stop_path_height: Option<u16>,
@@ -95,7 +120,7 @@ impl GroveDb {
                 );
                 let op = cost_return_on_error!(
                     &mut cost,
-                    Self::worst_case_delete_operation_for_delete::<S>(
+                    Self::worst_case_delete_operation_for_delete_engine_free(
                         &KeyInfoPath::from_vec(path_at_level.to_vec()),
                         key_at_level,
                         tree_type,
@@ -113,12 +138,39 @@ impl GroveDb {
         }
     }
 
+    /// The estimate of [`Self::worst_case_delete_operation_for_delete_engine_free`], for a
+    /// caller that names a storage engine. `S` is not used: the estimate
+    /// is the same on every engine.
+    pub fn worst_case_delete_operation_for_delete<'db, S: Storage<'db>>(
+        path: &KeyInfoPath,
+        key: &KeyInfo,
+        in_parent_tree_type: TreeType,
+        validate: bool,
+        check_if_tree: bool,
+        except_keys_count: u16,
+        max_element_size: u32,
+        backwards_references: BackwardsReferences,
+        grove_version: &GroveVersion,
+    ) -> CostResult<QualifiedGroveDbOp, Error> {
+        Self::worst_case_delete_operation_for_delete_engine_free(
+            path,
+            key,
+            in_parent_tree_type,
+            validate,
+            check_if_tree,
+            except_keys_count,
+            max_element_size,
+            backwards_references,
+            grove_version,
+        )
+    }
+
     /// Worst case costs for delete operation for delete
     ///
     /// `backwards_references` picks the checked op or its `DontCheckForBackwardsReferences` twin, which
     /// decides whether the batch estimator charges the displaced-participant
     /// fan-out for it.
-    pub fn worst_case_delete_operation_for_delete<'db, S: Storage<'db>>(
+    pub fn worst_case_delete_operation_for_delete_engine_free(
         path: &KeyInfoPath,
         key: &KeyInfo,
         in_parent_tree_type: TreeType,
@@ -142,7 +194,7 @@ impl GroveDb {
         if validate {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_merk_at_path::<S>(
+                GroveDb::add_worst_case_get_merk_at_path_engine_free(
                     &mut cost,
                     path,
                     in_parent_tree_type,
@@ -153,7 +205,7 @@ impl GroveDb {
         if check_if_tree {
             cost_return_on_error_no_add!(
                 cost,
-                GroveDb::add_worst_case_get_raw_cost::<S>(
+                GroveDb::add_worst_case_get_raw_cost_engine_free(
                     &mut cost,
                     path,
                     key,

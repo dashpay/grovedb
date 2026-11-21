@@ -6,12 +6,11 @@ use std::option::Option::None;
 use grovedb_costs::{cost_return_on_error, CostResult, CostsExt, OperationCost};
 use grovedb_merk::MerkOptions;
 use grovedb_path::SubtreePath;
-use grovedb_storage::{Storage, StorageBatch};
 use grovedb_version::{check_grovedb_v0_with_cost, version::GroveVersion};
 
 use crate::{
     util::{check_v1_slot_enabled, TxRef, MAX_KEY_LENGTH},
-    Element, Error, GroveDb, TransactionArg,
+    Element, Engine, Error, GroveDb, TransactionArg,
 };
 
 /// Refuse creating a tree element that a grove version predates, bare or
@@ -118,16 +117,16 @@ fn validate_key_length(key: &[u8]) -> CostResult<(), Error> {
     Ok(()).wrap_with_cost(OperationCost::default())
 }
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Insert a GroveDB element given a path to the subtree and the key to
     /// insert at
-    pub fn insert<'b, B, P>(
-        &self,
+    pub fn insert<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         element: Element,
         options: Option<InsertOptions>,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(), Error>
     where
@@ -143,7 +142,7 @@ impl GroveDb {
         cost_return_on_error!(&mut cost, validate_key_length(key));
 
         let subtree_path: SubtreePath<B> = path.into();
-        let batch = StorageBatch::new();
+        let batch = E::Batch::default();
 
         let tx = TxRef::new(&self.db, transaction);
 
@@ -162,9 +161,7 @@ impl GroveDb {
 
         cost_return_on_error!(
             &mut cost,
-            self.db
-                .commit_multi_context_batch(batch, Some(tx.as_ref()))
-                .map_err(Into::into)
+            self.db.apply_batch(batch, tx.as_ref()).map_err(Into::into)
         );
 
         tx.commit_local().wrap_with_cost(cost)
@@ -188,12 +185,12 @@ impl GroveDb {
     ///
     /// Returns a `CostResult<bool, Error>` indicating whether the element was
     /// inserted (`true`) or already existed (`false`).
-    pub fn insert_if_not_exists<'b, B, P>(
-        &self,
+    pub fn insert_if_not_exists<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         element: Element,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error>
     where
@@ -244,12 +241,12 @@ impl GroveDb {
     /// Returns a `CostResult<Option<Element>, Error>`, where
     /// `Ok(Some(element))` is the existing element if it was found, or
     /// `Ok(None)` if the new element was inserted.
-    pub fn insert_if_not_exists_return_existing_element<'b, B, P>(
-        &self,
+    pub fn insert_if_not_exists_return_existing_element<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         element: Element,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<Option<Element>, Error>
     where
@@ -285,12 +282,12 @@ impl GroveDb {
     /// Insert if the value changed
     /// We return if the value was inserted
     /// If the value was changed then we return the previous element
-    pub fn insert_if_changed_value<'b, B, P>(
-        &self,
+    pub fn insert_if_changed_value<'db, 'b, B, P>(
+        &'db self,
         path: P,
         key: &[u8],
         element: Element,
-        transaction: TransactionArg,
+        transaction: TransactionArg<'db, '_, E>,
         grove_version: &GroveVersion,
     ) -> CostResult<(bool, Option<Element>), Error>
     where
@@ -328,7 +325,7 @@ impl GroveDb {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, grovedb_test_engine))]
 mod tests {
     use crate::BackwardsReferences;
     use grovedb_costs::{

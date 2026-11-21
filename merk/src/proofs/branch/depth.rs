@@ -218,7 +218,7 @@ pub fn calculate_chunk_depths(tree_depth: u8, max_depth: u8) -> Result<Vec<u8>, 
         .collect())
 }
 
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests {
     use super::*;
 

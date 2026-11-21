@@ -1,0 +1,197 @@
+lignin-golden-trace 1
+name legacy-convert-without-a-counterpart
+seed 0x0
+grove-version 5
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-convert-without-a-counterpart
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c884cr697e
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [115, 117, 109, 115], element: sum_tree: None 0 })
+  cost seeks=5 loaded=150 added=124 replaced=77 removed=- hashes=9 sinsemilla=0
+  root ae4385276d28b4bc97fbc7c6864a50b7a0fb2932cebe52f2132fa5fad5ad5ebc
+c57a6r3562
+  step 2
+  # Write(Insert { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], element: sum_item: 4 })
+  cost seeks=8 loaded=313 added=164 replaced=164 removed=- hashes=15 sinsemilla=0
+  root 1062d35faeda91f773aafe5715fd99f4f1085ee34ef2abb52290e4cd357daa6d
+c91a4rb30c
+  step 3
+  # Write(Insert { path: [[116, 111, 112]], key: [116, 114, 101, 101], element: tree: None })
+  cost seeks=7 loaded=228 added=115 replaced=164 removed=- hashes=11 sinsemilla=0
+  root 156798f98424b87150f31702ec31a8b89e027bfc6de76f2b42a7d669adf74439
+c3311r184d
+  step 4
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116], element: count_tree: None 0 })
+  cost seeks=7 loaded=268 added=126 replaced=164 removed=- hashes=11 sinsemilla=0
+  root 3ec3500b9cd28a47eaa0fd4cd2adc3526f396633b6da4257cce9c062f14fd967
+cb0car0149
+  step 5
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116], element: provable_count_tree: None 0 })
+  cost seeks=9 loaded=380 added=144 replaced=252 removed=- hashes=13 sinsemilla=0
+  root 0602b6e70043e3eae930048c4a1305f9c8864f569f89d338e401f637c1d2043d
+cf0b5r5dc2
+  step 6
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 })
+  cost seeks=11 loaded=501 added=143 replaced=349 removed=- hashes=16 sinsemilla=0
+  root c8be9352e503154fe8ee17c218e7e536ea19cf8743aa581d4bfdf79582aa56fe
+c2446r3551
+  step 7
+  # Write(Insert { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109], element: big_sum_tree: None 0 })
+  cost seeks=13 loaded=622 added=137 replaced=446 removed=- hashes=17 sinsemilla=0
+  root 7e2fbb5165da3ed2eebe0aeec155b0b6dae13019c4556eb99eb0e903ddd79e06
+c20earffb1
+  step 8
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109], element: count_big_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=9 loaded=431 added=158 replaced=262 removed=- hashes=13 sinsemilla=0
+  root ae214754cc1c593e89f68eee1512eb13fe37d9e78435fce55976470e12a7d5c1
+cfcacr0e57
+  step 9
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], element: provable_big_sum_tree: None 0 })
+  cost seeks=11 loaded=551 added=155 replaced=358 removed=- hashes=15 sinsemilla=0
+  root ba77e85372aae25188905f31f82fcd38f53c353d185aadc134fef3f489b333f0
+cd447rbb14
+  step 10
+  # Write(Insert { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], element: provable_count_provable_big_sum_tree: Nonecount: 0, sum 0 })
+  cost seeks=11 loaded=603 added=194 replaced=358 removed=- hashes=15 sinsemilla=0
+  root afb9dd249c26379ab6ae22a026fbd699a18ffbf26cf02426e45fb656cb62879b
+cf539rb253
+  step 11
+  # Write(Insert { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_big_sum_indexed_tree: primary=None, secondary=None, sum: 0 })
+  cost seeks=11 loaded=551 added=154 replaced=359 removed=- hashes=16 sinsemilla=0
+  root 12389a30331e16c91d0716d2122fee77e1c272915d264b8fa1b1802290e54a6c
+ccdb3r0eb5
+  step 12
+  # Write(Insert { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], element: provable_count_provable_big_sum_indexed_tree: primary=None, count: 0, sum: 0, axes: [(0, None), (2, None), (3, None)] })
+  cost seeks=11 loaded=552 added=181 replaced=374 removed=- hashes=18 sinsemilla=0
+  root 97d22d6b30e718539a4830fa608f1f54b30825b5e2db95643514a8de41be62dd
+c84c9rc723
+  step 13
+  # Write(Insert { path: [[116, 111, 112]], key: [105, 116, 101, 109], element: item: [hex: 6e6f2074726565, str: no tree] })
+  cost seeks=15 loaded=813 added=153 replaced=594 removed=- hashes=18 sinsemilla=0
+  root a40785bc804d9a73bf0903cfb621d8ca1d122f8fb101bce916936a127c4f766d
+ce27dr1f4c
+  step 14
+  # Write(Insert { path: [[116, 111, 112]], key: [114, 101, 102, 101, 114, 101, 110, 99, 101], element: ref })
+  cost seeks=16 loaded=1059 added=162 replaced=488 removed=- hashes=19 sinsemilla=0
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cb7ddr1f4c
+  step 15
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c1d6fe72a5r1f4c
+  step 16
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [116, 114, 101, 101], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=310 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cef3de72a5r1f4c
+  step 17
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=403 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c3363e72a5r1f4c
+  step 18
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=362 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c4b0ee72a5r1f4c
+  step 19
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=351 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cff43e72a5r1f4c
+  step 20
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=312 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cf115e72a5r1f4c
+  step 21
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [105, 116, 101, 109], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=317 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c85cce72a5r1f4c
+  step 22
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], own_transaction: false })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=2 loaded=158 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cb7ddr1f4c
+  step 23
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+cef3de72a5r1f4c
+  step 24
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=403 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c5835e72a5r1f4c
+  step 25
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=2 loaded=240 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c8b16e72a5r1f4c
+  step 26
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=369 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c25afe72a5r1f4c
+  step 27
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [112, 114, 111, 118, 97, 98, 108, 101, 45, 99, 111, 117, 110, 116, 45, 112, 114, 111, 118, 97, 98, 108, 101, 45, 98, 105, 103, 45, 115, 117, 109], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=357 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+ce03be72a5r1f4c
+  step 28
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [99, 111, 117, 110, 116, 45, 98, 105, 103, 45, 115, 117, 109, 45, 105, 110, 100, 101, 120, 101, 100], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=319 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c5c8ae72a5r1f4c
+  step 29
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112]], key: [114, 101, 102, 101, 114, 101, 110, 99, 101], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=3 loaded=316 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c85cce72a5r1f4c
+  step 30
+  # Write(ConvertToBigSumTree { path: [[116, 111, 112], [115, 117, 109, 115]], key: [97], own_transaction: true })
+  # failed: invalid input: only a tree that keeps a 64-bit sum and has a counterpart with a 128-bit sum can be converted to a big sum tree (SumTree, CountSumTree, ProvableSumTree, ProvableCountSumTree, ProvableCountProvableSumTree, ProvableSumIndexedTree or ProvableCountProvableSumIndexedTree)
+  cost seeks=2 loaded=158 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  failed InvalidInput
+  root 823698f693465b630bb4fa265ac77422ed61af95b0b95c6784f3e1d834362fb7
+c4b93v0338
+  step 31
+  # Read(Get { path: [[116, 111, 112]], key: [115, 117, 109, 115] })
+  cost seeks=3 loaded=420 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  element 040101610800
+stream 32 0f108b05fbfcca7300dda7d4574dd214661f88386fc107427ae2314aad2353fb
+tally failed=14 unproved=0 unverified=0
+end 32 5e9527231ab93d6f7b9a2d8d302eafc12d5e4b06182e162c8c000feb5aaa5521

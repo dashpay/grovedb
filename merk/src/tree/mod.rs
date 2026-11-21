@@ -76,6 +76,8 @@ pub use walk::{Fetch, RefWalker, Walker};
 #[cfg(feature = "minimal")]
 use crate::merk::NodeType;
 #[cfg(feature = "minimal")]
+use crate::store::NodeChange;
+#[cfg(feature = "minimal")]
 use crate::tree::hash::HASH_LENGTH_X2;
 #[cfg(feature = "minimal")]
 use crate::tree::kv::ValueDefinedCostType;
@@ -90,25 +92,87 @@ use crate::{error::Error, tree_type::TreeType, Error::Overflow};
 /// The fields of the `Tree` type, stored on the heap.
 #[derive(Clone, Encode, Decode, Debug, PartialEq)]
 pub struct TreeNodeInner {
+    pub(crate) marks: NodeMarks,
     pub(crate) left: Option<Link>,
     pub(crate) right: Option<Link>,
     pub(crate) kv: KV,
 }
 
 #[cfg(feature = "minimal")]
+/// What a node in memory remembers about its children between commits. The
+/// marks are not part of the stored node: they encode to nothing, and two
+/// nodes that differ only in them are equal.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct NodeMarks {
+    /// A child slot was emptied or filled since the node was loaded or last
+    /// committed, and no walk showed that the same child came back.
+    pub(crate) children_changed: bool,
+    /// A walk detached this node from its parent to lend it to a closure,
+    /// and the node has not been attached since.
+    pub(crate) on_loan: bool,
+    /// The feature type was replaced in place since the node was loaded or
+    /// last committed, with no value put on the node.
+    pub(crate) feature_type_changed: bool,
+    /// The node was read without its value
+    /// ([`NodeStore::fetch_node_without_value`](crate::store::NodeStore::fetch_node_without_value)):
+    /// the value it holds is empty and is not the node's, until
+    /// [`NodeStore::load_node_value`](crate::store::NodeStore::load_node_value)
+    /// has read it. Such a node is of a walk that only reads
+    /// ([`RefWalker::values_on_demand`]) and is never in the tree of a Merk.
+    pub(crate) value_absent: bool,
+}
+
+#[cfg(feature = "minimal")]
+impl PartialEq for NodeMarks {
+    fn eq(&self, _other: &Self) -> bool {
+        true
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl Encode for NodeMarks {
+    #[inline]
+    fn encode_into<W: std::io::Write>(&self, _dest: &mut W) -> ed::Result<()> {
+        Ok(())
+    }
+
+    #[inline]
+    fn encoding_length(&self) -> ed::Result<usize> {
+        Ok(0)
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl Decode for NodeMarks {
+    #[inline]
+    fn decode<R: std::io::Read>(_input: R) -> ed::Result<Self> {
+        Ok(Self::default())
+    }
+}
+
+#[cfg(feature = "minimal")]
+impl Terminated for NodeMarks {}
+
+#[cfg(feature = "minimal")]
+const VALUE_ABSENT: &str = "the value of a node that was read without it";
+
+#[cfg(feature = "minimal")]
 impl TreeNodeInner {
     /// Get the value as owned of the key value struct
     pub fn value_as_owned(self) -> Vec<u8> {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         self.kv.value
     }
 
     /// Get the value as owned of the key value struct
     pub fn value_as_owned_with_feature(self) -> (Vec<u8>, TreeFeatureType) {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         (self.kv.value, self.kv.feature_type)
     }
 
     /// Get the value as slice of the key value struct
     pub fn value_as_slice(&self) -> &[u8] {
+        debug_assert!(!self.marks.value_absent, "{VALUE_ABSENT}");
         self.kv.value.as_slice()
     }
 
@@ -140,6 +204,34 @@ pub struct TreeNode {
 }
 
 #[cfg(feature = "minimal")]
+/// What a walk remembers of the child slot it empties, to tell whether it
+/// puts the same child back.
+///
+/// A walk detaches a child, lends it to a closure and attaches what the
+/// closure returns. It marks the child it lends as on loan, and attaching a
+/// node anywhere takes the mark off. So a node that comes back with the mark
+/// is the node that was lent, and the parent keeps the children it had.
+pub(crate) struct WalkedSlot {
+    had_child: bool,
+    #[cfg(debug_assertions)]
+    key: Option<Vec<u8>>,
+}
+
+#[cfg(feature = "minimal")]
+impl WalkedSlot {
+    /// The slot of `parent` on the given side, before a walk empties it.
+    #[inline]
+    pub(crate) fn of(parent: &TreeNode, left: bool) -> Self {
+        let link = parent.link(left);
+        WalkedSlot {
+            had_child: link.is_some(),
+            #[cfg(debug_assertions)]
+            key: link.map(|link| link.key().to_vec()),
+        }
+    }
+}
+
+#[cfg(feature = "minimal")]
 impl TreeNode {
     /// Creates a new `Tree` with the given key and value, and no children.
     ///
@@ -152,6 +244,7 @@ impl TreeNode {
     ) -> CostContext<Self> {
         KV::new(key, value, value_defined_cost, feature_type).map(|kv| Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv,
                 left: None,
                 right: None,
@@ -169,6 +262,52 @@ impl TreeNode {
             old_value: Some(old_value),
             known_storage_cost: None,
         }
+    }
+
+    /// A node that was read without its value, for a walk that only reads
+    /// ([`RefWalker::values_on_demand`]): its key, its hashes, its feature
+    /// type and its links. The value it holds is empty until
+    /// [`Self::put_read_value`]; [`Self::value_absent`] says so.
+    ///
+    /// It has no mutation baseline, so a commit would take it for a new
+    /// node: it must never reach one, nor be put in the tree of a Merk.
+    #[cfg(any(feature = "lignin_storage", test))]
+    pub(crate) fn new_without_value(
+        key: Vec<u8>,
+        kv_hash: CryptoHash,
+        value_hash: CryptoHash,
+        feature_type: TreeFeatureType,
+        left: Option<Link>,
+        right: Option<Link>,
+    ) -> Self {
+        Self {
+            inner: Box::new(TreeNodeInner {
+                marks: NodeMarks {
+                    value_absent: true,
+                    ..NodeMarks::default()
+                },
+                left,
+                right,
+                kv: KV::from_fields(key, Vec::new(), kv_hash, value_hash, feature_type),
+            }),
+            old_value: None,
+            known_storage_cost: None,
+        }
+    }
+
+    /// Whether the node was read without its value and the value has not
+    /// been read since.
+    #[inline]
+    pub fn value_absent(&self) -> bool {
+        self.inner.marks.value_absent
+    }
+
+    /// Gives a node that was read without its value the value that was
+    /// read for it.
+    #[cfg(any(feature = "lignin_storage", test))]
+    pub(crate) fn put_read_value(&mut self, value: Vec<u8>) {
+        self.inner.kv.value = value;
+        self.inner.marks.value_absent = false;
     }
 
     /// the node type
@@ -299,6 +438,7 @@ impl TreeNode {
     ) -> CostContext<Self> {
         KV::new_with_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv,
                 left: None,
                 right: None,
@@ -319,6 +459,7 @@ impl TreeNode {
     ) -> CostContext<Self> {
         KV::new_with_combined_value_hash(key, value, value_hash, feature_type).map(|kv| Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv,
                 left: None,
                 right: None,
@@ -341,6 +482,7 @@ impl TreeNode {
         KV::new_with_layered_value_hash(key, value, value_cost, value_hash, feature_type).map(
             |kv| Self {
                 inner: Box::new(TreeNodeInner {
+                    marks: NodeMarks::default(),
                     kv,
                     left: None,
                     right: None,
@@ -377,6 +519,7 @@ impl TreeNode {
         kv.value_defined_cost = value_defined_cost;
         let mut node = Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv,
                 left: None,
                 right: None,
@@ -506,6 +649,7 @@ impl TreeNode {
         )
         .map(|kv| Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv,
                 left: None,
                 right: None,
@@ -527,6 +671,7 @@ impl TreeNode {
     ) -> CostContext<Self> {
         value_hash(value.as_slice()).map(|vh| Self {
             inner: Box::new(TreeNodeInner {
+                marks: NodeMarks::default(),
                 kv: KV::from_fields(key, value, kv_hash, vh, feature_type),
                 left,
                 right,
@@ -557,6 +702,7 @@ impl TreeNode {
     #[inline]
     pub(crate) fn set_feature_type(&mut self, feature_type: TreeFeatureType) {
         self.inner.kv.feature_type = feature_type;
+        self.inner.marks.feature_type_changed = true;
     }
 
     /// Returns the root node's key as a slice.
@@ -568,6 +714,7 @@ impl TreeNode {
     /// Set key of Tree
     pub fn set_key(&mut self, key: Vec<u8>) {
         self.inner.kv.key = key;
+        self.inner.marks.on_loan = false;
     }
 
     /// Set value of Tree
@@ -585,18 +732,21 @@ impl TreeNode {
     /// Returns the root node's value as a ref.
     #[inline]
     pub fn value_ref(&self) -> &Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         self.inner.kv.value.as_ref()
     }
 
     /// Returns the root node's value as a ref.
     #[inline]
     pub fn value_mut_ref(&mut self) -> &mut Vec<u8> {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         &mut self.inner.kv.value
     }
 
     /// Returns the root node's value as a slice.
     #[inline]
     pub fn value_as_slice(&self) -> &[u8] {
+        debug_assert!(!self.value_absent(), "{VALUE_ABSENT}");
         self.inner.kv.value_as_slice()
     }
 
@@ -625,13 +775,16 @@ impl TreeNode {
 
     /// Returns a mutable reference to the root node's `Link` on the given side,
     /// if any. If there is no child, returns `None`.
+    ///
+    /// The link may be given another child through the reference, so the
+    /// node counts as having changed children from here on.
     #[inline]
     pub fn link_mut(&mut self, left: bool) -> Option<&mut Link> {
-        if left {
-            self.inner.left.as_mut()
-        } else {
-            self.inner.right.as_mut()
+        let link = self.slot_mut(left).as_mut();
+        if link.is_some() {
+            self.inner.marks.children_changed = true;
         }
+        self.slot_mut(left).as_mut()
     }
 
     /// Returns a the size of node's child key and sum on the given side, if
@@ -679,6 +832,10 @@ impl TreeNode {
 
     /// Returns a mutable reference to the root node's child on the given side,
     /// if any. If there is no child, returns `None`.
+    ///
+    /// The child must not be replaced through the reference by a node with
+    /// another key: this node would not know its children changed. `walk`
+    /// and `attach` replace a child.
     #[inline]
     pub fn child_mut(&mut self, left: bool) -> Option<&mut Self> {
         match self.slot_mut(left).as_mut() {
@@ -1389,15 +1546,62 @@ impl TreeNode {
     /// Returns an error if there is already a child on the given side,
     /// indicating a corrupted tree state.
     #[inline]
-    pub fn attach(mut self, left: bool, maybe_child: Option<Self>) -> Result<Self, Error> {
+    pub fn attach(mut self, left: bool, mut maybe_child: Option<Self>) -> Result<Self, Error> {
         debug_assert_ne!(
             Some(self.key()),
             maybe_child.as_ref().map(|c| c.key()),
             "Tried to attach tree with same key"
         );
 
-        let slot = self.slot_mut(left);
+        let slot = self.empty_slot_mut(left)?;
+        if let Some(child) = maybe_child.as_mut() {
+            child.inner.marks.on_loan = false;
+        }
+        *slot = Link::maybe_from_modified_tree(maybe_child);
+        if slot.is_some() {
+            self.inner.marks.children_changed = true;
+        }
 
+        Ok(self)
+    }
+
+    /// Attaches what the closure of a walk returned in the slot the walk
+    /// emptied. The node's children changed unless that is the child the
+    /// slot held.
+    #[inline]
+    pub(crate) fn attach_walked(
+        mut self,
+        left: bool,
+        mut maybe_child: Option<Self>,
+        walked: WalkedSlot,
+    ) -> Result<Self, Error> {
+        debug_assert_ne!(
+            Some(self.key()),
+            maybe_child.as_ref().map(|c| c.key()),
+            "Tried to attach tree with same key"
+        );
+
+        let slot = self.empty_slot_mut(left)?;
+        let same_child = match maybe_child.as_mut() {
+            Some(child) => std::mem::take(&mut child.inner.marks.on_loan) && walked.had_child,
+            None => !walked.had_child,
+        };
+        #[cfg(debug_assertions)]
+        if let (true, Some(child)) = (same_child, maybe_child.as_ref()) {
+            assert_eq!(walked.key.as_deref(), Some(child.key()));
+        }
+        *slot = Link::maybe_from_modified_tree(maybe_child);
+        if !same_child {
+            self.inner.marks.children_changed = true;
+        }
+
+        Ok(self)
+    }
+
+    /// The child slot on the given side, which has to be empty.
+    #[inline]
+    fn empty_slot_mut(&mut self, left: bool) -> Result<&mut Option<Link>, Error> {
+        let slot = self.slot_mut(left);
         if slot.is_some() {
             return Err(Error::CorruptedState(if left {
                 "Tried to attach to left tree slot, but it is already Some"
@@ -1405,9 +1609,7 @@ impl TreeNode {
                 "Tried to attach to right tree slot, but it is already Some"
             }));
         }
-        *slot = Link::maybe_from_modified_tree(maybe_child);
-
-        Ok(self)
+        Ok(slot)
     }
 
     /// Detaches the child on the given side (if any) from the root node, and
@@ -1416,16 +1618,25 @@ impl TreeNode {
     /// One will usually want to reattach (see `attach`) a child on the same
     /// side after applying some operation to the detached child.
     #[inline]
-    pub fn detach(mut self, left: bool) -> (Self, Option<Self>) {
-        let maybe_child = match self.slot_mut(left).take() {
+    pub fn detach(self, left: bool) -> (Self, Option<Self>) {
+        self.detach_child(left, false)
+    }
+
+    /// Detaches the child on the given side. A walk passes `walked`: the
+    /// child is then lent to the walk's closure, and whether this node's
+    /// children changed is decided when the walk attaches what comes back.
+    #[inline]
+    pub(crate) fn detach_child(mut self, left: bool, walked: bool) -> (Self, Option<Self>) {
+        let maybe_child = match self.take_link(left, walked) {
             None => None,
             Some(Link::Reference { .. }) => None,
-            Some(Link::Modified { tree, .. }) => Some(tree),
-            Some(Link::Uncommitted { tree, .. }) => Some(tree),
-            Some(Link::Loaded { tree, .. }) => Some(tree),
+            Some(Link::Modified { mut tree, .. })
+            | Some(Link::Uncommitted { mut tree, .. })
+            | Some(Link::Loaded { mut tree, .. }) => {
+                tree.inner.marks.on_loan = walked;
+                Some(tree)
+            }
         };
-        // println!("detaching {}",
-        // std::str::from_utf8(maybe_child.as_ref().unwrap().key()).unwrap());
 
         (self, maybe_child)
     }
@@ -1466,8 +1677,9 @@ impl TreeNode {
     where
         F: FnOnce(Option<Self>) -> Option<Self>,
     {
-        let (tree, maybe_child) = self.detach(left);
-        tree.attach(left, f(maybe_child))
+        let walked = WalkedSlot::of(&self, left);
+        let (tree, maybe_child) = self.detach_child(left, true);
+        tree.attach_walked(left, f(maybe_child), walked)
     }
 
     /// Like `walk`, but returns an error if there is no child on the given
@@ -1477,13 +1689,60 @@ impl TreeNode {
     where
         F: FnOnce(Self) -> Option<Self>,
     {
-        let (tree, child) = self.detach_expect(left)?;
-        tree.attach(left, f(child))
+        let walked = WalkedSlot::of(&self, left);
+        let (tree, maybe_child) = self.detach_child(left, true);
+        let Some(child) = maybe_child else {
+            return Err(Error::CorruptedState(if left {
+                "Expected tree to have left child, but got None"
+            } else {
+                "Expected tree to have right child, but got None"
+            }));
+        };
+        tree.attach_walked(left, f(child), walked)
     }
 
-    /// Returns a mutable reference to the child slot for the given side.
+    /// Empties the child slot on the given side and returns the link it held.
+    /// A walk passes `walked` and decides whether the children changed when
+    /// it attaches a child again.
     #[inline]
-    pub(crate) fn slot_mut(&mut self, left: bool) -> &mut Option<Link> {
+    pub(crate) fn take_link(&mut self, left: bool, walked: bool) -> Option<Link> {
+        let link = self.slot_mut(left).take();
+        if !walked && link.is_some() {
+            self.inner.marks.children_changed = true;
+        }
+        link
+    }
+
+    /// How this node differs from the node the store holds under its key,
+    /// for the commit that writes it. `value_put` says whether a put left a
+    /// storage cost on the node for this commit. Taking the answer starts the
+    /// next commit's account, so a commit asks once the write cannot fail.
+    pub(crate) fn take_node_change(&mut self, value_put: bool) -> NodeChange {
+        let children_changed = std::mem::take(&mut self.inner.marks.children_changed);
+        let feature_type_changed = std::mem::take(&mut self.inner.marks.feature_type_changed);
+        if self.old_value.is_none() || value_put || feature_type_changed {
+            return NodeChange::ValueWritten;
+        }
+        debug_assert_eq!(self.old_value.as_deref(), Some(self.value_as_slice()));
+        if children_changed {
+            NodeChange::StructureChanged
+        } else {
+            NodeChange::HashOnly
+        }
+    }
+
+    /// Puts `link` in the child slot on the given side, whatever it held.
+    #[inline]
+    pub(crate) fn set_link(&mut self, left: bool, link: Option<Link>) {
+        *self.slot_mut(left) = link;
+        self.inner.marks.children_changed = true;
+    }
+
+    /// Returns a mutable reference to the child slot for the given side. A
+    /// caller that puts another child in the slot has to set
+    /// `children_changed`.
+    #[inline]
+    fn slot_mut(&mut self, left: bool) -> &mut Option<Link> {
         if left {
             &mut self.inner.left
         } else {
@@ -2050,34 +2309,44 @@ impl TreeNode {
             ))
             .wrap_with_cost(Default::default());
         };
-        let (child_heights, hash, aggregate_data) = match link {
-            Link::Reference {
-                child_heights,
-                hash,
-                aggregate_data,
-                ..
-            } => (child_heights, hash, aggregate_data),
-            _ => {
-                return Err(Error::CorruptedState(
-                    "Expected Link::Reference in TreeNode::load",
-                ))
-                .wrap_with_cost(Default::default());
-            }
-        };
+        if !link.is_reference() {
+            return Err(Error::CorruptedState(
+                "Expected Link::Reference in TreeNode::load",
+            ))
+            .wrap_with_cost(Default::default());
+        }
 
         let mut cost = OperationCost::default();
         let tree = cost_return_on_error!(
             &mut cost,
             source.fetch(link, value_defined_cost_fn, grove_version)
         );
-        debug_assert_eq!(tree.key(), link.key());
+        cost_return_on_error_no_add!(cost, self.put_fetched_child(left, tree));
+        Ok(()).wrap_with_cost(cost)
+    }
+
+    /// Places `tree`, the node the `Link::Reference` on the given side
+    /// points to, in the child slot (upgrading the link to `Link::Loaded`).
+    pub(crate) fn put_fetched_child(&mut self, left: bool, tree: TreeNode) -> Result<(), Error> {
+        let Some(&Link::Reference {
+            child_heights,
+            hash,
+            aggregate_data,
+            ref key,
+        }) = self.link(left)
+        else {
+            return Err(Error::CorruptedState(
+                "Expected Link::Reference for a fetched child",
+            ));
+        };
+        debug_assert_eq!(tree.key(), key.as_slice());
         *self.slot_mut(left) = Some(Link::Loaded {
             tree,
-            hash: *hash,
-            child_heights: *child_heights,
-            aggregate_data: *aggregate_data,
+            hash,
+            child_heights,
+            aggregate_data,
         });
-        Ok(()).wrap_with_cost(cost)
+        Ok(())
     }
 }
 
@@ -2102,9 +2371,196 @@ mod test_provable_count_edge_cases;
 mod test {
 
     use super::{commit::NoopCommit, hash::NULL_HASH, AggregateData, TreeNode};
-    use crate::tree::{
-        tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
+    use crate::{
+        store::NodeChange,
+        tree::{
+            tree_feature_type::TreeFeatureType::SummedMerkNode, TreeFeatureType::BasicMerkNode,
+        },
     };
+
+    fn leaf(key: Vec<u8>) -> TreeNode {
+        TreeNode::new(key, vec![7], None, BasicMerkNode).unwrap()
+    }
+
+    fn stored(node: &TreeNode) -> TreeNode {
+        TreeNode::decode_raw(
+            &node.encode(),
+            node.key().to_vec(),
+            None::<fn(&[u8], &grovedb_version::version::GroveVersion) -> Option<_>>,
+            grovedb_version::version::GroveVersion::latest(),
+        )
+        .unwrap()
+    }
+
+    fn parent_with_left_child() -> TreeNode {
+        let mut parent = leaf(vec![5]).attach(true, Some(leaf(vec![3]))).unwrap();
+        assert!(parent.inner.marks.children_changed);
+        parent
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
+        parent.inner.marks.children_changed = false;
+        parent
+    }
+
+    #[test]
+    fn a_walk_that_puts_the_same_child_back_leaves_the_children_unchanged() {
+        let parent = parent_with_left_child();
+
+        let parent = parent.walk(true, |child| child).unwrap();
+        assert!(!parent.inner.marks.children_changed);
+        let parent = parent.walk_expect(true, Some).unwrap();
+        assert!(!parent.inner.marks.children_changed);
+        let parent = parent.walk(false, |absent| absent).unwrap();
+        assert!(!parent.inner.marks.children_changed);
+    }
+
+    #[test]
+    fn a_walk_that_changes_a_child_slot_marks_the_children_changed() {
+        let replaced = parent_with_left_child()
+            .walk(true, |_| Some(leaf(vec![2])))
+            .unwrap();
+        assert!(replaced.inner.marks.children_changed);
+
+        let replaced = parent_with_left_child()
+            .walk_expect(true, |_| Some(leaf(vec![2])))
+            .unwrap();
+        assert!(replaced.inner.marks.children_changed);
+
+        let removed = parent_with_left_child().walk(true, |_| None).unwrap();
+        assert!(removed.inner.marks.children_changed);
+
+        let added = parent_with_left_child()
+            .walk(false, |_| Some(leaf(vec![8])))
+            .unwrap();
+        assert!(added.inner.marks.children_changed);
+
+        let kept = added.walk(true, |child| child).unwrap();
+        assert!(kept.inner.marks.children_changed);
+    }
+
+    fn lent_elsewhere() -> TreeNode {
+        let mut node = leaf(vec![2]);
+        node.inner.marks.on_loan = true;
+        node
+    }
+
+    #[test]
+    fn only_the_child_a_walk_lent_counts_as_the_same_child() {
+        let added = parent_with_left_child()
+            .walk(false, |_| Some(lent_elsewhere()))
+            .unwrap();
+        assert!(added.inner.marks.children_changed);
+        assert!(!added.child(false).unwrap().inner.marks.on_loan);
+
+        let rekeyed = parent_with_left_child()
+            .walk(true, |child| {
+                let mut child = child.unwrap();
+                child.set_key(vec![2]);
+                Some(child)
+            })
+            .unwrap();
+        assert!(rekeyed.inner.marks.children_changed);
+
+        let parent = leaf(vec![5]).attach(true, Some(lent_elsewhere())).unwrap();
+        assert!(!parent.child(true).unwrap().inner.marks.on_loan);
+
+        let mut decoded = lent_elsewhere();
+        decoded
+            .decode_into(
+                vec![9],
+                &leaf(vec![9]).encode(),
+                None::<fn(&[u8], &grovedb_version::version::GroveVersion) -> Option<_>>,
+                grovedb_version::version::GroveVersion::latest(),
+            )
+            .unwrap();
+        assert!(!decoded.inner.marks.on_loan);
+    }
+
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic]
+    fn a_walk_checks_the_key_of_a_child_that_comes_back_on_loan() {
+        let _ = parent_with_left_child().walk(true, |_| Some(lent_elsewhere()));
+    }
+
+    #[test]
+    fn a_long_child_key_is_no_obstacle_to_a_walk() {
+        let mut parent = leaf(vec![0])
+            .attach(false, Some(leaf(vec![1; 300])))
+            .unwrap();
+        parent
+            .commit(&mut NoopCommit {}, &|_, _| Ok(0))
+            .unwrap()
+            .unwrap();
+        parent.inner.marks.children_changed = false;
+
+        let parent = parent.walk(false, |child| child).unwrap();
+        assert!(!parent.inner.marks.children_changed);
+    }
+
+    #[test]
+    fn emptying_a_child_slot_marks_the_children_changed() {
+        let (parent, child) = parent_with_left_child().detach(true);
+        assert!(child.is_some());
+        assert!(parent.inner.marks.children_changed);
+
+        let mut pruned = stored(&parent_with_left_child());
+        assert!(pruned.link(true).unwrap().is_reference());
+        assert!(pruned.take_link(false, false).is_none());
+        assert!(!pruned.inner.marks.children_changed);
+        let (pruned, child) = pruned.detach(true);
+        assert!(child.is_none());
+        assert!(pruned.inner.marks.children_changed);
+    }
+
+    #[test]
+    fn a_link_put_or_borrowed_mutably_marks_the_children_changed() {
+        let mut parent = parent_with_left_child();
+        assert!(parent.link_mut(false).is_none());
+        assert!(!parent.inner.marks.children_changed);
+        assert!(parent.link_mut(true).is_some());
+        assert!(parent.inner.marks.children_changed);
+
+        let mut parent = parent_with_left_child();
+        parent.set_link(false, None);
+        assert!(parent.inner.marks.children_changed);
+        assert!(parent.link(false).is_none());
+
+        let mut parent = parent_with_left_child();
+        let link = parent.take_link(true, false);
+        parent.set_link(false, link);
+        assert_eq!(parent.link(false).unwrap().key(), &[3]);
+        assert!(parent.link(true).is_none());
+    }
+
+    #[test]
+    fn a_node_names_the_parts_a_commit_has_to_store() {
+        let mut new = leaf(vec![1]);
+        assert_eq!(new.take_node_change(false), NodeChange::ValueWritten);
+
+        let mut loaded = stored(&parent_with_left_child());
+        assert_eq!(loaded.take_node_change(false), NodeChange::HashOnly);
+
+        loaded.inner.marks.children_changed = true;
+        assert_eq!(loaded.take_node_change(false), NodeChange::StructureChanged);
+        assert_eq!(loaded.take_node_change(false), NodeChange::HashOnly);
+
+        loaded.inner.marks.children_changed = true;
+        assert_eq!(loaded.take_node_change(true), NodeChange::ValueWritten);
+        assert!(!loaded.inner.marks.children_changed);
+
+        loaded.set_feature_type(crate::TreeFeatureType::BigSummedMerkNode(1));
+        assert_eq!(loaded.take_node_change(false), NodeChange::ValueWritten);
+        assert_eq!(loaded.take_node_change(false), NodeChange::HashOnly);
+    }
+
+    #[test]
+    fn the_children_changed_mark_is_not_part_of_a_node() {
+        let mut marked = parent_with_left_child();
+        marked.inner.marks.children_changed = true;
+        assert!(marked == parent_with_left_child());
+    }
 
     #[test]
     fn build_tree() {

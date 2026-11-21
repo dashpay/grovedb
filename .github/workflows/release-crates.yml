@@ -49,42 +49,25 @@ jobs:
           fi
           echo "release $tag matches grovedb $version"
 
+      - name: Check that every crate of the release can be published, in order
+        # Before the first upload: a crate that cannot be published, or one
+        # listed before a workspace crate it depends on, would otherwise stop
+        # the run halfway, with the crates before it already on crates.io.
+        run: .github/scripts/release-crates.sh check --release
+
       - name: Publish crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_GROVE_TOKEN }}
         run: |
           set -euo pipefail
 
-          # Every crate is listed after the workspace crates it depends on
-          # (see `cargo metadata`). cargo waits for each upload to reach the
-          # index before the next publish resolves it, so no sleeps are needed.
-          #
+          # The order is .github/scripts/release-crates.sh's, which the step
+          # above checked.
           # A version that is already on crates.io is skipped, which makes a
           # re-run after a partial failure pick up where the last run stopped.
-          crates=(
-            grovedb-costs
-            grovedb-path
-            grovedb-visualize
-            grovedb-version
-            grovedbg-types
-            grovedb-bincode-derive
-            grovedb-bincode
-            grovedb-storage
-            grovedb-epoch-based-storage-flags
-            grovedb-query
-            grovedb-element
-            grovedb-merkle-mountain-range
-            grovedb-dense-fixed-sized-merkle-tree
-            grovedb-bulk-append-tree
-            grovedb-private-document-store
-            grovedb-merk
-            # grovedb-commitment-tree depends on the dashpay orchard fork by
-            # git tag with no version, which crates.io rejects, and grovedb
-            # depends on grovedb-commitment-tree. Both stay last so everything
-            # else publishes; they succeed once orchard is a registry crate.
-            grovedb-commitment-tree
-            grovedb
-          )
+          list=$(.github/scripts/release-crates.sh list)
+          [ -n "$list" ] || { echo "::error::the release lists no crate"; exit 1; }
+          mapfile -t crates <<<"$list"
 
           metadata="$(cargo metadata --format-version 1 --no-deps)"
           published=()

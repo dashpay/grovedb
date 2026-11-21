@@ -7,7 +7,7 @@ use grovedb_costs::CostResult;
 use crate::PathQuery;
 
 /// GroveDB Errors
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
     #[error("infallible")]
@@ -84,11 +84,11 @@ pub enum Error {
     /// Invalid parameter
     InvalidParameter(&'static str),
 
-    #[cfg(feature = "minimal")]
+    #[cfg(feature = "engine_generic")]
     // Irrecoverable errors
     #[error("storage_cost error: {0}")]
     /// Storage error
-    StorageError(#[from] grovedb_storage::error::Error),
+    StorageError(#[source] grovedb_storage::error::Error),
 
     #[error("data corruption error: {0}")]
     /// Corrupted data
@@ -217,6 +217,30 @@ impl Error {
     }
 }
 
+#[cfg(feature = "engine_generic")]
+impl Error {
+    /// How a commit that returned this error ended, in terms that name no
+    /// engine, or `None` when the error has no such class: the transaction
+    /// is then over and the database unchanged, as for any failed commit.
+    ///
+    /// See [`grovedb_storage::Error::commit_error`] for how each engine's
+    /// own errors are classed.
+    pub fn commit_error(&self) -> Option<grovedb_storage::error::CommitError> {
+        match self {
+            Self::StorageError(error) => error.commit_error(),
+            _ => None,
+        }
+    }
+
+    /// Whether a commit returned this error because another commit wrote a
+    /// key after the transaction first wrote it. Any engine reports that
+    /// case so: on the RocksDB engine it holds for the `Busy` error of a
+    /// commit.
+    pub fn is_commit_conflict(&self) -> bool {
+        self.commit_error() == Some(grovedb_storage::error::CommitError::Conflict)
+    }
+}
+
 /// Extension trait for adding context to GroveDB error results.
 pub trait GroveDbErrorExt {
     /// Appends additional context to the error within this result.
@@ -229,6 +253,19 @@ impl<T> GroveDbErrorExt for CostResult<T, Error> {
             e.add_context(append.as_ref());
             e
         })
+    }
+}
+
+/// An error of the engine is a storage error, but for what the engine
+/// does not support: that is no fault of the storage, and callers are told
+/// so as they are by every other layer.
+#[cfg(feature = "engine_generic")]
+impl From<grovedb_storage::error::Error> for Error {
+    fn from(error: grovedb_storage::error::Error) -> Self {
+        match error {
+            grovedb_storage::error::Error::NotSupported(what) => Error::NotSupported(what),
+            error => Error::StorageError(error),
+        }
     }
 }
 

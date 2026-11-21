@@ -1,12 +1,12 @@
 //! Merk API enhancements for GroveDbg support
 
 use grovedb_costs::CostsExt;
-use grovedb_storage::StorageContext;
 use grovedb_version::version::GroveVersion;
 
+use crate::store::NodeStore;
 use crate::{tree::kv::ValueDefinedCostType, CryptoHash, Error, Merk, TreeFeatureType};
 
-impl<'a, S: StorageContext<'a>> Merk<S> {
+impl<'a, S: NodeStore<'a>> Merk<S> {
     /// Fetches a node by key and returns its debug representation.
     pub fn get_node_dbg(&self, key: &[u8]) -> Result<Option<NodeDbg>, Error> {
         self.get_node_direct_fn(

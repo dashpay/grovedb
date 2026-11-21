@@ -46,7 +46,7 @@
 mod emit;
 #[cfg(feature = "minimal")]
 mod prove;
-#[cfg(test)]
+#[cfg(all(test, merk_test_engine))]
 mod tests;
 #[cfg(any(feature = "minimal", feature = "verify"))]
 mod verify;

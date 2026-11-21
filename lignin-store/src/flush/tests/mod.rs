@@ -1,0 +1,1434 @@
+//! Tests of write-back, on a store with what the tasks after this one
+//! build reduced to what write-back meets of it: a commit that writes one
+//! log group, tells write-back, installs its copies and is published.
+
+mod acceptance;
+mod chains;
+mod checkpoint;
+pub(crate) mod crash;
+mod errors;
+mod faults;
+mod flat;
+mod log_files;
+mod measure;
+pub(crate) mod recover;
+mod recovered;
+mod regroup;
+mod settle;
+mod stats;
+mod threads;
+mod trim;
+mod values;
+
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::{Path, PathBuf},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
+};
+
+use lignin_format::{
+    delta::Delta,
+    flat_page::{FlatLeafBuilder, FlatPage, FlatPageKind, FlatValue},
+    manifest::Manifest,
+    tree_page::{CellContent, CellValue, HashField, TreeCell, TreePage, TreePageMut},
+    value_log::{PendingValue, ValuePlace, ValuePointer},
+    wal::{FlatChange, GroupWriter, ValueMove},
+    CommitVersion, FormatVersion, PageId, PageSize, SlotId,
+};
+use lignin_io::{
+    sim::{SimConfig, SimVfs},
+    StdVfs, Vfs,
+};
+use tempfile::TempDir;
+
+use super::*;
+use crate::{
+    alloc::{Epoch, Pins},
+    cache::{BufferPool, OwnerId, PageRef, PoolConfig, PrivateRef},
+    load::{LoadBuffers, LoadError, PageLoader, FRAME_FORMAT},
+    recovery::{self, RecoveryOptions},
+    segment::{ManifestStore, SegmentStore},
+    table::{CheckpointInfo, Link, LinkKind, LogPlace, PageTable, TableCheckpoints},
+    values::{FileCount, ValueChange, ValueHold, ValueStore, ValueWriter},
+    wal::{LogOptions, LogReader, LogStore},
+};
+
+const V1: FormatVersion = FormatVersion::V1;
+
+pub(crate) fn version(raw: u64) -> CommitVersion {
+    CommitVersion::new(raw).expect("a version")
+}
+
+pub(crate) fn page(raw: u32) -> PageId {
+    PageId::new(raw).expect("a page id")
+}
+
+pub(crate) fn slot(raw: u16) -> SlotId {
+    SlotId::new(raw).expect("a slot")
+}
+
+/// What a checkpoint that was installed covers, the place of its sample,
+/// and how many log files went after it.
+pub(crate) fn installed(checkpointed: Checkpointed) -> (CommitVersion, LogPlace, usize) {
+    match checkpointed {
+        Checkpointed::Installed {
+            covers,
+            place,
+            log_files_dropped,
+        } => (covers, place, log_files_dropped),
+        other => panic!("no checkpoint was installed: {other:?}"),
+    }
+}
+
+/// Ends the background loop when it goes, whatever becomes of the thread
+/// that holds it.
+pub(crate) struct StopOnDrop<'s>(pub(crate) WriteBack<'s>);
+
+impl Drop for StopOnDrop<'_> {
+    fn drop(&mut self) {
+        self.0.stop();
+    }
+}
+
+/// An empty buffer pool for pages of `size`.
+pub(crate) fn new_pool(size: PageSize) -> BufferPool {
+    BufferPool::new(PoolConfig {
+        page_size: size,
+        capacity: 4 << 20,
+    })
+    .expect("a pool")
+}
+
+/// The counts of live values that the sample of a checkpoint holds, as
+/// the value log takes them back.
+pub(crate) fn sample_counts(info: Option<&CheckpointInfo>) -> Vec<FileCount> {
+    info.iter()
+        .flat_map(|info| &info.sample().counts)
+        .map(|count| FileCount {
+            file: count.file,
+            values: count.values,
+            bytes: count.bytes,
+            miscounted: count.miscounted,
+        })
+        .collect()
+}
+
+/// Who publishes and who pins, for a store with one snapshot at most and
+/// no operation that outlives a call.
+#[derive(Debug)]
+pub(crate) struct Versions {
+    latest: AtomicU64,
+    pin: AtomicU64,
+    epoch: AtomicU64,
+    guards: AtomicU64,
+    /// The epoch of an operation guard that a test holds, or `u64::MAX`.
+    held: AtomicU64,
+    /// The epochs of the guards under which write-back reads blocks now,
+    /// by a number of their own.
+    reading: Mutex<BTreeMap<u64, u64>>,
+}
+
+impl Versions {
+    fn new() -> Self {
+        Self {
+            latest: AtomicU64::new(0),
+            pin: AtomicU64::new(u64::MAX),
+            epoch: AtomicU64::new(0),
+            guards: AtomicU64::new(0),
+            held: AtomicU64::new(u64::MAX),
+            reading: Mutex::default(),
+        }
+    }
+
+    /// Takes an operation guard, as an operation that goes on running
+    /// does: it is of the epoch that is current now.
+    pub(crate) fn hold_guard(&self) {
+        // Announced, and then looked at again, as a guard is taken: a
+        // reclaimer that started an epoch in between finds the guard, or
+        // the guard is of that epoch.
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            self.held.store(epoch, Ordering::SeqCst);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                return;
+            }
+        }
+    }
+
+    /// Pins the latest version, as a snapshot does, and returns it: the
+    /// version is announced, and then found to be the latest still.
+    pub(crate) fn pin_latest(&self) -> CommitVersion {
+        loop {
+            let latest = self.latest.load(Ordering::SeqCst);
+            self.pin.store(latest, Ordering::SeqCst);
+            if self.latest.load(Ordering::SeqCst) == latest {
+                return version(latest);
+            }
+        }
+    }
+
+    /// Gives the guard of [`Self::hold_guard`] back.
+    pub(crate) fn release_guard(&self) {
+        self.held.store(u64::MAX, Ordering::SeqCst);
+    }
+
+    /// Pins `version`, as a snapshot does.
+    pub(crate) fn pin(&self, version: CommitVersion) {
+        self.pin.store(version.get(), Ordering::SeqCst);
+    }
+
+    pub(crate) fn unpin(&self) {
+        self.pin.store(u64::MAX, Ordering::SeqCst);
+    }
+
+    /// How many times write-back read blocks under an operation guard.
+    pub(crate) fn guards(&self) -> u64 {
+        self.guards.load(Ordering::SeqCst)
+    }
+}
+
+impl Pins for Versions {
+    fn oldest_pin(&self) -> CommitVersion {
+        let latest = self.latest.load(Ordering::SeqCst);
+        version(self.pin.load(Ordering::SeqCst).min(latest))
+    }
+
+    fn next_epoch(&self) -> Epoch {
+        Epoch::new(self.epoch.fetch_add(1, Ordering::SeqCst) + 1)
+    }
+
+    fn oldest_guard(&self) -> Epoch {
+        let epoch = self.epoch.load(Ordering::SeqCst);
+        let reading = self.reading.lock().expect("the guards");
+        let oldest = reading.values().copied().min().unwrap_or(u64::MAX);
+        Epoch::new(epoch.min(self.held.load(Ordering::SeqCst)).min(oldest))
+    }
+}
+
+impl Published for Versions {
+    fn latest(&self) -> CommitVersion {
+        version(self.latest.load(Ordering::SeqCst))
+    }
+
+    fn guarded(&self, work: &mut dyn FnMut()) {
+        // A guard of its own, announced and then looked at again, as a
+        // guard is taken: whoever deletes a file waits for it.
+        let number = self.guards.fetch_add(1, Ordering::SeqCst);
+        loop {
+            let epoch = self.epoch.load(Ordering::SeqCst);
+            (self.reading.lock().expect("the guards")).insert(number, epoch);
+            if self.epoch.load(Ordering::SeqCst) == epoch {
+                break;
+            }
+        }
+        work();
+        (self.reading.lock().expect("the guards")).remove(&number);
+    }
+}
+
+/// What the layer above tree pages is to write-back, for pages whose cells
+/// a scan reads in the order of their keys.
+pub(crate) struct ByKey<'d>(pub(crate) &'d Db);
+
+impl ByKey<'_> {
+    fn slots(frame: &[u8]) -> Vec<SlotId> {
+        let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+        let mut cells: Vec<_> = tree
+            .cells()
+            .map(|(slot, cell)| (cell.key().to_vec(), slot))
+            .collect();
+        cells.sort();
+        cells.into_iter().map(|(_, slot)| slot).collect()
+    }
+}
+
+impl PageValues for ByKey<'_> {
+    fn scan_order(&self, frame: &[u8], out: &mut Vec<SlotId>) {
+        out.extend(Self::slots(frame));
+    }
+
+    fn regroup(
+        &self,
+        id: PageId,
+        to: &mut ValueWriter,
+        cover: &mut dyn FnMut(&mut ValueWriter) -> Result<(), FlushError>,
+    ) -> Result<u64, RegroupError> {
+        let db = self.0;
+        let placed: Vec<(SlotId, ValuePointer)> = {
+            let frame = db.frame(id, db.latest())?;
+            let tree = TreePage::from_validated(&frame, FRAME_FORMAT)?;
+            let slots = Self::slots(&frame).into_iter();
+            slots
+                .filter_map(|slot| Some((slot, tree.cell(slot)?.value_pointer()?)))
+                .collect()
+        };
+        let back_to_back = placed.windows(2).all(|pair| {
+            let (before, after) = (pair[0].1, pair[1].1);
+            (after.file(), after.offset()) == (before.file(), before.end(V1))
+        });
+        if back_to_back {
+            return Ok(0);
+        }
+        let mut hold = ValueHold::new();
+        let mut buf = Vec::new();
+        let mut moves = Vec::new();
+        for (slot, from) in placed {
+            let bytes = db.values.read(from, id, &mut buf)?.to_vec();
+            moves.push((slot, from, to.append(&mut hold, id, &bytes)?));
+        }
+        cover(to)?;
+        let mut moved = 0;
+        for (slot, from, to) in moves {
+            moved += u64::from(db.repoint(id, slot, from, to, false));
+        }
+        Ok(moved)
+    }
+}
+
+/// The value of a cell that a test writes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Val {
+    /// Stored in the cell.
+    Inline(Vec<u8>),
+    /// Too long for its cell: the commit carries it in its group, and the
+    /// cell holds a pending value until write-back has placed it.
+    Out(Vec<u8>),
+}
+
+/// One change of a commit to a tree page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Op {
+    /// A new cell. A page that no commit has written yet is made by its
+    /// first insert.
+    Insert {
+        page: PageId,
+        slot: SlotId,
+        key: Vec<u8>,
+        value: Val,
+    },
+    /// The value hash of a cell becomes 32 times `byte`.
+    Hash {
+        page: PageId,
+        slot: SlotId,
+        byte: u8,
+    },
+    /// A cell leaves.
+    Remove { page: PageId, slot: SlotId },
+    /// The value of a cell is replaced.
+    Value {
+        page: PageId,
+        slot: SlotId,
+        value: Val,
+    },
+    /// The page is freed.
+    Free { page: PageId },
+}
+
+impl Op {
+    fn page(&self) -> PageId {
+        match self {
+            Self::Insert { page, .. }
+            | Self::Hash { page, .. }
+            | Self::Remove { page, .. }
+            | Self::Value { page, .. }
+            | Self::Free { page } => *page,
+        }
+    }
+
+    fn out(&self) -> Option<&[u8]> {
+        match self {
+            Self::Insert {
+                value: Val::Out(bytes),
+                ..
+            }
+            | Self::Value {
+                value: Val::Out(bytes),
+                ..
+            } => Some(bytes),
+            _ => None,
+        }
+    }
+}
+
+pub(crate) fn insert(at: (u32, u16), key: &[u8], value: Val) -> Op {
+    Op::Insert {
+        page: page(at.0),
+        slot: slot(at.1),
+        key: key.to_vec(),
+        value,
+    }
+}
+
+pub(crate) fn hash(at: (u32, u16), byte: u8) -> Op {
+    Op::Hash {
+        page: page(at.0),
+        slot: slot(at.1),
+        byte,
+    }
+}
+
+pub(crate) fn inline(bytes: &[u8]) -> Val {
+    Val::Inline(bytes.to_vec())
+}
+
+/// `len` bytes that do not compress.
+pub(crate) fn noise(seed: u64, len: usize) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+    (0..len)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            (state >> 24) as u8
+        })
+        .collect()
+}
+
+/// A value of `len` bytes that no cell of the smallest page holds.
+pub(crate) fn long(seed: u8, len: usize) -> Val {
+    Val::Out((0..len).map(|at| seed.wrapping_add(at as u8)).collect())
+}
+
+/// What a cell says, with its value as a reader gets it: wherever it is.
+#[derive(Debug, Clone)]
+pub(crate) struct Cell {
+    slot: u16,
+    key: Vec<u8>,
+    value_hash: [u8; 32],
+    value: Vec<u8>,
+    /// Where the value is, if it is in the value log.
+    pub(crate) pointer: Option<ValuePointer>,
+}
+
+impl Cell {
+    /// The cell without the place of its value, which write-back and a
+    /// cleaner change and no reader sees.
+    pub(crate) fn said(&self) -> (u16, &[u8], &[u8; 32], &[u8]) {
+        (self.slot, &self.key, &self.value_hash, &self.value)
+    }
+}
+
+/// Whether two pages say the same: their cells, with the values wherever
+/// they are.
+pub(crate) fn same(found: &[Cell], expected: &[Cell]) -> bool {
+    found
+        .iter()
+        .map(Cell::said)
+        .eq(expected.iter().map(Cell::said))
+}
+
+/// Whether `frame` holds a flat page, as a loader tells.
+pub(crate) fn is_flat(frame: &[u8]) -> bool {
+    FlatPageKind::from_code(frame[0], FRAME_FORMAT).is_ok()
+}
+
+/// Whether the page in `frame`, of either kind, has a pending value.
+pub(crate) fn has_pending(frame: &[u8]) -> bool {
+    match is_flat(frame) {
+        true => FlatPage::from_validated(frame, FRAME_FORMAT)
+            .expect("a flat page")
+            .has_pending_value(),
+        false => TreePage::from_validated(frame, FRAME_FORMAT)
+            .expect("a tree page")
+            .has_pending_value(),
+    }
+}
+
+/// Where the value of a cell or of an entry of a flat leaf is.
+pub(crate) enum Stored {
+    Inline(Vec<u8>),
+    Placed(ValuePointer),
+    Pending(PendingValue),
+}
+
+/// What the page in `frame` holds, cell by cell: the slot, the key, the
+/// value hash, and where the value is. An entry of a flat leaf has its
+/// position, from 1, for a slot, and no hash.
+pub(crate) fn stored(id: PageId, frame: &[u8]) -> Vec<(u16, Vec<u8>, [u8; 32], Stored)> {
+    if is_flat(frame) {
+        let page = FlatPage::from_validated(frame, FRAME_FORMAT).expect("a flat page");
+        assert_eq!(page.id(), id);
+        let leaf = page.leaf().expect("a leaf");
+        return leaf
+            .iter()
+            .enumerate()
+            .map(|(at, (key, value))| {
+                let mut whole = Vec::new();
+                key.append_to(&mut whole);
+                let value = match value {
+                    FlatValue::Inline(bytes) => Stored::Inline(bytes.to_vec()),
+                    FlatValue::OutOfLine(place) => {
+                        let place: [u8; 16] = place.try_into().expect("a place");
+                        match ValuePlace::decode(place).expect("a place") {
+                            ValuePlace::Placed(pointer) => Stored::Placed(pointer),
+                            ValuePlace::Pending(pending) => Stored::Pending(pending),
+                        }
+                    }
+                };
+                (at as u16 + 1, whole, [0; 32], value)
+            })
+            .collect();
+    }
+    let tree = TreePage::from_validated(frame, FRAME_FORMAT).expect("a tree page");
+    assert_eq!(tree.id(), id);
+    tree.cells()
+        .map(|(slot, cell)| {
+            let value = match cell.value() {
+                CellValue::Inline(bytes) => Stored::Inline(bytes.to_vec()),
+                CellValue::OutOfLine(pointer) => Stored::Placed(pointer),
+                CellValue::Pending(pending) => Stored::Pending(pending),
+            };
+            (slot.get(), cell.key().to_vec(), *cell.value_hash(), value)
+        })
+        .collect()
+}
+
+/// What the cells of the page in `frame` say, with each value read from
+/// where it is: the cell, the frame the page is in, the log, or the value
+/// log. The entries of a flat leaf are its cells.
+pub(crate) fn cells_of(
+    id: PageId,
+    frame: &[u8],
+    attached: Option<&PageRef<'_>>,
+    values: &ValueStore,
+    log: &LogStore,
+) -> Vec<Cell> {
+    let mut buf = Vec::new();
+    stored(id, frame)
+        .into_iter()
+        .map(|(slot, key, value_hash, stored)| {
+            let (value, pointer) = match stored {
+                Stored::Inline(bytes) => (bytes, None),
+                Stored::Placed(pointer) => {
+                    let value = values.read(pointer, id, &mut buf);
+                    let value = value.expect("the value is in the value log").to_vec();
+                    assert_eq!(value.len(), pointer.value_len() as usize);
+                    (value, Some(pointer))
+                }
+                Stored::Pending(pending) => {
+                    let value = match attached.and_then(|frame| frame.attached(pending.id())) {
+                        Some(bytes) => bytes.to_vec(),
+                        None => {
+                            let logged = log.read_pending(&pending, id, &mut buf);
+                            let bytes = logged.expect("the value is in the log").bytes();
+                            bytes.expect("the value's bytes").to_vec()
+                        }
+                    };
+                    assert_eq!(value.len(), pending.value_len() as usize);
+                    (value, None)
+                }
+            };
+            Cell {
+                slot,
+                key,
+                value_hash,
+                value,
+                pointer,
+            }
+        })
+        .collect()
+}
+
+/// What the cells of the page in `frame` say, as the commit that installs
+/// it knows them, with no file read: a value in the value log is the one
+/// its cell had before the commit (`before`, by slot), and a pending value
+/// is with the frame, or among the values the commit wrote (`written`), or
+/// was pending before.
+fn committed_cells(
+    frame: &PageRef<'_>,
+    before: &BTreeMap<u16, Vec<u8>>,
+    written: &BTreeMap<[u8; 8], Vec<u8>>,
+) -> Vec<Cell> {
+    stored(frame.page(), frame)
+        .into_iter()
+        .map(|(slot, key, value_hash, stored)| {
+            let earlier = || before.get(&slot).expect("the cell had its value").clone();
+            let (value, pointer) = match stored {
+                Stored::Inline(bytes) => (bytes, None),
+                Stored::Placed(pointer) => (earlier(), Some(pointer)),
+                Stored::Pending(pending) => {
+                    let value = match frame.attached(pending.id()) {
+                        Some(bytes) => bytes.to_vec(),
+                        None => written.get(&pending.id()).cloned().unwrap_or_else(earlier),
+                    };
+                    (value, None)
+                }
+            };
+            Cell {
+                slot,
+                key,
+                value_hash,
+                value,
+                pointer,
+            }
+        })
+        .collect()
+}
+
+/// What a page said from one version on: the version, and its cells, or
+/// `None` from the commit that freed it.
+pub(crate) type Versioned = (u64, Option<Vec<Cell>>);
+
+/// An entry of a flat leaf: its key, its value unless that is pending,
+/// and the pointer to it if it is out of line.
+pub(crate) type FlatEntry = (Vec<u8>, Option<Vec<u8>>, Option<ValuePointer>);
+
+/// What every version of every page says, as the commits left it.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct Model {
+    pub(crate) pages: BTreeMap<PageId, Vec<Versioned>>,
+}
+
+impl Model {
+    pub(crate) fn at(&self, page: PageId, at: CommitVersion) -> Option<(u64, &[Cell])> {
+        let versions = self.pages.get(&page)?;
+        let (born, cells) = versions.iter().rev().find(|(born, _)| *born <= at.get())?;
+        cells.as_deref().map(|cells| (*born, cells))
+    }
+}
+
+/// What a cell stores for `value`, which is pending under `pending` if it
+/// is out of line.
+fn cell_value<'a>(value: &'a Val, pending: &Option<PendingValue>) -> CellValue<'a> {
+    match (value, pending) {
+        (Val::Inline(bytes), _) => CellValue::Inline(bytes),
+        (Val::Out(_), Some(pending)) => CellValue::Pending(*pending),
+        (Val::Out(_), None) => unreachable!("a value out of line is in the group"),
+    }
+}
+
+/// A write transaction: the private copies it has made so far.
+pub(crate) struct Txn<'d> {
+    db: &'d Db,
+    owner: OwnerId,
+    copies: BTreeMap<PageId, (PrivateRef<'d>, bool)>,
+    /// Whether the bytes of the values the commit writes out of line are
+    /// left off the frames, so that only the log has them.
+    pub(crate) values_in_log_only: bool,
+}
+
+/// A store in a directory.
+pub(crate) struct Db {
+    _dir: Option<TempDir>,
+    pub(crate) vfs: Arc<dyn Vfs>,
+    pub(crate) path: PathBuf,
+    pub(crate) size: PageSize,
+    pub(crate) manifest: Mutex<ManifestStore>,
+    pub(crate) segments: SegmentStore,
+    pub(crate) values: ValueStore,
+    pub(crate) log: LogStore,
+    pub(crate) checkpoints: TableCheckpoints,
+    pub(crate) table: PageTable,
+    pub(crate) pool: BufferPool,
+    pub(crate) versions: Versions,
+    pub(crate) state: FlushState,
+    owners: AtomicU64,
+    pub(crate) model: Mutex<Model>,
+}
+
+impl Db {
+    pub(crate) const SIZE: PageSize = PageSize::MIN;
+
+    /// A new store with the default thresholds.
+    pub(crate) fn new() -> Self {
+        Self::with(FlushConfig::new(Self::SIZE))
+    }
+
+    /// A new store in a directory of its own.
+    pub(crate) fn with(config: FlushConfig) -> Self {
+        Self::with_log(config, LogOptions::default())
+    }
+
+    /// A new store whose log is written as `log` says.
+    pub(crate) fn with_log(config: FlushConfig, log: LogOptions) -> Self {
+        let dir = tempfile::tempdir().expect("a directory");
+        let path = dir.path().to_path_buf();
+        let mut db = Self::create(Arc::new(StdVfs), &path, config, log);
+        db._dir = Some(dir);
+        db
+    }
+
+    /// A new store in the directory `path` of `vfs`, which exists.
+    pub(crate) fn create(
+        vfs: Arc<dyn Vfs>,
+        path: &Path,
+        config: FlushConfig,
+        log: LogOptions,
+    ) -> Self {
+        let size = Self::SIZE;
+        let empty = Manifest::new(size, Default::default(), None, Vec::new()).expect("a manifest");
+        let mut manifest = ManifestStore::create(vfs.clone(), path, empty).expect("a store");
+        let segments = SegmentStore::open(&manifest).expect("segments");
+        let values = ValueStore::open(&manifest, &[]).expect("a value log");
+        let checkpoints = TableCheckpoints::open(&manifest).expect("checkpoints");
+        let end = LogReader::new(vfs.clone(), path, manifest.manifest().expect("a manifest"))
+            .into_end()
+            .expect("an empty log");
+        let log = LogStore::open(&manifest, &end, log).expect("a log");
+        log.roll(&mut manifest).expect("a log file");
+        let pool = new_pool(size);
+        let db = Self {
+            _dir: None,
+            vfs,
+            path: path.to_path_buf(),
+            size,
+            manifest: Mutex::new(manifest),
+            segments,
+            values,
+            log,
+            checkpoints,
+            table: PageTable::new(),
+            pool,
+            versions: Versions::new(),
+            state: FlushState::new(config),
+            owners: AtomicU64::new(0),
+            model: Mutex::default(),
+        };
+        db.wb().adopt(None).expect("the whole log is kept");
+        db
+    }
+
+    /// A new store on a simulated file system, which the test can make
+    /// fail.
+    pub(crate) fn on_sim(config: FlushConfig, log: LogOptions) -> (SimVfs, Self) {
+        use crate::segment::tests::sim::{db_dir, shared, sim_fs};
+        let fs = sim_fs(SimConfig::new(5));
+        let db = Self::create(shared(&fs), db_dir(), config, log);
+        (fs, db)
+    }
+
+    /// Ends the session as a store does ([`WriteBack::finish`]) and opens
+    /// the directory again, with nothing in memory: what the next session
+    /// starts from. Every commit must have been written back.
+    pub(crate) fn reopen(self) -> Self {
+        let finished = self.wb().finish().expect("the session ends");
+        let latest = self.latest();
+        assert!(
+            matches!(finished, Checkpointed::Installed { covers, .. } if covers == latest),
+            "{finished:?}"
+        );
+        let Self {
+            _dir,
+            vfs,
+            path,
+            size,
+            state,
+            model,
+            ..
+        } = self;
+        let mut manifest = ManifestStore::open(vfs.clone(), &path).expect("a manifest");
+        let named = manifest.manifest().expect("a manifest").clone();
+        let (table, info) = PageTable::load(&*vfs, &path, &named).expect("the checkpoint loads");
+        let segments = SegmentStore::open(&manifest).expect("segments");
+        let counts = sample_counts(info.as_ref());
+        let values = ValueStore::open(&manifest, &counts).expect("a value log");
+        let checkpoints = TableCheckpoints::open(&manifest).expect("checkpoints");
+        let end = LogReader::new(vfs.clone(), &path, &named)
+            .into_end()
+            .expect("the log reads");
+        assert_eq!(end.latest(), latest);
+        let log = LogStore::open(&manifest, &end, LogOptions::default()).expect("a log");
+        log.roll(&mut manifest).expect("a log file");
+        let pool = new_pool(size);
+        let versions = Versions::new();
+        versions.latest.store(latest.get(), Ordering::SeqCst);
+        let db = Self {
+            _dir,
+            vfs,
+            path,
+            size,
+            manifest: Mutex::new(manifest),
+            segments,
+            values,
+            log,
+            checkpoints,
+            table,
+            pool,
+            versions,
+            state: FlushState::new(state.config()),
+            owners: AtomicU64::new(0),
+            model,
+        };
+        db.wb()
+            .adopt(info.as_ref())
+            .expect("the checkpoint is adopted");
+        db
+    }
+
+    /// Opens the directory `path` of `vfs` as a session opens it: with the
+    /// store's recovery ([`crate::recovery`]), whatever the session before
+    /// left there. `model` is what the commits of the earlier sessions
+    /// left. What they committed after the version the recovery lands on
+    /// is not part of the store any more, and is taken out of it: those
+    /// versions are given to the commits of this session.
+    pub(crate) fn recover(
+        vfs: Arc<dyn Vfs>,
+        path: &Path,
+        options: &RecoveryOptions,
+        mut model: Model,
+    ) -> Self {
+        let manifest = ManifestStore::open(vfs.clone(), path).expect("a manifest");
+        let recovered = recovery::recover(manifest, options)
+            .unwrap_or_else(|error| panic!("the store does not recover: {error}"));
+        let landed = recovered.landed();
+        model.pages.retain(|_, versions| {
+            versions.retain(|(born, _)| *born <= landed.get());
+            !versions.is_empty()
+        });
+        let recovery::Recovered {
+            manifest,
+            pool,
+            table,
+            segments,
+            values,
+            log,
+            checkpoints,
+            flush,
+            ..
+        } = recovered;
+        let versions = Versions::new();
+        versions.latest.store(landed.get(), Ordering::SeqCst);
+        Self {
+            _dir: None,
+            vfs,
+            path: path.to_path_buf(),
+            size: Self::SIZE,
+            manifest: Mutex::new(manifest),
+            segments,
+            values,
+            log,
+            checkpoints,
+            table,
+            pool,
+            versions,
+            state: flush,
+            owners: AtomicU64::new(0),
+            model: Mutex::new(model),
+        }
+    }
+
+    pub(crate) fn wb(&self) -> WriteBack<'_> {
+        self.wb_with(None)
+    }
+
+    /// Write-back that is handed `page_values` by the layer above.
+    pub(crate) fn wb_with<'s>(&'s self, page_values: Option<&'s dyn PageValues>) -> WriteBack<'s> {
+        let stores = Stores {
+            pool: &self.pool,
+            table: &self.table,
+            segments: &self.segments,
+            values: &self.values,
+            log: &self.log,
+            checkpoints: &self.checkpoints,
+            manifest: &self.manifest,
+            versions: &self.versions,
+            page_values,
+        };
+        WriteBack::new(stores, &self.state, self.size).expect("write-back")
+    }
+
+    pub(crate) fn latest(&self) -> CommitVersion {
+        Published::latest(&self.versions)
+    }
+
+    /// How many values the value log counts as live.
+    pub(crate) fn live_values(&self) -> u64 {
+        self.values.counts().iter().map(|count| count.values).sum()
+    }
+
+    /// How many blocks write-back has reported dead.
+    pub(crate) fn dead_blocks(&self) -> u64 {
+        let dead = self.state.dead_space();
+        dead.values().map(|dead| dead.blocks).sum()
+    }
+
+    pub(crate) fn stats(&self) -> FlushStats {
+        self.state.stats()
+    }
+
+    fn loader<'s>(&'s self, pool: &'s BufferPool) -> PageLoader<'s> {
+        PageLoader::new(pool, &self.table, &self.segments, self.size).expect("a loader")
+    }
+
+    /// The page as a reader at `at` gets it from this store's pool.
+    pub(crate) fn frame(&self, page: PageId, at: CommitVersion) -> Result<PageRef<'_>, LoadError> {
+        self.loader(&self.pool)
+            .get(page, at, &mut LoadBuffers::new())
+    }
+
+    /// The chain of `page`, oldest link first.
+    pub(crate) fn chain(&self, page: PageId) -> Vec<Link> {
+        let mut links = Vec::new();
+        self.table.chain(page, &mut links);
+        links
+    }
+
+    /// The kinds of the links of `page`'s chain, as a string: `B` for a
+    /// base image, `d` for a run of deltas, `F` for a free link.
+    pub(crate) fn shape(&self, page: PageId) -> String {
+        self.chain(page)
+            .iter()
+            .map(|link| match link.kind {
+                LinkKind::Base(_) => 'B',
+                LinkKind::Delta(_) => 'd',
+                LinkKind::Free => 'F',
+            })
+            .collect()
+    }
+
+    /// What the cells of the tree page in `frame` say, with each value read
+    /// from where it is: the cell, the frame, or the value log.
+    fn cells(&self, id: PageId, frame: &[u8], attached: Option<&PageRef<'_>>) -> Vec<Cell> {
+        cells_of(id, frame, attached, &self.values, &self.log)
+    }
+
+    /// The pending values of the current version of `page`.
+    pub(crate) fn pending(&self, page: PageId) -> Vec<(SlotId, PendingValue)> {
+        let frame = self.frame(page, self.latest()).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        tree.pending_values().collect()
+    }
+
+    /// The value pointers the cells of the current version of `page` hold.
+    pub(crate) fn pointers(&self, page: PageId) -> Vec<ValuePointer> {
+        let frame = self.frame(page, self.latest()).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        tree.cells()
+            .filter_map(|(_, cell)| cell.value_pointer())
+            .collect()
+    }
+
+    /// The value pointer that the cell in `slot` of the current version
+    /// of `id` holds.
+    pub(crate) fn pointer(&self, id: PageId, slot: SlotId) -> ValuePointer {
+        let frame = self.frame(id, self.latest()).expect("the page");
+        let tree = TreePage::from_validated(&frame, FRAME_FORMAT).expect("a tree page");
+        let cell = tree.cell(slot).expect("the cell");
+        cell.value_pointer().expect("a placed value")
+    }
+
+    /// Moves the value of the cell in `slot` of the current version of
+    /// `id` to another place in the value log, as the value log's cleaner
+    /// does: the value is appended again and covered, and a page step
+    /// gives the cell the new pointer. The record of the step goes to the
+    /// log through write-back, or, with `past_write_back`, straight to the
+    /// log, which leaves write-back with records that no longer lead to
+    /// the frame.
+    pub(crate) fn move_value(&self, id: PageId, slot: SlotId, past_write_back: bool) {
+        let from = self.pointer(id, slot);
+        let mut buf = Vec::new();
+        let bytes = self
+            .values
+            .read(from, id, &mut buf)
+            .expect("the value")
+            .to_vec();
+        let mut writer = self.values.create().expect("a value-log file");
+        self.values
+            .commit(&mut self.manifest.lock().expect("the manifest"))
+            .expect("named");
+        let mut hold = ValueHold::new();
+        let to = writer.append(&mut hold, id, &bytes).expect("appended");
+        writer.finish().expect("synced");
+        self.values
+            .commit(&mut self.manifest.lock().expect("the manifest"))
+            .expect("covered");
+        assert!(self.repoint(id, slot, from, to, past_write_back));
+    }
+
+    /// The page step that gives the cell in `slot` of the current version
+    /// of `id`, which holds `from`, the pointer `to`. Returns whether the
+    /// step was made: it is not while a write transaction holds a private
+    /// copy of the page.
+    pub(crate) fn repoint(
+        &self,
+        id: PageId,
+        slot: SlotId,
+        from: ValuePointer,
+        to: ValuePointer,
+        past_write_back: bool,
+    ) -> bool {
+        let counts = self.values.step().expect("the counts");
+        let step = self.pool.page_step(id);
+        let old = step.current().expect("the page");
+        if step.private_copies() > 0 {
+            return false;
+        }
+        let change = ValueMove::in_tree(id, slot, ValuePlace::Placed(from), to).expect("a move");
+        let mut record = Vec::new();
+        change.write(&mut record).expect("a record");
+        if past_write_back {
+            self.log.append_change(&record).expect("appended");
+        } else {
+            self.wb().append_change(&record).expect("appended");
+        }
+        let mut blank = self.pool.blank();
+        blank.copy_from(&old);
+        TreePageMut::open(&mut blank, self.size, FRAME_FORMAT)
+            .expect("a tree page")
+            .set_value(slot, CellValue::OutOfLine(to))
+            .expect("repointed");
+        step.replace(&old, blank).expect("replaced");
+        drop(step);
+        counts
+            .apply(&ValueChange::moved(from, to), self.latest())
+            .expect("counted");
+        true
+    }
+
+    /// Commits the flat leaf `id`, written whole: `entries` in key order.
+    /// A value that is out of line is carried by the group and pending in
+    /// its entry, or stays where `placed` says it is. The pointers that
+    /// the leaf held and holds no more are released.
+    pub(crate) fn commit_flat(
+        &self,
+        id: PageId,
+        entries: &[(&[u8], Val)],
+        placed: &BTreeMap<Vec<u8>, ValuePointer>,
+    ) -> CommitVersion {
+        let latest = self.latest();
+        let owner = OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1);
+        let (copy, held) = match self.frame(id, latest) {
+            Ok(frame) => {
+                let held: Vec<ValuePointer> = stored(id, &frame)
+                    .into_iter()
+                    .filter_map(|(.., stored)| match stored {
+                        Stored::Placed(pointer) => Some(pointer),
+                        _ => None,
+                    })
+                    .collect();
+                let copy = self.pool.make_private(owner, id, latest);
+                drop(frame);
+                (copy.expect("the page was just loaded"), held)
+            }
+            Err(LoadError::NoPage { .. }) => {
+                let copy = self.pool.new_private(owner, id).expect("a new page");
+                (copy, Vec::new())
+            }
+            Err(error) => panic!("page {id}: {error}"),
+        };
+
+        let counts = self.values.step().expect("the counts");
+        // A step may have placed a value since the page was looked at.
+        let held: Vec<ValuePointer> = match self.pool.get(id, CommitVersion::MAX) {
+            Ok(frame) => stored(id, &frame)
+                .into_iter()
+                .filter_map(|(.., stored)| match stored {
+                    Stored::Placed(pointer) => Some(pointer),
+                    _ => None,
+                })
+                .collect(),
+            Err(_) => held,
+        };
+        let at = self.log.next_group().expect("a place for the group");
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
+        // The place of each value that is out of line, with its bytes if
+        // the commit writes it.
+        type Placed<'a> = Option<(ValuePlace, Option<&'a [u8]>)>;
+        let places: Vec<Placed<'_>> = entries
+            .iter()
+            .map(|(key, value)| match (value, placed.get(*key)) {
+                (Val::Inline(_), _) => None,
+                (Val::Out(_), Some(pointer)) => Some((ValuePlace::Placed(*pointer), None)),
+                (Val::Out(value), None) => {
+                    let pending = group.value(id, value).expect("a value");
+                    Some((ValuePlace::Pending(pending), Some(value.as_slice())))
+                }
+            })
+            .collect();
+        let encoded: Vec<Option<[u8; 16]>> = places
+            .iter()
+            .map(|place| place.map(|(place, _)| place.encode()))
+            .collect();
+        let mut leaf =
+            FlatLeafBuilder::new(id, b"", self.size.image_capacity()).expect("a flat leaf");
+        for ((key, value), place) in entries.iter().zip(&encoded) {
+            let value = match (value, place) {
+                (Val::Inline(bytes), _) => FlatValue::Inline(bytes),
+                (Val::Out(_), Some(place)) => FlatValue::OutOfLine(place),
+                (Val::Out(_), None) => unreachable!("a value out of line has a place"),
+            };
+            leaf.push(key, value).expect("an entry");
+        }
+        let image = leaf.finish();
+        group
+            .flat_run_with(id, |run| run.push(&FlatChange::Image(&image)))
+            .expect("a run");
+        let kept: Vec<ValuePointer> = places
+            .iter()
+            .filter_map(|place| place.and_then(|(place, _)| place.pointer()))
+            .collect();
+        let mut released: Vec<ValuePointer> = held
+            .into_iter()
+            .filter(|pointer| !kept.contains(pointer))
+            .collect();
+        released.sort_by_key(|pointer| (pointer.file(), pointer.offset()));
+        for pointer in &released {
+            group.released(pointer).expect("a released pointer");
+        }
+        group.finish();
+        let appended = self.log.append_group(&at, &bytes).expect("appended");
+        let committed = at.version();
+        self.wb()
+            .committed(committed, appended.at, &bytes)
+            .expect("write-back was told");
+        {
+            let mut latch = copy.write().expect("private");
+            let (start, rest) = latch.split_at_mut(image.len());
+            start.copy_from_slice(&image);
+            rest.fill(0);
+            for (place, value) in places.into_iter().flatten() {
+                if let (Some(pending), Some(value)) = (place.pending(), value) {
+                    latch.attach(pending.id(), Arc::from(value));
+                }
+            }
+        }
+        let cells = entries
+            .iter()
+            .enumerate()
+            .map(|(at, (key, value))| Cell {
+                slot: at as u16 + 1,
+                key: key.to_vec(),
+                value_hash: [0; 32],
+                value: match value {
+                    Val::Inline(bytes) | Val::Out(bytes) => bytes.clone(),
+                },
+                pointer: None,
+            })
+            .collect();
+        let mut model = self.model.lock().expect("the model");
+        self.pool.install(&copy, committed).expect("installed");
+        let versions = model.pages.entry(id).or_default();
+        versions.push((committed.get(), Some(cells)));
+        drop(model);
+        let mut change = ValueChange::new();
+        released.iter().for_each(|&pointer| change.release(pointer));
+        counts.apply(&change, committed).expect("counted");
+        self.versions
+            .latest
+            .store(committed.get(), Ordering::SeqCst);
+        committed
+    }
+
+    /// The entries of the flat leaf in `frame`: each key with its value,
+    /// read through its pointer if it is out of line, and that pointer.
+    /// A value that is still pending has no bytes here.
+    pub(crate) fn flat_entries(&self, id: PageId, frame: &[u8]) -> Vec<FlatEntry> {
+        let mut buf = Vec::new();
+        stored(id, frame)
+            .into_iter()
+            .map(|(_, key, _, stored)| match stored {
+                Stored::Inline(bytes) => (key, Some(bytes), None),
+                Stored::Pending(_) => (key, None, None),
+                Stored::Placed(pointer) => {
+                    let read = self.values.read(pointer, id, &mut buf);
+                    (key, Some(read.expect("the value").to_vec()), Some(pointer))
+                }
+            })
+            .collect()
+    }
+
+    pub(crate) fn begin(&self) -> Txn<'_> {
+        Txn {
+            db: self,
+            owner: OwnerId::new(self.owners.fetch_add(1, Ordering::SeqCst) + 1),
+            copies: BTreeMap::new(),
+            values_in_log_only: false,
+        }
+    }
+
+    /// A transaction that makes `ops` and commits.
+    pub(crate) fn commit(&self, ops: &[Op]) -> CommitVersion {
+        self.begin().commit(ops)
+    }
+
+    /// Checks every version from the oldest a reader can ask for to the
+    /// latest, as a reader gets it through this store's pool.
+    pub(crate) fn check_warm(&self) {
+        self.check(&self.pool, false);
+    }
+
+    /// The same, through an empty pool: every page comes from its
+    /// segments, so every version must have been written back, and no
+    /// value may be pending.
+    pub(crate) fn check_cold(&self) {
+        self.check(&new_pool(self.size), true);
+    }
+
+    fn check(&self, pool: &BufferPool, cold: bool) {
+        let model = self.model.lock().expect("the model");
+        let loader = self.loader(pool);
+        let mut buffers = LoadBuffers::new();
+        let oldest = self.versions.oldest_pin().get();
+        for at in (oldest..=self.latest().get()).map(version) {
+            for &id in model.pages.keys() {
+                let expected = model.at(id, at);
+                match loader.get(id, at, &mut buffers) {
+                    Ok(frame) => {
+                        let (born, cells) = expected.unwrap_or_else(|| {
+                            panic!("page {id} has no version at {at} and was read")
+                        });
+                        assert_eq!(frame.born().get(), born, "page {id} at version {at}");
+                        let found = self.cells(id, &frame, (!cold).then_some(&frame));
+                        assert!(
+                            same(&found, cells),
+                            "page {id} at version {at}: {found:?}, not {cells:?}"
+                        );
+                        if cold {
+                            assert!(!has_pending(&frame), "page {id} at version {at}");
+                        }
+                    }
+                    Err(LoadError::NoPage { .. }) => {
+                        assert!(
+                            expected.is_none(),
+                            "page {id} at version {at} was not found"
+                        );
+                    }
+                    Err(error) => panic!("page {id} at version {at}: {error}"),
+                }
+            }
+        }
+    }
+
+    /// Checks that no chain is longer than the thresholds allow: for every
+    /// link, the runs between it and the base image under it.
+    pub(crate) fn check_chains(&self) {
+        let config = self.state.config();
+        let pages: Vec<PageId> = self
+            .model
+            .lock()
+            .expect("the model")
+            .pages
+            .keys()
+            .copied()
+            .collect();
+        for id in pages {
+            let (mut deltas, mut bytes) = (0, 0);
+            for link in self.chain(id) {
+                match link.kind {
+                    LinkKind::Delta(location) => {
+                        deltas += 1;
+                        bytes += location.len as usize;
+                    }
+                    LinkKind::Base(_) | LinkKind::Free => (deltas, bytes) = (0, 0),
+                }
+                assert!(
+                    deltas <= config.max_chain_deltas,
+                    "page {id}: {deltas} runs"
+                );
+                assert!(
+                    bytes <= config.max_chain_bytes,
+                    "page {id}: {bytes} bytes of runs"
+                );
+            }
+        }
+    }
+}
+
+impl<'d> Txn<'d> {
+    /// Makes the private copy of `id` now, as a write of the transaction
+    /// to that page does. Returns whether the page is new.
+    pub(crate) fn copy(&mut self, id: PageId) -> bool {
+        let Db { pool, size, .. } = self.db;
+        if let Some((_, created)) = self.copies.get(&id) {
+            return *created;
+        }
+        let latest = self.db.latest();
+        let exists = self.db.frame(id, latest);
+        let (copy, created) = match exists {
+            Ok(frame) => {
+                let copy = pool.make_private(self.owner, id, latest);
+                drop(frame);
+                (copy.expect("the page was just loaded"), false)
+            }
+            Err(LoadError::NoPage { .. }) => {
+                let copy = pool.new_private(self.owner, id).expect("a new page");
+                TreePageMut::init(&mut copy.write().expect("private"), *size, id, 0)
+                    .expect("an empty page");
+                (copy, true)
+            }
+            Err(error) => panic!("page {id}: {error}"),
+        };
+        self.copies.insert(id, (copy, created));
+        created
+    }
+
+    /// Attaches `bytes` to the copy of `id` under a name that no cell of
+    /// the page holds.
+    pub(crate) fn attach_stray(&mut self, id: PageId, name: [u8; 8], bytes: &[u8]) {
+        self.copy(id);
+        let mut latch = self.copies[&id].0.write().expect("private");
+        latch.attach(name, Arc::from(bytes));
+    }
+
+    /// Gives the copies up: nothing of the transaction is left.
+    pub(crate) fn roll_back(self) {
+        for (copy, _) in self.copies.into_values() {
+            self.db.pool.discard(&copy).expect("discarded");
+        }
+    }
+
+    /// Makes `ops` and commits: one group in the log, with the values, the
+    /// runs of the pages in ascending order and the pointers released;
+    /// write-back is told; then the copies are installed, the freed pages
+    /// freed and the version published (`transactions.md` CM3).
+    pub(crate) fn commit(mut self, ops: &[Op]) -> CommitVersion {
+        let db = self.db;
+        let ids: BTreeSet<PageId> = ops.iter().map(Op::page).collect();
+        let freed: BTreeSet<PageId> = ops
+            .iter()
+            .filter(|op| matches!(op, Op::Free { .. }))
+            .map(Op::page)
+            .collect();
+        for &id in &ids {
+            self.copy(id);
+        }
+
+        // The counts lock keeps the page steps and the marks out of the
+        // log between the place and the group (`wal`, "Locks").
+        let counts = db.values.step().expect("the counts");
+        let at = db.log.next_group().expect("a place for the group");
+        let mut bytes = Vec::new();
+        let mut group = GroupWriter::new(at.version(), at.address(), &mut bytes).expect("a group");
+        let pending: Vec<Option<PendingValue>> = ops
+            .iter()
+            .map(|op| Some(group.value(op.page(), op.out()?).expect("a value")))
+            .collect();
+
+        let written: BTreeMap<[u8; 8], Vec<u8>> = ops
+            .iter()
+            .zip(&pending)
+            .filter_map(|(op, pending)| Some(((*pending)?.id(), op.out()?.to_vec())))
+            .collect();
+
+        let mut released = Vec::new();
+        for &id in &ids {
+            let (copy, created) = &self.copies[&id];
+            let mut latch = copy.write().expect("private");
+            if freed.contains(&id) {
+                let tree = TreePage::from_validated(&latch, FRAME_FORMAT).expect("a tree page");
+                released.extend(tree.cells().filter_map(|(_, cell)| cell.value_pointer()));
+                group.freed(id).expect("a freed page");
+                continue;
+            }
+            let mut attach = Vec::new();
+            let run = group.tree_run_with(id, created.then_some(0), |run| {
+                let mut tree = TreePageMut::open(&mut latch, db.size, FRAME_FORMAT)?;
+                for (op, pending) in ops.iter().zip(&pending).filter(|(op, _)| op.page() == id) {
+                    let placed = |slot: &SlotId| tree.page().cell(*slot)?.value_pointer();
+                    let value = |value| cell_value(value, pending);
+                    let encoded;
+                    let delta = match op {
+                        Op::Insert {
+                            slot,
+                            key,
+                            value: of,
+                            ..
+                        } => {
+                            let cell = CellContent {
+                                key,
+                                feature: &[],
+                                value_hash: &[0x11; 32],
+                                kv_hash: &[0x22; 32],
+                                left: None,
+                                right: None,
+                                hosted_roots: &[],
+                                value: value(of),
+                                fragment_root: true,
+                            };
+                            encoded = cell.encode()?;
+                            Delta::Insert {
+                                slot: *slot,
+                                cell: TreeCell::decode(&encoded, V1)?,
+                            }
+                        }
+                        Op::Hash { slot, byte, .. } => Delta::Hash {
+                            slot: *slot,
+                            field: HashField::Value,
+                            hash: &[*byte; 32],
+                        },
+                        Op::Remove { slot, .. } => {
+                            released.extend(placed(slot));
+                            Delta::Remove { slot: *slot }
+                        }
+                        Op::Value {
+                            slot, value: of, ..
+                        } => {
+                            released.extend(placed(slot));
+                            Delta::Value {
+                                slot: *slot,
+                                value: value(of),
+                            }
+                        }
+                        Op::Free { .. } => unreachable!("a freed page has no run"),
+                    };
+                    delta.apply(&mut tree)?;
+                    run.push(&delta)?;
+                    if let (Some(bytes), Some(pending)) = (op.out(), pending) {
+                        attach.push((pending.id(), Arc::<[u8]>::from(bytes)));
+                    }
+                }
+                Ok(())
+            });
+            run.expect("a run");
+            if !self.values_in_log_only {
+                for (id, bytes) in attach {
+                    latch.attach(id, bytes);
+                }
+            }
+        }
+        released.sort_by_key(|pointer| (pointer.file(), pointer.offset()));
+        for pointer in &released {
+            group.released(pointer).expect("a released pointer");
+        }
+        group.finish();
+        let appended = db.log.append_group(&at, &bytes).expect("appended");
+        let committed = at.version();
+        db.wb()
+            .committed(committed, appended.at, &bytes)
+            .expect("write-back was told");
+
+        let mut model = db.model.lock().expect("the model");
+        for (id, (copy, _)) in std::mem::take(&mut self.copies) {
+            if freed.contains(&id) {
+                db.pool.discard(&copy).expect("discarded");
+                if db.table.newest(id).is_some() {
+                    // A page that was made under an id that named a freed
+                    // page before, and that no block holds yet, gets no
+                    // second free link (the engine's commit does the same).
+                    match db.table.push(id, Link::free(committed)) {
+                        Ok(()) | Err(crate::table::LinkError::AlreadyFree) => {}
+                        Err(error) => panic!("a free link: {error}"),
+                    }
+                }
+                db.pool.free(id, committed).expect("freed");
+                model
+                    .pages
+                    .entry(id)
+                    .or_default()
+                    .push((committed.get(), None));
+            } else {
+                let frame = db.pool.install(&copy, committed).expect("installed");
+                let versions = model.pages.entry(id).or_default();
+                let before = match versions.last() {
+                    Some((_, Some(cells))) => cells
+                        .iter()
+                        .map(|cell| (cell.slot, cell.value.clone()))
+                        .collect(),
+                    _ => BTreeMap::new(),
+                };
+                let cells = committed_cells(&frame, &before, &written);
+                versions.push((committed.get(), Some(cells)));
+            }
+        }
+        drop(model);
+        let mut change = ValueChange::new();
+        released.iter().for_each(|&pointer| change.release(pointer));
+        counts.apply(&change, committed).expect("counted");
+        db.versions.latest.store(committed.get(), Ordering::SeqCst);
+        committed
+    }
+}

@@ -3,7 +3,7 @@
 use grovedb_costs::{CostResult, CostsExt, OperationCost};
 use grovedb_dense_fixed_sized_merkle_tree::{v1_insert_model_cost, SlotWriteAccounting};
 use grovedb_merkle_mountain_range::{mmr_size_to_leaf_count, MmrKeySize, MmrNode, MmrStore, MMR};
-use grovedb_storage::StorageContext;
+use grovedb_storage::FlatStore;
 use grovedb_version::version::GroveVersion;
 use integer_encoding::VarInt;
 
@@ -29,7 +29,7 @@ use crate::{
 /// collide with it.
 pub const MMR_ROOT_KEY: &[u8] = b"r";
 
-impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
+impl<S: FlatStore> BulkAppendTree<S> {
     /// Create a new empty tree.
     ///
     /// `height` is the dense tree height (1–16). Capacity = `2^height - 1`.
@@ -780,7 +780,7 @@ impl<'db, S: StorageContext<'db>> BulkAppendTree<S> {
             Some(grovedb_costs::storage_cost::key_value_cost::KeyValueStorageCost::prepaid());
         self.dense_tree
             .storage
-            .put(MMR_ROOT_KEY, root, None, cost_info)
+            .put(MMR_ROOT_KEY, root, cost_info)
             .unwrap()
             .map_err(|e| BulkAppendError::StorageError(format!("MMR root put failed: {}", e)))
     }

@@ -1,59 +1,59 @@
 //! Proof operations
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod aggregate_common;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod aggregate_count;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod aggregate_count_and_sum;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod aggregate_sum;
 /// Versioned dispatch for `bind_terminal_non_merk_tree`, which binds a
 /// terminally-reported non-Merk tree's element bytes to the parent-committed
 /// `value_hash`. Consensus-critical — see the module docs.
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod bind_terminal_non_merk_tree;
 /// Trunk / branch chunk proofs: composite-row binding (#859), versioned.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod chunk_proof_row_binding;
-#[cfg(feature = "minimal")]
+#[cfg(feature = "engine_generic")]
 mod generate;
 /// Versioned dispatch for a V1 proof layer that has subquery branches under
 /// a per-instance cap: proven in full, or truncated where its budget is
 /// spent (issue #962). See the module docs for the soundness argument.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod instance_cap_layer_truncation;
-// The prover lives in `indexed_axis::generate` and is `minimal`-gated there;
+// The prover lives in `indexed_axis::generate` and is `engine_generic`-gated there;
 // the envelope types and verification entry points must be reachable from a
 // verifier-only build (Dash Platform's `drive` crate compiles its
 // proof-verification layer with `--no-default-features --features verify`).
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub mod indexed_axis;
 /// Interval arithmetic over u64 positions for the append-only tree
 /// verifiers' completeness/soundness checks (count-independent cost).
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod position_intervals;
 /// Whether a query goes below a key of a layer, as the V1 prover and
 /// verifier classify it, versioned.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod subquery_descent_on_key;
 /// Whether a V1 verifier charges an empty tree row it does not report,
 /// versioned.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod unreported_empty_tree_row_charge;
 /// Utility functions for proof display and conversion.
 pub mod util;
 mod verify;
 /// The unified verify entry point (`verify_path_query`), serving every
 /// provable `PathQuery` shape. Verify-reachable for light clients.
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 mod verify_path_query;
 
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use aggregate_common::CarrierAggregatePage;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use verify::SumBudgetStop;
-#[cfg(any(feature = "minimal", feature = "verify"))]
+#[cfg(any(feature = "engine_generic", feature = "verify"))]
 pub use verify_path_query::VerifiedPathQuery;
 
 use std::{collections::BTreeMap, fmt};

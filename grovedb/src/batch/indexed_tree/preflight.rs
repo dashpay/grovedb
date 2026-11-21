@@ -12,7 +12,7 @@ use grovedb_version::version::GroveVersion;
 
 use crate::{
     batch::{GroveOp, QualifiedGroveDbOp},
-    Element, Error, GroveDb, Transaction,
+    Element, Engine, Error, GroveDb, Transaction,
 };
 
 /// The qualified path (`op.path + op.key`) of every indexed-tree primary
@@ -75,10 +75,10 @@ fn freshly_created_indexed_paths(ops: &[QualifiedGroveDbOp]) -> Vec<Vec<Vec<u8>>
 /// pattern pay nothing), treating a missing parent path as absent — a
 /// parent created in this same batch means the element cannot exist on
 /// disk either.
-pub(crate) fn reject_indexed_overwrite_with_descendants(
-    db: &GroveDb,
+pub(crate) fn reject_indexed_overwrite_with_descendants<'db, E: Engine>(
+    db: &'db GroveDb<E>,
     ops: &[QualifiedGroveDbOp],
-    transaction: &Transaction,
+    transaction: &Transaction<'db, E>,
     grove_version: &GroveVersion,
 ) -> CostResult<(), Error> {
     let mut cost = OperationCost::default();

@@ -1,0 +1,264 @@
+lignin-golden-trace 1
+name partial-batches
+seed 0x1
+grove-version 5
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload partial-batches
+cd353r9908
+  step 0
+  # Write(Insert { path: [], key: [112, 97, 114, 116, 105, 97, 108], element: tree: None })
+  cost seeks=3 loaded=0 added=121 replaced=0 removed=- hashes=3 sinsemilla=0
+  root d685859076a2f3bbd76a3e7cbebe364059fc06839486c460007933b27378568c
+c396frb18e
+cb5a5r9c5b
+cb825r0940
+c31f7r3ee0
+c49d9re7f2
+c4c98r4c68
+c0e22ra04d
+c4a64r4f1d
+c9437r5942
+ce5a2rbcc1
+cd042r8ab0
+c5dcer0032
+c986br1bb6
+cc494r013c
+c301ard5e3
+ccdb3r8a0d
+c5c49rfac6
+cb7ddrfac6
+  step 18
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 2a28ab3ddb2bb84ad8c49023de0656f7eeca20c287a2ffe391c1b318e6fdc348
+cf5b3ve0e2r113a
+  step 19
+  # PartialBatch(PartialBatch { ops: [InsertOnly { path: [[112, 97, 114, 116, 105, 97, 108], [100, 111, 99, 117, 109, 101, 110, 116, 115], [111, 119, 110, 101, 114, 45, 48]], key: [0, 0, 0, 0, 0, 0, 0, 0], element: item: [hex: edbdd013..13aacea3][hex: 000001, str: \u{0}\u{0}\u{1}] }], add_on: [Replace { path: [[112, 97, 114, 116, 105, 97, 108], [98, 97, 108, 97, 110, 99, 101, 115]], key: [111, 119, 11… (607 characters)
+  cost seeks=34 loaded=2028 added=322 replaced=1237 removed=- hashes=58 sinsemilla=0
+  result written-in-segments
+  first-segment seeks=13 loaded=873 added=322 replaced=353 removed=- hashes=25 sinsemilla=0
+  root 9995bba5fd862a7254d0e020b79703493a2c591f94b6560e3823e507f446f97b
+ce761v4ef7r5520
+c0b71v3ec7r528f
+cdcb9vf690r1f8b
+c647ev9671r9295
+c3915v0b70r29bb
+c1706v0537rf9b5
+cfd2cv3319r683d
+cb7ddr683d
+cd989v7f23
+  step 28
+  # Read(Get { path: [[112, 97, 114, 116, 105, 97, 108], [98, 97, 108, 97, 110, 99, 101, 115]], key: [111, 119, 110, 101, 114, 45, 53] })
+  cost seeks=3 loaded=341 added=0 replaced=0 removed=- hashes=2 sinsemilla=0
+  element 03fc00a9204c00
+c9db1vb317
+c9588va501
+c66afvc13aqf218p2214
+  step 31
+  # Read(Query(Query { path: [[112, 97, 114, 116, 105, 97, 108], [100, 111, 99, 117, 109, 101, 110, 116, 115], [111, 119, 110, 101, 114, 45, 53]], items: [RangeFull], subquery_path: None, subquery_all: false, limit: Some(6), left_to_right: true, raw: false }))
+  cost seeks=3 loaded=679 added=0 replaced=0 removed=- hashes=1 sinsemilla=0
+  rows 1
+  row 7061727469616c/646f63756d656e7473/6f776e65722d35 0000000000000001 009c8c22ba86cce462435c411a0d53ab1efe713a20b0f90c094046998d209edcfb83e274f1507ec1b257edc0adda36d643a69d39b73d5a5ae72f02908caf393fc59f293a546e17fd41b5338e4b287d6b7ee1cfa4782d10ea5babde03549962df94dddbeced1c3e1914178ca0d231d1597a4ccede6cc2426d5f9094fbe6103f156b8c035c087ba0cdb0a02fd6c2142d33c5a1c1afb1ddcc8519de26da29950103000002
+  prove-cost seeks=10 loaded=1086 added=0 replaced=0 removed=- hashes=5 sinsemilla=0
+  proof 552 01003804077061727469616c000d020109646f63756d656e74730071ed0164cb89668199d677bcb46690cc84f7cf5bae1148e598cb97a6fe0dc8c601077061727469616c007c0112aa4a14c6f14e9b8af49fe7638e8a2fa195de7d6f9a7b60043f46ebf9d870b80409646f63756d656e7473000b0201076f776e65722d33006d82a0d4521a9d63107d0b4ee9422603ab55661ff1fd3b14b027873bca6b227510019451be99fa1e1fc7c74d91d8b0191070d42db26b6b0314d5bb2eb618c79a7e02110109646f63756d656e7473009e012b0d86a29cda4d7fe58960760609991784c16cacb2d3905f02637059d092111c02597d96c71a4b1b2641d0a1a47ac626840e889d55d55ac5bad72a3948d0c8488510026c4ca309d9d31e906dd81649d8711a0785558b1a042071c116eb3c05b232c26804076f776e65722d35000d06010800000000000000010100e91d3a6b6d02b4c5b60c65a480d64d42286c65e8f55f6be79a1cc60581049fe3111101076f776e65722d3500af0308000000000000000100a3009c8c22ba86cce462435c411a0d53ab1efe713a20b0f90c094046998d209edcfb83e274f1507ec1b257edc0adda36d643a69d39b73d5a5ae72f02908caf393fc59f293a546e17fd41b5338e4b287d6b7ee1cfa4782d10ea5babde03549962df94dddbeced1c3e1914178ca0d231d1597a4ccede6cc2426d5f9094fbe6103f156b8c035c087ba0cdb0a02fd6c2142d33c5a1c1afb1ddcc8519de26da2995010300000200
+  verification verified
+cf0d7v0989
+cf5e2v011ar8034
+cb8bav5e16r22dd
+ce455v8ff2r74c8
+c2e14vf954r09f8
+c1823ve4c4r452b
+cfcbdv2907r9e75
+cae48v7c0dr9f32
+c2200v11darbd9c
+cb7ddrbd9c
+cd989v1713
+ced9fv4e9c
+c991avd2bd
+c193ev3ea8q0ec3pa308
+cf0d7v0989
+c66aev83car06a8
+c3ca2vfed0ra039
+cc4f5v5cbfr1e54
+ce114v4f55rec20
+c3d59v77fcr70a0
+c5661v015erb343
+caa58v8b61reb5c
+c3028vcbb8r9ab4
+cb7ddr9ab4
+cd989v0e8d
+ced9fv5654
+c991avbf7b
+c8c82ve176q35ddp2070
+cf0d7ve801
+c4346vf36dr717f
+c09afv1a8dr099d
+c7120v428dr7dbe
+cd94ev70f2r61aa
+c27dev4bbdr8c97
+cdc76v87bfr4fe0
+c1ddav2226r70aa
+c7d78vbf35r84c4
+cb7ddr84c4
+cd989v8afb
+ced9fv6f81
+c991avf3d1
+cebf8v23ddq8489pdea1
+cf0d7v1c81
+cbe49v4dd1rc8a4
+c4f22v2104r1b60
+c83b4v8b94r264b
+ced77v0254red53
+cfcf0vbd86r3c3b
+cefffv8259r7922
+c7175ved52r8127
+cbab3vf215r95bd
+cb7ddr95bd
+ccde7vc3e7
+ced9fv50aa
+ceccav4b00
+ccd82v86caq7a3bpb046
+cf0d7v4034
+c74bevb36ar8748
+c6d89v5d07rc67e
+c5410v7cb0rb074
+c094av10f7r9dc5
+c486fv8bd8r5f07
+c57a6v8fd5reedb
+cabf2v00c3r21f0
+c87c9v771ar368c
+cb7ddr368c
+cedfbv3d44
+ced9fv8eee
+c36c4vef5d
+c1722v95f8qedf4p3b4b
+cf0d7v035d
+cefa1v2548r9c86
+c026cv9544reb7e
+c4df5v2a2drfbac
+c3c60v1f26rce7d
+c2e17v159br0833
+c7263va7b9rc039
+c0bfcveadfr7ee7
+c22d5v0c1erf46f
+cb7ddrf46f
+ccde7v833c
+ced9fv963b
+ceccavf9c8
+ca502vc82fqcd78p674a
+cf0d7v197a
+cd77dvc0dar9f8d
+c7535vd5b7rd5f1
+c3579v10car2dc9
+c0cadv462drb0a6
+c0ce2vfa5arf4b3
+cfdaavd859r23f1
+c1c7ev0f11re98f
+c4f53v4b84rdff8
+cb7ddrdff8
+ccde7v0f57
+ced9fve211
+ceccav5358
+c0af9v467bqd379p43bd
+cf0d7vc84b
+cc9e3va667rd751
+c255dvca82r22f4
+c3ebdv2599r1676
+caae7vfa77r6c88
+c57ccv04dera833
+ccc6dv9213rae66
+c0f0bveb88rbf84
+cafeev8855r9f65
+cb7ddr9f65
+cd989v348d
+ced9fvc566
+c991av8f1b
+c7505va817q7890p1ec6
+cf0d7v1b1d
+c69e0vfe5arddf0
+c7023v4a4dr3644
+c12ddve04dr6e59
+cd301v5d42rfb7e
+ce952vc388r9ac8
+c6781vd8far1373
+cb92evf2a4r59ea
+ca984v40b3r0bab
+cb7ddr0bab
+cd989va7bc
+ced9fv8fb0
+c991av84f5
+c64a4v301aqff00p7512
+cf0d7v1989
+c38a8v3544r2157
+c7b53vc268rfb24
+c1259v9f82re6eb
+c08a6v1122rb7de
+c4e5cvc689rffea
+c3f0cvae07r03ec
+caff4v18f0r9891
+c521ev76a3rb1dc
+cb7ddrb1dc
+cd989vb102
+ced9fvfb3a
+c991avc4d1
+c7505va817q7890pee44
+cf0d7v1989
+c173evea85raffb
+c4466v7627r5d65
+c76a6vb762r167d
+c1debv4f69r497f
+c7293vb990rc082
+c0634v9eb2r9554
+c9ad3v59carc4a8
+cdfb0v00e4r6500
+cb7ddr6500
+c6f45v1d1b
+ced9fv0683
+c847bv899e
+c729av3dfeq749dpdb0e
+cf0d7vaa58
+ca4d1v4ecbrc4ab
+cfea1vbb1ar41ee
+c33b9v48b6rcb94
+c39acv551brd88c
+cacb3vdae3rcb3a
+c164ev5424r993a
+cae94v115arde39
+c1496v13d3racc6
+cb7ddracc6
+c6bb9vdb8e
+ced9fvbde1
+c991av4086
+c89bdvb21bq8031p0800
+cf0d7v2f59
+c7732vf167ra0e7
+c7273v0fabr0480
+c23bbv0fbbr3d86
+c8e02vc176r3a2c
+cedcevdd58r402f
+c136bv7345r4e32
+cb231v12e6rf03e
+cdb08v180ar0a9c
+cb7ddr0a9c
+cedfbv4568
+ced9fvdb14
+c36c4v1f21
+cf4cdve401qfad3p006e
+cf0d7va0a2
+cb071v4ad0r7bd0
+c3f65v8d8drce75
+cfc28vc36dr4656
+c9735v6357rae0a
+c7237vc422rcfd4
+c248fv845er0502
+cabf0vb303r6f85
+c8a3fv622frd64b
+cb7ddrd64b
+cd989vff7f
+ced9fv520a
+c991avbe56
+c4ae9v4f96qe446p44fc
+cf0d7v9a0b
+stream 229 d74626348e1c61fa41fffb10d61a6a6be5859373cf6ae2e6d312d8b7a911461e
+tally failed=0 unproved=0 unverified=0
+end 229 e2f123e8270db07a0ed0d14ee85d2cdaa5e5a4ca812f8fd07dbe9e8b511792a0

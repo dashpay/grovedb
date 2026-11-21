@@ -2385,8 +2385,8 @@ fn plain_writes_still_route_through_pre_v4_dispatch() {
 /// does not match — e.g. one written with a corrupt provided hash.
 #[test]
 fn verify_grovedb_reports_corrupt_provided_value_hashes() {
+    use crate::{tests::SuiteBatch, Engine};
     use grovedb_merk::{tree::Op as MerkOp, TreeFeatureType};
-    use grovedb_storage::{Storage, StorageBatch};
 
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
@@ -2395,7 +2395,7 @@ fn verify_grovedb_reports_corrupt_provided_value_hashes() {
     let bytes = Element::new_item_allowing_bidirectional_references(b"evil".to_vec())
         .serialize(grove_version)
         .unwrap();
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let mut merk = db
         .open_transactional_merk_at_path(
             SubtreePath::from(&[TEST_LEAF]),
@@ -2417,10 +2417,7 @@ fn verify_grovedb_reports_corrupt_provided_value_hashes() {
     .unwrap()
     .unwrap();
     drop(merk);
-    db.db
-        .commit_multi_context_batch(batch, Some(&tx))
-        .unwrap()
-        .unwrap();
+    db.db.apply_batch(batch, &tx).unwrap().unwrap();
 
     let issues = db
         .verify_grovedb(Some(&tx), true, true, grove_version)
@@ -3429,8 +3426,8 @@ fn automatic_delete_handles_specialized_descendants() {
 /// position that does not point back is reported.
 #[test]
 fn verify_grovedb_reports_forged_referrer_entries() {
+    use crate::{tests::SuiteBatch, Engine};
     use grovedb_merk::{tree::Op as MerkOp, TreeFeatureType};
-    use grovedb_storage::{Storage, StorageBatch};
 
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
@@ -3453,7 +3450,7 @@ fn verify_grovedb_reports_forged_referrer_entries() {
         .unwrap()
         .unwrap();
     let bytes = forged_element.serialize(grove_version).unwrap();
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let mut merk = db
         .open_transactional_merk_at_path(
             SubtreePath::from(&[TEST_LEAF]),
@@ -3475,10 +3472,7 @@ fn verify_grovedb_reports_forged_referrer_entries() {
     .unwrap()
     .unwrap();
     drop(merk);
-    db.db
-        .commit_multi_context_batch(batch, Some(&tx))
-        .unwrap()
-        .unwrap();
+    db.db.apply_batch(batch, &tx).unwrap().unwrap();
 
     let issues = db
         .verify_grovedb(Some(&tx), true, true, grove_version)
@@ -3850,8 +3844,8 @@ fn proof_generation_respects_bidi_max_hop() {
 /// a corrupt empty inverse path.
 #[test]
 fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
+    use crate::{tests::SuiteBatch, Engine};
     use grovedb_merk::{element::ElementExt, tree::Op as MerkOp, TreeFeatureType};
-    use grovedb_storage::{Storage, StorageBatch};
 
     let grove_version = GroveVersion::latest();
     let db = db_with_bwr_item();
@@ -3880,7 +3874,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
         .unwrap()
         .unwrap();
     let bytes = stripped_target.serialize(grove_version).unwrap();
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let mut merk = db
         .open_transactional_merk_at_path(
             SubtreePath::from(&[TEST_LEAF]),
@@ -3902,10 +3896,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     .unwrap()
     .unwrap();
     drop(merk);
-    db.db
-        .commit_multi_context_batch(batch, Some(&tx))
-        .unwrap()
-        .unwrap();
+    db.db.apply_batch(batch, &tx).unwrap().unwrap();
 
     let issues = db
         .verify_grovedb(Some(&tx), true, true, grove_version)
@@ -3931,7 +3922,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     );
     let combined = forged.logical_value_hash(grove_version).unwrap().unwrap();
     let bytes = forged.serialize(grove_version).unwrap();
-    let batch = StorageBatch::new();
+    let batch = SuiteBatch::default();
     let mut merk = db
         .open_transactional_merk_at_path(
             SubtreePath::from(&[TEST_LEAF]),
@@ -3953,10 +3944,7 @@ fn verify_grovedb_reports_missing_forward_registration_and_empty_inverse() {
     .unwrap()
     .unwrap();
     drop(merk);
-    db.db
-        .commit_multi_context_batch(batch, Some(&tx))
-        .unwrap()
-        .unwrap();
+    db.db.apply_batch(batch, &tx).unwrap().unwrap();
     let issues = db
         .verify_grovedb(Some(&tx), true, true, grove_version)
         .unwrap();
@@ -4077,7 +4065,7 @@ fn retarget_rejects_upstream_max_hop_violation() {
 /// `value` rebalances the subtree and rewrites `ref`'s node in the shared
 /// batch; the cascade's later delete of `ref` must supersede that rewrite
 /// rather than being dropped by put-wins merging.
-#[cfg(feature = "unsafe-dump-load")]
+#[cfg(all(feature = "unsafe-dump-load", grovedb_test_engine = "rocksdb"))]
 #[test]
 fn cascade_removes_the_physical_referrer_record() {
     use grovedb_storage::{Storage, StorageContext};

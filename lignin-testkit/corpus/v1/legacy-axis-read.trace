@@ -1,0 +1,163 @@
+lignin-golden-trace 1
+name legacy-axis-read
+seed 0x0
+grove-version 1
+engine 2cfc1ce1f8e413cb97952f4c6b81128ae5576e89
+workload legacy-axis-read
+cff5creb64
+  step 0
+  # Write(Insert { path: [], key: [116, 111, 112], element: tree: None })
+  cost seeks=3 loaded=0 added=113 replaced=0 removed=- hashes=3 sinsemilla=0
+  root bc7e7e6ba01aa5da8673cb316923855d015ac4198ef19223380b58a72def3171
+c3540r92e7
+  step 1
+  # Write(Insert { path: [[116, 111, 112]], key: [114, 97, 110, 107, 101, 100], element: tree: None })
+  cost seeks=5 loaded=150 added=119 replaced=77 removed=- hashes=9 sinsemilla=0
+  root 288a40689b72b0192a2d01bdb47c3265525fb08d2e42e02a4e8777801c1fa4ac
+c1646r586e
+  step 2
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [114, 48], element: tree: None }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48]], key: [98, 121, 45, 99, 111, 117, 110, 116], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 }])
+  cost seeks=10 loaded=307 added=244 replaced=157 removed=- hashes=26 sinsemilla=0
+  root 236f0ca749a885f5b8334f28b0d47cf78aa8be66037ef917855f32eee7ad14c2
+cb7ddr586e
+  step 3
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 236f0ca749a885f5b8334f28b0d47cf78aa8be66037ef917855f32eee7ad14c2
+c5237rfc74
+  step 4
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 48], element: count_tree: None 0 }])
+  cost seeks=20 loaded=777 added=332 replaced=325 removed=- hashes=43 sinsemilla=0
+  root 8aa2e7cef96f7de3533db871ae37adb04f78db53d25338778f2b8ea4ebed3ef2
+c06b9rf874
+  step 5
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116], [114, 48]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }])
+  cost seeks=23 loaded=1040 added=160 replaced=622 removed=- hashes=48 sinsemilla=0
+  root 3fe49d56271dbc94692c2381b6e1e2c02604a6ed92e31693f21ee592b9bdb6a1
+cebc7r55f7
+  step 6
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 49], element: count_tree: None 0 }])
+  cost seeks=22 loaded=958 added=332 replaced=579 removed=- hashes=47 sinsemilla=0
+  root fa203a548baa26432cb006f77310b5a498da240c19f521ad350330a99d5f8bcb
+c1150r2ac3
+  step 7
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116], [114, 49]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116], [114, 49]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] }, InsertOnly { pa… (574 characters)
+  cost seeks=32 loaded=1496 added=480 replaced=876 removed=- hashes=60 sinsemilla=0
+  root b8dbb00541822d0ef7fe56bf7d98dfd35f119ec15e0959631474d7c890c7bf1f
+c8bd2r2f47
+  step 8
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 50], element: count_tree: None 0 }])
+  cost seeks=25 loaded=1120 added=332 replaced=680 removed=- hashes=49 sinsemilla=0
+  root 73d9b83b91170704f9327c07910776b646c0e6f162504a5d8969d6488080126d
+cd567r53a7
+  step 9
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116], [114, 50]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116], [114, 50]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] }, InsertOnly { pa… (952 characters)
+  cost seeks=36 loaded=1661 added=800 replaced=1029 removed=- hashes=70 sinsemilla=0
+  root d4bd736db4d34f8f983e3706d3a04a1f54b76d7a41b2466cf48c481a31b0b7e0
+cb7ddr53a7
+  step 10
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root d4bd736db4d34f8f983e3706d3a04a1f54b76d7a41b2466cf48c481a31b0b7e0
+c9111r0506
+  step 11
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], key: [114, 49], element: tree: None }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49]], key: [98, 121, 45, 99, 111, 117, 110, 116], element: provable_count_indexed_tree: primary=None, secondary=None, count: 0 }])
+  cost seeks=12 loaded=389 added=244 replaced=233 removed=- hashes=28 sinsemilla=0
+  root 85dddf0e5b4ae49bc2b131adc6c511579f235a4eacc1010820baea8932b29fe3
+cb7ddr0506
+  step 12
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root 85dddf0e5b4ae49bc2b131adc6c511579f235a4eacc1010820baea8932b29fe3
+c71edr9e19
+  step 13
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 48], element: count_tree: None 0 }])
+  cost seeks=23 loaded=973 added=332 replaced=401 removed=- hashes=45 sinsemilla=0
+  root 1a540ab06200ffc29eef4f21fba795f7c9918de3e10941ca6533f2eab3a3a439
+c2ee1r67a3
+  step 14
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116], [114, 48]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116], [114, 48]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] }, InsertOnly { pa… (574 characters)
+  cost seeks=28 loaded=1236 added=480 replaced=698 removed=- hashes=58 sinsemilla=0
+  root e68ac96f326c90c854486afb6134a36caa420a388f86fda9871bf3c2f95a0f23
+c9761rf7de
+  step 15
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 49], element: count_tree: None 0 }])
+  cost seeks=25 loaded=1154 added=332 replaced=655 removed=- hashes=49 sinsemilla=0
+  root a8a08142c26ac0200ab024eb011b8a17053765c7f29c32a50b329810866eb72f
+c2414rd77a
+  step 16
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116], [114, 49]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }, InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116], [114, 49]], key: [114, 49], element: item: [hex: 7601, str: v\u{1}] }, InsertOnly { pa… (952 characters)
+  cost seeks=37 loaded=1692 added=800 replaced=952 removed=- hashes=70 sinsemilla=0
+  root 0a8e72da876d918ce833adaf3fe6573b86e6dda416184f43ce91d24b24621db3
+c525dr8552
+  step 17
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116]], key: [114, 50], element: count_tree: None 0 }])
+  cost seeks=28 loaded=1316 added=332 replaced=756 removed=- hashes=51 sinsemilla=0
+  root 4116cdecfd9083e648548ddd7b1aeafe8f9f57dae38c1602a7b62f34469e71d4
+c37a5rbfc8
+  step 18
+  # Batch([InsertOnly { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 49], [98, 121, 45, 99, 111, 117, 110, 116], [114, 50]], key: [114, 48], element: item: [hex: 7600, str: v\u{0}] }])
+  cost seeks=33 loaded=1779 added=160 replaced=952 removed=- hashes=54 sinsemilla=0
+  root acc6e5a69733f7489923716d927ca79cf38700214094134d30c481738ccc200d
+cb7ddrbfc8
+  step 19
+  # Commit
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  root acc6e5a69733f7489923716d927ca79cf38700214094134d30c481738ccc200d
+cb7dde41f4qb7ddp24bc
+  step 20
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis… (570 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde41f4qb7ddp24bc
+  step 21
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis… (568 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde41f4qb7ddp24bc
+  step 22
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis… (575 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde41f4qb7ddp24bc
+  step 23
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis… (568 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde41f4qb7ddp24bc
+  step 24
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100], [114, 48], [98, 121, 45, 99, 111, 117, 110, 116]], query: SizedQuery { query: Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None }, conditional_subquery_branches: None, left_to_right: true, add_parent_tree_on_subquery: false, read_mode: Some(Axis(AxisQuery { axis… (594 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+cb7dde41f4qb7ddp24bc
+  step 25
+  # Read(PathQuery { query: PathQuery { path: [[116, 111, 112], [114, 97, 110, 107, 101, 100]], query: SizedQuery { query: Query { items: [Key([114, 48]), Key([114, 49]), Key([114, 55])], default_subquery_branch: SubqueryBranch { subquery_path: Some([[98, 121, 45, 99, 111, 117, 110, 116]]), subquery: Some(Query { items: [], default_subquery_branch: SubqueryBranch { subquery_path: None, subquery: None … (847 characters)
+  # failed: not supported: read-mode (axis / sum-budget) path queries are not served at this grove version
+  # prove failed: not supported: axis-ordered path queries require V1 proof envelopes; upgrade the grove version producing the proof
+  cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  failed NotSupported
+  prove-cost seeks=0 loaded=0 added=0 replaced=0 removed=- hashes=0 sinsemilla=0
+  prove-failed NotSupported
+stream 26 4b8ace9fbc0addaabeaa332fbb8bda56b5c9a7b4963818594c6277c6c11ec203
+tally failed=6 unproved=6 unverified=0
+end 26 085ec90d241a14bb61859052ddf5b7349b2be61c620cdfc961e6f9d07566165d

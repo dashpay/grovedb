@@ -50,24 +50,23 @@ use grovedb_costs::{
 };
 use grovedb_merk::Error as MerkError;
 use grovedb_path::SubtreePath;
-use grovedb_storage::StorageBatch;
 use grovedb_version::version::GroveVersion;
 
 use super::DeleteOptions;
-use crate::{Error, GroveDb, Transaction};
+use crate::{Engine, Error, GroveDb, Transaction};
 
-impl GroveDb {
+impl<E: Engine> GroveDb<E> {
     /// Delete an element on a transaction, clearing a non-empty subtree's
     /// storage when the options allow it, and propagate the parent layer's
     /// new link hash upward.
     ///
     /// Version dispatch (consensus-critical) — see the module documentation.
-    pub(crate) fn delete_internal_on_transaction<B: AsRef<[u8]>>(
-        &self,
+    pub(crate) fn delete_internal_on_transaction<'db, B: AsRef<[u8]>>(
+        &'db self,
         path: SubtreePath<B>,
         key: &[u8],
         options: &DeleteOptions,
-        transaction: &Transaction,
+        transaction: &Transaction<'db, E>,
         sectioned_removal: &mut impl FnMut(
             &Vec<u8>,
             u32,
@@ -76,7 +75,7 @@ impl GroveDb {
             (StorageRemovedBytes, StorageRemovedBytes),
             MerkError,
         >,
-        batch: &StorageBatch,
+        batch: &E::Batch,
         grove_version: &GroveVersion,
     ) -> CostResult<bool, Error> {
         match grove_version
