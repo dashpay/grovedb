@@ -56,12 +56,54 @@ Rules that hold for every implementation:
 3. **`get`** returns the value under the key, or `None`. A read failure is an `Err`, never `None`.
 4. **`put`** stores the value, replacing any value under the key.
 5. **`delete`** removes the record. Deleting a key with no record succeeds.
-6. **`cursor`** returns a cursor that is not positioned: `valid()` is false until the first seek. It walks the records that were visible to the handle when the cursor was opened, in key order, and never shows a record outside the keyspace. `seek(k)` goes to the first key `>= k`, `seek_for_prev(k)` to the last key `<= k`. Stepping past either end makes the cursor invalid. From an invalid cursor only a seek gives a defined position again. `status()` tells an error from the end of the keyspace.
+6. **`cursor`** returns a cursor that is not positioned: `valid()` is false until the first seek. It walks the records that were visible to the handle when the cursor was opened, in key order, and never shows a record outside the keyspace. `seek(k)` goes to the first key `>= k`, `seek_for_prev(k)` to the last key `<= k`. Stepping past either end makes the cursor invalid. `status()` tells an error from the end of the keyspace. **A step from an invalid cursor is defined**, and it is part of the answer of a query: [A step from no key](#a-step-from-no-key) says where it leads.
 7. **Cursor and writes.** One pattern of writing under an open cursor is defined: deleting the record the cursor stands on and then calling `next()`. `clear` uses it. Any other write to the keyspace while a cursor is open leaves that cursor's later results unspecified.
 8. **`clear`** is the range delete: it removes every record of the keyspace, and only of that keyspace. The aux, meta and roots records of the subtree stay when its data keyspace is cleared (inventory finding 6).
 9. **Refused writes.** A deferred handle opened with no batch is read-only: `put` and `delete` return `Err` and change nothing, and so does `clear` unless the keyspace is already empty. A snapshot read transaction is read-only as well. An immediate handle on it refuses each write, and a batch staged through deferred handles on it is refused when it is applied (`Error::SnapshotReadOnlyTransaction`).
 
 The cursor is the existing `RawIterator` trait. `FlatStore` does not define a second cursor trait, so code that walks a keyspace is the same for a flat keyspace and for Merk records.
+
+## A step from no key
+
+Rule 6 once said that from an invalid cursor only a seek gives a defined position. GroveDB relies on more (D-189): a descending read of an exclusive range seeks to the end of the range and steps back (`QueryItem::Range`, `RangeTo` and `RangeAfterTo` in `grovedb-query/src/query_item/mod.rs`: `iter.seek(end)`, then `iter.prev()`). Where the end is past the last key of the subtree, that step is made from an invalid cursor, and the rows of the read depend on where it leads. So what RocksDB does is the contract on every existing GroveVersion, for the cursor of a flat keyspace and for the cursor of a Merk's nodes ([node-store.md](node-store.md#cursor)) alike.
+
+**The line of a column.** RocksDB keeps the records of one keyspace of every subtree in one column family, under `prefix ‖ key`, and its iterator walks them all in that order: the *line* of the column. A cursor of a subtree is such an iterator, which shows a record of another subtree as no record (`valid()` is false, `key()` and `value()` are `None`). The iterator still stands on that record.
+
+| Cursor | Column family | What its line holds |
+| --- | --- | --- |
+| the nodes of a Merk (`NodeStore::cursor`), the flat data of a tree (`FlatStore::cursor` of a handle) | default | the nodes of every Merk and the flat records of every tree that keeps its data flat |
+| aux (`aux().cursor()`) | `aux` | the aux records of every subtree |
+| meta (`meta().cursor()`) | `meta` | the meta records of every subtree, and the pending-prefix-drop records under their reserved prefix |
+
+The `roots` column family has no cursor.
+
+**The moves.** A cursor stands on a record of its line, or nowhere.
+
+- `seek(k)` goes to the first record of the line at or after `prefix ‖ k`, and `seek_to_first()` to the first at or after `prefix`. `seek_for_prev(k)` goes to the last record at or before `prefix ‖ k`, and `seek_to_last()` to the last record before the next prefix. Where the line has no such record the cursor stands nowhere.
+- `next()` and `prev()` go one record along the line from the record the cursor stands on, whichever subtree that record is of, and off the end of the line to nowhere. **From nowhere a step does nothing.** A cursor that was never sought stands nowhere.
+
+So a cursor that has left the keys of its subtree is on the nearest record of another subtree that way, if the line has one, and nowhere if it has none:
+
+| The cursor left its subtree's keys by | The line has a record of another subtree on that side | It has none |
+| --- | --- | --- |
+| `seek(k)` with every key of the subtree before `k`; `next()` from the last key; `seek_to_first()` in a subtree with no record | It stands on the first record after the subtree. `prev()` goes to the subtree's last key. `next()` goes one record further from the subtree, and `prev()` then comes back by one. | It stands nowhere: `prev()` and `next()` do nothing. |
+| `seek_for_prev(k)` with every key of the subtree after `k`; `prev()` from the first key; `seek_to_last()` in a subtree with no record | It stands on the last record before the subtree. `next()` goes to the subtree's first key. `prev()` goes one record further from the subtree, and `next()` then comes back by one. | It stands nowhere: `next()` and `prev()` do nothing. |
+
+A step into a subtree that has no record goes over it, to the nearest record on its other side or to nowhere.
+
+Which subtree is before or after another is the order of their prefixes, which are hashes of their paths. So the same read of the same tree answers its rows in one grove and nothing in another: a descending read of `..end` with `end` past the last key, of a tree that has rows, answers nothing exactly when the tree's subtree is the last of its column family that holds a record. LigninDB reproduces this on the existing GroveVersions.
+
+**Costs.** Every move is charged as a move (`cost-model.md` C1), also a step that does nothing. `valid()`, `key()` and `value()` of a cursor that is on no record of its subtree are charged the fixed charge of C2, whether it stands on a record of another subtree or nowhere.
+
+**What counts as a record on the line.** A record that a cursor of its own subtree shows: the committed records of the state the cursor reads, with the transaction's applied writes. A staged write is not on it. A record whose delete the transaction has applied is not on it, and a record it has put is.
+
+**On LigninDB** the records of a column are not one keyspace: the nodes of a Merk are in the Merk's own tree. The store's cursors keep the place a cursor of RocksDB has, and ask the engine what lies beside the subtree when a step is made from no key ([node-store.md](node-store.md#the-cursor)). That question is a read of the subtrees beside, so inside a transaction with open write scopes it can be refused as any read can (`transactions.md` SC3), which RocksDB has no word for; the cursor's `status()` gives the refusal.
+
+Of the line itself, these are not reproduced:
+
+- `seek_to_last()` on RocksDB seeks back from the 32 bytes that follow the prefix in order. If another subtree has exactly those bytes as its prefix and a record under the empty key, the iterator stands on that record, and the cursor is invalid although its subtree has records. On LigninDB it stands on the subtree's last key. Prefixes are Blake3 hashes, so two of them are consecutive with probability 2^-256 for each pair, as for the prefix of all `0xFF` bytes that `seek_to_last` of the RocksDB engine already leaves out.
+- A cursor that is pointed at another subtree (`Engine::retarget_cursor`, [engine.md](engine.md)) keeps its place on the line on RocksDB. On LigninDB it stands nowhere. Every caller seeks such a cursor before it reads or steps it.
+- A flat drop leaves the records of the dropped subtree in their column families until its ranges are deleted ([Pending prefix drops](#pending-prefix-drops)), and until then they are records of the line on RocksDB. GROVE-05 decides when LigninDB takes them off it; no drop of a subtree that holds records is made through the LigninDB engine before that task.
 
 ## Transactions and visibility
 
