@@ -7,16 +7,18 @@
 //! element names a root, and for a tree that keeps its data flat always
 //! (`start_tree_copy` in `grovedb/src/batch/move_element.rs`). A walk
 //! that ends on a subtree with no entry tells the batch so
-//! ([`LigninSettled::moves_of_none`]). A tree that nothing was written
-//! into has none, and its move is the put and the delete of its element.
+//! ([`LigninSettled::moves_of_none`]). Where the element that the batch
+//! puts under the new key says that its tree holds no data, the move is
+//! the put and the delete of that element.
 //!
 //! Where the element that the batch puts under the new key says that the
-//! tree holds data, the directory does not hold what the mover read: the
-//! batch would put an element that names data over a prefix with no
+//! tree holds data, the directory does not hold what that element says:
+//! the batch would put an element that names data over a prefix with no
 //! subtree. The engine refuses it as a conflict, with nothing of it
 //! applied. A commit beside the transaction that writes an item over the
 //! tree, between the mover's read of the element and the walk, makes
-//! this.
+//! this. So does one writer that inserts an element which counts entries
+//! that its tree does not hold, and moves it.
 //!
 //! An element says that its tree holds data where it names a root, for a
 //! tree whose data is a Merk, and where it counts at least one entry, for

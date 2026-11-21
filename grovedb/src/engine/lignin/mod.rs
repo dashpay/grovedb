@@ -896,8 +896,8 @@ impl Engine for LigninEngine {
             return LigninSettled::apply(parts, view, &[]).map_err(merk_error);
         }
         // A batch that lands an element which names data where the walk
-        // of its move found no subtree was worked out from a tree that a
-        // commit beside the transaction took since.
+        // of its move found no subtree is refused: the directory does not
+        // hold what that element says.
         if let Err(error) = moved::found_none(&parts) {
             return Err(error).wrap_with_cost(OperationCost::default());
         }
