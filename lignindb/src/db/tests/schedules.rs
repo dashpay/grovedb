@@ -1520,8 +1520,8 @@ fn a_version_pinned_inside_a_commit_checks_sound_with_the_reclaimer_held_back() 
         while !round.is_finished() {
             assert!(
                 began.elapsed() < Duration::from_secs(30),
-                "the round of the reclaimer did not end within 30 s, with the commit held \
-                 before its publication"
+                "timed out polling for the round of the reclaimer, with the commit held before \
+                 its publication"
             );
             thread::sleep(Duration::from_millis(1));
         }
