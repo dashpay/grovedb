@@ -554,12 +554,12 @@ impl<'db, S: SubtreeHandle<'db>> SubtreeHandle<'db> for FaultableReads<S> {
     }
 }
 
-/// The engine `E` with one difference: its deferred subtree handles are
-/// [`FaultableReads`], so a node read of an armed key through one of them
-/// fails, in whichever operation of `GroveDb` makes it, and an armed move
-/// of a cursor over the nodes of one of them fails. Its immediate
-/// handles, and the flat records of every handle with their cursors, are
-/// `E`'s.
+/// The engine `E` with one difference: its subtree handles, deferred and
+/// immediate, are [`FaultableReads`], so a node read of an armed key
+/// through one of them fails, in whichever operation of `GroveDb` makes
+/// it, and an armed move of a cursor over the nodes of one of them fails.
+/// The flat records of every handle with their cursors are `E`'s, and so
+/// is what `E` reads for itself.
 pub(crate) struct RefusedReads<E>(pub(crate) E);
 
 impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
@@ -582,7 +582,7 @@ impl<E: Engine> PendingPrefixDrops for RefusedReads<E> {
 impl<E: Engine> Engine for RefusedReads<E> {
     type Applied = E::Applied;
     type Batch = E::Batch;
-    type ImmediateSubtree<'db> = E::ImmediateSubtree<'db>;
+    type ImmediateSubtree<'db> = FaultableReads<E::ImmediateSubtree<'db>>;
     type Subtree<'db> = FaultableReads<E::Subtree<'db>>;
     type SubtreeMove<'db> = E::SubtreeMove<'db>;
     type Transaction<'db> = E::Transaction<'db>;
@@ -711,7 +711,7 @@ impl<E: Engine> Engine for RefusedReads<E> {
     where
         B: AsRef<[u8]> + 'b,
     {
-        self.0.immediate_subtree(path, transaction)
+        (self.0.immediate_subtree(path, transaction)).map(FaultableReads)
     }
 
     fn immediate_subtree_by_prefix<'a>(
@@ -719,7 +719,18 @@ impl<E: Engine> Engine for RefusedReads<E> {
         prefix: SubtreePrefix,
         transaction: &'a Self::Transaction<'_>,
     ) -> CostContext<Self::ImmediateSubtree<'a>> {
-        self.0.immediate_subtree_by_prefix(prefix, transaction)
+        (self.0.immediate_subtree_by_prefix(prefix, transaction)).map(FaultableReads)
+    }
+
+    fn adopt_restored_subtrees<'b, B>(
+        &self,
+        path: SubtreePath<'b, B>,
+        transaction: &Self::Transaction<'_>,
+    ) -> Result<(), StorageError>
+    where
+        B: AsRef<[u8]> + 'b,
+    {
+        self.0.adopt_restored_subtrees(path, transaction)
     }
 
     fn settle_batch(
