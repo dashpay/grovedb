@@ -16,6 +16,7 @@ mod append_only;
 mod cases;
 mod indexed;
 mod nested;
+mod queries;
 mod restore;
 
 use grovedb_costs::OperationCost;

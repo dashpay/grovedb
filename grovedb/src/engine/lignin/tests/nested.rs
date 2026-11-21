@@ -50,11 +50,11 @@ use crate::{
 const DEPTH: usize = 5;
 
 /// A kind of tree whose data is one Merk.
-struct Kind {
-    name: &'static str,
-    make: fn() -> Element,
+pub(super) struct Kind {
+    pub(super) name: &'static str,
+    pub(super) make: fn() -> Element,
     /// Whether the tree takes sum items.
-    sums: bool,
+    pub(super) sums: bool,
 }
 
 /// The kinds of tree every grove version makes.
@@ -65,7 +65,7 @@ const fn kind(name: &'static str, make: fn() -> Element, sums: bool) -> Kind {
 }
 
 /// Every kind, the kinds that only `GROVE_V5` makes last.
-const KINDS: [Kind; 12] = [
+pub(super) const KINDS: [Kind; 12] = [
     kind("tree", Element::empty_tree, false),
     kind("sum tree", Element::empty_sum_tree, true),
     kind("big sum tree", Element::empty_big_sum_tree, true),
@@ -106,7 +106,7 @@ const KINDS: [Kind; 12] = [
 
 /// How many kinds of tree `version` makes: the kinds with a 128-bit sum
 /// beside a count or in the hashes are made from `GROVE_V5` on.
-fn made_by(version: &GroveVersion) -> usize {
+pub(super) fn made_by(version: &GroveVersion) -> usize {
     let insert = &version.grovedb_versions.operations.insert;
     match (
         insert.provable_count_provable_big_sum_tree_creation,
@@ -125,12 +125,12 @@ fn kinds_of(first: usize, stride: usize, made: usize) -> [usize; DEPTH] {
 
 /// One call of a history: what it was, what it was charged, and what it
 /// returned or how it failed, as text.
-type Answer = (String, OperationCost, String);
+pub(super) type Answer = (String, OperationCost, String);
 
 /// What a history gave on one engine.
 #[derive(Default)]
-struct Log {
-    answers: Vec<Answer>,
+pub(super) struct Log {
+    pub(super) answers: Vec<Answer>,
     /// How many calls were refused, and how many the history made to be.
     refused: usize,
     on_purpose: usize,
@@ -139,7 +139,11 @@ struct Log {
 }
 
 impl Log {
-    fn answer<T: std::fmt::Debug>(&mut self, name: String, answer: CostResult<T, Error>) {
+    pub(super) fn answer<T: std::fmt::Debug>(
+        &mut self,
+        name: String,
+        answer: CostResult<T, Error>,
+    ) {
         let cost = answer.cost.clone();
         let value = answer.unwrap();
         self.refused += usize::from(value.is_err());
@@ -163,14 +167,14 @@ impl Log {
 }
 
 /// The calls of a history through one transaction, or through none.
-struct Recorder<'db, 'a, 'l, E: Engine> {
-    db: &'db GroveDb<E>,
-    version: &'static GroveVersion,
-    through: TransactionArg<'db, 'a, E>,
-    log: &'l mut Log,
+pub(super) struct Recorder<'db, 'a, 'l, E: Engine> {
+    pub(super) db: &'db GroveDb<E>,
+    pub(super) version: &'static GroveVersion,
+    pub(super) through: TransactionArg<'db, 'a, E>,
+    pub(super) log: &'l mut Log,
 }
 
-fn segments(path: &[Vec<u8>]) -> Vec<&[u8]> {
+pub(super) fn segments(path: &[Vec<u8>]) -> Vec<&[u8]> {
     path.iter().map(Vec::as_slice).collect()
 }
 
@@ -184,7 +188,7 @@ fn named(call: &str, path: &[Vec<u8>], key: &[u8]) -> String {
 }
 
 impl<'db, 'a, 'l, E: Engine> Recorder<'db, 'a, 'l, E> {
-    fn new(
+    pub(super) fn new(
         db: &'db GroveDb<E>,
         version: &'static GroveVersion,
         through: TransactionArg<'db, 'a, E>,
@@ -204,7 +208,7 @@ impl<'db, 'a, 'l, E: Engine> Recorder<'db, 'a, 'l, E> {
         self.log.answer("root".to_owned(), root);
     }
 
-    fn insert(&mut self, path: &[Vec<u8>], key: &[u8], element: Element) {
+    pub(super) fn insert(&mut self, path: &[Vec<u8>], key: &[u8], element: Element) {
         let inserted = self.db.insert(
             segments(path).as_slice(),
             key,
@@ -217,7 +221,7 @@ impl<'db, 'a, 'l, E: Engine> Recorder<'db, 'a, 'l, E> {
         self.root();
     }
 
-    fn delete(&mut self, path: &[Vec<u8>], key: &[u8]) {
+    pub(super) fn delete(&mut self, path: &[Vec<u8>], key: &[u8]) {
         let deleted = self.db.delete(
             segments(path).as_slice(),
             key,
@@ -265,7 +269,7 @@ impl<'db, 'a, 'l, E: Engine> Recorder<'db, 'a, 'l, E> {
 
 /// A number as a tree stores it: a sum item where the tree takes sums, and
 /// an item otherwise.
-fn number(sums: bool, number: i64) -> Element {
+pub(super) fn number(sums: bool, number: i64) -> Element {
     match sums {
         true => Element::new_sum_item(number),
         false => Element::new_item(number.to_be_bytes().to_vec()),
@@ -410,7 +414,7 @@ fn chain<E: Engine>(recorder: &mut Recorder<'_, '_, '_, E>, top: &[u8], kinds: [
     recorder.get(&[], top);
 }
 
-fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
+pub(super) fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
     GroveDb::<E>::open_with_engine(dir).expect("a database")
 }
 
@@ -419,7 +423,7 @@ fn open<E: Engine>(dir: &Path) -> GroveDb<E> {
 /// again by Merk's rules as `version` has them and compared with the
 /// stored ones, a value hash that only its writer can make being taken as
 /// stored.
-fn check(dir: &Path, version: &GroveVersion) {
+pub(super) fn check(dir: &Path, version: &GroveVersion) {
     let db = Db::open(dir, &Options::default()).expect("the database opens again");
     let mut rules = MerkHashRules::for_check(version);
     let report = db.check(Scope::Still, Some(&mut rules));
@@ -597,7 +601,7 @@ fn chains_in_transactions_and_in_a_second_session_on_every_grove_version() {
     }
 }
 
-fn bidirectional(to: &[Vec<u8>], key: &[u8]) -> Element {
+pub(super) fn bidirectional(to: &[Vec<u8>], key: &[u8]) -> Element {
     let mut target = to.to_vec();
     target.push(key.to_vec());
     Element::new_bidirectional_reference_with_options(
