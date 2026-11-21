@@ -22,7 +22,7 @@ use super::{
     nested::{assert_same, check, made_by, number, on_both_engines, open, Log, KINDS},
     LigninEngine,
 };
-use crate::{engine::Engine, reference_path::ReferencePathType, Element};
+use crate::{engine::Engine, reference_path::ReferencePathType, Element, Error};
 
 fn rename(at: &[&[u8]], key: &[u8], new_key: &[u8]) -> Op {
     Op::move_op(path(at), key.to_vec(), new_key.to_vec())
@@ -529,6 +529,33 @@ fn the_history_of_moved_trees_is_sound_on_rocksdb() {
 
 fn moved_trees_on(version: &'static GroveVersion) {
     on_both_engines!(trees, version);
+}
+
+/// Until the transaction gives a subtree another prefix (`TXN-03-F4`),
+/// LigninDB refuses a batch that moves a tree which was written into, and
+/// takes nothing of it. It goes when the two tests below run.
+#[test]
+fn a_tree_that_was_written_into_is_not_moved_yet_and_stays_whole() {
+    for version in [&GROVE_VERSIONS[3], &GROVE_VERSIONS[4]] {
+        let dir = tempfile::tempdir().expect("a directory");
+        let db = open::<LigninEngine>(dir.path());
+        let made = filled(&[], b"tree", 0, made_by(version));
+        (db.apply_batch(made, None, None, version).unwrap()).expect("a tree with elements");
+        let root = db.root_hash(None, version).unwrap().expect("a root hash");
+        let moved = db.apply_batch(vec![rename(&[], b"tree", b"eert")], None, None, version);
+        let refused = moved.unwrap().expect_err("the move is refused");
+        assert!(matches!(refused, Error::NotSupported(_)), "{refused:?}");
+        assert!(
+            refused.to_string().contains("the move of a subtree"),
+            "{refused}"
+        );
+        let after = db.root_hash(None, version).unwrap().expect("a root hash");
+        assert_eq!(after, root);
+        let held = db.get(&[b"tree".as_slice(), b"nested"], b"b", None, version);
+        held.unwrap().expect("what the tree held");
+        drop(db);
+        check(dir.path(), version);
+    }
 }
 
 #[test]

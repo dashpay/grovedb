@@ -1251,7 +1251,10 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
         calls.log.answer("root of the leaves".to_owned(), hash);
     };
     for key in [b"m1".as_slice(), b"m2", b"m3", b"m4"] {
-        calls.batch("a tree of leaves", vec![insert(&[], key, Element::empty_mmr_tree())]);
+        calls.batch(
+            "a tree of leaves",
+            vec![insert(&[], key, Element::empty_mmr_tree())],
+        );
         for leaf in 1..=3 {
             append(&mut calls, key, leaf);
         }
@@ -1272,19 +1275,28 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
     calls.get(&[b"m1"], b"x");
     calls.proven(&[b"m1"]);
     // A tree over a tree of leaves, alone, and an element in it later.
-    calls.batch("a tree over leaves", vec![insert(&[], b"m2", Element::empty_count_tree())]);
+    calls.batch(
+        "a tree over leaves",
+        vec![insert(&[], b"m2", Element::empty_count_tree())],
+    );
     calls.batch("into it", vec![insert(&[b"m2"], b"x", item())]);
     calls.get(&[], b"m2");
     calls.proven(&[b"m2"]);
     // A tree of leaves over a tree with elements, and leaves in it later.
-    calls.batch("leaves over a tree", vec![insert(&[], b"t1", Element::empty_mmr_tree())]);
+    calls.batch(
+        "leaves over a tree",
+        vec![insert(&[], b"t1", Element::empty_mmr_tree())],
+    );
     calls.get(&[], b"t1");
     for leaf in 4..=5 {
         append(&mut calls, b"t1", leaf);
     }
     // A tree of leaves over a tree of leaves: nothing tells the new one
     // from the old, and its records stay on both engines.
-    calls.batch("leaves over leaves", vec![insert(&[], b"m3", Element::empty_mmr_tree())]);
+    calls.batch(
+        "leaves over leaves",
+        vec![insert(&[], b"m3", Element::empty_mmr_tree())],
+    );
     append(&mut calls, b"m3", 6);
     // A tree that sums over a tree of leaves, with a number in it.
     let ops = vec![
@@ -1298,7 +1310,12 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
 
     // A partial batch writes an item over a tree: its two segments are
     // one group.
-    calls.partial("an item over a tree", vec![insert(&[], b"t2", item())], None, |_| Ok(Vec::new()));
+    calls.partial(
+        "an item over a tree",
+        vec![insert(&[], b"t2", item())],
+        None,
+        |_| Ok(Vec::new()),
+    );
     calls.get(&[], b"t2");
     calls.refused(|calls| calls.get(&[b"t2"], b"item"));
     // One batch writes an item over a tree and an item over a tree in it.
@@ -1311,10 +1328,20 @@ fn over_flat_trees<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log
         insert(&[], b"t3", item()),
     ];
     calls.refused(|calls| {
-        calls.batch_with("an item over a tree and over a tree in it", ops, Some(options));
+        calls.batch_with(
+            "an item over a tree and over a tree in it",
+            ops,
+            Some(options),
+        );
     });
     calls.get(&[], b"t3");
-    calls.batch("after it all", vec![insert(&[b"m1"], b"y", item()), insert(&[b"m2"], b"y", item())]);
+    calls.batch(
+        "after it all",
+        vec![
+            insert(&[b"m1"], b"y", item()),
+            insert(&[b"m2"], b"y", item()),
+        ],
+    );
     db.flush().expect("a flush");
     log
 }
@@ -1329,10 +1356,17 @@ fn trees_that_keep_their_data_flat_are_written_over_and_written_over_trees() {
     for version in GROVE_VERSIONS.iter() {
         let log = on_both_engines!(over_flat_trees, version);
         let appended = log.answers.iter().filter(|(call, ..)| call == "append");
-        let appended: Vec<bool> = appended.map(|(.., answer)| answer.starts_with("Ok")).collect();
+        let appended: Vec<bool> = appended
+            .map(|(.., answer)| answer.starts_with("Ok"))
+            .collect();
         assert_eq!(appended, [true; 15]);
-        let batches = log.answers.iter().filter(|(call, ..)| call.starts_with("batch "));
-        let taken: Vec<bool> = batches.map(|(.., answer)| answer.starts_with("Ok")).collect();
+        let batches = log
+            .answers
+            .iter()
+            .filter(|(call, ..)| call.starts_with("batch "));
+        let taken: Vec<bool> = batches
+            .map(|(.., answer)| answer.starts_with("Ok"))
+            .collect();
         let mut expected = [true; 16];
         expected[14] = false;
         assert_eq!(taken, expected);

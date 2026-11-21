@@ -896,9 +896,7 @@ impl Engine for LigninEngine {
                     first.drop_subtree(dropped);
                 }
             }
-            let enters: Vec<_> = (left.enters.iter().chain(&owed.enters))
-                .cloned()
-                .collect();
+            let enters: Vec<_> = (left.enters.iter().chain(&owed.enters)).cloned().collect();
             let applied = LigninSettled::apply_kept(&mut parts, view, &enters);
             let Err(refused) = &applied.value else {
                 return applied.map_err(|refused| merk_error(refused.error));

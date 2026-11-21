@@ -1174,6 +1174,18 @@ fn the_errors_of_lignindb_are_named_by_what_the_seam_knows() {
         )))),
         Error::NotSupported(_)
     ));
+    // A write that the transaction refused because a commit took a value
+    // the write keeps is the conflict of the seam, from an operation and
+    // from a commit that made the write.
+    let taken = || {
+        let subtree = lignindb::txn::Subtree::new([7; 32]);
+        TxnError::Batch(lignindb::txn::BatchError::ValueTaken { subtree })
+    };
+    assert_eq!(
+        error::txn_error(taken()).commit_error(),
+        Some(CommitError::Conflict)
+    );
+    assert!(error::write_error(WriteError::Commit(Commit::Refused(taken()))).is_commit_conflict());
     // The outcomes of a commit by their class.
     let class = |error: WriteError| error::write_error(error).commit_error();
     assert_eq!(
