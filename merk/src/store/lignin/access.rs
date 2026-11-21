@@ -350,12 +350,13 @@ pub(super) trait Access: Sync + super::flat::FlatAccess {
 /// where the subtree is entered (`Entered`), is told as an error alone.
 ///
 /// The transaction judges a batch on what the batches before it in its
-/// group and its own drops and clears left. A drop takes out its
-/// subtree and those below it, and a clear of a Merk that has a root
-/// takes out those below it; a clear of a Merk with no node takes out
-/// none, and a drop of one that has a subtree below it is refused. A
-/// subtree that one of those took out, and that none entered again, has
-/// no entry to it, whatever the transaction held before.
+/// group and its own drops and clears left: a subtree that one of those
+/// took out, and that none entered again, has no entry to it, whatever
+/// the transaction held before. Where the transaction lays the batch out
+/// in its frames, a drop takes out its subtree and those below it, and a
+/// clear of a Merk that has a root takes out those below it; a clear of
+/// a Merk with no node takes out none, and a drop of one that has a
+/// subtree below it is refused.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LigninEntryRefused {
     /// The subtree has no entry (`NotEntered`).
