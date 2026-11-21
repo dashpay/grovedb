@@ -794,11 +794,23 @@ thread_local! {
 /// the read the value is kept from: the store's own read of the node
 /// where Merk says the value is unchanged, and the comparing read here,
 /// which is of exactly the bytes that are kept. A Merk whose subtree the
-/// batch enters has no node before the write, whatever the transaction
-/// holds under its prefix until then: no node of it is read here to
-/// compare. Nor is a node read here to compare for a Merk that `whole`
-/// marks, by its place among the Merks of the batch: its change set says
-/// that it is the whole Merk, and `apply` has checked it.
+/// batch enters as one that is new, or drops or clears by its name, has
+/// no node before the write, whatever the transaction holds under its
+/// prefix until then: no node of it is read here to compare. Nor is a
+/// node read here to compare for a Merk that `whole` marks, by its place
+/// among the Merks of the batch: its change set says that it is the whole
+/// Merk, and `apply` has checked it. One that the batch only enters if it
+/// is absent may be entered, with nodes, and is read as any other.
+///
+/// A batch that drops or clears a subtree can take a Merk out with it
+/// that it names no leave of, and enter that Merk again if it is absent:
+/// the Merk it writes is then a new one, and the value the transaction
+/// holds under a key is of the Merk that goes. Which subtree is below
+/// which is not asked here. So of a Merk that a batch enters if it is
+/// absent, where the batch drops or clears any subtree, every stated value
+/// is written, also one that the transaction holds. A node of it is read
+/// only where its write leaves a hash stale, for the bytes of that hash:
+/// a node that is new may state any for one.
 pub(super) fn apply_batch(
     scope: &Scope<'_, '_>,
     batch: &Batch<'_>,
@@ -806,18 +818,32 @@ pub(super) fn apply_batch(
 ) -> Result<Written, Error> {
     let mut written = Written::default();
     let fresh = |subtree: Subtree| {
-        let enters = |write: &SubtreeWrite<'_>| write.enters() && write.subtree() == subtree;
-        batch.subtrees.iter().any(enters)
+        (batch.subtrees.iter()).any(|write| match write {
+            SubtreeWrite::EnterIfAbsent { .. } => false,
+            write => write.subtree() == subtree,
+        })
+    };
+    let leaves = batch.subtrees.iter().any(|write| !write.enters());
+    let restated = |subtree: Subtree| {
+        let mut writes = batch.subtrees.iter();
+        leaves
+            && writes.any(|write| {
+                matches!(write, SubtreeWrite::EnterIfAbsent { .. }) && write.subtree() == subtree
+            })
     };
     let mut keep = Vec::with_capacity(batch.merks.len());
     for (at, merk) in batch.merks.iter().enumerate() {
         let fresh = whole.get(at) == Some(&true) || fresh(merk.subtree);
+        let restated = restated(merk.subtree);
         let mut kept = Vec::with_capacity(merk.nodes.len());
         for node in merk.nodes {
-            let held = match fresh {
+            let mut held = match fresh || (restated && node.stale.is_empty()) {
                 true => Held::default(),
                 false => held(scope, merk.subtree, node)?,
             };
+            if restated {
+                (held.value, held.read) = (false, None);
+            }
             if matches!(node.value, ValuePut::Value(_)) {
                 match held.value {
                     true => written.values_kept += 1,
@@ -1011,23 +1037,19 @@ fn with_enters<'a>(own: &[SubtreeWrite<'a>], enters: &[SubtreeWrite<'a>]) -> Vec
     // The subtree that the host of an entered subtree is in, if that one
     // is entered here too.
     let above = |subtree: &Subtree| {
-        let host = entered.iter().find_map(|write| match write {
-            SubtreeWrite::Enter {
-                subtree: entered,
-                host,
-                ..
-            } if entered == subtree => host.as_ref().map(|host| host.subtree),
+        let host = entered.iter().find_map(|write| match write.entering() {
+            Some(enter) if enter.subtree == *subtree => enter.host.map(|host| host.subtree),
             _ => None,
         })?;
-        let enters_it = |write: &SubtreeWrite<'_>| matches!(write, SubtreeWrite::Enter { subtree, .. } if *subtree == host);
+        let enters_it = |write: &SubtreeWrite<'_>| write.subtree() == host;
         entered.iter().any(enters_it).then_some(host)
     };
-    let depth = |write: &SubtreeWrite<'_>| match write {
-        SubtreeWrite::Enter { subtree, .. } => {
-            let hosts = std::iter::successors(Some(*subtree), above);
+    let depth = |write: &SubtreeWrite<'_>| match write.entering() {
+        Some(enter) => {
+            let hosts = std::iter::successors(Some(enter.subtree), above);
             hosts.take(entered.len()).count()
         }
-        SubtreeWrite::Drop { .. } | SubtreeWrite::Clear { .. } => 0,
+        None => 0,
     };
     let mut by_depth: Vec<_> = entered.iter().map(|write| (depth(write), write)).collect();
     by_depth.sort_by_key(|(depth, _)| *depth);

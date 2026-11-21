@@ -6,6 +6,7 @@ pub(crate) use super::testing as store;
 
 mod acceptance;
 mod drops;
+mod enters;
 mod errors;
 mod handles;
 mod hashes;

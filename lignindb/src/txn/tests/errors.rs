@@ -880,7 +880,7 @@ fn every_error_says_what_it_is() {
     assert_eq!(texts.len(), batch.len(), "{texts:?}");
     let page = lignin_format::PageId::MIN;
     let errors = [
-        TxnError::Batch(batch[0]),
+        TxnError::Batch(batch[0].clone()),
         TxnError::ScopeOpen,
         TxnError::Fragment(lignin_tree::fragment::FragmentError::NoRoom { page: None }),
         TxnError::Node(lignin_tree::node::NodeError::WrongPage {

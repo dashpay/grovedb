@@ -5,8 +5,8 @@ use super::{items, leaf, subtree, tree, unit, Rec};
 use crate::{
     batch::{Resolved, StagedBatch, Written},
     txn::{
-        BatchError, Column, HostPut, Hosted, RecordWrite, RootPut, Subtree, SubtreeWrite, TxnError,
-        ValuePut,
+        BatchError, Column, Differs, HostPut, Hosted, RecordWrite, RootPut, Subtree, SubtreeWrite,
+        TxnError, ValuePut,
     },
 };
 
@@ -53,7 +53,16 @@ pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
                     subtree,
                     tree_type,
                     host,
+                }
+                | SubtreeWrite::EnterIfAbsent {
+                    subtree,
+                    tree_type,
+                    host,
                 } => {
+                    let enter = match write {
+                        SubtreeWrite::EnterIfAbsent { .. } => "enter if absent",
+                        _ => "enter",
+                    };
                     let host = host.map(
                         |HostPut {
                              subtree,
@@ -64,7 +73,7 @@ pub(super) fn shape<C>(resolved: &Resolved<C>) -> Shape {
                         },
                     );
                     let host = host.unwrap_or_default();
-                    format!("enter {} as {}{host}", name(*subtree), text(tree_type))
+                    format!("{enter} {} as {}{host}", name(*subtree), text(tree_type))
                 }
             })
             .collect(),
@@ -655,7 +664,7 @@ fn a_leave_above_does_not_take_a_refusal_with_it() {
     let entered = BatchError::Entered {
         subtree: subtree(C),
     };
-    assert_eq!(batch.resolve().map(|_| ()), Err(entered));
+    assert_eq!(batch.resolve().map(|_| ()), Err(entered.clone()));
 
     let batch = StagedBatch::<()>::new();
     batch.host(subtree(A), b"h", &[subtree(C)]);
@@ -667,7 +676,7 @@ fn a_leave_above_does_not_take_a_refusal_with_it() {
     let not_entered = BatchError::NotEntered {
         subtree: subtree(C),
     };
-    assert_eq!(batch.resolve().map(|_| ()), Err(not_entered));
+    assert_eq!(batch.resolve().map(|_| ()), Err(not_entered.clone()));
 
     // Nor a refusal of a call of its own operation.
     type Call = fn(&StagedBatch);
@@ -675,7 +684,7 @@ fn a_leave_above_does_not_take_a_refusal_with_it() {
         (
             |batch| batch.drop_subtree(subtree(C)),
             |batch| batch.drop_subtree(subtree(C)),
-            not_entered,
+            not_entered.clone(),
         ),
         (
             |batch| batch.drop_subtree(subtree(C)),
@@ -705,7 +714,11 @@ fn a_leave_above_does_not_take_a_refusal_with_it() {
                 batch.drop_subtree(subtree(A));
             }
             assert!(!batch.is_empty());
-            assert_eq!(batch.resolve().map(|_| ()), Err(refused), "{above_first}");
+            assert_eq!(
+                batch.resolve().map(|_| ()),
+                Err(refused.clone()),
+                "{above_first}"
+            );
         }
     }
 
@@ -771,16 +784,16 @@ fn a_kept_value_is_asked_of_the_put_that_stands() {
     let refused = BatchError::NoValue {
         subtree: subtree(A),
     };
-    assert_eq!(staged().resolve().map(|_| ()), Err(refused));
+    assert_eq!(staged().resolve().map(|_| ()), Err(refused.clone()));
     // Another put that keeps has no more to keep.
     let batch = staged();
     batch.next_operation();
     put(&batch, A, &leaf(b"k", b"unused"), false);
-    assert_eq!(batch.resolve().map(|_| ()), Err(refused));
+    assert_eq!(batch.resolve().map(|_| ()), Err(refused.clone()));
     // A delete of the operation does not give the node a value.
     let batch = staged();
     batch.delete_node(subtree(A), b"k", ());
-    assert_eq!(batch.resolve().map(|_| ()), Err(refused));
+    assert_eq!(batch.resolve().map(|_| ()), Err(refused.clone()));
     // A later put that states its value stands in its place, and so does
     // a later delete.
     let batch = staged();
@@ -1056,16 +1069,16 @@ fn a_call_that_no_outcome_can_stand_for_refuses_the_batch() {
         subtree: subtree(A),
     };
     let cases: [(Calls, BatchError); 11] = [
-        (vec![enter, enter], twice),
-        (vec![enter, next, enter], entered),
-        (vec![clear, enter], entered),
-        (vec![clear, next, enter], entered),
+        (vec![enter, enter], twice.clone()),
+        (vec![enter, next, enter], entered.clone()),
+        (vec![clear, enter], entered.clone()),
+        (vec![clear, next, enter], entered.clone()),
         (vec![enter, clear], entered),
-        (vec![drop, drop], twice),
-        (vec![clear, clear], twice),
-        (vec![drop, clear], twice),
-        (vec![clear, drop], twice),
-        (vec![drop, next, drop], not_entered),
+        (vec![drop, drop], twice.clone()),
+        (vec![clear, clear], twice.clone()),
+        (vec![drop, clear], twice.clone()),
+        (vec![clear, drop], twice.clone()),
+        (vec![drop, next, drop], not_entered.clone()),
         (vec![drop, next, clear], not_entered),
     ];
     for (case, (calls, refused)) in cases.into_iter().enumerate() {
@@ -1341,4 +1354,314 @@ fn a_batch_is_shared_between_the_threads_of_its_handles() {
         }
     });
     assert_eq!(batch.len(), 200);
+}
+
+/// What two enters of one subtree state where their tree types are `t`
+/// and `u`.
+fn other_type(entered: &[u8], stated: &[u8]) -> BatchError {
+    BatchError::EnteredOtherwise {
+        subtree: subtree(A),
+        differs: Box::new(Differs::TreeType {
+            entered: entered.into(),
+            stated: stated.into(),
+        }),
+    }
+}
+
+/// An enter of a subtree that may be entered already
+/// ([`StagedBatch::enter_if_absent`]): what it comes to with what the
+/// batch says of the same subtree, in its operation and in those before.
+#[test]
+fn an_enter_if_absent_stands_with_what_the_batch_says_of_its_subtree() {
+    type Call = fn(&StagedBatch);
+    let enter: Call = |batch| batch.enter(subtree(A), b"t");
+    let absent: Call = |batch| batch.enter_if_absent(subtree(A), b"t");
+    let absent_other: Call = |batch| batch.enter_if_absent(subtree(A), b"u");
+    let drop: Call = |batch| batch.drop_subtree(subtree(A));
+    let clear: Call = |batch| batch.clear(subtree(A));
+    let next: Call = StagedBatch::next_operation;
+    let if_absent = "enter if absent 1 as t";
+    let stands: [(Vec<Call>, &[&str]); 20] = [
+        (vec![absent], &[if_absent]),
+        // It is satisfied by an enter of its own kind, and by the enter of
+        // a subtree that is new, which stands.
+        (vec![absent, absent], &[if_absent]),
+        (vec![absent, next, absent], &[if_absent]),
+        (vec![enter, absent], &["enter 1 as t"]),
+        (vec![absent, enter], &["enter 1 as t"]),
+        (vec![enter, next, absent], &["enter 1 as t"]),
+        // A drop comes first, in its operation and before it: the subtree
+        // is absent then, and is entered.
+        (vec![drop, absent], &["drop 1", if_absent]),
+        (vec![absent, drop], &["drop 1", if_absent]),
+        (vec![drop, next, absent], &["drop 1", if_absent]),
+        // A clear leaves the transaction's subtree entered, and the
+        // transaction says whether that is the subtree the enter states.
+        (vec![clear, absent], &["clear 1", if_absent]),
+        (vec![absent, clear], &["clear 1", if_absent]),
+        (vec![clear, next, absent], &["clear 1", if_absent]),
+        // The batch's own subtree: a clear leaves its enter, and a drop
+        // takes it back, after which the subtree is entered if the
+        // transaction does not have it.
+        (vec![enter, next, clear, absent], &["enter 1 as t"]),
+        (vec![enter, next, drop, absent], &[if_absent]),
+        // A leave after an enter that came after a drop is of the batch's
+        // own subtree: a drop takes the enter back, and a clear leaves it.
+        (vec![drop, absent, next, drop], &["drop 1"]),
+        (vec![drop, next, absent, next, drop], &["drop 1"]),
+        (vec![drop, absent, next, clear], &["drop 1", if_absent]),
+        // After a clear it is of the transaction's subtree.
+        (vec![clear, absent, next, drop], &["drop 1"]),
+        (vec![clear, next, absent, next, drop], &["drop 1"]),
+        (vec![clear, absent, next, clear], &["clear 1", if_absent]),
+    ];
+    for (case, (calls, subtrees)) in stands.into_iter().enumerate() {
+        let batch = StagedBatch::new();
+        for call in calls {
+            call(&batch);
+        }
+        assert!(!batch.is_empty(), "case {case}");
+        let resolved = batch.resolve().expect("the calls stand");
+        let entered = subtrees.iter().any(|write| write.starts_with("enter"));
+        let enters = entered.then_some(subtree(A));
+        assert_eq!(resolved.enters(), enters.as_slice(), "case {case}");
+        assert!(!resolved.is_empty(), "case {case}");
+        assert_eq!(shape(&resolved).subtrees, subtrees, "case {case}");
+    }
+
+    let entered = BatchError::Entered {
+        subtree: subtree(A),
+    };
+    let leaves = BatchError::LeavesIfEntered {
+        subtree: subtree(A),
+    };
+    let refused: [(Vec<Call>, BatchError); 10] = [
+        // One subtree is entered as one tree type, in whichever way.
+        (vec![absent, absent_other], other_type(b"t", b"u")),
+        (vec![absent_other, absent], other_type(b"u", b"t")),
+        (vec![enter, absent_other], other_type(b"t", b"u")),
+        (vec![absent_other, enter], other_type(b"u", b"t")),
+        (vec![absent, next, absent_other], other_type(b"t", b"u")),
+        (vec![enter, next, absent_other], other_type(b"t", b"u")),
+        // An enter of a new subtree finds the one that was entered if it
+        // was absent, as it finds any other.
+        (vec![absent, next, enter], entered.clone()),
+        // Whether the transaction has a subtree that was entered if it
+        // was absent, with no leave before, the batch does not know: it
+        // has none to leave.
+        (vec![absent, next, drop], leaves.clone()),
+        (vec![absent, next, clear], leaves.clone()),
+        (vec![absent, next, drop, absent], leaves),
+    ];
+    for (case, (calls, refusal)) in refused.into_iter().enumerate() {
+        let batch = StagedBatch::new();
+        for call in calls {
+            call(&batch);
+        }
+        batch.next_operation();
+        batch.put(unit(Column::Aux, B), b"k", b"v", ());
+        assert!(!batch.is_empty(), "case {case}");
+        assert_eq!(batch.resolve().map(|_| ()), Err(refusal), "case {case}");
+    }
+}
+
+/// An enter of a subtree that may be entered is an enter where the batch
+/// orders its enters, names their hosts, merges and drops.
+#[test]
+fn an_enter_if_absent_is_ordered_hosted_merged_and_dropped_as_an_enter_is() {
+    // It has the host its subtree was said to hang on, and comes after
+    // the enter of the subtree that host is in, of either kind.
+    for outer_if_absent in [false, true] {
+        let batch = StagedBatch::<()>::new();
+        batch.host(subtree(A), b"h", &[subtree(B), subtree(C)]);
+        batch.enter_if_absent(subtree(C), b"t");
+        match outer_if_absent {
+            true => batch.enter_if_absent(subtree(A), b"o"),
+            false => batch.enter(subtree(A), b"o"),
+        }
+        let resolved = batch.resolve().expect("the calls stand");
+        assert_eq!(resolved.enters(), [subtree(A), subtree(C)]);
+        let outer = match outer_if_absent {
+            true => "enter if absent 1 as o",
+            false => "enter 1 as o",
+        };
+        let inner = "enter if absent 3 as t at 1 of 1/h";
+        assert_eq!(shape(&resolved).subtrees, [outer, inner]);
+    }
+
+    // A batch that is merged brings its enter as the kind it is, into the
+    // operation the other batch is in.
+    let other = StagedBatch::<()>::new();
+    other.enter_if_absent(subtree(D), b"t");
+    other.enter(subtree(B), b"t");
+    let into = StagedBatch::new();
+    into.drop_subtree(subtree(D));
+    into.merge(other);
+    let resolved = into.resolve().expect("the calls stand");
+    assert_eq!(
+        shape(&resolved).subtrees,
+        ["drop 4", "enter if absent 4 as t", "enter 2 as t"]
+    );
+    let other = StagedBatch::<()>::new();
+    other.enter_if_absent(subtree(D), b"u");
+    let into = StagedBatch::new();
+    into.enter_if_absent(subtree(D), b"t");
+    into.merge_overwriting(other);
+    let differs = BatchError::EnteredOtherwise {
+        subtree: subtree(D),
+        differs: Box::new(Differs::TreeType {
+            entered: (*b"t").into(),
+            stated: (*b"u").into(),
+        }),
+    };
+    assert_eq!(into.resolve().map(|_| ()), Err(differs));
+
+    // A drop above takes the enter of an earlier operation with what that
+    // operation staged in the subtree, whichever kind it is: the subtree
+    // goes with the one it hangs in where the transaction has it, and is
+    // never entered where it has not.
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.enter_if_absent(subtree(C), b"t");
+    batch.put(unit(Column::Aux, C), b"k", b"v", ());
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    let resolved = batch.resolve().expect("the calls stand");
+    assert!(resolved.enters().is_empty());
+    assert_eq!(resolved.len(), 0);
+    assert_eq!(shape(&resolved).subtrees, ["drop 1"]);
+    // One of the same operation is of the subtree after the drop.
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.next_operation();
+    batch.drop_subtree(subtree(A));
+    batch.enter_if_absent(subtree(A), b"t");
+    batch.enter_if_absent(subtree(C), b"t");
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    let resolved = batch.resolve().expect("the calls stand");
+    assert_eq!(
+        shape(&resolved).subtrees,
+        [
+            "drop 1",
+            "enter if absent 1 as t",
+            "enter if absent 3 as t at 0 of 1/h"
+        ]
+    );
+
+    // The two together: an earlier operation entered the subtree, and the
+    // operation of the drop above enters it again, as another tree. The
+    // earlier enter went with the drop, with what its operation staged,
+    // and the later one is held against nothing of it. That holds for
+    // either kind of enter, in either operation.
+    for (before, after) in [(true, true), (true, false), (false, true), (false, false)] {
+        let enter = |batch: &StagedBatch, if_absent: bool, tree_type: &[u8]| match if_absent {
+            true => batch.enter_if_absent(subtree(C), tree_type),
+            false => batch.enter(subtree(C), tree_type),
+        };
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        enter(&batch, before, b"t");
+        batch.put(unit(Column::Aux, C), b"k", b"v", ());
+        batch.next_operation();
+        batch.drop_subtree(subtree(A));
+        batch.enter(subtree(A), b"t");
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        enter(&batch, after, b"u");
+        batch.put(unit(Column::Aux, C), b"l", b"w", ());
+        assert!(!batch.is_empty());
+        let resolved = batch.resolve().expect("the calls stand");
+        let kind = match after {
+            true => "enter if absent",
+            false => "enter",
+        };
+        assert_eq!(
+            shape(&resolved).subtrees,
+            [
+                "drop 1".to_owned(),
+                "enter 1 as t".to_owned(),
+                format!("{kind} 3 as u at 0 of 1/h")
+            ],
+            "{before} {after}"
+        );
+        assert_eq!(resolved.len(), 1, "{before} {after}");
+    }
+
+    // The operation of the drop above can name a leave of the subtree
+    // too. That leave goes with the drop and is not handed on. The enter
+    // is held against it as in a batch that holds nothing else, and
+    // against nothing of the operation before: a clear and an enter if it
+    // is absent stand, as another tree as well.
+    let replaced = |batch: &StagedBatch| {
+        batch.next_operation();
+        batch.drop_subtree(subtree(A));
+        batch.enter(subtree(A), b"t");
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+    };
+    let batch = StagedBatch::new();
+    batch.host(subtree(A), b"h", &[subtree(C)]);
+    batch.enter(subtree(C), b"t");
+    replaced(&batch);
+    batch.clear(subtree(C));
+    batch.enter_if_absent(subtree(C), b"u");
+    let resolved = batch.resolve().expect("the calls stand");
+    assert_eq!(
+        shape(&resolved).subtrees,
+        [
+            "drop 1",
+            "enter 1 as t",
+            "enter if absent 3 as u at 0 of 1/h"
+        ]
+    );
+    // A drop of a subtree that an earlier operation entered if it was
+    // absent is refused where it would be handed on, and not below a
+    // drop: with no enter after it, and with one of either kind.
+    let batch = StagedBatch::<()>::new();
+    batch.enter_if_absent(subtree(C), b"t");
+    batch.next_operation();
+    batch.drop_subtree(subtree(C));
+    let leaves = BatchError::LeavesIfEntered {
+        subtree: subtree(C),
+    };
+    assert_eq!(batch.resolve().map(|_| ()), Err(leaves));
+    for again in [None, Some(false), Some(true)] {
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        batch.enter_if_absent(subtree(C), b"t");
+        replaced(&batch);
+        batch.drop_subtree(subtree(C));
+        let kind = match again {
+            None => None,
+            Some(false) => {
+                batch.enter(subtree(C), b"u");
+                Some("enter")
+            }
+            Some(true) => {
+                batch.enter_if_absent(subtree(C), b"u");
+                Some("enter if absent")
+            }
+        };
+        let resolved = batch.resolve().expect("the calls stand");
+        let mut expected = vec!["drop 1".to_owned(), "enter 1 as t".to_owned()];
+        expected.extend(kind.map(|kind| format!("{kind} 3 as u at 0 of 1/h")));
+        assert_eq!(shape(&resolved).subtrees, expected, "{again:?}");
+    }
+    // A leave of a subtree that an earlier operation dropped stays
+    // refused below a drop, as with no enter after it
+    // (`a_leave_above_does_not_take_a_refusal_with_it`), with an enter of
+    // either kind too.
+    for if_absent in [false, true] {
+        let batch = StagedBatch::new();
+        batch.host(subtree(A), b"h", &[subtree(C)]);
+        batch.drop_subtree(subtree(C));
+        replaced(&batch);
+        batch.drop_subtree(subtree(C));
+        match if_absent {
+            true => batch.enter_if_absent(subtree(C), b"u"),
+            false => batch.enter(subtree(C), b"u"),
+        }
+        let not_entered = BatchError::NotEntered {
+            subtree: subtree(C),
+        };
+        assert_eq!(batch.resolve().map(|_| ()), Err(not_entered), "{if_absent}");
+    }
 }

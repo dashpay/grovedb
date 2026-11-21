@@ -24,22 +24,22 @@ pub(super) const OUTER: u8 = ENTERED + 10;
 pub(super) const INNER: u8 = ENTERED + 11;
 
 /// The keys and values of one Merk.
-type Items = BTreeMap<Vec<u8>, Vec<u8>>;
+pub(super) type Items = BTreeMap<Vec<u8>, Vec<u8>>;
 
-fn aux(name: u8) -> Unit {
+pub(super) fn aux(name: u8) -> Unit {
     model::unit(Column::Aux, name)
 }
 
-fn enter(name: u8) -> OwnedSubtree {
+pub(super) fn enter(name: u8) -> OwnedSubtree {
     OwnedSubtree::Enter(model::subtree(name), None)
 }
 
-fn hosted(name: u8, host: u8, key: &[u8]) -> OwnedSubtree {
+pub(super) fn hosted(name: u8, host: u8, key: &[u8]) -> OwnedSubtree {
     let host = (model::subtree(host), key.to_vec(), 0);
     OwnedSubtree::Enter(model::subtree(name), Some(host))
 }
 
-fn subtrees(subtrees: Vec<OwnedSubtree>) -> OwnedBatch {
+pub(super) fn subtrees(subtrees: Vec<OwnedSubtree>) -> OwnedBatch {
     OwnedBatch {
         subtrees,
         ..OwnedBatch::default()
@@ -99,7 +99,11 @@ pub(super) fn drop_outer<'s>(world: &World<'s>, tx: &Tx<'s>) {
 
 /// A change of `INNER` through `tx`, with its host written in the same
 /// batch, which names its root again.
-fn inner_batch<'s>(world: &World<'s>, tx: &Tx<'s>, edit: impl FnOnce(&mut Items)) -> OwnedBatch {
+pub(super) fn inner_batch<'s>(
+    world: &World<'s>,
+    tx: &Tx<'s>,
+    edit: impl FnOnce(&mut Items),
+) -> OwnedBatch {
     let inner = world.merk(tx, INNER, edit);
     let stamp = inner.nodes.len() as u8;
     let mut outer = world.merk(tx, OUTER, |items| {
@@ -1270,7 +1274,7 @@ fn a_new_root_in_the_cell_a_carried_root_left_keeps_both_merks_whole() {
 
 /// What a transaction is shown of a subtree: the key of its root, its
 /// tree type and its host.
-type Shown = Option<(Option<Vec<u8>>, Vec<u8>, Option<(Subtree, Vec<u8>, u8)>)>;
+pub(super) type Shown = Option<(Option<Vec<u8>>, Vec<u8>, Option<(Subtree, Vec<u8>, u8)>)>;
 
 fn shown_of(view: Option<SubtreeView<'_>>) -> Shown {
     view.map(|view| {
@@ -1283,25 +1287,31 @@ fn shown_of(view: Option<SubtreeView<'_>>) -> Shown {
     })
 }
 
-fn shown(tx: &Tx<'_>, name: u8) -> Shown {
+pub(super) fn shown(tx: &Tx<'_>, name: u8) -> Shown {
     (tx.txn.subtree(model::subtree(name), shown_of)).expect("the directory is read")
 }
 
 /// The key of the root of the Merk `name`, as the model of `tx` has it.
-fn model_root(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Option<Vec<u8>> {
+pub(super) fn model_root(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Option<Vec<u8>> {
     let unit = Unit::data(model::subtree(name));
     let view = tx.model.borrow().view(&world.model.records, unit);
     model::records(&Committed::items(&view)).0
 }
 
 /// A subtree that stands alone, with the root its Merk has for `tx`.
-fn alone(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Shown {
+pub(super) fn alone(world: &World<'_>, tx: &Tx<'_>, name: u8) -> Shown {
     Some((model_root(world, tx, name), TREE_TYPE.to_vec(), None))
 }
 
 /// Checks that a transaction with frames and one that serves its records
 /// by key are shown the same of every subtree of `names`.
-fn same<'s>(world: &World<'s>, framed: &Tx<'s>, by_key: &Tx<'s>, names: &[u8], at: &str) {
+pub(super) fn same<'s>(
+    world: &World<'s>,
+    framed: &Tx<'s>,
+    by_key: &Tx<'s>,
+    names: &[u8],
+    at: &str,
+) {
     for name in names {
         assert_eq!(shown(framed, *name), shown(by_key, *name), "{name}, {at}");
     }
@@ -1312,7 +1322,7 @@ fn same<'s>(world: &World<'s>, framed: &Tx<'s>, by_key: &Tx<'s>, names: &[u8], a
 }
 
 /// Applies the batch that `batch` makes for each of `txs` to it.
-fn both<'s>(
+pub(super) fn both<'s>(
     world: &World<'s>,
     txs: [&Tx<'s>; 2],
     batch: impl Fn(&World<'s>, &Tx<'s>) -> OwnedBatch,

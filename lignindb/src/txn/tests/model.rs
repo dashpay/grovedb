@@ -17,8 +17,8 @@ use lignin_tree::{hash::Stale, node::NodeHandle};
 pub use super::store::hash_of;
 use super::store::{mix, Rng};
 use crate::txn::{
-    Batch, Column, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite, RootPut,
-    Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
+    Batch, Column, Entering, HostPut, Hosted, LinkPut, MerkWrite, NodePut, NodeView, RecordWrite,
+    RootPut, Scope, Subtree, SubtreeWrite, TxnError, Unit, ValuePut,
 };
 
 pub fn subtree(name: u8) -> Subtree {
@@ -447,6 +447,10 @@ pub enum OwnedSubtree {
     /// Enters the subtree, with the host's subtree, its key and the
     /// position.
     Enter(Subtree, Option<(Subtree, Vec<u8>, u8)>),
+    /// Enters the subtree if it is absent. The model keeps no entry: for
+    /// it the subtree hangs where the write says, as it does where the
+    /// write found the subtree entered, and its records are those it had.
+    EnterIfAbsent(Subtree, Option<(Subtree, Vec<u8>, u8)>),
     Drop(Subtree),
     Clear(Subtree),
 }
@@ -525,7 +529,7 @@ impl OwnedBatch {
     pub fn writes(&self) -> Vec<Write> {
         let leaving = self.subtrees.iter().filter_map(|subtree| {
             let (subtree, cleared) = match subtree {
-                OwnedSubtree::Enter(..) => return None,
+                OwnedSubtree::Enter(..) | OwnedSubtree::EnterIfAbsent(..) => return None,
                 OwnedSubtree::Drop(subtree) => (*subtree, false),
                 OwnedSubtree::Clear(subtree) => (*subtree, true),
             };
@@ -537,7 +541,7 @@ impl OwnedBatch {
             }))
         });
         let entered = self.subtrees.iter().filter_map(|subtree| match subtree {
-            OwnedSubtree::Enter(subtree, host) => {
+            OwnedSubtree::Enter(subtree, host) | OwnedSubtree::EnterIfAbsent(subtree, host) => {
                 let host = host.as_ref().map(|(host, ..)| *host);
                 Some(Write::Enter(*subtree, host))
             }
@@ -656,15 +660,19 @@ impl OwnedBatch {
             .collect();
         let subtrees: Vec<SubtreeWrite<'_>> = (self.subtrees.iter())
             .map(|subtree| match subtree {
-                OwnedSubtree::Enter(subtree, host) => SubtreeWrite::Enter {
-                    subtree: *subtree,
-                    tree_type: super::store::TREE_TYPE,
-                    host: host.as_ref().map(|(subtree, key, position)| HostPut {
-                        subtree: *subtree,
-                        key,
-                        position: *position,
-                    }),
-                },
+                OwnedSubtree::Enter(entered, host) | OwnedSubtree::EnterIfAbsent(entered, host) => {
+                    let entering = Entering {
+                        subtree: *entered,
+                        tree_type: super::store::TREE_TYPE,
+                        host: host.as_ref().map(|(subtree, key, position)| HostPut {
+                            subtree: *subtree,
+                            key,
+                            position: *position,
+                        }),
+                        if_absent: matches!(subtree, OwnedSubtree::EnterIfAbsent(..)),
+                    };
+                    entering.write()
+                }
                 OwnedSubtree::Drop(subtree) => SubtreeWrite::Drop { subtree: *subtree },
                 OwnedSubtree::Clear(subtree) => SubtreeWrite::Clear { subtree: *subtree },
             })

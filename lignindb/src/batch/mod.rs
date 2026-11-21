@@ -4,8 +4,8 @@
 //!
 //! - [`StagedBatch`] takes the calls: puts and deletes of flat records in
 //!   the four columns, puts and deletes of Merk nodes, the root of a Merk,
-//!   what an element hosts, and the enter, the drop and the clear of a
-//!   subtree.
+//!   what an element hosts, and the enter of a subtree, as one that is new
+//!   or if it is absent, its drop and its clear.
 //! - [`Resolved`] is the batch when no more calls are made on it: the
 //!   [`Outcome`] of each key, in the order a storage batch is charged in,
 //!   what it holds for one key ([`Resolved::held`]), the subtrees it
@@ -162,9 +162,10 @@
 //!   A write below that the batch was not told of stays, and so does a
 //!   drop below, and the transaction refuses the batch
 //!   ([`BatchError::NotEntered`]).
-//! - **A drop takes back the enter of an earlier operation**: the subtree
-//!   was the batch's own, and the transaction never sees it. A clear of
-//!   such a subtree leaves the enter.
+//! - **A drop takes back the enter of a new subtree that an earlier
+//!   operation made**: the subtree was the batch's own, and the
+//!   transaction never sees it. A clear of such a subtree leaves the
+//!   enter.
 //! - **An enter and a drop of one operation** are the drop of the subtree
 //!   as it was before the operation, and then the enter of a new one.
 //!
@@ -176,17 +177,71 @@
 //!
 //! A call that no outcome can stand for is refused when the batch is
 //! resolved, with the error the transaction gives an operation that makes
-//! it: an enter of a subtree that an earlier operation entered or cleared,
-//! or that the same operation clears ([`BatchError::Entered`]), a drop or
-//! a clear of a subtree that an earlier operation dropped
-//! ([`BatchError::NotEntered`]), and two enters or two leaves of one
-//! subtree in one operation ([`BatchError::SubtreeTwice`]). A batch that
-//! is refused applies nothing, and refuses the batch it is merged into.
+//! it: an enter of a new subtree that an earlier operation entered or
+//! cleared, or that the same operation clears ([`BatchError::Entered`]), a
+//! drop or a clear of a subtree that an earlier operation dropped
+//! ([`BatchError::NotEntered`]), and two enters of a new subtree, or two
+//! leaves, of one subtree in one operation
+//! ([`BatchError::SubtreeTwice`]). A batch that is refused applies
+//! nothing, and refuses the batch it is merged into.
+//!
+//! What an earlier operation said of a subtree goes with a leave above
+//! it, as the rule above says, and so does a leave of the subtree by the
+//! operation of the leave above: it is not handed to the transaction. So
+//! an enter by that operation is of a new subtree. It is held against a
+//! leave of the subtree by its own operation, as in a batch that holds
+//! nothing else, and against no enter that an earlier operation made. And
+//! such a leave is not refused for an earlier enter of the subtree if it
+//! is absent ([`BatchError::LeavesIfEntered`]): whether the transaction
+//! has the subtree to leave need not be known.
 //!
 //! Only what the batch ends up holding is applied, so the transaction is
 //! not asked about an operation whose writes a later one took the place
 //! of: a batch can stand where its operations, applied one after the
 //! other, would have been refused half way.
+//!
+//! ## A subtree that may be entered already
+//!
+//! [`StagedBatch::enter`] makes a subtree that is new, and the
+//! transaction refuses the batch where it has the subtree entered.
+//! [`StagedBatch::enter_if_absent`] is the enter of a writer that may be
+//! the first to write into a subtree, or may not be. Where the
+//! transaction has the subtree when the batch is applied, as a tree of
+//! the type the call states and under the element the batch says hosts
+//! it, the subtree stays as it is, with all it holds. Where the
+//! transaction has it otherwise, the batch is refused there
+//! ([`BatchError::EnteredOtherwise`], which has both). The rule is the
+//! transaction's
+//! ([`SubtreeWrite::EnterIfAbsent`](crate::txn::SubtreeWrite)), which
+//! judges the enter again whenever its writes are laid out anew.
+//!
+//! The batch reads no directory, so it settles only what its own calls
+//! say of the subtree. In every rule above such an enter is an enter: it
+//! comes after the enter of the subtree its host is in, it goes with a
+//! drop or a clear above it, and a merge makes it again as the kind it
+//! is.
+//!
+//! | The batch holds for the subtree | An enter of it if it is absent |
+//! | --- | --- |
+//! | nothing | stands |
+//! | an enter of either kind, of its own operation or an earlier one | is satisfied by it where the two state one tree type, and refuses the batch where they state two ([`BatchError::EnteredOtherwise`]). The enter that was held stands, and in one operation the enter of a new subtree stands, whichever of the two came first |
+//! | a drop, of its own operation or an earlier one | stands, after the drop: the subtree is absent then, so it is entered as one that is new, and starts empty |
+//! | a clear of the transaction's subtree, of its own operation or an earlier one | stands, after the clear, which leaves the subtree entered: the transaction judges the enter against the entry the clear kept |
+//!
+//! Of the calls that come after an enter if absent of an earlier
+//! operation, an enter of a new subtree is refused as after any enter
+//! ([`BatchError::Entered`]). What a drop or a clear of the subtree comes
+//! to depends on what the batch held for the subtree before that enter:
+//!
+//! | Before the enter if absent | The subtree is | A later drop | A later clear |
+//! | --- | --- | --- | --- |
+//! | a drop | the batch's own, entered after the drop | takes the enter back, and the drop stands alone | leaves the drop and the enter |
+//! | a clear | the transaction's, which the clear left entered | takes the place of the clear, and the enter goes with it | stands as the clear, with the enter |
+//! | nothing | the batch's own or the transaction's | is refused ([`BatchError::LeavesIfEntered`]) | is refused |
+//!
+//! In the last row the leave would have to reach the transaction in one
+//! case and not in the other, and a batch holds one outcome. A caller
+//! that leaves such a subtree applies the batch first.
 //!
 //! # What is not here
 //!
@@ -354,9 +409,20 @@ impl<C> StagedBatch<C> {
     }
 
     /// Enters `subtree`, with no node, as a tree of `tree_type`. Its host
-    /// is the element that was said to host it, or none.
+    /// is the element that was said to host it, or none. The subtree is
+    /// one that is new: the transaction refuses the batch where it has the
+    /// subtree entered.
     pub fn enter(&self, subtree: Subtree, tree_type: &[u8]) {
-        self.staged().enter(subtree, tree_type);
+        self.staged().enter(subtree, tree_type, false);
+    }
+
+    /// Enters `subtree` as [`Self::enter`] does where the transaction does
+    /// not have it entered when the batch is applied, and leaves it as it
+    /// is where it has: with all it holds, if it is entered as a tree of
+    /// `tree_type` under the element that was said to host it
+    /// ([`SubtreeWrite::EnterIfAbsent`](crate::txn::SubtreeWrite)).
+    pub fn enter_if_absent(&self, subtree: Subtree, tree_type: &[u8]) {
+        self.staged().enter(subtree, tree_type, true);
     }
 
     /// Drops `subtree` with every subtree below it. The outermost subtree

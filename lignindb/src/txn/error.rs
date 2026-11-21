@@ -13,9 +13,84 @@ use lignin_tree::{
 
 use super::key::{Subtree, Unit};
 
+/// The element that hosts a subtree, as an error names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HostName {
+    /// The subtree of the Merk the element is a node of.
+    pub subtree: Subtree,
+    /// The element's key in that Merk.
+    pub key: Box<[u8]>,
+    /// The position of the hosted subtree among those the element hosts.
+    pub position: u8,
+}
+
+impl fmt::Display for HostName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self {
+            subtree,
+            key,
+            position,
+        } = self;
+        write!(f, "the key {} of {subtree}, at {position}", Hex(key))
+    }
+}
+
+/// What a subtree is entered with and what an enter of it states, where
+/// the two are not the same ([`BatchError::EnteredOtherwise`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Differs {
+    /// The tree types.
+    TreeType {
+        /// The tree type the subtree is entered with.
+        entered: Box<[u8]>,
+        /// The tree type the enter states.
+        stated: Box<[u8]>,
+    },
+    /// The elements that host the subtree, where the tree types are the
+    /// same.
+    Host {
+        /// The element the subtree is entered under, or none.
+        entered: Option<HostName>,
+        /// The element the enter states, or none.
+        stated: Option<HostName>,
+    },
+}
+
+struct Hex<'a>(&'a [u8]);
+
+impl fmt::Display for Hex<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("0x")?;
+        self.0.iter().try_for_each(|byte| write!(f, "{byte:02x}"))
+    }
+}
+
+impl fmt::Display for Differs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let host = |host: &Option<HostName>| match host {
+            Some(host) => host.to_string(),
+            None => "no element".to_owned(),
+        };
+        match self {
+            Self::TreeType { entered, stated } => write!(
+                f,
+                "as a tree of the type {}, and the enter states the type {}",
+                Hex(entered),
+                Hex(stated)
+            ),
+            Self::Host { entered, stated } => write!(
+                f,
+                "under {}, and the enter states {}",
+                host(entered),
+                host(stated)
+            ),
+        }
+    }
+}
+
 /// What is wrong with a [`Batch`](super::Batch). A batch that is refused
 /// with one of these has changed nothing (`transactions.md` WT10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BatchError {
     /// A record key is written twice in one batch. A batch holds one
     /// outcome for a key (GM0).
@@ -151,6 +226,27 @@ pub enum BatchError {
         /// The subtree.
         subtree: Subtree,
     },
+    /// A subtree is entered if it is absent
+    /// ([`SubtreeWrite::EnterIfAbsent`](super::SubtreeWrite::EnterIfAbsent)),
+    /// and it is entered already as a tree of another type or under
+    /// another element. That is no race with another writer: whoever
+    /// enters one subtree in two places says the same of it in both.
+    EnteredOtherwise {
+        /// The subtree.
+        subtree: Subtree,
+        /// What it is entered with, and what the enter states.
+        differs: Box<Differs>,
+    },
+    /// A subtree is dropped or cleared that an earlier operation of the
+    /// same staged batch entered if it was absent
+    /// ([`StagedBatch::enter_if_absent`](crate::batch::StagedBatch::enter_if_absent)),
+    /// and the batch holds no drop and no clear of it from before that
+    /// enter. It does not know then whether the transaction has the
+    /// subtree to leave, and holds one outcome for it.
+    LeavesIfEntered {
+        /// The subtree.
+        subtree: Subtree,
+    },
     /// A batch enters one subtree twice, or drops or clears it twice.
     SubtreeTwice {
         /// The subtree.
@@ -230,6 +326,15 @@ impl fmt::Display for BatchError {
             Self::NotEntered { subtree } => write!(f, "the subtree {subtree} is not entered"),
             Self::Entered { subtree } => {
                 write!(f, "the subtree {subtree} is entered already")
+            }
+            Self::EnteredOtherwise { subtree, differs } => {
+                write!(f, "the subtree {subtree} is entered {differs}")
+            }
+            Self::LeavesIfEntered { subtree } => {
+                write!(
+                    f,
+                    "the subtree {subtree} leaves in a batch that entered it if it was absent"
+                )
             }
             Self::SubtreeTwice { subtree } => {
                 write!(f, "the subtree {subtree} is entered, or leaves, twice")
