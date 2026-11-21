@@ -17,6 +17,8 @@ mod differential;
 mod directories;
 mod durability;
 mod faults;
+mod many_changes;
+mod names_campaign;
 mod oracle;
 mod rng;
 mod schedule;

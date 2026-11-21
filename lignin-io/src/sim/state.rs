@@ -2,7 +2,7 @@
 //! operation runs from start to end.
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     ffi::{OsStr, OsString},
     io::{self, ErrorKind},
     path::{Component, Path},
@@ -46,13 +46,18 @@ pub(super) enum Node {
 pub(super) struct Cell {
     now: Option<Node>,
     pub(super) durable: Option<Node>,
-    pub(super) pending: Vec<(u64, Option<Node>)>,
+    pub(super) pending: VecDeque<(u64, Option<Node>)>,
 }
 
 impl Cell {
     /// The numbers of the unsynced changes of the name, rising.
-    fn unsynced(&self) -> impl Iterator<Item = u64> + '_ {
+    fn unsynced(&self) -> impl DoubleEndedIterator<Item = u64> + '_ {
         self.pending.iter().map(|(seq, _)| *seq)
+    }
+
+    /// The number of the last unsynced change of the name.
+    fn last_unsynced(&self) -> Option<u64> {
+        self.unsynced().next_back()
     }
 
     fn nodes(&self) -> impl Iterator<Item = Node> + '_ {
@@ -105,10 +110,11 @@ struct Handle {
 /// it.
 ///
 /// `removed` is the directory the change took away: the one a `remove_dir`
-/// removed, or the empty one a rename replaced. `placed` is for a rename:
-/// the changes, unsynced when it was made, that had put the directories its
-/// two names are in, and every directory above them, under the names they
-/// had then.
+/// removed, or the empty one a rename replaced. `before` is, for each of its
+/// names that had one, the last change of that name that was unsynced when
+/// this one was made. `placed` is for a rename: the changes, unsynced when
+/// it was made, that had put the directories its two names are in, and
+/// every directory above them, under the names they had then.
 #[derive(Clone, Debug)]
 pub(super) struct NameOp {
     kind: NameChangeKind,
@@ -116,6 +122,7 @@ pub(super) struct NameOp {
     to: Option<Arc<str>>,
     file: Option<FileId>,
     removed: Option<DirId>,
+    before: Vec<u64>,
     placed: Vec<u64>,
     waiting: Vec<DirId>,
     cells: Vec<(DirId, OsString)>,
@@ -145,24 +152,48 @@ pub(super) fn with_what_they_build_on(
     ops: &BTreeMap<u64, NameOp>,
     kept: impl IntoIterator<Item = u64>,
 ) -> BTreeSet<u64> {
+    with_what_they_build_on_counted(dirs, ops, kept).0
+}
+
+/// [`with_what_they_build_on`], and how many changes it looked at: the
+/// ones in `kept`, and for each change that comes out the earlier ones it
+/// names.
+///
+/// Those are the last earlier change of each of its names and what had
+/// placed the directories of a rename, both on record with the change since
+/// it was made, and the last change of each name in a directory it took
+/// away. Each of them builds on the ones before it in turn, so every
+/// earlier change is reached, and none is searched for. A change is put on
+/// the list once, when it is first looked at, so the list is never longer
+/// than the set that comes out.
+pub(super) fn with_what_they_build_on_counted(
+    dirs: &BTreeMap<DirId, Dir>,
+    ops: &BTreeMap<u64, NameOp>,
+    kept: impl IntoIterator<Item = u64>,
+) -> (BTreeSet<u64>, u64) {
     let mut closed = BTreeSet::new();
-    let mut queue: Vec<u64> = kept.into_iter().collect();
-    while let Some(seq) = queue.pop() {
-        if !closed.insert(seq) {
-            continue;
+    let mut queue = Vec::new();
+    let mut looked_at = 0;
+    let mut look_at = |seq: u64, closed: &mut BTreeSet<u64>, queue: &mut Vec<u64>| {
+        looked_at += 1;
+        if ops.contains_key(&seq) && closed.insert(seq) {
+            queue.push(seq);
         }
-        let op = &ops[&seq];
-        for (dir, name) in &op.cells {
-            let unsynced = dirs[dir].cells[name].unsynced();
-            queue.extend(unsynced.take_while(|earlier| *earlier < seq));
-        }
-        if let Some(removed) = op.removed {
-            queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
-        }
-        let unsynced = |placed: &&u64| ops.contains_key(placed);
-        queue.extend(op.placed.iter().filter(unsynced));
+    };
+    for seq in kept {
+        look_at(seq, &mut closed, &mut queue);
     }
-    closed
+    while let Some(seq) = queue.pop() {
+        let op = &ops[&seq];
+        let emptied = op.removed.iter().flat_map(|removed| {
+            let names = dirs[removed].cells.values();
+            names.filter_map(Cell::last_unsynced)
+        });
+        for earlier in op.before.iter().chain(&op.placed).copied().chain(emptied) {
+            look_at(earlier, &mut closed, &mut queue);
+        }
+    }
+    (closed, looked_at)
 }
 
 #[derive(Debug)]
@@ -346,7 +377,7 @@ impl State {
         let cell = Cell {
             now: Some(node),
             durable: Some(node),
-            pending: Vec::new(),
+            pending: VecDeque::new(),
         };
         self.dir_mut(dir).cells.insert(name.to_owned(), cell);
     }
@@ -434,7 +465,7 @@ impl State {
             self.retain(node);
         }
         let cell = self.dir_mut(dir).cells.entry(name.to_owned()).or_default();
-        cell.pending.push((seq, node));
+        cell.pending.push_back((seq, node));
         if let Some(old) = std::mem::replace(&mut cell.now, node) {
             self.release(old);
         }
@@ -464,7 +495,7 @@ impl State {
     /// under the names they have now.
     fn placed(&self, dir: DirId, placed: &mut Vec<u64>) {
         for (above, name) in self.above(dir) {
-            placed.extend(self.dirs[above].cells[name].unsynced().last());
+            placed.extend(self.dirs[above].cells[name].last_unsynced());
         }
     }
 
@@ -496,12 +527,17 @@ impl State {
                 self.placed(*dir, &mut placed);
             }
         }
+        let before = |(dir, name): &(DirId, OsString)| {
+            let mut newest_first = self.dirs[dir].cells[name].unsynced().rev();
+            newest_first.find(|made| *made < op.number)
+        };
         let name_op = NameOp {
             kind,
             path: op.path.clone(),
             to: op.to.clone(),
             file,
             removed,
+            before: cells.iter().filter_map(before).collect(),
             placed,
             waiting,
             cells,
@@ -547,7 +583,7 @@ impl State {
         for seq in &settled {
             let op = self.name_ops.remove(seq).expect("the change is on record");
             for (cell_dir, name) in op.cells {
-                self.settle_cell(cell_dir, &name);
+                self.settle_cell(cell_dir, &name, *seq);
             }
         }
         !settled.is_empty()
@@ -559,11 +595,14 @@ impl State {
             .expect("an unsynced change of names is on record")
     }
 
-    /// Makes the oldest unsynced change of a name durable.
-    fn settle_cell(&mut self, dir: DirId, name: &OsStr) {
+    /// Makes change `seq` of a name durable, which is the oldest unsynced
+    /// one: the changes of the name before it were made durable before it.
+    fn settle_cell(&mut self, dir: DirId, name: &OsStr, seq: u64) {
         let cells = &mut self.dir_mut(dir).cells;
         let cell = cells.get_mut(name).expect("a changed name is on record");
-        let (_, node) = cell.pending.remove(0);
+        let oldest = cell.pending.pop_front();
+        let (made, node) = oldest.expect("a change that is settled is unsynced");
+        debug_assert_eq!(made, seq, "the changes of a name are settled in order");
         let old = std::mem::replace(&mut cell.durable, node);
         if cell.now.is_none() && cell.durable.is_none() && cell.pending.is_empty() {
             cells.remove(name);
@@ -1358,9 +1397,9 @@ impl State {
                         Node::Dir(dir) => *dir_refs.entry(dir).or_default() += 1,
                     }
                 }
-                let expected = cell.pending.last().map_or(cell.durable, |last| last.1);
+                let expected = cell.pending.back().map_or(cell.durable, |last| last.1);
                 assert_eq!(cell.now, expected, "a name shows its newest change");
-                assert!(cell.pending.is_sorted_by_key(|(seq, _)| *seq));
+                assert!(cell.unsynced().is_sorted());
                 for (seq, _) in &cell.pending {
                     let cells = &self.name_ops[seq].cells;
                     assert!(cells.contains(&(*id, name.clone())));
@@ -1379,6 +1418,8 @@ impl State {
             }
             let kept = with_what_they_build_on(&self.dirs, &self.name_ops, [*seq]);
             assert!(kept.iter().all(|built_on| built_on <= seq));
+            let listed = by_every_earlier_change(&self.dirs, &self.name_ops, [*seq]);
+            assert_eq!(kept, listed, "what change {seq} builds on");
         }
         let mut under_the_root = BTreeSet::new();
         let mut walk = vec![ROOT];
@@ -1423,6 +1464,36 @@ pub(super) fn check_one_more_fits(open: usize, dirs: &BTreeMap<DirId, Dir>) {
         "the simulator's directories form a cycle: a walk down from the root has all {open} of \
          them open and found one more below them"
     );
+}
+
+/// What [`with_what_they_build_on`] gives, found the long way round: every
+/// earlier change of a name is put on the list for each later one, and every
+/// change that emptied a directory. It is the rule as the contract words
+/// it, and the list grows with the square of the changes of one name.
+#[cfg(test)]
+fn by_every_earlier_change(
+    dirs: &BTreeMap<DirId, Dir>,
+    ops: &BTreeMap<u64, NameOp>,
+    kept: impl IntoIterator<Item = u64>,
+) -> BTreeSet<u64> {
+    let mut closed = BTreeSet::new();
+    let mut queue: Vec<u64> = kept.into_iter().collect();
+    while let Some(seq) = queue.pop() {
+        if !closed.insert(seq) {
+            continue;
+        }
+        let op = &ops[&seq];
+        for (dir, name) in &op.cells {
+            let unsynced = dirs[dir].cells[name].unsynced();
+            queue.extend(unsynced.take_while(|earlier| *earlier < seq));
+        }
+        if let Some(removed) = op.removed {
+            queue.extend(dirs[&removed].cells.values().flat_map(Cell::unsynced));
+        }
+        let unsynced = |placed: &&u64| ops.contains_key(placed);
+        queue.extend(op.placed.iter().filter(unsynced));
+    }
+    closed
 }
 
 #[cfg(test)]
