@@ -487,7 +487,9 @@ fn a_flat_tree_that_is_entered_before_the_cursor_of_its_move_is_a_move_of_the_ba
 /// data under the new key. The batch is refused as a conflict, and
 /// nothing of it is applied: for a tree whose data is a Merk, and for a
 /// tree of leaves. A tree of leaves that nothing was appended to has no
-/// subtree and names no data, and is moved.
+/// subtree and names no data, and is moved. One writer that inserts an
+/// element which counts a leaf that its tree does not hold is refused the
+/// move of it alike.
 #[test]
 fn a_move_whose_subtree_a_commit_dropped_before_its_walk_is_a_conflict() {
     use crate::batch::QualifiedGroveDbOp;
@@ -534,6 +536,17 @@ fn a_move_whose_subtree_a_commit_dropped_before_its_walk_is_a_conflict() {
         .expect("the move of a tree of leaves that nothing was appended to");
     let read = (db.get(ROOT, b"f", None, v).unwrap()).expect("the moved tree");
     assert_eq!(read, Element::empty_mmr_tree());
+    // One writer meets the same refusal with an element that counts a
+    // leaf which its tree does not hold: nothing is entered under it.
+    let counted = Element::MmrTree(1, None);
+    (db.apply_batch(vec![insert(&[], b"c", counted.clone())], None, None, v))
+        .unwrap()
+        .expect("an element that counts a leaf");
+    let moved = db.apply_batch(rename(b"c", b"d"), None, None, v).unwrap();
+    let refused = moved.expect_err("the element names data that the directory does not hold");
+    assert!(refused.is_commit_conflict(), "{refused}");
+    let read = (db.get(ROOT, b"c", None, v).unwrap()).expect("the element where it was");
+    assert_eq!(read, counted);
     drop(Arc::into_inner(db).expect("the only handle on the grove"));
     check(dir.path());
 }
