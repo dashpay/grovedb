@@ -420,10 +420,11 @@ pub enum Reopen {
     /// given no file after the one it ends in (`lignin_store::wal`).
     ///
     /// Nothing that was published is lost by it, and a
-    /// [`flush`](super::Db::flush) still makes it durable. Unlike the
-    /// other reasons this one is not over at the next open: a session
-    /// begins a log file of its own, and there is no id for it. An engine
-    /// that makes a log file a second uses the ids up in 136 years.
+    /// [`flush`](super::Db::flush) still makes it durable. Where a
+    /// manifest has recorded the last id as used, this reason is not over
+    /// at the next open, unlike the others: a session begins a log file
+    /// of its own, and there is no id for it. An engine that makes a log
+    /// file a second uses the ids up in 136 years.
     LogFileIdsUsedUp,
     /// The commit path stopped the session
     /// ([`Stopped`]): whether a commit is in the log

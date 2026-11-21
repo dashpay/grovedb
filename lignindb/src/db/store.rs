@@ -75,6 +75,12 @@ impl Catalog {
 pub(super) struct Signal {
     thread: OnceLock<Thread>,
     stop: AtomicBool,
+    /// How often the thread was woken, and how many rounds it has begun:
+    /// what a test of its pace counts.
+    #[cfg(test)]
+    pub(super) wakes: AtomicU64,
+    #[cfg(test)]
+    pub(super) rounds: AtomicU64,
 }
 
 impl Signal {
@@ -86,6 +92,8 @@ impl Signal {
     /// Wakes the thread. It takes no lock and waits for nothing, so a
     /// reader may call it (`Reclaim::wake`).
     pub(super) fn wake(&self) {
+        #[cfg(test)]
+        self.wakes.fetch_add(1, Ordering::Relaxed);
         if let Some(thread) = self.thread.get() {
             thread.unpark();
         }

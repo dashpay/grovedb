@@ -141,6 +141,10 @@ pub struct Round {
     /// Whether the round left one of them at its bound of calls, with
     /// nothing in its way: the next round goes on at once.
     pub more: bool,
+    /// Whether something of this round failed: a call of the reclaimer,
+    /// or a read the round makes for one. A call that a page held back
+    /// is no failure.
+    pub failed: bool,
 }
 
 /// What a round does after one call of the reclaimer.
@@ -244,6 +248,11 @@ impl Shared {
         let store = &*self.store;
         let mut work = lock(&store.reclaiming);
         let work = &mut *work;
+        // Every failure of a round is counted under the lock on the
+        // work, so what is counted between here and the end of the round
+        // is this round's, whoever makes a round beside it.
+        let failures = || store.troubles.reclaim.load(Ordering::Relaxed);
+        let failed_before = failures();
         for (version, dropped) in lock(&store.dropped).drain(..) {
             work.merks.push(MerkJob {
                 reclaim: Reclaim::new(dropped),
@@ -343,6 +352,7 @@ impl Shared {
         }
         round.waiting = (work.merks.len() + work.flats.len()) as u64;
         round.holds_cells = work.holds_cells();
+        round.failed = failures() != failed_before;
         *lock(&store.reclaimed) = work.stats();
         round
     }
@@ -428,6 +438,8 @@ impl Shared {
         // The rounds in a row, up to the last one, in which a call failed.
         let mut failed_rounds = 0_u32;
         while !store.signal.stopping() {
+            #[cfg(test)]
+            store.signal.rounds.fetch_add(1, Ordering::Relaxed);
             let (round, failed_wait) = self.paced_round(idle, &mut failed_rounds);
             if store.signal.stopping() {
                 break;
@@ -454,10 +466,8 @@ impl Shared {
         failed_rounds: &mut u32,
     ) -> (Round, Option<std::time::Duration>) {
         let store = &*self.store;
-        let failures = || store.troubles.reclaim.load(Ordering::Relaxed);
-        let before = failures();
         let round = self.reclaim_round(false);
-        if failures() == before {
+        if !round.failed {
             *failed_rounds = 0;
             return (round, None);
         }

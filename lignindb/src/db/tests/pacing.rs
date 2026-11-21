@@ -25,7 +25,7 @@ use lignin_format::{
     FileId, PageSize,
 };
 use lignin_io::{
-    sim::{Fault, FaultRule, OpKind, SimConfig},
+    sim::{Event, Fault, FaultRule, OpKind, Outcome, SimConfig},
     SimVfs, Vfs,
 };
 use lignin_store::{
@@ -137,28 +137,44 @@ impl Drop for Halt<'_> {
     }
 }
 
+/// How many creations of the log file `path` the device has refused,
+/// among its operations after number `after` and up to number `to`.
+fn refused_creations(fs: &SimVfs, path: &Path, after: u64, to: u64) -> u64 {
+    let path = path.display().to_string();
+    let refused = |event: &Event| match event {
+        Event::Op(op) => {
+            let injected = matches!(op.outcome, Outcome::Injected { .. });
+            op.kind == OpKind::Open && injected && op.path == path && op.op > after && op.op <= to
+        }
+        _ => false,
+    };
+    fs.trace().iter().filter(|event| refused(event)).count() as u64
+}
+
 /// The three background threads run on the full device, as a database
 /// that is open has them, and somebody asks write-back and the reclaimer
 /// for a turn all the time. Write-back's loop ends no more failed turns
-/// in the window than its waits allow, the three threads together make a
-/// few file operations for each of them, and write-back asks for one log
-/// file throughout: no id is used up. The session has not ended, and
-/// with room it takes the next commit: the log goes on in the file the
-/// failed turns had asked for, with the file after it made ready.
+/// in the window than its waits allow, and asks for one log file
+/// throughout: no id is used up. The file is asked for once in each of
+/// those turns, and once by each table checkpoint that the cleaner asks
+/// for in a pass that then fails. The session has not ended, and with
+/// room it takes the next commit: the log goes on in the file the failed
+/// turns had asked for, with the file after it made ready.
 #[test]
 fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no_id() {
     let mut session = stuck();
     let files = log_files(&session.fs);
     let next = FileId::new(*files.last().expect("a log file") + 1).expect("an id");
-    let asked_for = FileNames::WAL.path(Path::new(DIR), next);
-    let asked_for = format!("cannot create {}", asked_for.display());
+    let next_file = FileNames::WAL.path(Path::new(DIR), next);
+    let asked_for = format!("cannot create {}", next_file.display());
     {
         let db = session.db.as_ref().expect("the database is open");
         let shared = &*db.shared;
         let store = &*shared.store;
         let config = store.flush.config();
         let asking = AtomicBool::new(true);
-        let (window, turns, ops) = thread::scope(|scope| {
+        let cleaner_failed = || store.troubles.cleaner.load(Ordering::Relaxed);
+        let (window, turns, passes, asked) = thread::scope(|scope| {
             scope.spawn(|| crate::db::write_back(shared));
             scope.spawn(|| shared.reclaim_loop(IDLE));
             scope.spawn(|| crate::db::clean(shared));
@@ -175,31 +191,40 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
             while failed() == 0 {
                 thread::yield_now();
             }
+            // The operations are sampled inside the samples of the
+            // turns and of the cleaner's failed passes, and the time
+            // around all of them: an operation that is counted is of a
+            // turn or a pass that is counted, or of the one that is
+            // being made, however late this thread comes to a sample.
             let began = Instant::now();
-            let (turns, ops) = (failed(), session.fs.stats().ops);
+            let (turns, passes) = (failed(), cleaner_failed());
+            let ops = session.fs.stats().ops;
             thread::sleep(WINDOW);
-            let turns = failed() - turns;
-            let ops = session.fs.stats().ops - ops;
-            (began.elapsed(), turns, ops)
+            let asked = refused_creations(&session.fs, &next_file, ops, session.fs.stats().ops);
+            let (turns, passes) = (failed() - turns, cleaner_failed() - passes);
+            (began.elapsed(), turns, passes, asked)
         });
         let most = most_turns(&config, window);
         let stats = db.stats();
         println!(
             "in {window:?}, with an idle time of {IDLE:?} and waits of {MOST:?} at most: {turns} \
-             failed turns of write-back ({most} at most) and {ops} file operations of the three \
-             threads; {} waits went on though a turn was asked for; {} passes of the cleaner \
-             failed",
+             failed turns of write-back ({most} at most); the next log file was asked for {asked} \
+             times, with {passes} failed passes of the cleaner in the window; {} waits went on \
+             though a turn was asked for; {} file operations in all since the open",
             store.flush.stats().turns_put_off,
-            stats.background.cleaner_errors
+            session.fs.stats().ops
         );
         assert!(
             turns <= most,
             "{turns} failed turns in {window:?}, where the waits allow {most}"
         );
+        // One turn of write-back and two passes of the cleaner can be
+        // under way at a sample.
         assert!(
-            ops <= (turns + 1) * 8,
-            "{ops} file operations in {turns} turns"
+            asked <= turns + 1 + passes + 2,
+            "the log file was asked for {asked} times in {turns} turns and {passes} passes"
         );
+        assert!(stats.background.write_back_errors >= turns, "{stats}");
         let last = db.stats().background.last_error.expect("a turn failed");
         assert!(last.contains(&asked_for), "{last}");
         assert_eq!(db.reopen(), None, "the session has ended");
@@ -219,6 +244,59 @@ fn write_back_on_a_device_that_stays_full_waits_between_its_turns_and_uses_up_no
     assert_eq!(log_files(&session.fs), with_room);
     session.ticks("with room");
     session.check("with room");
+}
+
+/// **What wakes the reclaimer on the full device: nothing.** The three
+/// background threads run in the state of the module's documentation,
+/// and nobody asks them for anything. The reclaimer's thread is woken by
+/// a commit that dropped something and by a reader that gave up a pin
+/// on an older version, and there is neither: no wake reaches its signal
+/// while write-back's turns fail beside it, no round of it fails, and it
+/// makes a round each time its idle time has passed. A sleep of a thread
+/// can end early with no wake, so twice as many rounds are allowed as
+/// the idle times that passed: a thread that spins makes thousands.
+#[test]
+fn the_reclaimer_on_a_device_that_stays_full_is_woken_by_nobody() {
+    let session = stuck();
+    let db = session.db.as_ref().expect("the database is open");
+    let shared = &*db.shared;
+    let store = &*shared.store;
+    let signal = &store.signal;
+    let rounds = || signal.rounds.load(Ordering::Relaxed);
+    let wakes = || signal.wakes.load(Ordering::Relaxed);
+    let failed = || store.flush.stats().errors;
+    let asking = AtomicBool::new(false);
+    let (window, made, woken, turns) = thread::scope(|scope| {
+        scope.spawn(|| crate::db::write_back(shared));
+        scope.spawn(|| shared.reclaim_loop(IDLE));
+        scope.spawn(|| crate::db::clean(shared));
+        let _halt = Halt(shared, &asking);
+        // Write-back has made a turn and the reclaimer a round: states
+        // they reach alone.
+        while failed() == 0 || rounds() == 0 {
+            thread::yield_now();
+        }
+        let began = Instant::now();
+        let (made, woken, turns) = (rounds(), wakes(), failed());
+        thread::sleep(WINDOW);
+        let (made, woken, turns) = (rounds() - made, wakes() - woken, failed() - turns);
+        (began.elapsed(), made, woken, turns)
+    });
+    let background = db.stats().background;
+    let idle_times = (window.as_micros() / IDLE.as_micros()) as u64;
+    println!(
+        "in {window:?} ({idle_times} idle times of {IDLE:?}): {made} rounds of the reclaimer and \
+         {woken} wakes of its thread, beside {turns} failed turns of write-back; {} calls of the \
+         reclaimer failed",
+        background.reclaim_errors
+    );
+    assert_eq!(woken, 0, "the reclaimer's thread was woken");
+    assert_eq!(background.reclaim_errors, 0, "{background:?}");
+    assert!(turns > 0, "write-back made no turn beside it");
+    assert!(
+        made <= 2 * (idle_times + 1),
+        "{made} rounds in {idle_times} idle times"
+    );
 }
 
 /// The reclaimer's thread has the rule of write-back's loop: a round in
@@ -241,6 +319,7 @@ fn a_round_of_the_reclaimer_that_failed_is_followed_by_a_wait_that_grows_to_a_bo
     for _ in 0..9 {
         let (round, wait) = shared.paced_round(idle, &mut failed_rounds);
         assert_eq!((round.finished, round.waiting), (0, 1), "{round:?}");
+        assert!(round.failed, "{round:?}");
         waits.push(wait.map(|wait| wait.as_millis()));
     }
     let failed = db.stats().background;
@@ -254,7 +333,11 @@ fn a_round_of_the_reclaimer_that_failed_is_followed_by_a_wait_that_grows_to_a_bo
     // With room write-back rolls the log, and the round fails no more.
     fs.clear_rules();
     tick(&db).expect("a turn with room");
-    let (_, wait) = shared.paced_round(idle, &mut failed_rounds);
+    // A round is told that it failed by what was counted under its own
+    // lock, so the failures of the rounds before, which the session has
+    // counted, are none of this one.
+    let (round, wait) = shared.paced_round(idle, &mut failed_rounds);
+    assert!(!round.failed, "{round:?}");
     assert_eq!((wait, failed_rounds), (None, 0));
     fs.add_rule(Mode::FullButSyncs.rule(0));
     let (round, wait) = shared.paced_round(idle, &mut failed_rounds);
@@ -348,9 +431,9 @@ fn a_log_whose_file_ids_are_used_up_ends_the_session_and_says_why() {
     assert_eq!(log_files(&fs).last(), Some(&FileId::MAX.get()));
     drop(db);
 
-    let error = open_at_rest(DIR, &options)
-        .err()
-        .expect("an open with no id left");
+    let Err(error) = open_at_rest(DIR, &options) else {
+        panic!("an open with no id left");
+    };
     let mut said = error.to_string();
     let mut source = std::error::Error::source(&error);
     while let Some(cause) = source {
