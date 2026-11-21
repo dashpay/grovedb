@@ -675,20 +675,29 @@ struct Round {
 /// Every call of a history was answered, but for the proofs that a grove
 /// version below 3 does not make: those that need the proof version these
 /// grove versions do not have, and are refused as not supported with the
-/// name of that proof version. Returns how many those are.
-/// A history is compared with the same history on another grove, and
-/// calls that every grove refuses alike would compare as equal.
-fn assert_answered(answers: &[Answer]) -> usize {
+/// name of that proof version. They are proofs of an indexed tree or of a
+/// tree in one, and of the tree that commits to a count and a sum, and of
+/// no other tree. Returns how many those are. A history is compared with
+/// the same history on another grove, and calls that every grove refuses
+/// alike would compare as equal.
+fn assert_answered(answers: &[Answer], shape: &Shape) -> usize {
+    let proof = |at: &Vec<Vec<u8>>| format!("proof of {at:?}");
+    let in_indexed = |at: &&Vec<Vec<u8>>| at.len() > 1 && at[0] == INDEXED_AT;
+    let merks = shape.merks.iter().map(|(at, _)| at);
+    let indexed = shape.indexed.iter().map(|(at, _)| at);
+    let mut later: Vec<String> = merks.chain(indexed).filter(in_indexed).map(proof).collect();
+    later.push(proof(&path(&[
+        KINDS_AT,
+        b"provable count provable sum tree",
+    ])));
+
     let mut unproven = 0;
     for (call, _, answer) in answers {
         if answer.starts_with("Ok(") {
             continue;
         }
         let old_version = answer.starts_with("Err(NotSupported(") && answer.contains("V1 proof");
-        assert!(
-            call.starts_with("proof of ") && old_version,
-            "{call}: {answer}"
-        );
+        assert!(later.contains(call) && old_version, "{call}: {answer}");
         unproven += 1;
     }
     unproven
@@ -708,14 +717,14 @@ fn round<S: Side, T: Side>(source: &Made<S>, mode: RestoreCommitMode, v: &GroveV
     assert!(issues.expect("a verification").is_empty());
     let records = records(&target, &source.shape);
     let reads = reads(&target, &source.shape, v);
-    let unproven = assert_answered(&reads);
+    let unproven = assert_answered(&reads, &source.shape);
     target.flush().expect("a flush");
     drop(target);
     T::check(dir.path(), v);
 
     let target = open::<T>(dir.path());
     let writes = writes(&target, &source.shape, v);
-    assert_eq!(assert_answered(&writes), 0);
+    assert_eq!(assert_answered(&writes, &source.shape), 0);
     target.flush().expect("a flush");
     drop(target);
     T::check(dir.path(), v);
@@ -758,12 +767,12 @@ fn a_grove_syncs_into_a_database_behind_the_fault_seam() {
     assert_eq!(synced.records, records(&source.db, &source.shape));
 }
 
-/// A synced grove on LigninDB has an entry in the subtree directory for
-/// each subtree the restore wrote into, and for no other: for a Merk that
-/// has a node, for an append-only tree that has an entry, and for every
-/// Merk of an indexed tree of which one has a node. That is what the grove
-/// it was synced from has, but for the tree that was written into and
-/// emptied, whose entry stays in the grove it was made in.
+/// Of the subtrees that the elements of this grove host, a synced grove on
+/// LigninDB has an entry in the subtree directory for each one the restore
+/// wrote into and for none of the others: for a Merk that has a node, for
+/// an append-only tree that has an entry, and for every Merk of an indexed
+/// tree of which one has a node. The grove it was synced from has the same
+/// entries and one more, of the tree that was written into and emptied.
 #[test]
 fn a_synced_grove_has_an_entry_for_each_subtree_the_restore_wrote_into() {
     let v = GroveVersion::latest();
@@ -1204,7 +1213,8 @@ fn a_database_that_was_wiped_is_synced_between_the_engines() {
 /// On LigninDB a restore over a Merk that holds nodes is refused where the
 /// Merk is handed over, so a session into a database that holds a grove
 /// and was not wiped fails at the root Merk and leaves the database as it
-/// was.
+/// was. So does a session whose source holds no element, before anything
+/// is handed over.
 #[test]
 fn a_session_into_a_grove_that_was_not_wiped_is_refused_on_lignindb() {
     let v = GroveVersion::latest();
@@ -1230,6 +1240,23 @@ fn a_session_into_a_grove_that_was_not_wiped_is_refused_on_lignindb() {
     before.assert_left(&target, &source.shape, v);
     let read = target.get(super::ROOT, b"of before", None, v);
     assert_eq!(read.unwrap().expect("the tree of before"), of_before);
+
+    // From a source with no element the session is handed no Merk: it
+    // finds the root Merk of its target not empty, and fails there.
+    let nothing_dir = tempfile::tempdir().expect("a directory");
+    let nothing = open::<LigninEngine>(nothing_dir.path());
+    let root = nothing.root_hash(None, v).unwrap().expect("a root hash");
+    let mut session = begin(&target, root, atomic, v).expect("a session starts");
+    let mut requests = Requests::new(&nothing, root, v);
+    let (request, payload) = requests.fetch().expect("the root Merk is asked for");
+    let refused = requests.apply(&mut session, &request, &payload);
+    let refused = refused.expect_err("a root Merk that holds nodes is no empty one");
+    assert!(
+        refused.to_string().contains("non-null root hash"),
+        "{refused}"
+    );
+    drop(session);
+    before.assert_left(&target, &source.shape, v);
     drop(target);
     LigninEngine::check(dir.path(), v);
 }
@@ -1303,12 +1330,79 @@ fn an_empty_chunk_is_refused<S: Side, T: Side>(v: &GroveVersion) -> Vec<String> 
     refusals
 }
 
+/// What a receiving node makes of an indexed tree that holds children and
+/// is served as one that holds none: a header that gives the hash of an
+/// empty Merk for the primary and for each axis, an empty root chunk of
+/// the primary, and an empty chunk for each secondary. It is what a node
+/// answers for a root key that names no node, and what LigninDB answers a
+/// header request that names a subtree of flat records. The session takes
+/// the header and the empty Merks, and refuses them where it holds the
+/// roots of the tree's Merks against what the element commits to. It
+/// commits nothing, and leaves the target as it was.
+fn an_indexed_tree_served_as_empty_is_refused<S: Side, T: Side>(v: &GroveVersion) -> String {
+    use grovedb_merk::tree::hash::NULL_HASH;
+
+    use crate::replication::indexed_sync::IndexedHeader;
+    let source = Made::<S>::new(v);
+    let shape = &source.shape;
+    let at = path(&[INDEXED_AT, CountSum::NAME.as_bytes()]);
+    let primary = build_prefix(segments(&at).as_slice().into()).value;
+    let axes = CountSum::axes();
+    assert!(axes.len() > 1, "a tree with more than one axis");
+    let secondary = |axis: &IndexAxis| secondary_prefix_for(&primary, axis_storage_tag(*axis));
+    let secondaries: Vec<[u8; 32]> = axes.iter().map(|axis| secondary(axis).value).collect();
+    let header = IndexedHeader {
+        primary_root_hash: NULL_HASH,
+        axes: axes.iter().map(|axis| (axis.tag(), NULL_HASH)).collect(),
+    };
+    let page = pack_nested_bytes(vec![header.encode(), Vec::new()]).expect("a header page");
+    let page = pack_nested_bytes(vec![page]).expect("the payload of the primary");
+    let empty = pack_nested_bytes(vec![vec![]]).expect("an empty chunk");
+
+    let dir = tempfile::tempdir().expect("a directory");
+    let target = open::<T>(dir.path());
+    let before = Before::of(&target, shape, v);
+    let atomic = RestoreCommitMode::Atomic;
+    let mut session = begin(&target, source.root, atomic, v).expect("a session starts");
+    let mut requests = Requests::new(&source.db, source.root, v);
+    let mut emptied = BTreeSet::new();
+    let refused = loop {
+        let (request, payload) = requests.fetch().expect("the tree is asked for");
+        let altered = changed(&source.root, &request, &payload, &mut |prefix, part| {
+            if *prefix != primary && !secondaries.contains(prefix) {
+                return part;
+            }
+            emptied.insert(*prefix);
+            match *prefix == primary {
+                true => page.clone(),
+                false => empty.clone(),
+            }
+        });
+        if let Err(error) = requests.apply(&mut session, &request, &altered) {
+            break error;
+        }
+    };
+    // The header was served, and an empty chunk for the secondary of every
+    // axis: the session came to the last of them.
+    assert_eq!(emptied.len(), 1 + secondaries.len(), "{refused}");
+    assert!(!session.is_sync_completed());
+    let committed = target.commit_session(session, v);
+    assert!(committed.is_err(), "a session that was refused commits");
+    before.assert_left(&target, shape, v);
+    target.flush().expect("a flush");
+    drop(target);
+    T::check(dir.path(), v);
+    refused.to_string()
+}
+
 #[test]
 fn an_empty_chunk_for_a_subtree_that_holds_data_is_refused_on_lignindb() {
     let v = GroveVersion::latest();
     let refusals = an_empty_chunk_is_refused::<LigninEngine, LigninEngine>(v);
     assert!(refusals[0].contains("empty payload for a subtree"));
     assert!(refusals[2].contains("non-merk page is empty"));
+    let refused = an_indexed_tree_served_as_empty_is_refused::<LigninEngine, LigninEngine>(v);
+    assert!(refused.contains("failed joint verification"), "{refused}");
 }
 
 #[cfg(feature = "rocksdb_storage")]
@@ -1328,6 +1422,17 @@ fn an_empty_chunk_for_a_subtree_that_holds_data_is_refused_on_both_engines() {
     for refusal in &on_rocksdb {
         println!("{refusal}");
     }
+
+    let on_rocksdb = an_indexed_tree_served_as_empty_is_refused::<Rocks, Rocks>(v);
+    assert!(
+        on_rocksdb.contains("failed joint verification"),
+        "{on_rocksdb}"
+    );
+    let on_lignindb = an_indexed_tree_served_as_empty_is_refused::<Rocks, LigninEngine>(v);
+    assert_eq!(on_rocksdb, on_lignindb);
+    let from_lignindb = an_indexed_tree_served_as_empty_is_refused::<LigninEngine, Rocks>(v);
+    assert_eq!(on_rocksdb, from_lignindb);
+    println!("{on_rocksdb}");
 }
 
 /// A grove for the engine's own call: a tree, an indexed tree with two
