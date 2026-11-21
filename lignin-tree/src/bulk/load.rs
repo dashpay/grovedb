@@ -700,9 +700,9 @@ impl Loader {
         // The values are given their places in the order a scan reads the
         // cells of the fragment (`crate::value::scan_order`): a node after
         // its left subtree, then the Merks it hosts, then its right
-        // subtree. Values that are appended as they are placed so lie
-        // back to back in that order, and write-back finds nothing to
-        // regroup in them.
+        // subtree. Values that are appended as they are placed so follow
+        // each other in that order, back to back where nothing else is
+        // appended between them and their file does not end.
         self.scan.clear();
         self.scan.push((root, false));
         while let Some((index, left_walked)) = self.scan.pop() {

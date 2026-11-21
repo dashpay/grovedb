@@ -146,7 +146,9 @@ pub trait LoadValues: Values {
     /// cells get their pages appends the value for `page` here and returns
     /// the pointer: the cell holds it from its first write on, and the
     /// values of a fragment lie in the value log in the order a scan reads
-    /// them, as a regrouping would leave them (`crate::value`). A place of
+    /// them (`crate::value`): back to back, as a regrouping would leave
+    /// them, where nothing else is appended between them and their file
+    /// does not end. A place of
     /// another length than the value ends the load with
     /// [`LoadError::Value`](super::LoadError::Value), before the cell is
     /// written.

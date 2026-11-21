@@ -420,75 +420,125 @@ fn a_load_that_places_its_values_writes_its_cells_with_their_places() {
 
 /// A balanced Merk of `count` nodes, every second one with a value out
 /// of line, handed to `loader` with `values`: a child before its parent.
+/// Every node whose number is a multiple of `hosting` hosts a Merk of
+/// three nodes with values out of line, which is handed over before it as
+/// a subtree of the load.
 fn balanced(
     loader: &mut Loader,
     mem: &mut Mem,
     values: &mut Placed,
-    count: usize,
+    (count, hosting): (usize, usize),
 ) -> Result<Root, LoadError> {
     fn below(
         (loader, mem, values): (&mut Loader, &mut Mem, &mut Placed),
-        (from, to): (usize, usize),
+        (from, to, hosting): (usize, usize, usize),
     ) -> Result<Option<Loaded>, LoadError> {
         if from == to {
             return Ok(None);
         }
         let top = from + (to - from) / 2;
-        let left = below((loader, mem, values), (from, top))?;
-        let right = below((loader, mem, values), (top + 1, to))?;
+        let left = below((loader, mem, values), (from, top, hosting))?;
+        let right = below((loader, mem, values), (top + 1, to, hosting))?;
         let key = format!("key-{top:05}");
         let long = [7u8; THRESHOLD + 40];
+        let mut rules = Rules::default();
+        let mut hosted = Vec::new();
+        if top % hosting == 0 {
+            let leaf = |side: &str| format!("in-{top:05}-{side}");
+            let mut node = |node: &NodeLoad<'_>| loader.node(mem, values, &mut rules, node);
+            let (a, b, c) = (leaf("a"), leaf("b"), leaf("c"));
+            let merk = NodeLoad {
+                left: link(node(&plain(a.as_bytes(), &long))?),
+                right: link(node(&plain(c.as_bytes(), &long))?),
+                ..plain(b.as_bytes(), &long)
+            };
+            hosted.push(HostedLoad::Loaded(node(&merk)?));
+        }
         let value: &[u8] = if top % 2 == 0 { &long } else { b"short" };
         let node = NodeLoad {
             left: left.and_then(link),
             right: right.and_then(link),
+            hosted: &hosted,
             ..plain(key.as_bytes(), value)
         };
-        let taken = loader.node(mem, values, &mut Rules::default(), &node);
+        let taken = loader.node(mem, values, &mut rules, &node);
         taken.map(Some)
     }
-    let top = below((loader, mem, values), (0, count))?;
+    let top = below((loader, mem, values), (0, count, hosting))?;
     loader.root(mem, values, top.expect("a Merk with a node"))
 }
 
 /// The values of a fragment are given their places in the order a scan
-/// reads its cells. So values that are appended as they are placed lie in
-/// the value log as a regrouping would leave them: a scan of a page
-/// leaves the place it reads at only between two fragments.
+/// reads its cells: a cell after its left subtree, then the Merks it
+/// hosts in its page, then its right subtree. So values that are appended
+/// as they are placed lie in the value log as a regrouping would leave
+/// them, each fragment's one after the other.
 #[test]
 fn the_values_of_a_fragment_are_placed_in_the_order_of_a_scan() {
     use crate::value::scan_order;
 
+    /// The cells of the fragment below `slot`, in the order of a scan.
+    fn scan(page: &TreePage<'_>, slot: SlotId, out: &mut Vec<SlotId>) {
+        let cell = page.cell(slot).expect("a cell of the page");
+        let here = |at: CellAddress| (at.page() == page.id()).then(|| at.slot());
+        let child = |side| cell.link(side).and_then(|link| here(link.child));
+        if let Some(left) = child(Side::Left) {
+            scan(page, left, out);
+        }
+        out.push(slot);
+        for hosted in cell.hosted_roots().flatten().filter_map(here) {
+            scan(page, hosted, out);
+        }
+        if let Some(right) = child(Side::Right) {
+            scan(page, right, out);
+        }
+    }
+
     let layout = Layout::proposed(SIZE);
     let mut loader = Loader::new(layout, LoadParams::DEFAULT).expect("a fill");
     let (mut mem, mut values) = (Mem::new(SIZE), Placed::default());
-    balanced(&mut loader, &mut mem, &mut values, 3_000).expect("a load");
+    balanced(&mut loader, &mut mem, &mut values, (3_000, 40)).expect("a load");
     let report = loader.finish().expect("every subtree has its place");
-    assert_eq!(report.counters.values, 1_500);
-    let (mut fragments, mut in_fragments_of_many) = (0, 0);
+    assert_eq!(report.counters.values, 1_500 + 3 * 75);
+    let (mut fragments, mut followed, mut hosted_inside) = (0, 0, 0);
     for page in &report.pages {
         let view = mem.view(page.page);
         let tree_page = view.tree_page();
-        let placed = scan_order(&tree_page)
-            .into_iter()
-            .filter_map(|slot| tree_page.cell(slot)?.value_pointer());
-        let positions: Vec<usize> = placed.map(Placed::position).collect();
-        let jumps = (positions.windows(2))
-            .filter(|pair| pair[1] != pair[0] + 1)
-            .count();
-        let roots = tree_page.fragment_roots().count();
-        assert!(
-            jumps < roots.max(1),
-            "{}: a scan jumps {jumps} times in {roots} fragments",
-            page.page
-        );
-        fragments += roots;
-        in_fragments_of_many += positions.len().saturating_sub(roots);
+        let mut cells = 0;
+        for root in tree_page.fragment_roots() {
+            let mut order = Vec::new();
+            scan(&tree_page, root, &mut order);
+            cells += order.len();
+            hosted_inside += (order.iter())
+                .filter_map(|slot| tree_page.cell(*slot))
+                .flat_map(|cell| cell.hosted_roots().flatten())
+                .filter(|at| at.page() == page.page)
+                .count();
+            let placed = order
+                .iter()
+                .filter_map(|slot| tree_page.cell(*slot)?.value_pointer());
+            let positions: Vec<usize> = placed.map(Placed::position).collect();
+            assert!(
+                positions.windows(2).all(|pair| pair[1] == pair[0] + 1),
+                "{}: the values of the fragment at {root} were placed as {positions:?}",
+                page.page
+            );
+            fragments += 1;
+            followed += positions.len().saturating_sub(1);
+        }
+        // Every cell of the page is in one fragment, and the order of the
+        // page is that of its fragments.
+        assert_eq!(cells, tree_page.cell_count());
+        assert_eq!(scan_order(&tree_page).len(), cells);
     }
     assert!(fragments >= report.pages.len(), "{fragments} fragments");
     assert!(
-        in_fragments_of_many > 1_000,
-        "{in_fragments_of_many} values follow another of their fragment"
+        followed > 1_000,
+        "{followed} values follow another of their fragment"
+    );
+    assert!(
+        hosted_inside > 20,
+        "{hosted_inside} Merks are in the fragments of their hosts"
     );
     mem.check();
 }
