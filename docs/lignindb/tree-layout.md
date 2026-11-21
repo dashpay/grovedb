@@ -798,7 +798,10 @@ then made in two steps. Every Merk is taken from its prefix, and a Merk
 that leaves is taken out, the innermost first; then each is entered under
 the prefix it goes to. So two Merks change places in one write. Each Merk
 keeps its id, its root, its tree type and the Merks it is below, and its
-host keeps its position, in the same Merk. A Merk below the moved one that
+host keeps its position, in the same Merk. The cell of the new host points
+at the moved Merk where the cell of the old host did, and hosts no Merk at
+that position where that one hosted none there, as the element of a tree
+whose data is not in a Merk does. A Merk below the moved one that
 is given no prefix leaves the directory as a drop takes it if it has no
 node, and refuses the plan if it has one; a Merk that is given a prefix
 below one that leaves refuses the plan too. What a write transaction makes
