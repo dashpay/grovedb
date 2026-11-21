@@ -14,7 +14,7 @@ GroveDB's CI runs on pull requests into `develop`, `master` and the `vX.Y-dev` b
 | Test *package* on *engine* | Linux x86_64 | each suite on each engine of its registry but the first ([`test-engines.md`](test-engines.md)) | `.github/scripts/engine-suites.sh run` |
 | LigninDB on Linux aarch64 | `ubuntu-24.04-arm` | the LigninDB crates' tests, then the tests of Merk's node store on LigninDB | `.github/scripts/lignin-ci.sh test` |
 | LigninDB on macOS aarch64 | `macos-15` | the same | the same |
-| LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), at the bounds the models set | `lignin-ci.sh loom` |
+| LigninDB loom models | Linux x86_64 | the loom models of the buffer pool (`lignin-store` `cache::tests::races`), the write scopes and the snapshots (`lignindb` `scope::tests::model`, `snapshot::tests::loom`), and the pool and the page ids under the real versions, with a page that is freed while write-back holds it (`lignindb` `models`), at the bounds the models set | `lignin-ci.sh loom` |
 | LigninDB Miri and fuzz targets | `ubuntu-latest` | Miri over `lignin-io` under Stacked Borrows, the buffer pool under both borrow models, and the checksum's software path; a build of the fuzz targets of `lignin-format` | `lignin-ci.sh miri`, `lignin-ci.sh fuzz-targets` |
 | Cost model replay | Linux x86_64 | the golden corpus replayed on the cost model ([`cost-model.md`](cost-model.md)) | `lignin-ci.sh cost-model` |
 | Linting | Linux x86_64 | clippy, every target type-checked, and three steps below | |
@@ -65,7 +65,7 @@ The tests make their databases in the temporary directory, which `TMPDIR` names.
 
 ### Open files
 
-`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". Someone who runs the test kit's tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
+`lignin-ci.sh test` raises the soft limit of open files to the hard limit, at most 65,536, before it runs the tests, and so do `stress` and `tsan`. macOS starts a process with 256, and the test kit's tests hold more RocksDB files than that at once: without the raise, 32 of them fail on a Mac with "Too many open files". The engine's stress test (`lignindb` `db::tests::stress`) wants more than 256 too: it holds a database and a checkpoint of it open at once, both in small files, and a run that may not open as many files as it wants fails at its start and says so. Someone who runs these tests on a Mac by hand, without the script, raises the soft limit first, within the hard one: `ulimit -Sn 65536`.
 
 ### Hosted runners
 
@@ -94,8 +94,13 @@ Each of those jobs prints the runner's cores, memory, swap and free disk at its 
 | Decoder fuzzing | five minutes for each fuzz target of `lignin-format` (FMT-08), from its seeds | 20 seconds each | `lignin-ci.sh fuzz-decoders 300` |
 | Miri | the file layer under both borrow models and every checksum test; the pool's races under 64 of Miri's schedules, both borrow models | the races under 4 | `lignin-ci.sh miri --full`, `lignin-ci.sh miri-schedules 64` |
 | Store crash campaign | the planted defects the campaign has to find, then five million distinct crash states of the page store, each recovered and held to the model (VER-03, [`crash-tests.md`](crash-tests.md)), from seeds of its own each night (the run's id on, which the log names) | the planted defects, then the runs of seeds 1 to 4 | `lignin-ci.sh crash --points 5000000 --jobs 4 --seed N` |
+| Engine schedules | each step of the engine's background work, a reader and an open of a checkpoint, against commits let in at one of its points, each sweep at every point (`lignindb` `db::tests::schedules`, VER-05) | each sweep at 4 points at most, but the one whose points are few, which tries them all | `lignin-ci.sh schedules`, `lignin-ci.sh schedules 4` |
+| Engine stress | an hour of readers, writers, write-back, the reclaimer, the cleaner and checkpoints at once (`db::tests::stress`), in an optimised build with the assertions of a debug build | one minute | `lignin-ci.sh stress 3600` |
+| ThreadSanitizer | the threaded tests of the buffer pool and of the engine, the schedules among them, and half an hour of the stress test, with the standard library built under the sanitizer | half a minute of the stress test | `lignin-ci.sh tsan 1800` |
 
 The corpus from its pinned engine is what a sync with `develop` runs first (D-107): done every night, a recipe that has rotted is found the day it rots.
+
+The tests of a pull request run the engine's schedules too, as tests of `lignindb`: each sweep at twelve of its points at most, evenly spread (`LIGNIN_SCHEDULE_POINTS=all` runs every point, `=N` at most `N`; one sweep, whose points are few, always tries them all), and the short form of the stress test. The sanitizer's job runs the schedules as tests too, so there each sweep tries the points it tries with the crate's tests, whatever the job of the schedules is given.
 
 ## Crash simulation
 

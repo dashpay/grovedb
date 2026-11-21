@@ -42,12 +42,26 @@
 #                                         defects it must find, then the
 #                                         campaign; ARGS follow
 #                                         `lignin-crash run`
+#   lignin-ci.sh schedules [POINTS]       one step of the engine's background
+#                                         work, a reader or an open of a
+#                                         checkpoint against commits let in at
+#                                         one of its points: each sweep at
+#                                         every point, or at no more than
+#                                         POINTS where it samples them
+#   lignin-ci.sh stress SECONDS           the engine's stress test: readers,
+#                                         writers, write-back, the reclaimer,
+#                                         the cleaner and checkpoints at once
+#   lignin-ci.sh tsan SECONDS             the same under ThreadSanitizer, with
+#                                         the threaded tests of the buffer
+#                                         pool and of the engine
 #
-# Miri and cargo-fuzz run on the toolchain $LIGNIN_NIGHTLY (default
-# nightly-2026-02-24), everything else on the one rust-toolchain.toml names.
-# Test databases go to the temporary directory: TMPDIR says where. `test`
-# raises the limit of open files, whose default of 256 on macOS is less than
-# the RocksDB databases of the test kit's tests hold at once.
+# Miri, cargo-fuzz and ThreadSanitizer run on the toolchain $LIGNIN_NIGHTLY
+# (default nightly-2026-02-24), everything else on the one
+# rust-toolchain.toml names.
+# Test databases go to the temporary directory: TMPDIR says where. `test`,
+# `stress` and `tsan` raise the limit of open files, whose default of 256 on
+# macOS is less than the RocksDB databases of the test kit's tests hold at
+# once, and less than the engine's stress test does.
 set -euo pipefail
 shopt -s inherit_errexit 2>/dev/null || true
 
@@ -56,6 +70,15 @@ cd "$repo"
 nightly=${LIGNIN_NIGHTLY:-nightly-2026-02-24}
 
 say() { printf '== %s\n' "$*"; }
+# Raises the soft limit of open files to the hard limit, at most 65536.
+raise_open_files() {
+    local limit
+    limit=$(ulimit -Hn)
+    if [ "$limit" = unlimited ] || [ "$limit" -gt 65536 ]; then
+        limit=65536
+    fi
+    ulimit -n "$limit"
+}
 fail() {
     printf 'lignin-ci: %s\n' "$*" >&2
     exit 1
@@ -167,11 +190,7 @@ machine)
 test)
     shift
     package_args
-    limit=$(ulimit -Hn)
-    if [ "$limit" = unlimited ] || [ "$limit" -gt 65536 ]; then
-        limit=65536
-    fi
-    ulimit -n "$limit"
+    raise_open_files
     say "cargo test ${packages[*]} --all-features $* (open files: $(ulimit -n))"
     status=0
     cargo test "${packages[@]}" --all-features --no-fail-fast "$@" || status=$?
@@ -264,6 +283,7 @@ loom)
 lignin-store cache::tests::races
 lignindb scope::tests::model
 lignindb snapshot::tests::loom
+lignindb models::
 MODELS
     ;;
 
@@ -408,6 +428,64 @@ miri-schedules)
         MIRIFLAGS="${MIRIFLAGS:-} -Zmiri-many-seeds=0..$seeds $borrows" \
             cargo "+$nightly" miri test -p lignin-store --lib cache::tests::races
     done
+    ;;
+
+schedules)
+    points=${2:-all}
+    [[ $points == all || $points =~ ^[1-9][0-9]*$ ]] ||
+        fail "usage: lignin-ci.sh schedules [POINTS]"
+    export LIGNIN_SCHEDULE_POINTS=$points
+    say "the schedules of the engine, $points points of each step"
+    sweeps=(cargo test -p lignindb --lib db::tests::schedules::)
+    found=$("${sweeps[@]}" -- --list)
+    grep -q ': test$' <<<"$found" || fail "no test of lignindb is a schedule"
+    "${sweeps[@]}" -- --nocapture
+    ;;
+
+stress | tsan)
+    seconds=${2:-}
+    [[ $seconds =~ ^[1-9][0-9]*$ ]] || fail "usage: lignin-ci.sh $1 SECONDS"
+    # The stress test holds a database and a checkpoint of it open at
+    # once, both in small files.
+    raise_open_files
+    # An optimised build with the assertions of a debug build, in a
+    # directory of its own: the profile is not the one of a release.
+    export CARGO_PROFILE_RELEASE_DEBUG_ASSERTIONS=true
+    export CARGO_PROFILE_RELEASE_OVERFLOW_CHECKS=true
+    export LIGNIN_STRESS_SECONDS=$seconds
+    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$repo/target}/$1
+    long=(-p lignindb --release --lib db::tests::stress::an_hour_of_stress)
+    runner=(cargo test)
+    under=
+    if [ "$1" = tsan ]; then
+        # ThreadSanitizer needs the standard library built with it, which
+        # asks for a target by name. A test binary in which it reported a
+        # data race ends with a failure, whatever its tests said.
+        host=$(rustc "+$nightly" -vV | sed -n 's/^host: //p')
+        [ -n "$host" ] || fail "the toolchain $nightly names no host"
+        export RUSTFLAGS="${RUSTFLAGS:-} -Zsanitizer=thread"
+        runner=(cargo "+$nightly" test -Zbuild-std --target "$host")
+        under="ThreadSanitizer: "
+        while read -r crate tests; do
+            say "ThreadSanitizer: cargo test -p $crate --release --lib $tests"
+            found=$("${runner[@]}" -p "$crate" --release --lib "$tests" -- --list)
+            grep -q ': test$' <<<"$found" || fail "no test of $crate matches $tests"
+            "${runner[@]}" -p "$crate" --release --lib "$tests"
+        done <<'THREADED'
+lignin-store cache::tests::
+lignindb snapshot::tests::
+lignindb scope::tests::
+lignindb models::
+lignindb db::tests::schedules::
+lignindb db::tests::reclaim::
+lignindb db::tests::kept::
+lignindb commit::tests::cleaner::the_cleaner_runs_beside
+THREADED
+    fi
+    say "${under}the stress test of the engine for $seconds s"
+    found=$("${runner[@]}" "${long[@]}" -- --ignored --list)
+    grep -q ': test$' <<<"$found" || fail "no test of lignindb is the long stress test"
+    "${runner[@]}" "${long[@]}" -- --ignored --nocapture
     ;;
 
 *)

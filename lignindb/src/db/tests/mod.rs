@@ -3,6 +3,7 @@
 //! or fails a file operation.
 
 mod backup;
+mod beside;
 mod ended;
 mod filling;
 mod full;
@@ -13,6 +14,8 @@ mod reads;
 mod reclaim;
 mod reopen;
 mod room;
+mod schedules;
+mod stress;
 mod wipe;
 mod writes;
 
@@ -51,6 +54,9 @@ use crate::{
 /// What a test does to a directory at a moment it chose.
 type Change = Box<dyn FnOnce() + Send>;
 
+/// What a test does at every moment of one kind.
+type Again = Box<dyn FnMut() + Send>;
+
 /// What a [`Watched`] file layer saw.
 #[derive(Default)]
 pub(super) struct Counts {
@@ -83,6 +89,9 @@ pub(super) struct Counts {
     after_listing: Mutex<Option<Change>>,
     /// What is run, once, before a segment is read.
     at_segment_read: Mutex<Option<Change>>,
+    /// What is run before every open of a log file below a directory, for
+    /// reading, and that directory.
+    at_log_open: Mutex<Option<(PathBuf, Again)>>,
 }
 
 impl fmt::Debug for Counts {
@@ -207,6 +216,30 @@ impl Watched {
     /// location of its block in hand and the block not read.
     pub(super) fn before_the_next_read_of_a_segment(&self, change: impl FnOnce() + Send + 'static) {
         *self.0.at_segment_read.lock().expect("the hook") = Some(Box::new(change));
+    }
+
+    /// Has `change` run before every open, for reading, of a log file of
+    /// the database in `dir`: between any two looks that an open of that
+    /// database takes at its log.
+    pub(super) fn before_every_read_of_a_log_file_in(
+        &self,
+        dir: &Path,
+        change: impl FnMut() + Send + 'static,
+    ) {
+        *self.0.at_log_open.lock().expect("the hook") = Some((dir.join("wal"), Box::new(change)));
+    }
+
+    fn change_at_a_log_open(&self, path: &Path) {
+        let hook = self.0.at_log_open.lock().expect("the hook").take();
+        let Some((dir, mut change)) = hook else {
+            return;
+        };
+        if path.starts_with(&dir) {
+            // The hook is out of its place while it runs: what it does
+            // opens files of its own.
+            change();
+        }
+        *self.0.at_log_open.lock().expect("the hook") = Some((dir, change));
     }
 
     fn change_at_a_segment_read(&self) {
@@ -373,6 +406,8 @@ impl Vfs for Watched {
         self.0.opens.fetch_add(1, Ordering::Relaxed);
         if !matches!(mode, OpenMode::Read) {
             self.changed();
+        } else {
+            self.change_at_a_log_open(path);
         }
         let file = StdVfs.open(&self.at(path), mode)?;
         let segment = path.components().any(|part| part.as_os_str() == "seg");

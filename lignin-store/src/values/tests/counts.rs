@@ -983,6 +983,28 @@ fn a_step_holds_the_counts_still_for_a_sample_or_for_a_change() {
     });
 }
 
+/// A step that is tried is taken only while no step is: it is refused
+/// under a step of the same thread and under one of another, with no
+/// wait, and what it applies is applied as a step's is.
+#[test]
+fn a_step_that_is_tried_is_taken_only_while_no_step_is() {
+    let (store, pointers) = one_closed_file(&[40, 50]);
+    let values = &store.values;
+    let tried = values.try_step().unwrap().expect("no step is taken");
+    assert!(values.try_step().unwrap().is_none(), "under its own step");
+    std::thread::scope(|scope| {
+        let other = scope.spawn(|| values.try_step().unwrap().is_none());
+        assert!(other.join().unwrap(), "under the step of another thread");
+    });
+    tried.apply(&acquired(&pointers[..1]), version(1)).unwrap();
+    assert_eq!(values.counts(), [count(1, &pointers[..1])]);
+
+    let step = values.step().unwrap();
+    assert!(values.try_step().unwrap().is_none());
+    drop(step);
+    assert!(values.try_step().unwrap().is_some());
+}
+
 #[test]
 fn a_checkpoint_takes_its_hold_inside_a_step_while_a_deletion_waits_for_the_step() {
     let (store, pointers) = one_closed_file(&[40]);

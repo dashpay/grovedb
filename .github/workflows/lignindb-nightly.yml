@@ -214,3 +214,57 @@ jobs:
         run: .github/scripts/lignin-ci.sh miri --full
       - name: Run the races
         run: .github/scripts/lignin-ci.sh miri-schedules ${{ github.event_name == 'pull_request' && 4 || 64 }}
+
+  # One step of the engine's background work, a reader or an open of a
+  # checkpoint, against commits let in at each of its points (VER-05). The
+  # tests of a pull request run each step at a sample of its points; this
+  # runs every point.
+  schedules:
+    name: Engine schedules
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+      - name: Run the schedules
+        run: .github/scripts/lignin-ci.sh schedules ${{ github.event_name == 'pull_request' && 4 || 'all' }}
+
+  # Readers, writers, write-back, the reclaimer, the cleaner and checkpoints
+  # at once for an hour, with every read compared with a model and the
+  # physical checker at every rest (VER-05).
+  stress:
+    name: Engine stress
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/stress"
+      - name: Run the stress test
+        run: .github/scripts/lignin-ci.sh stress ${{ github.event_name == 'pull_request' && 60 || 3600 }}
+
+  # The threaded tests of the buffer pool and of the engine, and the stress
+  # test, under ThreadSanitizer (VER-05). It builds the standard library
+  # with the sanitizer, which needs a nightly toolchain and its sources.
+  tsan:
+    name: ThreadSanitizer
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.LIGNIN_NIGHTLY }}
+          components: rust-src
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: "false"
+          workspaces: ". -> target/tsan"
+      - name: Run under ThreadSanitizer
+        run: .github/scripts/lignin-ci.sh tsan ${{ github.event_name == 'pull_request' && 30 || 1800 }}
