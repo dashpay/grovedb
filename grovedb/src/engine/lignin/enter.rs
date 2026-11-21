@@ -8,13 +8,17 @@
 //! - **A subtree is entered by the first batch that writes into it**, in
 //!   any column: a node of its Merk, a flat record, an aux or a meta
 //!   record. A tree that was inserted and never written into has no entry,
-//!   and is read as the empty tree that it is.
+//!   and is read as the empty tree that it is. No enter is stated on
+//!   account of the writes that a group leaves out
+//!   ([`gone`](super::gone)): those into a subtree that is dropped with
+//!   the group, and removals alone in a subtree that is not entered.
 //! - **Its host is the element its handle was opened under**: the key of
 //!   the last segment of the path, in the subtree of the segments before
 //!   ([`LigninSubtree::host`]). A subtree with no host is the root Merk of
 //!   the grove, or a keyspace that no element names, opened by its prefix
 //!   alone. A first write under a key that holds no element once the
-//!   batch is applied is refused with `Error::NotSupported`: the
+//!   batch is applied, which is not left out so, is refused with
+//!   `Error::NotSupported`: the
 //!   directory would name a host that is no node, or name none for a
 //!   subtree that an element inserted later points at.
 //! - **Its tree type is the one of that element**, read from the value
@@ -65,9 +69,11 @@
 //!   subtrees of its own path, in the handles of one subtree or of two.
 //!   A named write into the subtree of the element's own path under a
 //!   key that holds no element once the group is applied is refused
-//!   where the subtree is not entered, and applied where it is: the
-//!   delete of a tree removes the records of its subtree with its
-//!   element. A handle that names no element, by prefix or beside the
+//!   where the subtree is not entered and its writes are not left out
+//!   ([`gone`](super::gone)): where the group puts a node or a record
+//!   into it, or a batch of the group enters, drops or clears a subtree
+//!   itself. A handle that names no
+//!   element, by prefix or beside the
 //!   path of the root, is not held to an element.
 //! - **In a group of more than one batch, the element of a tree whose
 //!   data is one Merk names that Merk in every batch that puts it**
@@ -82,15 +88,20 @@
 //!   would name it.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
-//!   node or removes it, which gives the element or none. Otherwise it is
-//!   read from the transaction, as a node of the Merk that holds the
-//!   element.
+//!   node or removes it, which gives the element or none. Otherwise, in
+//!   a group of one batch, the entry of the subtree stands for the
+//!   element where the subtree is entered as the one Merk of a tree: a
+//!   subtree leaves the directory with its element
+//!   ([`gone`](super::gone)), and nothing is read. For a subtree that is
+//!   not entered, for one that is entered as a Merk of an indexed tree,
+//!   and in a group of several batches, the element is read from the
+//!   transaction, as a node of the Merk that holds it.
 //! - **The directory has all of them where the element names them, or
-//!   none.** A subtree is not dropped when its element is deleted
-//!   (GROVE-05),
-//!   and a conversion does not move the subtrees of its element
-//!   (MERK-09). So an indexed tree can find, under its key, subtrees that
-//!   are entered already. A group that holds a named write for one of its
+//!   none.** A conversion does not move the subtrees of its element
+//!   (MERK-09), and an element that is written over an indexed tree
+//!   leaves them (GROVE-04-F1). So an indexed tree can find, under its
+//!   key, subtrees that are entered already. A group that holds a named
+//!   write for one of its
 //!   Merks is refused with `Error::NotSupported` where a subtree the
 //!   element hosts, and that no batch of the group enters itself, is
 //!   entered at another position or under another element, and where one
@@ -98,9 +109,9 @@
 //!
 //! What this does not do:
 //!
-//! - A subtree is not dropped when its element is deleted (GROVE-05).
-//!   What a group drops when it writes another element over a tree's,
-//!   and enters again, is worked out beside this ([`super::over`]).
+//! - What a group drops when it writes another element over a tree's,
+//!   and enters again, is worked out beside this ([`super::over`]), and
+//!   what it drops when it removes a node in [`super::gone`].
 //!
 //! A subtree is entered **if it is absent**
 //! (`lignindb::txn::SubtreeWrite::EnterIfAbsent`): the look here says
@@ -135,7 +146,9 @@
 //! all of these hold (`Engine::apply_write_group`):
 //!
 //! - **The transaction refused the group for the entry of a subtree, and
-//!   found it otherwise than the look had** ([`Owed::found_otherwise`]):
+//!   found it otherwise than the look had** ([`Owed::found_otherwise`],
+//!   and for a subtree that the look found entered and stated the drop
+//!   of, `Gone::found_otherwise`):
 //!   no entry, for a subtree that the look stated no enter for, and that
 //!   it found entered or that holds the element of an enter it stated;
 //!   or another entry than the one the look stated an enter for. A
@@ -144,8 +157,9 @@
 //!   that is named as the subtree of its own element does: no commit
 //!   made that so.
 //! - **No batch of the group enters, drops or clears a subtree
-//!   itself**: the enters that the look states are the group's only
-//!   writes of subtrees. Where a batch makes one itself, the group can
+//!   itself**: the enters that the look states, and the drops that it
+//!   states for the subtrees under removed nodes ([`gone`](super::gone)),
+//!   are the group's only writes of subtrees. Where a batch makes one itself, the group can
 //!   be refused for an entry by its own doing, with nothing published
 //!   beside it, and the engine does not tell that from a stale look:
 //!   such a group is not looked for again. No operation of GroveDB
@@ -422,7 +436,15 @@ fn hangs(entry: &LigninEntry, host: &LigninHost, prefix: &[u8; 32]) -> bool {
 }
 
 /// What `parts` owe the subtree directory.
-pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed, Error> {
+///
+/// `left` are the subtrees whose writes the group leaves out
+/// ([`gone`](super::gone)): nothing is owed on account of a write into one
+/// of them, which is not applied.
+pub(super) fn owed(
+    view: LigninView<'_>,
+    parts: &[LigninSettled],
+    left: &BTreeSet<[u8; 32]>,
+) -> Result<Owed, Error> {
     // Each subtree once: of the parts that write into it, as the first
     // names it whose handle named a host.
     // A subtree hangs on one element: handles that name two for it are
@@ -477,7 +499,7 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
     let mut owed = Owed::default();
     for subtree in written.into_values() {
         let prefix = subtree.prefix;
-        if enters_itself(&prefix) {
+        if enters_itself(&prefix) || left.contains(&prefix) {
             continue;
         }
         let Some(host) = &subtree.host else {
@@ -497,6 +519,21 @@ pub(super) fn owed(view: LigninView<'_>, parts: &[LigninSettled]) -> Result<Owed
             match same_element(known, host) {
                 true => continue,
                 false => return Err(beside_nothing(host)),
+            }
+        }
+        // A subtree leaves the directory with its element ([`gone`]), so
+        // the entry of the one Merk of a tree stands for that element
+        // where the one batch of the group does not state it: nothing is
+        // owed, and the element is not read. A group of several batches
+        // takes the way below, which looks at the element for all of
+        // them.
+        if parts.len() == 1 && prefix == own && matches!(host_of(parts, host), Host::Stored) {
+            let one_merk = |entry: LigninEntry| {
+                let indexed = (entry.tree_type()).is_ok_and(|tree| tree.is_indexed_primary());
+                !indexed && entry.host.is_some_and(|at| at.position == 0)
+            };
+            if entered(prefix)?.is_some_and(one_merk) {
+                continue;
             }
         }
         match hosting_of(view, parts, host, own)? {

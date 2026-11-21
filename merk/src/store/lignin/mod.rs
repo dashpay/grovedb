@@ -139,11 +139,13 @@
 //!   writes with it ([`LigninHost`]). Saying them is GroveDB's, which
 //!   knows the elements (GROVE-01, GROVE-05). What the directory holds of
 //!   a subtree is read through its handle ([`LigninNodeStore::entry`]),
-//!   and a Merk is opened by it (`Merk::open_from_directory`). A dropped
-//!   subtree's nodes are not charged here.
+//!   and a Merk is opened by it (`Merk::open_from_directory`). A drop
+//!   charges nothing: what the removal of a tree's nodes is charged is
+//!   the removals that were staged for them before
+//!   ([`LigninSettled::leave_out`]).
 //! - **The clear of a subtree**, which the transaction offers beside the
-//!   drop. What a clear takes is GROVE-05's to state. Until then a Merk
-//!   loses its nodes one by one, by key, as on RocksDB.
+//!   drop. A Merk that keeps its host loses its nodes one by one, by key,
+//!   as on RocksDB (`transactions.md`, CV9).
 
 mod access;
 mod change_set;

@@ -913,6 +913,75 @@ fn the_merks_of_an_indexed_tree_are_entered_together_under_their_element() {
     check(dir.path(), v);
 }
 
+/// The Merks of an indexed tree leave the directory with its element:
+/// after the delete of the tree with the children it holds, and after a
+/// flat drop of it, none of them is entered, and the key takes an indexed
+/// tree of another kind.
+#[test]
+fn the_merks_of_an_indexed_tree_leave_with_its_element() {
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        for (name, flat) in [(b"deleted", false), (b"dropped", true)] {
+            let top: &[&[u8]] = &[name];
+            db.insert(ROOT, name, SumAndAverage::empty(), None, None, v)
+                .unwrap()
+                .expect("an indexed tree");
+            for (child, sum) in [(b"one", 1), (b"two", 2)] {
+                SumAndAverage::insert(&db, top, child, SumAndAverage::leaf(sum), None, v)
+                    .unwrap()
+                    .expect("a child");
+            }
+            let primary = build_prefix(top.into()).value;
+            let secondary = |axis: IndexAxis| secondary_prefix_for(&primary, axis.tag()).value;
+            let hosted = [
+                primary,
+                secondary(IndexAxis::Sum),
+                secondary(IndexAxis::Avg),
+            ];
+            for prefix in hosted {
+                assert!(entry(&db, prefix).is_some(), "entered with the first child");
+            }
+            let left = match flat {
+                true => {
+                    db.drop_flat_subtree(ROOT, name, crate::BackwardsReferences::DontCheck, None, v)
+                }
+                false => {
+                    let allowed = crate::operations::delete::DeleteOptions {
+                        allow_deleting_non_empty_trees: true,
+                        deleting_non_empty_trees_returns_error: false,
+                        ..Default::default()
+                    };
+                    db.delete(ROOT, name, Some(allowed), None, v)
+                }
+            };
+            left.unwrap().expect("the tree leaves");
+            for prefix in hosted {
+                assert_eq!(entry(&db, prefix), None, "after the element went");
+            }
+            // The key again, as an indexed tree with other axes.
+            db.insert(ROOT, name, CountSum::empty(), None, None, v)
+                .unwrap()
+                .expect("an indexed tree of another kind");
+            CountSum::insert(&db, top, b"one", CountSum::leaf(3), None, v)
+                .unwrap()
+                .expect("a child");
+            let count = entry(&db, secondary(IndexAxis::Count)).expect("an entry");
+            assert_eq!(count.host.expect("a host").position, 1);
+        }
+        let pending =
+            grovedb_storage::flat::PendingPrefixDrops::pending_prefix_drop_records(db.engine());
+        assert_eq!(
+            pending.expect("the records"),
+            [],
+            "the drop drained its record"
+        );
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
 /// A handle that is opened beside the subtree of an element writes a
 /// subtree that the element hosts. Under a tree of one Merk, and under a
 /// key that holds no element, its write is refused with its batch, and
@@ -1060,11 +1129,12 @@ fn a_secondary_that_is_written_without_its_element_is_one_of_those_the_element_h
     engine.rollback_transaction(&tx).expect("a rollback");
 }
 
-/// A subtree is not dropped when its element goes (GROVE-05). An indexed
-/// tree that is made under a key whose earlier element left subtrees
-/// entered finds them there. Where they hang as the new element names
-/// them, it is written. Where they do not, the write is refused and
-/// changes nothing: with other axes, and after a tree of one Merk.
+/// A subtree leaves the directory with its element, so an indexed tree
+/// that is made under a key whose earlier tree was deleted finds nothing
+/// entered there and is written, whatever the earlier tree was. What
+/// still leaves subtrees where an element does not name them is a
+/// conversion, which writes the element with other axes and moves no
+/// subtree (MERK-09): it is refused and changes nothing.
 #[test]
 fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refused() {
     let v = GroveVersion::latest();
@@ -1100,57 +1170,52 @@ fn an_indexed_tree_over_subtrees_that_an_earlier_element_left_elsewhere_is_refus
         db.insert(ROOT, key, second, None, None, v)
             .unwrap()
             .expect("the second tree");
-        let before = db.root_hash(None, v).unwrap().expect("a root");
-        let written = CountSum::insert(&db, at, b"child", child(), None, v).unwrap();
-        let after = db.root_hash(None, v).unwrap().expect("a root");
-        (written, before == after)
+        CountSum::insert(&db, at, b"child", child(), None, v).unwrap()
     };
     let all = [IndexAxis::Count, IndexAxis::Sum, IndexAxis::Avg];
     let two = [IndexAxis::Sum, IndexAxis::Avg];
+    let one = [IndexAxis::Count];
+    let other = [IndexAxis::Sum];
+    let plain = Element::empty_count_sum_tree;
 
-    let (written, _) = replaced(b"same", with_axes(&all), with_axes(&all));
-    written.expect("the subtrees hang where the element names them");
-    // The axes it keeps are the first of those the earlier tree kept:
-    // each hangs where the new element names it.
-    let leading = [IndexAxis::Count, IndexAxis::Sum];
-    let (written, _) = replaced(b"leading", with_axes(&all), with_axes(&leading));
-    written.expect("the subtrees it hosts hang where the element names them");
-
-    let refusals = [
+    // After a delete nothing is entered under the key, whatever the
+    // tree was that held it.
+    let written = [
+        replaced(b"same", with_axes(&all), with_axes(&all)),
+        replaced(b"leading", with_axes(&all), with_axes(&[all[0], all[1]])),
         replaced(b"fewer", with_axes(&all), with_axes(&two)),
         replaced(b"more", with_axes(&two), with_axes(&all)),
-        replaced(
-            b"other",
-            with_axes(&[IndexAxis::Count]),
-            with_axes(&[IndexAxis::Sum]),
-        ),
-        replaced(b"plain", Element::empty_count_sum_tree(), with_axes(&two)),
+        replaced(b"other", with_axes(&one), with_axes(&other)),
+        replaced(b"plain", plain(), with_axes(&two)),
     ];
-    for (written, unchanged) in refusals {
-        let refused = written.expect_err("subtrees that hang elsewhere");
-        assert!(
-            matches!(&refused, Error::NotSupported(words) if words.contains("other places")),
-            "{refused}"
-        );
-        assert!(unchanged, "a refused write changed the root hash");
+    for written in written {
+        written.expect("nothing is entered under the key of a deleted tree");
     }
 
-    // A write into the primary alone, by a batch that states no element,
-    // is held to the same: the entry of the primary is the earlier
-    // tree's, and says nothing of the element that is there now.
+    // The conversion of an indexed tree to its 128-bit counterpart puts
+    // its axes in another order, and its secondaries stay where they are
+    // entered.
+    let before = db.root_hash(None, v).unwrap().expect("a root");
+    let converted = db.convert_to_big_sum_tree(ROOT, b"same", None, v).unwrap();
+    let refused = converted.expect_err("subtrees that hang elsewhere");
+    assert!(
+        matches!(&refused, Error::NotSupported(words) if words.contains("other places")),
+        "{refused}"
+    );
+    let after = db.root_hash(None, v).unwrap().expect("a root");
+    assert_eq!(after, before, "a refused write changed the root hash");
+
+    // A record of the primary alone, by a batch that states no element:
+    // the Merks of the tree hang where its element names them, and the
+    // record is written.
     let engine = db.engine();
     let tx = engine.start_transaction();
     let batch = <LigninEngine as Engine>::Batch::default();
-    let plain: &[&[u8]] = &[b"plain"];
-    let primary = engine.subtree(plain.into(), Some(&batch), &tx).unwrap();
+    let same: &[&[u8]] = &[b"same"];
+    let primary = engine.subtree(same.into(), Some(&batch), &tx).unwrap();
     (primary.aux().put(b"k", b"v", None).unwrap()).expect("staging");
     drop(primary);
-    let refused = engine.apply_batch(batch, &tx).unwrap();
-    let refused = refused.expect_err("a primary whose secondaries are not entered");
-    assert!(
-        matches!(&refused, StorageError::NotSupported(words) if words.contains("other places")),
-        "{refused}"
-    );
+    (engine.apply_batch(batch, &tx).unwrap()).expect("a record of an entered subtree");
 }
 
 /// A subtree hangs on one element. Handles that name two elements for one
@@ -1439,10 +1504,13 @@ fn a_writer_inside_the_look_of_an_indexed_tree_is_found_or_refuses_the_group() {
             }
 
             // The named write reads the entry of each Merk of the tree,
-            // and the write by prefix reads the entry of its own: the
-            // other writer comes after the first read of that entry.
+            // after one read of its own subtree's where that is the one
+            // of the element's path (an entry of one Merk would stand
+            // for the element), and the write by prefix reads the entry
+            // of its own: the other writer comes after the first read of
+            // that entry.
             let reads = match named_first {
-                true => 2,
+                true => 2 + usize::from(named == primary),
                 false => 1,
             };
             let published = Rc::new(Cell::new(false));
@@ -1530,5 +1598,197 @@ fn a_writer_inside_the_look_of_an_indexed_tree_is_found_or_refuses_the_group() {
             db.flush().expect("a flush");
         }
         check(dir.path(), v);
+    }
+}
+
+/// The delete of an indexed tree whose look is stale: another writer's
+/// delete of the tree is published after the look. The removals that the
+/// delete staged for the secondaries, through handles by prefix, are
+/// then of subtrees that are not entered: they are not handed over, and
+/// nothing is entered for them.
+#[test]
+fn a_delete_of_an_indexed_tree_that_another_commit_took_enters_nothing() {
+    use std::sync::Arc;
+
+    use super::super::AFTER_A_LOOK;
+
+    let v = GroveVersion::latest();
+    let dir = tempfile::tempdir().expect("a directory");
+    {
+        let db = Arc::new(Lignin::open_with_engine(dir.path()).expect("a database"));
+        let top: &[&[u8]] = &[b"top"];
+        db.insert(ROOT, b"top", SumAndAverage::empty(), None, None, v)
+            .unwrap()
+            .expect("an indexed tree");
+        for (child, sum) in [(b"one", 1), (b"two", 2)] {
+            SumAndAverage::insert(&*db, top, child, SumAndAverage::leaf(sum), None, v)
+                .unwrap()
+                .expect("a child");
+        }
+        let primary = build_prefix(top.into()).value;
+        let secondary = |axis: IndexAxis| secondary_prefix_for(&primary, axis.tag()).value;
+        let hosted = [
+            primary,
+            secondary(IndexAxis::Sum),
+            secondary(IndexAxis::Avg),
+        ];
+        for prefix in hosted {
+            assert!(entry(&db, prefix).is_some(), "entered with the first child");
+        }
+        let allowed = || crate::operations::delete::DeleteOptions {
+            allow_deleting_non_empty_trees: true,
+            deleting_non_empty_trees_returns_error: false,
+            ..Default::default()
+        };
+        let other = {
+            let db = db.clone();
+            Box::new(move || {
+                (db.delete(ROOT, b"top", Some(allowed()), None, v).unwrap())
+                    .expect("the other delete");
+            })
+        };
+        let tx = db.start_transaction();
+        AFTER_A_LOOK.set([super::apart(other)].into_iter().collect());
+        let deleted = db.delete(ROOT, b"top", Some(allowed()), Some(&tx), v);
+        assert!(AFTER_A_LOOK.take().is_empty(), "the group looked");
+        deleted
+            .unwrap()
+            .expect("the delete is applied with no drop");
+        let engine = db.engine();
+        for prefix in hosted {
+            let handle = engine.subtree_by_prefix(prefix, None, &tx).unwrap();
+            let entered = handle.entry().expect("the directory answers");
+            assert_eq!(entered, None, "in the transaction of the second delete");
+        }
+        // Whether the second delete commits is the conflict rule's to
+        // say; the directory is the same either way.
+        let _ = db.commit_transaction(tx).unwrap();
+        for prefix in hosted {
+            assert_eq!(entry(&db, prefix), None);
+        }
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), v);
+}
+
+/// A child of an indexed tree that is a tree with an element and a tree
+/// in it is written over with an empty tree of its kind, through the
+/// entry point of the indexed tree. GroveDB removes the records of the
+/// old child in one batch and writes the new element in the next, and
+/// nothing of the old child is read under the new. Gives every call with
+/// its cost and the root hash after it.
+fn written_over_a_child<E: Engine>(dir: &std::path::Path) -> Vec<(String, OperationCost, String)> {
+    let v = GroveVersion::latest();
+    let db = GroveDb::<E>::open_with_engine(dir).expect("a database");
+    let mut calls = Vec::new();
+    let mut call = |name: &str, cost: OperationCost, answer: String| {
+        let root = db.root_hash(None, v).unwrap().expect("a root");
+        calls.push((
+            name.to_owned(),
+            cost,
+            format!("{answer} {}", hex::encode(root)),
+        ));
+    };
+    let top: &[&[u8]] = &[b"top"];
+    let child: &[&[u8]] = &[b"top", b"a"];
+    let inner: &[&[u8]] = &[b"top", b"a", b"in"];
+    let made = db.insert(ROOT, b"top", CountSum::empty(), None, None, v);
+    call("made", made.cost.clone(), format!("{:?}", made.value));
+    let branch = CountSum::insert(&db, top, b"a", CountSum::branch(), None, v);
+    call(
+        "a child",
+        branch.cost.clone(),
+        format!("{:?}", branch.value),
+    );
+    let filled = db.insert(child, b"x", CountSum::in_branch(0), None, None, v);
+    call(
+        "an element",
+        filled.cost.clone(),
+        format!("{:?}", filled.value),
+    );
+    let tree = db.insert(child, b"in", Element::empty_tree(), None, None, v);
+    call(
+        "a tree in it",
+        tree.cost.clone(),
+        format!("{:?}", tree.value),
+    );
+    let deep = db.insert(inner, b"y", Element::new_item(vec![7; 5]), None, None, v);
+    call(
+        "an element of that",
+        deep.cost.clone(),
+        format!("{:?}", deep.value),
+    );
+
+    let over = CountSum::insert(&db, top, b"a", CountSum::branch(), None, v);
+    call(
+        "written over",
+        over.cost.clone(),
+        format!("{:?}", over.value),
+    );
+    let gone = db.get(child, b"x", None, v);
+    call(
+        "the old element",
+        gone.cost.clone(),
+        format!("{}", gone.value.is_ok()),
+    );
+    let gone = db.has_raw(inner, b"y", None, v);
+    call(
+        "the old tree's element",
+        gone.cost.clone(),
+        format!("{:?}", gone.value),
+    );
+    let empty = db.is_empty_tree(child, None, v);
+    call("empty", empty.cost.clone(), format!("{:?}", empty.value));
+    let again = db.insert(child, b"z", CountSum::in_branch(1), None, None, v);
+    call(
+        "an element of the new child",
+        again.cost.clone(),
+        format!("{:?}", again.value),
+    );
+    let issues = db.verify_grovedb(None, true, false, v);
+    call(
+        "verified",
+        OperationCost::default(),
+        format!("{:?}", issues.map(|issues| issues.len())),
+    );
+    db.flush().expect("a flush");
+    calls
+}
+
+/// A tree written over a tree whose records GroveDB removed in the batch
+/// before, which left the Merk of the old child with no root and did not
+/// write its element: the element's node names the Merk again, the
+/// removals are charged as on RocksDB, the subtree of the old child
+/// holds nothing afterwards, and the tree that was in it has left the
+/// directory. Every answer, cost and root hash is RocksDB's.
+#[test]
+fn a_child_of_an_indexed_tree_that_is_written_over_is_swept_as_on_rocksdb() {
+    let dir = tempfile::tempdir().expect("a directory");
+    let on_lignin = written_over_a_child::<LigninEngine>(dir.path());
+    let said = |call: &str| {
+        let found = on_lignin.iter().find(|(name, ..)| name == call);
+        found.map(|(.., said)| said.clone()).expect("the call")
+    };
+    assert!(
+        said("written over").starts_with("Ok(())"),
+        "{}",
+        said("written over")
+    );
+    assert!(said("the old element").starts_with("false"));
+    assert!(said("the old tree's element").starts_with("Ok(false)"));
+    assert!(said("empty").starts_with("Ok(true)"));
+    assert!(said("verified").starts_with("Ok(0)"));
+    {
+        let db = Lignin::open_with_engine(dir.path()).expect("a database");
+        let inner = build_prefix([b"top".as_slice(), b"a", b"in"].as_slice().into()).value;
+        assert_eq!(entry(&db, inner), None, "the tree in the old child");
+        db.flush().expect("a flush");
+    }
+    check(dir.path(), GroveVersion::latest());
+    #[cfg(feature = "rocksdb_storage")]
+    {
+        let dir = tempfile::tempdir().expect("a directory");
+        let on_rocksdb = written_over_a_child::<crate::RocksDbEngine>(dir.path());
+        assert_eq!(on_lignin, on_rocksdb);
     }
 }

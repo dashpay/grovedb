@@ -1202,6 +1202,14 @@ fn a_walk_that_fails_is_not_taken_for_the_end_of_the_nodes() {
         assert_eq!(cursor.status().is_ok(), opens);
         drop(cursor);
 
+        // The removal of the Merk's nodes as the records of its keyspace
+        // walks them with such a cursor: it fails with the cursor's
+        // error, and stages no removal.
+        let cleared = grovedb_storage::FlatStore::clear(&store);
+        let cleared = cleared.unwrap().expect_err("the walk failed");
+        assert!(cleared.to_string().contains(refused), "{cleared}");
+        assert!(staged.is_empty(), "nothing is removed");
+
         // Merk's walks. A scan gives the records it came to and says that
         // it did not come to the end.
         let mut query = Query::new();
