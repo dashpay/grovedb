@@ -592,13 +592,19 @@ impl<C> Staged<C> {
     }
 
     /// The refusal of what the batch holds beside its moves, if it holds
-    /// anything it does not hold beside them
-    /// ([`BatchError::Moved`]): a move of another operation than the
-    /// first one's, which would not be made together with it; or, under
-    /// a prefix that a move names on either side, an outcome of a key, a
-    /// root, an enter of either kind, a clear, or a drop of anything but
-    /// the subtree that is entered where one is moved to and that no
-    /// move takes away. It is asked of a batch that is settled.
+    /// anything it does not hold beside them: a move of another operation
+    /// than the first one's, which would not be made together with it
+    /// ([`BatchError::Moved`]); a prefix that its moves name twice as one
+    /// a subtree is taken from, or twice as one a subtree goes to
+    /// ([`BatchError::SubtreeTwice`]); or, under a prefix that a move
+    /// names on either side, an outcome of a key, a root, an enter of
+    /// either kind, a clear, or a drop of anything but the subtree that
+    /// is entered where one is moved to and that no move takes away
+    /// ([`BatchError::Moved`]). That drop is one that the operation of
+    /// the moves states, or an earlier one: the batch applies its drops
+    /// before its moves, and a drop that a later operation states is of
+    /// the subtree that was moved there. It is asked of a batch that is
+    /// settled.
     fn moved(&self) -> Option<BatchError> {
         let first = self.moves.first()?;
         let apart = |moving: &&Move| moving.generation != first.generation;
@@ -609,6 +615,13 @@ impl<C> Staged<C> {
         }
         let sources: Vec<Subtree> = self.moves.iter().flat_map(Move::sources).collect();
         let targets: Vec<Subtree> = self.moves.iter().flat_map(Move::targets).collect();
+        let twice = |names: &[Subtree]| {
+            let again = |(at, name): (usize, &Subtree)| names[..at].contains(name).then_some(*name);
+            names.iter().enumerate().find_map(again)
+        };
+        if let Some(subtree) = twice(&sources).or_else(|| twice(&targets)) {
+            return Some(BatchError::SubtreeTwice { subtree });
+        }
         let named = sources.iter().chain(&targets).copied();
         let refused = named.into_iter().find(|named| {
             let held = |column: &BTreeMap<Subtree, Keys<C>>| {
@@ -616,7 +629,7 @@ impl<C> Staged<C> {
             };
             let makes_room = |state: &SubtreeState| {
                 let dropped = state.leave == Some(Leave::Drop) && state.enter.is_none();
-                dropped && !sources.contains(named)
+                dropped && !sources.contains(named) && state.at <= first.generation
             };
             let stated = (self.subtrees.get(named)).is_some_and(|state| !makes_room(state));
             stated || self.roots.contains_key(named) || self.columns.iter().any(held)

@@ -6,7 +6,7 @@
 use lignin_tree::{directory::MerkId, node::NodeHandle};
 
 use super::{
-    model::{self, handle_of, OwnedBatch, OwnedSubtree},
+    model::{self, handle_of, OwnedBatch, OwnedMerk, OwnedSubtree},
     store::{Db, Outcome, ENTERED},
     subtrees::{aux, enter, hosted, shown, subtrees, Shown},
     *,
@@ -201,9 +201,11 @@ fn under(shown: &Shown, name: u8, key: &[u8]) -> Shown {
     Some((root, tree_type, host(name, key)))
 }
 
-/// What the directory of the latest version holds of every Merk, without
-/// the cells the roots are in, with the Merks each hosts, and every
-/// record of every flat column.
+/// What the directory of the latest version holds: of every Merk its
+/// entry without the cell its root is in, the Merks it is below, the
+/// Merks it hosts by the records that lead to them, and the prefix that
+/// the record of its root's cell names; the id the next Merk gets; and
+/// every record of every flat column.
 type Kept = (
     Vec<(
         Subtree,
@@ -211,7 +213,9 @@ type Kept = (
         Shown,
         Vec<MerkId>,
         Vec<(u8, Vec<u8>, Subtree, MerkId)>,
+        Option<Option<Subtree>>,
     )>,
+    MerkId,
     Vec<Vec<(Vec<u8>, Vec<u8>)>>,
 );
 
@@ -244,8 +248,14 @@ fn kept(world: &World<'_>) -> Kept {
             ));
         }
         let lineage = entry.lineage().collect();
-        entries.push((Subtree::new(prefix), entry.id(), shown, lineage, hosted));
+        let owner = entry.root().map(|root| {
+            let owner = directory.root_owner(&pages, root.address);
+            owner.expect("a lookup").map(Subtree::new)
+        });
+        let prefix = Subtree::new(prefix);
+        entries.push((prefix, entry.id(), shown, lineage, hosted, owner));
     }
+    let next = directory.next_id(&pages).expect("the next id");
     let columns = world.path.keyspaces.columns().map(|column| {
         let mut cursor = column.tree.cursor();
         let mut records = Vec::new();
@@ -258,7 +268,25 @@ fn kept(world: &World<'_>) -> Kept {
         }
         records
     });
-    (entries, columns.to_vec())
+    (entries, next, columns.to_vec())
+}
+
+/// Commits, under the node `e` of the subtree `parent`, which the node
+/// `key` of `TOP` hosts, the subtree `name` with no node and with flat
+/// records, one of them in its data column.
+fn flat_below<'s>(world: &mut World<'s>, key: &[u8], parent: u8, name: u8) {
+    let tx = world.begin();
+    let mut batch = edit_at(world, &tx, &[(parent, key)], |items| {
+        items.insert(b"e".to_vec(), b"a tree with flat data".to_vec());
+    });
+    (batch.merks[0].hosted).insert(b"e".to_vec(), vec![sub(name)]);
+    batch.subtrees = vec![hosted(name, parent, b"e")];
+    batch.records = vec![
+        put(aux(name), b"x", b"flat"),
+        put(model::unit(Column::Data, name), b"d", b"flat data"),
+    ];
+    world.apply(&tx, &batch).expect("the subtree is made");
+    assert!(committed(world.commit(tx, &[])));
 }
 
 /// Section 4 of the interface: after a move the transaction reads under
@@ -322,15 +350,20 @@ fn a_move_takes_a_subtree_and_those_below_it_to_their_new_prefixes() {
 
 /// D-212 item 3: after a move the directory and every flat keyspace hold,
 /// record for record, what a store holds in which the subtree was written
-/// under the new prefix from the start. Each store is read by the
-/// physical checker when it is dropped.
+/// under the new prefix from the start: the entries with their ids, the
+/// records that lead from a host to its Merks and from a root's cell to
+/// its Merk, the id the next Merk gets, and the flat records of every
+/// column, those of a subtree that keeps its data flat among them. Each
+/// store is read by the physical checker when it is dropped.
 #[test]
 fn a_moved_subtree_is_kept_as_one_that_was_written_under_the_new_prefix() {
     let (db, versions) = Db::new(96);
     let mut world = World::new(&db, &versions);
     grove(&mut world, b"a", A, A_IN);
+    flat_below(&mut world, b"a", A, EMPTY);
     let tx = world.begin();
-    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    let pairs = [(A, B), (A_IN, B_IN), (EMPTY, EMPTY_B)];
+    let batch = rename(&world, &tx, b"a", b"b", &pairs);
     world.apply(&tx, &batch).expect("the subtree is moved");
     assert!(committed(world.commit(tx, &[])));
     world.check_committed();
@@ -338,11 +371,22 @@ fn a_moved_subtree_is_kept_as_one_that_was_written_under_the_new_prefix() {
     let (other_db, other_versions) = Db::new(96);
     let mut other = World::new(&other_db, &other_versions);
     grove(&mut other, b"b", B, B_IN);
+    flat_below(&mut other, b"b", B, EMPTY_B);
     other.check_committed();
     let (moved, written) = (kept(&world), kept(&other));
     assert_eq!(moved.0, written.0, "the directory");
-    for (column, (moved, written)) in moved.1.iter().zip(&written.1).enumerate() {
-        assert!(column == 0 || !moved.is_empty(), "column {column} is used");
+    // The four Merks of the test, beside those every store has.
+    let own =
+        |entry: &&(Subtree, MerkId, Shown, Vec<MerkId>, _, _)| entry.0.as_bytes()[0] >= ENTERED;
+    assert_eq!(moved.0.iter().filter(own).count(), 4);
+    let rooted = moved.0.iter().filter(own).filter(|entry| entry.5.is_some());
+    assert_eq!(rooted.count(), 3, "three of them have a root");
+    for (prefix, .., owner) in &moved.0 {
+        assert!(owner.is_none_or(|owner| owner == Some(*prefix)));
+    }
+    assert_eq!(moved.1, written.1, "the id the next Merk gets");
+    for (column, (moved, written)) in moved.2.iter().zip(&written.2).enumerate() {
+        assert!(!moved.is_empty(), "column {column} is used");
         assert_eq!(moved, written, "the flat records of column {column}");
     }
     assert_eq!(world.model.records, other.model.records);
@@ -667,10 +711,13 @@ fn conflict(error: TxnError) -> BatchError {
 /// else; and its commit is the conflict.
 #[test]
 fn a_commit_under_a_prefix_a_move_names_meets_the_move() {
-    for case in 0..6 {
+    for case in 0..8 {
         let (db, versions) = Db::new(96);
         let mut world = World::new(&db, &versions);
         grove(&mut world, b"a", A, A_IN);
+        // A subtree with no node below the source, which the move does
+        // not name: it leaves with the move.
+        emptied(&mut world);
         let mover = world.begin();
         let batch = rename(&world, &mover, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
         world.apply(&mover, &batch).expect("the subtree is moved");
@@ -701,23 +748,52 @@ fn a_commit_under_a_prefix_a_move_names_meets_the_move() {
                 world.apply(&other, &batch).expect("a drop");
             }
             // A subtree that is entered under the prefix the moved one
-            // went to, with a flat record and no host.
+            // went to, with no host, a flat record, and a subtree below
+            // it that has a flat record too.
             4 => {
+                let mut nodes = world.merk(&other, B, |items| {
+                    items.insert(b"z".to_vec(), b"a tree".to_vec());
+                });
+                nodes.hosted.insert(b"z".to_vec(), vec![sub(EMPTY_2)]);
                 let entered = OwnedBatch {
-                    records: vec![put(aux(B), b"f", b"foreign")],
-                    subtrees: vec![enter(B)],
-                    ..OwnedBatch::default()
+                    merks: vec![nodes],
+                    records: vec![
+                        put(aux(B), b"f", b"foreign"),
+                        put(aux(EMPTY_2), b"f", b"foreign"),
+                    ],
+                    subtrees: vec![enter(B), hosted(EMPTY_2, B, b"z")],
                 };
                 world.apply(&other, &entered).expect("a subtree is entered");
             }
             // A drop of the subtree above the source, which names neither
             // the source nor a key under it.
-            _ => {
+            5 => {
                 let dropped = subtrees(vec![OwnedSubtree::Drop(sub(TOP))]);
+                world.apply(&other, &dropped).expect("a drop");
+            }
+            // A flat record under the subtree that left with the move.
+            6 => world.write(&other, vec![put(aux(EMPTY), b"f", b"foreign")]),
+            // And a drop of that subtree, which writes no node.
+            _ => {
+                let dropped = subtrees(vec![OwnedSubtree::Drop(sub(EMPTY))]);
                 world.apply(&other, &dropped).expect("a drop");
             }
         }
         assert!(committed(world.commit(other, &[&mover])), "case {case}");
+        if case == 4 {
+            // What the committed state has below a prefix the move names
+            // is not answered for either, on whichever side.
+            let refused = get(&mover, aux(EMPTY_2), b"f").expect_err("a refusal");
+            assert!(moved_by_key(&refused, EMPTY_2), "{refused}");
+            let refused = (mover.txn.subtree(sub(EMPTY_2), |_| ())).expect_err("a refusal");
+            assert!(moved_by_key(&refused, EMPTY_2), "{refused}");
+            let record = OwnedBatch {
+                records: vec![put(aux(EMPTY_2), b"more", b"by key")],
+                ..OwnedBatch::default()
+            };
+            let refused = world.apply(&mover, &record).expect_err("a refusal");
+            assert!(moved_by_key(&refused, EMPTY_2), "{refused}");
+        }
 
         for (unit, key) in [(aux(B), &b"a"[..]), (aux(A), b"a"), (aux(B_IN), b"late")] {
             let refused = get(&mover, unit, key).expect_err("a refusal");
@@ -742,7 +818,7 @@ fn a_commit_under_a_prefix_a_move_names_meets_the_move() {
         assert!(moved_by_key(&refused, B), "case {case}: {refused}");
         // What no move decides is read as before, and the committed
         // records are those of the committed state (RD10).
-        let top = (case < 5).then(|| b"top".to_vec());
+        let top = (case != 5).then(|| b"top".to_vec());
         assert_eq!(get(&mover, aux(TOP), b"t").expect("a read"), top);
         let mut out = Vec::new();
         let found = mover.txn.committed_get(aux(B), b"a", &mut out);
@@ -1239,6 +1315,11 @@ fn a_move_that_cannot_be_made_is_refused_and_changes_nothing() {
         BatchError::Entered { subtree: sub(C_IN) },
     ));
     refused.push((
+        "a subtree is entered where a pair that names none would bring one",
+        with(&[(A, B), (A_IN, B_IN), (NONE, C_IN)]),
+        BatchError::Entered { subtree: sub(C_IN) },
+    ));
+    refused.push((
         "a Merk with a node below is not named",
         with(&[(A, B)]),
         BatchError::MoveUnnamed { subtree: sub(A_IN) },
@@ -1463,7 +1544,9 @@ fn a_move_goes_where_the_batch_drops_what_is_entered() {
 #[test]
 fn a_refusal_of_a_move_that_a_commit_explains_is_a_conflict() {
     let pairs = [(A, B), (A_IN, B_IN)];
-    for entered in [false, true] {
+    // With a drop in the batch of the move the refusal comes before the
+    // application, where the batch asks what its drop takes.
+    for (entered, beside_a_drop) in [(false, false), (true, false), (false, true), (true, true)] {
         let (db, versions) = Db::new(96);
         let mut world = World::new(&db, &versions);
         // `TOP` is hosted by the node `t` of `ROOT`.
@@ -1477,7 +1560,7 @@ fn a_refusal_of_a_move_that_a_commit_explains_is_a_conflict() {
         });
         let made = OwnedBatch {
             merks: vec![top, root],
-            subtrees: vec![enter(ROOT), hosted(TOP, ROOT, b"t")],
+            subtrees: vec![enter(ROOT), hosted(TOP, ROOT, b"t"), enter(EMPTY_2)],
             ..OwnedBatch::default()
         };
         world.apply(&tx, &made).expect("the top is made");
@@ -1493,7 +1576,10 @@ fn a_refusal_of_a_move_that_a_commit_explains_is_a_conflict() {
 
         let tx = world.begin();
         world.write(&tx, vec![put(aux(1), b"own", b"kept")]);
-        let stale = read_now(&tx, &rename(&world, &tx, b"a", b"b", &pairs));
+        let mut stale = read_now(&tx, &rename(&world, &tx, b"a", b"b", &pairs));
+        if beside_a_drop {
+            (stale.subtrees).insert(0, OwnedSubtree::Drop(sub(EMPTY_2)));
+        }
 
         // A commit that writes no node of the Merk the host is in.
         let other = world.begin();
@@ -1587,12 +1673,25 @@ fn a_move_is_made_through_a_scope_whose_writes_are_laid_out() {
     let refused = second.get(aux(B), b"a", &mut out).expect_err("refused");
     let subtree = sub(B);
     assert_eq!(beside_error(refused), BatchError::MoveBeside { subtree });
+    // Neither does it take a write there, under the new prefix or under
+    // the old one.
+    let record = |name: u8| OwnedBatch {
+        records: vec![put(aux(name), b"more", b"of a scope")],
+        ..OwnedBatch::default()
+    };
+    for name in [B, A] {
+        let refused = (world.apply_in(&tx, &second, &record(name))).expect_err("refused");
+        let subtree = sub(name);
+        assert_eq!(beside_error(refused), BatchError::MoveBeside { subtree });
+    }
     second.lay_out().expect("it has no write");
     out.clear();
     assert!(second.get(aux(B), b"a", &mut out).expect("a read"));
     assert_eq!(out, vec![1; 3]);
+    (world.apply_in(&tx, &second, &record(B))).expect("the record is written");
     second.merge();
     first.merge();
+    world.check(&tx);
     assert!(committed(world.commit(tx, &[])));
     world.check_committed();
 
@@ -1611,4 +1710,302 @@ fn a_move_is_made_through_a_scope_whose_writes_are_laid_out() {
     world.check(&tx);
     assert!(committed(world.commit(tx, &[])));
     world.check_committed();
+}
+
+/// The prefix a move took a subtree from is another subtree's once the
+/// transaction enters one there. What the transaction then clears and
+/// drops under that prefix takes nothing of the subtree that was moved:
+/// its records, and those of the subtree below it, are read under the new
+/// prefixes by key and by cursor, and are there after the commit.
+#[test]
+fn a_drop_at_the_old_prefix_takes_nothing_of_the_subtree_that_was_moved() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    let again = nested(&world, &tx, b"a", A, A_IN, 90);
+    world.apply(&tx, &again).expect("a tree at the old key");
+    let moved = |tx: &Tx<'_>| {
+        let below = get(tx, aux(B_IN), b"ia").expect("a read");
+        let meta = get(tx, model::unit(Column::Meta, B_IN), b"im").expect("a read");
+        let own = get(tx, aux(B), b"a").expect("a read");
+        assert_eq!(
+            (below, meta, own),
+            (Some(vec![1; 9]), Some(vec![1; 400]), Some(vec![1; 3]))
+        );
+        let mut cursor = tx.txn.cursor(aux(B_IN));
+        cursor.seek_to_first().expect("a move");
+        assert_eq!(cursor.key(), Some(&b"ia"[..]));
+        assert!(shown(tx, B_IN).is_some());
+    };
+    moved(&tx);
+
+    // The new one is cleared, which takes the subtree below it.
+    let cleared = subtrees(vec![OwnedSubtree::Clear(sub(A))]);
+    world.apply(&tx, &cleared).expect("a clear");
+    world.check(&tx);
+    moved(&tx);
+    assert_eq!(shown(&tx, A_IN), None);
+    // And it is dropped with its element.
+    let top = world.merk(&tx, TOP, |items| {
+        items.remove(&b"a"[..]);
+    });
+    let dropped = OwnedBatch {
+        merks: vec![top],
+        subtrees: vec![OwnedSubtree::Drop(sub(A))],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &dropped).expect("a drop");
+    world.check(&tx);
+    moved(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let reader = world.begin();
+    moved(&reader);
+    assert_eq!(shown(&reader, A), None);
+}
+
+/// What a subtree holds in its data column goes with it: flat records
+/// that the transaction wrote under the old prefix make the subtree one
+/// that takes no node under the new prefix (ST1), as under the old one.
+#[test]
+fn the_data_column_of_a_moved_subtree_holds_what_it_held() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let data = |name: u8| model::unit(Column::Data, name);
+    let node = |name: u8| {
+        let items = BTreeMap::from([(b"n".to_vec(), b"a node".to_vec())]);
+        OwnedBatch {
+            merks: vec![OwnedMerk::change(sub(name), &BTreeMap::new(), &items)],
+            ..OwnedBatch::default()
+        }
+    };
+    let tx = world.begin();
+    // A subtree with no node under the node `f` of `TOP`, with a flat
+    // record in its data column.
+    let mut top = world.merk(&tx, TOP, |items| {
+        items.insert(b"f".to_vec(), b"a tree with flat data".to_vec());
+    });
+    top.hosted.insert(b"f".to_vec(), vec![sub(C)]);
+    let made = OwnedBatch {
+        merks: vec![top],
+        records: vec![put(data(C), b"d", b"flat")],
+        subtrees: vec![hosted(C, TOP, b"f")],
+    };
+    world.apply(&tx, &made).expect("a subtree with flat data");
+    assert_eq!(
+        batch_error(world.apply(&tx, &node(C))),
+        BatchError::NotMerk { subtree: sub(C) }
+    );
+    // It is moved by the transaction that made it, whose own record the
+    // host is: the move names no read.
+    let batch = rename(&world, &tx, b"f", b"g", &[(C, C_IN)]);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    world.check(&tx);
+    assert_eq!(
+        batch_error(world.apply(&tx, &node(C_IN))),
+        BatchError::NotMerk { subtree: sub(C_IN) }
+    );
+    world.write(&tx, vec![put(data(C_IN), b"e", b"more flat")]);
+    world.check(&tx);
+    assert_eq!(
+        get(&tx, data(C_IN), b"d").expect("a read"),
+        Some(b"flat".to_vec())
+    );
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+}
+
+/// A cursor is the first call of the mover after a commit met its move.
+/// It reads a version that has the commit, so it takes the commit in and
+/// is refused where the move decides, as a read by key is.
+#[test]
+fn a_cursor_that_is_opened_after_a_commit_met_the_move_is_refused() {
+    for over_nodes in [false, true] {
+        let (db, versions) = Db::new(96);
+        let mut world = World::new(&db, &versions);
+        grove(&mut world, b"a", A, A_IN);
+        let mover = world.begin();
+        let batch = rename(&world, &mover, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+        world.apply(&mover, &batch).expect("the subtree is moved");
+        let other = world.begin();
+        world.write(&other, vec![put(aux(A), b"f", b"foreign")]);
+        assert!(committed(world.commit(other, &[&mover])));
+
+        let refused = match over_nodes {
+            true => {
+                let mut cursor = mover.txn.merk_cursor(sub(B)).expect("a cursor");
+                cursor.seek_to_first().expect_err("a refusal")
+            }
+            false => (mover.txn.cursor(aux(B)).seek_to_first()).expect_err("a refusal"),
+        };
+        assert!(moved_by_key(&refused, B), "{refused}");
+        assert_eq!(mover.txn.stats().overlapped, 1);
+        assert_eq!(world.commit(mover, &[]), Outcome::Conflict);
+        world.check_committed();
+    }
+}
+
+/// D-213 item 3: a move that is stated while a commit has met the
+/// transaction is refused as a conflict, through a scope whose writes are
+/// laid out as through one that keeps them in the write set.
+#[test]
+fn a_move_stated_through_a_scope_after_a_commit_met_the_transaction_is_a_conflict() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    world.write(&tx, vec![put(aux(1), b"own", b"mine")]);
+    let batch = rename(&world, &tx, b"a", b"b", &[(A, B), (A_IN, B_IN)]);
+    let other = world.begin();
+    world.write(&other, vec![put(aux(1), b"own", b"theirs")]);
+    assert!(committed(world.commit(other, &[&tx])));
+
+    let first = tx.txn.scope().expect("a scope");
+    let second = tx.txn.scope().expect("a scope");
+    assert!(first.is_laid_out() && !second.is_laid_out());
+    for scope in [&second, &first] {
+        let refused = world.apply_in(&tx, scope, &batch).expect_err("refused");
+        assert!(moved_by_key(&refused, A), "{refused}");
+    }
+    second.merge();
+    first.merge();
+    assert_eq!(tx.txn.stats().overlapped, 1);
+    assert_eq!(world.commit(tx, &[]), Outcome::Conflict);
+    world.check_committed();
+}
+
+/// Case 3 of the interface: a subtree five subtrees deep is moved, with
+/// nodes and flat records at every level. Among the subtrees below it
+/// are one that was emptied, which has an entry and no node and leaves
+/// with the move, and one that nothing was written into, for which the
+/// move states a pair that says nothing.
+#[test]
+fn a_subtree_five_deep_is_moved_with_all_that_is_below_it() {
+    const OLD: [u8; 5] = [A, A_IN, C, C_IN, EMPTY_2];
+    const NEW: [u8; 5] = [B, B_IN, ROOT, ENTERED + 53, ENTERED + 54];
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    // Three more levels, each under the node `in` of the one above.
+    for depth in 2..5 {
+        let tx = world.begin();
+        let path: Vec<(u8, &[u8])> = (0..depth)
+            .map(|at| (OLD[at], if at == 0 { &b"a"[..] } else { &b"in"[..] }))
+            .collect();
+        let mut batch = edit_at(&world, &tx, &path, |items| {
+            items.insert(b"in".to_vec(), b"tree in".to_vec());
+        });
+        let (parent, name) = (OLD[depth - 1], OLD[depth]);
+        (batch.merks[0].hosted).insert(b"in".to_vec(), vec![sub(name)]);
+        let below = world.merk(&tx, name, |items| {
+            items.insert(b"n".to_vec(), vec![depth as u8; 30]);
+        });
+        batch.merks.insert(0, below);
+        batch.subtrees = vec![hosted(name, parent, b"in")];
+        batch.records = vec![
+            put(aux(name), b"deep", &[depth as u8; 4]),
+            put(
+                model::unit(Column::Meta, name),
+                b"deep",
+                &[depth as u8; 300],
+            ),
+        ];
+        world.apply(&tx, &batch).expect("a level is made");
+        assert!(committed(world.commit(tx, &[])));
+    }
+    emptied(&mut world);
+
+    let tx = world.begin();
+    let was = OLD.map(|name| shown(&tx, name));
+    let mut pairs: Vec<(u8, u8)> = OLD.into_iter().zip(NEW).collect();
+    pairs.push((NONE, NONE_B));
+    let batch = rename(&world, &tx, b"a", b"b", &pairs);
+    world.apply(&tx, &batch).expect("the subtree is moved");
+    world.check(&tx);
+    for depth in 0..5 {
+        assert_eq!(shown(&tx, OLD[depth]), None, "level {depth}");
+        let (above, key): (u8, &[u8]) = match depth {
+            0 => (TOP, b"b"),
+            _ => (NEW[depth - 1], b"in"),
+        };
+        let expected = under(&was[depth], above, key);
+        assert_eq!(shown(&tx, NEW[depth]), expected, "level {depth}");
+    }
+    for (depth, name) in NEW.into_iter().enumerate().skip(2) {
+        let deep = get(&tx, aux(name), b"deep").expect("a read");
+        assert_eq!(deep, Some(vec![depth as u8; 4]));
+    }
+    for gone in [EMPTY, EMPTY_B, NONE, NONE_B] {
+        assert_eq!(shown(&tx, gone), None, "{gone}");
+    }
+    // A change at the deepest level, with every host above it written.
+    let path: Vec<(u8, &[u8])> = (0..5)
+        .map(|at| (NEW[at], if at == 0 { &b"b"[..] } else { &b"in"[..] }))
+        .collect();
+    let change = edit_at(&world, &tx, &path, |items| {
+        items.insert(b"late".to_vec(), vec![5; 50]);
+    });
+    world
+        .apply(&tx, &change)
+        .expect("a change at the deepest level");
+    world.check(&tx);
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    let reader = world.begin();
+    let deep = get(&reader, model::unit(Column::Meta, NEW[4]), b"deep");
+    assert_eq!(deep.expect("a read"), Some(vec![4; 300]));
+    assert_eq!(db.private_ids(), 0);
+}
+
+/// Case 4 of the interface: a tree and an item change places. The node
+/// at the tree's old key is put as an item and hosts nothing, the node at
+/// the item's key hosts the tree, and one move takes the subtree, with
+/// the one below it, to the prefixes under that key.
+#[test]
+fn a_tree_and_an_item_change_places() {
+    let (db, versions) = Db::new(96);
+    let mut world = World::new(&db, &versions);
+    grove(&mut world, b"a", A, A_IN);
+    let tx = world.begin();
+    world.edit(&tx, TOP, |items| {
+        items.insert(b"i".to_vec(), b"an item".to_vec());
+    });
+    assert!(committed(world.commit(tx, &[])));
+
+    let tx = world.begin();
+    let was = [shown(&tx, A), shown(&tx, A_IN)];
+    let mut top = world.merk(&tx, TOP, |items| {
+        let (tree, item) = (items[&b"a"[..]].clone(), items[&b"i"[..]].clone());
+        items.insert(b"a".to_vec(), item);
+        items.insert(b"i".to_vec(), tree);
+    });
+    top.hosted.insert(b"a".to_vec(), Vec::new());
+    top.hosted.insert(b"i".to_vec(), vec![sub(B)]);
+    let read = (tx.txn.node(sub(TOP), b"a", handle_of)).expect("the host is read");
+    let batch = OwnedBatch {
+        merks: vec![top],
+        subtrees: vec![moving(b"i", read, &[(A, B), (A_IN, B_IN)])],
+        ..OwnedBatch::default()
+    };
+    world.apply(&tx, &batch).expect("the two change places");
+    world.check(&tx);
+    assert_eq!([shown(&tx, A), shown(&tx, A_IN)], [None, None]);
+    assert_eq!(shown(&tx, B), under(&was[0], TOP, b"i"));
+    assert_eq!(shown(&tx, B_IN), under(&was[1], B, b"in"));
+    let item = (tx
+        .txn
+        .node(sub(TOP), b"a", |view| view.map(|view| value_of(&view))))
+    .expect("a read");
+    assert_eq!(item, Some(b"an item".to_vec()));
+    assert_eq!(
+        get(&tx, aux(B_IN), b"ia").expect("a read"),
+        Some(vec![1; 9])
+    );
+    assert!(committed(world.commit(tx, &[])));
+    world.check_committed();
+    assert_eq!(db.private_ids(), 0);
 }

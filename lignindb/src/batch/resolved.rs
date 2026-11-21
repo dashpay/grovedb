@@ -211,9 +211,11 @@ impl<C> Resolved<C> {
     }
 
     /// Whether the batch writes nothing: its application adds nothing to
-    /// the transaction (`transactions.md` GM0).
+    /// the transaction (`transactions.md` GM0). A batch that moves a
+    /// subtree is not empty, whatever else it holds: the transaction
+    /// judges the move, also one whose host the batch does not put.
     pub fn is_empty(&self) -> bool {
-        self.len() == 0 && self.staged.subtrees.is_empty()
+        self.len() == 0 && self.staged.subtrees.is_empty() && self.staged.moves.is_empty()
     }
 
     /// The outcome of each key, in the order a storage batch is iterated

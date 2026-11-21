@@ -691,12 +691,17 @@ impl<'s> WriteTxn<'s> {
         let applied = (self.begin(state, true)).and_then(|op| {
             let laid = state.scopes.laid(id);
             for moving in batch.moves() {
-                // A move is laid out on the frames when it is stated, and
-                // it knows nothing of the marks of pending elements.
+                let subtree = moving.from;
+                // A move is laid out on the frames when it is stated.
+                // Where the transaction, or this scope, lays nothing out,
+                // the refusal says why: a commit that met the transaction
+                // comes before a scope that keeps its writes in the set.
+                if Self::by_key(state, Who::scope(id)) {
+                    return Err(self.unlaid(state, &op.guard, subtree));
+                }
+                // And it knows nothing of the marks of pending elements.
                 let marked = state.scopes.ever_marked();
-                let mut named = moving.named();
-                if !laid || named.any(|named| marked.iter().any(|(at, _)| *at == named)) {
-                    let subtree = moving.from;
+                if (moving.named()).any(|named| marked.iter().any(|(at, _)| *at == named)) {
                     return Err(BatchError::MoveBeside { subtree }.into());
                 }
             }
@@ -720,7 +725,7 @@ impl<'s> WriteTxn<'s> {
                 }
                 false => {
                     state.set.admits(batch)?;
-                    self.write_by_key(state, &op, batch)?
+                    self.write_by_key(state, &op, Who::scope(id), batch)?
                 }
             };
             state.set.tag_last(id, laid);
@@ -1095,8 +1100,8 @@ impl<'s> WriteTxn<'s> {
     ///   which records no names, that is every such pair of commits.
     /// - With an enter if it is absent it is a pair whose later commit
     ///   takes the subtree with one that is not among the recorded names:
-    ///   the first entered it under an element that none of them is
-    ///   above, or a commit hung one of them elsewhere in between.
+    ///   for one, the first entered it under an element of a Merk beside
+    ///   the stated host's, and the later one drops that Merk.
     /// - **The transaction dropped or cleared a subtree, and a commit
     ///   wrote, dropped or cleared one below it.** The drop is met.
     pub(super) fn meet_below(

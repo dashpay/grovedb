@@ -908,16 +908,16 @@ impl<'t, 's, C: CommittedSide<'s>> Cursor<'t, 's, C> {
             if let Some((_, reads)) = seen.filter(|(left, _)| *left == set.left()) {
                 return Ok((set.left(), reads, None));
             }
-            let under = set.committed_under(subtree);
+            let from = set.committed_from(subtree);
             let opened = Opened::at(opened, &path, guard, at)?;
-            let reads = match under {
-                Some(under) => {
+            let reads = match from {
+                Some((under, since)) => {
                     !opened.leaves_with_a_move(&path, guard, set, &subtree)?
-                        && opened.seen(&path, guard, set, &under)?.is_some()
+                        && (opened.seen_before(&path, guard, set, &under, since)?).is_some()
                 }
                 None => false,
             };
-            Ok::<_, TxnError>((set.left(), reads, under))
+            Ok::<_, TxnError>((set.left(), reads, from.map(|(under, _)| under)))
         })??;
         if let Some(under) = under.filter(|under| *under != self.side.under()) {
             self.side.point(guard, under)?;

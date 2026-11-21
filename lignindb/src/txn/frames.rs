@@ -890,9 +890,12 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
         let plan = plan.map_err(unplanned)?;
         // A pair names a subtree below the moved one, or one that is not
         // entered. One that is entered elsewhere would stay where it is,
-        // under a prefix the move is taken to have emptied.
+        // under a prefix the move is taken to have emptied. And the
+        // prefix that such a pair states for a subtree is free as every
+        // other one: the transaction reads under it what the pair says.
         let taken: HashSet<&Prefix> = plan.moved().map(|(from, ..)| from).collect();
-        for (from, _) in pairs
+        let gone: HashSet<&Prefix> = taken.iter().copied().chain(plan.left()).collect();
+        for (from, to) in pairs
             .iter()
             .flatten()
             .filter(|(from, _)| !taken.contains(from))
@@ -901,6 +904,11 @@ impl<'s: 'g, 'g> Awake<'s, 'g> {
             if entry.is_some_and(|entry| !leaves(&entry)) {
                 let subtree = Subtree::new(*from);
                 return Err(BatchError::Moved { subtree }.into());
+            }
+            let there = self.directory.open(&*self.flat, to)?;
+            if there.is_some_and(|there| !leaves(&there)) && !gone.contains(to) {
+                let subtree = Subtree::new(*to);
+                return Err(BatchError::Entered { subtree }.into());
             }
         }
         for (from, to, was) in plan.moved() {

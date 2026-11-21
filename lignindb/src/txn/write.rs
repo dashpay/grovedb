@@ -386,9 +386,9 @@ pub struct HostPut<'a> {
 /// write on, until it enters the subtree again, and before that commit:
 /// whether the subtree was entered then or not, and also where that
 /// commit enters it again. A commit that takes the subtree with a subtree
-/// which is none of those is not met by this: where a commit beside the
-/// transaction entered the subtree under an element that none of them is
-/// above, or hung one of them elsewhere.
+/// which is none of those is not met by this: for one, where a commit
+/// beside the transaction entered the subtree under an element of a Merk
+/// beside the stated host's, and a later commit drops that Merk.
 ///
 /// Between the scopes of one transaction the write is a write of the
 /// subtree's entry, whether it finds the subtree or enters it (SC3): two
@@ -415,7 +415,8 @@ pub struct HostPut<'a> {
 ///   new prefix, and so is each of their flat records, in every column
 ///   ([`lignin_tree::drop::rekey`]). A Merk below that `below` does not
 ///   name leaves with the move if it has no node, as a drop takes it, and
-///   refuses the batch if it has one
+///   refuses the batch if it has one; so does a Merk that `below` names
+///   below one that leaves
 ///   ([`BatchError::MoveUnnamed`](super::BatchError::MoveUnnamed)).
 /// - **The batch puts the node that hosts the subtree afterwards**, in
 ///   the Merk the host is in before and at the position the subtree had
@@ -431,12 +432,14 @@ pub struct HostPut<'a> {
 ///   move of a subtree whose host is a node of the committed state names
 ///   a read ([`BatchError::NoRead`](super::BatchError::NoRead)).
 /// - **Afterwards the transaction reads under the new prefix** what it
-///   read under the old one, and no subtree under the old one. Frames
-///   that are made again make the move again, and write the flat records
-///   again. A transaction that serves its records by key refuses every
-///   read and write that a move of it decides
+///   read under the old one, and no subtree under the old one unless
+///   another move of the batch brought one there. Frames that are made
+///   again make the move again, and write the flat records again. A
+///   transaction that serves its records by key refuses every read and
+///   write that a move of it decides
 ///   ([`BatchError::MovedByKey`](super::BatchError::MovedByKey)), and a
-///   scope that keeps its writes in the write set refuses a move
+///   scope that keeps its writes in the write set refuses a move, and
+///   what a move decides
 ///   ([`BatchError::MoveBeside`](super::BatchError::MoveBeside)).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SubtreeWrite<'a> {

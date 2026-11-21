@@ -6,7 +6,13 @@ use std::collections::HashMap;
 use lignin_format::{CellAddress, CommitVersion};
 use lignin_tree::directory::{Directory, Entry, MerkId};
 
-use super::{error::TxnError, key::Subtree, path::WritePath, unlinked, write_set::WriteSet};
+use super::{
+    error::TxnError,
+    key::Subtree,
+    path::WritePath,
+    unlinked,
+    write_set::{EntryId, WriteSet},
+};
 use crate::snapshot::OperationGuard;
 
 /// A handle on the subtree directory of one committed version, and the
@@ -154,8 +160,8 @@ impl Opened {
     /// what the transaction reads under `subtree`: a move names the
     /// subtree, on either side, or took it out with the subtree it moved;
     /// the transaction entered it under a subtree of which that holds; or
-    /// it is below a prefix that a move took a subtree from, at this
-    /// version, which has the subtrees where they were before the moves.
+    /// it is below a prefix that a move names, on either side, at this
+    /// version, which has the subtrees where the commits left them.
     pub(crate) fn moved<'s>(
         &mut self,
         path: &WritePath<'s>,
@@ -179,28 +185,27 @@ impl Opened {
                 _ => break,
             }
         }
-        self.below_a_source(path, guard, set, &at)
+        self.below_one_of(path, guard, &set.moved_names(), &at)
     }
 
-    /// Whether `subtree` is below a prefix that a move of `set` took a
-    /// subtree from, as this version has the subtrees.
-    fn below_a_source<'s>(
+    /// Whether `subtree` is below a subtree that this version has under
+    /// one of `prefixes`.
+    fn below_one_of<'s>(
         &mut self,
         path: &WritePath<'s>,
         guard: &OperationGuard<'s>,
-        set: &WriteSet,
+        prefixes: &[Subtree],
         subtree: &Subtree,
     ) -> Result<bool, TxnError> {
-        let sources = set.moved_from();
         self.open(path, guard, subtree)?;
-        for source in &sources {
-            self.open(path, guard, source)?;
+        for prefix in prefixes {
+            self.open(path, guard, prefix)?;
         }
         let Some(entry) = &self.entries[subtree] else {
             return Ok(false);
         };
-        Ok(sources.iter().any(|source| {
-            let above = self.entries[source].as_ref();
+        Ok(prefixes.iter().any(|prefix| {
+            let above = self.entries[prefix].as_ref();
             above.is_some_and(|above| entry.lineage().any(|id| id == above.id()))
         }))
     }
@@ -222,7 +227,7 @@ impl Opened {
         if !set.has_moves() || set.moves(subtree) {
             return Ok(false);
         }
-        self.below_a_source(path, guard, set, subtree)
+        self.below_one_of(path, guard, &set.moved_from(), subtree)
     }
 
     /// The ids of the Merks that `subtree` is below at this version, from
@@ -266,7 +271,23 @@ impl Opened {
         set: &WriteSet,
         subtree: &Subtree,
     ) -> Result<Option<Option<CellAddress>>, TxnError> {
-        let entry = self.seen_entry(path, guard, set, subtree)?;
+        self.seen_before(path, guard, set, subtree, None)
+    }
+
+    /// As [`Self::seen`], with only what the transaction dropped or
+    /// cleared before the entry `before` asked of this version's
+    /// directory, or all of it where none is given: for the committed
+    /// side of a subtree that the transaction moved
+    /// ([`WriteSet::committed_from`]).
+    pub(crate) fn seen_before<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+        before: Option<EntryId>,
+    ) -> Result<Option<Option<CellAddress>>, TxnError> {
+        let entry = self.seen_entry_before(path, guard, set, subtree, before)?;
         Ok(entry.map(|entry| entry.root().map(|root| root.address)))
     }
 
@@ -278,7 +299,18 @@ impl Opened {
         set: &WriteSet,
         subtree: &Subtree,
     ) -> Result<Option<&Entry>, TxnError> {
-        let left: Vec<Subtree> = set.leaving().collect();
+        self.seen_entry_before(path, guard, set, subtree, None)
+    }
+
+    fn seen_entry_before<'s>(
+        &mut self,
+        path: &WritePath<'s>,
+        guard: &OperationGuard<'s>,
+        set: &WriteSet,
+        subtree: &Subtree,
+        before: Option<EntryId>,
+    ) -> Result<Option<&Entry>, TxnError> {
+        let left: Vec<Subtree> = set.leaving_before(before).collect();
         if !left.is_empty() && self.below(path, guard, subtree, &left)? {
             return Ok(None);
         }

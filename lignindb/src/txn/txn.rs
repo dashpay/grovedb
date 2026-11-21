@@ -974,7 +974,7 @@ impl<'s> WriteTxn<'s> {
         let path = &self.path;
         state.set.admits(batch)?;
         let Some(mut frames) = Woken::wake(&mut state.frames, &op.guard) else {
-            return self.write_by_key(state, op, batch);
+            return self.write_by_key(state, op, Who::OUTSIDE, batch);
         };
         Self::date_moves(&state.set, &state.reads, op.at, &mut frames, batch)?;
         // A value that is kept is one its writer read: when, and what the
@@ -991,7 +991,15 @@ impl<'s> WriteTxn<'s> {
         // What the transaction wrote below a Merk that the batch drops or
         // clears goes with it: the directory says which, before the batch.
         let cut = match batch.has_leaves() {
-            true => frames.below(batch, state.set.written())?,
+            true => match frames.below(batch, state.set.written()) {
+                Ok(cut) => cut,
+                // The batch is refused before anything is applied: the
+                // refusal is told as one of the application is.
+                Err(refused) => {
+                    drop(frames);
+                    return Err(self.told(state, op, batch, refused));
+                }
+            },
             false => Vec::new(),
         };
         match frames.apply(path, batch, None) {
@@ -1167,8 +1175,17 @@ impl<'s> WriteTxn<'s> {
         guard: &OperationGuard<'s>,
         at: CommitVersion,
     ) -> Result<(), TxnError> {
-        let state = self.lock();
-        self.refuse_moved(&state, opened, guard, at, who, subtree)
+        let mut state = self.lock();
+        let state = &mut *state;
+        if !state.set.has_moves() {
+            return Ok(());
+        }
+        // The cursor reads a version that the transaction may not have
+        // looked at yet. Whether a commit up to it met the transaction
+        // decides whether a move is answered for, so those commits are
+        // taken in first, as an operation takes them in when it begins.
+        self.take_in(state, guard, at)?;
+        self.refuse_moved(state, opened, guard, at, who, subtree)
     }
 
     /// The refusal `error` of `batch`, which says so where a commit outside
@@ -1332,11 +1349,14 @@ impl<'s> WriteTxn<'s> {
     }
 
     /// Adds a batch to a write set that is served by key: no page is
-    /// changed, and every value the batch keeps is copied now.
+    /// changed, and every value the batch keeps is copied now. `who` is
+    /// the scope that keeps its writes in the write set, or nobody where
+    /// the transaction itself lays nothing out.
     fn write_by_key(
         &self,
         state: &mut State<'s>,
         op: &Op<'s>,
+        who: Who,
         batch: &Batch<'_>,
     ) -> Result<Applied, TxnError> {
         let path = &self.path;
@@ -1355,8 +1375,7 @@ impl<'s> WriteTxn<'s> {
             let named = batch.subtrees.iter().map(SubtreeWrite::subtree);
             let written: Vec<Subtree> = merks.chain(records).chain(hosts).chain(named).collect();
             for subtree in written {
-                // The claim of the batch was taken for its scope.
-                self.guard_moved(state, op, Who::OUTSIDE, subtree)?;
+                self.guard_moved(state, op, who, subtree)?;
             }
         }
         for record in batch.records {
@@ -1477,13 +1496,15 @@ impl<'s> WriteTxn<'s> {
             // committed state has the records of a subtree that the
             // transaction moved under the prefix it took the subtree from.
             Own::Unwritten => {
-                let Some(under) = state.set.committed_under(unit.subtree) else {
+                let Some((under, since)) = state.set.committed_from(unit.subtree) else {
                     return Ok(false);
                 };
                 if self.leaves_with_a_move(state, &op.guard, op.at, &unit.subtree)? {
                     return Ok(false);
                 }
-                match self.seen(state, &op.guard, op.at, &under)? {
+                let State { directory, set, .. } = &mut *state;
+                let opened = Opened::at(directory, &self.path, &op.guard, op.at)?;
+                match opened.seen_before(&self.path, &op.guard, set, &under, since)? {
                     Some(_) => {
                         let unit = Unit::new(unit.column, under);
                         self.committed_record(state, &op, unit, key, out)

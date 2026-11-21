@@ -95,9 +95,9 @@ pub(crate) enum Kind {
     Cleared,
     /// The moves of one operation, which are made together: a write of
     /// every key of every column under each prefix they name, on either
-    /// side (`transactions.md` CF5). The entry's key holds them
-    /// ([`Names`]), with the subtrees below the moved ones that left with
-    /// the moves when they were stated, which the entry does not cover.
+    /// side, and under the prefix of each subtree below a moved one that
+    /// left with the moves when they were stated (`transactions.md`
+    /// CF10). The entry's key holds them all ([`Names`]).
     ///
     /// It deletes nothing by itself. What the transaction reads under a
     /// prefix after it follows from where the move took each subtree
@@ -142,6 +142,13 @@ impl<'a> Names<'a> {
     fn named(&self) -> impl Iterator<Item = Subtree> + 'a {
         let named = self.sources.iter().chain(self.targets);
         named.copied().map(Subtree::new)
+    }
+
+    /// Every prefix the entry covers: those the moves name, and those of
+    /// the subtrees that left with them.
+    fn covered(&self) -> impl Iterator<Item = Subtree> + 'a {
+        let left = self.left.iter().copied().map(Subtree::new);
+        self.named().chain(left)
     }
 
     /// What the moves did under `at`: brought a subtree there, from the
@@ -674,7 +681,7 @@ impl WriteSet {
         let subtree = entry.unit.subtree;
         if matches!(entry.kind, Kind::Moved) {
             let mut named: Vec<Subtree> = Vec::new();
-            for subtree in Names::of(arena.get(entry.key)).named() {
+            for subtree in Names::of(arena.get(entry.key)).covered() {
                 if !named.contains(&subtree) {
                     named.push(subtree);
                 }
@@ -1205,19 +1212,43 @@ impl WriteSet {
     /// What the transaction has written in `unit` since it last dropped or
     /// cleared the unit's subtree: Merk nodes, flat records, or nothing. It
     /// is never both ([`Self::admits`]).
+    ///
+    /// What it wrote under the prefix a move took the subtree from, before
+    /// the move, is the subtree's still ([`Self::stretches`]).
     fn held(&self, unit: Unit) -> Option<Held> {
-        let index = self.units.get(&unit)?;
-        // After a move the set knows of the unit what was written since.
-        let left = |id: &&EntryId| self.entry(**id).kind.is_whole();
-        let since = index.ranges.iter().rev().find(left).copied();
-        let later = |id: &&EntryId| since.is_none_or(|since| **id > since);
-        let entry =
-            (index.ranges.iter().find(later)).or_else(|| index.keys.values().find(later))?;
-        match self.entry(*entry).kind {
+        let kind = |id: EntryId| match self.entry(id).kind {
             Kind::Node(_) | Kind::Remove => Some(Held::Nodes),
             Kind::Put(_) | Kind::Delete | Kind::Range { .. } => Some(Held::Flat),
             Kind::Dropped | Kind::Cleared | Kind::Moved => None,
+        };
+        let stretches = match self.moved.is_empty() {
+            true => vec![Stretch {
+                subtree: unit.subtree,
+                after: None,
+                before: None,
+            }],
+            false => self.stretches(unit.subtree, None).0,
+        };
+        for stretch in &stretches {
+            let Some(index) = self.units.get(&Unit::new(unit.column, stretch.subtree)) else {
+                continue;
+            };
+            // What the subtree held when it was dropped or cleared went
+            // with that, and so did all that is older.
+            let leaves =
+                |id: &&EntryId| stretch.holds(**id) && !self.entry(**id).kind.leaves().is_empty();
+            let since = index.ranges.iter().rev().find(leaves).copied();
+            let later = |id: &EntryId| since.is_none_or(|since| *id > since);
+            let ranges = (index.ranges.iter().copied()).filter(|id| stretch.holds(*id));
+            let points = (index.keys.keys()).filter_map(|key| self.point_in(index, key, stretch));
+            if let Some(held) = ranges.chain(points).filter(later).find_map(kind) {
+                return Some(held);
+            }
+            if since.is_some() {
+                return None;
+            }
         }
+        None
     }
 
     /// Whether an operation of the set moves a subtree.
@@ -1240,6 +1271,12 @@ impl WriteSet {
     pub(crate) fn moved_from(&self) -> Vec<Subtree> {
         let sources = (self.moved.iter()).flat_map(|id| self.names(*id).sources);
         sources.copied().map(Subtree::new).collect()
+    }
+
+    /// Every prefix that the moves of the set name, on either side.
+    pub(crate) fn moved_names(&self) -> Vec<Subtree> {
+        let named = |id: &EntryId| self.names(*id).named().collect::<Vec<_>>();
+        self.moved.iter().flat_map(named).collect()
     }
 
     /// The subtrees that left with the moves of the operation `op`: what
@@ -1290,16 +1327,29 @@ impl WriteSet {
     /// as the transaction reads the subtree now: the subtree's own where
     /// no move of the transaction named it, the prefix a move took it
     /// from, and `None` where a move took a subtree from the prefix and
-    /// none was brought there since.
-    pub(crate) fn committed_under(&self, subtree: Subtree) -> Option<Subtree> {
-        match self.moved.is_empty() {
-            true => Some(subtree),
-            false => self.stretches(subtree, None).1,
+    /// none was brought there since. With it, the oldest move that the
+    /// subtree passed on its way from that prefix, if it passed one.
+    ///
+    /// What the transaction dropped or cleared before that move, it
+    /// dropped or cleared while the subtree was under the committed
+    /// state's own prefix: whether that took the subtree is asked of the
+    /// committed directory ([`Self::leaving_before`]). From that move on
+    /// the subtree is one the transaction has written, under whichever
+    /// prefix, so a drop or a clear that took it covers it by its entry
+    /// (the cut of the drop), and the prefixes of such a write say
+    /// nothing of the committed state: a prefix that a move took a
+    /// subtree from can be another subtree's afterwards.
+    pub(crate) fn committed_from(&self, subtree: Subtree) -> Option<(Subtree, Option<EntryId>)> {
+        if self.moved.is_empty() {
+            return Some((subtree, None));
         }
+        let (stretches, under) = self.stretches(subtree, None);
+        let oldest = stretches.last().and_then(|stretch| stretch.before);
+        under.map(|under| (under, oldest))
     }
 
-    /// [`Self::committed_under`], for the subtree of the entry `id` as it
-    /// was read when that entry was written.
+    /// The prefix of [`Self::committed_from`], for the subtree of the
+    /// entry `id` as it was read when that entry was written.
     pub(crate) fn committed_under_at(&self, id: EntryId) -> Option<Subtree> {
         let subtree = self.entry(id).unit.subtree;
         match self.moved.is_empty() {
@@ -1351,7 +1401,17 @@ impl WriteSet {
 
     /// The subtrees the transaction dropped or cleared, oldest first.
     pub(crate) fn leaving(&self) -> impl Iterator<Item = Subtree> + '_ {
-        (self.leaving.iter()).map(|id| self.entry(*id).unit.subtree)
+        self.leaving_before(None)
+    }
+
+    /// The subtrees the transaction dropped or cleared before the entry
+    /// `before`, or all of them where none is given, oldest first.
+    pub(crate) fn leaving_before(
+        &self,
+        before: Option<EntryId>,
+    ) -> impl Iterator<Item = Subtree> + '_ {
+        let older = move |id: &&EntryId| before.is_none_or(|before| **id < before);
+        (self.leaving.iter().filter(older)).map(|id| self.entry(*id).unit.subtree)
     }
 
     /// A number that is another whenever the transaction drops or clears a
@@ -1665,7 +1725,7 @@ impl WriteSet {
     /// of the record under the prefix the subtree had before are its
     /// writes of it ([`Self::stretches`]). [`Own::Unwritten`] then says
     /// that the record is the committed one, which the committed state
-    /// has under [`Self::committed_under`].
+    /// has under the prefix of [`Self::committed_from`].
     pub(crate) fn own(&self, unit: Unit, key: &[u8]) -> Own<'_> {
         if self.moved.is_empty() {
             let whole = Stretch {

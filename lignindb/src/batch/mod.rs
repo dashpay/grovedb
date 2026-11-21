@@ -204,15 +204,18 @@
 //!
 //! [`StagedBatch::move_subtree`] stages the move of a subtree to another
 //! prefix (`transactions.md` section 7.5), under the element that the
-//! same operation said hosts that prefix ([`StagedBatch::host`]). The
-//! moves of a batch are of one operation. They are applied together,
-//! after the batch's drops and clears and before its enters, and no rule
-//! above re-keys what the batch holds: beside its moves a batch holds
-//! nothing under a prefix that a move names, of any operation, but the
-//! drop of a subtree that is entered where one goes. What else it holds
-//! there refuses it where it is resolved ([`BatchError::Moved`]), and so
-//! does a move whose operation did not say which element hosts the new
-//! prefix ([`BatchError::MoveHost`]). A merge makes the moves again in
+//! batch says hosts that prefix when it is resolved
+//! ([`StagedBatch::host`]), whichever operation said so. The moves of a
+//! batch are of one operation, and name a prefix once on each side
+//! ([`BatchError::SubtreeTwice`]). They are applied together, after the
+//! batch's drops and clears and before its enters, and no rule above
+//! re-keys what the batch holds: beside its moves a batch holds nothing
+//! under a prefix that a move names, of any operation, but the drop of a
+//! subtree that is entered where one goes, stated by the operation of the
+//! moves or by an earlier one. What else it holds there refuses it where
+//! it is resolved ([`BatchError::Moved`]), and so does a move for whose
+//! new prefix the batch was told no host ([`BatchError::MoveHost`]). A
+//! batch that holds a move is not empty. A merge makes the moves again in
 //! the batch that takes them.
 //!
 //! ## A subtree that may be entered already
@@ -466,7 +469,8 @@ impl<C> StagedBatch<C> {
     /// Beside them the batch holds nothing under a prefix a move names, on
     /// either side: no outcome of a key, no root, no enter and no clear.
     /// The one drop it holds there is of a subtree that is entered where
-    /// one is moved to and that no move takes away. A batch that holds
+    /// one is moved to and that no move takes away, stated by the
+    /// operation of the moves or by an earlier one. A batch that holds
     /// more is refused where it is resolved
     /// ([`BatchError::Moved`]), and one
     /// that was not told the element that hosts `to` with

@@ -1811,9 +1811,71 @@ fn a_staged_batch_holds_its_moves_and_nothing_else_of_what_they_name() {
     let host = leaf(b"newer", b"a tree");
     batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(D)])), ());
     batch.move_subtree(subtree(40), subtree(D), None, &[]);
-    let subtree = subtree(40);
+    let moved = subtree(40);
     assert_eq!(
         batch.resolve().expect_err("two operations"),
-        BatchError::Moved { subtree }
+        BatchError::Moved { subtree: moved }
     );
+
+    // A drop of what is entered where the subtree goes that a later
+    // operation states would be of the subtree that was moved there: the
+    // batch applies its drops before its moves, so it holds none.
+    let batch = StagedBatch::new();
+    move_b_to_c(&batch);
+    batch.next_operation();
+    batch.drop_subtree(subtree(C));
+    assert_eq!(
+        batch.resolve().expect_err("a drop after the move"),
+        BatchError::Moved {
+            subtree: subtree(C)
+        }
+    );
+
+    // The moves of one operation name a prefix once on each side: a
+    // subtree is moved once, a pair of another move among them, and one
+    // subtree goes to a prefix.
+    let twice: [(&str, u8, Call); 3] = [
+        ("one subtree is moved twice", B, |batch| {
+            let host = leaf(b"newer", b"a tree");
+            batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(D)])), ());
+            batch.move_subtree(subtree(B), subtree(D), None, &[]);
+        }),
+        ("a subtree that a pair moves is moved again", 20, |batch| {
+            let host = leaf(b"newer", b"a tree");
+            batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(D)])), ());
+            batch.move_subtree(subtree(20), subtree(D), None, &[]);
+        }),
+        ("two subtrees go to one prefix", C, |batch| {
+            batch.move_subtree(subtree(40), subtree(C), None, &[]);
+        }),
+    ];
+    for (what, named, again) in twice {
+        let batch = StagedBatch::new();
+        move_b_to_c(&batch);
+        again(&batch);
+        let subtree = subtree(named);
+        let refused = batch.resolve().expect_err(what);
+        assert_eq!(refused, BatchError::SubtreeTwice { subtree }, "{what}");
+    }
+
+    // The element that hosts the new prefix is the one the batch says
+    // hosts it when it is resolved, whichever operation said so.
+    let batch = StagedBatch::new();
+    let host = leaf(b"new", b"a tree");
+    batch.put_node(subtree(A), &host.put(true, Hosted::Set(&[subtree(C)])), ());
+    batch.delete_node(subtree(A), b"old", ());
+    batch.next_operation();
+    batch.move_subtree(subtree(B), subtree(C), None, &[(subtree(20), subtree(30))]);
+    assert_eq!(resolved(batch).subtrees, [MOVE]);
+
+    // A batch that was told the host and does not put it holds a move
+    // and nothing else. It is not empty: the transaction refuses the
+    // move for the node that is not put.
+    let batch = StagedBatch::<()>::new();
+    batch.host(subtree(A), b"new", &[subtree(C)]);
+    batch.move_subtree(subtree(B), subtree(C), None, &[]);
+    let told = batch.resolve().expect("the host was told");
+    assert!(told.moves() && !told.is_empty());
+    assert_eq!(told.len(), 0);
+    assert_eq!(shape(&told).subtrees, ["move 2 to 3 at 0 of 1/new"]);
 }

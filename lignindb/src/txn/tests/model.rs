@@ -339,8 +339,8 @@ impl Write {
                 moved.named.iter().any(|named| other.named.contains(named))
             }
             (Self::Move(moved), Self::Leave(left)) | (Self::Leave(left), Self::Move(moved)) => {
-                let mut named = moved.named.iter();
-                named.any(|named| left.names(Unit::data(*named)) || left.subtree == *named)
+                let mut covered = moved.named.iter().chain(&moved.left);
+                covered.any(|covered| left.names(Unit::data(*covered)) || left.subtree == *covered)
             }
             // And what left with a move is taken as a drop takes what is
             // below its subtree.
