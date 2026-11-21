@@ -50,9 +50,15 @@ full:
   was made durable: by a `flush()`, a checkpoint or a close that returned
   `Ok`, by a commit that returned `Ok` under a policy that syncs at the
   commit, or by the open of the session. And it is at most the latest
-  version that was published. After a close, also one that answered an
-  error, and with no power cut since, it is the latest version that was
-  published. In both cases one version more is possible: a commit that
+  version that was published. With no power cut since, it is the latest
+  version that was published after a close that returned `Ok`, and also
+  after a close that answered an error, unless the operating system
+  failed to write to the device something that the session wrote to its
+  files. A sync that the device refused is such a failure, and what the
+  system keeps in memory of the bytes it could not write is not promised
+  (`sync-handles.md`, section 6): the open can then land on an earlier
+  version with no power cut, and never on one before the newest that was
+  made durable. In each case one version more is possible: a commit that
   was answered as unsettled (DF2).
 
 **DF2. A commit that a full device had answered as not made is never
@@ -159,8 +165,10 @@ it:
 - a `flush()` still makes durable what was published, unless it is the
   log's sync that failed;
 - the close finishes what it can and answers an error (DF4);
-- the next open recovers the database at the latest version that was
-  published, or, after a power cut, at one that DF1 allows.
+- the next open recovers the database at a version that DF1 allows. A
+  refused sync is a failure of the kind that DF1 names: also with no
+  power cut, the open can land before the latest version that was
+  published.
 
 The look is two reads of what the store holds already: no operation on a
 file, and no lock that a commit waits for.
@@ -464,12 +472,12 @@ full (`lignindb::space::out_of_space`): the node stops at a block. Reads
 are answered. `DbStats::background` counts turns of write-back that failed
 and keeps the last error as text.
 
-**What is true then.** Nothing that was committed is lost or damaged
-(DF1), and nothing needs a repair. No file of the database directory is to
-be removed by hand: each one is needed, or is taken away by the engine
-when it is not. The one exception is the reserve, the file `RESERVE`,
-which is there to be removed, with `RESERVE.new`, which is what a fill of
-it left that was cut short.
+**What is true then.** Nothing that was made durable is lost, nothing
+that was committed is damaged (DF1), and nothing needs a repair. No file
+of the database directory is to be removed by hand: each one is needed,
+or is taken away by the engine when it is not. The one exception is the
+reserve, the file `RESERVE`, which is there to be removed, with
+`RESERVE.new`, which is what a fill of it left that was cut short.
 
 **What to do**, in this order:
 
@@ -490,8 +498,12 @@ it left that was cut short.
    - It says that the session has ended (DF8): close the database and
      open it again. A sync of the log or of a segment was refused while
      the device was full, and that stays failed for the session. Nothing
-     that was published is lost by it. Without a power cut the next open
-     has every commit, and after one it has what DF1 says.
+     that was made durable is lost by it. A commit that was published
+     after the newest durable version is in the next open if the system
+     still has the log whole up to it, which it does not promise after a
+     sync that was refused (DF1): the open can land on an earlier commit
+     than the last one with no power cut, and `Db::version` says where
+     it landed. After a power cut it has what DF1 says.
    - **A checkpoint that fails with "a replacement of the manifest ... did
      not finish"** is made again after the next commit: a commit that
      finds the manifest in doubt has it settled before it begins (DF8a).

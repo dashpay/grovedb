@@ -150,6 +150,13 @@ impl Told {
     /// one that the answers allow: after a power cut any version from the
     /// newest durable one to the latest, and otherwise the latest; or, in
     /// both cases, the commit that was left unsettled.
+    ///
+    /// "Otherwise the latest" is asked of the simulator, where every read
+    /// sees every byte that was written until the power is cut, whatever
+    /// became of its sync. It is not what DF1 promises of a device: where
+    /// the system failed to write what a session wrote, and a refused
+    /// sync is that, an open with no power cut is allowed what an open
+    /// after one is (`docs/lignindb/sync-handles.md`, section 6).
     fn allowed(&self, landed: u64, cut: bool, context: &str) -> &State {
         if let Some(unsettled) = &self.unsettled
             && unsettled.version() == landed
