@@ -182,6 +182,11 @@ impl<C> Resolved<C> {
         &self.enters
     }
 
+    /// Whether the batch drops or clears a subtree.
+    pub fn leaves(&self) -> bool {
+        !self.leaves.is_empty()
+    }
+
     /// What the batch holds for `key` in the data column of `subtree`, or
     /// `None` if it holds no outcome for it.
     pub fn held(&self, subtree: Subtree, key: &[u8]) -> Option<Written<'_>> {

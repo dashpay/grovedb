@@ -462,6 +462,26 @@ fn a_delete_and_a_put_of_one_operation_leave_what_the_element_hosts() {
     assert_eq!(write.merks[1].subtree, C, "nothing says it is below");
 }
 
+/// A resolved batch says whether a subtree leaves with it: by a drop or
+/// by a clear, also where the same operation enters the subtree again.
+#[test]
+fn a_resolved_batch_says_whether_a_subtree_leaves_with_it() {
+    let leaves = |calls: &dyn Fn(&StagedBatch)| {
+        let batch = StagedBatch::new();
+        calls(&batch);
+        batch.resolve().expect("no call is refused").leaves()
+    };
+    assert!(!leaves(&|_| ()));
+    assert!(!leaves(&|batch| fill(batch, A, b"v")));
+    assert!(!leaves(&|batch| batch.enter_if_absent(subtree(A), b"t")));
+    assert!(leaves(&|batch| batch.drop_subtree(subtree(A))));
+    assert!(leaves(&|batch| batch.clear(subtree(A))));
+    assert!(leaves(&|batch| {
+        batch.drop_subtree(subtree(A));
+        batch.enter_if_absent(subtree(A), b"t");
+    }));
+}
+
 #[test]
 fn the_calls_of_one_operation_on_a_subtree_come_to_the_same_in_any_order() {
     let shapes = |calls: [&dyn Fn(&StagedBatch); 2], before: &dyn Fn(&StagedBatch)| {
