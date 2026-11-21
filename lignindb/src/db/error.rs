@@ -125,10 +125,10 @@ pub enum OpenError {
         /// The directory.
         dir: PathBuf,
     },
-    /// The path that was given ends in a name that checkpoints are built
-    /// under: its last name (`Path::file_name`) ends in `.creating`,
-    /// whatever the case of its ASCII letters
-    /// (`lignindb::checkpoint::CREATING_SUFFIX`). The open answers this
+    /// The last component of the supplied path has the suffix reserved
+    /// for checkpoint creation: `.creating`, matched without regard to
+    /// ASCII case (`Path::file_name`,
+    /// `lignindb::checkpoint::CREATING_SUFFIX`). The open answers this
     /// before it makes a call to the file layer: it opens nothing and
     /// makes nothing, whatever is at the path and whatever
     /// [`Options::create_if_missing`](crate::Options::create_if_missing)
@@ -243,8 +243,8 @@ impl OpenError {
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
     /// lost its manifest or its lock file, it holds an entry with the
-    /// name of a removal's mark, its path ends in a name that checkpoints
-    /// are built under, its pages are of another size, or it was
+    /// name of a removal's mark, its path ends in the suffix reserved for
+    /// checkpoint creation, its pages are of another size, or it was
     /// removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
@@ -308,8 +308,8 @@ impl fmt::Display for OpenError {
             ),
             Self::Creating { dir } => write!(
                 f,
-                "{} has a name that checkpoints are built under, one that ends in .creating in \
-                 whatever case of its ASCII letters: no database is opened or made at it",
+                "{} ends in the suffix reserved for checkpoint creation (.creating, ignoring \
+                 ASCII case): no database was opened or made",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(

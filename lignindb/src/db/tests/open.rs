@@ -1410,15 +1410,14 @@ fn every_error_has_its_text_and_its_source() {
     }
 }
 
-/// A path whose last name ends in `.creating`, in whatever case of its
-/// ASCII letters, is the name that a checkpoint is built under: no open
-/// opens it and none makes a database at it, whatever it is told about
-/// creating, and the open makes no call that changes anything. That holds
-/// with a database at the path, with an empty directory and with nothing
-/// there. The same directory under a name that does not end so is
-/// opened.
+/// The engine refuses any path whose last component ends in `.creating`,
+/// ignoring ASCII case, before it calls the file layer, with either value
+/// of `create_if_missing`. Here it is refused with a database at the
+/// path, with an empty directory and with nothing there, with no call
+/// that changes anything. The same database under a name that does not
+/// end so is opened.
 #[test]
-fn a_name_that_checkpoints_are_built_under_is_not_opened_and_gets_no_database() {
+fn a_path_with_the_suffix_reserved_for_checkpoint_creation_is_not_opened_and_gets_no_database() {
     let dir = temp();
     for (case, name) in ["7.creating", "7.CREATING", "7.Creating", ".creating"]
         .into_iter()
@@ -1447,7 +1446,7 @@ fn a_name_that_checkpoints_are_built_under_is_not_opened_and_gets_no_database() 
                     ..options()
                 };
                 let what = format!("{name} with {held}, create {create_if_missing}");
-                let error = Db::open(&path, &opening).expect_err("a name that is built under");
+                let error = Db::open(&path, &opening).expect_err("the reserved suffix");
                 assert!(
                     matches!(&error, OpenError::Creating { dir } if *dir == path),
                     "{what}: {error:?}"

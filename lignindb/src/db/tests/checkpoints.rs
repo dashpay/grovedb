@@ -10,7 +10,10 @@ use std::sync::{
 
 use lignin_format::CommitVersion;
 use lignin_io::sim::{Event, Fault, FaultRule, OpKind, OpSet, SimConfig, SimVfs};
-use lignin_store::{flush::FlushError, wal::SyncPolicy};
+use lignin_store::{
+    flush::{Checkpointed, FlushError},
+    wal::SyncPolicy,
+};
 
 use super::{full::Session, *};
 use crate::{
@@ -36,8 +39,8 @@ fn read<const N: usize>(dir: &Path, subtrees: [Subtree; N]) -> (CommitVersion, [
     (version, held)
 }
 
-/// A session of the sweeps on a simulated device, with two commits and
-/// its background work at rest.
+/// A session on a simulated device, with two application commits after
+/// initialization and its background work at rest.
 fn session(seed: u64) -> Session {
     let mut session = Session::new(seed, SyncPolicy::Never, true);
     assert!(session.open());
@@ -52,10 +55,10 @@ fn session(seed: u64) -> Session {
 /// and a commit that is made in the live database afterwards is not in
 /// it. The call makes its creation with the options it is given: with
 /// log held and nothing writing it back, a creation that is told to catch
-/// up above no bytes has write-back catch up, and one that is told to
-/// leave the catch-up out does not. And the call refuses what a creation
-/// refuses: a target that is there, and a name that checkpoints are built
-/// under.
+/// up above no bytes has a table checkpoint installed first, and one that
+/// is told to leave the catch-up out asks for none. And the call refuses
+/// a target that is there, and one whose name ends in the suffix reserved
+/// for checkpoint creation, as a creation does.
 #[test]
 fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
     let dir = temp();
@@ -91,7 +94,13 @@ fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
         .checkpoint(&second, catching_up)
         .unwrap_or_else(|error| panic!("the second checkpoint: {error}"));
     assert_eq!(created.version, db.version());
-    assert!(created.catch_up.is_some(), "{created:?}");
+    assert!(
+        matches!(
+            &created.catch_up,
+            Some(Ok(Checkpointed::Installed { covers, .. })) if *covers == created.version
+        ),
+        "{created:?}"
+    );
     let (version, [later]) = read(&second, [subtree(2)]);
     assert!(version == created.version && later.is_some());
 
@@ -121,14 +130,13 @@ fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
     assert_eq!(db.reopen(), None);
 }
 
-/// The call is made beside commits and beside the three background
-/// threads of the database, from two threads at once. A third thread
-/// makes one commit after another, and each maker waits for a commit of
-/// it before each of its calls. Each checkpoint is then opened as a
-/// database of its own: it lands on the version its call returned, holds
-/// the commit of that version, and does not hold the commit after it. The
-/// database counts no error of its background work, and its session has
-/// not ended.
+/// Two threads each make three checkpoints while the database's
+/// background workers are enabled. Before each call, the maker waits for
+/// the writer to publish another commit. Each checkpoint is then opened
+/// as a database of its own: it lands on the version its call returned,
+/// holds the commit of that version, and does not hold the commit after
+/// it. The database counts no error of its background work, and its
+/// session has not ended.
 #[test]
 fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
     const MAKERS: u32 = 2;
@@ -141,8 +149,9 @@ fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
     let base = plant(&db, numbered(0), Merk::sized(b'k', 6, 40)).version;
     let (done, committed) = (AtomicBool::new(false), AtomicU64::new(0));
     let made = thread::scope(|scope| {
+        // The writer ends when this body does, also where it unwinds.
+        let _ending = Ending(&done);
         scope.spawn(|| {
-            let _ending = Ending(&done);
             let mut round = 0;
             while !done.load(Ordering::SeqCst) {
                 round += 1;
@@ -171,12 +180,10 @@ fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
                 })
             })
             .collect();
-        let made: Vec<_> = makers
+        makers
             .into_iter()
             .flat_map(|maker| maker.join().expect("a maker of checkpoints"))
-            .collect();
-        done.store(true, Ordering::SeqCst);
-        made
+            .collect::<Vec<_>>()
     });
     assert_eq!(made.len(), (MAKERS * EACH) as usize);
     let latest = db.version();
@@ -211,8 +218,9 @@ fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
 /// In a session whose commit path has stopped, the call is refused with
 /// the commit path's reason, and makes no call to the file layer: after a
 /// commit of which the log cannot say whether it holds it
-/// ([`Reopen::Stopped`]), and after a sync of the log that failed and
-/// that the commit path was told of ([`Reopen::NotDurable`]).
+/// ([`Reopen::Stopped`]), and after the test records
+/// `Stopped::NotDurable` directly on the commit path
+/// ([`Reopen::NotDurable`]).
 #[test]
 fn the_facade_refuses_a_checkpoint_where_the_commit_path_has_stopped() {
     for unsettled in [true, false] {
@@ -315,11 +323,10 @@ fn the_facade_makes_a_checkpoint_of_a_session_that_ended_for_a_segment() {
     check_reads(&opened, session.told.state(), "the checkpoint");
 }
 
-/// An error of the call is returned to its caller, and the database
-/// counts it nowhere: here the device refuses the making of the directory
-/// that the checkpoint is built in. The counts of the background work are
-/// as they were, the session has not ended, and with room the call makes
-/// the checkpoint.
+/// If the device refuses creation of the building directory, the caller
+/// receives the error and the background error counts are unchanged. The
+/// session has not ended, and once the test refuses nothing any more the
+/// call makes the checkpoint.
 #[test]
 fn an_error_of_the_call_is_returned_and_counted_as_no_error_of_the_background_work() {
     let session = session(52);
@@ -333,7 +340,9 @@ fn an_error_of_the_call_is_returned_and_counted_as_no_error_of_the_background_wo
         .expect_err("the directory is not made");
     session.fs.clear_rules();
     assert!(
-        matches!(&refused, CheckpointError::Io { .. }) && out_of_space(&refused),
+        matches!(&refused, CheckpointError::Io { path, .. }
+            if path == Path::new("/checkpoint.creating"))
+            && out_of_space(&refused),
         "{refused}"
     );
     assert_eq!(db.stats().background, before);

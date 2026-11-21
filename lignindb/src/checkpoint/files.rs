@@ -92,11 +92,10 @@ fn is_building(path: &Path) -> bool {
     (path.file_name()).is_some_and(|name| name.as_encoded_bytes().ends_with(suffix))
 }
 
-/// Whether the last name of `path` is one that a creation builds under,
-/// in any case of its ASCII letters. A target that is given as such a
-/// path is refused, and so is an open of the engine that is given one
-/// (`crate::db::OpenError::Creating`). A file system that does not tell
-/// capital letters from small ones takes each of them for that name.
+/// Whether the last component of `path` ends in the suffix reserved for
+/// checkpoint creation, ignoring ASCII case. A target that is given as
+/// such a path is refused, and so is an open of the engine that is given
+/// one (`crate::db::OpenError::Creating`).
 pub(crate) fn is_reserved(path: &Path) -> bool {
     let suffix = CREATING_SUFFIX.as_bytes();
     (path.file_name()).is_some_and(|name| {

@@ -134,12 +134,12 @@
 //! | holds a database of this engine and no `LOCK` | [`OpenError::NoLockFile`] |
 //! | held a database at one look of the open and none at a later one; or had a lock file that the open took, and has another, or none, after the look under it | [`OpenError::Replaced`] |
 //!
-//! Each of these is found with no file made
-//! ([`OpenError::left_untouched`]): by the name alone, by reading alone
-//! before the lock, or under the lock of a lock file that was there. A
-//! `MANIFEST` that is too
-//! short to have a header is reported as a manifest that cannot be read
-//! ([`OpenError::Manifest`]), and nothing is written for it either.
+//! For each refusal in the table, the open makes no file
+//! ([`OpenError::left_untouched`]): it checks the supplied name, reads
+//! before taking the lock, or checks under a lock on an existing lock
+//! file. A `MANIFEST` that is too short to have a header is reported as
+//! a manifest that cannot be read ([`OpenError::Manifest`]), and nothing
+//! is written for it either.
 //!
 //! **Whom the guarantee is for** (D-129). The byte-for-byte guarantee is
 //! for a directory that nobody else changes while it is being opened, and
@@ -193,15 +193,15 @@
 //!
 //! A path whose last name ends in `.creating`, in any case of its ASCII
 //! letters, is not opened and gets no database
-//! ([`OpenError::Creating`]). That is the name a checkpoint is built
-//! under, beside its target (`lignindb::checkpoint`, D-128 B): a
-//! directory of that name can hold nothing, a lock file alone, a part of
-//! a checkpoint or a whole one, and the first two the open could not
-//! tell from a place. The open goes by the name it is given, before it
-//! makes a call to the file layer, so this row of the table comes before
-//! every other. What a creation leaves at its target, and what becomes
-//! of the directory it built in, is said there ("Durability, and a
-//! creation that fails").
+//! ([`OpenError::Creating`]). A checkpoint is built beside its target by
+//! appending this suffix to the target's name (`lignindb::checkpoint`,
+//! D-128 B): a directory that a creation built in can hold nothing, a
+//! lock file alone, a part of a checkpoint or a whole one, and the first
+//! two the open could not tell from a place. The open goes by the name
+//! it is given, before it makes a call to the file layer, so this row of
+//! the table comes before every other. What a creation leaves at its
+//! target, and what becomes of the directory it built in, is said there
+//! ("Durability, and a creation that fails").
 //!
 //! # A new database
 //!
@@ -1362,10 +1362,11 @@ impl Db {
     ///   [`Reopen::SegmentsNotDurable`] can be one whose commit path has
     ///   not stopped.
     /// - A call whose own sync of the log fails returns
-    ///   [`CheckpointError::Sync`]. That sync stays failed in the store,
-    ///   and the session ends for it as for any sync of the log that
-    ///   failed ("A session that takes no write any more" in the
-    ///   [module documentation](self)).
+    ///   [`CheckpointError::Sync`]. A failed WAL file sync stays failed
+    ///   for this session. An otherwise active session ends for that
+    ///   failure; if the session already reported a reason for ending, it
+    ///   keeps that reason ("A session that takes no write any more" in
+    ///   the [module documentation](self)).
     ///
     /// [`DbStats`] has no count of the checkpoints that this call makes.
     /// An error of this call is returned to its caller, and the call does

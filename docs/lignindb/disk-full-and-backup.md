@@ -379,10 +379,10 @@ of it.
 
 ### 6.2 The procedure
 
-1. **Make a checkpoint for the backup**, in a directory of its own
-   (`Db::checkpoint`; through GroveDB, `create_checkpoint`). Do not
-   open it. A node that opens every checkpoint it makes (P-15) makes one
-   more for the backup.
+1. **Make a checkpoint for the backup** in a directory of its own with
+   `Db::checkpoint`. The GroveDB LigninEngine adapter does not yet
+   implement `create_checkpoint`. Do not open it. A node that opens every
+   checkpoint it makes (P-15) makes one more for the backup.
 2. **Copy the checkpoint's directory to where the backup is kept**, with
    `lignindb::backup::Backup::copy`, or with any tool that copies a
    directory with its `LOCK` file (`cp -a`, `rsync -a`, `tar`).
