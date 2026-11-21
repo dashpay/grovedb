@@ -10,6 +10,10 @@
 //! RocksDB on every grove version. Every answer, every `OperationCost` and
 //! the root hash after every write are compared, and the physical checker
 //! reads the database that LigninDB leaves.
+//!
+//! Each tree has a second history, [`chain`]: the tree in the fifth and
+//! in the third of five trees, one inside the other, where every append
+//! is carried up to the root.
 
 use std::fmt::Debug;
 
@@ -962,6 +966,181 @@ fn told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usi
             false => assert_eq!(seen[..3], [0, 0, 0], "{} on version {number}", T::NAME),
         }
     }
+}
+
+/// The five trees of a chain, one inside the other under the root: five
+/// kinds that every grove version makes.
+const CHAIN: [(&[u8], fn() -> Element); 5] = [
+    (b"one", Element::empty_tree),
+    (b"two", Element::empty_sum_tree),
+    (b"three", Element::empty_count_tree),
+    (b"four", Element::empty_provable_count_tree),
+    (b"five", Element::empty_count_sum_tree),
+];
+
+/// The history of one kind of append-only tree below other trees: a tree
+/// of the kind in the fifth tree of a chain and one in the third, and
+/// every append carried up to the root (`engine.md`, "Root-hash
+/// propagation").
+///
+/// An item in the fifth tree; appends to the two trees of the kind in
+/// turn, with the elements of the five trees above read after them; appends in a transaction, with the root hash that
+/// the transaction has and the one outside it, committed, and in one that
+/// is rolled back; a batch of an append to each beside an item in the
+/// second tree; the proofs of the deepest tree and the grove's own check.
+fn chain<T: Appended, E: Engine>(db: &GroveDb<E>, v: &GroveVersion) -> Vec<Answer> {
+    let mut h = History::new(db, v);
+    let tree = T::NAME.as_bytes();
+    let keys: Vec<&[u8]> = CHAIN.iter().map(|(key, _)| *key).collect();
+    for (depth, (key, make)) in CHAIN.iter().enumerate() {
+        h.write(
+            "tree",
+            db.insert(&keys[..depth], key, make(), None, None, v),
+        );
+    }
+    let (middle, bottom) = (&keys[..3], keys.as_slice());
+    // The fifth tree holds an item on every grove version, whether or not
+    // the version has the kind.
+    let first = Element::new_item(b"first".to_vec());
+    h.write("item", db.insert(bottom, b"item", first, None, None, v));
+    h.write(
+        "made",
+        db.insert(middle, tree, T::empty(None), None, None, v),
+    );
+    let flagged = T::empty(Some(vec![4, 2]));
+    h.write("made", db.insert(bottom, tree, flagged, None, None, v));
+    let above = |h: &mut History<'_, E>| {
+        for (depth, key) in keys.iter().enumerate() {
+            h.element("above", db.get(&keys[..depth], key, None, v));
+        }
+    };
+    above(&mut h);
+
+    for n in 0..6 {
+        h.write("append", T::append(db, bottom, tree, n, None, v));
+        h.write("append", T::append(db, middle, tree, 50 + n, None, v));
+    }
+    above(&mut h);
+    T::reads(&mut h, bottom, tree, 5, None);
+    T::reads(&mut h, middle, tree, 5, None);
+
+    let tx = db.start_transaction();
+    for n in 0..2 {
+        let appended = T::append(db, bottom, tree, 100 + n, Some(&tx), v);
+        h.write_in("append", appended, Some(&tx));
+    }
+    h.read("root outside", db.root_hash(None, v));
+    h.write("commit", db.commit_transaction(tx));
+
+    let tx = db.start_transaction();
+    let appended = T::append(db, bottom, tree, 110, Some(&tx), v);
+    h.write_in("append", appended, Some(&tx));
+    h.plain("rollback", db.rollback_transaction(&tx));
+    drop(tx);
+    h.read("root after rollback", db.root_hash(None, v));
+
+    let item = Element::new_item(b"beside".to_vec());
+    let batch = vec![
+        T::op(owned(bottom, tree), 120),
+        T::op(owned(middle, tree), 121),
+        QualifiedGroveDbOp::insert_or_replace_op(
+            owned(&keys[..1], keys[1]),
+            b"item".to_vec(),
+            item,
+        ),
+    ];
+    h.write("batch", db.apply_batch(batch, None, None, v));
+    above(&mut h);
+    T::reads(&mut h, bottom, tree, 8, None);
+    proofs::<T, E>(&mut h, bottom, tree, 0, 9);
+    proofs::<T, E>(&mut h, middle, tree, 2, 4);
+    verified(&mut h);
+    h.answers
+}
+
+/// What a chain's history must have done on the grove version `number`:
+/// the five trees and the item are made, the elements of the trees are
+/// read, and the grove's own check finds nothing wrong. On a version that has the kind, both trees
+/// of it are made, every append and the batch are taken, and the root
+/// hash follows each of them: no two of the root hashes after the writes
+/// are equal. The commit leaves the root hash that its transaction had,
+/// which the grove outside did not have before, and the rollback leaves
+/// the one of the commit. On a version that has not the kind, no tree of
+/// it is made and nothing is appended.
+fn chain_told<T: Appended>(has_tree: impl Fn(usize) -> bool) -> impl Fn(&[Answer], usize) {
+    move |answers, number| {
+        let count = |call: &str| taken(answers, call);
+        assert_eq!(
+            [
+                count("tree"),
+                count("item"),
+                count("above"),
+                count("verified")
+            ],
+            [5, 1, 15, 1],
+            "{} on version {number}",
+            T::NAME
+        );
+        assert!(sound(answers), "{} on version {number}", T::NAME);
+        let seen = [count("made"), count("append"), count("batch")];
+        if !has_tree(number) {
+            assert_eq!(seen, [0, 0, 0], "{} on version {number}", T::NAME);
+            return;
+        }
+        assert_eq!(seen, [2, 15, 1], "{} on version {number}", T::NAME);
+        // The root hash after each call, by the name of the call.
+        let after = |calls: &[&str]| -> Vec<&str> {
+            (answers.windows(2))
+                .filter(|pair| calls.contains(&pair[0].0.as_str()))
+                .map(|pair| {
+                    assert_eq!(pair[1].0, "root", "after a {}", pair[0].0);
+                    assert!(pair[1].2.starts_with("Ok("), "a root hash is read");
+                    pair[1].2.as_str()
+                })
+                .collect()
+        };
+        let roots = after(&["tree", "item", "made", "append", "batch"]);
+        let mut different = roots.clone();
+        different.sort_unstable();
+        different.dedup();
+        assert_eq!(roots.len(), 5 + 1 + 2 + 15 + 1);
+        assert_eq!(
+            different.len(),
+            roots.len(),
+            "{} on version {number}",
+            T::NAME
+        );
+        let named = |call: &str| -> &str {
+            let mut found = answers.iter().filter(|(named, ..)| named == call);
+            let answer = found.next().expect("the call is in the history");
+            assert!(found.next().is_none(), "one {call}");
+            answer.2.as_str()
+        };
+        // The first twelve appends have no transaction, the next two are
+        // those of the transaction that commits.
+        let appends = after(&["append"]);
+        let committed = after(&["commit"]);
+        assert_eq!(committed, [appends[13]], "the commit leaves its own root");
+        assert_eq!(named("root outside"), appends[11]);
+        assert_eq!(named("root after rollback"), appends[13]);
+    }
+}
+
+macro_rules! five_trees_deep {
+    ($($test:ident: $kind:ty, $has:expr;)*) => {$(
+        #[test]
+        fn $test() {
+            on_both_engines!(chain::<$kind, _>, chain_told::<$kind>($has));
+        }
+    )*};
+}
+
+five_trees_deep! {
+    the_root_hash_follows_an_append_to_an_mmr_tree_five_trees_deep: Mmr, |_| true;
+    the_root_hash_follows_an_append_to_a_bulk_append_tree_five_trees_deep: Bulk, |_| true;
+    the_root_hash_follows_an_append_to_a_dense_tree_five_trees_deep: Dense, |_| true;
+    the_root_hash_follows_an_append_to_a_commitment_tree_five_trees_deep: Commitment, |_| true;
+    the_root_hash_follows_an_append_to_a_private_document_store_five_trees_deep: Private, |number| number >= 4;
 }
 
 #[test]
