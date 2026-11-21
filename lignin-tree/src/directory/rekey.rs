@@ -239,15 +239,16 @@ impl Directory {
     ///   position of its host stay, and its host's Merk is the Merk above
     ///   it under that one's new prefix;
     /// - or, if the move names none for it and it has no node, leaves the
-    ///   directory with the move, as [`Self::unlink`] takes it out. Every
-    ///   Merk below such a one leaves too;
-    /// - or refuses the move ([`DirectoryError::Unnamed`]): it has a
-    ///   node, or it is below a Merk that leaves, and the move names no
-    ///   prefix for it, or names one for it and none for the Merk above.
+    ///   directory with the move, as [`Self::unlink`] takes it out, whether
+    ///   the Merk above it goes or leaves;
+    /// - or refuses the move ([`DirectoryError::Unnamed`]), in two cases:
+    ///   the move names no prefix for it and it has a node, or the move
+    ///   names a prefix for it and the Merk above it leaves.
     ///
     /// A pair of `below` whose first prefix is not that of a Merk below
-    /// the moved one says nothing. Every Merk keeps its id, its root, its
-    /// tree type and the Merks it is below, and no cell is read.
+    /// the moved one gives no Merk another prefix. Every Merk keeps its
+    /// id, its root, its tree type and the Merks it is below, and no cell
+    /// is read.
     ///
     /// The moves are made together: a prefix that one Merk leaves is free
     /// for another, so two Merks can change places.
@@ -258,18 +259,34 @@ impl Directory {
     /// other's way.
     ///
     /// The plan is refused if a moved Merk is not in use, leaves before,
-    /// or has no host ([`DirectoryError::NoHost`]); if a Merk is taken
-    /// from a prefix twice, or two go to one ([`DirectoryError::Twice`]);
-    /// if a prefix that a Merk goes to has a Merk in use that neither
-    /// leaves before nor is moved away ([`DirectoryError::Exists`]); or
-    /// if the new host has a Merk at the position already, which neither
-    /// leaves before nor is moved away ([`DirectoryError::HostTaken`]).
+    /// or has no host ([`DirectoryError::NoHost`]); if the moves name a
+    /// prefix twice as one a Merk is taken from, or twice as one a Merk
+    /// goes to, whether a Merk is there or not
+    /// ([`DirectoryError::Twice`]); if a prefix that a Merk goes to has a
+    /// Merk in use that neither leaves before nor is moved away
+    /// ([`DirectoryError::Exists`]); or if the new host has a Merk at the
+    /// position already, which neither leaves before nor is moved away,
+    /// or two Merks of the plan go to one position of one host
+    /// ([`DirectoryError::HostTaken`]).
     pub fn plan_rekey<P: FlatPages + ?Sized>(
         &self,
         pages: &P,
         moves: &[Rekey<'_>],
         leaves: &dyn Fn(&Entry) -> bool,
     ) -> Result<RekeyPlan, DirectoryError> {
+        // No prefix is named twice on one side, by all the moves together.
+        let (mut froms, mut tos) = (HashSet::new(), HashSet::new());
+        for rekey in moves {
+            let below = rekey.below.iter().map(|(from, to)| (from, to));
+            for (from, to) in std::iter::once((rekey.from, rekey.to)).chain(below) {
+                if !froms.insert(from) {
+                    return Err(DirectoryError::Twice { prefix: *from });
+                }
+                if !tos.insert(to) {
+                    return Err(DirectoryError::Twice { prefix: *to });
+                }
+            }
+        }
         let mut plan = RekeyPlan::default();
         for rekey in moves {
             let entry = self.live(pages, rekey.from)?;
@@ -366,7 +383,7 @@ impl Directory {
                 return Err(DirectoryError::Twice { prefix: *prefix });
             }
         }
-        let mut targets = HashSet::new();
+        let (mut targets, mut hosts) = (HashSet::new(), HashSet::new());
         // A Merk in use stands in the way unless it is out before the
         // Merks are entered: by the write's own drops, or by the plan.
         let stays = |entry: &Entry| self.is_live(entry) && !leaves(entry);
@@ -378,6 +395,16 @@ impl Directory {
             let there = self.stored(pages, &prefix)?;
             if there.is_some_and(|there| stays(&there)) && !taken.contains(&prefix) {
                 return Err(DirectoryError::Exists { prefix });
+            }
+            // Two Merks of the plan would hang at one position of one
+            // host: the record of the second would take the place of the
+            // first's.
+            if !hosts.insert(&planned.child) {
+                let host = planned.now.host();
+                return Err(DirectoryError::HostTaken {
+                    parent: host.map_or(prefix, |host| *host.parent),
+                    position: host.map_or(0, |host| host.position),
+                });
             }
             let Some(record) = self.get(pages, &planned.child)? else {
                 continue;

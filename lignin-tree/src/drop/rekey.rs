@@ -15,7 +15,7 @@ use crate::{
 ///
 /// After it every flat record that was under a prefix a Merk moved from
 /// is under the prefix that Merk went to, with its key and its value, and
-/// none is under a prefix that no Merk went to. A Merk that leaves with
+/// none is under a prefix that a Merk moved from and none went to. A Merk that leaves with
 /// the move takes its flat records with it, as a drop does, and what it
 /// left is returned for the reclaimer. Where a Merk goes to a prefix
 /// under which a dropped Merk had left an entry, the flat records of that

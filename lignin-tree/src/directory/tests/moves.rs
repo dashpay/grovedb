@@ -704,6 +704,35 @@ fn a_plan_is_refused_where_the_directory_cannot_take_it() {
             position: 0
         })
     );
+    // Two Merks that go to one free key of one host, under two prefixes:
+    // the record that leads from the host to the first would be lost.
+    let mut beside = pairs(&["e"], "z", &[]);
+    beside.to = [0x46; 32];
+    assert_eq!(
+        refused(&grove, &[pairs(&["a"], "z", &BELOW_A), beside]),
+        shown(&DirectoryError::HostTaken {
+            parent: prefix_of(&[]),
+            position: 0
+        })
+    );
+    // A move names a prefix once on each side, also where no Merk is
+    // under it.
+    let mut twice = pairs(&["a"], "z", &BELOW_A);
+    twice.below.push((prefix(&["a", "b"]), [0x47; 32]));
+    assert_eq!(
+        refused(&grove, &[twice]),
+        shown(&DirectoryError::Twice {
+            prefix: prefix(&["a", "b"])
+        })
+    );
+    let mut twice = pairs(&["a"], "z", &BELOW_A);
+    twice.below.push(([0x48; 32], prefix(&["z", "b"])));
+    assert_eq!(
+        refused(&grove, &[twice]),
+        shown(&DirectoryError::Twice {
+            prefix: prefix(&["z", "b"])
+        })
+    );
     assert_eq!(grove.records(), records);
 
     // A Merk that the same write drops first is in nobody's way, and one
