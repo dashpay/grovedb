@@ -1159,6 +1159,29 @@ one write-set entry with its own first-write version. A range delete in a
 foreign commit meets every entry of *T* whose keys lie in the range. Wipe is
 a commit whose key set is everything, so it meets every entry.
 
+A drop deletes every record under every subtree below the dropped one
+(CV9), and the key set of its commit names the dropped subtree alone; so
+does a clear. A foreign commit that drops or clears a subtree above one
+that *T* wrote under, by the Merks that *T* found that subtree below at its
+last look at the committed state, meets every entry of *T* under it. And
+for a subtree that *T* entered if it was absent
+(`SubtreeWrite::EnterIfAbsent`), whether it was entered then or not, a
+foreign commit that drops or clears a subtree which the stated host of that
+enter was in or below, as *T* had the subtrees when it stated the enter,
+meets the entries that *T* made under the entered subtree from that enter
+on, until *T* entered the subtree again, and before that commit.
+
+Neither rule sees the following, and there the outcome can depend on
+whether *T* looked at the committed state between two foreign commits: a
+subtree is not entered at *T*'s first write under it, a commit beside *T*
+enters it, and a later commit takes it with a subtree above it. With an
+enter of a subtree as one that is new (`SubtreeWrite::Enter`), which
+records no names, that is every such pair of commits. With an enter if it
+is absent it is a pair whose later commit takes the subtree with one that
+is not among the names the enter recorded: the first entered it under an
+element that none of them is above, or a commit hung one of them elsewhere
+in between.
+
 A bulk load into a subtree, inside *T* or outside it, may be counted for
 this rule as one write of the range "that subtree's column", in place of one
 entry per loaded key. What is read back under those keys is the loaded
