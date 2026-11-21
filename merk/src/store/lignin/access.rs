@@ -234,17 +234,14 @@ pub(super) trait Walk: Send {
     fn node(&mut self) -> Result<Option<StoredNode>, Error>;
 
     /// Points the cursor at the Merk of `subtree`, in the committed state
-    /// it has read from since it was opened. It stands on no node then.
+    /// it has read from since it was opened. It stands on no node then,
+    /// and is sought before it is read or stepped.
     ///
-    /// A cursor of a snapshot does this. A cursor of a write transaction
-    /// is refused: the transaction has no way to point the committed side
-    /// of a cursor at another Merk under the pin it holds.
-    fn retarget(&mut self, _subtree: &Prefix) -> Result<(), Error> {
-        Err(Error::NotSupported(
-            "lignindb: a cursor of a write transaction is not pointed at another subtree"
-                .to_owned(),
-        ))
-    }
+    /// A cursor of a snapshot goes on in its snapshot. A cursor of a write
+    /// transaction keeps the version it pinned when it was opened, and
+    /// shows the nodes that version has of `subtree` with the
+    /// transaction's writes to `subtree` as they are at each call.
+    fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error>;
 }
 
 /// Why a cursor stands on nothing, kept so that its status gives the error
@@ -483,6 +480,10 @@ impl Walk for TxnWalk<'_, '_> {
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
         node_under(&mut self.0)
     }
+
+    fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
+        self.0.retarget(Subtree::new(*subtree)).map_err(fault)
+    }
 }
 
 /// The cursor of a writer's handle: parked between two calls
@@ -513,6 +514,10 @@ impl Walk for ScopeWalk<'_, '_, '_> {
 
     fn node(&mut self) -> Result<Option<StoredNode>, Error> {
         self.resumed(node_resumed)
+    }
+
+    fn retarget(&mut self, subtree: &Prefix) -> Result<(), Error> {
+        self.resumed(|cursor| cursor.retarget(Subtree::new(*subtree)).map_err(fault))
     }
 }
 

@@ -17,7 +17,7 @@ use grovedb_merk::{
     tree_type::TreeType,
 };
 use grovedb_path::SubtreePath;
-use grovedb_storage::prefix::build_prefix;
+use grovedb_storage::{prefix::build_prefix, RawIterator};
 use grovedb_version::version::GroveVersion;
 
 use super::{
@@ -174,10 +174,14 @@ pub(super) fn read_local_count_page<'db, E: Engine>(
         hook();
     }
     let host_prefix = build_prefix(subtree_path).unwrap_add_cost(&mut cost);
+    let view = E::retarget_cursor(view, host_prefix);
+    // A cursor that could not be pointed at the host shows no record, as
+    // the cursor of an empty host does.
+    cost_return_on_error_no_add!(cost, view.status().map_err(Error::StorageError));
     let rows = cost_return_on_error!(
         &mut cost,
         local_count_offset_page_from_view(
-            E::retarget_cursor(view, host_prefix),
+            view,
             root_key,
             tree_type,
             &query.query.items[0],

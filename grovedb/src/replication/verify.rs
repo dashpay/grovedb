@@ -31,7 +31,9 @@ use crate::{
 };
 
 /// Visit one stored node at a time without loading the whole Merk into its
-/// cache or retaining a collection of reference rows.
+/// cache or retaining a collection of reference rows. A cursor that failed
+/// stands on no record, as one at the end of its records does, so the walk
+/// asks its status before it takes its end for the end of the nodes.
 fn visit_nodes<'db, S: NodeStore<'db>>(
     merk: &Merk<S>,
     grove_version: &GroveVersion,
@@ -43,9 +45,12 @@ fn visit_nodes<'db, S: NodeStore<'db>>(
         let key = iter.key().unwrap().ok_or_else(|| {
             Error::CorruptedData("missing restored node key during verification".to_string())
         })?;
-        let bytes = iter.value().unwrap().ok_or_else(|| {
-            Error::CorruptedData("missing restored node during verification".to_string())
-        })?;
+        let Some(bytes) = iter.value().unwrap() else {
+            iter.status().map_err(Error::StorageError)?;
+            return Err(Error::CorruptedData(
+                "missing restored node during verification".to_string(),
+            ));
+        };
         let node = TreeNode::decode(
             key.to_vec(),
             bytes,
@@ -56,7 +61,7 @@ fn visit_nodes<'db, S: NodeStore<'db>>(
         visit(&node)?;
         iter.next().unwrap();
     }
-    Ok(())
+    iter.status().map_err(Error::StorageError)
 }
 
 impl<E: Engine> GroveDb<E> {
@@ -152,7 +157,7 @@ impl<E: Engine> GroveDb<E> {
         Ok(())
     }
 
-    pub(super) fn verify_restored_value_hashes<'db>(
+    pub(crate) fn verify_restored_value_hashes<'db>(
         &'db self,
         transaction: &Transaction<'db, E>,
         grove_version: &GroveVersion,
