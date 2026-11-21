@@ -1339,7 +1339,7 @@ fn a_checkpoint_sampled_right_after_the_log_turned_to_a_new_file_opens() {
 /// What a commit writes behind a pinned version, in
 /// [`a_check_of_a_pinned_version_wants_the_reclaimer_held_back_from_the_pin_on`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Behind {
+pub(super) enum Behind {
     /// No commit is made.
     Nothing,
     /// One record of a column, in the leaf that holds the flat record of
@@ -1352,7 +1352,11 @@ enum Behind {
 /// A database in which a Merk that hosts another, which has a flat record,
 /// was dropped by the latest commit, with its model and nothing reclaimed.
 fn dropped_just_now() -> (Db, History) {
-    let fs = SimVfs::new(SimConfig::new(11));
+    dropped_on(SimVfs::new(SimConfig::new(11)))
+}
+
+/// [`dropped_just_now`], on the file system `fs`.
+pub(super) fn dropped_on(fs: SimVfs) -> (Db, History) {
     let db = open_at_rest("/db", &options(Arc::new(fs))).expect("a new database");
     let history = History::new(1);
     let mut writer = Writer::new(1, 11);
@@ -1370,7 +1374,7 @@ fn dropped_just_now() -> (Db, History) {
 }
 
 /// The commit of `behind`.
-fn commit_behind(db: &Db, history: &History, behind: Behind) {
+pub(super) fn commit_behind(db: &Db, history: &History, behind: Behind) {
     let mut batch = OwnedBatch::default();
     match behind {
         Behind::Nothing => return,

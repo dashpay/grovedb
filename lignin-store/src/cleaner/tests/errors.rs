@@ -460,3 +460,109 @@ fn the_damage_a_pass_found_is_not_replaced_by_a_later_failure() {
         .count();
     assert_eq!(stats.segments_retired, empty as u64, "{stats:?}");
 }
+
+/// D-204, for the cleaner's loop: the turn after one in which a pass
+/// failed waits the idle time, and twice as long after each further such
+/// turn in a row, up to the bound of the store's write-back. The first
+/// turn in which no pass fails brings the idle time back.
+#[test]
+fn a_turn_in_which_a_pass_failed_is_followed_by_a_wait_that_grows_to_a_bound() {
+    use std::time::Duration;
+
+    let ms = Duration::from_millis;
+    let db = Db::with(FlushConfig {
+        max_failed_wait: ms(70),
+        ..small_segments()
+    });
+    let state = CleanerState::new(CleanerConfig {
+        idle: ms(10),
+        ..eager()
+    });
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let mut failed_turns = 0;
+    let mut reported = 0;
+    let mut turn = |fails: bool| {
+        let mut values = |_: &Cleaner<'_>| match fails {
+            true => Err(CleanerError::Values(ValueStoreError::FileIdsExhausted)),
+            false => Ok(ValuePass::default()),
+        };
+        let wait = cleaner.paced_turn(&mut values, &mut |_| reported += 1, &mut failed_turns);
+        wait.map(|wait| wait.as_millis())
+    };
+    let waits = [true, true, true, true, true, false, true, true].map(&mut turn);
+    assert_eq!(
+        waits,
+        [
+            Some(10),
+            Some(20),
+            Some(40),
+            Some(70),
+            Some(70),
+            None,
+            Some(10),
+            Some(20)
+        ]
+    );
+    assert_eq!(reported, 7);
+}
+
+/// The loop itself, with somebody who wakes it all the time: after each
+/// turn in which a pass failed it waits as long as it was to, at least.
+#[test]
+fn the_cleaners_loop_waits_after_a_failed_turn_whoever_wakes_it() {
+    use std::{
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Mutex,
+        },
+        time::{Duration, Instant},
+    };
+
+    let ms = Duration::from_millis;
+    let flush = FlushConfig {
+        max_failed_wait: ms(40),
+        ..small_segments()
+    };
+    let db = Db::with(flush);
+    let state = CleanerState::new(CleanerConfig {
+        idle: ms(10),
+        ..eager()
+    });
+    let cleaner = Cleaner::new(db.wb(), &state);
+    let turns = Mutex::new(Vec::new());
+    let enough = AtomicBool::new(false);
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            cleaner.run(
+                |_| {
+                    let mut turns = turns.lock().expect("the turns");
+                    turns.push(Instant::now());
+                    if turns.len() == 5 {
+                        enough.store(true, Ordering::Release);
+                    }
+                    Err(CleanerError::Values(ValueStoreError::FileIdsExhausted))
+                },
+                |_| {},
+            )
+        });
+        while !enough.load(Ordering::Acquire) {
+            state.wake();
+            std::thread::yield_now();
+        }
+        cleaner.stop();
+    });
+    let turns = turns.into_inner().expect("the turns");
+    let pacing = FlushConfig {
+        idle: ms(10),
+        ..flush
+    };
+    for (turn, pair) in turns.windows(2).take(4).enumerate() {
+        let waited = pair[1] - pair[0];
+        let least = pacing.wait_after_failure(turn as u32 + 1);
+        assert!(
+            waited >= least,
+            "the turn after failed turn {} came after {waited:?}, and not after {least:?}",
+            turn + 1
+        );
+    }
+}

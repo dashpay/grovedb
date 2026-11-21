@@ -11,6 +11,7 @@ mod faults;
 mod flat;
 mod log_files;
 mod measure;
+mod pacing;
 pub(crate) mod recover;
 mod recovered;
 mod regroup;

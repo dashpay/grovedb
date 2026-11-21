@@ -8,12 +8,13 @@ use std::{
         atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Condvar, Mutex, MutexGuard, PoisonError,
     },
+    time::{Duration, Instant},
 };
 
 use lignin_format::{value_log::ValuePointer, CommitVersion, FileId, PageId};
 
 use super::{
-    config::{Counters, Dead, DeadSpace, FlushConfig, FlushStats},
+    config::{count, Counters, Dead, DeadSpace, FlushConfig, FlushStats},
     page::{ChainBuffers, PendingCell},
     trim_bound::TrimBound,
 };
@@ -476,6 +477,46 @@ impl FlushState {
     pub(super) fn wake(&self) {
         *lock(&self.wake) = true;
         self.woken.notify_all();
+    }
+
+    /// The sleep of the background loop between two turns.
+    ///
+    /// After a turn that did not fail (`failed_wait` is `None`) it ends
+    /// when a turn is asked for ([`Self::wake`]), and after the idle time
+    /// of the configuration otherwise. After a turn that failed it lasts
+    /// `failed_wait`, whoever asks for a turn before it or during it.
+    /// Only the end of the loop ends it before that.
+    pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
+        let stopping = || self.stopping.load(Ordering::Acquire);
+        let mut asked = lock(&self.wake);
+        match failed_wait {
+            None => {
+                if !*asked && !stopping() {
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(asked, self.config.idle)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    asked = next;
+                }
+            }
+            Some(wait) => {
+                let began = Instant::now();
+                while !stopping() {
+                    let Some(left) = wait.checked_sub(began.elapsed()) else {
+                        break;
+                    };
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(asked, left)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    asked = next;
+                }
+                if *asked && !stopping() {
+                    count(&self.counters.turns_put_off, 1);
+                }
+            }
+        }
+        *asked = false;
     }
 
     /// Keeps the log for the table checkpoint the manifest names, which

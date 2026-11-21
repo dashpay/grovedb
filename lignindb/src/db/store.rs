@@ -6,7 +6,8 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Arc, Mutex, MutexGuard, OnceLock, PoisonError, TryLockError,
     },
-    thread::Thread,
+    thread::{self, Thread},
+    time::{Duration, Instant},
 };
 
 use lignin_format::{CommitVersion, PageId, PageSize};
@@ -93,6 +94,19 @@ impl Signal {
     pub(super) fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         self.wake();
+    }
+
+    /// Has the calling thread, which is the one that is woken, sleep for
+    /// `wait`, whoever wakes it meanwhile. Only [`Self::stop`] ends the
+    /// sleep before that.
+    pub(super) fn sleep(&self, wait: Duration) {
+        let began = Instant::now();
+        while !self.stopping() {
+            let Some(left) = wait.checked_sub(began.elapsed()) else {
+                break;
+            };
+            thread::park_timeout(left);
+        }
     }
 
     pub(super) fn stopping(&self) -> bool {

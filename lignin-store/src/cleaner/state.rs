@@ -3,7 +3,11 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    sync::{atomic::AtomicBool, Condvar, Mutex, MutexGuard, PoisonError},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Condvar, Mutex, MutexGuard, PoisonError,
+    },
+    time::{Duration, Instant},
 };
 
 use lignin_format::{CommitVersion, FileId};
@@ -180,5 +184,39 @@ impl CleanerState {
     pub(super) fn wake(&self) {
         *lock(&self.wake) = true;
         self.woken.notify_all();
+    }
+
+    /// The sleep of the background loop between two turns: until it is
+    /// woken or its idle time has passed after a turn in which no pass
+    /// failed (`failed_wait` is `None`), and for `failed_wait` after one in
+    /// which a pass did, whoever wakes it. The end of the loop ends both.
+    pub(super) fn sleep(&self, failed_wait: Option<Duration>) {
+        let stopping = || self.stopping.load(Ordering::Acquire);
+        let mut woken = lock(&self.wake);
+        match failed_wait {
+            None => {
+                if !*woken && !stopping() {
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(woken, self.config.idle)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    woken = next;
+                }
+            }
+            Some(wait) => {
+                let began = Instant::now();
+                while !stopping() {
+                    let Some(left) = wait.checked_sub(began.elapsed()) else {
+                        break;
+                    };
+                    let (next, _) = self
+                        .woken
+                        .wait_timeout(woken, left)
+                        .unwrap_or_else(PoisonError::into_inner);
+                    woken = next;
+                }
+            }
+        }
+        *woken = false;
     }
 }

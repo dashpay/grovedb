@@ -1,7 +1,10 @@
 //! The background loop of write-back, and the backpressure it puts on
 //! whoever commits (`transactions.md` FL5).
 
-use std::{sync::atomic::Ordering, time::Instant};
+use std::{
+    sync::atomic::Ordering,
+    time::{Duration, Instant},
+};
 
 use super::{
     checkpoint::Checkpointed,
@@ -149,6 +152,12 @@ impl WriteBack<'_> {
     /// that a write transaction holds back ([`Pass::blocked`]): it would
     /// be put off. The first error of the turn is returned.
     pub fn tick(&self) -> Result<Tick, FlushError> {
+        self.counted_turn().1
+    }
+
+    /// [`Self::tick`], with whether the turn moved anything on, which it
+    /// can have done though it failed.
+    fn counted_turn(&self) -> (bool, Result<Tick, FlushError>) {
         let state = self.state;
         let number = {
             let mut turns = lock(&state.turns);
@@ -161,7 +170,36 @@ impl WriteBack<'_> {
         turns.progress = progress;
         drop(turns);
         state.turned.notify_all();
-        turn
+        (progress, turn)
+    }
+
+    /// One turn of the background loop and what follows it there: a turn
+    /// that failed is counted and passed to `failed`. Returns how long the
+    /// loop waits before its next turn, whoever asks for one, or `None`
+    /// after a turn that did not fail. `in_vain` is the loop's count of
+    /// the turns in a row that failed and moved nothing on.
+    pub(super) fn paced_turn(
+        &self,
+        in_vain: &mut u32,
+        failed: &mut dyn FnMut(FlushError),
+    ) -> Option<Duration> {
+        let state = self.state;
+        let (progressed, turn) = self.counted_turn();
+        match turn {
+            Ok(_) => {
+                *in_vain = 0;
+                None
+            }
+            Err(error) => {
+                *in_vain = match progressed {
+                    true => 0,
+                    false => in_vain.saturating_add(1),
+                };
+                count(&state.counters.errors, 1);
+                failed(error);
+                Some(state.config.wait_after_failure(*in_vain))
+            }
+        }
     }
 
     /// One turn, and whether it moved anything on, which it can have done
@@ -197,27 +235,32 @@ impl WriteBack<'_> {
     /// error is passed to `failed`, and the loop goes on: what it could not
     /// do stays owed, and nothing committed is lost.
     ///
+    /// **A turn that failed does not bring the next turn forward.** After
+    /// it the loop waits for as long as
+    /// [`FlushConfig::wait_after_failure`] says, whoever asks for a turn
+    /// before that wait or during it: the idle time, and twice as long
+    /// after each further turn in a row that failed and moved nothing on,
+    /// up to [`FlushConfig::max_failed_wait`]. The wait is the idle time
+    /// again after a failed turn that moved something on, and a turn that
+    /// does not fail is followed by the sleep of the first paragraph. A
+    /// wait in which a turn was asked for is counted
+    /// ([`FlushStats::turns_put_off`]). `failed` is called before the wait
+    /// begins. Only [`Self::stop`] ends the wait before its time.
+    ///
     /// The store has no thread of its own. Whoever opens it runs this on
     /// one, for as long as the stores live.
     ///
     /// [`FlushStats::errors`]: super::FlushStats::errors
+    /// [`FlushStats::turns_put_off`]: super::FlushStats::turns_put_off
+    /// [`FlushConfig::wait_after_failure`]: super::FlushConfig::wait_after_failure
+    /// [`FlushConfig::max_failed_wait`]: super::FlushConfig::max_failed_wait
     pub fn run(&self, mut failed: impl FnMut(FlushError)) {
         let state = self.state;
         state.running.store(true, Ordering::Release);
+        let mut in_vain = 0;
         while !state.stopping.load(Ordering::Acquire) {
-            if let Err(error) = self.tick() {
-                count(&state.counters.errors, 1);
-                failed(error);
-            }
-            let mut woken = lock(&state.wake);
-            if !*woken && !state.stopping.load(Ordering::Acquire) {
-                let (next, _) = state
-                    .woken
-                    .wait_timeout(woken, state.config.idle)
-                    .unwrap_or_else(std::sync::PoisonError::into_inner);
-                woken = next;
-            }
-            *woken = false;
+            let failed_wait = self.paced_turn(&mut in_vain, &mut failed);
+            state.sleep(failed_wait);
         }
         state.running.store(false, Ordering::Release);
         state.stopping.store(false, Ordering::Release);
@@ -226,7 +269,8 @@ impl WriteBack<'_> {
 
     /// Wakes the background loop for a turn: after a commit was published,
     /// say, so that its pages are written while they are still in the
-    /// processor's cache.
+    /// processor's cache. A loop whose last turn failed finishes its wait
+    /// first ([`Self::run`]).
     pub fn wake(&self) {
         self.state.wake();
     }

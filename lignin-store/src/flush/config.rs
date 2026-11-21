@@ -57,6 +57,9 @@ pub struct FlushConfig {
     pub checkpoint_log_bytes: u64,
     /// How long the background loop sleeps when nobody wakes it.
     pub idle: Duration,
+    /// The longest wait of the background loop after a turn that failed
+    /// ([`Self::wait_after_failure`]).
+    pub max_failed_wait: Duration,
 }
 
 impl FlushConfig {
@@ -64,7 +67,9 @@ impl FlushConfig {
     /// half a page of delta blocks after a base image, segments of 64 MiB,
     /// at most 4096 page versions and 32 MiB of pending values waiting, at
     /// most 256 MiB of log that no table checkpoint covers, and a table
-    /// checkpoint for every 64 MiB of log.
+    /// checkpoint for every 64 MiB of log. The background loop sleeps
+    /// 50 ms when nobody wakes it, and a second at most after a turn that
+    /// failed.
     pub const fn new(page_size: PageSize) -> Self {
         Self {
             max_chain_deltas: DEFAULT_CHAIN_DELTAS,
@@ -75,7 +80,26 @@ impl FlushConfig {
             max_log_held: 256 << 20,
             checkpoint_log_bytes: 64 << 20,
             idle: Duration::from_millis(50),
+            max_failed_wait: Duration::from_secs(1),
         }
+    }
+
+    /// How long the background loop waits after a turn that failed, before
+    /// its next turn. `in_vain` is how many turns in a row, that one
+    /// included, failed and moved nothing on: 0 after a failed turn that
+    /// moved something on.
+    ///
+    /// It is [`Self::idle`] for 0 and for 1, and twice as long for each
+    /// turn more, up to [`Self::max_failed_wait`]. It is never shorter
+    /// than [`Self::idle`], whatever the bound is set to, and never
+    /// shorter than a millisecond.
+    pub fn wait_after_failure(&self, in_vain: u32) -> Duration {
+        let doublings = in_vain.saturating_sub(1).min(31);
+        let grown = self.idle.saturating_mul(1 << doublings);
+        grown
+            .min(self.max_failed_wait)
+            .max(self.idle)
+            .max(Duration::from_millis(1))
     }
 }
 
@@ -146,6 +170,10 @@ pub struct FlushStats {
     pub log_files_dropped: u64,
     /// Calls of the background loop that ended with an error.
     pub errors: u64,
+    /// Waits of the background loop after a failed turn in which a turn
+    /// was asked for, which the wait put off to its end
+    /// ([`WriteBack::run`](super::WriteBack::run)).
+    pub turns_put_off: u64,
     /// Commit groups write-back was told of ([`WriteBack::committed`]).
     ///
     /// [`WriteBack::committed`]: super::WriteBack::committed
@@ -203,6 +231,7 @@ pub(super) struct Counters {
     pub(super) checkpoints_failed: AtomicU64,
     pub(super) log_files_dropped: AtomicU64,
     pub(super) errors: AtomicU64,
+    pub(super) turns_put_off: AtomicU64,
     pub(super) groups: AtomicU64,
     pub(super) node_records: AtomicU64,
     pub(super) node_record_bytes: AtomicU64,
@@ -244,6 +273,7 @@ impl Counters {
             checkpoints_failed: read(&self.checkpoints_failed),
             log_files_dropped: read(&self.log_files_dropped),
             errors: read(&self.errors),
+            turns_put_off: read(&self.turns_put_off),
             groups: read(&self.groups),
             node_records: read(&self.node_records),
             node_record_bytes: read(&self.node_record_bytes),
