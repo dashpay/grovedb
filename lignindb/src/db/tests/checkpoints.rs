@@ -53,12 +53,11 @@ fn session(seed: u64) -> Session {
 /// A checkpoint that the facade makes is a database of its own: it opens
 /// at the version the call returned, with what the database held then,
 /// and a commit that is made in the live database afterwards is not in
-/// it. The call makes its creation with the options it is given: with
-/// log held and nothing writing it back, a creation that is told to catch
-/// up above no bytes has a table checkpoint installed first, and one that
-/// is told to leave the catch-up out asks for none. And the call refuses
-/// a target that is there, and one whose name ends in the suffix reserved
-/// for checkpoint creation, as a creation does.
+/// it. In this test, with write-back at rest and no open write
+/// transaction, `Some(0)` installs a table checkpoint covering the
+/// sampled version. With `None`, the call skips catch-up. And the call
+/// refuses a target that is there, and one whose name ends in the suffix
+/// reserved for checkpoint creation, as a creation does.
 #[test]
 fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
     let dir = temp();
@@ -132,11 +131,11 @@ fn the_facade_makes_a_checkpoint_that_opens_as_the_database_of_its_version() {
 
 /// Two threads each make three checkpoints while the database's
 /// background workers are enabled. Before each call, the maker waits for
-/// the writer to publish another commit. Each checkpoint is then opened
-/// as a database of its own: it lands on the version its call returned,
-/// holds the commit of that version, and does not hold the commit after
-/// it. The database counts no error of its background work, and its
-/// session has not ended.
+/// the writer's published-round counter to advance. Each checkpoint is
+/// then opened as a database of its own: it lands on the version its call
+/// returned, holds the commit of that version, and does not hold the
+/// commit after it. The database counts no error of its background work,
+/// and its session has not ended.
 #[test]
 fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
     const MAKERS: u32 = 2;
@@ -149,7 +148,8 @@ fn the_facade_makes_checkpoints_beside_commits_and_the_background_work() {
     let base = plant(&db, numbered(0), Merk::sized(b'k', 6, 40)).version;
     let (done, committed) = (AtomicBool::new(false), AtomicU64::new(0));
     let made = thread::scope(|scope| {
-        // The writer ends when this body does, also where it unwinds.
+        // Leaving the scope body signals the writer to stop, including on
+        // unwind.
         let _ending = Ending(&done);
         scope.spawn(|| {
             let mut round = 0;

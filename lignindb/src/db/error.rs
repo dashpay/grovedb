@@ -243,9 +243,9 @@ impl OpenError {
     /// byte for byte as it was: it holds no database and none was to be
     /// made, it is another engine's, its format version is unknown, it has
     /// lost its manifest or its lock file, it holds an entry with the
-    /// name of a removal's mark, its path ends in the suffix reserved for
-    /// checkpoint creation, its pages are of another size, or it was
-    /// removed or put in the place of another while it was
+    /// name of a removal's mark, its final file name has the suffix
+    /// reserved for checkpoint creation, its pages are of another size,
+    /// or it was removed or put in the place of another while it was
     /// being opened ([`Self::Replaced`]). Each of these was found with no
     /// file made: before the lock, or under the lock of a lock file that
     /// was there. That holds for a directory that nobody else changes
@@ -308,8 +308,8 @@ impl fmt::Display for OpenError {
             ),
             Self::Creating { dir } => write!(
                 f,
-                "{} ends in the suffix reserved for checkpoint creation (.creating, ignoring \
-                 ASCII case): no database was opened or made",
+                "{} has a final file name with the suffix reserved for checkpoint creation \
+                 (.creating, ignoring ASCII case): no database was opened or made",
                 dir.display()
             ),
             Self::NoLockFile { dir } => write!(
