@@ -219,10 +219,11 @@ impl<'s> Committer<'s> {
     }
 
     /// As [`Self::commit`], and the key set of the commit holds `also`
-    /// beside the keys of the transaction's writes (CF1, CF5): the range a
-    /// load put records into, or every key for a wipe. So the commit meets
-    /// every write that an open transaction made to a key of `also`
-    /// before it.
+    /// beside what the transaction's writes give it (CF1, CF5): a range
+    /// that the commit stands for beyond them, or every key for a wipe.
+    /// So the commit meets every write that an open transaction made to a
+    /// key of `also` before it. The range of a load is in the key set
+    /// without it (`transactions.md` LD6).
     ///
     /// A transaction that has written nothing commits nothing, with or
     /// without `also`.

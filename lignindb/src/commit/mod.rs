@@ -90,7 +90,7 @@
 //! | Step | What is done | Locks held |
 //! | --- | --- | --- |
 //! | before | The transaction's frames are made over the latest version, and where no durable manifest covers the values its loads appended for them, the file the loads fill is synced and the manifest is replaced. An error here is returned by no one: the same is done again below. | the transaction's own, that of the loads' file, the manifest's |
-//! | 2 to 4 | The same again, after the conflict is decided (CF6) and before the frames are taken. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). Nothing is left to do unless frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
+//! | 2 to 4 | The same again, after the conflict is decided (CF6) and before the frames are taken. A failure refuses the commit with the transaction as it was ([`CommitError::Refused`]). Nothing is left to do where the first row covered every value and the frames are the ones it covered. The work is done here where the first row failed, and where frames were made since: a commit of another was published, or an operation of the transaction on another thread dropped them or loaded more. | commit lock, and the three above |
 //! | 6 | The group lists as acquired the pointers that cells of the transaction's pages hold to values of its loads, after the released ones. A pointer of its own loads that a cell stopped holding again is not listed as released: no count had it. | as for any commit |
 //! | 7 | The acquired pointers are counted with the released ones, and the hold on the files of the loads ends. | as for any commit |
 //!
@@ -117,7 +117,9 @@
 //! ([`CommitError::Unsettled`]) and one whose install is refused
 //! ([`CommitError::Halted`]). A recovery that keeps the group finds cells
 //! that point into those files. The store has the hold as well where the
-//! commit panics once it holds the lock on the counts (step 6).
+//! commit panics after it took the lock on the counts (step 6) and before
+//! it has counted the values (step 7). After the count the counts keep
+//! the files, and a commit that fails or panics then leaves no hold.
 //!
 //! **After a crash the store has all of a load or none of it.** A manifest
 //! that covers every value is durable before the group that names their

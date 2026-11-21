@@ -139,10 +139,10 @@
 //!
 //! **The records are those of the same change set that does not say so.**
 //! A load is in the write set as the puts of its nodes, one entry each, so
-//! the claims of scopes, the conflict rule, the service by key and the
-//! rollback to a mark are for it what they are for any write. What
-//! differs is where the cells and the values go, where the load is laid
-//! out in the frames:
+//! the claims of scopes, the service by key and the rollback to a mark are
+//! for it what they are for any write. To the conflict rule it is those
+//! puts and a range (below). What differs beside that is where the cells
+//! and the values go, where the load is laid out in the frames:
 //!
 //! - **The layout is the bulk loader's** ([`lignin_tree::bulk`]). The
 //!   loads of one batch are laid out before its other change sets are
@@ -154,11 +154,12 @@
 //!   wherever it stands in the batch, or of a Merk the batch does not
 //!   write. No Merk is laid out inside the fragment of its host. A node of
 //!   a load does not host a Merk that the batch writes node by node, nor
-//!   one that another node of the batch hosts: the batch is refused. For
-//!   another node that states the Merks it hosts that is before anything
-//!   is changed, and for one that is written and keeps them it is when
-//!   the batch is laid out. A node that is written as any other can host
-//!   a load.
+//!   one that another node of the batch states it hosts: the batch is
+//!   refused before anything is changed. Nor does it host a Merk that
+//!   was entered with another host, or with none
+//!   ([`WholeFault::NotItsHost`]): that is refused where the batch is
+//!   laid out, before a page of it is started. A node that is written as
+//!   any other can host a load.
 //! - **The hashes are the ones the change set states.** The loader asks
 //!   for each hash of a node when the node arrives, and is answered with
 //!   what the change set says: no rule is known here. The hash of the
@@ -220,9 +221,11 @@
 //! stated. Of a value out of line the transaction keeps only where it is
 //! until the cell gets its page: in the batch, or in the value log where
 //! the frames are made again. There a value is read when its node is
-//! handed to the loader and again when it is appended: two such values
-//! are in memory at most. The batch itself is its caller's ([`TxnStats`]
-//! has the pages and the bytes of the write set).
+//! handed to the loader and again when it is appended, each time into a
+//! buffer that is used again for the next value: what the buffers hold is
+//! a few times the bytes of the longest such value, whatever the number
+//! of nodes that wait. The batch itself is its caller's ([`TxnStats`] has
+//! the pages and the bytes of the write set).
 //!
 //! # Subtrees and the directory
 //!
