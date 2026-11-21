@@ -69,6 +69,14 @@
 //!   delete of a tree removes the records of its subtree with its
 //!   element. A handle that names no element, by prefix or beside the
 //!   path of the root, is not held to an element.
+//! - **In a group of more than one batch, the element of a tree whose
+//!   data is one Merk names that Merk in every batch that puts it**
+//!   ([`Owed::apart`]). One batch can write the nodes of the Merk and a
+//!   later one the node of its element, as the two segments of a partial
+//!   batch do. The first then leaves the root of the Merk for the
+//!   element's node to name (`tree-layout.md` T3), and a node that kept
+//!   what it hosts would point at the root the Merk had before, or at
+//!   none.
 //! - **What an element hosts is read from the group where it states the
 //!   element**: from the last batch that states a value for the element's
 //!   node or removes it, which gives the element or none. Otherwise it is
