@@ -246,10 +246,20 @@ impl LigninChangeSet {
         }
     }
 
-    /// Whether the change set puts or removes the node under `key`.
-    pub(super) fn writes_node(&self, key: &[u8]) -> bool {
-        let put = self.nodes.iter().any(|(node, _)| node.key == key);
-        put || self.removed.iter().any(|(removed, _)| removed == key)
+    /// Whether the change set begins a Merk: it puts nodes, removes none,
+    /// and every node it puts is new to the Merk as its writer has it.
+    /// Merk says that with the cost of each put
+    /// (`KeyValueStorageCost::new_node`): a node that it did not read
+    /// from the store and did not write before, whose key is charged as
+    /// a key that is added. The first change set of a Merk that was
+    /// opened with a root puts that root or removes it, which is no new
+    /// node, so only the first change set of a Merk with no node begins
+    /// one. A put that came with no cost says nothing, and begins none.
+    pub(super) fn begins_a_merk(&self) -> bool {
+        let new = |(_, sizes): &(NodeWrite, PutSizes)| {
+            sizes.cost.as_ref().is_some_and(|cost| cost.new_node)
+        };
+        self.removed.is_empty() && !self.nodes.is_empty() && self.nodes.iter().all(new)
     }
 
     /// Notes which of the written nodes take the place of the element of a
@@ -1121,26 +1131,26 @@ impl LigninSettled {
 
     /// Whether a change set of the Merk `prefix` in the batch is of a
     /// writer that began with no node, as the writer of a tree that the
-    /// same batch makes does. A handle decides it with the first change
-    /// set of nodes that it stages, for that one and every later one: the
-    /// change set neither puts nor removes the node the handle fetched
-    /// first. A change set that a handle stages after it took in an
-    /// application of the Merk
+    /// same batch makes does. The first change set of nodes that a
+    /// handle stages decides it, for that one and every later one of the
+    /// handle: it puts nodes, removes none, and every node it puts is new
+    /// to the Merk as its writer has it, which Merk says with the cost of
+    /// each put (`KeyValueStorageCost::new_node`). A change set that a
+    /// handle stages after it took in an application of the Merk
     /// ([`LigninNodeStore::take_locations`](super::LigninNodeStore::take_locations))
     /// is of no such writer: it writes on what that application left.
     ///
-    /// A Merk that is opened with a root fetches it before anything else,
-    /// and its first change set puts that root or removes it; the writer
-    /// of a Merk with no node fetches nothing for it. A node that such a
-    /// writer fetches by its key, where the transaction holds one under
-    /// the prefix, counts against it only if its first change set writes
-    /// that key.
+    /// The first change set of a Merk that was opened with a root puts
+    /// that root or removes it, and a root that was read is no new node.
+    /// What the writer of a Merk with no node asked the store for by a
+    /// key, where the transaction holds a node under the prefix, does not
+    /// count: that node is not one of its Merk.
     ///
-    /// It says what a handle did and nothing else: a handle is taken to
-    /// write the Merk whose nodes it read. A handle that stages nodes of a
-    /// Merk which another handle read answers as a writer that began with
-    /// no node, though the Merk has nodes. What to make of the answer is
-    /// up to whoever applies the batch.
+    /// It says what a writer stated and nothing else: a change set whose
+    /// puts all came with the cost of a new node, staged through a handle
+    /// of a prefix under which the transaction holds a Merk, answers as
+    /// one of a writer that began with no node, whoever made it. What to
+    /// make of the answer is up to whoever applies the batch.
     pub fn began_empty(&self, prefix: &[u8; 32]) -> bool {
         self.merks.get(prefix).copied().unwrap_or(false)
     }

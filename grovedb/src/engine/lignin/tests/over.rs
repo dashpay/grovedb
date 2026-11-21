@@ -240,6 +240,16 @@ fn a_group_that_writes_into_a_tree_it_leaves_as_no_tree_is_looked_for_once() {
     let refused = REFUSED.take();
     assert_eq!(refused.len(), 1, "{refused:?}");
     assert!(refused[0].contains("not entered"), "{refused:?}");
+    // The transaction holds nothing of the group: it reads the tree and
+    // its element.
+    let through = (db.get(ROOT, b"t", Some(&tx), v).unwrap()).expect("the element of the group");
+    assert!(through.is_any_tree(), "{through:?}");
+    let held = (db.get(T, b"x", Some(&tx), v).unwrap()).expect("the element of the tree");
+    assert_eq!(held, item(1));
+    let below = engine.subtree(T.into(), None, &tx).unwrap();
+    let record = below.aux().get(b"k").unwrap().expect("a read");
+    assert_eq!(record, None);
+    drop(below);
     drop(tx);
     assert_eq!(entry_of_t(&db), Some((TreeType::NormalTree, true)));
     let kept = (db.get(T, b"x", None, v).unwrap()).expect("the element of the tree");

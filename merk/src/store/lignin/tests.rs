@@ -2501,9 +2501,9 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
 
     // The writer of a Merk that begins with no node can ask for a key
     // which the transaction holds under the prefix, as an insert of what
-    // is not there does. Its change set does not write that node, and it
-    // began with no node all the same. One that is opened with the root
-    // and writes on did not.
+    // is not there does: it began with no node all the same, since every
+    // node it puts is new to its Merk. One that is opened with the root
+    // and writes on did not: the root it puts again is none.
     let began = |root: Option<Vec<u8>>, asked: Option<u64>, put: u64| {
         let staged = LigninBatch::new();
         let lower = LigninNodeStore::deferred(&writer, child.clone(), Some(&staged));
@@ -2524,9 +2524,9 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     assert_eq!(began(None, Some(1), 2), (true, true));
     assert_eq!(began(Some(be(1)), None, 2), (false, true));
     assert_eq!(began(Some(be(1)), Some(1), 2), (false, true));
-    // A writer that began with no node and writes the key it asked for is
-    // taken for one that writes the Merk on.
-    assert_eq!(began(None, Some(1), 1), (false, true));
+    // So did a writer that began with no node and then puts the key it
+    // asked for: the node it puts is new to its Merk.
+    assert_eq!(began(None, Some(1), 1), (true, true));
     // A handle that took in where an application put the nodes it wrote
     // writes that Merk on, whatever it fetched.
     let own = LigninSubtree::alone([223; 32]);
@@ -2546,9 +2546,8 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     let second = staged.settle(&writer).unwrap().expect("a settled batch");
     assert!(!second.began_empty(&own.prefix) && second.writes_merk(&own.prefix));
     // A writer that removes the root it was opened with and writes the
-    // Merk on through the same handle began with that root: its later
-    // change set writes neither the root that is gone nor any node the
-    // handle fetched first.
+    // Merk on through the same handle began with that root: what its
+    // first change set says holds for the one after it.
     (LigninSettled::apply(vec![second], &writer, &[]).unwrap()).expect("the batch is applied");
     let staged = LigninBatch::new();
     let handle = LigninNodeStore::deferred(&writer, own.clone(), Some(&staged));

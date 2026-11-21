@@ -434,8 +434,10 @@ enum Records<'db> {
 /// its nodes where they are (`tree-layout.md` D5), and the batch says so
 /// ([`LigninBatch::move_subtree`]): where the subtree is entered when the
 /// walk begins, and otherwise where it is entered when the walk ends,
-/// which a commit beside the transaction made so. The walk reads the
-/// state of each of its steps, and keeps none.
+/// which a commit beside the transaction made so. The cursor of the walk
+/// reads the committed state as it was when the cursor was made, with
+/// the transaction's own writes: it shows no record of a subtree that
+/// was entered after that.
 /// What a move is charged on existing
 /// GroveVersions is what the copy of RocksDB is charged, record by
 /// record, so each step reads the next record through a cursor of the
@@ -972,8 +974,8 @@ impl Engine for LigninEngine {
         // move: its walk finds nothing, and the batch is told of no move.
         // A read of the entry that the transaction refuses is met again by
         // the cursor, whose status ends the move. The cursor is made after
-        // the entry is read, and reads the state of each step: a subtree
-        // that is entered meanwhile is found at the end of the walk.
+        // the entry is read, and a subtree that is entered in between or
+        // during the walk is found by the read at the end of the walk.
         let entry = source.entry().ok().flatten();
         #[cfg(test)]
         an_entry_was_read();

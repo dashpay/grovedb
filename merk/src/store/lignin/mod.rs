@@ -270,9 +270,6 @@ pub struct LigninNodeStore<'db> {
     /// them is told to the batch that takes it
     /// ([`LigninSettled::over_trees`]).
     trees: RefCell<HashSet<Vec<u8>>>,
-    /// The key of the node that was fetched through the handle first, for
-    /// a Merk or by its key: the root of a Merk that was opened with one.
-    first: RefCell<Option<Vec<u8>>>,
     /// Whether the writer of the handle's Merk began with no node, once
     /// the first change set of nodes was staged through the handle
     /// ([`Self::began_empty`]).
@@ -359,7 +356,6 @@ impl<'db> LigninNodeStore<'db> {
             hints: RefCell::new(HashMap::new()),
             reads: RefCell::new(HashMap::new()),
             trees: RefCell::new(HashSet::new()),
-            first: RefCell::new(None),
             began: Cell::new(None),
             placed: Cell::new(false),
             path: None,
@@ -473,33 +469,19 @@ impl<'db> LigninNodeStore<'db> {
         Err(refused("a node changed under every read of it"))
     }
 
-    /// Keeps the key of the first node that is fetched through the handle.
-    fn note_fetch(&self, key: &[u8]) {
-        self.first.borrow_mut().get_or_insert_with(|| key.to_vec());
-    }
-
     /// Whether a change set of nodes that this handle stages is of a Merk
-    /// whose writer began with no node. It is decided by the first such
-    /// change set and holds for every later one of the handle, which are
-    /// of the same writer: that change set neither puts nor removes the
-    /// node that the handle fetched first. A Merk that is opened with a
-    /// root fetches it before anything else, and its first change set
-    /// writes that root or removes it; a later one need not, once the
-    /// root is another. A handle that took in an application of the Merk
-    /// writes on what that application left, whatever it began with.
+    /// whose writer began with no node. The first such change set that
+    /// the handle stages decides it, for every later one of the handle
+    /// too, which are of the same writer: it begins a Merk
+    /// ([`LigninChangeSet::begins_a_merk`]). A handle that took in an
+    /// application of the Merk writes on what that application left,
+    /// whatever it began with.
     fn began_empty(&self, change_set: &LigninChangeSet) -> bool {
         if self.placed.get() {
             return false;
         }
-        if let Some(began) = self.began.get() {
-            return began;
-        }
-        let first = self.first.borrow();
-        let on = first
-            .as_ref()
-            .is_some_and(|key| change_set.writes_node(key));
-        self.began.set(Some(!on));
-        !on
+        let begins = || change_set.begins_a_merk();
+        self.began.get().unwrap_or_else(begins)
     }
 
     /// Keeps the key of a node that was loaded with the element of a tree
@@ -593,9 +575,15 @@ impl<'db> LigninNodeStore<'db> {
             }
             Mode::Deferred(Some(batch)) => {
                 let staged = change_set.check_stale();
-                let began_empty = change_set.writes_nodes() && self.began_empty(&change_set);
+                let writes_nodes = change_set.writes_nodes();
+                let began_empty = writes_nodes && self.began_empty(&change_set);
                 let staged = staged
                     .and_then(|()| batch.stage(change_set, began_empty, self.path.as_deref()));
+                // The first change set of nodes that is staged decides
+                // what the handle's writer began with.
+                if staged.is_ok() && writes_nodes && self.began.get().is_none() {
+                    self.began.set(Some(began_empty));
+                }
                 staged.wrap_with_cost(MODEL.staged_write())
             }
             Mode::Immediate => {
@@ -655,7 +643,6 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.read(key, true)
             .map_ok(|node| {
                 node.map(|node| {
-                    self.note_fetch(key);
                     let mut inner = node_inner(key.to_vec(), node)?;
                     if let Some(value_defined_cost_fn) = &value_defined_cost_fn {
                         inner.kv.value_defined_cost =
@@ -683,7 +670,6 @@ impl<'db> NodeStore<'db> for LigninNodeStore<'db> {
         self.read(key, false)
             .map_ok(|node| {
                 let node = node.ok_or(Error::KeyNotFoundError("Key not found for fetch"))?;
-                self.note_fetch(key);
                 node_without_value(key.to_vec(), node)
             })
             .flatten()

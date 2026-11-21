@@ -776,7 +776,7 @@ fn partial<E: Engine>(dir: &Path, version: &'static GroveVersion) -> Log {
     ops.push(insert(rooted, b"z", Element::empty_tree()));
     ops.push(insert(inner, b"deep", Element::new_item(vec![3; 30])));
     calls.batch("a tree with a tree in it", ops);
-    for (round, height) in [None, Some(1u8), Some(2), Some(3)].into_iter().enumerate() {
+    for (round, height) in [None, Some(0u8), Some(1), Some(2)].into_iter().enumerate() {
         let tree = db.get(&rooted[..1], b"rooted", None, version).unwrap();
         let root = (tree.expect("the tree").root_key_and_tree_type_owned())
             .and_then(|(root, _)| root)
@@ -1622,6 +1622,27 @@ fn only_what_is_not_there<E: Engine>(dir: &Path, version: &'static GroveVersion)
     calls.proven(&[b"five"]);
     calls.batch("into it", vec![insert(&[b"five"], b"later", item())]);
     calls.proven(&[b"five"]);
+    // A partial batch whose first segment leaves the insert out, and
+    // whose caller then puts an element under the same key: the writer of
+    // the new tree asked the store for that key and began with no node.
+    calls.batch("filled", filled(&[], b"six", 0, made));
+    let options = BatchApplyOptions {
+        batch_pause_height: Some(0),
+        ..BatchApplyOptions::default()
+    };
+    let ops = vec![
+        insert(&[], b"six", Element::empty_sum_tree()),
+        or_skipped(&[b"six"], b"number"),
+    ];
+    calls.partial(
+        "a sum tree over six, its insert left out",
+        ops,
+        Some(options),
+        |_| Ok(vec![insert(&[b"six"], b"number", Element::new_sum_item(6))]),
+    );
+    calls.get(&[], b"six");
+    calls.get(&[b"six"], b"number");
+    calls.proven(&[b"six"]);
     let after = |top: &[u8]| insert(&[top], b"after", item());
     calls.batch("after it all", vec![after(b"one"), after(b"three")]);
     calls.batch(
@@ -1652,22 +1673,34 @@ fn a_tree_over_a_tree_takes_what_is_not_there_as_on_rocksdb() {
         log.assert_refusals();
         let db = open::<LigninEngine>(dir.path());
         let engine = db.engine();
-        for (key, tree_type) in [
-            (b"one".as_slice(), TreeType::NormalTree),
-            (b"two", TreeType::SumTree),
-            (b"three", TreeType::NormalTree),
-            (b"four", TreeType::NormalTree),
-            (b"five", TreeType::NormalTree),
+        // Each with the type of the tree that the batch of one segment
+        // made. What the element of a tree is after a partial batch wrote
+        // it in both segments is GroveDB's to say, the same on both
+        // engines: the directory has the tree by its element's type.
+        let under_the_root: &[&[u8]] = &[];
+        for (key, made) in [
+            (b"one".as_slice(), Some(TreeType::NormalTree)),
+            (b"two", Some(TreeType::SumTree)),
+            (b"three", Some(TreeType::NormalTree)),
+            (b"four", Some(TreeType::NormalTree)),
+            (b"five", Some(TreeType::NormalTree)),
+            (b"six", None),
         ] {
+            let named = String::from_utf8_lossy(key);
+            let element = db.get(under_the_root, key, None, version).unwrap();
+            let tree_type = (element.expect("an element").tree_type()).expect("a tree");
+            assert!(made.is_none_or(|made| made == tree_type), "{named}");
             let tx = engine.start_read_transaction();
             let handle = engine.subtree([key].as_ref().into(), None, &tx).unwrap();
             let entry = handle.entry().expect("the directory answers");
-            let entry = entry.unwrap_or_else(|| panic!("{} is entered", hex::encode(key)));
-            assert_eq!(entry.tree_type().expect("a tree type"), tree_type);
+            let entry = entry.unwrap_or_else(|| panic!("{named} is entered"));
+            let entered = entry.tree_type().expect("a tree type");
+            assert_eq!(entered, tree_type, "{named}");
             // Nothing of the tree that was there is under the new one.
             let nested: [&[u8]; 2] = [key, b"nested"];
             let below = engine.subtree(nested.as_ref().into(), None, &tx).unwrap();
-            assert_eq!(below.entry().expect("the directory answers"), None);
+            let below = below.entry().expect("the directory answers");
+            assert_eq!(below, None, "{named}");
         }
         drop(db);
         check(dir.path(), version);

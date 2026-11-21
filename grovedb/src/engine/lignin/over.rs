@@ -52,7 +52,8 @@
 //!   (`BatchError::NotEntered`) and takes nothing of the group. The
 //!   engine looks again by the rule of the enters
 //!   ([`Left::found_otherwise`], `Engine::apply_write_group`), and applies
-//!   the group with what that look states. A group that writes into a
+//!   the group with what that look states, which is no drop of a
+//!   subtree that is not entered then. A group that writes into a
 //!   subtree which leaves with it and is not entered again is refused for
 //!   that subtree by its own doing ([`Left::own_doing`]), and is not
 //!   looked for again.
@@ -64,8 +65,9 @@
 //!   entered the subtree before the group was applied, by a first write
 //!   into the tree, nothing is dropped and this look says nothing of the
 //!   element's node: the element is written as the group states it, its
-//!   node keeps the Merk that the commit hung under it, and the entry
-//!   outlives the tree. That commit wrote the element's node too. Its
+//!   node keeps what the commit hung under it, which is a Merk where the
+//!   tree's data is one, and the entry outlives the tree. That commit
+//!   wrote the element's node too. Its
 //!   transaction and this one do not meet as a conflict where this one
 //!   had not written the node before it, on either engine, and RocksDB
 //!   keeps that commit's records under the prefix. A group that writes
