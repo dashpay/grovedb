@@ -974,8 +974,9 @@ impl Engine for LigninEngine {
         // move: its walk finds nothing, and the batch is told of no move.
         // A read of the entry that the transaction refuses is met again by
         // the cursor, whose status ends the move. The cursor is made after
-        // the entry is read, and a subtree that is entered in between or
-        // during the walk is found by the read at the end of the walk.
+        // the entry is read. A subtree that is entered in between or
+        // during the walk, and still is where the walk ends, is found by
+        // the read there.
         let entry = source.entry().ok().flatten();
         #[cfg(test)]
         an_entry_was_read();

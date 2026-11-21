@@ -253,8 +253,11 @@ impl LigninChangeSet {
     /// from the store and did not write before, whose key is charged as
     /// a key that is added. The first change set of a Merk that was
     /// opened with a root puts that root or removes it, which is no new
-    /// node, so only the first change set of a Merk with no node begins
-    /// one. A put that came with no cost says nothing, and begins none.
+    /// node, so that one begins none. A later change set of the same
+    /// writer can hold of itself what this asks, where an earlier one
+    /// removed every node: which change set of a handle is asked is the
+    /// handle's to decide (`LigninNodeStore::began_empty`). A put that
+    /// came with no cost says nothing, and begins none.
     pub(super) fn begins_a_merk(&self) -> bool {
         let new = |(_, sizes): &(NodeWrite, PutSizes)| {
             sizes.cost.as_ref().is_some_and(|cost| cost.new_node)
@@ -1146,11 +1149,12 @@ impl LigninSettled {
     /// key, where the transaction holds a node under the prefix, does not
     /// count: that node is not one of its Merk.
     ///
-    /// It says what a writer stated and nothing else: a change set whose
-    /// puts all came with the cost of a new node, staged through a handle
-    /// of a prefix under which the transaction holds a Merk, answers as
-    /// one of a writer that began with no node, whoever made it. What to
-    /// make of the answer is up to whoever applies the batch.
+    /// It says what a writer stated and nothing else: where the first
+    /// change set of nodes that a handle stages removes none and puts
+    /// only nodes that came with the cost of a new node, through a handle
+    /// of a prefix under which the transaction holds a Merk, the answer
+    /// is that of a writer that began with no node, whoever made it. What
+    /// to make of the answer is up to whoever applies the batch.
     pub fn began_empty(&self, prefix: &[u8; 32]) -> bool {
         self.merks.get(prefix).copied().unwrap_or(false)
     }

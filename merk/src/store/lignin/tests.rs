@@ -2541,23 +2541,32 @@ fn a_settled_batch_says_which_puts_are_over_a_tree_and_takes_a_drop() {
     merk.storage
         .take_locations(&applied.expect("the batch is applied"));
     apply(&mut merk, &[basic(2, b"two")]);
-    let opened_with = merk.root_key();
     drop(merk);
     let second = staged.settle(&writer).unwrap().expect("a settled batch");
     assert!(!second.began_empty(&own.prefix) && second.writes_merk(&own.prefix));
-    // A writer that removes the root it was opened with and writes the
-    // Merk on through the same handle began with that root: what its
-    // first change set says holds for the one after it.
     (LigninSettled::apply(vec![second], &writer, &[]).unwrap()).expect("the batch is applied");
+    // A writer that removes the root it was opened with, the one node of
+    // its Merk, and writes the Merk on through the same handle began with
+    // that root: what its first change set says holds for the one after
+    // it, which by itself puts one new node and removes none.
+    let sole = LigninSubtree::alone([224; 32]);
     let staged = LigninBatch::new();
-    let handle = LigninNodeStore::deferred(&writer, own.clone(), Some(&staged));
+    staged.enter(&sole, b"tree").unwrap();
+    let handle = LigninNodeStore::deferred(&writer, sole.clone(), Some(&staged));
+    let mut merk = open_layered(handle, None);
+    apply(&mut merk, &[basic(1, b"one")]);
+    let opened_with = merk.root_key();
+    drop(merk);
+    (staged.apply(&writer).unwrap()).expect("the batch is applied");
+    let staged = LigninBatch::new();
+    let handle = LigninNodeStore::deferred(&writer, sole.clone(), Some(&staged));
     let mut merk = open_layered(handle, opened_with.clone());
     apply(&mut merk, &[(opened_with.expect("a root"), Op::Delete)]);
     staged.next_operation();
     apply(&mut merk, &[basic(3, b"three")]);
     drop(merk);
     let on = staged.settle(&writer).unwrap().expect("a settled batch");
-    assert!(!on.began_empty(&own.prefix) && on.writes_merk(&own.prefix));
+    assert!(!on.began_empty(&sole.prefix) && on.writes_merk(&sole.prefix));
     let none = LigninBatch::new()
         .settle(&writer)
         .unwrap()
